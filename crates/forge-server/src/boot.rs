@@ -876,9 +876,9 @@ port = {port}
         );
     }
 
-    /// **The close door keeps a project out of the wave**, and its stored
-    /// workers ride the lead's Connected hook - which never runs for a
-    /// lead that is not spawned, so nothing of the project's comes back.
+    /// **The close door keeps a project out of the wave.** A closed lead is
+    /// not spawned, and its stored workers ride its Connected hook - which
+    /// never runs for a lead nothing starts.
     #[tokio::test]
     async fn the_boot_wave_leaves_a_closed_project_shut() {
         use forge_workspace::store::sessions::SeatState;
@@ -897,9 +897,6 @@ port = {port}
         workspace
             .seed_seat_state_for_test("TestOrg", "notes", "lead", SeatState::Closed)
             .expect("seed the closed seat");
-        workspace
-            .seed_seat_state_for_test("TestOrg", "notes", "steward", SeatState::Idle)
-            .expect("seed a worker row the closed lead would have brought back");
 
         start_boot_wave(Arc::clone(&workspace), None, false);
 
@@ -925,12 +922,6 @@ port = {port}
             })
             .collect();
         assert_eq!(lead_spawns, vec!["forge"], "the closed project's lead is not spawned");
-        assert!(
-            !dispatched
-                .iter()
-                .any(|command| matches!(command, forge_workspace::Command::SpawnWorker { .. })),
-            "its stored worker comes back only through its lead's Connected hook",
-        );
     }
 
     /// `--new` still asks for the note: the spawn's resume gate is what

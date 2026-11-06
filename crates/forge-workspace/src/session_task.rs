@@ -279,6 +279,15 @@ impl SessionTask {
                 }
             }
         }
+        // The turn settled at the fold - completed, failed or cancelled - so
+        // the seat is open with nothing in flight. **Written before the
+        // boundary hooks**: `after_turn_ended` can start the next turn
+        // synchronously (a parked handoff's judgment prompt goes through
+        // `route` and commits `InTurn`), and an Idle write after it would
+        // erase the turn now running.
+        if turn_ended && let Some(workspace) = self.workspace.upgrade() {
+            workspace.record_seat_state(&self.key, crate::store::sessions::SeatState::Idle);
+        }
         // The CLI reported a repository mutation: re-read the seat's tree on
         // the frame, and for a published change look the PR up again.
         if let Some(pr_stale) = repo_nudge
@@ -299,12 +308,6 @@ impl SessionTask {
         }
         if turn_cancelled {
             self.abort_cancelled_handoff();
-        }
-        // The turn settled - completed, failed or cancelled - so the seat
-        // is open with nothing in flight. Written from the same boundary
-        // the frames announce, so the row and the page agree on liveness.
-        if turn_ended && let Some(workspace) = self.workspace.upgrade() {
-            workspace.record_seat_state(&self.key, crate::store::sessions::SeatState::Idle);
         }
 
         // Mirror Connected into the project catalog so the Projects
@@ -2873,9 +2876,10 @@ fn maybe_kick_worker_on_connected(workspace: &Arc<crate::Workspace>, slot: &crat
 }
 
 /// A lead's first turn after a boot spawn handed it a stored session id
-/// to resume: the restart note the spawn stamped on the domain. The hook
-/// takes the note, so a reconnect repeats nothing, and a first boot or
-/// `--new` never stamped one.
+/// to resume: the restart note the spawn stamped on the domain when the
+/// boot read the seat as mid-turn. The hook takes the note, so a reconnect
+/// repeats nothing, and a parked seat, a first boot or `--new` never
+/// stamped one.
 fn maybe_kick_lead_on_connected(
     workspace: &Arc<crate::Workspace>,
     slot: &crate::SessionSlot,
@@ -4703,11 +4707,12 @@ mod tests {
         );
     }
 
-    /// **A settled turn leaves the seat open and parked.** The Result is
-    /// the boundary the page's TurnComplete frame announces, so the row and
-    /// the page cannot disagree about whether work is in flight.
+    /// **Every Result settles the seat, not only a clean one.** A success, a
+    /// failure and the reader's cancel all end the turn the row names; a
+    /// settle narrowed to the success arm would leave a failed seat looking
+    /// mid-turn until the next boot kicked it.
     #[tokio::test]
-    async fn a_result_settles_the_seat_to_idle() {
+    async fn every_result_settles_the_seat_to_idle() {
         use crate::store::sessions::SeatState;
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -4718,19 +4723,111 @@ mod tests {
         );
         let key = SessionSlot::worker("TestOrg", "forge", "settling");
         workspace.record_session_id("TestOrg", "forge", "settling", "id-1");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &key);
+
+        for (label, subtype, cancelled, is_error) in [
+            ("a success", "success", false, false),
+            ("a failure", "error_during_execution", false, true),
+            ("a cancel", "error_during_execution", true, true),
+        ] {
+            workspace.record_seat_state(&key, SeatState::InTurn);
+            {
+                let mut domain = task.domain.lock();
+                domain.reset_turns();
+                domain.commit_turn();
+                // The cancel stamp is armed while the turn runs; the
+                // commit's own cleanup would spend it first.
+                domain.pending_cancel = cancelled;
+            }
+
+            task.translate_event(AgentEvent::SdkMessage {
+                session_id: "id-1".to_owned(),
+                msg: result_message(subtype, is_error),
+            });
+
+            assert_eq!(
+                workspace.stored_seat_state(&key),
+                Some(SeatState::Idle),
+                "{label} settles the turn, so the seat is open with nothing in flight",
+            );
+        }
+    }
+
+    /// **A settle must not erase the turn the boundary itself starts.** A
+    /// parked handoff begins its judgment turn from `after_turn_ended`; that
+    /// prompt routes through the workspace and writes `in_turn`, so the
+    /// settle's own `idle` has to land first. Written after the hooks, a
+    /// handoff running for minutes would leave the row reading idle, and a
+    /// restart in that window would park the lead with no restart note.
+    #[tokio::test]
+    async fn a_settle_does_not_erase_the_handoff_turn_it_starts() {
+        use crate::store::sessions::SeatState;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let key = SessionSlot::lead("TestOrg", "forge");
+        workspace.record_session_id("TestOrg", "forge", "lead", "id-1");
         workspace.record_seat_state(&key, SeatState::InTurn);
         let (mut task, _agent_rx) = command_task_for(&workspace, &key);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("id-1".to_owned()));
+        // The handoff was asked for while the turn ran; this boundary is the
+        // idle one it waited for.
+        task.domain.lock().handoff.parked = true;
         task.domain.lock().commit_turn();
+        // The judgment prompt routes through the workspace, so the seat has
+        // to be one the workspace can route to, and the task has to hold its
+        // own domain there for the commit to be seen.
+        workspace.domain_handles.lock().insert(key.clone(), Arc::clone(&task.domain));
+        let (command_tx, _command_rx) = tokio::sync::mpsc::unbounded_channel();
+        workspace.command_senders.lock().insert(key.clone(), command_tx);
+        let _updates = workspace.subscribe_mirror();
 
         task.translate_event(AgentEvent::SdkMessage {
             session_id: "id-1".to_owned(),
             msg: result_message("success", false),
         });
 
+        assert!(task.domain.lock().handoff.awaiting, "the boundary starts the handoff");
         assert_eq!(
             workspace.stored_seat_state(&key),
-            Some(SeatState::Idle),
-            "the turn settled, so the seat is open with nothing in flight",
+            Some(SeatState::InTurn),
+            "the judgment turn the boundary started is the state the row holds",
+        );
+    }
+
+    /// **A turn a transport death cut off stays on the row.** The death is
+    /// forge's to heal, and the state it interrupted is what the next boot
+    /// reads to decide whether the seat was mid-work; a death write here
+    /// would turn a stuck turn into a parked seat.
+    #[tokio::test]
+    async fn a_transport_death_leaves_an_interrupted_turn_in_turn() {
+        use crate::store::sessions::SeatState;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let key = SessionSlot::worker("TestOrg", "forge", "dying");
+        workspace.record_session_id("TestOrg", "forge", "dying", "id-1");
+        workspace.record_seat_state(&key, SeatState::InTurn);
+        let (mut task, _agent_rx) = command_task_for(&workspace, &key);
+        task.domain.lock().commit_turn();
+
+        task.translate_event(AgentEvent::ConnectionFailed {
+            message: "the child exited".to_owned(),
+            kind: forge_agent::client::SpawnFailureKind::Unclassified,
+        });
+
+        assert_eq!(
+            workspace.stored_seat_state(&key),
+            Some(SeatState::InTurn),
+            "the interrupted turn stays on the row for the next boot",
         );
     }
 

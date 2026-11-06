@@ -2311,8 +2311,8 @@ impl Workspace {
                     target: "forge_workspace::sessions",
                     event_name = "seat_state_seed_failed",
                     %error,
-                    "seeding the seats written before the seat-state field failed; the boot \
-                     wave sees them as absent and opens nothing for them",
+                    "seeding the seats written before the seat-state field failed; the rows it \
+                     did not reach read as absent, and the boot opens nothing for them",
                 ),
             }
         }
@@ -3228,6 +3228,11 @@ impl Workspace {
     /// open or closed: naming it is the user's own act, and closing is not
     /// forgetting. A name no project declares is returned as itself so the
     /// spawn handler reports it like any other unknown project.
+    ///
+    /// A project renamed in `forge.toml` starts with no row, because the
+    /// row is keyed by its org and name: the rename is the same act that
+    /// loses the stored session id, and there is nothing stable underneath
+    /// to key by instead.
     pub fn boot_wave_targets(&self, only: Option<&str>) -> Vec<BootWaveTarget> {
         let config = self.config_arc();
         let mut targets = Vec::new();
@@ -3575,7 +3580,10 @@ impl Workspace {
             domain_created: false,
             armed: true,
         };
-        let session_id = self.record_spawn_id(&session_slot, stored.clone());
+        // **The spawn is an opening door.** Naming a closed project, or a
+        // wake that names it, runs this path, and the seat it starts is
+        // open; every other seat-state write leaves a closed row closed.
+        let session_id = self.record_spawn_id(&session_slot, stored.clone(), true);
         tracing::info!(
             target: "forge_workspace::account",
             slot = %session_slot.display(),
@@ -5131,20 +5139,34 @@ impl Workspace {
     /// the caller has none to hand in. A spawn leaves the seat open with
     /// no turn in flight; the boot wave read its pre-spawn state already,
     /// and the turn its note starts flips it back.
-    fn record_spawn_id(&self, slot: &SessionSlot, id: Option<String>) -> String {
+    fn record_spawn_id(&self, slot: &SessionSlot, id: Option<String>, reopen: bool) -> String {
         let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         self.record_session_id(slot.org(), slot.project(), slot.label(), &id);
-        self.record_seat_state(slot, crate::store::sessions::SeatState::Idle);
+        self.write_seat_state(slot, crate::store::sessions::SeatState::Idle, reopen);
         id
     }
 
     /// Move `slot`'s row to `state`. A write that cannot land is warned and
     /// not retried: the row is what the next boot derives from, and a
-    /// missing write reads as the state it held before.
+    /// missing write reads as the state it held before. A closed row is
+    /// left closed; only the spawn path reopens it.
     pub(crate) fn record_seat_state(
         &self,
         slot: &SessionSlot,
         state: crate::store::sessions::SeatState,
+    ) {
+        self.write_seat_state(slot, state, false);
+    }
+
+    /// The one write behind [`Self::record_seat_state`] and the spawn's
+    /// reopen. `reopen` is the opening door's word, not a turn's: a spawn
+    /// the user or the boot wave asked for may open a closed seat, while a
+    /// settle or a swap landing late must not.
+    fn write_seat_state(
+        &self,
+        slot: &SessionSlot,
+        state: crate::store::sessions::SeatState,
+        reopen: bool,
     ) {
         let db = self.db.lock();
         let Some(db) = db.as_ref() else { return };
@@ -5154,6 +5176,7 @@ impl Workspace {
             slot.project(),
             slot.label(),
             state,
+            reopen,
         ) {
             tracing::warn!(
                 target: "forge_workspace::sessions",
@@ -5182,7 +5205,8 @@ impl Workspace {
                     event_name = "seat_state_read_failed",
                     slot = %slot.display(),
                     %error,
-                    "reading the seat's state failed; treating it as idle",
+                    "reading the seat's state failed; the boot opens nothing for this seat and \
+                     a resumed worker carries no kick",
                 );
                 None
             }
@@ -5460,7 +5484,9 @@ impl Workspace {
     /// A fresh id for a session starting now, recorded against `slot`'s
     /// row.
     pub(crate) fn fresh_session_id_for(&self, slot: &SessionSlot) -> String {
-        self.record_spawn_id(slot, None)
+        // A swap is not an opening door: a `/new` a dying task drains after
+        // the close must not reopen the row.
+        self.record_spawn_id(slot, None, false)
     }
 
     /// The session id the store holds for `(org, project, label)`.
@@ -7688,11 +7714,12 @@ impl Workspace {
     /// Charter and kick come from the DB row.
     ///
     /// Since this holds the worker set, it decides the kick directly:
-    /// a resume takes the row's own `resume_kick` and falls back to the
-    /// forge restart note, telling it to continue rather than restart; a
-    /// fresh re-spawn (never prompted, so no store row) re-delivers the
-    /// stored kick. `maybe_kick_worker_on_connected` then just delivers
-    /// whatever this put on the `WorkerEntry`.
+    /// a resume of a worker whose row says `in_turn` takes the row's own
+    /// `resume_kick` and falls back to the forge restart note, telling it
+    /// to continue rather than restart; a resume of a parked worker gets
+    /// nothing, and a fresh re-spawn (never prompted, so no store row)
+    /// re-delivers the stored kick. `maybe_kick_worker_on_connected` then
+    /// just delivers whatever this put on the `WorkerEntry`.
     pub(crate) fn dispatch_worker_respawns(
         self: &Arc<Self>,
         lead: &SessionSlot,
@@ -13283,8 +13310,9 @@ provider = "anthropic"
     }
 
     /// Dispatch a `SpawnProject` for the fixture's lead with the launch
-    /// settings a caller states. The boot wave passes the restart note;
-    /// every other wake passes `None`.
+    /// settings a caller states. The boot wave passes the restart note for
+    /// a seat it read as mid-turn; a parked seat and every other wake pass
+    /// `None`.
     fn spawn_lead(workspace: &Arc<Workspace>, force_new: bool, resume_kick: Option<String>) {
         let spawned = workspace.dispatch(Command::SpawnProject {
             project_name: "forge".to_owned(),
@@ -13346,6 +13374,74 @@ provider = "anthropic"
         .await
         .unwrap_or(false);
         (true, before.1 || after)
+    }
+
+    /// **The first boot on this build seeds a row written before the field
+    /// and opens it.** The migration is what every existing install relies
+    /// on: without it the row's state is absent, which the wave reads as a
+    /// lead that never spawned, and no project reopens after the upgrade.
+    #[test]
+    fn the_boot_seeds_a_row_written_before_the_field_and_opens_it() {
+        use crate::store::sessions::SeatState;
+
+        let dir = tempdir().expect("tempdir");
+        let project = tempdir().expect("project");
+        let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
+        fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "{}"
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+                project.path().display()
+            ),
+        )
+        .expect("write forge.toml");
+        // A row of the shape the previous build wrote, in the store the
+        // workspace will open.
+        let app_support = dir.path().join("app-support");
+        std::fs::create_dir_all(app_support.join("stores")).expect("stores dir");
+        let db = crate::store::Db::open(&crate::store::path_for(&app_support, dir.path()))
+            .expect("open the scratch store");
+        crate::store::sessions::put_raw_for_test(
+            &db,
+            "Default",
+            "forge",
+            "lead",
+            br#"{"session_id":"id-1"}"#,
+        )
+        .expect("plant the pre-change row");
+        drop(db);
+
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        let key = SessionSlot::lead("Default", "forge");
+
+        let targets = workspace.boot_wave_targets(None);
+        assert_eq!(targets.len(), 1, "the seeded seat is in the wave: {targets:?}");
+        assert_eq!(targets[0].project_name, "forge");
+        assert_eq!(
+            targets[0].resume_kick, None,
+            "a row from before the field has no interrupted turn to report",
+        );
+        assert_eq!(
+            workspace.stored_seat_state(&key),
+            Some(SeatState::Idle),
+            "the migration wrote the state the wave then read",
+        );
     }
 
     /// **A bare boot opens exactly the seats that were open.** A mid-turn
@@ -15209,7 +15305,7 @@ provider = "anthropic"
         let previous = workspace
             .stored_session_id(slot.org(), slot.project(), slot.label())
             .expect("the store reads");
-        let minted = workspace.record_spawn_id(&slot, previous.clone());
+        let minted = workspace.record_spawn_id(&slot, previous.clone(), true);
         assert_ne!(previous.as_deref(), Some(minted.as_str()), "the spawn pinned a new id");
         workspace
             .domain_handles
@@ -17317,9 +17413,14 @@ provider = "anthropic"
     /// can close.
     #[test]
     fn a_prompt_a_dead_task_never_receives_leaves_no_turn_in_flight() {
+        use crate::store::sessions::SeatState;
+
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        ws.install_db_for_test(crate::store::Db::open(&dir.path().join("db.redb")).expect("db"));
         let key = SessionSlot::lead("TestOrg", "forge");
+        ws.record_session_id("TestOrg", "forge", "lead", "id-1");
+        ws.record_seat_state(&key, SeatState::InTurn);
         let receiver = install_fake_session_task(&ws, &key);
         drop(receiver);
 
@@ -17334,6 +17435,11 @@ provider = "anthropic"
         assert!(
             !domain.lock().turn_in_flight(),
             "a refused prompt leaves no turn in flight for the header",
+        );
+        assert_eq!(
+            ws.stored_seat_state(&key),
+            Some(SeatState::Idle),
+            "and the row must not say a turn is running for a prompt no task ever saw",
         );
     }
 
@@ -17413,6 +17519,18 @@ provider = "anthropic"
             Some(SeatState::Closed),
             "a closed lead is not reopened by a bare boot",
         );
+
+        // **The task a close tore down can still land a write.** A Result
+        // being translated and a buffered swap both write through this door
+        // after the close; neither may reopen the project the user shut.
+        for late in [SeatState::Idle, SeatState::InTurn] {
+            ws.record_seat_state(&key, late);
+            assert_eq!(
+                ws.stored_seat_state(&key),
+                Some(SeatState::Closed),
+                "a late {late:?} write leaves the close as the last word",
+            );
+        }
     }
 
     /// `/new` mints the successor's id, and a swap leaves the seat parked:

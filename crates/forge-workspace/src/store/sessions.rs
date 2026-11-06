@@ -33,8 +33,8 @@ pub const LEAD_LABEL: &str = "lead";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SeatState {
-    /// The seat is not open: the close door took it, and nothing reopens
-    /// it at boot.
+    /// The seat is not open: the close door took it, and a bare boot
+    /// leaves it shut. Naming the project opens it again.
     Closed,
     /// Open with a turn in flight. A boot resumes this seat and hands it
     /// the restart note.
@@ -442,17 +442,27 @@ pub fn update(db: &Db, fields: &SessionRecord) -> anyhow::Result<bool> {
 }
 
 /// Move the row at `(org, project, label)` to `state`, keeping every other
-/// field. Returns whether a row existed; a row that is not there is not
-/// created, because the state describes an occupant the row names.
+/// field.
+///
+/// **`Closed` is authoritative.** Unless `reopen` states that an opening
+/// door asked for the seat, a write leaves a closed row closed: the task a
+/// close tore down can still drain a queued `/resume` or translate a
+/// `Result`, and one of those writes landing would reopen a project the
+/// user shut. Returns whether a row existed; a row that is not there is
+/// not created, because the state describes an occupant the row names.
 pub fn set_seat_state(
     db: &Db,
     org: &str,
     project: &str,
     label: &str,
     state: SeatState,
+    reopen: bool,
 ) -> anyhow::Result<bool> {
     let Some(mut record) = get(db, org, project, label)? else { return Ok(false) };
     if record.seat_state == Some(state) {
+        return Ok(true);
+    }
+    if !reopen && record.seat_state == Some(SeatState::Closed) {
         return Ok(true);
     }
     record.seat_state = Some(state);
@@ -693,7 +703,8 @@ mod tests {
         put(&db, &row).expect("write");
 
         assert!(
-            set_seat_state(&db, "Personal", "forge", "steward", SeatState::Closed).expect("set"),
+            set_seat_state(&db, "Personal", "forge", "steward", SeatState::Closed, false)
+                .expect("set"),
             "an existing row takes the state",
         );
         let read = get(&db, "Personal", "forge", "steward").expect("read").expect("row");
@@ -703,8 +714,45 @@ mod tests {
         assert_eq!(read.kick.as_deref(), Some("kick"), "and the kick");
 
         assert!(
-            !set_seat_state(&db, "Personal", "forge", "ghost", SeatState::Idle).expect("set ghost"),
+            !set_seat_state(&db, "Personal", "forge", "ghost", SeatState::Idle, false)
+                .expect("set ghost"),
             "a row that is not there is not created",
+        );
+    }
+
+    /// **A closed row stays closed against every write a torn-down task can
+    /// still land**, and only a spawn that states it is opening the seat
+    /// moves it. Without this, a buffered swap or a late settle reopens the
+    /// project the user just shut, and the next boot reopens it for real.
+    #[test]
+    fn a_closed_row_moves_only_for_an_explicit_reopen() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        let mut row = record("Personal", "forge", "lead", Some("id-1"));
+        row.seat_state = Some(SeatState::Closed);
+        put(&db, &row).expect("write");
+
+        for state in [SeatState::Idle, SeatState::InTurn, SeatState::Closed] {
+            assert!(
+                set_seat_state(&db, "Personal", "forge", "lead", state, false).expect("write"),
+                "the row is there to write",
+            );
+            assert_eq!(
+                get(&db, "Personal", "forge", "lead").expect("read").expect("row").seat_state,
+                Some(SeatState::Closed),
+                "a non-reopening write leaves {state:?} off a closed row",
+            );
+        }
+
+        assert!(
+            set_seat_state(&db, "Personal", "forge", "lead", SeatState::Idle, true)
+                .expect("reopen"),
+            "the row is there to reopen",
+        );
+        assert_eq!(
+            get(&db, "Personal", "forge", "lead").expect("read").expect("row").seat_state,
+            Some(SeatState::Idle),
+            "an opening door reopens it",
         );
     }
 
