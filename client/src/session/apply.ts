@@ -16,6 +16,8 @@
  * the record.
  */
 
+import { eventsOf, joinOfEvents, withEvents, type TaskJoin } from '../chat/join';
+import { outcomesOf } from '../chat/outcomes';
 import { fold } from '../chat/units';
 import { FALLBACK_FLOOR_DB, fractionOf } from '../composer/meter';
 import { surfaceFrom } from '../composer/wire';
@@ -758,8 +760,8 @@ function settled(held: SessionRecord): SessionRecord {
  *   which opens a turn on a queued prompt; the chat refuses that cut and joins
  *   the row to the turn above it.
  *
- * Nothing draws these turns whole: a view reads them flattened, so a
- * difference here is a row count rather than a picture.
+ * **The boundary is the window's unit**: a turn that leaves it takes its facts
+ * with it, and no page draws the cut.
  *
  * **The record keeps the ceiling a fresh read sends**: `SUBSCRIBE_TURNS`, the
  * server's count (`crates/forge-server/src/transport/wire.rs`), which its own
@@ -767,29 +769,53 @@ function settled(held: SessionRecord): SessionRecord {
  */
 function appendFrame(conversation: Conversation, message: unknown): Conversation {
   // **A boundary moves the count**, the same rule the server's own copy keeps
-  // (`transport/conversation.rs`): the frame is appended like any other, and
-  // the header reads the count it increments rather than a figure only a read
-  // refreshes.
+  // (`transport/conversation.rs`): the frame is folded into its turn like any
+  // other, and the header reads the count it increments rather than a figure
+  // only a read refreshes.
   const held = isCompactBoundary(message)
     ? { ...conversation, compaction_count: conversation.compaction_count + 1 }
     : conversation;
+  const events = eventsOf(message);
   const last = held.turns[held.turns.length - 1];
   const opens =
     last === undefined || (fold([message]).length > 0 && !isSystem(message) && opensATurn(message));
   if (opens) {
-    return windowed({ ...held, turns: [...held.turns, { key: null, messages: [message] }] });
+    return windowed(
+      { ...held, turns: [...held.turns, { events }], join: withEvents(held.join, events) },
+      held.join,
+    );
   }
   if (last === undefined) return held;
-  return windowed({
-    ...held,
-    turns: [...held.turns.slice(0, -1), { ...last, messages: [...last.messages, message] }],
-  });
+  return windowed(
+    {
+      ...held,
+      turns: [...held.turns.slice(0, -1), { ...last, events: [...last.events, ...events] }],
+      join: withEvents(held.join, events),
+    },
+    held.join,
+  );
 }
 
-/** The conversation cut to the newest whole turns, which never splits the live one. */
-function windowed(conversation: Conversation): Conversation {
+/**
+ * The conversation cut to the newest whole turns, which never splits the live one.
+ *
+ * A dropped turn's facts cannot be un-folded in place - a stop's answer, a
+ * task frame's owner link, a latched failure all read what earlier turns wrote
+ * - so the surviving window is replayed rather than patched. That happens once
+ * per turn the window sheds, never per frame.
+ *
+ * `was` is the join before this frame, so a frame that stated no task fact
+ * keeps the outcomes it already had rather than rebuilding them.
+ */
+function windowed(conversation: Conversation, was: TaskJoin): Conversation {
   const over = conversation.turns.length - SUBSCRIBE_TURNS;
-  return over > 0 ? { ...conversation, turns: conversation.turns.slice(over) } : conversation;
+  if (over <= 0) {
+    if (conversation.join === was) return conversation;
+    return { ...conversation, outcomes: outcomesOf(conversation.join) };
+  }
+  const turns = conversation.turns.slice(over);
+  const join = joinOfEvents(turns);
+  return { ...conversation, turns, join, outcomes: outcomesOf(join) };
 }
 
 /** Whether a frame is a `system` frame, which is a report about a turn rather than part of one. */

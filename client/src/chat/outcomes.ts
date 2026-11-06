@@ -14,7 +14,7 @@
  * its call, and the tool's success answer is the only ending.
  */
 
-import { addJoinFrame, seedJoin, settleStops } from './join';
+import { addJoinFrame, seedJoin, settleStops, type TaskJoin } from './join';
 
 /** What is known about a finished call, by its tool_use_id. */
 export interface Outcome {
@@ -51,11 +51,20 @@ export interface Outcomes {
 }
 
 export function outcomesFrom(turns: readonly { messages: readonly unknown[] }[]): Outcomes {
+  return outcomesOf(joinFrom(turns));
+}
+
+/** The join over turns carrying their frames, which is what a whole walk folds. */
+export function joinFrom(turns: readonly { messages: readonly unknown[] }[]): TaskJoin {
   const join = seedJoin();
   for (const turn of turns) {
     for (const message of turn.messages) addJoinFrame(join, message);
   }
+  return join;
+}
 
+/** The maps and sets a row reads, out of a join. */
+export function outcomesOf(join: TaskJoin): Outcomes {
   const calls = new Map<string, Outcome>();
   for (const [call, ending] of join.calls) calls.set(call, { ...ending, stopped: false });
 
@@ -73,5 +82,7 @@ export function outcomesFrom(turns: readonly { messages: readonly unknown[] }[])
       stopped: true,
     });
   }
-  return { calls, owners: join.owners, stoppedTasks };
+  // A copy: the record retains the join this was built from, and a reader
+  // handed the same map could write into the join through it.
+  return { calls, owners: new Map(join.owners), stoppedTasks };
 }

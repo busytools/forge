@@ -150,6 +150,156 @@ export function addJoinFrame(join: TaskJoin, frame: unknown): void {
   });
 }
 
+/**
+ * One fact a frame states about the conversation's tasks, in the shape the
+ * join folds it.
+ *
+ * **The record keeps these rather than the frames.** The join is folded once
+ * as frames land, and the only thing a window trim needs is a replay of the
+ * turns that survive - so the body each fact came from is dropped, and what
+ * remains is the whole of a replay's input.
+ */
+export type JoinEvent =
+  /** A tool call the page holds, and what a launch sentence may be read from. */
+  | { kind: 'use'; id: string; name: string | null; stops: string | null }
+  /** A tool's own answer: the task its sentence names, and whether it reported
+   * its stop. */
+  | { kind: 'result'; id: string; launches: string | null; stopped: boolean }
+  /** The CLI's own link from a task to the call that began it. */
+  | { kind: 'started'; task: string; call: string }
+  /** A task frame's ending, and the call it names or the task it must resolve. */
+  | {
+      kind: 'ending';
+      task: string | null;
+      call: string | null;
+      failed: boolean;
+      ended: number | null;
+    };
+
+/**
+ * The join facts one frame carries, in the order it carries them.
+ *
+ * Dispatched frames state nothing of the session's, so they yield none - the
+ * same guard `addJoinFrame` keeps.
+ */
+export function eventsOf(frame: unknown): JoinEvent[] {
+  if (isDispatched(frame)) return [];
+  const held = frame as Frame | null;
+  if (held === null || typeof held !== 'object') return [];
+  if (held.type === 'assistant' || held.type === 'user') {
+    const events: JoinEvent[] = [];
+    for (const block of blocksOf(held.message?.content)) {
+      if (block.type === 'tool_use' && typeof block.id === 'string') {
+        const task = (block.input as { task_id?: unknown } | null)?.task_id;
+        events.push({
+          kind: 'use',
+          id: block.id,
+          name: typeof block.name === 'string' ? block.name : null,
+          stops: block.name === 'TaskStop' && typeof task === 'string' ? task : null,
+        });
+      }
+      if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
+        events.push({
+          kind: 'result',
+          id: block.tool_use_id,
+          launches: launchedTask(block.content),
+          stopped: stopSucceeded(block),
+        });
+      }
+    }
+    return events;
+  }
+  if (held.type !== 'system') return [];
+  const task = typeof held.task_id === 'string' ? held.task_id : null;
+  const call = typeof held.tool_use_id === 'string' ? held.tool_use_id : null;
+  if (held.subtype === 'task_started') {
+    return task === null || call === null ? [] : [{ kind: 'started', task, call }];
+  }
+  if (task === null && call === null) return [];
+  const patch =
+    typeof held.patch === 'object' && held.patch !== null
+      ? (held.patch as { status?: unknown; end_time?: unknown })
+      : null;
+  const status =
+    typeof patch?.status === 'string'
+      ? patch.status
+      : typeof held.status === 'string'
+        ? held.status
+        : null;
+  return [
+    {
+      kind: 'ending',
+      task,
+      call,
+      failed: status === 'failed',
+      ended: typeof patch?.end_time === 'number' ? patch.end_time : null,
+    },
+  ];
+}
+
+/** Fold one extracted fact into the join, by the rules `addJoinFrame` keeps. */
+export function addJoinEvent(join: TaskJoin, event: JoinEvent): void {
+  switch (event.kind) {
+    case 'use':
+      join.held.add(event.id);
+      if (event.name !== null) join.names.set(event.id, event.name);
+      if (event.stops !== null) join.asks.set(event.id, event.stops);
+      return;
+    case 'result':
+      // A launching tool's result, first write wins: any result may quote the
+      // sentence, and a later copy must not steal the task from its launch.
+      if (
+        event.launches !== null &&
+        !join.owners.has(event.launches) &&
+        LAUNCHING.has(join.names.get(event.id) ?? '')
+      ) {
+        join.owners.set(event.launches, event.id);
+      }
+      if (join.asks.has(event.id)) join.answers.set(event.id, event.stopped);
+      return;
+    case 'started':
+      join.owners.set(event.task, event.call);
+      join.strong.add(event.task);
+      return;
+    case 'ending': {
+      const call =
+        event.call ?? (event.task === null ? null : (join.owners.get(event.task) ?? null));
+      if (call === null) return;
+      const prior = join.calls.get(call);
+      join.calls.set(call, {
+        // Latched: a later frame cannot un-fail a call.
+        failed: (prior?.failed ?? false) || event.failed,
+        ended_ms: event.ended ?? prior?.ended_ms ?? null,
+      });
+    }
+  }
+}
+
+/** The join with one frame's facts folded in, leaving `held` as it was. */
+export function withEvents(held: TaskJoin, events: readonly JoinEvent[]): TaskJoin {
+  if (events.length === 0) return held;
+  const join: TaskJoin = {
+    owners: new Map(held.owners),
+    strong: new Set(held.strong),
+    held: new Set(held.held),
+    names: new Map(held.names),
+    asks: new Map(held.asks),
+    answers: new Map(held.answers),
+    calls: new Map(held.calls),
+  };
+  for (const event of events) addJoinEvent(join, event);
+  return join;
+}
+
+/** The join over turns carrying their own facts, which is a trimmed window's replay. */
+export function joinOfEvents(turns: readonly { events: readonly JoinEvent[] }[]): TaskJoin {
+  const join = seedJoin();
+  for (const turn of turns) {
+    for (const event of turn.events) addJoinEvent(join, event);
+  }
+  return join;
+}
+
 /** One stop that succeeded, and what the page can say about its target. */
 export interface StoppedTask {
   /** The `TaskStop` call whose own answer said it stopped. */

@@ -44,12 +44,22 @@ function text(data: RawData): string {
   return Buffer.from(data as ArrayBuffer).toString('utf8');
 }
 
-/** One user row, as the CLI reports it. */
+/**
+ * One user row, as the CLI reports it, naming itself in a tool result: the
+ * record keeps a frame's join facts and not its body, so this is what a test
+ * reads back.
+ */
 function spoke(uuid: string): Record<string, unknown> {
   return {
     type: 'user',
     uuid,
-    message: { role: 'user', content: [{ type: 'text', text: uuid }] },
+    message: {
+      role: 'user',
+      content: [
+        { type: 'text', text: uuid },
+        { type: 'tool_result', tool_use_id: uuid, content: '' },
+      ],
+    },
     session_id: 'occ-1',
   };
 }
@@ -188,13 +198,13 @@ async function slowLink(answerMs: number, frameMs: number) {
   };
 }
 
-/** Every word a record's turns carry, in the order its frames arrived. */
+/**
+ * Every word the record's turns carry, in the order its frames arrived: the id
+ * `spoke` names its tool result by, which is the fact the record keeps.
+ */
 function spoken(read: SessionRead): string[] {
   return (read.wire?.conversation.turns ?? []).flatMap((turn) =>
-    turn.messages.flatMap((frame) => {
-      const content = (frame as { message?: { content?: { text?: string }[] } }).message?.content;
-      return (content ?? []).map((part) => part.text ?? '');
-    }),
+    turn.events.flatMap((event) => (event.kind === 'result' ? [event.id] : [])),
   );
 }
 

@@ -12,6 +12,8 @@
  * its project out.
  */
 
+import { eventsOf, joinOfEvents, type JoinEvent, type TaskJoin } from '../chat/join';
+import { outcomesOf, type Outcomes } from '../chat/outcomes';
 import type { WireTime, WorkState } from '../wire/home';
 import { terminalSummaryFrom, type TerminalSummary } from '../wire/terminal';
 import type { SessionSlot } from '../wire/types';
@@ -183,21 +185,28 @@ export interface MonitorRecord {
 }
 
 /**
- * One turn of the transcript: what names it, and the frames it ran as.
+ * One turn of the record's conversation: the task facts its frames stated.
  *
- * `key` is `null` on every turn of a transcript-derived conversation - the name
- * comes from a `Result` frame and a transcript holds none - so it is carried
- * for a live session and must not be keyed on.
+ * **The frames themselves are not kept.** A whole read walks them once and a
+ * live frame is folded as it lands, so all a window trim needs to replay is
+ * the facts - and the bodies, which no page draws from this record, go.
  */
 export interface Turn {
-  key: string | null;
-  messages: unknown[];
+  events: JoinEvent[];
 }
 
-/** The transcript's whole turns, and how many times it has compacted. */
+/**
+ * The transcript's whole turns, and how many times it has compacted.
+ *
+ * **The join is folded as frames land, not walked when a page draws.** `join`
+ * is `turns` folded in order, and `outcomes` is what the process strip reads
+ * out of it; a trim replays the turns that survive from their own facts.
+ */
 export interface Conversation {
   turns: Turn[];
   compaction_count: number;
+  join: TaskJoin;
+  outcomes: Outcomes;
 }
 
 /**
@@ -561,11 +570,25 @@ function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : {};
 }
 
-/** One turn, with the frames it fails to carry read as none rather than as a
- * shape the row below would have to test for. */
-function turnFrom(value: unknown): Turn {
-  const held = record(value);
-  return { key: text(held['key']), messages: list(held['messages']) };
+/**
+ * The read's conversation, with its join folded from the facts its turns keep.
+ *
+ * **One extraction, so the stored facts ARE the join's input**: a second walk
+ * of the wire frames would let the two drift, and the read would then disagree
+ * with the replay of its own window. A frame that does not parse contributes
+ * none rather than a shape the rest of this would have to test for.
+ */
+function conversationFrom(held: Record<string, unknown>): Conversation {
+  const turns = list(held['turns']).map((turn) => ({
+    events: list(record(turn)['messages']).flatMap(eventsOf),
+  }));
+  const join = joinOfEvents(turns);
+  return {
+    turns,
+    compaction_count: number(held['compaction_count']) ?? 0,
+    join,
+    outcomes: outcomesOf(join),
+  };
 }
 
 function list(value: unknown): unknown[] {
@@ -654,10 +677,7 @@ export function sessionFrom(data: unknown): SessionRecord {
     resume_sessions: held['resume_sessions'] ?? null,
     composer: composerFrom(held['composer']),
     pending_asks: asksFrom(held['pending_asks'], held['pending_ask']),
-    conversation: {
-      turns: list(record(held['conversation'])['turns']).map(turnFrom),
-      compaction_count: number(record(held['conversation'])['compaction_count']) ?? 0,
-    },
+    conversation: conversationFrom(record(held['conversation'])),
     work: workFrom(held['work']),
     git: gitFrom(held['git']),
     pr: prFrom(held['pr']),
