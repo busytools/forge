@@ -192,7 +192,10 @@
     });
     instance.onResize(({ cols, rows }) => resize(cols, rows));
     instance.attachCustomKeyEventHandler((event) => {
-      // **Cmd+W lowers the surface**, not the window; Ctrl+W is the PTY's.
+      // **Cmd+W is the window's on the desktop and the tab's in a browser**,
+      // never the PTY's. On the phone's hardware keyboard, where no menu or
+      // tab chord takes it, this handler is what lowers the surface. Ctrl+W
+      // is the shell's.
       if (event.metaKey && event.key.toLowerCase() === 'w') {
         if (event.type === 'keydown') void closeTerminal();
         return false;
@@ -294,7 +297,6 @@
     window.addEventListener('popstate', back);
     return () => window.removeEventListener('popstate', back);
   });
-
 
   /** The touch bar's sticky modifiers: the next character carries them. */
   let ctrlArmed = $state(false);
@@ -432,7 +434,6 @@
       <button type="button" disabled={!typing} onclick={() => key('~')}>~</button>
     </div>
   {/if}
-
 </div>
 
 <style>

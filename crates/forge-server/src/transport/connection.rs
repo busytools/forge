@@ -2106,15 +2106,15 @@ where
             // **The grid the client will draw on**, set before the repaint is
             // taken: a repaint laid out for another grid is one the client
             // cannot draw, and skipping it read as the screen flushing.
-            if let (Some(cols), Some(rows)) = (cols, rows) {
-                if let Err(why) = entry.terminal.resize(cols, rows) {
-                    tracing::debug!(
-                        event_name = "terminal_attach_resize_failed",
-                        seat = %seat.display(),
-                        reason = %why,
-                        "an attach's grid was refused",
-                    );
-                }
+            if let (Some(cols), Some(rows)) = (cols, rows)
+                && let Err(why) = entry.terminal.resize(cols, rows)
+            {
+                tracing::debug!(
+                    event_name = "terminal_attach_resize_failed",
+                    seat = %seat.display(),
+                    reason = %why,
+                    "an attach's grid was refused",
+                );
             }
             let output = entry.terminal.subscribe();
             // **The repaint reflects every chunk below this sequence**, so a
@@ -2944,10 +2944,10 @@ where
                 if let Some(entry) = held {
                     terminal.role = Some((entry, me));
                 }
-            } else if let Some(viewing) = terminal.viewing.as_ref() {
-                if viewing.entry.release_control(me) {
-                    terminal.role = None;
-                }
+            } else if let Some(viewing) = terminal.viewing.as_ref()
+                && viewing.entry.release_control(me)
+            {
+                terminal.role = None;
             }
             Ok(())
         }
