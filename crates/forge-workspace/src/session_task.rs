@@ -373,6 +373,7 @@ impl SessionTask {
                 // the same lie the issue was filed against, mirrored.
                 if let Some(workspace) = self.workspace.upgrade() {
                     workspace.clear_spawn_failure(&key);
+                    workspace.note_seat_connected(&key);
                 }
                 // Nothing re-keys on `Connected`: the task is
                 // registered under the slot the CLI never moves, so
@@ -746,7 +747,15 @@ impl SessionTask {
                             error = %message,
                             "the session's subprocess ended; the seat keeps the death until a reader is shown it",
                         );
+                        workspace.note_seat_death(&key, &message);
                         workspace.record_death(&key, occupant, &message);
+                    }
+                    // **A healing seat's new occupant that never came up is
+                    // a failed attempt, not a first spawn to surface.** The
+                    // heal progress standing on the slot is what tells the
+                    // two apart.
+                    if !self.connected_once && workspace.heal_progress(&key).is_some() {
+                        workspace.note_seat_death(&key, &message);
                     }
                 }
                 // A `/new` or `/resume` that fails to respawn ends the
@@ -2981,6 +2990,7 @@ pub(crate) fn execute_command_via_handle(
         | Command::DeliverGotifyMessage { .. }
         | Command::RespondSlackPost { .. }
         | Command::RespondBrowserHandOff { .. }
+        | Command::RespondTerminalHandOff { .. }
         | Command::AnswerDocumentHandOff { .. }
         | Command::DictateCatalogueCheck
         | Command::DictateInstall { .. }

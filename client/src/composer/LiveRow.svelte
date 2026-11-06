@@ -14,6 +14,7 @@
   import Strip from '../chat/Strip.svelte';
   import SubagentSegment from '../chat/SubagentSegment.svelte';
   import TasksSegment from '../chat/TasksSegment.svelte';
+  import TerminalSegment from '../chat/TerminalSegment.svelte';
   import { connectors } from '../chat/connectors.svelte';
   import { files } from '../chat/files.svelte';
   import { git } from '../chat/git.svelte';
@@ -51,6 +52,7 @@
   let {
     info,
     slot = null,
+    sessionless = false,
     ask = null,
     draft = null,
     onask = () => {},
@@ -58,6 +60,8 @@
   }: {
     info: TurnInfo | null;
     slot?: SessionSlot | null;
+    /** Whether the seat holds no session, so its terminal has no door. */
+    sessionless?: boolean;
     /**
      * What waits in the body, said on the row: the ask's kind, the mark it
      * wears, and whether it is something the reader owes an answer.
@@ -281,6 +285,8 @@
 {#snippet segment(name: string)}
   {#if name === 'browser'}
     <BrowserSegment {slot} />
+  {:else if name === 'terminal'}
+    <TerminalSegment {slot} {sessionless} />
   {:else if name === 'subagents'}
     <SubagentSegment />
   {:else if name === 'processes'}
@@ -306,7 +312,7 @@
   {/if}
 {/snippet}
 
-{#if info !== null || rows || ask !== null || draft !== null}
+{#if info !== null || rows || ask !== null || draft !== null || slot !== null}
   <div class="live-row" bind:this={rowEl}>
     <!-- What waits sorts to the front and takes its tone: an ask the body is
          parked on is the first thing a reader needs to see. -->
@@ -339,6 +345,16 @@
       >
         {@render segment('browser')}
       </span>
+      {#if slot !== null}
+        <span
+          class="live-chip"
+          class:off={hidden.includes('terminal')}
+          data-chip="terminal"
+          role="listitem"
+        >
+          {@render segment('terminal')}
+        </span>
+      {/if}
       <span
         class="live-chip"
         class:off={hidden.includes('subagents')}

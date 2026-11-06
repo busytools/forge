@@ -68,7 +68,11 @@ pub fn run_subprocess() -> std::process::ExitCode {
     }
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
     let args = args::Args::new();
-    let ret = execute_process(Some(args.as_main_args()), None, std::ptr::null_mut());
+    // **The app reaches the renderer too.** The opener bridge installs its
+    // shim from `on_context_created`, which only runs when this process's app
+    // provides a render process handler.
+    let mut app = HostApp::new();
+    let ret = execute_process(Some(args.as_main_args()), Some(&mut app), std::ptr::null_mut());
     if ret >= 0 { std::process::ExitCode::SUCCESS } else { std::process::ExitCode::from(1) }
 }
 
@@ -215,6 +219,13 @@ cef::wrap_app! {
     impl App {
         fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
             Some(PumpHandler::new())
+        }
+
+        /// **The renderer's half of the opener bridge.** Every frame's context
+        /// is created through this handler, which is where `window.open` and
+        /// the popup's `window.opener` are installed before page scripts.
+        fn render_process_handler(&self) -> Option<RenderProcessHandler> {
+            Some(crate::bridge_renderer::handler())
         }
 
         fn on_before_command_line_processing(

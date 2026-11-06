@@ -2,6 +2,11 @@
   import Prose from '../chat/Prose.svelte';
   import Icon from '../components/Icon.svelte';
   import { closeSurface, openSurface, surface } from '../browser/surface.svelte';
+  import {
+    closeTerminal,
+    openTerminal,
+    surface as terminalSurface,
+  } from '../terminal/surface.svelte';
   import Field from './Field.svelte';
   import SendBack from './SendBack.svelte';
   import TakeCard from './TakeCard.svelte';
@@ -740,6 +745,12 @@
       handOff('not_now', 'dock_escape');
       return;
     }
+    if (ask.kind === 'terminal_hand_off') {
+      // The same arm for the same reason: a parked terminal hand-off has no
+      // timeout, and Not now is the only release.
+      terminalHandOff('not_now', 'dock_escape');
+      return;
+    }
     if (ask.kind === 'document_hand_off') {
       // The same arm for the same reason: Not now is the answer the core
       // reads as the reader declining, and it is the only release for a
@@ -979,11 +990,16 @@
    * trims the block's own edges - and is a literal a lint (rightly) calls
    * useless; one template string says it once.
    */
-  const handOffTitle = $derived(
-    ask.kind === 'browser_hand_off' && ask.request.tab !== null
+  const handOffTitle = $derived.by((): string => {
+    if (ask.kind === 'terminal_hand_off') {
+      return ask.request.terminal === null
+        ? 'terminal hand-off'
+        : `terminal hand-off · terminal ${ask.request.terminal}`;
+    }
+    return ask.kind === 'browser_hand_off' && ask.request.tab !== null
       ? `browser hand-off · tab ${ask.request.tab}`
-      : 'browser hand-off',
-  );
+      : 'browser hand-off';
+  });
   /**
    * What a folded bar says: the kind's mark and its subject. **Every kind
    * folds**, not only the question - the body is one slot, so any ask can give
@@ -993,6 +1009,7 @@
     if (ask.kind === 'question') return 'question';
     if (ask.kind === 'permission') return 'warning';
     if (ask.kind === 'slack_draft') return 'plane';
+    if (ask.kind === 'terminal_hand_off') return 'code';
     if (ask.kind === 'document_hand_off') return 'file';
     if (ask.kind === 'settings_write') return 'settings';
     if (ask.kind === 'vault') return 'decide';
@@ -1012,6 +1029,11 @@
     if (ask.kind === 'settings_write') {
       return ask.request.edits.map((edit) => edit.key).join(', ');
     }
+    if (ask.kind === 'terminal_hand_off') {
+      return ask.request.terminal === null
+        ? 'terminal hand-off'
+        : `terminal hand-off · terminal ${ask.request.terminal}`;
+    }
     if (ask.kind === 'vault') return ask.request.summary;
     return handOffTitle;
   });
@@ -1020,12 +1042,16 @@
   /** Why the raise failed, in the shell's own words - a machine with no
    *  browser to drive is told which one to install. */
   let raiseWhy = $state<string | null>(null);
-  const raiseFailed = $derived(
-    ask.kind === 'browser_hand_off' && raiseFailedFor === ask.request.id
-      ? (raiseWhy ??
-          'The browser could not be opened - act where the browser is up, then press Done.')
-      : null,
-  );
+  const raiseFailed = $derived.by((): string | null => {
+    if (raiseFailedFor === null) return null;
+    const id =
+      ask.kind === 'browser_hand_off' || ask.kind === 'terminal_hand_off' ? ask.request.id : null;
+    if (id === null || raiseFailedFor !== id) return null;
+    if (raiseWhy !== null) return raiseWhy;
+    return ask.kind === 'browser_hand_off'
+      ? 'The browser could not be opened - act where the browser is up, then press Done.'
+      : 'The terminal could not be opened - read the screen from the session and try again.';
+  });
 
   /**
    * Raise the browser surface, which is the client's own act rather than the
@@ -1073,6 +1099,42 @@
     // The lower names no profile: the shell lowers the attach this page
     // actually holds, which is the one the hand-off's Open raised.
     void closeSurface(null, slot);
+  }
+
+  /**
+   * Raise the seat's terminal for a parked hand-off, which is the client's own
+   * act rather than the core's. The ask stays parked; the person's keystrokes
+   * go to the PTY and nowhere else.
+   */
+  function openTerminalHandOff(): void {
+    if (ask.kind !== 'terminal_hand_off') return;
+    const terminal = ask.request.terminal;
+    if (terminal === null) return;
+    const id = ask.request.id;
+    void openTerminal(slot, terminal).then((why) => {
+      if (why !== null) {
+        raiseFailedFor = id;
+        raiseWhy = why;
+      }
+    });
+  }
+
+  /**
+   * A terminal hand-off's answer, the only release for its blocked handler.
+   * Answering also lowers the surface: the terminal keeps running with its
+   * screen and scrollback intact, and the next raise attaches again.
+   */
+  function terminalHandOff(
+    ending: 'done' | 'not_now' | 'feedback',
+    source: 'dock' | 'dock_escape' | 'takeover' | 'feedback',
+  ): void {
+    if (answered || ask.kind !== 'terminal_hand_off') return;
+    const id = ask.request.id;
+    onanswer(id);
+    answer({
+      respond_terminal_hand_off: { key: slot, id, answer: { ending: { type: ending }, source } },
+    });
+    void closeTerminal();
   }
 
   /**
@@ -1589,6 +1651,19 @@
           {@render valueBlock('the value this write would leave', edit.proposed)}
         {/if}
       {/each}
+    {:else if ask.kind === 'terminal_hand_off'}
+      <div class="d-head">
+        <span class="tag warn">&#9888; needs you</span>
+        <span class="q mono">{handOffTitle}</span>
+        {@render foldButton()}
+      </div>
+      <!-- The reason verbatim: it is what the session needs, in its own words,
+         and a summary of it would be the client guessing at the act. -->
+      <div class="d-q">{ask.request.reason}</div>
+      <div class="desc">
+        {raiseFailed ??
+          "Open terminal raises the seat's terminal, exactly as it stands; take control there to type. The session waits, with no timeout, for your answer, and cannot read or write the terminal while it does."}
+      </div>
     {:else if ask.kind === 'vault'}
       <div class="d-head">
         <span class="tag warn">&#9888; needs you</span>
@@ -1824,6 +1899,24 @@
           <button class="btn p" onclick={open}>Open browser</button>
           <button class="btn" onclick={() => handOff('done', 'dock')}>Done</button>
           <button class="btn d" onclick={() => handOff('not_now', 'dock')}>Not now</button>
+        {/if}
+      </div>
+    {/if}
+
+    {#if ask.kind === 'terminal_hand_off'}
+      <div class="acts">
+        <!-- The surface carries the person's work once it is up; before then
+             the card carries Open terminal, Done and Not now, because the
+             session waits with no timeout. -->
+        {#if terminalSurface.phase === 'live'}
+          <span class="fo">the terminal is open over the window</span>
+        {:else}
+          <button class="btn p" onclick={openTerminalHandOff}>Open terminal</button>
+          <button class="btn" onclick={() => terminalHandOff('done', 'dock')}>Done</button>
+          <button class="btn d" onclick={() => terminalHandOff('not_now', 'dock')}>Not now</button>
+        {/if}
+        {#if ask.request.secret}
+          <span class="fo">typing is hidden: the program is reading a secret</span>
         {/if}
       </div>
     {/if}

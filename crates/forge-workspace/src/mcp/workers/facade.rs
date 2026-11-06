@@ -1624,6 +1624,8 @@ mod mock_tests {
             spawned_at: std::time::SystemTime::UNIX_EPOCH,
             spawned_by: SessionSlot::from_str_for_test("lead"),
             diagnostic: None,
+            heal_attempt: None,
+            heal_next_at: None,
             activity: None,
         }
     }
@@ -1658,6 +1660,8 @@ mod mock_tests {
                     spawned_at: std::time::SystemTime::UNIX_EPOCH,
                     spawned_by: SessionSlot::from_str_for_test("lead"),
                     diagnostic: None,
+                    heal_attempt: None,
+                    heal_next_at: None,
                     activity: None,
                 },
                 WorkerStatus {
@@ -1669,6 +1673,8 @@ mod mock_tests {
                     spawned_at: std::time::SystemTime::UNIX_EPOCH,
                     spawned_by: SessionSlot::from_str_for_test("lead"),
                     diagnostic: None,
+                    heal_attempt: None,
+                    heal_next_at: None,
                     activity: None,
                 },
             ],

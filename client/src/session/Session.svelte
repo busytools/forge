@@ -8,6 +8,15 @@
   import BrowserSurface from '../browser/BrowserSurface.svelte';
   import { drawsSurface } from '../browser/link';
   import { surface } from '../browser/surface.svelte';
+  import type { Component } from 'svelte';
+  import { setTerminalRecord } from '../terminal/record.svelte';
+  import {
+    closeTerminal,
+    lowerForOtherSeat,
+    openTerminal,
+    sameSeat,
+    surface as terminalSurface,
+  } from '../terminal/surface.svelte';
   import { subjectKey } from '../protocol';
   import { report, type Connection } from '../socket';
   import type { BoardRead } from '../wire/board';
@@ -118,6 +127,67 @@
   });
 
   const record: SessionRecord | null = $derived(read.wire);
+
+  /**
+   * The terminal row reads the record's own half.
+   *
+   * **The strip and the surface read one store**, so a page whose record has
+   * not re-read still draws the terminal it was told about, and a record with
+   * none draws no row at all.
+   *
+   * **A terminal that leaves the record has closed**, so a surface still
+   * drawing it is lowered rather than left under a live bar. Only the Some to
+   * None transition closes: a fresh record that has not read the terminal yet
+   * must not lower a surface that is still opening.
+   */
+  let heldTerminal: number | null = null;
+  $effect(() => {
+    const held = record?.terminal ?? null;
+    setTerminalRecord(slot, held);
+    if (held !== null) {
+      heldTerminal = held.id;
+      return;
+    }
+    if (heldTerminal === null) return;
+    heldTerminal = null;
+    const at = terminalSurface.seat;
+    if (
+      at !== null &&
+      at.org === slot.org &&
+      at.project === slot.project &&
+      at.label === slot.label
+    ) {
+      void closeTerminal();
+    }
+  });
+
+  // **A raised terminal belongs to the seat it was opened on.** The page is
+  // deliberately not keyed on the seat, so a switch keeps its instance; the
+  // old surface would draw under the new seat's bar and its close would end
+  // the old seat's shell. Lowering it keeps the old terminal running.
+  $effect(() => {
+    void lowerForOtherSeat(slot);
+  });
+
+  /**
+   * **The terminal surface is its own chunk.** xterm.js and its addons are
+   * the terminal's renderer, not the page's, and a session that never raises
+   * the terminal should not download them.
+   */
+  let TerminalSurface = $state<Component | null>(null);
+  $effect(() => {
+    if (terminalSurface.phase === 'closed' || TerminalSurface !== null) return;
+    void import('../terminal/Terminal.svelte')
+      .then((module) => {
+        TerminalSurface = module.default;
+      })
+      .catch((why: unknown) => {
+        // **A chunk that did not load is lowered, not left opening.** The
+        // terminal keeps running on the server, and the next show retries.
+        console.warn('the terminal surface did not load', why);
+        void closeTerminal();
+      });
+  });
 
   /**
    * The dispatch join follows the record: the chat's rows read their cards
@@ -505,9 +575,25 @@
   $effect(() => {
     const onkey = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
-      // **A live takeover owns the keyboard**: Cmd+K belongs to the page
-      // under the bar while the surface is up, not to this page's palette.
-      if (surface.phase !== 'closed') return;
+      // **Cmd+J is the terminal pane's chord**, the way Cmd+K is the
+      // palette's - and it is a toggle, so it is read above the surface gate
+      // that stands the rest of the page's chords down while one is up.
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'j') {
+        event.preventDefault();
+        if (terminalSurface.phase !== 'closed') {
+          void closeTerminal();
+        } else if (read.refused === null) {
+          // **A sessionless seat has no terminal door**: its read is refused,
+          // so a surface raised here would run with no record to draw. The
+          // strip's row says why; the chord stays quiet rather than undoing it.
+          void openTerminal(slot, record?.terminal?.id ?? null);
+        }
+        return;
+      }
+      // **A live surface owns the keyboard**: Cmd+K belongs to the page
+      // under the bar while the browser or the terminal is up, not to this
+      // page's palette.
+      if (surface.phase !== 'closed' || terminalSurface.phase !== 'closed') return;
       const target = event.target;
       const typing =
         target instanceof HTMLInputElement ||
@@ -615,6 +701,17 @@
          canvas and its keyboard field unreachable on every client that
          paints them (#2726). -->
     <BrowserSurface {connection} />
+  {/if}
+
+  {#if terminalSurface.phase !== 'closed' && terminalSurface.seat !== null && sameSeat(terminalSurface.seat, slot)}
+    <!-- The terminal's own surface, the browser takeover's sibling: a
+         full-window layer with the terminal under a slim bar. It is hidden by
+         default and raised by the strip row or a hand-off's Open.
+         **xterm.js is its own chunk**: a session that never raises the
+         terminal does not pay for the renderer. -->
+    {#if TerminalSurface !== null}
+      <TerminalSurface />
+    {/if}
   {/if}
 
   <main class="chat">
@@ -844,6 +941,7 @@
         record: record ?? emptyComposer(slot),
         slot,
         seat,
+        refused: read.refused,
         connection,
         voice: wire.voice.enabled,
         reading,

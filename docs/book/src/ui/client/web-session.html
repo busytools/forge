@@ -197,6 +197,9 @@
   .dot.off.settling { animation: pulse 1.05s ease-in-out infinite; }
   .dot.failed { background: var(--bad);
     clip-path: polygon(16% 0,50% 34%,84% 0,100% 16%,66% 50%,100% 84%,84% 100%,50% 66%,16% 100%,0 84%,34% 50%,0 16%); }
+  /* A seat between heal attempts: the ring is broken rather than spinning,
+     because the subprocess is not there. */
+  .dot.restarting { border: 1.6px dashed var(--muted); border-radius: 50%; }
   /* The work spinner is the RING, the only one this view draws. */
   .ring { width: 10px; height: 10px; display: inline-block; border-radius: 50%;
     border: 1.6px solid rgba(244,118,0,.3); border-top-color: var(--accent);
@@ -1688,6 +1691,14 @@
           <span class="org">Busytools</span>
           <button class="x" type="button" title="close">&#10005;</button></div>
         <div class="why bad">the claude subprocess closed its output stream</div>
+      </div>
+      <!-- A seat forge is bringing back: the broken ring, and the line names
+           the attempt. Nothing here is the reader's to act on. -->
+      <div class="pj">
+        <div class="pr"><span class="dot-slot"><span class="dot restarting"></span></span><span class="nm">inference-shop</span>
+          <span class="org">Personal</span>
+          <button class="x" type="button" title="close">&#10005;</button></div>
+        <div class="why">restarting (1 of 3)</div>
       </div>
       <div class="pj">
         <div class="pr"><span class="dot-slot"><span class="dot live"></span></span><span class="nm">granite-core</span>

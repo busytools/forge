@@ -46,6 +46,7 @@
     }
   ],
   "monitors": [],
+  "terminal": null,
   "pending_ask": {
     "kind": "permission",
     "request": {

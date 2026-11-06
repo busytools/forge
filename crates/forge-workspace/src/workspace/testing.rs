@@ -483,6 +483,8 @@ impl Workspace {
             despawn_cleanups: Mutex::new(HashSet::new()),
             spawn_failures: Mutex::new(HashMap::new()),
             deaths: Mutex::new(HashMap::new()),
+            heal_progress: Mutex::new(HashMap::new()),
+            healing: std::sync::OnceLock::new(),
             held_work_seats: crate::work::HeldSeats::default(),
             domain_handles: Mutex::new(HashMap::new()),
             review_origin: Mutex::new(HashMap::new()),
@@ -532,6 +534,10 @@ impl Workspace {
             slack_ledger_failures: Mutex::new(std::collections::HashSet::new()),
             slack_drafts: Mutex::new(HashMap::new()),
             browser_handoffs: Mutex::new(HashMap::new()),
+            terminals: Mutex::new(HashMap::new()),
+            terminal_handoffs: Mutex::new(HashMap::new()),
+            next_terminal_id: std::sync::atomic::AtomicU16::new(1),
+            terminal_clock_started: std::sync::atomic::AtomicBool::new(false),
             settings_writes: Mutex::new(HashMap::new()),
             parked_vault_asks: Mutex::new(HashMap::new()),
             pending_seq: Mutex::new(HashMap::new()),
@@ -654,6 +660,33 @@ impl Workspace {
 
 #[cfg(any(test, feature = "testing"))]
 impl Workspace {
+    /// Park a terminal hand-off on `slot` as a blocked `terminal__hand_off`
+    /// call would, so a transport test can type through the hand-off's door.
+    /// Test-only.
+    pub fn park_terminal_hand_off(
+        &self,
+        slot: &SessionSlot,
+        terminal: u16,
+    ) -> Result<String, String> {
+        self.register_terminal_hand_off(slot, terminal, "a transport test parks this")
+            .map(|(id, _answer)| id.to_string())
+    }
+
+    /// Answer a parked terminal hand-off with Done, as the dock's button
+    /// would. Test-only.
+    pub fn answer_terminal_hand_off(&self, id: &str, slot: &SessionSlot) {
+        let Ok(id) = uuid::Uuid::parse_str(id) else { return };
+        let _ = self.resolve_terminal_hand_off(
+            id,
+            slot,
+            forge_primitives::terminal::TerminalHandOffAnswer {
+                ending: forge_primitives::browser::HandOffEnding::Done,
+                source: forge_primitives::browser::HandOffSource::Unstated,
+                client: None,
+            },
+        );
+    }
+
     /// Append a synthetic project to the test overlay searched first
     /// by `find_project_view_by_name`. Used by respawn tests
     /// to drive the Connected-hook worker-spawn trigger without

@@ -163,6 +163,7 @@ const MARKS: [RowState, string][] = [
   [{ kind: 'lifecycle', lifecycle: 'Attention' }, 'needs'],
   [{ kind: 'lifecycle', lifecycle: 'AuthRequired' }, 'auth'],
   [{ kind: 'lifecycle', lifecycle: 'Failed' }, 'failed'],
+  [{ kind: 'lifecycle', lifecycle: 'Restarting' }, 'restarting'],
   [{ kind: 'lifecycle', lifecycle: 'Sleeping' }, 'asleep'],
   [{ kind: 'lifecycle', lifecycle: 'LoggedOut' }, 'asleep'],
   [{ kind: 'unseen' }, 'unseen'],
@@ -314,6 +315,8 @@ function agent(
     slot: { org, project, label },
     label,
     lifecycle,
+    heal_attempt: null,
+    heal_attempts: null,
     has_background_work: false,
     pending: null,
     pending_depth: 0,
@@ -372,6 +375,7 @@ const LEAD_ROW: Row = {
   task: null,
   pending: null,
   reason: null,
+  heal: null,
   lastActivity: null,
   failedTurn: null,
 };
@@ -1379,10 +1383,105 @@ describe('what a row says', () => {
    * property off it: an unknown string there is not a card drawn wrongly,
    * it is a page that does not draw.
    */
+  /**
+   * A restarting worker is work in flight: the project groups under working
+   * rather than needs-you, and its row says which attempt is coming. Catches
+   * a row that drops the seat into needs-you, or one that leaves the reader
+   * with no word for what is happening.
+   */
+  it('draws a restarting seat under working with its attempt', () => {
+    const restarting = {
+      ...agent('Busytools', 'forge', 'w1', 'Restarting'),
+      heal_attempt: 1,
+      heal_attempts: 3,
+    };
+    const wire = homeFrom({
+      ...FLEET,
+      agents: [agent('Busytools', 'forge', 'lead', 'Idle'), restarting],
+    });
+    const rows = fleetRows(wire);
+    const forge = rows.find((row) => row.name === 'forge');
+    expect(forge?.restart).toBe('w1 restarting (1 of 3)');
+
+    const groups = fleetGroups(rows);
+    expect(
+      groups.find((group) => group.heading === 'working')?.rows.map((row) => row.name),
+      'a seat between attempts is work in flight',
+    ).toContain('forge');
+    expect(
+      groups.find((group) => group.heading === 'needs you')?.rows.map((row) => row.name) ?? [],
+      "nothing is a person's to act on while it comes back",
+    ).not.toContain('forge');
+  });
+
+  /**
+   * **A heal in progress outranks the death it is healing.** Every heal
+   * starts from a death the reader has not been shown, so the row carries
+   * `died` while it restarts; the mark must be the dashed working one and
+   * the row must group under working, not draw a failed seat in needs-you.
+   */
+  it('draws a restarting row over the standing death it is healing', () => {
+    const restarting = {
+      ...agent('Busytools', 'forge', 'w1', 'Restarting'),
+      died: true,
+      heal_attempt: 2,
+      heal_attempts: 3,
+    };
+    const wire = homeFrom({
+      ...FLEET,
+      agents: [agent('Busytools', 'forge', 'lead', 'Idle'), restarting],
+    });
+    const rows = fleetRows(wire);
+    const forge = rows.find((row) => row.name === 'forge');
+    expect(forge?.state, 'the heal outranks the death').toEqual({
+      kind: 'lifecycle',
+      lifecycle: 'Restarting',
+    });
+    expect(markOf(forge?.state ?? { kind: 'never-started' })).toEqual({
+      class: 'restarting',
+      dot: 'restarting',
+    });
+    expect(forge?.restart, 'and the row still names the attempt').toBe('w1 restarting (2 of 3)');
+    expect(
+      fleetGroups(rows)
+        .find((group) => group.heading === 'working')
+        ?.rows.map((row) => row.name),
+      "a seat coming back is work, not a person's to act on",
+    ).toContain('forge');
+  });
+
   it('narrows a lifecycle it does not know as the snapshot is read', () => {
     const unknown = { ...FLEET, agents: [{ ...FLEET_AGENT, lifecycle: 'Resting' as never }] };
     const lead = rowsOf(homeFrom(unknown)).lead;
     expect(lead?.state).toEqual({ kind: 'lifecycle', lifecycle: 'Idle' });
+  });
+
+  /**
+   * The restarting state and its attempt survive the read: a client that
+   * dropped them would draw a seat between attempts as a calm idle row.
+   */
+  it('narrows a restarting seat with its attempt', () => {
+    const restarting = {
+      ...FLEET_AGENT,
+      lifecycle: 'Restarting' as const,
+      heal_attempt: 1,
+      heal_attempts: 3,
+    };
+    const row = homeFrom({ ...FLEET, agents: [restarting] }).agents[0];
+    expect(row?.lifecycle).toBe('Restarting');
+    expect(row?.heal_attempt).toBe(1);
+    expect(row?.heal_attempts).toBe(3);
+  });
+
+  /**
+   * A server older than the fields states neither, and they read as no
+   * attempt rather than as a definite one the row would count.
+   */
+  it('reads absent heal fields as no attempt', () => {
+    const old = { ...FLEET, agents: [{ ...FLEET_AGENT, heal_attempt: undefined }] };
+    const row = homeFrom(old as unknown as HomeWire).agents[0];
+    expect(row?.heal_attempt).toBe(null);
+    expect(row?.heal_attempts).toBe(null);
   });
 
   /**

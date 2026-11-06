@@ -17,7 +17,7 @@ use serde_json::json;
 
 use crate::config::{
     ConfigReload, DEFAULT_HANDOFF_AFTER_COMPACTIONS, DEFAULT_HANDOFF_AT_PERCENT,
-    DEFAULT_MAX_WORKERS_PER_PROJECT, LoadedConfig, LoadedProject,
+    DEFAULT_MAX_WORKERS_PER_PROJECT, LoadedConfig, LoadedProject, format_session_duration,
 };
 
 /// One area's fixed identity: the id the page keys on, the name it draws,
@@ -43,6 +43,11 @@ pub const AREAS: &[AreaSpec] = &[
         note: "orgs, their projects, and every per-project setting",
     },
     AreaSpec {
+        id: "sessions",
+        name: "sessions",
+        note: "whether a dead lead or worker comes back, and how often it tries",
+    },
+    AreaSpec {
         id: "connectors",
         name: "connectors",
         note: "gotify, slack, system one, the vault and the plugin switch - the integrations that reach outside forge",
@@ -50,7 +55,8 @@ pub const AREAS: &[AreaSpec] = &[
     AreaSpec {
         id: "server",
         name: "server",
-        note: "the socket a client reads through, and the browser the server hosts",
+        note: "the socket a client reads through, the browser the server hosts, and the \
+               seat's terminal",
     },
     AreaSpec { id: "client", name: "client", note: "the sets a client draws with" },
     AreaSpec {
@@ -198,6 +204,7 @@ fn edit_spec(path: &str) -> EditSpec {
         | "gotify.client_token"
         | "systemone.base_url"
         | "systemone.model"
+        | "terminal.shell"
         | "vault.url"
         | "vault.email"
         | "server.bind" => required(TEXT),
@@ -212,7 +219,8 @@ fn edit_spec(path: &str) -> EditSpec {
         | "dictate.enabled"
         | "dictate.normalizer"
         | "tts.enabled"
-        | "handoff.enabled" => BOOLEAN,
+        | "handoff.enabled"
+        | "sessions.heal" => BOOLEAN,
         "systemone.timeout_ms"
         | "server.first_frame_cap_kb"
         | "server.more_page_cap_kb"
@@ -220,11 +228,13 @@ fn edit_spec(path: &str) -> EditSpec {
         | "browser.fps"
         | "browser.quality"
         | "browser.idle_minutes"
+        | "terminal.scrollback_lines"
+        | "terminal.idle_minutes"
         | "dictate.max_capture_minutes"
         | "tts.max_utterance_seconds"
         | "handoff.at_percent"
         | "handoff.after_compactions" => NUMBER,
-        "server.allowed_origins" => LIST,
+        "server.allowed_origins" | "sessions.heal_backoff" => LIST,
         // client
         "client.mark" => choice(forge_primitives::client::MARK_NAMES),
         "client.theme" => choice(forge_primitives::client::THEME_NAMES),
@@ -239,6 +249,7 @@ fn edit_spec(path: &str) -> EditSpec {
         "models.*.auto_compact_window" => named(NUMBER, "model"),
         "documents.max_size_mib"
         | "usage.poll_seconds"
+        | "sessions.heal_attempts"
         | "server.port"
         | "gateway.port"
         | "gateway.streak_count"
@@ -273,10 +284,12 @@ fn all_keys() -> impl Iterator<Item = &'static ConfigKey> {
         .chain(PROJECT_KEYS)
         .chain(CONNECTOR_KEYS)
         .chain(SERVER_KEYS)
+        .chain(TERMINAL_KEYS)
         .chain(CLIENT_KEYS)
         .chain(DICTATE_KEYS)
         .chain(TTS_KEYS)
         .chain(MODEL_KEYS)
+        .chain(SESSION_KEYS)
         .chain(HANDOFF_KEYS)
         .chain(DOCUMENT_KEYS)
         .chain(USAGE_KEYS)
@@ -979,6 +992,27 @@ const SERVER_KEYS: &[ConfigKey] = &[
     },
 ];
 
+const TERMINAL_KEYS: &[ConfigKey] = &[
+    ConfigKey {
+        path: "terminal.shell",
+        area: "server",
+        class: EffectClass::NextSession,
+        rows: |config| vec![text("terminal.shell", &config.terminal.shell)],
+    },
+    ConfigKey {
+        path: "terminal.scrollback_lines",
+        area: "server",
+        class: EffectClass::NextSession,
+        rows: |config| vec![number("terminal.scrollback_lines", config.terminal.scrollback_lines)],
+    },
+    ConfigKey {
+        path: "terminal.idle_minutes",
+        area: "server",
+        class: EffectClass::Live,
+        rows: |config| vec![number("terminal.idle_minutes", config.terminal.idle_minutes)],
+    },
+];
+
 fn enum_name<T: serde::Serialize>(value: T) -> String {
     serde_json::to_value(value).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()
 }
@@ -1197,6 +1231,40 @@ const MODEL_KEYS: &[ConfigKey] = &[ConfigKey {
             .collect()
     },
 }];
+
+const SESSION_KEYS: &[ConfigKey] = &[
+    ConfigKey {
+        path: "sessions.heal",
+        area: "sessions",
+        class: EffectClass::Live,
+        rows: |config| vec![flag("sessions.heal", config.sessions.heal)],
+    },
+    ConfigKey {
+        path: "sessions.heal_attempts",
+        area: "sessions",
+        class: EffectClass::Live,
+        rows: |config| vec![number("sessions.heal_attempts", config.sessions.heal_attempts)],
+    },
+    ConfigKey {
+        path: "sessions.heal_backoff",
+        area: "sessions",
+        class: EffectClass::Live,
+        rows: |config| {
+            vec![list(
+                "sessions.heal_backoff",
+                config.sessions.heal_backoff.iter().copied().map(format_session_duration).collect(),
+            )]
+        },
+    },
+    ConfigKey {
+        path: "sessions.heal_stable",
+        area: "sessions",
+        class: EffectClass::Live,
+        rows: |config| {
+            vec![text("sessions.heal_stable", format_session_duration(config.sessions.heal_stable))]
+        },
+    },
+];
 
 const HANDOFF_KEYS: &[ConfigKey] = &[
     ConfigKey {
@@ -1902,11 +1970,22 @@ fps = 10
 quality = 50
 idle_minutes = 5
 
+[terminal]
+shell = "/bin/zsh"
+scrollback_lines = 1000
+idle_minutes = 15
+
 [documents]
 max_size_mib = 5
 
 [usage]
 poll_seconds = 5
+
+[sessions]
+heal = false
+heal_attempts = 2
+heal_backoff = ["1s", "2s"]
+heal_stable = "1m"
 "#;
 
     /// Two orgs, one with dotted names, for the org-level rows and the
@@ -2043,8 +2122,10 @@ models = ["m"]
         let server = accepted_fields(&format!("{BASE}\n[server]\nzzz_unknown = 1\n"));
         let client = accepted_fields(&format!("{BASE}\n[client]\nzzz_unknown = 1\n"));
         let browser = accepted_fields(&format!("{BASE}\n[browser]\nzzz_unknown = 1\n"));
+        let terminal = accepted_fields(&format!("{BASE}\n[terminal]\nzzz_unknown = 1\n"));
         let documents = accepted_fields(&format!("{BASE}\n[documents]\nzzz_unknown = 1\n"));
         let usage = accepted_fields(&format!("{BASE}\n[usage]\nzzz_unknown = 1\n"));
+        let sessions = accepted_fields(&format!("{BASE}\n[sessions]\nzzz_unknown = 1\n"));
 
         assert_eq!(
             models.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -2094,10 +2175,16 @@ models = ["m"]
                 "browser" => {
                     accepted.extend(browser.iter().map(|field| format!("browser.{field}")));
                 }
+                "terminal" => {
+                    accepted.extend(terminal.iter().map(|field| format!("terminal.{field}")));
+                }
                 "documents" => {
                     accepted.extend(documents.iter().map(|field| format!("documents.{field}")));
                 }
                 "usage" => accepted.extend(usage.iter().map(|field| format!("usage.{field}"))),
+                "sessions" => {
+                    accepted.extend(sessions.iter().map(|field| format!("sessions.{field}")));
+                }
                 "env" => {
                     accepted.insert("env.*".to_owned());
                 }
@@ -2330,13 +2417,13 @@ models = ["m"]
         }
     }
 
-    /// The document covers the twelve areas and counts what it draws.
+    /// The document covers the thirteen areas and counts what it draws.
     #[test]
     fn the_document_covers_every_area_and_counts_its_keys() {
         let config = load(EVERY_KEY);
         let document = document(&config, "1.2.3", Path::new("/tmp/forge.toml"));
         assert_eq!(document.areas.len(), AREAS.len(), "every area is drawn");
-        assert_eq!(document.areas.len(), 12, "the sub-nav's twelve areas");
+        assert_eq!(document.areas.len(), 13, "the sub-nav's thirteen areas");
         assert_eq!(
             document.totals.keys,
             document.areas.iter().map(|area| area.keys.len()).sum::<usize>(),
@@ -2388,7 +2475,9 @@ models = ["m"]
             .replace("first_frame_cap_kb = 64", "first_frame_cap_kb = 128")
             .replace("port = 8790", "port = 8791")
             .replace("auto_update = true", "auto_update = false")
-            .replace("https://gotify.test", "https://gotify.example");
+            .replace("https://gotify.test", "https://gotify.example")
+            .replace("shell = \"/bin/zsh\"", "shell = \"/bin/bash\"")
+            .replace("idle_minutes = 15", "idle_minutes = 20");
         let next = load(&changed);
         let reload = diff(&previous, &next);
         assert!(
@@ -2414,6 +2503,21 @@ models = ["m"]
         assert!(
             !reload.changed.iter().any(|key| key.contains("plugins")),
             "a key nothing reads is not reported as applied: {reload:?}",
+        );
+        assert!(
+            reload.changed.iter().any(|key| key == "terminal.idle_minutes"),
+            "the idle clock reads live: {reload:?}",
+        );
+        assert!(
+            reload.changed.iter().any(|key| key == "terminal.shell"),
+            "a shell change applies at the next terminal spawn, not a restart: {reload:?}",
+        );
+        assert!(
+            matches!(
+                all_keys().find(|key| key.path == "terminal.shell").map(|key| key.class),
+                Some(EffectClass::NextSession)
+            ),
+            "the shell's class is next session",
         );
     }
 

@@ -354,7 +354,31 @@ const DRAWN: readonly Pair[] = [
  * named with their measurements in that same file; they are not claimed here.
  * Named rather than left out, so a token arriving without a pair still fails.
  */
-const NOT_INK = ['--line'];
+const NOT_INK = [
+  '--line',
+  // **The terminal's 16 ANSI colours are a program's choice, not forge's.**
+  // A program picks its own foreground on its own background, so no pair here
+  // can promise what `ls --color` or a TUI draws. The terminal's own chrome -
+  // its bar, its state line - is drawn from `--text`/`--muted`/`--warn` over
+  // `--bg`/`--s1`, which the pairs above already carry. The page states the
+  // limit in words; this is the token set saying the same thing.
+  '--ansi-black',
+  '--ansi-red',
+  '--ansi-green',
+  '--ansi-yellow',
+  '--ansi-blue',
+  '--ansi-magenta',
+  '--ansi-cyan',
+  '--ansi-white',
+  '--ansi-bright-black',
+  '--ansi-bright-red',
+  '--ansi-bright-green',
+  '--ansi-bright-yellow',
+  '--ansi-bright-blue',
+  '--ansi-bright-magenta',
+  '--ansi-bright-cyan',
+  '--ansi-bright-white',
+];
 
 /**
  * Two grounds one step apart, which is the shape a wrong entry in the table

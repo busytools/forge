@@ -321,6 +321,58 @@ pub enum ClientMessage {
     /// connection that switched profiles must not leave a phantom viewer on
     /// the old one.
     BrowserDetach,
+    /// Attach this connection to one of a seat's terminals, as a viewer. The
+    /// answer is a `terminal_view` carrying the screen as a VT stream, then
+    /// output frames as the shell writes them.
+    TerminalView {
+        seat: SessionSlot,
+        /// The terminal id, or `None` to open the seat's terminal - creating
+        /// it when the seat has none - and attach to it. **The person's door
+        /// on a seat every agent has left alone.**
+        #[serde(default)]
+        id: Option<u16>,
+        /// **The grid the client will draw on**, sent with the attach so the
+        /// repaint is laid out for it: a client that attached first and
+        /// resized after had to draw nothing until a second repaint arrived,
+        /// which read as the screen flushing.
+        #[serde(default)]
+        cols: Option<u16>,
+        #[serde(default)]
+        rows: Option<u16>,
+        /// Answers the attach: `{"ok": true, "id": <the one attached>}` or
+        /// `{"ok": false, "why": ...}`. A raise that cannot be answered is a
+        /// dark surface, so a client that can wait sends one.
+        reply_to: Option<u64>,
+    },
+    /// Stop viewing the attached terminal: the idle clock and the resize
+    /// arbitration both read the truth from it.
+    TerminalDetach,
+    /// The attached surface changed size: the PTY and the model resize.
+    TerminalResize {
+        seat: SessionSlot,
+        id: u16,
+        cols: u16,
+        rows: u16,
+    },
+    /// Client-driven flow control, so a phone that backgrounded stops being
+    /// written to rather than being dropped. A resume is answered with a
+    /// fresh `terminal_view`, because the frames it missed are not replayed.
+    TerminalPause {
+        paused: bool,
+    },
+    /// Take the person's control of an attached terminal, or give it back.
+    /// **One controller at a time, like the browser's role**: a take always
+    /// lands, and the previous holder hears it lost the role.
+    TerminalControl {
+        seat: SessionSlot,
+        id: u16,
+        take: bool,
+    },
+    /// The person's close door: end the terminal's process group.
+    TerminalClose {
+        seat: SessionSlot,
+        id: u16,
+    },
     /// One input event from the controlling viewer.
     ///
     /// `seq` is the viewer's own ordering: the server drops an event at or
@@ -582,6 +634,34 @@ pub enum ServerMessage {
         controller: Option<u64>,
         viewers: u32,
         viewer: u64,
+    },
+    /// One terminal's screen, as a VT stream a client can draw, and where the
+    /// byte stream continues from.
+    TerminalView {
+        seat: SessionSlot,
+        id: u16,
+        cols: u16,
+        rows: u16,
+        /// The last sequence the repaint reflects; the next frame carries
+        /// one above it.
+        seq: u32,
+        /// The visible screen as a VT stream, valid UTF-8.
+        screen: String,
+        /// How many clients are attached.
+        viewers: u32,
+        /// This connection's own viewer number, so a control change can say
+        /// whether the holder is this viewer.
+        viewer: u64,
+        /// The connection holding the person's control, `None` when the agent
+        /// does.
+        controller: Option<u64>,
+    },
+    /// Who holds a terminal's input, pushed to every viewer of it on a take
+    /// or a release.
+    TerminalControl {
+        seat: SessionSlot,
+        id: u16,
+        controller: Option<u64>,
     },
     /// Where the viewed tab's history sits: what the bar's arrows may do.
     BrowserNavState {
@@ -1022,6 +1102,7 @@ mod tests {
                 title: "portal".to_owned(),
                 url: "https://x/".to_owned(),
                 owner: SessionSlot::worker("TestOrg", "proj", "w"),
+                opener: None,
                 state: forge_primitives::browser::BrowserTabState::InUse,
                 dialog: Some(forge_primitives::browser::BrowserTabDialog {
                     kind: "confirm".to_owned(),
@@ -1637,6 +1718,8 @@ mod tests {
                     spawned_at: std::time::SystemTime::UNIX_EPOCH,
                     spawned_by: seat.clone(),
                     diagnostic: None,
+                    heal_attempt: None,
+                    heal_next_at: None,
                     activity: None,
                 },
                 worktree: forge_workspace::protocol::WorktreeDisposition::Absent,

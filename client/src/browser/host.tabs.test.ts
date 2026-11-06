@@ -16,6 +16,7 @@ describe("the strip's tab rows", () => {
           title: 'portal',
           url: 'https://x/',
           owner: { org: 'Busytools', project: 'forge', label: 'lead' },
+          opener: null,
           state: 'held',
           dialog: null,
         },
@@ -24,6 +25,7 @@ describe("the strip's tab rows", () => {
           title: '',
           url: 'about:blank',
           owner: { org: 'Busytools', project: 'forge', label: 'w1' },
+          opener: null,
           state: 'in_use',
           dialog: null,
         },
@@ -46,6 +48,7 @@ describe("the strip's tab rows", () => {
           title: 'portal',
           url: 'https://x/',
           owner: { org: 'O', project: 'p', label: 'l' },
+          opener: null,
           state: 'idle',
           dialog: { kind: 'confirm', message: 'Leave this page?' },
         },
@@ -64,6 +67,7 @@ describe("the strip's tab rows", () => {
             title: '',
             url: '',
             owner: { org: 'O', project: 'p', label: 'l' },
+            opener: null,
             state: 'idle',
             dialog: { kind: 2, message: '' },
           },
@@ -80,9 +84,31 @@ describe("the strip's tab rows", () => {
         up: true,
         connected: false,
         closing_at_ms: null,
-        rows: [{ number: 1, title: '', url: '', owner: null, state: 'idle' }],
+        rows: [{ number: 1, title: '', url: '', owner: null, opener: null, state: 'idle' }],
       } as never),
     ).toThrow(/owner/);
+  });
+
+  /// **An older server omits the additive field**, and its rows must still
+  /// draw: `opener` absent reads as null, like `closing_at_ms`.
+  it('reads a missing opener as null', () => {
+    const list = tabListOf({
+      profile: 'p',
+      id: 1,
+      up: true,
+      connected: true,
+      closing_at_ms: null,
+      rows: [
+        {
+          number: 1,
+          title: '',
+          url: '',
+          owner: { org: 'O', project: 'p', label: 'l' },
+          state: 'idle',
+        },
+      ],
+    });
+    expect(list.rows[0]?.opener).toBeNull();
   });
 
   /// **An unreadable list is a refusal, not an empty strip.** The rows used
@@ -136,6 +162,7 @@ describe("the strip's tab rows", () => {
           title: '',
           url: '',
           owner: { org: 'O', project: 'p', label: 'l' },
+          opener: null,
           state: 'constructor',
           dialog: null,
         },

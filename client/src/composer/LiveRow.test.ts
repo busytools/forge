@@ -149,8 +149,10 @@ function processFailed(): void {
 
 let app: Record<string, unknown> | null = null;
 
+const SLOT = { org: 'TestOrg', project: 'proj', label: 'lead' };
+
 function draw(info: TurnInfo | null): void {
-  app = mount(LiveRow, { target: document.body, props: { info } });
+  app = mount(LiveRow, { target: document.body, props: { info, slot: SLOT } });
   flushSync();
 }
 
@@ -342,8 +344,10 @@ describe('the live row', () => {
     ]);
     draw(null);
 
-    // The row's fixed order, every segment the stores state.
+    // The row's fixed order, every segment the stores state. The terminal is
+    // first because its row is the person's door on every seat.
     expect(drawn()).toEqual([
+      'terminal',
       'subagents',
       'processes',
       'connectors',
@@ -367,7 +371,8 @@ describe('the live row', () => {
     tasks.sync(null);
     git.sync(null);
     flushSync();
-    expect(drawn(), 'the chips a store no longer states').toEqual([]);
+    // The terminal's row is not a store's: it stands for every seat.
+    expect(drawn(), 'the chips a store no longer states').toEqual(['terminal']);
   });
 
   it('takes the attention tone on the segments that hold something waiting', () => {
@@ -397,9 +402,13 @@ describe('the live row', () => {
     reviewWaiting(false);
     boardTask();
     draw(null);
-    expect(drawn()).toEqual(['subagents', 'processes', 'git', 'review', 'tasks']);
+    expect(drawn()).toEqual(['terminal', 'subagents', 'processes', 'git', 'review', 'tasks']);
 
-    measured(300, { subagents: 70, processes: 80, git: 90, review: 60, tasks: 50 }, 30);
+    measured(
+      355,
+      { terminal: 60, subagents: 70, processes: 80, git: 90, review: 60, tasks: 50 },
+      30,
+    );
 
     expect(
       document.querySelector('.live-row .live-more')?.textContent?.trim(),

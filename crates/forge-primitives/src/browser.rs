@@ -186,6 +186,10 @@ pub struct BrowserTabRow {
     pub url: String,
     /// The session whose calls drive it.
     pub owner: crate::SessionSlot,
+    /// The tab whose page opened this one, when this is a popup. **The
+    /// opener is a tab number, not a page id**: the surface follows a popup
+    /// in and hands back on the tab that opened it.
+    pub opener: Option<u16>,
     pub state: BrowserTabState,
     /// The page dialog holding this tab, when one is open.
     pub dialog: Option<BrowserTabDialog>,
@@ -456,7 +460,10 @@ mod tests {
     }
 
     /// A tab row crosses with the session that drives it and what it is
-    /// doing, so a strip can mark a held tab without a second read.
+    /// doing, so a strip can mark a held tab without a second read. **The
+    /// opener crosses too**: a client follows a popup in and hands back on
+    /// the tab that opened it, and a row that dropped the field would leave
+    /// the surface on a closed tab.
     #[test]
     fn a_tab_row_crosses_with_its_owner_and_state() {
         let row = BrowserTabRow {
@@ -464,6 +471,7 @@ mod tests {
             title: "portal".to_owned(),
             url: "https://x/".to_owned(),
             owner: SessionSlot::worker("O", "p", "w"),
+            opener: Some(1),
             state: BrowserTabState::Held,
             dialog: Some(BrowserTabDialog {
                 kind: "confirm".to_owned(),
@@ -472,6 +480,7 @@ mod tests {
         };
         let encoded = serde_json::to_value(&row).expect("a row encodes");
         assert_eq!(encoded["number"], 2);
+        assert_eq!(encoded["opener"], 1);
         assert_eq!(encoded["state"], "held");
         assert_eq!(encoded["dialog"]["kind"], "confirm");
         assert_eq!(serde_json::from_value::<BrowserTabRow>(encoded).expect("decodes"), row);

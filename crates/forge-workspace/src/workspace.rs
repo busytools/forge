@@ -415,7 +415,7 @@ reviewer kept on as a long-lived worker.";
 /// `resume_kick` of its own. On a resuming re-spawn forge delivers this
 /// constant as the worker's first turn - telling it to continue rather
 /// than start the task over.
-const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted by forge. Your prior conversation and progress are in the history above. Continue where you left off; do not restart the task. If the history's timestamps disagree with the clock and the live schedules, believe the clock and the schedules, and still do the concrete asks.";
+pub(crate) const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted by forge. Your prior conversation and progress are in the history above. Continue where you left off; do not restart the task. If the history's timestamps disagree with the clock and the live schedules, believe the clock and the schedules, and still do the concrete asks.";
 
 /// The first turn a boot spawn delivers to a lead it hands a stored
 /// session id to. A lead has no kick of its own, so this note is what
@@ -538,6 +538,15 @@ pub(crate) type ParkedBrowserHandOff = (
     tokio::sync::oneshot::Sender<forge_primitives::browser::HandOffEnding>,
 );
 
+/// One parked terminal hand-off: the session that asked, the hand-off itself,
+/// and the sender the blocked `terminal__hand_off` handler awaits. No clock
+/// ends it - only an answer, or the handler's own drop.
+pub(crate) type ParkedTerminalHandOff = (
+    SessionSlot,
+    forge_primitives::terminal::TerminalHandOff,
+    tokio::sync::oneshot::Sender<forge_primitives::browser::HandOffEnding>,
+);
+
 /// A seat's occupant that died, held until a reader has been shown the
 /// seat AND the recovery has announced itself - so a crash nobody watched
 /// is still readable when someone looks, and the recovery that answers it
@@ -554,6 +563,14 @@ struct SeatDeath {
     announced: bool,
     /// Whether a reader has been shown the seat since.
     shown: bool,
+}
+
+/// Where a dead seat's heal has got to while it is between attempts: the
+/// attempt number the row names, and when the next one fires.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HealProgress {
+    pub attempt: u32,
+    pub next_at: SystemTime,
 }
 
 /// Which operation holds a composed path. Re-entrancy needs the same
@@ -692,7 +709,7 @@ pub struct Workspace {
     /// its pool. It carries account health state updated on every spawn
     /// and refreshed by the in-memory usage poller, and it is what the
     /// gateway's selection walk reads to choose an account.
-    accounts: Arc<forge_gateway::AccountPool>,
+    pub(crate) accounts: Arc<forge_gateway::AccountPool>,
     /// Dictation preflight: the per-model progress the launchpad
     /// renders, the flag Escape sets, and the loaded engine held for
     /// the run. Populated by `start_dictate_preflight`; inert when
@@ -840,6 +857,15 @@ pub struct Workspace {
     /// a new id rather than reading as a plain connect - and what keeps
     /// the failure and its reason on the row until someone has looked.
     deaths: Mutex<HashMap<SessionSlot, SeatDeath>>,
+    /// Where each dead seat's heal has got to while it is restarting,
+    /// keyed by slot. The healing supervisor writes it between attempts;
+    /// every row that draws the seat reads it, and a lead has no worker
+    /// entry for the state to live on instead.
+    heal_progress: Mutex<HashMap<SessionSlot, HealProgress>>,
+    /// The auto-heal supervisor, built on the first death that reaches it.
+    /// It holds a `Weak<Workspace>`, which does not exist while the value
+    /// is still being constructed.
+    healing: std::sync::OnceLock<Arc<crate::healing::Healing>>,
     /// The seats a view is showing, each with the working-tree scan loop it
     /// runs. Empty is the quiet case: a seat nobody holds is not scanned.
     pub(crate) held_work_seats: crate::work::HeldSeats,
@@ -1093,6 +1119,23 @@ pub struct Workspace {
     /// blocked `browser_hand_off` handler awaits the sender, with no timeout,
     /// for as long as the person takes.
     pub(crate) browser_handoffs: Mutex<HashMap<uuid::Uuid, ParkedBrowserHandOff>>,
+    /// The per-seat terminals, created lazily on first use and living as long
+    /// as the seat: `/new`, `/resume` and a handoff leave the PTY, its shell
+    /// and its scrollback untouched; a release ends the seat and its
+    /// terminal.
+    pub(crate) terminals: Mutex<HashMap<SessionSlot, Arc<crate::terminal::TerminalEntry>>>,
+    /// Terminal hand-offs parked for the person at a client, keyed by their
+    /// id and carrying the session that asked. The blocked `terminal__hand_off`
+    /// handler awaits the sender, with no timeout, for as long as the person
+    /// takes.
+    pub(crate) terminal_handoffs: Mutex<HashMap<uuid::Uuid, ParkedTerminalHandOff>>,
+    /// The id the next terminal takes. **One per seat today**, but the wire
+    /// carries an id so a second terminal per seat is additive rather than a
+    /// protocol change.
+    pub(crate) next_terminal_id: std::sync::atomic::AtomicU16,
+    /// Set the first time the idle clock starts, so a second terminal does not
+    /// start a second clock.
+    pub(crate) terminal_clock_started: std::sync::atomic::AtomicBool,
     /// Configuration writes held for the reader's approval, keyed by the
     /// write's id and carrying the session that asked. Its own registry for
     /// the same reason the draft's is: a held write exists on a seat with no
@@ -2535,6 +2578,8 @@ impl Workspace {
             despawn_cleanups: Mutex::new(HashSet::new()),
             spawn_failures: Mutex::new(HashMap::new()),
             deaths: Mutex::new(HashMap::new()),
+            heal_progress: Mutex::new(HashMap::new()),
+            healing: std::sync::OnceLock::new(),
             held_work_seats: crate::work::HeldSeats::default(),
             domain_handles: Mutex::new(HashMap::new()),
             review_origin: Mutex::new(HashMap::new()),
@@ -2584,6 +2629,10 @@ impl Workspace {
             slack_ledger_failures: Mutex::new(std::collections::HashSet::new()),
             slack_drafts: Mutex::new(HashMap::new()),
             browser_handoffs: Mutex::new(HashMap::new()),
+            terminals: Mutex::new(HashMap::new()),
+            terminal_handoffs: Mutex::new(HashMap::new()),
+            next_terminal_id: std::sync::atomic::AtomicU16::new(1),
+            terminal_clock_started: std::sync::atomic::AtomicBool::new(false),
             settings_writes: Mutex::new(HashMap::new()),
             parked_vault_asks: Mutex::new(HashMap::new()),
             pending_seq: Mutex::new(HashMap::new()),
@@ -3687,6 +3736,8 @@ impl Workspace {
             let worker_facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(self);
             let browser_facade =
                 crate::mcp::browser::facade::ProdBrowserFacade::from_workspace(self);
+            let terminal_facade =
+                crate::mcp::terminal::facade::ProdTerminalFacade::from_workspace(self);
             let documents_facade =
                 crate::mcp::documents::facade::ProdDocumentFacade::from_workspace(self);
             let review_facade = crate::mcp::review::facade::ProdReviewFacade::from_arc(self);
@@ -3710,6 +3761,7 @@ impl Workspace {
                     workspace: workspace_facade,
                     worker: worker_facade,
                     browser: browser_facade,
+                    terminal: terminal_facade,
                     documents: documents_facade,
                     review: review_facade,
                     cron: cron_facade,
@@ -6226,7 +6278,9 @@ impl Workspace {
     ) -> Result<(), DispatchError> {
         if key.is_lead() {
             self.note_running_session_id(key, session_id);
-            crate::spawn::handle_spawn_project(self, key.project(), launch_settings);
+            // The failure is surfaced by the frame the handler emits; this
+            // recovery path has no caller to answer with it.
+            let _ = crate::spawn::handle_spawn_project(self, key.project(), launch_settings);
             return Ok(());
         }
         let Some(view) = self
@@ -6494,6 +6548,15 @@ impl Workspace {
                     });
                 }
             }
+            Command::RespondTerminalHandOff { key, id, .. } => {
+                let waiting = self.terminal_handoff_waiting(*id, key);
+                if !waiting {
+                    return Err(DispatchError::NoTerminalHandOffWaiting {
+                        key: key.clone(),
+                        id: *id,
+                    });
+                }
+            }
             Command::AnswerDocumentHandOff { key, id, .. } => {
                 let waiting = self.document_handoff_waiting(*id, key);
                 if !waiting {
@@ -6599,6 +6662,13 @@ impl Workspace {
                 _ => {}
             }
             let key = key.clone();
+            // **A hand-off parked by the outgoing occupant cannot outlive
+            // it.** `/new` and `/resume` replace the session that is waiting,
+            // and a park left behind would blind the new occupant's first
+            // terminal call with an ask nobody owns.
+            if matches!(&cmd, Command::NewSession { .. } | Command::ResumeSession { .. }) {
+                self.abandon_terminal_hand_offs(&key);
+            }
             // /new and /resume re-spawn on the already-pooled handle, where
             // get_agent_handle_at_key's stamp never runs.
             let resuming = matches!(&cmd, Command::ResumeSession { .. });
@@ -6806,7 +6876,9 @@ impl Workspace {
                         project = %project_name,
                     );
                     let _enter = span.enter();
-                    spawn::handle_spawn_project(self, &project_name, launch_settings);
+                    // A command has no caller to answer: the failure reaches
+                    // the views through the frame the handler emits.
+                    let _ = spawn::handle_spawn_project(self, &project_name, launch_settings);
                 }
                 Command::DeliverPeerPrompt { caller, target_project, wrapped, respond } => {
                     let span = tracing::info_span!(
@@ -6988,6 +7060,27 @@ impl Workspace {
                     let answered = self.resolve_browser_hand_off(id, &key, answer);
                     if !answered {
                         return Err(DispatchError::NoBrowserHandOffWaiting {
+                            key: key.clone(),
+                            id,
+                        });
+                    }
+                }
+                Command::RespondTerminalHandOff { key, id, answer } => {
+                    // Same shape as the browser arm above: the guard already
+                    // refused one that is not waiting, and the answer names
+                    // its own hand.
+                    tracing::debug!(
+                        event_name = "terminal_hand_off_answered",
+                        key = ?key,
+                        id = %id,
+                        ending = ?answer.ending,
+                        source = ?answer.source,
+                        client = answer.client,
+                        "a client answered a parked terminal hand-off"
+                    );
+                    let answered = self.resolve_terminal_hand_off(id, &key, answer);
+                    if !answered {
+                        return Err(DispatchError::NoTerminalHandOffWaiting {
                             key: key.clone(),
                             id,
                         });
@@ -8101,6 +8194,9 @@ impl Workspace {
                 // An entry whose label has no persisted row is only here.
                 self.clear_spawn_failure(&entry.slot);
                 self.spend_death(&entry.slot);
+                // The cascade is the lead's close taking its workers with
+                // it: their deaths are the stop's, not crashes to heal.
+                self.healing().note_stopped(&entry.slot);
                 let worktree =
                     crate::protocol::WorktreeDisposition::untouched(entry.is_git_repo_at_spawn);
                 let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
@@ -8133,6 +8229,12 @@ impl Workspace {
     pub(crate) fn announce_release(self: &Arc<Self>, key: &SessionSlot) {
         self.clear_spawn_failure(key);
         self.spend_death(key);
+        // A stop owns the seat from here: any heal attempt standing for it
+        // - a backoff already counted down - is cancelled rather than left
+        // to resurrect what the stop is taking down, and the subprocess
+        // death the stop causes is not read as a crash.
+        self.clear_heal_progress(key);
+        self.healing().note_stopped(key);
         let _ = self.update_tx.send(SessionUpdate::Releasing { key: key.clone() });
     }
 
@@ -8155,6 +8257,10 @@ impl Workspace {
         // after it does not keep the tab for a session that has ended; the
         // async tab close follows.
         self.release_browser_seat(session_key);
+        // **The seat ended, so its terminal ends with it.** A `/new` or
+        // `/resume` swaps the occupant and never reaches this path, which is
+        // what leaves the PTY, its shell and its scrollback untouched.
+        self.close_terminal(session_key);
         crate::dictate::teardown_for_closed_session(self, session_key);
         // A parked write is not a prompt the gone session can answer, and a
         // reused label must not draw the previous occupant's edit on a dock.
@@ -8527,6 +8633,14 @@ impl Workspace {
             ));
         }
         {
+            let parked = self.terminal_handoffs.lock();
+            asks.extend(parked.values().filter(|(owner, _, _)| owner == slot).map(
+                |(_, handoff, _)| {
+                    crate::protocol::PendingAsk::TerminalHandOff(Box::new(handoff.clone()))
+                },
+            ));
+        }
+        {
             let parked = self.document_handoffs.lock();
             asks.extend(parked.values().filter(|held| &held.seat == slot).map(|held| {
                 crate::protocol::PendingAsk::DocumentHandOff(Box::new(held.ask.clone()))
@@ -8559,10 +8673,11 @@ impl Workspace {
     ) -> forge_primitives::SessionLifecycleState {
         use forge_primitives::{SessionLifecycleState as L, WorkerLiveness};
 
-        // Neither has a connected session to interrogate.
+        // None of these has a connected session to interrogate.
         match entry.status {
             WorkerLiveness::Spawning => return L::Spawning,
             WorkerLiveness::Failed => return L::Failed,
+            WorkerLiveness::Restarting => return L::Restarting,
             WorkerLiveness::Running => {}
         }
         self.session_activity(&entry.slot)
@@ -8639,6 +8754,75 @@ impl Workspace {
         self.deaths.lock().get(slot).filter(|death| !death.shown).map(|death| death.reason.clone())
     }
 
+    /// Record that `slot` is between heal attempts: which attempt is next
+    /// and when it fires. Written by the healing supervisor and read by
+    /// every row that draws the seat.
+    pub fn set_heal_progress(&self, slot: &SessionSlot, attempt: u32, next_at: SystemTime) {
+        self.heal_progress.lock().insert(slot.clone(), HealProgress { attempt, next_at });
+    }
+
+    /// Forget `slot`'s heal progress: an occupant connected, or the seat
+    /// gave up and its row now draws the failure instead.
+    pub fn clear_heal_progress(&self, slot: &SessionSlot) {
+        let _ = self.heal_progress.lock().remove(slot);
+    }
+
+    /// Where `slot`'s heal has got to, or `None` when the seat is not
+    /// restarting.
+    pub fn heal_progress(&self, slot: &SessionSlot) -> Option<HealProgress> {
+        self.heal_progress.lock().get(slot).copied()
+    }
+
+    /// How many restarts a heal may make, from the current config: the row
+    /// says `restarting (attempt 1 of 3)` from this.
+    pub fn heal_attempts(&self) -> Option<u32> {
+        u32::try_from(self.config_arc().sessions.heal_attempts).ok()
+    }
+
+    /// The supervisor, built on first use.
+    fn healing(self: &Arc<Self>) -> Arc<crate::healing::Healing> {
+        self.healing.get_or_init(|| crate::healing::Healing::for_workspace(self)).clone()
+    }
+
+    /// A seat that had been up died: hand the death to the supervisor. A
+    /// resume's new occupant that never came up is a death here too - the
+    /// attempt failed rather than a first spawn being surfaced.
+    pub(crate) fn note_seat_death(self: &Arc<Self>, slot: &SessionSlot, diagnostic: &str) {
+        self.healing().note_death(slot, diagnostic);
+    }
+
+    /// A session came up on `slot`, which cancels any scheduled heal.
+    pub(crate) fn note_seat_connected(self: &Arc<Self>, slot: &SessionSlot) {
+        if let Some(healing) = self.healing.get() {
+            healing.note_connected(slot);
+        }
+    }
+
+    /// `slot`'s worker is between heal attempts: its row draws
+    /// `Restarting`, and the label is free for the resume.
+    pub(crate) fn mark_worker_restarting(&self, project_key: &ProjectKey, slot: &SessionSlot) {
+        let entry = {
+            let mut workers = self.live_workers.lock();
+            workers.get_mut(project_key).and_then(|entries| {
+                entries.iter_mut().find(|entry| entry.slot == *slot).map(|entry| {
+                    entry.status = forge_primitives::WorkerLiveness::Restarting;
+                    entry.clone()
+                })
+            })
+        };
+        if let Some(entry) = entry {
+            let status = self.worker_status_snapshot(&entry);
+            let _ = self.update_tx.send(SessionUpdate::WorkerStatusChanged {
+                project_key: project_key.clone(),
+                action: crate::protocol::WorkerStatusAction::StatusChanged,
+                status,
+                worktree: crate::protocol::WorktreeDisposition::untouched(
+                    entry.is_git_repo_at_spawn,
+                ),
+            });
+        }
+    }
+
     /// A reader has been shown the death on `slot` - the seat's page was
     /// opened: the row's trace goes (whether or not the recovery has
     /// announced itself yet), and the answer says whether there was one to
@@ -8672,6 +8856,12 @@ impl Workspace {
     pub fn session_activity(&self, slot: &SessionSlot) -> forge_primitives::SessionLifecycleState {
         use forge_primitives::SessionLifecycleState as L;
 
+        // A seat between heal attempts outranks the failure that started
+        // the heal: the failure is being answered, and drawing it would
+        // tell a reader nothing is happening when something is.
+        if self.heal_progress(slot).is_some() {
+            return L::Restarting;
+        }
         // Both of these are terminal for the session's own progress, so
         // they answer before anything about turns: a session waiting to
         // be let in, and one whose last attempt to start is still the
@@ -8752,8 +8942,11 @@ impl Workspace {
         &self,
         entry: &crate::mcp::workers::types::WorkerEntry,
     ) -> forge_primitives::WorkerStatus {
+        let heal = self.heal_progress(&entry.slot);
         forge_primitives::WorkerStatus {
             activity: Some(self.worker_activity(entry)),
+            heal_attempt: heal.map(|progress| progress.attempt),
+            heal_next_at: heal.map(|progress| progress.next_at),
             ..entry.to_status()
         }
     }
@@ -9475,6 +9668,24 @@ impl Workspace {
                 return Err(LiveWorkerRefusal::AtCap { live, cap });
             }
         }
+        // **The heal's tombstone goes with the spawn that supersedes it.**
+        // The label gate admits a same-label spawn because a `Restarting`
+        // entry is not live, while the cap counts that entry; a push beside
+        // it would count the slot twice, and the heal's timer aborts on the
+        // now-live label, leaving a tombstone that holds a cap slot for the
+        // rest of the run. Cleared after the refusals above, so a refused
+        // spawn never frees the heal's slot.
+        // **The heal's tombstone goes with the spawn that supersedes it.**
+        // The label gate admits a same-label spawn because a `Restarting`
+        // entry is not live, while the cap counts that entry; a push beside
+        // it would count the slot twice, and the heal's timer aborts on the
+        // now-live label, leaving a tombstone that holds a cap slot for the
+        // rest of the run. Cleared after the refusals above, so a refused
+        // spawn never frees the heal's slot.
+        workers.entry(project_key.clone()).or_default().retain(|existing| {
+            existing.slot != entry.slot
+                || !matches!(existing.status, forge_primitives::WorkerLiveness::Restarting)
+        });
         workers.entry(project_key.clone()).or_default().push(entry);
         Ok(())
     }
@@ -11091,6 +11302,12 @@ pub(crate) fn transition_worker_to_failed(
         let mut workers = workspace.live_workers.lock();
         workers.get_mut(project_key).and_then(|entries| {
             entries.iter_mut().find(|e| e.slot == *session_key).and_then(|entry| {
+                // A seat the supervisor is already bringing back keeps its
+                // `Restarting`: this failure is the death it is healing, and
+                // the row must not be repainted failed under it.
+                if workspace.heal_progress(&entry.slot).is_some() {
+                    return None;
+                }
                 // Idempotency: same status + same diagnostic -> no-op.
                 if entry.status == forge_primitives::WorkerLiveness::Failed
                     && entry.diagnostic == diagnostic
@@ -17258,7 +17475,8 @@ provider = "anthropic"
     fn respawn_of_connected_project_announces_the_live_key() {
         let (ws, mut update_rx, lead, _dir) = stub_with_connected_lead();
 
-        crate::spawn::handle_spawn_project(&ws, "companies", SessionLaunchSettings::default());
+        let _ =
+            crate::spawn::handle_spawn_project(&ws, "companies", SessionLaunchSettings::default());
 
         let announced = spawning_keys(&mut update_rx);
         assert_eq!(
@@ -17279,7 +17497,8 @@ provider = "anthropic"
         // pool entry alone.
         ws.set_session_id_in_domain(&lead, None);
 
-        crate::spawn::handle_spawn_project(&ws, "companies", SessionLaunchSettings::default());
+        let _ =
+            crate::spawn::handle_spawn_project(&ws, "companies", SessionLaunchSettings::default());
 
         assert_eq!(
             spawning_keys(&mut update_rx),
@@ -17730,6 +17949,32 @@ mod workers_state_tests {
             "a Failed entry does not block a re-spawn of its label",
         );
         assert_eq!(ws.list_live_workers(&project).len(), 2);
+    }
+
+    /// **A spawn supersedes a heal's tombstone rather than sitting beside
+    /// it.** A same-label spawn is admitted because a `Restarting` entry is
+    /// not live while the cap still counts it; leaving the tombstone would
+    /// count the slot twice, and the heal's timer aborts on the live label,
+    /// so it would hold a cap slot for the rest of the run.
+    #[test]
+    fn insert_if_label_absent_supersedes_a_restarting_tombstone() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let project = ProjectKey::new("forge");
+        let mut tombstone = fake_entry("reviewer", "w1");
+        tombstone.status = WorkerLiveness::Restarting;
+        ws.insert_live_worker(&project, tombstone);
+
+        ws.insert_live_worker_if_label_absent(&project, fake_entry("reviewer", "w1"), None)
+            .expect("a Restarting tombstone does not hold the label");
+
+        let entries = ws.list_live_workers(&project);
+        assert_eq!(entries.len(), 1, "the tombstone went with the spawn that superseded it");
+        assert_eq!(
+            entries[0].status,
+            WorkerLiveness::Running,
+            "the spawn's own entry is what remains",
+        );
+        assert_eq!(ws.count_live_workers(&project), 1, "and the cap counts the slot once");
     }
 
     #[test]
@@ -19796,6 +20041,9 @@ mod worker_respawn_tests {
                 workspace: crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace),
                 worker: crate::mcp::workers::facade::ProdWorkerFacade::from_arc(workspace),
                 browser: crate::mcp::browser::facade::ProdBrowserFacade::from_workspace(workspace),
+                terminal: crate::mcp::terminal::facade::ProdTerminalFacade::from_workspace(
+                    workspace,
+                ),
                 documents: crate::mcp::documents::facade::ProdDocumentFacade::from_workspace(
                     workspace,
                 ),

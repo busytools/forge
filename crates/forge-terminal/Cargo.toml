@@ -1,0 +1,30 @@
+[package]
+name = "forge-terminal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "One terminal per seat: the PTY, the screen model, the OSC 133 scanner and the shell integration scripts. Depends on no other forge crate."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# The only terminal dependency: the PTY, the vte parser, Term with reflow and
+# scrollback, and the event types. The event loop is not used - it consumes
+# the raw bytes internally, and forge needs to tap them.
+alacritty_terminal = "0.26"
+# Safe wrappers for poll, termios and the process-group kill; the workspace
+# forbids unsafe code.
+rustix = { workspace = true, features = ["event", "termios", "process", "fs"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

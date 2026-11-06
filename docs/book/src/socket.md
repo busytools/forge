@@ -342,14 +342,14 @@ variant's own name rather than on `kind`:
 }
 ```
 
-A command's variant is its name around its field bag - `Command` has 63
-variants, 57 of them struct variants; the six unit variants,
+A command's variant is its name around its field bag - `Command` has 64
+variants, 58 of them struct variants; the six unit variants,
 `dictate_catalogue_check`, `dictate_bench_stop`, `voice_bench_start`,
 `voice_bench_stop`, `plugin_update_all` and `plugin_check_updates`, cross as
 the name alone. An update is the same
 shape one level in,
 `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 73 of `SessionUpdate`'s 76 variants are struct variants too. The other
+and 76 of `SessionUpdate`'s 79 variants are struct variants too. The other
 three are why the payload is not one shape: they are unit variants and cross
 as the name alone - `"catalog_loaded"`, `"cli_version_changed"` and
 `"dictate_availability"`.
@@ -547,14 +547,46 @@ reply**, so a client that draws the rows sends `reply_to`:
 the profile's host is running; `connected` is whether a driver is attached
 to it; `closing_at_ms` is the idle clock's deadline as Unix epoch
 milliseconds, or `null` when no host is up; and each row is
-`{number, title, url, owner, state}`. `number` is the host's own tab number,
-which frames and input already speak; `owner` is the session whose calls
-drive it, as `{org, project, label}`; and `state` is `in_use` (a call is
-driving it), `idle`, or `held` (a parked hand-off is waiting on the person
-in it). **The ask is the subscription**: the connection follows the same row
+`{number, title, url, owner, opener, state, dialog}`. `number` is the host's
+own tab number, which frames and input already speak; `owner` is the session
+whose calls drive it, as `{org, project, label}`; `opener` is the tab whose
+page opened this one, or `null` for a tab a session owns outright; `state` is
+`in_use` (a call is driving it), `idle`, or `held` (a parked hand-off is
+waiting on the person in it); and `dialog` is the page dialog holding the
+tab, as `{kind, message}`, or `null` when none is open. **The ask is the subscription**: the connection follows the same row
 list from then on, and every change is pushed as a `browser_tabs` frame. A
 refusal answers `{"ok": false, "why": ...}`; with no `reply_to`, a refusal is
 an `error` frame and a success is silent.
+
+**`terminal_view {seat, id?, reply_to}`** - attach this connection to a
+seat's terminal as a viewer. The answer is a `terminal_view` frame carrying
+the screen as a VT stream and the sequence the byte stream continues from,
+then output frames as the shell writes them. **`id` omitted opens the seat's
+terminal**, creating it on first use - the person's door on a seat no agent
+has touched; a named id that is not the seat's is refused with
+`{"ok": false, "why": ...}`.
+
+**`terminal_detach`** - stop viewing the attached terminal. Lowering the
+surface sends this, so the idle clock and the viewer count see the truth.
+
+**`terminal_resize {seat, id, cols, rows}`** - the attached surface's size.
+The PTY and the server's screen model resize together.
+
+**`terminal_pause {paused}`** - client-driven flow control, so a phone that
+backgrounded stops being written to rather than being dropped. **A resume is
+answered with a fresh `terminal_view`**: the frames a pause missed are not
+replayed.
+
+**`terminal_control {seat, id, take}`** - take the person's control of the
+attached terminal (`take: true`) or give it back (`false`). **One controller
+at a time, like the browser's role**: a take always lands and the previous
+holder is told it lost the role, and a release by anyone else is not theirs
+to make. Every viewer hears the result as a `terminal_control` frame. While
+a client holds it the terminal tools are refused, exactly as during a
+hand-off; lowering the surface or dropping the connection releases it.
+
+**`terminal_close {seat, id}`** - the person's close door: the terminal's
+process group is killed and the seat's next open starts a fresh shell.
 
 **There is no profile verb on the socket.** A profile is `forge.toml`'s -
 its org's `browser_profile`, or the project's override - so no client names,
@@ -709,10 +741,19 @@ a broken file.
 **Binary messages are frames, and a frame's first byte says which kind.** A
 client that captures sends one dictation frame per 20 ms of speech:
 
-| bytes | field   | value                                                   |
-| ----- | ------- | ------------------------------------------------------- |
-| 1     | kind    | `0` = dictation; `1` = browser frame; `2` = browser audio |
-| rest  | samples | i16 little-endian, mono, 16 kHz (kind `0`)              |
+| bytes | field   | value                                                                       |
+| ----- | ------- | --------------------------------------------------------------------------- |
+| 1     | kind    | `0` = dictation; `1` = browser frame; `2` = browser audio; `4` = terminal output; `5` = terminal input |
+| rest  | samples | i16 little-endian, mono, 16 kHz (kind `0`)                                  |
+
+**A terminal output frame (kind `4`) is the server's**: a little-endian `u16`
+terminal id, a `u32` sequence, then the shell's own bytes. The sequence is
+per terminal and monotonic; a gap means the viewer fell behind and the server
+sends that attachment a fresh screen rather than replaying the bytes. **A
+resume after a pause is answered the same way** - the frames it missed are
+not replayed.
+**A terminal input frame (kind `5`) is a client's**: the same id and then the
+keystrokes. Both are refused from the wrong direction, as a browser frame is.
 
 A dictation frame carries no seat. It addresses the take its own CONNECTION
 started: one connection streams one take at a time and its messages are
@@ -990,6 +1031,25 @@ content_hash, threads, reviews}`** - in answer to `document_read`: the
 - **`browser_surface_failed {id, tab, reason}`** - the viewed tab's browser
   stopped. **Said out loud**, because a frozen last frame reads as a slow
   page and the person has no way to tell the two apart.
+- **`terminal_view {seat, id, cols, rows, seq, screen, viewers, viewer, controller}`**
+  - one terminal's screen as a VT stream a client can draw, and where the
+  byte stream continues from: `seq` is the last sequence the repaint
+  reflects, so a chunk at or below it is one the screen already carries;
+  `viewer` is this connection's own viewer number and `controller` the
+  viewer holding the person's control, `null` when the agent does. Sent on
+  attach and on a resume, never as a reply: the attach's `reply` is its own
+  `{"ok": true, "id": ...}`.
+- **`terminal_control {seat, id, controller}`** - who holds the terminal's
+  input, pushed to every viewer on a take or a release: the controller's
+  viewer id, or `null` for the agent. Every bar draws the same truth about
+  whose keyboard it is.
+- **`terminal_changed {key, terminal}`** - a seat's terminal opened, changed
+  or closed, as an `update` frame and not a message of its own: the summary
+  carries the id, the shell, the cwd, the size, whether the shell is alive,
+  the state (with its `source`), the title and whether a hand-off holds it.
+  `terminal` is `null` when the terminal is gone. **It is pushed on every
+  real state change** - a command starts, a password is wanted, the shell
+  exits - so the strip's words never wait for a record re-read.
 - **`browser_file_dialog {id, tab, multiple}`** - a page asked for a file.
   The shell opens this machine's picker and answers `browser_file_answer`
   under the same id; `multiple` is whether the page accepts more than one
@@ -1081,7 +1141,8 @@ conversation, and what the composer is doing.
 | `processes`                   | The last walk of the session's process tree, or `null` for a seat nothing has walked - a seat a client holds is walked once a second and its movement is pushed as a `processes_changed` update, a seat nobody holds is not walked at all, and a session ending clears it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `background_tasks`            | The seat's live tasks: the CLI's background registry plus the long foreground calls it announces on `task_started` and ends with a `task_notification`, a terminal `task_updated`, or the turn the call ran in, each entry saying whether the CLI backgrounded it (`is_backgrounded`), with the line the row leads with, the command its own call carried and the call that began it. The processes feed leads its rows with these, because a backgrounded bash is detached from claude's tree and the OS walk cannot see it for itself.                                                                                                                                                                                                                                                                                                                                                                                      |
 | `monitors`                    | The watches the session has running.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `pending_asks`                | Every prompt the seat is holding, oldest first within each kind that keeps arrival order, the held kinds leading (a Slack draft, a browser hand-off, a document hand-off, a held vault call, a held configuration write); the vault registry keeps no arrival order, so its own cards have none to offer. Two questions of one batch or two calls that ran in parallel park several at once, so this is what a client that attached mid-batch reads.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `terminal`                    | The seat's terminal as the strip draws it, `null` until one is opened: the id, shell, cwd, size, whether the shell is alive, the state (with its `source`), the title and whether a hand-off holds it. Pushed as `terminal_changed` on every real state change, so the strip's words never wait for a record re-read.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `pending_asks`                | Every prompt the seat is holding, oldest first within each kind that keeps arrival order, the held kinds leading (a Slack draft, a browser hand-off, a document hand-off, a terminal hand-off, a held vault call, a held configuration write); the vault registry keeps no arrival order, so its own cards have none to offer. Two questions of one batch or two calls that ran in parallel park several at once, so this is what a client that attached mid-batch reads.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `pending_ask`                 | The front of `pending_asks` - the prompt a client that draws a single ask waits on, `null` when there is none. Kept beside the list so a client reading only this one still draws the oldest ask.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `reviews`                     | The review threads and the submitted reviews, each read separately so an unreadable one is not reported as empty.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `slash_commands`, `subagents` | What the CLI last advertised: its commands and its agent-type catalogue, pushed as `slash_commands_changed` / `subagents_changed` when a turn's init (or a plugin reload, for the commands) moves them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |

@@ -219,12 +219,13 @@ fn try_emit(workspace: &Workspace, label: &'static str, update: SessionUpdate) {
 /// `SessionUpdate::Spawning` under it, then spawn the agent. The
 /// `Connected` event from the resulting `SessionTask` lands under the
 /// same key, so the announced bucket is the one the child connects
-/// under.
+/// under. A spawn that fails names the reason, which the heal's own
+/// supervisor counts as a failed attempt; a command dispatch drops it.
 pub(crate) fn handle_spawn_project(
     workspace: &Arc<Workspace>,
     project_name: &str,
     mut launch_settings: SessionLaunchSettings,
-) {
+) -> Result<(), String> {
     let Some(project) = workspace.find_project_view_by_name(project_name) else {
         tracing::warn!(
             target: "forge_workspace::spawn",
@@ -239,7 +240,7 @@ pub(crate) fn handle_spawn_project(
                 message: format!("Unknown project: {project_name}"),
             },
         );
-        return;
+        return Err(format!("Unknown project: {project_name}"));
     };
 
     apply_lead_charter(&mut launch_settings);
@@ -262,16 +263,17 @@ pub(crate) fn handle_spawn_project(
                 &crate::SessionSlot::lead(&project.org, &project.name),
                 crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
             );
+            let message = format!("agent spawn failed: {err}");
             try_emit(
                 workspace,
                 "spawn_project::ConnectionFailed",
                 SessionUpdate::ConnectionFailed {
                     key: SessionSlot::lead(&project.org, &project.name),
-                    message: format!("agent spawn failed: {err}"),
+                    message: message.clone(),
                     fatal: false,
                 },
             );
-            return;
+            return Err(message);
         }
     };
     try_emit(
@@ -304,6 +306,7 @@ pub(crate) fn handle_spawn_project(
             // The lead's profile comes up with the session rather than
             // paying the launch on its first browser call.
             warm_browser_seat(workspace, &session_key);
+            Ok(())
         }
         Err(err) => {
             tracing::error!(
@@ -328,8 +331,13 @@ pub(crate) fn handle_spawn_project(
             try_emit(
                 workspace,
                 "spawn_project::ConnectionFailed",
-                SessionUpdate::ConnectionFailed { key: session_key, message, fatal: false },
+                SessionUpdate::ConnectionFailed {
+                    key: session_key,
+                    message: message.clone(),
+                    fatal: false,
+                },
             );
+            Err(message)
         }
     }
 }
@@ -3274,7 +3282,11 @@ provider = "anthropic"
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe_answerer();
 
-        handle_spawn_project(&workspace, "no-such-project", SessionLaunchSettings::default());
+        assert!(
+            handle_spawn_project(&workspace, "no-such-project", SessionLaunchSettings::default())
+                .is_err(),
+            "an unknown project is refused rather than ignored",
+        );
 
         // The user sees a typed notice naming the unknown project.
         assert!(
@@ -3299,7 +3311,7 @@ provider = "anthropic"
         let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
         let mut rx = workspace.subscribe_answerer();
 
-        handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
+        let _ = handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
 
         let update = rx.try_recv().expect("Spawning emit");
         match std::sync::Arc::unwrap_or_clone(update.update) {
@@ -3331,7 +3343,7 @@ provider = "anthropic"
         workspace.seed_test_gateway_ready(false);
         let mut rx = workspace.subscribe_answerer();
 
-        handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
+        let _ = handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
 
         assert!(
             matches!(
@@ -5097,6 +5109,525 @@ provider = "anthropic"
         forge_agent::set_test_sdk_binary(None);
     }
 
+    // ---- auto-heal over the mock child -------------------------------------
+
+    /// `forge.toml` with the `[sessions]` backoff the heal tests run on:
+    /// real seconds would make a three-restart case wait out 5+30+120 s.
+    fn write_heal_toml(dir: &std::path::Path, project_path: &str) {
+        fs::write(
+            forge_toml_path(dir),
+            format!(
+                r#"
+[[orgs]]
+name = "Default"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "{project_path}"
+resume_lead = true
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+
+[sessions]
+heal_backoff = ["150ms", "200ms", "300ms"]
+heal_stable = "30s"
+"#
+            ),
+        )
+        .expect("write forge.toml");
+    }
+
+    /// The real mock wrapped so runs `die_from..=die_through` die of their
+    /// own accord shortly after the handshake, which is what forge sees as
+    /// a subprocess that closed mid-run. Every later run stays up. The run
+    /// count is left on disk, which is how a case proves how many children
+    /// ever started.
+    fn heal_mock(dir: &std::path::Path, die_from: u32, die_through: u32) -> String {
+        use std::os::unix::fs::PermissionsExt as _;
+        let real =
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../forge-sdk/tests/fixtures/mock_claude.sh");
+        let wrapper = dir.join("heal-mock");
+        fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/bash\n\
+                 if [[ ${{1:-}} == \"--version\" ]]; then exec {real} \"$@\"; fi\n\
+                 runs={runs}\n\
+                 n=$(( $(cat \"$runs\" 2>/dev/null || echo 0) + 1 ))\n\
+                 echo \"$n\" > \"$runs\"\n\
+                 {real} \"$@\" <&0 & child=$!\n\
+                 if [[ \"$n\" -ge {die_from} && \"$n\" -le {die_through} ]]; then\n\
+                   ( /bin/sleep 0.6; kill -9 \"$child\" 2>/dev/null ) &\n\
+                 fi\n\
+                 wait \"$child\"\n",
+                real = real,
+                runs = dir.join("heal-mock-runs").display(),
+                die_from = die_from,
+                die_through = die_through,
+            ),
+        )
+        .expect("write the heal mock");
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).expect("+x");
+        wrapper.to_string_lossy().into_owned()
+    }
+
+    /// How many mock children have started.
+    fn mock_runs(dir: &std::path::Path) -> u32 {
+        fs::read_to_string(dir.join("heal-mock-runs"))
+            .ok()
+            .and_then(|raw| raw.trim().parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// Every update up to and including the one that satisfies `done`, before
+    /// `spawn_wait` runs out. The frames are kept rather than matched one by
+    /// one, because a case that waits for two things cannot know which
+    /// arrives first.
+    async fn await_updates(
+        updates: &mut tokio::sync::mpsc::UnboundedReceiver<crate::update_fanout::SeatUpdate>,
+        what: &str,
+        mut done: impl FnMut(&[std::sync::Arc<SessionUpdate>]) -> bool,
+    ) -> Vec<std::sync::Arc<SessionUpdate>> {
+        let mut seen = Vec::new();
+        tokio::time::timeout(spawn_wait(), async {
+            while let Some(seat) = updates.recv().await {
+                seen.push(std::sync::Arc::clone(&seat.update));
+                if done(&seen) {
+                    return;
+                }
+            }
+            panic!("the update stream closed before {what}");
+        })
+        .await
+        .unwrap_or_else(|_| {
+            let shapes: Vec<String> = seen.iter().map(|update| shape(update)).collect();
+            panic!("timed out waiting for {what}; saw {shapes:?}")
+        });
+        seen
+    }
+
+    /// An update's variant and, where it has one, the seat it names: enough
+    /// to read a timeout without the payloads.
+    fn shape(update: &SessionUpdate) -> String {
+        let debug = format!("{update:?}");
+        let head = debug.split_whitespace().next().unwrap_or("?");
+        let at = update.slot().map_or_else(String::new, |slot| format!("@{}", slot.display()));
+        match update {
+            SessionUpdate::ChatAppended { msg, .. } => {
+                let text = user_text(msg);
+                format!("{head}{at}({}..)", text.chars().take(40).collect::<String>())
+            }
+            _ => format!("{head}{at}"),
+        }
+    }
+
+    /// The next update `wants` accepts, before `spawn_wait` runs out.
+    async fn await_update(
+        updates: &mut tokio::sync::mpsc::UnboundedReceiver<crate::update_fanout::SeatUpdate>,
+        what: &str,
+        mut wants: impl FnMut(&SessionUpdate) -> bool,
+    ) -> std::sync::Arc<SessionUpdate> {
+        await_updates(updates, what, |seen| seen.iter().any(|update| wants(update)))
+            .await
+            .pop()
+            .expect("a matched update")
+    }
+
+    /// **The budget is the bound**: a child that keeps dying gets three
+    /// restarts and then one escalation, and no fourth child is ever
+    /// started. Catches a supervisor that spins past its cap.
+    #[tokio::test]
+    async fn a_crash_loop_stops_after_three_restarts_and_escalates() {
+        let _binary = MOCK_BINARY.lock().await;
+        let (dir, _project, ws) = heal_fixture();
+        // Run 1 is the lead; runs 2..=5 are the worker's four deaths.
+        forge_agent::set_test_sdk_binary(Some(heal_mock(dir.path(), 2, 5)));
+        let mut updates = ws.subscribe_mirror();
+        let lead = start_lead(&ws, &mut updates).await;
+        let slot = SessionSlot::worker("Default", "forge", "probe-heal");
+        spawn_mock_worker(&ws, &lead, "probe-heal").await;
+
+        let seen = await_updates(&mut updates, "the escalation", |seen| {
+            seen.iter().any(|update| {
+                matches!(
+                    update.as_ref(),
+                    SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. }
+                        if *key == lead && wrapped.body.contains("Left Failed after 3 restarts")
+                )
+            })
+        })
+        .await;
+        assert_eq!(mock_runs(dir.path()), 5, "the lead, the first worker and its three resumes");
+        assert_eq!(connects(&seen, &slot), 4, "the first connect and three restarts");
+
+        // Nothing starts a fourth child once the budget is spent.
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        assert_eq!(mock_runs(dir.path()), 5, "no fourth restart after the escalation");
+        assert!(ws.heal_progress(&slot).is_none(), "the seat is left failed, not restarting");
+
+        // Every death was reported, the escalation last.
+        let notices: Vec<String> = seen
+            .iter()
+            .filter_map(|update| match update.as_ref() {
+                SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } if *key == lead => {
+                    Some(wrapped.body.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notices.len(), 4, "one notice per death: {notices:?}");
+        assert!(
+            notices.last().is_some_and(|body| body.contains("Left Failed after 3 restarts")),
+            "and the last is the escalation: {notices:?}",
+        );
+        forge_agent::set_test_sdk_binary(None);
+    }
+
+    /// **A despawn never heals.** The stop owns the seat, so the death its
+    /// own teardown causes must not bring the worker back.
+    #[tokio::test]
+    async fn a_despawned_worker_does_not_heal() {
+        let _binary = MOCK_BINARY.lock().await;
+        let (dir, _project, ws) = heal_fixture();
+        forge_agent::set_test_sdk_binary(Some(heal_mock(dir.path(), 2, 2)));
+        let mut updates = ws.subscribe_mirror();
+        let lead = start_lead(&ws, &mut updates).await;
+        let key = forge_key(&ws);
+        let slot = SessionSlot::worker("Default", "forge", "probe-heal");
+        spawn_mock_worker(&ws, &lead, "probe-heal").await;
+        await_update(
+            &mut updates,
+            "the worker's first connect",
+            |update| matches!(update, SessionUpdate::Connected { key, .. } if *key == slot),
+        )
+        .await;
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_despawn_worker(&ws, &key, "probe-heal", false, tx);
+        rx.await.expect("despawn result");
+
+        // The child dies 0.6 s in; a heal that wrongly fired would start a
+        // new one 150 ms after that.
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert_eq!(mock_runs(dir.path()), 2, "nothing was started for the stop's own death");
+        assert!(ws.heal_progress(&slot).is_none(), "the seat is not restarting");
+        forge_agent::set_test_sdk_binary(None);
+    }
+
+    /// **A seat with no durable row is not forge's to bring back**: a row
+    /// deleted under a live seat leaves a death with nothing a resume could
+    /// return, and it stays dead until a person starts it.
+    #[tokio::test]
+    async fn an_ad_hoc_seats_death_does_not_heal() {
+        let _binary = MOCK_BINARY.lock().await;
+        let (dir, _project, ws) = heal_fixture();
+        forge_agent::set_test_sdk_binary(Some(heal_mock(dir.path(), 2, 2)));
+        let mut updates = ws.subscribe_mirror();
+        let lead = start_lead(&ws, &mut updates).await;
+        let key = forge_key(&ws);
+        let slot = SessionSlot::worker("Default", "forge", "probe-heal");
+        spawn_mock_worker(&ws, &lead, "probe-heal").await;
+        await_update(
+            &mut updates,
+            "the worker's first connect",
+            |update| matches!(update, SessionUpdate::Connected { key, .. } if *key == slot),
+        )
+        .await;
+
+        assert!(
+            ws.delete_worker_row(&key, "probe-heal").expect("the row is deleted"),
+            "precondition: the row existed",
+        );
+
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert_eq!(mock_runs(dir.path()), 2, "no child was started for the ad-hoc death");
+        assert!(ws.heal_progress(&slot).is_none(), "the seat is not restarting");
+        forge_agent::set_test_sdk_binary(None);
+    }
+
+    /// Wait until `done` holds, polling every 20 ms, up to `spawn_wait`.
+    async fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        tokio::time::timeout(spawn_wait(), async {
+            while !done() {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+    }
+
+    /// **A lead whose project tree is gone fails every attempt with the
+    /// tree's own reason and escalates at the cap**, rather than reporting a
+    /// generic failure or resting as if it had come back.
+    #[tokio::test]
+    async fn a_lead_whose_project_tree_is_gone_escalates_at_the_cap() {
+        let _binary = MOCK_BINARY.lock().await;
+        let (dir, project, ws) = heal_fixture();
+        // Run 1 is the lead, which then dies; its resumes never start.
+        forge_agent::set_test_sdk_binary(Some(heal_mock(dir.path(), 1, 1)));
+        let mut updates = ws.subscribe_mirror();
+        let lead = start_lead(&ws, &mut updates).await;
+        let root = std::fs::canonicalize(project.path()).expect("canonical tree");
+        fs::remove_dir_all(&root).expect("remove the tree");
+
+        // The lead's child dies of its own accord, the first attempt is
+        // scheduled, and then every attempt is refused by the gone tree
+        // until the budget runs out.
+        wait_until("the first attempt", || ws.heal_progress(&lead).is_some()).await;
+        wait_until("the budget to run out", || ws.heal_progress(&lead).is_none()).await;
+
+        let reason = ws.spawn_failure(&lead).expect("the last attempt's reason stays on the row");
+        assert!(reason.contains("spawn failed"), "the refusal's own words: {reason}");
+        assert!(
+            reason.contains(root.to_string_lossy().as_ref()),
+            "the tree the attempt could not enter: {reason}",
+        );
+        // The first spawn's Spawning frame went with the connect; every
+        // frame left on the stream is one heal attempt taking the tree on.
+        let mut attempts = 0;
+        while let Ok(seat) = updates.try_recv() {
+            if matches!(&*seat.update, SessionUpdate::Spawning { key, .. } if *key == lead) {
+                attempts += 1;
+            }
+        }
+        assert_eq!(attempts, 3, "the cap's three attempts were each made, then it escalated");
+        assert_eq!(mock_runs(dir.path()), 1, "no resume ever started a child");
+        forge_agent::set_test_sdk_binary(None);
+    }
+
+    /// **A worker whose worktree is gone comes back anyway**: the heal
+    /// resumes through the boot re-spawn path, which re-creates the tree the
+    /// worker needs rather than refusing to start. This is the
+    /// inference-shop death's shape.
+    #[tokio::test]
+    async fn a_dead_workers_missing_worktree_is_recreated_by_the_heal() {
+        let _binary = MOCK_BINARY.lock().await;
+        let dir = tempdir().expect("config tempdir");
+        let repo = tempdir().expect("repo tempdir");
+        run_git(repo.path(), &["init", "-q"]);
+        run_git(repo.path(), &["config", "user.email", "t@example.com"]);
+        run_git(repo.path(), &["config", "user.name", "Test"]);
+        run_git(repo.path(), &["config", "commit.gpgsign", "false"]);
+        fs::write(repo.path().join("README.md"), "seed").expect("write seed");
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-q", "-m", "init"]);
+        let repo_root = std::fs::canonicalize(repo.path()).expect("canonical repo");
+        // The worktree `--worktree probe-heal` names: the mock ignores the
+        // flag, so the fixture forks it the way the CLI would.
+        let worktree = repo_root.join(".claude/worktrees/probe-heal");
+        std::fs::create_dir_all(worktree.parent().expect("worktrees dir")).expect("mkdir");
+        run_git(
+            &repo_root,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "worktree-probe-heal",
+                worktree.to_str().expect("utf8"),
+            ],
+        );
+        write_heal_toml(dir.path(), &repo_root.to_string_lossy());
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
+        ws.seed_test_gateway_ready(true);
+        ws.start_kick_dispatcher();
+        forge_agent::set_test_sdk_binary(Some(heal_mock(dir.path(), 2, 2)));
+
+        let mut updates = ws.subscribe_mirror();
+        let lead = start_lead(&ws, &mut updates).await;
+        let slot = SessionSlot::worker("Default", "forge", "probe-heal");
+        spawn_mock_worker(&ws, &lead, "probe-heal").await;
+        await_update(
+            &mut updates,
+            "the worker's first connect",
+            |update| matches!(update, SessionUpdate::Connected { key, .. } if *key == slot),
+        )
+        .await;
+
+        // The tree the worker needs disappears while it is up; the resume
+        // is what must put it back. The registration goes with it, so the
+        // re-create is a fresh `git worktree add` rather than a repair.
+        fs::remove_dir_all(&worktree).expect("remove the worktree");
+        run_git(&repo_root, &["worktree", "prune"]);
+        assert!(!worktree.is_dir(), "precondition: the worktree is gone");
+
+        // The scan starts after the first connect, so the restart is one
+        // more connect on the same seat.
+        let seen = await_updates(&mut updates, "the restart and its note", |seen| {
+            connects(seen, &slot) >= 1 && heard(seen, &slot, "This session was restarted by forge")
+        })
+        .await;
+        assert_eq!(connects(&seen, &slot), 1, "the seat came back despite the missing tree");
+        assert!(worktree.is_dir(), "the resume re-created the worktree the worker needs");
+        forge_agent::set_test_sdk_binary(None);
+    }
+
+    fn user_text(msg: &forge_primitives::Message) -> String {
+        let forge_primitives::Message::User { message, .. } = msg else {
+            return String::new();
+        };
+        message
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                forge_primitives::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Whether `seen` holds a chat row on `slot` whose user text contains
+    /// `needle`.
+    fn heard(seen: &[std::sync::Arc<SessionUpdate>], slot: &SessionSlot, needle: &str) -> bool {
+        seen.iter().any(|update| match update.as_ref() {
+            SessionUpdate::ChatAppended { key, msg, .. } => {
+                key == slot && user_text(msg).contains(needle)
+            }
+            _ => false,
+        })
+    }
+
+    /// How many connects on `slot` `seen` holds.
+    fn connects(seen: &[std::sync::Arc<SessionUpdate>], slot: &SessionSlot) -> usize {
+        seen.iter()
+            .filter(|update| matches!(update.as_ref(), SessionUpdate::Connected { key, .. } if key == slot))
+            .count()
+    }
+
+    /// A project the mock can be spawned into, with the heal `[sessions]`
+    /// table. The project is not a git repo, so its workers run in the
+    /// project root and forge's first-connect worktree check stays out of
+    /// the way - a git worker needs the worktree the mock never creates,
+    /// which the worktree case builds for itself.
+    fn heal_fixture() -> (tempfile::TempDir, tempfile::TempDir, Arc<Workspace>) {
+        let dir = tempdir().expect("config tempdir");
+        let project = tempdir().expect("project tempdir");
+        let root = std::fs::canonicalize(project.path()).expect("canonical project");
+        write_heal_toml(dir.path(), &root.to_string_lossy());
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
+        ws.seed_test_gateway_ready(true);
+        // The server starts this at boot; a kick a worker is meant to
+        // continue on would otherwise sit in the queue forever.
+        ws.start_kick_dispatcher();
+        (dir, project, ws)
+    }
+
+    /// Start the project's lead over the mock and wait for it, so a worker's
+    /// notice lands in a running chat rather than spawning the lead in the
+    /// middle of the case.
+    async fn start_lead(
+        ws: &Arc<Workspace>,
+        updates: &mut tokio::sync::mpsc::UnboundedReceiver<crate::update_fanout::SeatUpdate>,
+    ) -> SessionSlot {
+        let lead = SessionSlot::lead("Default", "forge");
+        crate::spawn::handle_spawn_project(
+            ws,
+            "forge",
+            forge_agent::client::SessionLaunchSettings::default(),
+        )
+        .expect("the lead spawns");
+        await_update(
+            updates,
+            "the lead's connect",
+            |update| matches!(update, SessionUpdate::Connected { key, .. } if *key == lead),
+        )
+        .await;
+        lead
+    }
+
+    /// The fixture's project key.
+    fn forge_key(ws: &Workspace) -> crate::ProjectKey {
+        ws.list_projects()
+            .into_iter()
+            .find(|view| view.name == "forge")
+            .expect("fixture project")
+            .key
+    }
+
+    /// Spawn one worker over the mock and answer its spawn reply.
+    async fn spawn_mock_worker(ws: &Arc<Workspace>, lead: &SessionSlot, label: &str) {
+        let key = forge_key(ws);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            ws,
+            key,
+            WorkerSpawnArgs {
+                label: label.to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                mcp_families: None,
+                cwd: None,
+            },
+            lead.clone(),
+            None,
+            false,
+            tx,
+        );
+        rx.await.expect("spawn replies").expect("spawn succeeds");
+    }
+
+    /// **A worker whose child closes while it is up comes back by itself**,
+    /// on its own seat, with the restart note, and its project's lead hears
+    /// the death and the outcome. Catches a death path that records the seat
+    /// dead and leaves it there.
+    #[tokio::test]
+    async fn a_dead_worker_comes_back_and_its_lead_hears() {
+        let _binary = MOCK_BINARY.lock().await;
+        let (dir, _project, ws) = heal_fixture();
+        // Run 1 is the lead, run 2 the worker that dies, run 3 its restart.
+        forge_agent::set_test_sdk_binary(Some(heal_mock(dir.path(), 2, 2)));
+
+        let mut updates = ws.subscribe_mirror();
+        let lead = start_lead(&ws, &mut updates).await;
+        let slot = SessionSlot::worker("Default", "forge", "probe-heal");
+        spawn_mock_worker(&ws, &lead, "probe-heal").await;
+
+        // The first connect, then the child dies of its own accord 0.6 s in;
+        // the supervisor's 150 ms wait brings the same seat back with the
+        // restart note, and the lead hears the death and the outcome.
+        let seen =
+            await_updates(&mut updates, "the restart, its note and the lead's notice", |seen| {
+                connects(seen, &slot) >= 2
+                    && heard(seen, &slot, "This session was restarted by forge")
+                    && seen.iter().any(|update| {
+                        matches!(
+                            update.as_ref(),
+                            SessionUpdate::PeerEnvelopeAppended { key, .. } if *key == lead
+                        )
+                    })
+            })
+            .await;
+        assert_eq!(mock_runs(dir.path()), 3, "the lead, the dead worker, and its resume");
+        assert_eq!(connects(&seen, &slot), 2, "the same seat came back once");
+
+        let told = seen
+            .iter()
+            .find_map(|update| match update.as_ref() {
+                SessionUpdate::PeerEnvelopeAppended { key, wrapped, .. } if *key == lead => {
+                    Some(wrapped.body.clone())
+                }
+                _ => None,
+            })
+            .expect("the lead's notice");
+        assert!(told.contains("died at"), "the time: {told}");
+        assert!(told.contains(" IST ("), "IST first, UTC after: {told}");
+        assert!(told.contains("probe-heal"), "the seat the lead must act on: {told}");
+        assert!(told.contains("attempt 1 of 3"), "the attempt and the cap: {told}");
+        assert!(told.contains("Restarted"), "the outcome, even on success: {told}");
+        forge_agent::set_test_sdk_binary(None);
+    }
+
     /// A despawn racing the spawn itself: the live entry is registered
     /// before the session task (and its teardown signal) is minted, so a
     /// despawn in that window would remove the worktree under a child that
@@ -5771,7 +6302,7 @@ provider = "anthropic"
             vec![slack_msg("parked while asleep")],
         );
 
-        crate::spawn::handle_spawn_project(
+        let _ = crate::spawn::handle_spawn_project(
             &ws,
             "overlayonly",
             forge_agent::client::SessionLaunchSettings::default(),
@@ -7001,7 +7532,7 @@ provider = "anthropic"
                 .to_owned(),
         ));
 
-        handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
+        let _ = handle_spawn_project(&workspace, "forge", SessionLaunchSettings::default());
 
         let (what, args) = tokio::time::timeout(std::time::Duration::from_secs(5), heard.recv())
             .await
@@ -9477,7 +10008,7 @@ provider = "anthropic"
         let (handle, mut agent_rx) = Workspace::testing_stub_handle();
         ws.install_test_spawn_handle(handle);
 
-        handle_spawn_project(&ws, "proj", SessionLaunchSettings::default());
+        let _ = handle_spawn_project(&ws, "proj", SessionLaunchSettings::default());
 
         let Some(forge_primitives::AgentCommand::NewSession { launch_settings, .. }) =
             agent_rx.try_recv().ok()

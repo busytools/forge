@@ -429,6 +429,10 @@ pub enum SessionLifecycleState {
     /// drove this. Bucket is dead but kept in the roster so the
     /// user can see the error banner.
     Failed,
+    /// The seat's subprocess died while it was supposed to be up and
+    /// the supervisor is between attempts. Nothing occupies the slot
+    /// until one lands.
+    Restarting,
     /// User triggered `/logout`. The bridge is down; user can start
     /// a new session via /new or by clicking another project.
     LoggedOut,

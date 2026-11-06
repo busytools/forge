@@ -16,7 +16,7 @@ its connector sets. The drawing it is held against is
 
 | Region | Shows | Read from |
 |---|---|---|
-| Rail | every declared project grouped by the strongest state among its rows, the current seat marked, each project's and seat's decision waits marked with a glyph and a count, sleepers folded - a fold hiding a decision wait opens itself, so the mark is visible without expanding it; its footer carries the account and what it is costing | the home's snapshot, the board's snapshot for each row's task, and `accounts` |
+| Rail | every declared project grouped by the strongest state among its rows, the current seat marked, each project's and seat's decision waits marked with a glyph and a count, sleepers folded - a fold hiding a decision wait opens itself, so the mark is visible without expanding it; a seat row's own line names what happened to it - a turn failure, a death with its reason, a refused spawn, or `restarting (N of M)` while forge brings the seat back - and the footer carries the account and what it is costing | the home's snapshot, the board's snapshot for each row's task, and `accounts` |
 | Header | the chip, the seat's own mark, org and name, and the facts: session id, model with its effort, mode, context fill, and the compaction count | `header`, `conversation.compaction_count` |
 | Conversation | the turns and everything inside them, in the column's own scroll viewport | `conversation` |
 | Queue | the prompts waiting, drawn against what is running | `queue`, `queue_ended` |
@@ -57,12 +57,18 @@ read as one system.
   web, lsp, skill, tool search, config, worktree, tool, and the one
   mutation row every edit draws whatever tool it was.
 - **A forge call** draws a card for its family - tasks, agents, cron,
-  documents, gotify, handoff, review, slack, voice - and the System One decisions
+  documents, gotify, handoff, review, slack, terminal, voice - and the System
+  One decisions
   draw as their own family, so a reader scanning for what the session decided
   does not find the three decision calls mixed among its cron and peer calls.
   The handoff's exit call is its own family: its family is handoff, it wears
   the handoff mark rather than the workers one, and it carries the note it
-  handed over.
+  handed over. A terminal call is the terminal family's: it wears the
+  terminal mark, titles itself by the terminal it acted on (`opened terminal
+  3`, `ran a command in a terminal`), chips the shell's state in words
+  (`running`, `waiting for input`, `exit 2`) and quotes the screen or the
+  command's own text; a parked `terminal__hand_off` says it waits for the
+  person and carries the ask's reason.
 - **A browser call** is the browser's, whatever server name carried it.
 - **A peer message** draws a card saying which way it went: `sent to` and
   `from` name the counterparty and its org, `failed` carries the
@@ -355,8 +361,9 @@ column's top-edge pill says it is loading. Nothing is made unreachable.
 ## The live row
 
 One row of segments at the top of the composer's card, in a fixed order: the
-browser, the agents, the processes, the connectors, the schedules, the MCP
-servers, the files, the tree, the review, the tasks, the monitors. Each segment
+browser, the terminal, the agents, the processes, the connectors, the
+schedules, the MCP servers, the files, the tree, the review, the tasks, the
+monitors. Each segment
 draws what it has and nothing else, and the row stands whenever anything has
 something to say - a running turn is one of the things it may say, not the
 condition for it, because these chips are the home of what the inspector
@@ -370,6 +377,12 @@ seat's project resolves to, show raises one of them as the full-window
 takeover, hide lowers it, and the sessions keep driving the same tabs
 underneath while it is closed. **It draws only while that profile has a
 tab**, so a page that has never used the browser carries no browser row.
+
+**The terminal segment raises the seat's terminal** (see
+[terminal.md](./terminal.md)): show opens the full-window surface, hide lowers
+it, and the row draws for every seat - on one no agent has opened, its button
+is **start**, the person's own door; a seat whose read is refused draws the
+note that says why instead.
 
 **The files slip is the one mandatory segment** (Ved, 2026-10-17): every
 seat has a tree - a worker's own worktree, the lead's checkout - so it

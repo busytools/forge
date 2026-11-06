@@ -295,6 +295,20 @@ export interface DocumentHandOff {
   reviewable: boolean;
 }
 
+/** A terminal hand-off: a session asking the person to type into the seat's
+ *  terminal before it can carry on. */
+export interface TerminalHandOff {
+  /** The hand-off's own id, which is what an answer is addressed by. */
+  id: string;
+  /** What the session needs done, in its own words - shown verbatim. */
+  reason: string;
+  /** The terminal the person should see. */
+  terminal: number | null;
+  /** Whether the program is reading a secret (ECHO off), so the card says
+   *  the typing is hidden rather than leaving the person guessing. */
+  secret: boolean;
+}
+
 /** The prompt the seat is parked on. */
 export type Ask =
   | { kind: 'permission'; request: PermissionRequest }
@@ -302,6 +316,7 @@ export type Ask =
   /** A held Slack post, which this composer draws no dock for. */
   | { kind: 'slack_draft'; request: SlackDraft }
   | { kind: 'browser_hand_off'; request: BrowserHandOff }
+  | { kind: 'terminal_hand_off'; request: TerminalHandOff }
   | { kind: 'document_hand_off'; request: DocumentHandOff }
   | { kind: 'settings_write'; request: SettingsWriteAsk }
   | { kind: 'vault'; request: VaultDraft };
@@ -404,6 +419,8 @@ export function askFrom(value: unknown): Ask | null {
       return slackFrom(request);
     case 'browser_hand_off':
       return browserHandOffFrom(request);
+    case 'terminal_hand_off':
+      return terminalHandOffFrom(request);
     case 'document_hand_off':
       return documentHandOffFrom(request);
     case 'settings_write':
@@ -514,6 +531,19 @@ function browserHandOffFrom(value: unknown): Ask {
       reason: text(held['reason']) ?? '',
       tab: number(held['tab']) ?? null,
       target: text(held['target']),
+    },
+  };
+}
+
+function terminalHandOffFrom(value: unknown): Ask {
+  const held = record(value);
+  return {
+    kind: 'terminal_hand_off',
+    request: {
+      id: text(held['id']) ?? '',
+      reason: text(held['reason']) ?? '',
+      terminal: number(held['terminal']) ?? null,
+      secret: held['secret'] === true,
     },
   };
 }

@@ -78,6 +78,7 @@ pub mod settings;
 pub mod slack;
 pub mod systemone;
 pub mod tasks;
+pub mod terminal;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod vault;
@@ -295,6 +296,7 @@ pub struct ForgeServerFacades {
     pub workspace: Arc<dyn WorkspaceFacade>,
     pub worker: Arc<dyn WorkerFacade>,
     pub browser: Arc<dyn BrowserFacade>,
+    pub terminal: Arc<dyn crate::mcp::terminal::facade::TerminalFacade>,
     pub documents: Arc<dyn DocumentFacade>,
     pub review: Arc<dyn ReviewFacade>,
     pub cron: Arc<dyn CronFacade>,
@@ -354,6 +356,7 @@ pub fn build_forge_server(
         workspace,
         worker,
         browser,
+        terminal,
         documents,
         review,
         cron,
@@ -378,6 +381,10 @@ pub fn build_forge_server(
     // session is offered it, and only a lead may use it, because it ends a
     // host every session on the profile shares.
     builder = browser::add_tools(builder, browser, slot.clone());
+    // Unconditional for the same reason: the terminal is one per seat on the
+    // machine, not a per-project scope, and it carries no approval gate -
+    // Bash through the CLI already reaches the shell here.
+    builder = terminal::add_tools(builder, terminal, slot.clone());
     // Unconditional for the same reason: a hand-off reads the caller's own
     // tree, so every session may hand a document and no project has anything
     // to withhold. The tool still takes the caller's review family, because a
@@ -659,6 +666,7 @@ mod tests {
                 workspace: MockWorkspaceFacade::new().into_arc(),
                 worker: MockWorkerFacade::new().into_arc(),
                 browser: MockBrowserFacade::new().into_arc(),
+                terminal: crate::mcp::terminal::facade::MockTerminalFacade::new().into_arc(),
                 documents: MockDocumentFacade::new().into_arc(),
                 review: MockReviewFacade::new().into_arc(),
                 cron: MockCronFacade::new().into_arc(),
@@ -898,6 +906,21 @@ mod tests {
                     .into_iter()
                     .map(str::to_owned),
                 )
+                // The terminal is any-caller and always on, like the browser.
+                .chain(
+                    [
+                        "terminal__open",
+                        "terminal__write",
+                        "terminal__read",
+                        "terminal__wait",
+                        "terminal__resize",
+                        "terminal__close",
+                        "terminal__hand_off",
+                        "terminal__run",
+                    ]
+                    .into_iter()
+                    .map(str::to_owned),
+                )
                 .collect();
         expected.sort();
         assert_eq!(
@@ -940,6 +963,7 @@ mod tests {
                     workspace: MockWorkspaceFacade::new().into_arc(),
                     worker: MockWorkerFacade::new().into_arc(),
                     browser: MockBrowserFacade::new().into_arc(),
+                    terminal: crate::mcp::terminal::facade::MockTerminalFacade::new().into_arc(),
                     documents: documents.into_arc(),
                     review: MockReviewFacade::new().into_arc(),
                     cron: MockCronFacade::new().into_arc(),
@@ -1002,6 +1026,22 @@ mod tests {
                 )
                 .chain(
                     ["cron__create", "cron__delete", "cron__list"].into_iter().map(str::to_owned),
+                )
+                // The terminal is any-caller and always on, so a cron-only
+                // selection still carries its eight tools.
+                .chain(
+                    [
+                        "terminal__open",
+                        "terminal__write",
+                        "terminal__read",
+                        "terminal__wait",
+                        "terminal__resize",
+                        "terminal__close",
+                        "terminal__hand_off",
+                        "terminal__run",
+                    ]
+                    .into_iter()
+                    .map(str::to_owned),
                 )
                 .collect();
         expected.sort();

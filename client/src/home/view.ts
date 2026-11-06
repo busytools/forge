@@ -107,6 +107,11 @@ export interface Row {
   /** The decision waits this seat holds: the mark, and the list behind it. */
   waits: AttentionRow[];
   reason: string | null;
+  /**
+   * The heal a restarting seat is between: the attempt and the cap, when
+   * the seat named one. `null` for every other state.
+   */
+  heal: { attempt: number; attempts: number | null } | null;
   lastActivity: WireTime | null;
   /**
    * When the seat's newest turn failed, as this view's wire left it: `null`
@@ -182,6 +187,11 @@ export interface FleetViewRow {
   state: RowState;
   /** The project's decision waits, which its mark lists and its popover draws. */
   waits: AttentionRow[];
+  /**
+   * A seat between heal attempts, in words: `w1 restarting (1 of 3)`. The
+   * row says what is happening while forge brings the seat back.
+   */
+  restart: string | null;
   place: { branch: string | null; files: string | null };
   gate: string | null;
   /** Each seat's state and its waits, which its chip's mark lists. */
@@ -218,6 +228,7 @@ const MARK_ORDER: string[] = [
   'unseen',
   'running',
   'spawning',
+  'restarting',
   'idle',
   'asleep',
   'never',
@@ -277,6 +288,13 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
           : best,
       dormantState(lastActivity),
     );
+    let restart: string | null = null;
+    for (const agent of agents) {
+      if (agent.lifecycle === 'Restarting' && agent.heal_attempt !== null) {
+        restart = `${agent.label} ${restartLine(agent.heal_attempt, agent.heal_attempts)}`;
+        break;
+      }
+    }
     const org = project?.project.org ?? orgOf(wire, row.project);
     // The lead is the row's own target; a project between lead sessions still
     // reads its slot, where the session page draws its start.
@@ -288,6 +306,7 @@ export function fleetRows(wire: HomeWire): FleetViewRow[] {
       leadHref: lead?.href ?? hrefForSlot({ org, project: row.project, label: 'lead' }),
       state: strongest,
       waits: row.attention,
+      restart,
       place: project === undefined ? { branch: null, files: null } : placeOf(project.work),
       gate: project === undefined ? null : gateLine(project.work.gate),
       seats,
@@ -398,6 +417,21 @@ export function orgOf(wire: HomeWire, project: string): string {
  * `unseen`, `failed_turn`, `died` and `pending` all cross on the snapshot.
  */
 export function stateOf(row: AgentRow, unseen: SessionSlot[]): RowState {
+  // **A heal in progress outranks the death it is healing.** The death stays
+  // on the row until the seat is shown, but a seat forge is actively bringing
+  // back draws as working: the mark says it is coming back and the line says
+  // which attempt, where a death's mark would send the reader to a failure
+  // nothing is waiting on them for. The trade is that the death's reason is
+  // not the row's line while an attempt is scheduled; it returns with the
+  // seat's failure if the heal gives up.
+  // **A heal in progress outranks the death it is healing.** The death stays
+  // on the row until the seat is shown, but a seat forge is actively bringing
+  // back draws as working: the mark says it is coming back and the line says
+  // which attempt, where a death's mark would send the reader to a failure
+  // nothing is waiting on them for. The trade is that the death's reason is
+  // not the row's line while an attempt is scheduled; it returns with the
+  // seat's failure if the heal gives up.
+  if (row.lifecycle === 'Restarting') return { kind: 'lifecycle', lifecycle: 'Restarting' };
   // **A death outranks a failed turn**, both drawing the one failure mark:
   // the session ended, which is the larger fact about the seat.
   if (row.died) return { kind: 'died' };
@@ -460,6 +494,11 @@ export function seatMark(state: RowState): SeatMark {
       return mark('running', 'live', 'live');
     case 'Spawning':
       return mark('spawning', 'live', 'live');
+    // A seat between heal attempts is work in flight, not a person's to
+    // act on: forge is bringing it back by itself, and the row says which
+    // attempt is next.
+    case 'Restarting':
+      return mark('restarting', 'restarting', 'restarting');
     case 'Idle':
       return mark('idle', 'live', 'idle');
     case 'Attention':
@@ -994,6 +1033,10 @@ function rowOf(
     pending: agent.pending,
     waits: mine,
     reason: agent.reason,
+    heal:
+      agent.lifecycle === 'Restarting' && agent.heal_attempt !== null
+        ? { attempt: agent.heal_attempt, attempts: agent.heal_attempts }
+        : null,
     lastActivity: agent.last_activity,
     failedTurn: agent.failed_turn,
   };
@@ -1033,9 +1076,20 @@ function dormantRow(wire: ProjectWire, lastRan: WireTime | null, waits: Attentio
     pending: null,
     waits: mine,
     reason: null,
+    heal: null,
     lastActivity: lastRan,
     failedTurn: null,
   };
+}
+
+/**
+ * A restarting seat in words: the attempt forge is on, and the cap when the
+ * server named one, so the row reads `restarting (1 of 3)`.
+ */
+export function restartLine(attempt: number, attempts: number | null): string {
+  return attempts === null
+    ? `restarting (attempt ${attempt})`
+    : `restarting (${attempt} of ${attempts})`;
 }
 
 /**
