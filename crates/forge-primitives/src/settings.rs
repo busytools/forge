@@ -101,24 +101,33 @@ pub struct SettingsEdit {
     pub group: Option<String>,
 }
 
+/// One key's change in a held write.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SettingsWriteChange {
+    /// The concrete catalogue path the change names.
+    pub key: String,
+    /// The value the key stands at now; `null` when it is unset.
+    pub current: serde_json::Value,
+    /// The value the change would leave; `null` when it clears the key.
+    pub proposed: serde_json::Value,
+    /// Whether the change clears the key rather than setting it.
+    pub unset: bool,
+}
+
 /// One configuration write held for the reader's approval.
 ///
 /// The blocked `settings__set` / `settings__unset` handler awaits the
 /// answer, and nothing reaches `forge.toml` unless it approved: this is the
 /// shape the dock draws while it waits, so it carries what a person decides
-/// on - the key, what it holds now, and what the write would leave.
+/// on - every key in the save, what it holds now, and what the write would
+/// leave. A batch is one ask and one approval because a section's keys can
+/// be mutually required: neither half can land alone.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SettingsWriteAsk {
     /// The write's own id, which is what an answer is addressed by.
     pub id: uuid::Uuid,
-    /// The concrete catalogue path the write names.
-    pub key: String,
-    /// The value the key stands at now; `null` when it is unset.
-    pub current: serde_json::Value,
-    /// The value the write would leave; `null` when it clears the key.
-    pub proposed: serde_json::Value,
-    /// Whether the write clears the key rather than setting it.
-    pub unset: bool,
+    /// The keys the one write changes, in the caller's order.
+    pub edits: Vec<SettingsWriteChange>,
 }
 
 /// What ended a held write, which a view that did not answer it has no other

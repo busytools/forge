@@ -36,9 +36,14 @@ timeout the bar reports.
 **The same catalogue and writer back the settings MCP tools.** An agent
 reads one key or the catalogue through `settings__get` and
 `settings__index`; a `settings__set` or `settings__unset` parks as a held
-write in the composer's dock, showing the key and the current and proposed
-value, and applies through this same save path only when the reader
-approves. The page and an agent never take two routes to one file.
+write in the composer's dock, showing every key it would change with the
+current and proposed value, and applies through this same save path only
+when the reader approves. One `settings__set` may carry several keys - a
+section's mutually required pair is one validated save - and the batch is
+refused before the dock if the loader would reject its result. A file that
+moved between the card and the approval refuses the write whole, so nothing
+lands against a config the reader never saw. The page and an agent never
+take two routes to one file.
 
 The speaking card is the page's one other read: while the voice area is
 selected it watches the `dictate_models` subject through the models read, and

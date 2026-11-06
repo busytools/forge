@@ -205,8 +205,8 @@
    * field, and a destructive card must not call that a thread.
    *
    * **The thread is named core-side**, and a parent the core could not read
-   * falls back to the raw ts - never to an invented name. The tags are people
-   * the core resolved, and one it could not name keeps its id.
+   * still reads as a thread rather than as a ts. The tags are people the core
+   * resolved, and one it could not name keeps its id.
    */
   interface Dest {
     workspace: string;
@@ -231,6 +231,41 @@
     const noun = operation === 'post' || operation === 'upload' ? 'thread' : 'message';
     return { workspace, conversation: conversationLabel, noun, threadTs, thread, tagged };
   });
+
+  /**
+   * The draft's text as the card draws it: a mention the core named reads as
+   * its name, as Slack draws it, and one it could not name keeps its id. Code
+   * draws its own markup, so a mention inside a span or a fence stays as
+   * written.
+   */
+  function namedBody(text: string, tagged: SlackPerson[]): string {
+    const names = new Map(tagged.map((person) => [person.id, person.name]));
+    const named = (mention: string, inner: string): string => {
+      const id = inner.split('|')[0] ?? '';
+      if (!/^[A-Za-z][A-Za-z0-9]*$/.test(id)) return mention;
+      const name = names.get(id);
+      return name === null || name === undefined ? id : `@${name}`;
+    };
+    let fenced = false;
+    return text
+      .split('\n')
+      .map((line) => {
+        if (/^\s*(```|~~~)/.test(line)) {
+          fenced = !fenced;
+          return line;
+        }
+        if (fenced) return line;
+        return line
+          .split(/(`[^`]*`)/)
+          .map((part, at) => (at % 2 === 1 ? part : part.replace(/<@([^>]*)>/g, named)))
+          .join('');
+      })
+      .join('\n');
+  }
+
+  const slackBody = $derived.by(() =>
+    ask.kind === 'slack_draft' ? namedBody(ask.request.text, ask.request.tagged) : '',
+  );
 
   /**
    * The two places the line yields are decided from MEASURED widths, because
@@ -974,7 +1009,9 @@
       return `${ask.request.workspace} · ${ask.request.conversationLabel}`;
     }
     if (ask.kind === 'document_hand_off') return ask.request.path;
-    if (ask.kind === 'settings_write') return ask.request.key;
+    if (ask.kind === 'settings_write') {
+      return ask.request.edits.map((edit) => edit.key).join(', ');
+    }
     if (ask.kind === 'vault') return ask.request.summary;
     return handOffTitle;
   });
@@ -1474,7 +1511,7 @@
             <span class="thr">
               <span class="lbl">{slackDest.noun}:</span>
               {#if slackDest.thread === null}
-                <span class="ex" title={slackDest.threadTs}>{slackDest.threadTs}</span>
+                <span class="ex">a {slackDest.noun}</span>
               {:else}
                 {@const thread = slackDest.thread}
                 <span class="who">@{thread.author}</span>
@@ -1505,17 +1542,14 @@
         <span class="q mono dest-verb">{slackVerbs.head}</span>
         {@render foldButton()}
       </div>
-      <!-- The body verbatim: this is what would go out, so the reader approves
-         the text itself rather than a summary of it. -->
+      <!-- The words the draft would send, with its mentions drawn as the names
+         the core resolved: this is what would go out and what the reader
+         approves, not a summary of it. -->
       <!-- The draft reads as an option's preview does, through the same
          markdown renderer and the same panel: Slack text IS markdown, the
          question kinds are already in hand, and one kind of block for both
          keeps the dock one system rather than two. -->
-      {@render previewRegion(
-        `the ${ask.request.operation} held for approval`,
-        ask.request.text,
-        false,
-      )}
+      {@render previewRegion(`the ${ask.request.operation} held for approval`, slackBody, false)}
     {:else if ask.kind === 'document_hand_off'}
       <div class="d-head">
         <span class="tag warn">&#9888; needs you</span>
@@ -1536,21 +1570,25 @@
         <span class="q mono">config write</span>
         {@render foldButton()}
       </div>
-      <!-- The key and both values verbatim: approving a summary of an edit
-         nobody drew would be approving something the reader never saw. -->
-      <div class="d-q mono">{ask.request.key}</div>
-      {#if ask.request.current === null}
-        <div class="desc">currently unset</div>
-      {:else}
-        <div class="desc">currently</div>
-        {@render valueBlock('the value this key holds now', ask.request.current)}
-      {/if}
-      {#if ask.request.unset}
-        <div class="desc">cleared to its default</div>
-      {:else}
-        <div class="desc">would become</div>
-        {@render valueBlock('the value this write would leave', ask.request.proposed)}
-      {/if}
+      <!-- Every key and both values verbatim: approving a summary of an edit
+         nobody drew would be approving something the reader never saw. A
+         section's mutually required keys ride one card because they are one
+         save. -->
+      {#each ask.request.edits as edit (edit.key)}
+        <div class="d-q mono">{edit.key}</div>
+        {#if edit.current === null}
+          <div class="desc">currently unset</div>
+        {:else}
+          <div class="desc">currently</div>
+          {@render valueBlock('the value this key holds now', edit.current)}
+        {/if}
+        {#if edit.unset}
+          <div class="desc">cleared to its default</div>
+        {:else}
+          <div class="desc">would become</div>
+          {@render valueBlock('the value this write would leave', edit.proposed)}
+        {/if}
+      {/each}
     {:else if ask.kind === 'vault'}
       <div class="d-head">
         <span class="tag warn">&#9888; needs you</span>

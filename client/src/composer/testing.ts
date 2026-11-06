@@ -179,10 +179,14 @@ export function settingsWriteAsk(over: Record<string, unknown> = {}): unknown {
     kind: 'settings_write',
     request: {
       id: '0192e1c0-0000-7000-8000-0000000000bb',
-      key: 'orgs.Default.projects.forge.max_workers',
-      current: 2,
-      proposed: 4,
-      unset: false,
+      edits: [
+        {
+          key: 'orgs.Default.projects.forge.max_workers',
+          current: 2,
+          proposed: 4,
+          unset: false,
+        },
+      ],
       ...over,
     },
   };
