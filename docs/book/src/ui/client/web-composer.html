@@ -749,7 +749,7 @@ on the folded bar.</p>
   </div>
   <div class="row">
     <div class="col">
-      <div class="lab">held config write <span class="h">268px</span></div>
+      <div class="lab">held config write, one batch</div>
       <div class="comp"><div class="surf">
         <div class="live-row">
           <span class="live-door att"><svg class="ic"><use href="#i-settings"/></svg>config write waiting</span>
@@ -762,19 +762,23 @@ on the folded bar.</p>
           <div class="d-head"><span class="tag warn">&#9888; needs you</span>
             <span class="q mono">config write</span>
             <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
-          <div class="d-q mono">orgs.Default.projects.forge.max_workers</div>
-          <div class="desc">currently</div>
-          <div class="wv mono">2</div>
+          <div class="d-q mono">vault.url</div>
+          <div class="desc">currently unset</div>
           <div class="desc">would become</div>
-          <div class="wv mono">4</div>
+          <div class="wv mono">https://vault.test</div>
+          <div class="d-q mono">vault.email</div>
+          <div class="desc">currently unset</div>
+          <div class="desc">would become</div>
+          <div class="wv mono">me@vault.test</div>
           <div class="acts"><span class="btn p">Write it</span><span class="btn d">Don't write</span></div>
           <div class="keys"><span><span class="k">tab</span> between Write it and Don't write</span>
             <span><span class="k">&#9166;</span> activates</span>
             <span><span class="k">esc</span> reject</span></div>
         </div></div></div>
       </div></div>
-      <p class="note" style="margin:8px 0 0">A held write shows the key and both values verbatim,
-      because the reader approves the edit itself rather than a summary of it.</p>
+      <p class="note" style="margin:8px 0 0">A held write shows every key it would change and both
+      values verbatim, because the reader approves the edit itself rather than a summary of it. A
+      section's mutually required pair is one card: one save, one approval.</p>
     </div>
     <div class="col">
       <div class="lab">held vault call, locked <span class="h">386px</span></div>
@@ -894,16 +898,16 @@ on the folded bar.</p>
             <span class="q dest-verb">Reply in Slack</span>
             <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
           <div class="preview" tabindex="0" role="region" aria-label="the post held for approval">
-            <div class="prose"><p>Confirmed - the replica caught the bad statement, so production is
-              clear to take the same set.</p></div>
+            <div class="prose"><p>Confirmed by @bob - the replica caught the bad statement, so
+              production is clear to take the same set.</p></div>
           </div>
           <div class="acts"><span class="btn p">Post</span><span class="btn">Send back with feedback</span><span class="btn d">Do not post</span></div>
         </div></div></div>
       </div></div>
-      <p class="note" style="margin:8px 0 0">The text that would go out, verbatim; the approving
-      verb leads, the send-back sits between it and the refusal. The thread is named by its
-      parent's author and opening words, and the people the draft tags are their names - the
-      timestamp and the raw ids are gone.</p>
+      <p class="note" style="margin:8px 0 0">The words that would go out, with each mention drawn
+      as the name the core resolved; the approving verb leads, the send-back sits between it and
+      the refusal. The thread is named by its parent's author and opening words, and the people
+      the draft tags are their names - the timestamp and the raw ids are gone.</p>
     </div>
     <div class="col">
       <div class="lab">the send-back's words <span class="h">241px</span></div>
@@ -927,17 +931,18 @@ on the folded bar.</p>
             <span class="q dest-verb">Post to Slack</span>
             <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
           <div class="preview" tabindex="0" role="region" aria-label="the post held for approval">
-            <div class="prose"><p>Confirmed - the replica caught the bad statement, so production is
-              clear to take the same set.</p></div>
+            <div class="prose"><p>Confirmed by @bob - the replica caught the bad statement, so
+              production is clear to take the same set.</p></div>
           </div>
           <div class="acts"><span class="btn p">Post</span><span class="btn">Send back with feedback</span><span class="btn d">Do not post</span></div>
           <div class="sendback"><span class="fld">say staging, not prod</span><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span><span class="btn">Send back</span></div>
         </div></div></div>
       </div></div>
       <p class="note" style="margin:8px 0 0">Enter sends, Shift+Enter is a newline, Escape closes;
-      the verb is unavailable until the field has words. The mic dictates into this box; while a
-      take runs its card replaces the field, and the card's way out abandons the take. This draft
-      is a root message, so no thread segment is drawn and the verb says <b>Post to Slack</b>.</p>
+      the verb is unavailable until the field has words. The mic dictates into this box, and so
+      does the push-to-talk key while the field holds the caret; while a take runs its card
+      replaces the field, and the card's way out abandons the take. This draft is a root message,
+      so no thread segment is drawn and the verb says <b>Post to Slack</b>.</p>
     </div>
   </div>
   <div class="row">
@@ -1332,6 +1337,21 @@ badge - so there is only ever one animation to read.</p>
       </div></div>
       <p class="note" style="margin:8px 0 0">The line names the cause above the take's own row,
       and goes the moment a sample lands.</p>
+    </div>
+    <div class="col">
+      <div class="lab">take that failed <span class="h">111px</span></div>
+      <div class="comp"><div class="surf">
+        <div class="slot">
+          <div class="notice q">dictation failed &middot; try again; restart forge if it repeats</div>
+          <div class="line">
+            <span class="txt ph">Type a message...</span>
+            <span class="ctls"><span class="mic"><svg class="ic"><use href="#i-mic"/></svg></span></span>
+          </div>
+        </div>
+      </div></div>
+      <p class="note" style="margin:8px 0 0">The field comes back with the notice above it, no
+      recording band and no stop control: the take produced no words, so the reader knows to
+      re-speak.</p>
     </div>
   </div>
 </div>

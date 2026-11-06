@@ -153,6 +153,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use forge_primitives::settings::SettingsWriteChange;
     use serde_json::json;
 
     fn caller() -> SessionSlot {
@@ -162,10 +163,12 @@ mod tests {
     fn an_ask(key: &str) -> SettingsWriteAsk {
         SettingsWriteAsk {
             id: Uuid::nil(),
-            key: key.to_owned(),
-            current: json!(2),
-            proposed: json!(4),
-            unset: false,
+            edits: vec![SettingsWriteChange {
+                key: key.to_owned(),
+                current: json!(2),
+                proposed: json!(4),
+                unset: false,
+            }],
         }
     }
 

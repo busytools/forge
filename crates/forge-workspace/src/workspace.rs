@@ -1078,7 +1078,8 @@ pub struct Workspace {
     /// spend the once-per-author line the sweep relies on.
     pub(crate) slack_draft_user_failures: Mutex<std::collections::HashSet<(String, String)>>,
     /// `(workspace, conversation, parent ts)` whose failed thread read has
-    /// been reported: a raw ts on the card is the only other symptom.
+    /// been reported, so a persistent failure says so once rather than on
+    /// every park.
     pub(crate) slack_thread_failures: Mutex<std::collections::HashSet<(String, String, String)>>,
     /// When each followed thread was last read whole, keyed
     /// `(workspace, conversation, parent ts)`. In memory: a restart costs one
@@ -2872,7 +2873,42 @@ impl Workspace {
     ) -> Result<(), SettingsSaveError> {
         let _one_at_a_time = self.settings_write.lock();
         let path = self.config_path();
-        let current = std::fs::read_to_string(&path).map_err(|error| {
+        let candidate = self.settings_candidate(&path, fingerprint, edits)?;
+        // **The file may have moved between the read and the write.**
+        // `write_atomically` re-reads it after the temp exists and before
+        // the rename, which is the last moment the check can run.
+        write_atomically(&path, &candidate, Some(fingerprint)).map_err(|error| match error {
+            WriteRefusal::Stale => SettingsSaveError::Stale,
+            WriteRefusal::Io(error) => {
+                SettingsSaveError::Io(format!("forge.toml could not be written: {error}"))
+            }
+        })
+    }
+
+    /// Validate a save's candidate without writing it.
+    ///
+    /// The same checks the save runs, over the whole batch, so a caller can
+    /// refuse a write the file would never accept before asking the reader
+    /// about it. Not the authority: [`Self::save_settings`] repeats every
+    /// check under its write lock.
+    pub(crate) fn validate_settings(
+        &self,
+        fingerprint: &str,
+        edits: &[SettingsEditRequest],
+    ) -> Result<(), SettingsSaveError> {
+        let path = self.config_path();
+        self.settings_candidate(&path, fingerprint, edits).map(|_candidate| ())
+    }
+
+    /// Build the save's candidate text and run it through every check short
+    /// of the write.
+    fn settings_candidate(
+        &self,
+        path: &std::path::Path,
+        fingerprint: &str,
+        edits: &[SettingsEditRequest],
+    ) -> Result<String, SettingsSaveError> {
+        let current = std::fs::read_to_string(path).map_err(|error| {
             SettingsSaveError::Io(format!("forge.toml could not be read: {error}"))
         })?;
         if crate::config::fingerprint_of(&current) != fingerprint {
@@ -2880,7 +2916,7 @@ impl Workspace {
         }
         let config = self.config_arc();
         let version = self.settings_version.get().map(String::as_str).unwrap_or_default();
-        let document = crate::settings::document(&config, version, &path);
+        let document = crate::settings::document(&config, version, path);
 
         // **The live-session and loading-account guards run before the
         // loader.** A removal that empties an org fails the loader's own
@@ -2925,7 +2961,7 @@ impl Workspace {
         let candidate = crate::settings_write::apply(&current, edits, &document)
             .map_err(SettingsSaveError::from)?;
 
-        let after = match crate::config::load_from_text(path.clone(), &candidate) {
+        let after = match crate::config::load_from_text(path.to_path_buf(), &candidate) {
             Ok(config) => config,
             Err(error) => {
                 // Anchor the refusal at the first edit that fails on its own;
@@ -2938,7 +2974,8 @@ impl Workspace {
                     ) else {
                         continue;
                     };
-                    if let Err(one_error) = crate::config::load_from_text(path.clone(), &one) {
+                    if let Err(one_error) = crate::config::load_from_text(path.to_path_buf(), &one)
+                    {
                         return Err(SettingsSaveError::Invalid {
                             message: one_error.to_string(),
                             key_path: Some(edit.key_path.clone()),
@@ -2973,15 +3010,7 @@ impl Workspace {
                 key_path: None,
             });
         }
-        // **The file may have moved between the read and the write.**
-        // `write_atomically` re-reads it after the temp exists and before
-        // the rename, which is the last moment the check can run.
-        write_atomically(&path, &candidate, Some(fingerprint)).map_err(|error| match error {
-            WriteRefusal::Stale => SettingsSaveError::Stale,
-            WriteRefusal::Io(error) => {
-                SettingsSaveError::Io(format!("forge.toml could not be written: {error}"))
-            }
-        })
+        Ok(candidate)
     }
 
     /// Refuse a save that drops an entry something live depends on.

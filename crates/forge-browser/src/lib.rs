@@ -6,6 +6,10 @@
 //! the server never links CEF into its own process and nothing here needs
 //! the client installed.
 
+// **The host that uses this is macOS's; the module still compiles for the
+// lib's own tests so its routing and origin rules run on every platform.**
+#[cfg(any(target_os = "macos", test))]
+pub mod bridge;
 #[cfg(unix)]
 pub mod channel;
 pub mod control;
@@ -18,6 +22,8 @@ pub mod tabs;
 
 #[cfg(target_os = "macos")]
 pub mod audio;
+#[cfg(target_os = "macos")]
+pub(crate) mod bridge_renderer;
 #[cfg(target_os = "macos")]
 pub(crate) mod challenge;
 #[cfg(target_os = "macos")]

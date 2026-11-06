@@ -7,7 +7,9 @@
 
 use std::sync::{Arc, Weak};
 
-use forge_primitives::settings::{SettingsEditOp, SettingsWriteAsk, SettingsWriteEnding};
+use forge_primitives::settings::{
+    SettingsEditOp, SettingsWriteAsk, SettingsWriteChange, SettingsWriteEnding,
+};
 use forge_primitives::{EffectClass, SettingsEditRequest};
 use serde_json::Value;
 use uuid::Uuid;
@@ -26,8 +28,7 @@ pub(crate) enum SettingsError {
     ForeignProject { key: String, org: String, project: String },
     /// The key is one of another org's own keys, refused on the same terms.
     ForeignOrg { key: String, org: String, caller_org: String },
-    /// The catalogue refused the value, the key cannot be unset, or the
-    /// write would change nothing.
+    /// The key, value or batch was refused before any reader was asked.
     Wanted(String),
     /// No client is attached to answer the approval prompt.
     NoReader,
@@ -80,11 +81,19 @@ pub(crate) struct SettingsValue {
     pub value: Value,
 }
 
+/// One key and its new value, as `settings__set` hands them through.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub(crate) struct SettingsSetItem {
+    pub key: String,
+    pub value: Value,
+}
+
 /// What a write did, which is what the agent's result says.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SettingsWriteOutcome {
-    /// The reader approved and the write landed.
-    Applied { effect: EffectClass },
+    /// The reader approved and the write landed. Each key's effect class is
+    /// carried once, in the order the batch first names one.
+    Applied { effects: Vec<EffectClass> },
     /// The reader declined; nothing was written.
     Declined,
 }
@@ -99,12 +108,12 @@ pub(crate) trait SettingsFacade: Send + Sync {
     /// global keys read freely; another project's key is refused by name.
     async fn get(&self, caller: &SessionSlot, key: &str) -> Result<SettingsValue, SettingsError>;
 
-    /// Set one key, held for the reader's approval.
+    /// Set one or more keys, applied as one validated save and held for the
+    /// reader's approval.
     async fn set(
         &self,
         caller: &SessionSlot,
-        key: &str,
-        value: Value,
+        items: Vec<SettingsSetItem>,
     ) -> Result<SettingsWriteOutcome, SettingsError>;
 
     /// Clear one key, held for the reader's approval.
@@ -148,62 +157,104 @@ impl ProdSettingsFacade {
     }
 
     /// One write, from the catalogue check through the reader's decision to
-    /// the validated writer. Every step that can refuse without a decision
-    /// refuses before the prompt is minted.
+    /// the validated writer. **The whole batch is checked before anything is
+    /// asked**: an unknown key, a wrong type, or a batch the loader would
+    /// refuse - a section whose keys are mutually required, say - is refused
+    /// by name with no prompt minted.
     async fn write(
         &self,
         caller: &SessionSlot,
-        key: &str,
-        value: Option<Value>,
+        items: Vec<SettingsSetItem>,
+        unset: bool,
     ) -> Result<SettingsWriteOutcome, SettingsError> {
+        if items.is_empty() {
+            return Err(SettingsError::Wanted(
+                "a write needs at least one edit; nothing was written".to_owned(),
+            ));
+        }
         let ws = self.workspace()?;
         let config = ws.config_arc();
         let document = ws.settings_snapshot();
-        let target = crate::settings::resolve_target(&config, &document, key)
-            .ok_or_else(|| SettingsError::UnknownKey(key.to_owned()))?;
-        let unset = value.is_none();
-        let proposed = value.clone().unwrap_or(Value::Null);
-        if unset {
-            if target.edit.required {
-                return Err(SettingsError::Wanted(format!(
-                    "`{key}` is required and cannot be unset"
-                )));
+
+        let mut edits = Vec::with_capacity(items.len());
+        let mut changes = Vec::with_capacity(items.len());
+        let mut effects: Vec<EffectClass> = Vec::new();
+        for item in &items {
+            let target = crate::settings::resolve_target(&config, &document, &item.key)
+                .ok_or_else(|| SettingsError::UnknownKey(item.key.clone()))?;
+            let proposed = if unset { Value::Null } else { item.value.clone() };
+            if unset {
+                if target.edit.required {
+                    return Err(SettingsError::Wanted(format!(
+                        "`{}` is required and cannot be unset",
+                        item.key
+                    )));
+                }
+                if target.current.is_null() {
+                    return Err(SettingsError::Wanted(format!(
+                        "`{}` is already unset; nothing was written",
+                        item.key
+                    )));
+                }
+            } else {
+                if proposed.is_null() {
+                    return Err(SettingsError::Wanted(format!(
+                        "`{}` is cleared with settings__unset, not with a null value",
+                        item.key
+                    )));
+                }
+                crate::settings_write::validate(&proposed, &target.edit, &item.key)
+                    .map_err(|error| SettingsError::Wanted(error.message))?;
             }
-            if target.current.is_null() {
-                return Err(SettingsError::Wanted(format!(
-                    "`{key}` is already unset; nothing was written"
-                )));
-            }
-        } else {
-            if proposed.is_null() {
-                return Err(SettingsError::Wanted(format!(
-                    "`{key}` is cleared with settings__unset, not with a null value"
-                )));
-            }
-            crate::settings_write::validate(&proposed, &target.edit, key)
-                .map_err(|error| SettingsError::Wanted(error.message))?;
-            if target.current == proposed {
-                return Err(SettingsError::Wanted(format!(
-                    "`{key}` already holds that value; nothing was written"
-                )));
+            edits.push(SettingsEditRequest {
+                area: target.area.clone(),
+                key_path: item.key.clone(),
+                pattern: target.pattern.clone(),
+                op: SettingsEditOp::Set,
+                value: (!unset).then(|| item.value.clone()),
+            });
+            changes.push(SettingsWriteChange {
+                key: item.key.clone(),
+                current: target.current.clone(),
+                proposed,
+                unset,
+            });
+            if !effects.contains(&target.class) {
+                effects.push(target.class);
             }
         }
 
-        let edit = SettingsEditRequest {
-            area: target.area.clone(),
-            key_path: key.to_owned(),
-            pattern: target.pattern.clone(),
-            op: SettingsEditOp::Set,
-            value: value.clone(),
-        };
-        let ask = SettingsWriteAsk {
-            id: Uuid::new_v4(),
-            key: key.to_owned(),
-            current: target.current.clone(),
-            proposed: proposed.clone(),
-            unset,
-        };
+        // A save that changes nothing is not worth a prompt.
+        if changes.iter().all(|change| change.current == change.proposed) {
+            let message = if changes.len() == 1 {
+                format!("`{}` already holds that value; nothing was written", changes[0].key)
+            } else {
+                "every key in this write already holds its value; nothing was written".to_owned()
+            };
+            return Err(SettingsError::Wanted(message));
+        }
+
+        // **The loader validates the batch, not each key.** It is the only
+        // authority on cross-key rules, and its refusal is owed before the
+        // reader is shown a prompt for a save that could not land.
         let fingerprint = document.fingerprint.clone();
+        ws.validate_settings(&fingerprint, &edits).map_err(|error| match error {
+            crate::workspace::SettingsSaveError::Stale => SettingsError::Wanted(
+                "the configuration changed since it was read; call again to write against \
+                 the current config"
+                    .to_owned(),
+            ),
+            crate::workspace::SettingsSaveError::Invalid { message, .. }
+            | crate::workspace::SettingsSaveError::Refused { message, .. } => {
+                SettingsError::Wanted(message)
+            }
+            crate::workspace::SettingsSaveError::Io(message) => SettingsError::Wanted(format!(
+                "the configuration could not be read to validate this write, so nothing was \
+                 written: {message}"
+            )),
+        })?;
+
+        let ask = SettingsWriteAsk { id: Uuid::new_v4(), edits: changes };
         let (id, decision, answerable) = ws.register_settings_write(caller, ask);
         if !answerable {
             return Err(SettingsError::NoReader);
@@ -224,10 +275,10 @@ impl ProdSettingsFacade {
         // **The ending is emitted after the write, not after the click.** A
         // view that did not answer must not read "applied" for an edit the
         // writer then refused, so the outcome crosses with the ending.
-        match ws.save_settings(&fingerprint, std::slice::from_ref(&edit)) {
+        match ws.save_settings(&fingerprint, &edits) {
             Ok(()) => {
                 ws.settle_settings_write(id, caller, SettingsWriteEnding::Applied);
-                Ok(SettingsWriteOutcome::Applied { effect: target.class })
+                Ok(SettingsWriteOutcome::Applied { effects })
             }
             Err(error) => {
                 let message = match error {
@@ -292,10 +343,9 @@ impl SettingsFacade for ProdSettingsFacade {
     async fn set(
         &self,
         caller: &SessionSlot,
-        key: &str,
-        value: Value,
+        items: Vec<SettingsSetItem>,
     ) -> Result<SettingsWriteOutcome, SettingsError> {
-        self.write(caller, key, Some(value)).await
+        self.write(caller, items, false).await
     }
 
     async fn unset(
@@ -303,7 +353,8 @@ impl SettingsFacade for ProdSettingsFacade {
         caller: &SessionSlot,
         key: &str,
     ) -> Result<SettingsWriteOutcome, SettingsError> {
-        self.write(caller, key, None).await
+        self.write(caller, vec![SettingsSetItem { key: key.to_owned(), value: Value::Null }], true)
+            .await
     }
 }
 
@@ -314,7 +365,7 @@ pub(crate) struct MockSettingsFacade {
     pub index_text: parking_lot::Mutex<String>,
     pub values: parking_lot::Mutex<std::collections::HashMap<String, Value>>,
     pub missing: parking_lot::Mutex<Option<SettingsError>>,
-    pub set_calls: parking_lot::Mutex<Vec<(SessionSlot, String, Value)>>,
+    pub set_calls: parking_lot::Mutex<Vec<(SessionSlot, Vec<SettingsSetItem>)>>,
     pub unset_calls: parking_lot::Mutex<Vec<(SessionSlot, String)>>,
     pub write_result: parking_lot::Mutex<Option<Result<SettingsWriteOutcome, SettingsError>>>,
 }
@@ -358,10 +409,9 @@ impl SettingsFacade for MockSettingsFacade {
     async fn set(
         &self,
         caller: &SessionSlot,
-        key: &str,
-        value: Value,
+        items: Vec<SettingsSetItem>,
     ) -> Result<SettingsWriteOutcome, SettingsError> {
-        self.set_calls.lock().push((caller.clone(), key.to_owned(), value));
+        self.set_calls.lock().push((caller.clone(), items));
         self.write_result.lock().clone().unwrap_or(Ok(SettingsWriteOutcome::Declined))
     }
 
@@ -424,6 +474,10 @@ provider = "anthropic"
 
     fn caller() -> SessionSlot {
         SessionSlot::lead("Default", "forge")
+    }
+
+    fn item(key: &str, value: serde_json::Value) -> SettingsSetItem {
+        SettingsSetItem { key: key.to_owned(), value }
     }
 
     fn facade(ws: &Arc<Workspace>) -> Arc<dyn SettingsFacade> {
@@ -504,7 +558,7 @@ provider = "anthropic"
 
         let task = tokio::spawn({
             let facade = Arc::clone(&facade);
-            async move { facade.set(&caller(), key, json!(4)).await }
+            async move { facade.set(&caller(), vec![item(key, json!(4))]).await }
         });
         let id = wait_for_write(&ws).await;
 
@@ -514,7 +568,10 @@ provider = "anthropic"
             held.iter().any(|ask| matches!(
                 ask,
                 crate::protocol::PendingAsk::SettingsWrite(held)
-                    if held.id == id && held.current == json!(2) && held.proposed == json!(4)
+                    if held.id == id
+                        && held.edits.len() == 1
+                        && held.edits[0].current == json!(2)
+                        && held.edits[0].proposed == json!(4)
             )),
             "the record read carries the key and both values",
         );
@@ -523,7 +580,9 @@ provider = "anthropic"
         let outcome = task.await.expect("no panic").expect("the write lands");
         assert_eq!(
             outcome,
-            SettingsWriteOutcome::Applied { effect: forge_primitives::EffectClass::NextSession },
+            SettingsWriteOutcome::Applied {
+                effects: vec![forge_primitives::EffectClass::NextSession],
+            },
         );
         assert!(read_config(&ws).contains("max_workers = 4"), "the value landed");
         ws.reload_config().expect("the written file loads");
@@ -531,7 +590,7 @@ provider = "anthropic"
 
         let task = tokio::spawn({
             let facade = Arc::clone(&facade);
-            async move { facade.set(&caller(), key, json!(7)).await }
+            async move { facade.set(&caller(), vec![item(key, json!(7))]).await }
         });
         let id = wait_for_write(&ws).await;
         assert!(ws.resolve_settings_write(id, &caller(), false));
@@ -596,7 +655,7 @@ provider = "anthropic"
 
         let task = tokio::spawn({
             let facade = Arc::clone(&facade);
-            async move { facade.set(&caller(), key, json!(true)).await }
+            async move { facade.set(&caller(), vec![item(key, json!(true))]).await }
         });
         let id = wait_for_write(&ws).await;
         assert!(ws.resolve_settings_write(id, &caller(), true));
@@ -618,7 +677,7 @@ provider = "anthropic"
 
         let task = tokio::spawn({
             let facade = Arc::clone(&facade);
-            async move { facade.set(&caller(), key, json!(5)).await }
+            async move { facade.set(&caller(), vec![item(key, json!(5))]).await }
         });
         let id = wait_for_write(&ws).await;
         let held = ws.pending_asks(&caller());
@@ -626,7 +685,8 @@ provider = "anthropic"
             held.iter().any(|ask| matches!(
                 ask,
                 crate::protocol::PendingAsk::SettingsWrite(held)
-                    if held.id == id && held.key == key && held.proposed == json!(5)
+                    if held.id == id
+                        && held.edits.iter().any(|edit| edit.key == key && edit.proposed == json!(5))
             )),
             "the write parks with the foreign key the reader has to see",
         );
@@ -669,7 +729,9 @@ provider = "anthropic"
         let task = tokio::spawn({
             let facade = Arc::clone(&facade);
             async move {
-                facade.set(&caller(), "orgs.Default.projects.forge.max_workers", json!(5)).await
+                facade
+                    .set(&caller(), vec![item("orgs.Default.projects.forge.max_workers", json!(5))])
+                    .await
             }
         });
         let _id = wait_for_write(&ws).await;
@@ -704,14 +766,14 @@ provider = "anthropic"
         let facade = facade(&ws);
 
         let unknown = facade
-            .set(&caller(), "orgs.Default.projects.forge.nope", json!(1))
+            .set(&caller(), vec![item("orgs.Default.projects.forge.nope", json!(1))])
             .await
             .expect_err("an unknown key is refused");
         assert!(unknown.message().contains("orgs.Default.projects.forge.nope"));
         assert!(ws.settings_writes.lock().is_empty(), "no ask was minted");
 
         let wrong = facade
-            .set(&caller(), "orgs.Default.projects.forge.max_workers", json!("four"))
+            .set(&caller(), vec![item("orgs.Default.projects.forge.max_workers", json!("four"))])
             .await
             .expect_err("a wrong type is refused");
         assert!(wrong.message().contains("max_workers"), "{}", wrong.message());
@@ -754,7 +816,7 @@ provider = "anthropic"
         let (ws, _dir) = fixture();
 
         let error = facade(&ws)
-            .set(&caller(), "orgs.Default.projects.forge.max_workers", json!(4))
+            .set(&caller(), vec![item("orgs.Default.projects.forge.max_workers", json!(4))])
             .await
             .expect_err("no reader means no write");
 
@@ -775,7 +837,9 @@ provider = "anthropic"
         let task = tokio::spawn({
             let facade = Arc::clone(&facade);
             async move {
-                facade.set(&caller(), "orgs.Default.projects.forge.max_workers", json!(4)).await
+                facade
+                    .set(&caller(), vec![item("orgs.Default.projects.forge.max_workers", json!(4))])
+                    .await
             }
         });
         let id = wait_for_write(&ws).await;
@@ -785,5 +849,205 @@ provider = "anthropic"
         let error = task.await.expect("no panic").expect_err("a stale write is refused");
         assert!(matches!(error, SettingsError::Refused(_)), "{error:?}");
         assert!(!read_config(&ws).contains("max_workers = 4"), "nothing was written");
+    }
+
+    /// **The acceptance case: a section whose keys are mutually required is
+    /// created in one held, validated write.** `[vault]` needs both its keys,
+    /// so neither can land alone - the pair rides one save, one ask and one
+    /// approval.
+    #[tokio::test]
+    async fn a_vault_pair_creates_the_section_in_one_write() {
+        let (ws, _dir) = fixture();
+        let _answerer = ws.subscribe_answerer();
+        let facade = facade(&ws);
+
+        let task = tokio::spawn({
+            let facade = Arc::clone(&facade);
+            async move {
+                facade
+                    .set(
+                        &caller(),
+                        vec![
+                            item("vault.url", json!("https://vault.test")),
+                            item("vault.email", json!("me@vault.test")),
+                        ],
+                    )
+                    .await
+            }
+        });
+        let id = wait_for_write(&ws).await;
+
+        assert_eq!(read_config(&ws), CONFIG, "nothing is written while the pair waits");
+        let held = ws.pending_asks(&caller());
+        let ask = held
+            .iter()
+            .find_map(|ask| match ask {
+                crate::protocol::PendingAsk::SettingsWrite(held) if held.id == id => {
+                    Some(held.clone())
+                }
+                _ => None,
+            })
+            .expect("the pair parked one write");
+        assert_eq!(ask.edits.len(), 2, "one card carries both keys");
+        assert_eq!(ask.edits[0].key, "vault.url");
+        assert_eq!(ask.edits[0].current, json!(null));
+        assert_eq!(ask.edits[0].proposed, json!("https://vault.test"));
+        assert_eq!(ask.edits[1].key, "vault.email");
+        assert_eq!(ask.edits[1].proposed, json!("me@vault.test"));
+
+        assert!(ws.resolve_settings_write(id, &caller(), true));
+        let outcome = task.await.expect("no panic").expect("the pair lands");
+        assert!(
+            matches!(
+                outcome,
+                SettingsWriteOutcome::Applied { ref effects }
+                    if effects.as_slice() == [forge_primitives::EffectClass::Live]
+            ),
+            "{outcome:?}",
+        );
+
+        let written = read_config(&ws);
+        assert!(written.contains("[vault]"), "the section was created: {written}");
+        assert!(written.contains("url = \"https://vault.test\""), "{written}");
+        assert!(written.contains("email = \"me@vault.test\""), "{written}");
+        ws.reload_config().expect("the written file loads");
+        let vault = ws.config_arc().vault.clone().expect("the section is live");
+        assert_eq!(vault.url, "https://vault.test");
+        assert_eq!(vault.email, "me@vault.test");
+    }
+
+    /// A half pair is refused before the reader is asked: the loader's own
+    /// words name the missing key, and no dock prompt is minted for a write
+    /// that could never land.
+    #[tokio::test]
+    async fn a_partial_pair_is_refused_before_the_ask() {
+        let (ws, _dir) = fixture();
+        let _answerer = ws.subscribe_answerer();
+        let facade = facade(&ws);
+
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            facade.set(&caller(), vec![item("vault.url", json!("https://vault.test"))]),
+        )
+        .await
+        .expect("the refusal precedes the ask, so nothing waits on an approval")
+        .expect_err("a half [vault] is refused");
+
+        let message = error.message();
+        assert!(message.contains("vault"), "the section is named: {message}");
+        assert!(message.contains("email"), "the missing key is named: {message}");
+        assert!(ws.settings_writes.lock().is_empty(), "no ask was minted");
+        assert_eq!(read_config(&ws), CONFIG, "nothing was written");
+    }
+
+    /// A config that cannot be read to validate the batch refuses it before
+    /// the ask, and the words do not claim a reader approved anything.
+    #[tokio::test]
+    async fn an_unreadable_config_refuses_the_batch_before_the_ask() {
+        let (ws, _dir) = fixture();
+        let _answerer = ws.subscribe_answerer();
+        let facade = facade(&ws);
+        std::fs::remove_file(ws.config_path()).expect("remove forge.toml");
+
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            facade.set(
+                &caller(),
+                vec![
+                    item("vault.url", json!("https://vault.test")),
+                    item("vault.email", json!("me@vault.test")),
+                ],
+            ),
+        )
+        .await
+        .expect("the refusal precedes the ask, so nothing waits on an approval")
+        .expect_err("an unreadable config refuses the write");
+
+        let message = error.message();
+        assert!(message.contains("could not be read"), "{message}");
+        assert!(!message.contains("approved"), "no reader was asked: {message}");
+        assert!(ws.settings_writes.lock().is_empty(), "no ask was minted");
+    }
+
+    /// **One bad key refuses the whole batch**: the good pair beside it is
+    /// not written, and nothing is asked.
+    #[tokio::test]
+    async fn one_bad_key_refuses_the_whole_batch() {
+        let (ws, _dir) = fixture();
+        let _answerer = ws.subscribe_answerer();
+        let facade = facade(&ws);
+
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            facade.set(
+                &caller(),
+                vec![
+                    item("vault.url", json!("https://vault.test")),
+                    item("vault.email", json!("me@vault.test")),
+                    item("orgs.Default.projects.forge.max_workers", json!("four")),
+                ],
+            ),
+        )
+        .await
+        .expect("the refusal precedes the ask, so nothing waits on an approval")
+        .expect_err("a wrong-typed member refuses the batch");
+
+        assert!(error.message().contains("max_workers"), "{}", error.message());
+        assert!(ws.settings_writes.lock().is_empty(), "no ask was minted");
+        assert_eq!(read_config(&ws), CONFIG, "the good pair was not written");
+    }
+
+    /// **A batch naming one key twice is refused before the ask.** The pair
+    /// that would net back to the value already in the file must not slip
+    /// past the "changes nothing" guard as a write the reader approves.
+    #[tokio::test]
+    async fn a_batch_naming_one_key_twice_is_refused_before_the_ask() {
+        let (ws, _dir) = fixture();
+        let _answerer = ws.subscribe_answerer();
+        let facade = facade(&ws);
+        let key = "orgs.Default.projects.forge.max_workers";
+
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            facade.set(&caller(), vec![item(key, json!(4)), item(key, json!(2))]),
+        )
+        .await
+        .expect("the refusal precedes the ask, so nothing waits on an approval")
+        .expect_err("a duplicate key is refused");
+
+        assert!(error.message().contains("max_workers"), "{}", error.message());
+        assert!(error.message().contains("twice"), "{}", error.message());
+        assert!(ws.settings_writes.lock().is_empty(), "no ask was minted");
+        assert_eq!(read_config(&ws), CONFIG, "nothing was written");
+    }
+
+    /// The hold is the whole batch's: a decline writes neither key.
+    #[tokio::test]
+    async fn a_declined_batch_writes_nothing() {
+        let (ws, _dir) = fixture();
+        let _answerer = ws.subscribe_answerer();
+        let facade = facade(&ws);
+
+        let task = tokio::spawn({
+            let facade = Arc::clone(&facade);
+            async move {
+                facade
+                    .set(
+                        &caller(),
+                        vec![
+                            item("vault.url", json!("https://vault.test")),
+                            item("vault.email", json!("me@vault.test")),
+                        ],
+                    )
+                    .await
+            }
+        });
+        let id = wait_for_write(&ws).await;
+        assert!(ws.resolve_settings_write(id, &caller(), false));
+
+        let outcome = task.await.expect("no panic").expect("a decline is an outcome");
+        assert_eq!(outcome, SettingsWriteOutcome::Declined);
+        assert_eq!(read_config(&ws), CONFIG, "a decline writes nothing");
+        assert!(ws.config_arc().vault.is_none(), "the section stayed absent");
     }
 }

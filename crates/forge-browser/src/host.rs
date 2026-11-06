@@ -16,16 +16,17 @@
     reason = "CEF's wrap_* macros transmute the wrapper reference to the base object"
 )]
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
 
 use cef::*;
 
+use crate::bridge::{self, Channels};
 use crate::engine::{HostApp, elapsed_ms, initialize, pump};
 use crate::osr::{Header, Ring, STATE_FAILED, STATE_LIVE};
 
@@ -389,12 +390,22 @@ impl Tabs {
     /// the browser is created synchronously and CEF runs a nested message loop
     /// inside that call: a page's popup can be admitted and given a number
     /// while the create is still in progress, and a number peeked beforehand
-    /// would be handed out twice. A browser that fails to create burns its
-    /// number, which costs a gap in a numbering nothing reads back.
+    /// would be handed out twice. A create that fails gives its number back
+    /// through `unreserve` unless a nested admission has taken a newer one.
     fn reserve(&mut self) -> u16 {
         let tab = self.next.saturating_add(1).max(1);
         self.next = tab;
         tab
+    }
+
+    /// Give back a number whose browser was never created. **Only the newest
+    /// reservation goes**: the create runs a nested loop, and a popup admitted
+    /// inside it has already taken the next number, so this leaves the gap
+    /// rather than rewinding over a live reservation.
+    fn unreserve(&mut self, tab: u16) {
+        if self.next == tab && !self.open.contains_key(&tab) {
+            self.next = tab.saturating_sub(1);
+        }
     }
 
     /// Take one tab out and end its frame worker. The page itself may be what
@@ -658,14 +669,20 @@ impl AdmittedPopup {
     }
 }
 
-/// What turns a page's `window.open` into a tab of this profile.
+/// The host's tab admission: CEF's same-origin popups, and the browsers this
+/// host creates for a server command or a cross-site open.
 ///
-/// **CEF creates the popup's browser itself.** A host that cancels the popup
-/// and opens a tab in its place leaves `window.open` answering null, and every
-/// sign-in flow reads null as "the pop-up was blocked" - the tab it substituted
-/// never helps, because the page has already failed. The gate admits the popup,
-/// hands CEF a client of its own so it paints and takes input like any other
-/// tab, and registers the browser as a tab the moment CEF reports it created.
+/// **For a same-origin popup, CEF creates the browser itself.** A host that
+/// cancels the popup and opens a tab in its place leaves `window.open`
+/// answering null, and every sign-in flow reads null as "the pop-up was
+/// blocked" - the tab it substituted never helps, because the page has already
+/// failed. The gate admits the popup, hands CEF a client of its own so it
+/// paints and takes input like any other tab, and registers the browser as a
+/// tab the moment CEF reports it created.
+///
+/// **A cross-site open never takes that path**; it creates a browser through
+/// `create_browser`, and its two halves and origins live in
+/// [`crate::bridge`].
 struct PopupGate {
     ring: Arc<Ring>,
     paused: Arc<AtomicBool>,
@@ -686,12 +703,41 @@ struct PopupGate {
     places: Mutex<HashMap<(u16, i32), Arc<Place>>>,
     /// Popups whose first document is still the host's to start.
     boot: Mutex<Vec<PopupBoot>>,
-    /// Popup births taken while a tab is being created, and whether a create
-    /// holds them. **A create's browser is made inside a nested CEF loop**,
-    /// so a popup adopted during it would report before the tab the create
-    /// is making, and the service pairs births to pages by that order.
+    /// Popup births taken while a tab is being created, and how many creates
+    /// hold them. **A create's browser is made inside a nested CEF loop**, so
+    /// a popup adopted during it would report before the tab the create is
+    /// making, and the service pairs births to pages by that order. **The
+    /// depth is counted**: a bridged popup's create can run inside another
+    /// create's nested loop, and only the outermost hold may flush.
     held_births: Mutex<Vec<crate::control::HostEvent>>,
-    holding_births: AtomicBool,
+    holding_births: AtomicUsize,
+    /// The cross-site `window.open` bridges this host holds.
+    bridge: Mutex<Channels>,
+    /// The popups this host created for a page, `noopener` ones included.
+    /// **A noopener popup has no channel**, so this is what still lets its
+    /// renderer death end its tab instead of leaving a dead row.
+    bridged_tabs: Mutex<HashSet<u16>>,
+    /// Refusals already logged, by tab or opener and kind. **One line per
+    /// reason, not one per attempt**: a page can repeat a refused open, and
+    /// the host's stderr is an append-only file nobody rotates.
+    refused_logged: Mutex<HashSet<(u16, &'static str)>>,
+    /// A bridged popup whose blank document has not acknowledged its role,
+    /// with the address to start once it does. **The address waits**: the
+    /// popup's first document must have `window.opener` before its own
+    /// scripts, and the role is only established once the renderer says so.
+    pending_start: Mutex<Vec<PendingStart>>,
+    /// Tabs whose document has already acknowledged its role. **The ack can
+    /// land before the pending start is registered** (the blank context is
+    /// created inside the create's nested loop), so it is a level, not an
+    /// edge: a start registered later checks this set and goes at once.
+    assigned_tabs: Mutex<HashSet<u16>>,
+}
+
+/// One popup waiting for its role before the host starts its address.
+struct PendingStart {
+    tab: u16,
+    url: String,
+    at: u64,
 }
 
 /// Ends a birth hold, flushing what it kept, however the create ended.
@@ -779,10 +825,14 @@ impl PopupGate {
             let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
             let held = live.entry(opener).or_default();
             if *held >= MAX_POPUP_TABS {
-                eprintln!(
-                    "cef host: a page's popup was refused (event_name cef_popup_refused, \
-                     opener {opener}, popup {popup_id}, url {url})"
-                );
+                if self.first_refusal(opener, "cap") {
+                    eprintln!(
+                        "cef host: a page's popup was refused (event_name cef_popup_refused, \
+                         profile {}, opener {opener}, popup {popup_id}, address {})",
+                        self.profile,
+                        origin_words(url)
+                    );
+                }
                 return None;
             }
             *held += 1;
@@ -901,13 +951,13 @@ impl PopupGate {
     /// otherwise reach the server before the tab the create is making, and
     /// the service counts births against pages in that order.
     fn hold_births(&self) -> BirthHold<'_> {
-        self.holding_births.store(true, Ordering::Release);
+        self.holding_births.fetch_add(1, Ordering::AcqRel);
         BirthHold { popups: self }
     }
 
     /// Announce a tab's birth, or keep it while a create holds births.
     fn emit_birth(&self, event: crate::control::HostEvent) {
-        if self.holding_births.load(Ordering::Acquire) {
+        if self.holding_births.load(Ordering::Acquire) > 0 {
             self.held_births.lock().unwrap_or_else(PoisonError::into_inner).push(event);
             return;
         }
@@ -918,8 +968,14 @@ impl PopupGate {
     /// adopted, which is the order the engine made them. Answers what it
     /// sent, so a test can hold it to sending rather than only to emptying
     /// the buffer.
+    ///
+    /// **Only the outermost hold flushes.** A bridged popup's create can run
+    /// inside another create's nested loop, and its own hold must not send
+    /// the outer create's births early.
     fn flush_births(&self) -> Vec<crate::control::HostEvent> {
-        self.holding_births.store(false, Ordering::Release);
+        if self.holding_births.fetch_sub(1, Ordering::AcqRel) > 1 {
+            return Vec::new();
+        }
         let held = {
             let mut held = self.held_births.lock().unwrap_or_else(PoisonError::into_inner);
             std::mem::take(&mut *held)
@@ -941,6 +997,42 @@ impl PopupGate {
     /// never over a load; a popup that cannot get that far is given up rather
     /// than left blank for ever.
     fn bootstrap(&self, now: u64) {
+        // **A popup whose role is acknowledged starts here**, on the pump
+        // thread and never inside a create's nested loop. **One whose role is
+        // never acknowledged is given up**, or a renderer that never
+        // installed its shim would leave a blank tab holding a place for the
+        // host's whole life.
+        let mut ready: Vec<PendingStart> = Vec::new();
+        let mut expired: Vec<PendingStart> = Vec::new();
+        {
+            let known = self.assigned_tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut pending = self.pending_start.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut at = 0;
+            while at < pending.len() {
+                let tab = pending[at].tab;
+                if known.contains(&tab) {
+                    ready.push(pending.remove(at));
+                } else if now.saturating_sub(pending[at].at) >= POPUP_BOOT_GIVE_UP_MS {
+                    expired.push(pending.remove(at));
+                } else {
+                    at += 1;
+                }
+            }
+        }
+        for entry in ready {
+            self.assigned_tabs.lock().unwrap_or_else(PoisonError::into_inner).remove(&entry.tab);
+            self.navigate_tab(entry.tab, &entry.url);
+        }
+        for entry in expired {
+            eprintln!(
+                "cef host: a popup never acknowledged its bridge role (event_name \
+                 cef_opener_bridge_unstarted, profile {}, tab {}, address {})",
+                self.profile,
+                entry.tab,
+                origin_words(&entry.url),
+            );
+            self.close_tab(entry.tab);
+        }
         let mut due = Vec::new();
         {
             let mut boot = self.boot.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1010,6 +1102,21 @@ impl PopupGate {
         }
     }
 
+    /// Whether this refusal is the first of its kind for the tab or opener.
+    /// **The line is written once until the opener navigates or a popup is
+    /// admitted**, because a page can repeat a refusal and the host's stderr
+    /// is an append-only file.
+    fn first_refusal(&self, who: u16, kind: &'static str) -> bool {
+        self.refused_logged.lock().unwrap_or_else(PoisonError::into_inner).insert((who, kind))
+    }
+
+    fn clear_refusals(&self, who: u16) {
+        self.refused_logged
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(tab, _)| *tab != who);
+    }
+
     /// **A popup CEF never created gives its place back**, or a page that
     /// opened one that failed would hold a count against itself for the life
     /// of the host. The place is the one CEF's own popup id names.
@@ -1029,12 +1136,15 @@ impl PopupGate {
         let opener = ended.opener.unwrap_or_default();
         eprintln!(
             "cef host: a popup was given up (event_name cef_popup_given_up, profile {}, tab {}, \
-             opener {opener}, url {})",
-            self.profile, entry.tab, entry.url,
+             opener {opener}, address {})",
+            self.profile,
+            entry.tab,
+            origin_words(&entry.url),
         );
         if let Some(place) = &ended.place {
             self.release(place);
         }
+        self.bridge_tab_ended(entry.tab);
         if let Some(host) = ended.browser.host() {
             host.close_browser(1);
         }
@@ -1048,40 +1158,74 @@ impl PopupGate {
         if let Some(place) = &ended.place {
             self.release(place);
         }
+        self.bridge_tab_ended(tab);
         crate::control::emit(&crate::control::HostEvent::TabClosed { tab });
     }
-}
 
-/// What every tab's callbacks and the pump share: the profile's one ring,
-/// its one frame socket, and the tab map.
-struct HostRuntime {
-    profile: u16,
-    tabs: Arc<Mutex<Tabs>>,
-    inputs: Arc<Mutex<VecDeque<crate::input::HostInput>>>,
-    popups: Arc<PopupGate>,
-    recording: Arc<Recording>,
-    /// Whether any viewer is attached; **the profile's**, not one tab's.
-    paused: Arc<AtomicBool>,
-}
+    /// Close one tab, give its place back, and tell the bridge. **The one
+    /// close path for a host-created tab**: a call's close, the shim's
+    /// `window.close()`, and a bridge peer's `close()`.
+    fn close_tab(&self, tab: u16) {
+        let ended = self.tabs.lock().unwrap_or_else(PoisonError::into_inner).end(tab);
+        let Some(ended) = ended else { return };
+        if let Some(place) = &ended.place {
+            self.release(place);
+        }
+        self.bridge_tab_ended(tab);
+        if let Some(host) = ended.browser.host() {
+            host.close_browser(1);
+        }
+        crate::control::emit(&crate::control::HostEvent::TabClosed { tab });
+    }
 
-impl HostRuntime {
-    /// Open one tab at `url`. **The one place the host creates a browser**: the
-    /// first tab and a server command both come through here. A page's popup
-    /// is CEF's to create, and joins as a tab through `adopt`.
+    // ---- the opener bridge ------------------------------------------------
+
+    /// Create one browser and register it as a tab. **The one place a browser
+    /// is created here**: a server command's tab and a page's cross-site open
+    /// both come through it.
     ///
-    /// **The number is reserved before the create, never after it.** The create
-    /// is synchronous and CEF runs a nested message loop inside it, so a page's
-    /// popup can be admitted and take a number while this call is still
-    /// running; reserving first is what keeps the two apart.
-    fn create_tab(&self, url: &str, request: Option<u64>) -> bool {
-        // **A popup adopted inside this create reports after the tab it is
-        // making.** The create is synchronous and CEF runs a nested loop in
-        // it, so the popup's birth would otherwise reach the server first and
-        // the service would pair it with this tab's page.
-        let births = self.popups.hold_births();
+    /// The number is reserved before the create (CEF runs a nested loop
+    /// inside it), and births are held for its duration so a popup adopted in
+    /// that loop reports after the tab the create is making. `emit_now` is
+    /// the requested tab's: its birth goes out ahead of the held popups, so
+    /// it is sent directly; a bridged popup's birth rides the hold.
+    fn create_browser(
+        self: &Arc<Self>,
+        opener: Option<u16>,
+        url: &str,
+        request: Option<u64>,
+        place: Option<Arc<Place>>,
+        bridged: Option<&(u64, String)>,
+        emit_now: bool,
+    ) -> Option<u16> {
+        let births = self.hold_births();
         let tab = self.tabs.lock().unwrap_or_else(PoisonError::into_inner).reserve();
-        let parts = self.popups.parts(tab);
-        let mut client = self.popups.client(tab, &parts, None);
+        // **The channel is bound before the browser is created.** The create
+        // runs a nested CEF loop, and the popup's first document can post to
+        // its `window.opener` inside that loop; a channel bound afterwards
+        // would drop that message.
+        if let (Some((id, handle)), Some(opener)) = (bridged, opener) {
+            let bound = self.bridge.lock().unwrap_or_else(PoisonError::into_inner).bind(
+                *id,
+                opener,
+                tab,
+                handle.clone(),
+            );
+            if let Err(why) = bound {
+                eprintln!(
+                    "cef host: a bridge channel was not bound (event_name \
+                     cef_opener_bridge_unbound, profile {}, tab {tab}): {why}",
+                    self.profile
+                );
+                // **A refusal the page can repeat must not spend a number**,
+                // or a handle that is not ours walks the counter to its u16
+                // ceiling and the next insert replaces a live tab.
+                self.tabs.lock().unwrap_or_else(PoisonError::into_inner).unreserve(tab);
+                return None;
+            }
+        }
+        let parts = self.parts(tab);
+        let mut client = self.client(tab, &parts, None);
         let window_info = WindowInfo {
             windowless_rendering_enabled: 1,
             // **The frame source is ours.** With CEF's own scheduling under
@@ -1096,12 +1240,19 @@ impl HostRuntime {
         // as a blank surface; the app's own background is what the browser
         // fills.
         let settings = BrowserSettings { background_color: 0xFF04_050A, ..Default::default() };
+        let mut extra = bridged.and_then(|(id, _)| bridge_extra(*id));
+        // **A bridged popup's browser starts blank**, and the host starts the
+        // requested address only once a document has acknowledged the role.
+        // A `noopener` popup has no role to wait for and starts at the address
+        // itself, so it takes no second navigation. The birth still carries
+        // the requested address, which is what the service pairs and lists.
+        let start = if bridged.is_some() { "about:blank" } else { url };
         let browser = browser_host_create_browser_sync(
             Some(&window_info),
             Some(&mut client),
-            Some(&CefString::from(url)),
+            Some(&CefString::from(start)),
             Some(&settings),
-            None,
+            extra.as_mut(),
             // **The global context**: the one whose autofill preferences
             // `turn_off_autofill` sets.
             None,
@@ -1109,25 +1260,43 @@ impl HostRuntime {
         let host = browser.as_ref().and_then(cef::ImplBrowser::host);
         let (Some(browser), Some(host)) = (browser, host) else {
             eprintln!(
-                "cef host: a tab was not created (event_name cef_tab_create_failed, tab {tab}, \
-                 url {url})"
+                "cef host: a tab was not created (event_name cef_tab_create_failed, profile {}, \
+                 tab {tab}, address {})",
+                self.profile,
+                origin_words(url)
             );
-            return false;
+            // **A channel bound for a browser that never existed goes with
+            // it**, or a later popup could post into a channel no tab owns.
+            if bridged.is_some() {
+                self.bridge.lock().unwrap_or_else(PoisonError::into_inner).popup_ended(tab);
+            }
+            self.tabs.lock().unwrap_or_else(PoisonError::into_inner).unreserve(tab);
+            return None;
         };
-        // CEF's visibility and focus calls are re-asserted once a page is
-        // there: the windowless surface has no window to inherit them from.
-        host.was_hidden(0);
-        host.set_focus(1);
-        host.set_windowless_frame_rate(60);
+        // **Only a requested tab is shown here.** A bridged popup's visibility
+        // and focus are re-asserted by `on_load_end`, which every tab already
+        // goes through; the raw call on a host whose pointer resolves null is
+        // the crash `f7b0659b` fixes, and this path does not need to risk it.
+        if opener.is_none() {
+            host.was_hidden(0);
+            host.set_focus(1);
+            host.set_windowless_frame_rate(60);
+        }
+        // **Every tab this function creates with an opener is a bridged
+        // popup**, `noopener` included; CEF's own popups arrive through
+        // `adopt` and never reach this map.
+        if opener.is_some() {
+            self.bridged_tabs.lock().unwrap_or_else(PoisonError::into_inner).insert(tab);
+        }
         {
             let mut tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
             tabs.open.insert(
                 tab,
                 Tab {
                     browser,
-                    opener: None,
+                    opener,
                     loaded: Arc::clone(&parts.loaded),
-                    place: None,
+                    place,
                     pending: Arc::clone(&parts.pending),
                     stop: Arc::clone(&parts.stop),
                     key: Arc::clone(&parts.key),
@@ -1138,42 +1307,392 @@ impl HostRuntime {
         start_tab_encoder(
             parts.pending,
             parts.stop,
-            crate::frame::Sink::new(
-                self.profile,
-                tab,
-                self.popups.frames.clone(),
-                self.popups.fps,
-                self.popups.quality,
-            ),
+            crate::frame::Sink::new(self.profile, tab, self.frames.clone(), self.fps, self.quality),
             Arc::clone(&self.paused),
             parts.key,
         );
-        // **This birth goes out ahead of the popups the create held**, and it
-        // is sent directly rather than through the hold for that reason.
-        crate::control::emit(&crate::control::HostEvent::TabCreated {
-            tab,
-            opener: None,
-            url: url.to_owned(),
-            request,
-        });
+        let event =
+            crate::control::HostEvent::TabCreated { tab, opener, url: url.to_owned(), request };
+        if emit_now {
+            crate::control::emit(&event);
+        } else {
+            self.emit_birth(event);
+        }
         drop(births);
-        true
+        Some(tab)
+    }
+
+    /// Admit one page's cross-site `window.open` and create its browser.
+    fn open_bridged(
+        self: &Arc<Self>,
+        opener: u16,
+        handle: &str,
+        url: &str,
+        id: u64,
+        noopener: bool,
+    ) -> Result<u16, String> {
+        let opener_url = self
+            .tab_url(opener)
+            .ok_or_else(|| format!("the popup's opener tab {opener} is not open"))?;
+        if !bridge::is_cross_origin(url, &opener_url) {
+            return Err("not a cross-origin web target".to_owned());
+        }
+        if !noopener
+            && self
+                .bridge
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .handle_taken(opener, handle)
+        {
+            return Err("the opener reused a bridge handle".to_owned());
+        }
+        {
+            let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
+            let held = live.entry(opener).or_default();
+            if *held >= MAX_POPUP_TABS {
+                if self.first_refusal(opener, "cap") {
+                    eprintln!(
+                        "cef host: a page's popup was refused (event_name cef_popup_refused, \
+                         profile {}, opener {opener}, popup {id}, address {})",
+                        self.profile,
+                        origin_words(url)
+                    );
+                }
+                return Err("the page already holds its open popups' limit".to_owned());
+            }
+            *held += 1;
+        }
+        let place = Arc::new(Place { opener, released: AtomicBool::new(false) });
+        let extra = if noopener { None } else { Some((id, handle.to_owned())) };
+        let Some(tab) = self.create_browser(
+            Some(opener),
+            url,
+            None,
+            Some(Arc::clone(&place)),
+            extra.as_ref(),
+            false,
+        ) else {
+            self.release(&place);
+            return Err("the popup's browser could not be created".to_owned());
+        };
+        // **A popup admitted clears the opener's refusal lines**: one line on
+        // entering a refusal and one on leaving it, not one per attempt.
+        self.clear_refusals(opener);
+        if !noopener {
+            // **The address waits for the role.** The renderer acknowledges
+            // once `window.opener` is installed in its document; only then
+            // can the popup's own scripts safely see it. An ack that landed
+            // inside the create (the blank context exists before this runs)
+            // is remembered, so the start goes immediately.
+            self.pending_start.lock().unwrap_or_else(PoisonError::into_inner).push(PendingStart {
+                tab,
+                url: url.to_owned(),
+                at: elapsed_ms(),
+            });
+            let assigned =
+                self.assigned_tabs.lock().unwrap_or_else(PoisonError::into_inner).contains(&tab);
+            if !assigned {
+                self.announce_bridge(tab, id);
+            }
+        }
+        Ok(tab)
+    }
+
+    fn bridge_assigned(&self, tab: u16) {
+        // **The start is the pump's, never the callback's.** An ack can land
+        // inside the create's nested CEF loop; navigating from there times
+        // out the new browser's info response. The pump sees the flag on its
+        // next tick, outside every create.
+        self.assigned_tabs.lock().unwrap_or_else(PoisonError::into_inner).insert(tab);
+    }
+
+    /// A page's `window.open`: admit, create, and refuse into the proxy the
+    /// page already holds when it cannot be done.
+    fn bridge_open(
+        self: &Arc<Self>,
+        opener: u16,
+        handle: &str,
+        url: &str,
+        _name: &str,
+        noopener: bool,
+    ) {
+        let id = self.bridge.lock().unwrap_or_else(PoisonError::into_inner).next_id();
+        if let Err(why) = self.open_bridged(opener, handle, url, id, noopener) {
+            if self.first_refusal(opener, "bridged") {
+                eprintln!(
+                    "cef host: a cross-site popup was not bridged (event_name \
+                     cef_opener_bridge_refused, profile {}, opener {opener}, address {}): {why}",
+                    self.profile,
+                    origin_words(url)
+                );
+            }
+            if !noopener {
+                self.send_bridge_event(opener, "refused", handle, "", "", "");
+            }
+        }
+    }
+
+    /// One `postMessage` through the relay. **The sending side is the tab the
+    /// message arrived on**, never a field the page supplies.
+    fn bridge_post(&self, from: u16, handle: &str, target: &str, data: &str) {
+        if data.len() > bridge::MAX_MESSAGE_BYTES {
+            if self.first_refusal(from, "too_large") {
+                eprintln!(
+                    "cef host: a bridged message was too large (event_name \
+                     cef_opener_bridge_too_large, profile {}, tab {from}, bytes {})",
+                    self.profile,
+                    data.len()
+                );
+            }
+            return;
+        }
+        let channel = {
+            let channels = self.bridge.lock().unwrap_or_else(PoisonError::into_inner);
+            if handle.is_empty() {
+                channels.by_popup(from)
+            } else {
+                channels.by_handle(from, handle)
+            }
+        };
+        // **A stray or mismatched message is silent**, as the platform's own
+        // postMessage is; a line per drop would be a page-controlled log
+        // flood.
+        let Some(channel) = channel else { return };
+        let (recipient, out_handle) = if handle.is_empty() {
+            if !channel.opener_open {
+                return;
+            }
+            (channel.opener, channel.handle)
+        } else {
+            (channel.popup, String::new())
+        };
+        let (Some(sender), Some(target_url)) = (self.tab_url(from), self.tab_url(recipient)) else {
+            return;
+        };
+        if !bridge::target_allows(target, &target_url) {
+            return;
+        }
+        let Some(origin) = bridge::origin(&sender) else { return };
+        self.send_bridge_event(recipient, "message", &out_handle, &origin, data, target);
+    }
+
+    /// One proxy's `location` write: the other side of the channel navigates.
+    fn bridge_navigate(&self, from: u16, handle: &str, url: &str) {
+        if !bridge::navigable(url) {
+            return;
+        }
+        let recipient = {
+            let channels = self.bridge.lock().unwrap_or_else(PoisonError::into_inner);
+            if handle.is_empty() {
+                channels
+                    .by_popup(from)
+                    .filter(|channel| channel.opener_open)
+                    .map(|channel| channel.opener)
+            } else {
+                channels.by_handle(from, handle).map(|channel| channel.popup)
+            }
+        };
+        let Some(tab) = recipient else { return };
+        let browser = {
+            let tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            tabs.open.get(&tab).map(|tab| tab.browser.clone())
+        };
+        let Some(browser) = browser else { return };
+        if let Some(frame) = browser.main_frame() {
+            frame.load_url(Some(&CefString::from(url)));
+        }
+    }
+
+    /// The opener closed its popup through the proxy.
+    fn bridge_close(&self, from: u16, handle: &str) {
+        let popup = {
+            self.bridge
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .by_handle(from, handle)
+                .map(|channel| channel.popup)
+        };
+        if let Some(tab) = popup {
+            self.close_tab(tab);
+        }
+    }
+
+    /// **A host-created tab is not script-closable to Blink**, so the shim
+    /// routes the popup's `window.close()` here.
+    fn bridge_close_self(&self, from: u16) {
+        let popup = {
+            self.bridge
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .by_popup(from)
+                .map(|channel| channel.popup)
+        };
+        if let Some(tab) = popup {
+            self.close_tab(tab);
+            return;
+        }
+        // **A noopener popup that took the shim's role through `window.name`
+        // has no channel**, so the tab's own record that it was ours to close
+        // is the one this side keeps.
+        if self.bridged_tabs.lock().unwrap_or_else(PoisonError::into_inner).contains(&from) {
+            self.close_tab(from);
+        }
+    }
+
+    /// One tab ended: tell the other half of every channel it held. A popup's
+    /// opener hears `closed`; an opener's popups hear it too, because the
+    /// window they opened cannot answer any more.
+    fn bridge_tab_ended(&self, tab: u16) {
+        self.clear_refusals(tab);
+        self.bridged_tabs.lock().unwrap_or_else(PoisonError::into_inner).remove(&tab);
+        self.assigned_tabs.lock().unwrap_or_else(PoisonError::into_inner).remove(&tab);
+        self.pending_start
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|entry| entry.tab != tab);
+        let (popup_channel, opener_channels) = {
+            let mut channels = self.bridge.lock().unwrap_or_else(PoisonError::into_inner);
+            (channels.popup_ended(tab), channels.opener_ended(tab))
+        };
+        if let Some(channel) = popup_channel {
+            self.send_bridge_event(channel.opener, "closed", &channel.handle, "", "", "");
+        }
+        for channel in opener_channels {
+            self.send_bridge_event(channel.popup, "closed", "", "", "", "");
+        }
+    }
+
+    /// The opener's main frame started a navigation: its old document's
+    /// handles die with it. The popups stay, as platform popups do.
+    fn bridge_opener_navigated(&self, tab: u16) {
+        self.bridge.lock().unwrap_or_else(PoisonError::into_inner).opener_navigated(tab);
+        // A new document may refuse for a new reason; its first line is worth
+        // having.
+        self.clear_refusals(tab);
+    }
+
+    /// A bridged popup's main frame started a navigation in a renderer that
+    /// may not have received the browser's `extra_info`: name the bridge
+    /// again, so the new document installs `window.opener`.
+    fn bridge_popup_navigated(&self, tab: u16) {
+        let channel = { self.bridge.lock().unwrap_or_else(PoisonError::into_inner).by_popup(tab) };
+        if let Some(channel) = channel {
+            self.announce_bridge(tab, channel.id);
+            // **A document that loads after its opener died is told then.**
+            // The close was pushed when it happened; a popup whose context
+            // was not ready for it would otherwise read `closed: false` for
+            // the rest of its life.
+            if !channel.opener_open {
+                self.send_bridge_event(tab, "closed", "", "", "", "");
+            }
+        }
+    }
+
+    /// A bridged popup's renderer died. **The tab ends**: its opener must not
+    /// read `closed: false` for a page that can never answer. A `noopener`
+    /// popup has no channel, so the tab itself is the record that it was ours.
+    fn bridge_renderer_gone(&self, tab: u16) {
+        let bridged =
+            self.bridged_tabs.lock().unwrap_or_else(PoisonError::into_inner).contains(&tab);
+        if bridged {
+            self.close_tab(tab);
+        }
+    }
+
+    fn tab_url(&self, tab: u16) -> Option<String> {
+        let browser = {
+            let tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            tabs.open.get(&tab)?.browser.clone()
+        };
+        let frame = browser.main_frame()?;
+        Some(CefStringUtf16::from(&frame.url()).to_string())
+    }
+
+    /// Send one bridge event to a tab's main frame. A tab with no frame yet
+    /// drops it, as a platform message to a gone window does.
+    ///
+    /// `target` rides along for a message so the receiving document can
+    /// re-check the target origin at dispatch, where a commit cannot land
+    /// between the check and the event.
+    fn send_bridge_event(
+        &self,
+        tab: u16,
+        kind: &str,
+        handle: &str,
+        origin: &str,
+        data: &str,
+        target: &str,
+    ) {
+        let browser = {
+            let tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            tabs.open.get(&tab).map(|tab| tab.browser.clone())
+        };
+        let Some(browser) = browser else { return };
+        let Some(frame) = browser.main_frame() else { return };
+        send_bridge_message(
+            &frame,
+            "forge.bridge.event",
+            &[
+                kind.to_owned(),
+                handle.to_owned(),
+                origin.to_owned(),
+                data.to_owned(),
+                target.to_owned(),
+            ],
+        );
+    }
+
+    fn navigate_tab(&self, tab: u16, url: &str) {
+        let browser = {
+            let tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            tabs.open.get(&tab).map(|tab| tab.browser.clone())
+        };
+        let Some(browser) = browser else { return };
+        if let Some(frame) = browser.main_frame() {
+            frame.load_url(Some(&CefString::from(url)));
+        }
+    }
+
+    fn announce_bridge(&self, tab: u16, id: u64) {
+        let browser = {
+            let tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            tabs.open.get(&tab).map(|tab| tab.browser.clone())
+        };
+        let Some(browser) = browser else { return };
+        let Some(frame) = browser.main_frame() else { return };
+        send_bridge_message(&frame, "forge.bridge.assign", &[id.to_string()]);
+    }
+}
+
+/// What every tab's callbacks and the pump share: the profile's one ring,
+/// its one frame socket, and the tab map.
+struct HostRuntime {
+    tabs: Arc<Mutex<Tabs>>,
+    inputs: Arc<Mutex<VecDeque<crate::input::HostInput>>>,
+    popups: Arc<PopupGate>,
+    recording: Arc<Recording>,
+    /// Whether any viewer is attached; **the profile's**, not one tab's.
+    paused: Arc<AtomicBool>,
+}
+
+impl HostRuntime {
+    /// Open one tab at `url`. **The one place the host creates a browser for
+    /// a server command or a page's cross-site open**: the first tab and a
+    /// call both come through here. A same-origin CEF popup is CEF's to
+    /// create, and joins as a tab through `adopt`.
+    ///
+    /// **The number is reserved before the create, never after it.** The create
+    /// is synchronous and CEF runs a nested message loop inside it, so a page's
+    /// popup can be admitted and take a number while this call is still
+    /// running; reserving first is what keeps the two apart.
+    fn create_tab(&self, url: &str, request: Option<u64>) -> bool {
+        self.popups.create_browser(None, url, request, None, None, true).is_some()
     }
 
     /// Close one tab and end its frame worker; a page target CEF has already
     /// lost is a no-op.
     fn close_tab(&self, tab: u16) {
-        let removed = self.tabs.lock().unwrap_or_else(PoisonError::into_inner).end(tab);
-        let Some(removed) = removed else { return };
-        // **A popup's place goes back here too**, or a page that closes its
-        // own popups through the host would keep counting them.
-        if let Some(place) = &removed.place {
-            self.popups.release(place);
-        }
-        if let Some(host) = removed.browser.host() {
-            host.close_browser(1);
-        }
-        crate::control::emit(&crate::control::HostEvent::TabClosed { tab });
+        self.popups.close_tab(tab);
     }
 
     /// One tab's host, when the tab is open.
@@ -1490,7 +2009,6 @@ pub fn run(args: &Args) -> ExitCode {
     let paused = Arc::new(AtomicBool::new(true));
     let recording = Recording::new();
     let runtime = HostRuntime {
-        profile: args.profile_id,
         tabs: Arc::clone(&tabs),
         inputs: Arc::new(Mutex::new(VecDeque::new())),
         popups: Arc::new(PopupGate {
@@ -1507,7 +2025,12 @@ pub fn run(args: &Args) -> ExitCode {
             places: Mutex::new(HashMap::new()),
             boot: Mutex::new(Vec::new()),
             held_births: Mutex::new(Vec::new()),
-            holding_births: AtomicBool::new(false),
+            holding_births: AtomicUsize::new(0),
+            bridge: Mutex::new(Channels::default()),
+            bridged_tabs: Mutex::new(HashSet::new()),
+            refused_logged: Mutex::new(HashSet::new()),
+            pending_start: Mutex::new(Vec::new()),
+            assigned_tabs: Mutex::new(HashSet::new()),
         }),
         recording,
         paused,
@@ -1666,6 +2189,33 @@ fn mouse_button(button: i32) -> MouseButtonType {
     }
 }
 
+/// One process message to a renderer, with string arguments.
+fn send_bridge_message(frame: &Frame, name: &str, arguments: &[String]) {
+    let Some(mut message) = process_message_create(Some(&CefString::from(name))) else { return };
+    let Some(list) = message.argument_list() else { return };
+    for (at, value) in arguments.iter().enumerate() {
+        list.set_string(at, Some(&CefString::from(value.as_str())));
+    }
+    frame.send_process_message(ProcessId::RENDERER, Some(&mut message));
+}
+
+/// The address a log line may name: scheme, host and port, never the path or
+/// query. **An OAuth redirect carries a code and a state**, and the host's
+/// stderr is a file.
+fn origin_words(url: &str) -> String {
+    crate::bridge::origin(url).unwrap_or_else(|| "an unreadable address".to_owned())
+}
+
+/// The `extra_info` a bridged popup's browser carries into its renderers:
+/// the channel id, so `window.opener` is installed before the first
+/// document's scripts run.
+fn bridge_extra(id: u64) -> Option<DictionaryValue> {
+    let value = dictionary_value_create()?;
+    let key = CefString::from("forge_bridge");
+    let id = CefString::from(id.to_string().as_str());
+    (value.set_string(Some(&key), Some(&id)) == 1).then_some(value)
+}
+
 fn fail(why: &str) -> ExitCode {
     eprintln!("forge host: {why}");
     ExitCode::from(2)
@@ -1690,6 +2240,8 @@ cef::wrap_load_handler! {
         // cannot say that: the frame keeps its last URL while the next load
         // is in flight.
         loaded: Arc<AtomicBool>,
+        tab: u16,
+        popups: Arc<PopupGate>,
     }
 
     impl LoadHandler {
@@ -1701,6 +2253,20 @@ cef::wrap_load_handler! {
         ) {
             if frame.is_some_and(|frame| frame.is_main() == 1) {
                 self.loaded.store(true, Ordering::Release);
+                // **A main-frame navigation is a new document on this tab.**
+                // An opener's handles die with the old one; a bridged popup
+                // is told which bridge it is again, because a cross-site
+                // navigation may have created a renderer that never saw the
+                // browser's `extra_info`.
+                //
+                // **The handles die at load START, before commit.** The old
+                // document is live until commit, so a message it sends in
+                // that window is dropped where the platform would deliver
+                // it; the narrowing is deliberate, because a handle minted by
+                // a document that is leaving cannot be allowed to name a
+                // channel after the next document exists.
+                self.popups.bridge_opener_navigated(self.tab);
+                self.popups.bridge_popup_navigated(self.tab);
             }
         }
 
@@ -1803,8 +2369,9 @@ cef::wrap_life_span_handler! {
         /// **The browser going is the tab going**, when the close is the
         /// page's own `window.close()` or the host's. A tab the host already
         /// ended is a no-op here, so the server sees one `TabClosed` either
-        /// way. **A crashed renderer is not this**: the browser outlives it,
-        /// and nothing in this host watches render-process termination.
+        /// way. **A crashed renderer is not this**: the browser outlives it.
+        /// Only a bridged popup's death is watched, because its opener holds
+        /// a `closed` flag that must not lie (see `HostRequestHandler`).
         fn on_before_close(&self, _browser: Option<&mut Browser>) {
             self.popups.forget(self.tab);
             // **A dialog open on this browser goes with it.** The callback has
@@ -1866,7 +2433,70 @@ cef::wrap_client! {
         }
 
         fn load_handler(&self) -> Option<LoadHandler> {
-            Some(HostLoadHandler::new(Arc::clone(&self.loaded)))
+            Some(HostLoadHandler::new(
+                Arc::clone(&self.loaded),
+                self.tab,
+                Arc::clone(&self.popups),
+            ))
+        }
+
+        /// **A page's bridge call.** The tab this client belongs to is the
+        /// sender: the browser process never trusts an id the page names for
+        /// the other side.
+        fn on_process_message_received(
+            &self,
+            _browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            _source_process: ProcessId,
+            message: Option<&mut ProcessMessage>,
+        ) -> i32 {
+            let Some(message) = message else { return 0 };
+            // **The bridge is the main frame's.** A subframe has no native
+            // object, so a message from one is a renderer that reached past
+            // its own document; it is refused here rather than routed as the
+            // top document's.
+            if frame.as_ref().is_some_and(|frame| frame.is_main() != 1) {
+                eprintln!(
+                    "cef host: a subframe tried the opener bridge (event_name \
+                     cef_opener_bridge_subframe, profile {}, tab {})",
+                    self.popups.profile,
+                    self.tab
+                );
+                return 1;
+            }
+            let name = CefString::from(&message.name()).to_string();
+            let Some(args) = message.argument_list() else { return 1 };
+            let string = |at: usize| CefString::from(&args.string(at)).to_string();
+            match name.as_str() {
+                "forge.bridge.open" => {
+                    self.popups.bridge_open(
+                        self.tab,
+                        &string(0),
+                        &string(1),
+                        &string(2),
+                        string(3) == "1",
+                    );
+                }
+                "forge.bridge.post" => {
+                    self.popups.bridge_post(self.tab, &string(0), &string(1), &string(2));
+                }
+                "forge.bridge.close" => self.popups.bridge_close(self.tab, &string(0)),
+                "forge.bridge.close_self" => self.popups.bridge_close_self(self.tab),
+                "forge.bridge.navigate" => {
+                    self.popups.bridge_navigate(self.tab, &string(0), &string(1));
+                }
+                "forge.bridge.assigned" => self.popups.bridge_assigned(self.tab),
+                _ => return 0,
+            }
+            1
+        }
+
+        /// **A bridged popup whose renderer died ends its tab**, so its opener
+        /// never reads `closed: false` for a page that cannot answer. Other
+        /// tabs keep the existing behaviour: the browser outlives a crashed
+        /// renderer.
+        fn request_handler(&self) -> Option<RequestHandler> {
+            Some(HostRequestHandler::new(self.tab, Arc::clone(&self.popups)))
         }
 
         fn life_span_handler(&self) -> Option<LifeSpanHandler> {
@@ -1875,6 +2505,28 @@ cef::wrap_client! {
                 Arc::clone(&self.popups),
                 self.popup.clone(),
             ))
+        }
+    }
+}
+
+// **A bridged popup's renderer dying ends its tab.** Every other tab keeps
+// the existing behaviour: the browser outlives a crashed renderer and the tab
+// is closed by a call or the sweep.
+cef::wrap_request_handler! {
+    struct HostRequestHandler {
+        tab: u16,
+        popups: Arc<PopupGate>,
+    }
+
+    impl RequestHandler {
+        fn on_render_process_terminated(
+            &self,
+            _browser: Option<&mut Browser>,
+            _status: TerminationStatus,
+            _error_code: i32,
+            _error_string: Option<&CefString>,
+        ) {
+            self.popups.bridge_renderer_gone(self.tab);
         }
     }
 }
@@ -1897,7 +2549,12 @@ mod tests {
             places: std::sync::Mutex::new(std::collections::HashMap::new()),
             boot: std::sync::Mutex::new(Vec::new()),
             held_births: std::sync::Mutex::new(Vec::new()),
-            holding_births: std::sync::atomic::AtomicBool::new(false),
+            holding_births: std::sync::atomic::AtomicUsize::new(0),
+            bridge: std::sync::Mutex::new(super::Channels::default()),
+            bridged_tabs: std::sync::Mutex::new(std::collections::HashSet::new()),
+            refused_logged: std::sync::Mutex::new(std::collections::HashSet::new()),
+            pending_start: std::sync::Mutex::new(Vec::new()),
+            assigned_tabs: std::sync::Mutex::new(std::collections::HashSet::new()),
         })
     }
 
@@ -2102,9 +2759,13 @@ mod tests {
             1,
             "a birth taken during the create waits",
         );
-        assert!(popups.holding_births.load(Ordering::Acquire), "the create holds births");
+        assert!(popups.holding_births.load(Ordering::Acquire) > 0, "the create holds births");
         drop(held);
-        assert!(!popups.holding_births.load(Ordering::Acquire), "the hold ends with the create");
+        assert_eq!(
+            popups.holding_births.load(Ordering::Acquire),
+            0,
+            "the hold ends with the create"
+        );
         assert!(
             popups.held_births.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty(),
             "the kept birth is flushed after the create's own",
@@ -2336,6 +2997,32 @@ mod tests {
         let first = tabs.reserve();
         assert_eq!(tabs.reserve(), first + 1, "each reservation takes the next number");
         assert_eq!(tabs.open.len(), 0, "a reservation opens no row of its own");
+    }
+
+    /// **A failed create gives its number back.** A page can repeat a refusal
+    /// (a handle that is not ours, or one it already used), and a number spent
+    /// per refusal would walk the counter to its u16 ceiling, where the next
+    /// insert lands on a live tab.
+    #[test]
+    fn a_failed_create_does_not_consume_a_number() {
+        use super::Tabs;
+        let mut tabs = Tabs::default();
+        let refused = tabs.reserve();
+        tabs.unreserve(refused);
+        assert_eq!(tabs.reserve(), refused, "the refused number is handed out again");
+    }
+
+    /// **A nested admission keeps its number.** A create can run CEF's loop
+    /// and admit a popup before failing; the outer create's unreserve must
+    /// not rewind over the reservation the popup already holds.
+    #[test]
+    fn unreserve_leaves_a_later_reservation_alone() {
+        use super::Tabs;
+        let mut tabs = Tabs::default();
+        let outer = tabs.reserve();
+        let inner = tabs.reserve();
+        tabs.unreserve(outer);
+        assert_eq!(tabs.reserve(), inner + 1, "the inner reservation keeps its place");
     }
 
     /// **A cue is acknowledged only when there is a host to show.** The

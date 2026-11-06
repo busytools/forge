@@ -87,7 +87,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 28,
+  "version": 29,
   "forge_version": "1.1.25 · abc1234",
   "forge_version_short": "1.1.25+abc1234",
   "settings": {
@@ -280,14 +280,17 @@ file's comments and order, replaces the file by rename in the
 destination's own mode and through a symlink, and the guards live on the
 server so a hand-rolled client cannot force them.
 
-**The same writer backs the settings MCP tools.** A `settings__set` or
-`settings__unset` call from a session parks as `settings_write_pending` on
-that seat, carrying the key and the current and proposed value, and the
-blocked tool call waits for `respond_settings_write { key, id, approved }`.
-Approving applies the one edit through the save path above and the
-watcher's reload push follows; declining writes nothing. A
-`settings_write_resolved` names the ending, so a view that did not answer
-it can close the dock.
+**The same writer backs the settings MCP tools.** A `settings__set` call
+carries one or more edits - a section's mutually required keys go in the
+same one - and a `settings__unset` call one clear. Either parks as
+`settings_write_pending` on that seat, carrying every key with the value it
+holds now and the value the write would leave, and the blocked tool call
+waits for `respond_settings_write { key, id, approved }`. The batch is
+validated against the loader before the prompt is minted, so a save the
+file would refuse is refused without asking. Approving applies the whole
+batch through the save path above and the watcher's reload push follows;
+declining writes nothing. A `settings_write_resolved` names the ending, so
+a view that did not answer it can close the dock.
 
 **A vault call parks the same way.** Every `vault__*` call parks as
 `vault_ask_pending` on the seat, carrying a draft that draws no secret: the
@@ -544,11 +547,13 @@ reply**, so a client that draws the rows sends `reply_to`:
 the profile's host is running; `connected` is whether a driver is attached
 to it; `closing_at_ms` is the idle clock's deadline as Unix epoch
 milliseconds, or `null` when no host is up; and each row is
-`{number, title, url, owner, state}`. `number` is the host's own tab number,
-which frames and input already speak; `owner` is the session whose calls
-drive it, as `{org, project, label}`; and `state` is `in_use` (a call is
-driving it), `idle`, or `held` (a parked hand-off is waiting on the person
-in it). **The ask is the subscription**: the connection follows the same row
+`{number, title, url, owner, opener, state, dialog}`. `number` is the host's
+own tab number, which frames and input already speak; `owner` is the session
+whose calls drive it, as `{org, project, label}`; `opener` is the tab whose
+page opened this one, or `null` for a tab a session owns outright; `state` is
+`in_use` (a call is driving it), `idle`, or `held` (a parked hand-off is
+waiting on the person in it); and `dialog` is the page dialog holding the
+tab, as `{kind, message}`, or `null` when none is open. **The ask is the subscription**: the connection follows the same row
 list from then on, and every change is pushed as a `browser_tabs` frame. A
 refusal answers `{"ok": false, "why": ...}`; with no `reply_to`, a refusal is
 an `error` frame and a success is silent.

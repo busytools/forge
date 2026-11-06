@@ -6373,6 +6373,60 @@ describe('the dock', () => {
     );
   });
 
+  it('names the people a held post mentions in the words it would send', () => {
+    open({
+      record: record({
+        pending_asks: [
+          slackDraftAsk({
+            text: 'Confirmed <@U0442|rena> and <@U0442> are on the deploy.',
+            tagged: [{ id: 'U0442', name: 'rena' }],
+          }),
+        ],
+      }),
+    });
+
+    const body = document.querySelector('.dock .preview')?.textContent ?? '';
+    expect(body, 'a mention reads as the name Slack itself draws').toContain(
+      'Confirmed @rena and @rena are on the deploy.',
+    );
+    expect(body, 'the raw mention markup never reaches the reader').not.toContain('<@');
+  });
+
+  it('keeps an unnamed mention as its id in the words it would send', () => {
+    open({
+      record: record({
+        pending_asks: [
+          slackDraftAsk({ text: 'Confirmed <@U9>.', tagged: [{ id: 'U9', name: null }] }),
+        ],
+      }),
+    });
+
+    const body = document.querySelector('.dock .preview')?.textContent ?? '';
+    expect(body, 'an unnamed mention keeps its id rather than being dropped').toContain(
+      'Confirmed U9.',
+    );
+  });
+
+  it('leaves a mention inside code as written, as Slack draws it', () => {
+    open({
+      record: record({
+        pending_asks: [
+          slackDraftAsk({
+            text: 'Raw is `<@U0442>` and fenced:\n```\n<@U0442>\n```\nConfirmed <@U0442>.',
+            tagged: [{ id: 'U0442', name: 'rena' }],
+          }),
+        ],
+      }),
+    });
+
+    const body = document.querySelector('.dock .preview')?.textContent ?? '';
+    expect(body, 'a mention outside code reads as its name').toContain('Confirmed @rena.');
+    expect(
+      body.match(/<@U0442>/g)?.length,
+      'both the inline span and the fence keep the raw mention',
+    ).toBe(2);
+  });
+
   /** The card's destination line, with its whitespace collapsed for a read. */
   function dest(): string {
     return (document.querySelector('.dock .dest')?.textContent ?? '').replace(/\s+/g, ' ').trim();
@@ -6437,7 +6491,7 @@ describe('the dock', () => {
     expect(dest()).not.toContain('tags:');
   });
 
-  it('draws an unresolved tag as its id and an unnamed thread as its stamp', () => {
+  it('draws an unresolved tag as its id and an unreadable thread as a thread', () => {
     open({
       record: record({
         pending_asks: [
@@ -6450,9 +6504,14 @@ describe('the dock', () => {
       }),
     });
 
-    expect(dest(), 'an id is drawn as the id, never dropped and never invented over').toBe(
-      `Trust Machines · #granite-staging-alerts thread: ${STAMP} · tags: U3`,
+    expect(dest(), 'a thread nobody could name is still named as a thread').toBe(
+      'Trust Machines · #granite-staging-alerts thread: a thread · tags: U3',
     );
+    expect(dest(), 'and the raw stamp never reaches the reader').not.toContain(STAMP);
+    expect(
+      document.querySelector('.dock .dest .ex')?.getAttribute('title'),
+      'nor is it reachable from the line title',
+    ).toBeNull();
   });
 
   it('draws the server-cut excerpt with the same line in its title', () => {
@@ -6638,10 +6697,43 @@ describe('the dock', () => {
     expect(drawn()).toContain("Don't write");
   });
 
+  it('draws every key of a batch in the one card that would write them', () => {
+    open({
+      record: record({
+        pending_asks: [
+          settingsWriteAsk({
+            edits: [
+              { key: 'vault.url', current: null, proposed: 'https://vault.test', unset: false },
+              { key: 'vault.email', current: null, proposed: 'me@vault.test', unset: false },
+            ],
+          }),
+        ],
+      }),
+    });
+
+    const text = drawn();
+    expect(text).toContain('vault.url');
+    expect(text).toContain('vault.email');
+    expect(text).toContain('https://vault.test');
+    expect(text).toContain('me@vault.test');
+    expect(text).toContain('Write it');
+  });
+
   it('draws an unset write as a removal, not as a null value', () => {
     open({
       record: record({
-        pending_asks: [settingsWriteAsk({ unset: true, proposed: null })],
+        pending_asks: [
+          settingsWriteAsk({
+            edits: [
+              {
+                key: 'orgs.Default.projects.forge.max_workers',
+                current: 2,
+                proposed: null,
+                unset: true,
+              },
+            ],
+          }),
+        ],
       }),
     });
 
@@ -6654,7 +6746,9 @@ describe('the dock', () => {
     open({
       record: record({
         pending_asks: [
-          settingsWriteAsk({ key: 'gotify.url', current: null, proposed: 'https://x' }),
+          settingsWriteAsk({
+            edits: [{ key: 'gotify.url', current: null, proposed: 'https://x', unset: false }],
+          }),
         ],
       }),
     });
@@ -7194,15 +7288,15 @@ describe('the dock', () => {
   // these rows carry the shape a real server sends, not a null.
   const OPERATION_CARDS: [string, string | null, string, string, string, string | null][] = [
     ['post', null, 'Post to Slack', 'Post', 'Do not post', null],
-    ['post', STAMP, 'Reply in Slack', 'Post', 'Do not post', `thread: ${STAMP}`],
-    ['edit', STAMP, 'Edit in Slack', 'Apply edit', 'Do not apply', `message: ${STAMP}`],
-    ['delete', STAMP, 'Delete in Slack', 'Delete', 'Keep it', `message: ${STAMP}`],
-    ['react', STAMP, 'React in Slack', 'React', 'Do not react', `message: ${STAMP}`],
-    ['unreact', STAMP, 'Unreact in Slack', 'Unreact', 'Do not unreact', `message: ${STAMP}`],
+    ['post', STAMP, 'Reply in Slack', 'Post', 'Do not post', 'thread: a thread'],
+    ['edit', STAMP, 'Edit in Slack', 'Apply edit', 'Do not apply', 'message: a message'],
+    ['delete', STAMP, 'Delete in Slack', 'Delete', 'Keep it', 'message: a message'],
+    ['react', STAMP, 'React in Slack', 'React', 'Do not react', 'message: a message'],
+    ['unreact', STAMP, 'Unreact in Slack', 'Unreact', 'Do not unreact', 'message: a message'],
     ['upload', null, 'Upload to Slack', 'Upload', 'Do not upload', null],
-    ['upload', STAMP, 'Upload to Slack', 'Upload', 'Do not upload', `thread: ${STAMP}`],
+    ['upload', STAMP, 'Upload to Slack', 'Upload', 'Do not upload', 'thread: a thread'],
     // A value from a newer server draws neutral words, never a post's.
-    ['unknown', STAMP, 'Slack draft', 'Approve', 'Do not send', `message: ${STAMP}`],
+    ['unknown', STAMP, 'Slack draft', 'Approve', 'Do not send', 'message: a message'],
   ];
 
   it.each(OPERATION_CARDS)(
@@ -11494,6 +11588,90 @@ describe('dictation in the send-back box', () => {
   });
 
   /**
+   * **The key lands in the box holding the caret.** A take begun with the
+   * push-to-talk key has no press on any box to name its destination, so the
+   * box the reader's caret is in is the one it lands in: with the send-back
+   * field open and holding the caret, the words are their feedback - not the
+   * draft behind the card - exactly as a press on the box's own mic leaves
+   * them.
+   */
+  it('lands a keyboard-started take in the open send-back box', async () => {
+    const write = clipboard(() => Promise.resolve());
+    const harness = open({ dictation: true, record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+    expect(document.activeElement, 'the box holds the caret').toBe(feedbackBox());
+
+    key('ControlRight', 'keydown');
+    await opened();
+    key('ControlRight', 'keyup');
+    showTake(harness);
+    endTake(harness);
+    harness.page.record = record({
+      pending_asks: [slackDraftAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'say staging, not prod', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    expect(feedbackBox().value, 'the words land in the send-back box').toBe(
+      'say staging, not prod',
+    );
+    expect(write, 'and are copied once').toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenCalledWith('say staging, not prod');
+  });
+
+  /**
+   * **An open box claims a key take only while its field holds the caret.**
+   * A reader who opened the box and then moved on to the card is not
+   * dictating into it, so the words go to the composer's draft: the box being
+   * open is not on its own enough to take them.
+   */
+  it('keeps a keyboard take in the composer when the open box does not hold the caret', async () => {
+    const write = clipboard(() => Promise.resolve());
+    const harness = open({ dictation: true, record: record({ pending_asks: [slackDraftAsk()] }) });
+
+    action('Send back with feedback').click();
+    flushSync();
+    const post = action('Post');
+    post.focus();
+    flushSync();
+    expect(document.activeElement, 'the caret left the box').toBe(post);
+
+    key('ControlRight', 'keydown');
+    await opened();
+    key('ControlRight', 'keyup');
+    showTake(harness);
+    endTake(harness);
+    harness.page.record = record({
+      pending_asks: [slackDraftAsk()],
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'key words', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    // The prompt still holds the slot, so the composer's field is not drawn.
+    expect(document.querySelector('[data-editor="composer"]')).toBeNull();
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'key words', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+    expect(field().value, 'the words were kept in the composer draft').toBe('key words');
+    expect(write).toHaveBeenCalledWith('key words');
+  });
+
+  /**
    * A take begun in the send-back box whose field closes before the words land
    * keeps them in the composer's draft, which is the box the card leaves
    * behind. Nothing is lost.
@@ -11803,13 +11981,13 @@ describe('dictation in the send-back box', () => {
   });
 
   /**
-   * **A refused press does not decide the next take's destination.** The
-   * send-back box's mic opens the box and records the intent, and a permission
-   * the reader refused leaves both behind: the next press from the composer's
-   * own key must land in the composer's draft, not in the box whose mic was
-   * refused.
+   * **A refused press leaves the box open, and the open box is what decides.**
+   * The press never started a take, so it names no destination of its own; the
+   * key take lands in the field the caret is in, which is the box the reader
+   * was already writing in. Nothing the refused press left behind moves the
+   * words, and the composer's draft keeps none of them.
    */
-  it('does not route the next take to the send-back box after its press was refused', async () => {
+  it('routes a key take to the box a refused press left open', async () => {
     const write = clipboard(() => Promise.resolve());
     const harness = open({ dictation: true, record: record({ pending_asks: [slackDraftAsk()] }) });
 
@@ -11826,9 +12004,9 @@ describe('dictation in the send-back box', () => {
     } finally {
       mic.held.refuse = false;
     }
+    expect(document.activeElement, 'the box still holds the caret').toBe(feedbackBox());
 
-    // The reader tries the key instead. The refused press must not decide
-    // where these words go.
+    // The reader tries the key instead.
     key('ControlRight', 'keydown');
     await opened();
     key('ControlRight', 'keyup');
@@ -11844,16 +12022,7 @@ describe('dictation in the send-back box', () => {
     });
     flushSync();
 
-    // The prompt is answered, so the composer's field returns with the words.
-    harness.page.record = record({
-      composer: {
-        take: null,
-        notice: { kind: 'landed', text: 'key words', truncated: false },
-        machine: null,
-      },
-    });
-    flushSync();
-    expect(field().value, 'the key took the words to the composer').toBe('key words');
+    expect(feedbackBox().value, 'the key took the words to the open box').toBe('key words');
     expect(write).toHaveBeenCalledWith('key words');
   });
 });

@@ -25,7 +25,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * rail footer carries both halves' build and socket numbers, and a mismatch
  * raises the notice beside it. Nothing refuses a connection over it.
  */
-export const PROTOCOL_VERSION = 28;
+export const PROTOCOL_VERSION = 29;
 
 /**
  * The release this client was built from, baked in by the build.
@@ -257,6 +257,9 @@ export interface BrowserTabRow {
   url: string;
   /** The session whose calls drive it. */
   owner: SessionSlot;
+  /** The tab whose page opened this one, when this is a popup: the surface
+   *  follows a popup in and hands back to the tab that opened it. */
+  opener: number | null;
   /** The server's own word, kept whole: a state this page has not seen is
    *  drawn as itself rather than as a neighbour it does not mean. */
   state: string;

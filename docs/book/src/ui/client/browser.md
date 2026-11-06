@@ -83,14 +83,38 @@ with its session: the sweep of dead seats, a `/new` or `/resume` on the slot,
 and the host ending - except a tab a parked hand-off still holds. Nothing
 outlives the host.
 
-**A popup's own document is the one the host starts.** Its target answers no
-page-domain command until it has a document, so the passkey veto - the script
-every other page starts with - cannot be registered on it before that first
-one, and a popup an attached client holds commits exactly one navigation, so
-its address cannot be preceded by a blank. The host starts the address the
+**A cross-origin popup is the same kind of tab, opened by the host.** A
+top-level page's first sign-in open on another origin gets a working window
+back: the host starts that address in a browser of its own, so the engine has
+no popup target to share the opener's renderer with, and the attached driver
+keeps working. `window.opener` in the popup is a matching proxy and
+`postMessage` is relayed in both directions with each side's own origin
+checked at delivery, so an OAuth flow's result reaches the app as a JSON
+payload. A `noopener` or `noreferrer` open answers null and its tab has no
+opener unless the page sets the shim's `window.name` marker itself. A second
+cross-site popup from the same page does not commit while the first is live
+(#2869), a bridged refused open answers a live proxy and the refusal arrives
+later as a `refused` event (#2898), and one page may hold sixteen popups at
+once. **A subframe never bridges**: a same-origin subframe answers null for
+every web address but the top frame's own origin, and a cross-origin subframe
+answers null for every web address. A same-origin popup keeps the engine's
+own popup path and its real, scriptable `window.opener`. **The takeover
+follows a popup in**: a surface showing the opener moves to the popup when it
+appears, and hands back to the opener when the popup closes, so a sign-in is
+seen without hunting the strip. The hand-off ask stays parked on the page it
+named, and Done and Not now come back with the surface when it returns to
+that page.
+
+**A same-origin popup's own document is the one the host starts.** Its target
+answers no page-domain command until it has a document, so the passkey veto -
+the script every other page starts with - cannot be registered on it before that
+first one, and a popup an attached client holds commits exactly one navigation,
+so its address cannot be preceded by a blank. The host starts the address the
 popup asked for as that first document; the veto patches that document's world
 as soon as its context is reported, which is the out-of-band case a tab
-another client creates directly at a URL is already in.
+another client creates directly at a URL is already in. A bridged cross-origin
+popup does not need this: the host creates a browser of its own and starts the
+address once the bridge role is in place.
 
 **The browser offers no WebAuthn**: its pages expose no `PublicKeyCredential`,
 so passkey and security-key sign-in stop working and a site that checks for the
@@ -117,7 +141,8 @@ never handed back as the driver's `_page` TypeError. A driver that cannot
 attach within its 30 s bound is replaced; a host no fresh driver can list is
 named and ended, except that a host another session's page is open on is left
 running and the holder is named back instead; when its endpoint has stopped
-answering, only the idle clock releases it.
+answering, the idle clock releases it, or the project lead's `browser_end_host`
+does when the profile is shared.
 
 **Every viewer is a watcher until it takes the role on that tab.** A surface
 attaches to one tab and receives every frame that tab paints; **exactly one
@@ -284,9 +309,10 @@ than a scaled copy of the surface.
 **There is no external-browser door.** Every page lives in the server's
 engine and nowhere else; no client hands one to another browser.
 
-**A host that ends takes its tabs.** A restart, an idle close and a stop all
-end the host, and its tabs end with it: the next call starts a fresh host,
-whose boot tab the first page call adopts before navigating. A profile's
+**A host that ends takes its tabs.** A restart, an idle close, a stop and a
+lead's `browser_end_host` all end the host, and its tabs end with it: the next
+call starts a fresh host, whose boot tab the first page call adopts before
+navigating. A profile's
 cache and logins stay, so a sign-in survives the host; a filled form does not.
 
 **An idle browser closes on the SERVER's clock.** After `[browser]
