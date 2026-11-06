@@ -257,6 +257,9 @@ export interface BrowserTabRow {
   url: string;
   /** The session whose calls drive it. */
   owner: SessionSlot;
+  /** The tab whose page opened this one, when this is a popup: the surface
+   *  follows a popup in and hands back to the tab that opened it. */
+  opener: number | null;
   /** The server's own word, kept whole: a state this page has not seen is
    *  drawn as itself rather than as a neighbour it does not mean. */
   state: string;

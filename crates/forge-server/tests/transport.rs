@@ -11397,6 +11397,7 @@ async fn a_strip_read_answers_the_tabs_and_then_follows_them() {
             title: "portal".to_owned(),
             url: "https://x/".to_owned(),
             owner: lead_seat(),
+            opener: None,
             state: forge_primitives::browser::BrowserTabState::Idle,
             dialog: None,
         }],
