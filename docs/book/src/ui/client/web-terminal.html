@@ -129,11 +129,11 @@
     <div class="tnote">the touch key bar is drawn under <span class="mono">pointer: coarse</span>: a
       finger cannot produce Escape, Tab or an arrow, and every key is a 44px target. Ctrl and Alt
       are sticky for the next character the soft keyboard types, and the whole bar is inert
-      outside both holds - the person's own take control or a hand-off - and, once another client
-      has claimed a hand-off, on every other client: the surface is a viewer then, and the server
-      refuses a keystroke that arrives anyway. A parked hand-off's keyboard is one client's: the
-      first to type claims it, and any other client's bar reads
-      <span class="mono">another client has the keyboard</span>.</div>
+      outside the person's own control: the surface is a viewer then, and the server refuses a
+      keystroke that arrives anyway. A parked hand-off raises the surface as a viewer too - take
+      control there to type. Whoever loses the role reads
+      <span class="mono">another client has the keyboard</span>, or
+      <span class="mono">the agent took the keyboard</span> when an agent's call took it.</div>
   </div>
 
   <div class="tile">
@@ -146,8 +146,8 @@
     </div></div>
     <div class="tnote">while this page holds the role the state says <span class="mono">you have control</span>
       and the door reads <b>release control</b>. One holder at a time, like the browser's controller: another
-      client's take overrides it, the agent's terminal tools are refused while it is held, and the role
-      survives a lower - it is released by the person, a steal, or the connection ending.</div>
+      client's take overrides it, an agent's write or hand-off takes it back, and going back to chat
+      gives it up - a lower never keeps the agent out. The person takes it explicitly every time.</div>
   </div>
 
   <div class="tile">
@@ -161,9 +161,8 @@
     <div class="term"><div class="bar">
       <span class="back">back to chat</span>
       <span class="title">terminal 1 · zsh · /Users/vedhavyas/Projects/forge</span>
-      <span class="state">a terminal hand-off holds the keyboard; use the hand-off card</span>
-      <span class="act">Done</span>
-      <span class="act">Not now</span>
+      <span class="state">this connection is not viewing that terminal</span>
+      <span class="act">take control</span>
     </div></div>
     <div class="term"><div class="bar">
       <span class="back">back to chat</span>
@@ -175,8 +174,8 @@
       <b>releasing...</b> - and a refusal replaces the state line in the server's own words, until the
       ask ends, the control push lands or a fresh repaint arrives; the bar carries the parked ask's
       <b>Done</b> and <b>Not now</b> while it waits. A client that lost the keyboard to another
-      client's take, or to a hand-off's claim, reads
-      <span class="mono">another client has the keyboard</span>.</div>
+      client's take reads <span class="mono">another client has the keyboard</span>; a client that
+      lost it to an agent's call reads <span class="mono">the agent took the keyboard</span>.</div>
   </div>
 
   <div class="tile">
@@ -207,7 +206,7 @@
         <span class="fo">typing is hidden: the program is reading a secret</span>
       </div>
     </div>
-    <div class="tnote">the agent is blind while this is parked: <span class="mono">terminal__read</span> and <span class="mono">terminal__write</span> are refused, and the tool gets the ending only. The keystrokes go to the PTY, not into the agent's turn; the shell may echo them, so a read after the hand-off can carry what was typed.</div>
+    <div class="tnote">the agent is blind while this is parked: <span class="mono">terminal__read</span> and <span class="mono">terminal__write</span> are refused, and the tool gets the ending only. <b>Open terminal</b> raises the surface as a viewer - take control there to type - and the ending hands the keyboard back to the agent. The keystrokes go to the PTY, not into the agent's turn; the shell may echo them, so a read after the hand-off can carry what was typed.</div>
   </div>
 </div>
 </body>
