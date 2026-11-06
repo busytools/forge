@@ -1156,7 +1156,9 @@ open still spawns its lead session in the background, resuming the
 session forge stored for it unless the launch passed `--new`, but none of
 them is focused: you pick one from the picker to enter chat. A project
 closed from the pane is not reopened, and a project whose lead never
-spawned has nothing to reopen. A lead whose last turn was cut off is
+spawned has nothing to reopen. The first launch on this build seeds the
+seats an earlier build left, so that once every project whose lead had
+ever spawned opens; from then on the state is explicit. A lead whose last turn was cut off is
 handed one restart note as its first turn, telling it to read the project
 handoff and the task board and to continue where it left off; a lead that
 was parked is resumed with nothing, and a `--new` launch sends no note at

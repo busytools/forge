@@ -1615,8 +1615,9 @@ pub(crate) fn handle_spawn_worker(
     // cap, bringing back a worker the caller was told does not exist.
     // The row's `kick` is the worker's first turn, which only a first
     // spawn states. A resume's live kick is the restart note (or the row's
-    // `resume_kick`), and writing that here would make it the worker's
-    // opening turn on every later `--new` re-spawn.
+    // `resume_kick`) when the seat's turn was cut off - decided upstream
+    // from the pre-spawn row - and writing that here would make it the
+    // worker's opening turn on every later `--new` re-spawn.
     let kick_field = if is_resume { None } else { entry.kick.as_deref() };
     // The stored-selection contract, mirrored exactly by `families`
     // below so the reply, the running surface and the row cannot
@@ -4179,8 +4180,10 @@ provider = "anthropic"
         assert!(row.is_some(), "the boot re-spawn keeps the row a later restart re-spawns from");
     }
 
-    /// A resume delivers the restart note (or the row's `resume_kick`) as
-    /// this connection's kick, and that text must not land in the row's
+    /// A resume may deliver the restart note (or the row's `resume_kick`)
+    /// as this connection's kick - the re-spawn decider above hands one
+    /// only to a seat whose turn was cut off, and this test states one
+    /// directly to prove it - and that text must not land in the row's
     /// `kick`: that field is the worker's original first turn, and it is
     /// what a later `--new` re-spawn opens the worker with. Written, the
     /// resume text becomes the worker's opening turn for the rest of its
@@ -5448,6 +5451,9 @@ heal_stable = "30s"
             |update| matches!(update, SessionUpdate::Connected { key, .. } if *key == slot),
         )
         .await;
+        // Mid-work when the tree goes, so the heal's resume carries the
+        // restart note this test waits on.
+        ws.record_seat_state(&slot, crate::store::sessions::SeatState::InTurn);
 
         // The tree the worker needs disappears while it is up; the resume
         // is what must put it back. The registration goes with it, so the
@@ -5590,6 +5596,10 @@ heal_stable = "30s"
         let lead = start_lead(&ws, &mut updates).await;
         let slot = SessionSlot::worker("Default", "forge", "probe-heal");
         spawn_mock_worker(&ws, &lead, "probe-heal").await;
+        // The worker is mid-work when its child dies, which is the state
+        // that earns the heal's restart note; a worker found parked comes
+        // back silent.
+        ws.record_seat_state(&slot, crate::store::sessions::SeatState::InTurn);
 
         // The first connect, then the child dies of its own accord 0.6 s in;
         // the supervisor's 150 ms wait brings the same seat back with the

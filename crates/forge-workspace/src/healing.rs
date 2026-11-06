@@ -284,6 +284,20 @@ impl Healing {
             workspace.clear_heal_progress(slot);
             return;
         }
+        // **A closed seat is the reader's stop, not a crash.** The close's
+        // `note_stopped` bumps the generation, so an attempt firing after it
+        // returns above; this is the window where the attempt was already
+        // past that check when the close landed.
+        if slot.is_lead()
+            && matches!(
+                workspace.stored_seat_state(slot),
+                Some(crate::store::sessions::SeatState::Closed)
+            )
+        {
+            self.forget(slot);
+            workspace.clear_heal_progress(slot);
+            return;
+        }
         if !slot.is_lead() {
             let Some(project_key) = workspace.project_key_for_name(slot.project()) else {
                 self.forget(slot);
@@ -398,12 +412,13 @@ async fn restart_worker(
     };
     let lead = SessionSlot::lead(slot.org(), slot.project());
     let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(workspace);
+    let kick = heal_resume_kick(&row);
     facade
         .spawn_worker(
             &lead,
             slot.label().to_owned(),
             row.charter.unwrap_or_default(),
-            row.resume_kick.or_else(|| Some(DYNAMIC_WORKER_RESTART_NOTE.to_owned())),
+            kick,
             // The row's own resume kick stays the row's: this spawn only
             // delivers the live kick.
             None,
@@ -415,6 +430,19 @@ async fn restart_worker(
         .await
         .map(|reply| Some(reply.session_id))
         .map_err(|error| error.message())
+}
+
+/// The kick a heal's worker resume carries.
+///
+/// **Only a worker whose turn was cut off gets one.** A worker that was
+/// idle when its subprocess died is resumed parked, the same as at a boot
+/// re-spawn; a crash must not put a seat back to work that was not working.
+fn heal_resume_kick(row: &crate::store::sessions::SessionRecord) -> Option<String> {
+    if matches!(row.seat_state, Some(crate::store::sessions::SeatState::InTurn)) {
+        row.resume_kick.clone().or_else(|| Some(DYNAMIC_WORKER_RESTART_NOTE.to_owned()))
+    } else {
+        None
+    }
 }
 
 /// The notice one worker death earns: the instant, the diagnostic, the
@@ -497,6 +525,52 @@ mod tests {
 
     type Calls = Arc<Mutex<Vec<SessionSlot>>>;
     type Notices = Arc<Mutex<Vec<(SessionSlot, String)>>>;
+
+    /// **A heal kicks only the worker whose turn it interrupted.** A
+    /// worker that was parked when it died comes back parked; its own
+    /// `resume_kick` rides the kick only for a cut-off turn.
+    #[test]
+    fn a_heal_kicks_only_a_worker_left_mid_turn() {
+        use crate::store::sessions::{SeatState, SessionRecord};
+
+        let row = |state: Option<SeatState>| SessionRecord {
+            org: "Default".to_owned(),
+            project: "forge".to_owned(),
+            label: "steward".to_owned(),
+            session_id: Some("id-1".to_owned()),
+            charter: None,
+            kick: None,
+            resume_kick: Some("re-read the notes".to_owned()),
+            interactive: None,
+            seat_state: state,
+            is_git_repo: None,
+            mcp_families: None,
+            cwd: None,
+        };
+
+        assert_eq!(
+            heal_resume_kick(&row(Some(SeatState::InTurn))).as_deref(),
+            Some("re-read the notes"),
+            "an interrupted worker resumes with its own kick",
+        );
+        let mut bare = row(Some(SeatState::InTurn));
+        bare.resume_kick = None;
+        assert_eq!(
+            heal_resume_kick(&bare).as_deref(),
+            Some(DYNAMIC_WORKER_RESTART_NOTE),
+            "and falls back to the generic note",
+        );
+        assert_eq!(
+            heal_resume_kick(&row(Some(SeatState::Idle))),
+            None,
+            "a worker that was parked is resumed with nothing",
+        );
+        assert_eq!(
+            heal_resume_kick(&row(None)),
+            None,
+            "a row written before the field reads as parked, never as interrupted",
+        );
+    }
 
     /// Records each restart, so a test watches the decision without
     /// spawning a child, and answers every attempt with `outcome`.
