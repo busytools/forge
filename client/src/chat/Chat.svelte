@@ -2357,7 +2357,12 @@
       // there and comes back for the growth on a later frame; the two-frame
       // budget bounds only the deferred retries, never the hold, so a stream
       // that grows the row every frame still cannot write past the model.
-      target = model;
+      // **And it never drags the reader back to that end.** The hold is a
+      // ceiling on a forward write; a reader already past the model's foot -
+      // an entry that placed at the element's, with rows arriving below it -
+      // would otherwise be pulled up to the model and glided back down as it
+      // measured, which is the entry walk this column is meant to have lost.
+      target = Math.max(model, viewport.scrollTop);
       if (repinTries < REPIN_TRIES) {
         repinTries += 1;
         repin();
