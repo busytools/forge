@@ -447,10 +447,6 @@ describe('applyUpdate', () => {
       for (const frame of frames) held = landed(held, frame);
 
       expect(
-        held.conversation.outcomes,
-        'the folded join drifted from a whole walk of the frames it holds',
-      ).toEqual(outcomesFrom([{ messages: frames }]));
-      expect(
         held.conversation.outcomes.calls.get('call-window')?.failed,
         "the newest ending did not reach the strip's join",
       ).toBe(true);
@@ -464,6 +460,10 @@ describe('applyUpdate', () => {
         ),
         'the window did not start at the opening turn before the trim',
       ).toBe(true);
+      expect(
+        held.conversation.outcomes,
+        'the folded join drifted from a whole walk of the frames it holds',
+      ).toEqual(outcomesFrom([{ messages: frames }]));
 
       // One more turn and the ending's turn is the first the window drops. The
       // surviving frames are the reference: what the window keeps, it keeps
@@ -476,10 +476,6 @@ describe('applyUpdate', () => {
         'the trim did not start its window at the oldest turn it keeps',
       ).toBe(true);
       expect(
-        held.conversation.outcomes,
-        'the replay of the surviving window drifted from a whole walk of it',
-      ).toEqual(outcomesFrom([{ messages: frames.slice(3) }]));
-      expect(
         held.conversation.outcomes.calls.get('call-window'),
         'an ending older than the window outlived it',
       ).toBeUndefined();
@@ -491,6 +487,10 @@ describe('applyUpdate', () => {
         held.conversation.outcomes.calls.get('call-late')?.failed,
         "a surviving turn's ending was lost with the dropped turn",
       ).toBe(true);
+      expect(
+        held.conversation.outcomes,
+        'the replay of the surviving window drifted from a whole walk of it',
+      ).toEqual(outcomesFrom([{ messages: frames.slice(3) }]));
 
       // A frame after the replay folds into the window it just replayed.
       const after = taskFrame({
@@ -501,13 +501,13 @@ describe('applyUpdate', () => {
       });
       held = landed(held, after);
       expect(
-        held.conversation.outcomes,
-        'a frame after the trim drifted from a whole walk of the new window',
-      ).toEqual(outcomesFrom([{ messages: [...frames.slice(3), after] }]));
-      expect(
         held.conversation.outcomes.calls.get('call-after')?.failed,
         'the frame after the trim did not reach the join',
       ).toBe(true);
+      expect(
+        held.conversation.outcomes,
+        'a frame after the trim drifted from a whole walk of the new window',
+      ).toEqual(outcomesFrom([{ messages: [...frames.slice(3), after] }]));
     });
   });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { outcomesFrom } from './outcomes';
+import { joinFrom, outcomesFrom, outcomesOf } from './outcomes';
 
 const sys = (fields: Record<string, unknown>) => ({ type: 'system', ...fields });
 
@@ -106,5 +106,20 @@ describe('the outcome join', () => {
 
     expect(map.stoppedTasks.has('t-long'), 'the stop names the task it ended').toBe(true);
     expect(map.calls.size, 'and no call outcome is invented without a link').toBe(0);
+  });
+
+  /**
+   * The record retains the join this was built from, so an outcomes map that
+   * aliased it would let every reader of the strip write into the record.
+   */
+  it('hands out owner links that cannot write back into the join', () => {
+    const join = joinFrom([
+      { messages: [sys({ subtype: 'task_started', task_id: 't1', tool_use_id: 'tu1' })] },
+    ]);
+    const { owners } = outcomesOf(join);
+
+    owners.set('t2', 'tu2');
+    expect(owners.get('t1'), 'the outcome map lost its own link').toBe('tu1');
+    expect(join.owners.has('t2'), 'the outcome map wrote through to the join').toBe(false);
   });
 });
