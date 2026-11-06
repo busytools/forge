@@ -69,9 +69,10 @@ read as one system.
   (`running`, `waiting for input`, `exit 2`) and quotes the screen or the
   command's own text; a parked `terminal__hand_off` says it waits for the
   person and carries the ask's reason. A vault call is the vault family's: it
-  wears the key mark, titles itself by the item it touched (`created login
-  'bank'`, `moved item ... to the trash`, `searched the vault for 'bank'`),
-  chips a parked call `waiting for your approval` and a find by its count,
+  wears the key mark, titles itself by the item it touched where the call
+  names one (`created login 'bank'`, `moved item ... to the trash`,
+  `searched the vault for 'bank'`), chips a parked call `waiting for your
+  approval` and a find by its count,
   draws a search's rows and a folder list's names, and draws the one value a
   reveal asked for - the card replaces the raw body, so a value left out of
   the card would be a value the reader cannot find.

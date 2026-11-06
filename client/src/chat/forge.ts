@@ -1119,6 +1119,11 @@ function vaultSubject(verb: string, held: Record<string, unknown>, done: boolean
       return `${done ? 'restored' : 'restoring'} ${item}`;
     case 'totp_code':
       return `${done ? 'computed' : 'computing'} a TOTP code for ${item}`;
+    case 'search': {
+      const query = str(held, 'query');
+      const forWhat = query === null || query.trim() === '' ? '' : ` for '${query}'`;
+      return `${done ? 'searched' : 'searching'} the vault${forWhat}`;
+    }
     case 'attachment_get': {
       const of = str(held, 'item_id');
       return `${done ? 'downloaded' : 'downloading'} an attachment from ${of === null ? 'the item' : `item ${of}`}`;
@@ -1217,7 +1222,7 @@ function vaultCard(verb: string, input: unknown, answer: unknown): ForgeCard | n
       if (held['favorite'] === true) chips.push({ text: 'favorite', tone: 'dim' });
       const pairs: [string, string][] = [];
       const folder = str(held, 'folder_id');
-      if (folder !== null) pairs.push(['folder', folder]);
+      if (folder !== null) pairs.push(['folder id', folder]);
       const username = str(held, 'username');
       if (username !== null) pairs.push(['username', username]);
       const uris = held['uris'];

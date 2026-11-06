@@ -159,8 +159,8 @@ pub struct Folder {
 }
 
 /// The `GET /api/folders` list envelope. Vaultwarden sends every folder in
-/// `data` with a null `continuationToken`, so the rows never sit at the top
-/// level where a bare `Vec<Folder>` would find them.
+/// `data` with a null `continuationToken`, and no server this family talks to
+/// pages, so the token is not modelled.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FolderList {

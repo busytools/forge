@@ -230,6 +230,12 @@ describe('the vault card', () => {
     expect(JSON.stringify(card), 'the input secret is never drawn').not.toContain('hunter2');
   });
 
+  it('says a held search waits too, naming the query', () => {
+    const card = forgeCardOf('mcp__forge__vault__search', { query: 'bank' }, undefined);
+    expect(card?.title).toBe("searching the vault for 'bank'");
+    expect(card?.chips).toEqual([{ text: 'waiting for your approval', tone: 'warn' }]);
+  });
+
   it('draws a search as the rows it found and the count', () => {
     const card = forgeCardOf(
       'mcp__forge__vault__search',
@@ -263,11 +269,13 @@ describe('the vault card', () => {
           id: 'i-1',
           name: 'bank',
           type: 1,
+          folder_id: 'f-1',
           revealed: { field: 'password', value: 's3cret' },
         }),
       ),
     );
     expect(card?.title).toBe("read 'bank'");
+    expect(pairsOf(card)).toContainEqual(['folder id', 'f-1']);
     expect(pairsOf(card)).toContainEqual(['password', 's3cret']);
   });
 

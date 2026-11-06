@@ -1556,12 +1556,30 @@ fn account_user_id(profile: &Profile) -> Result<String, VaultToolError> {
     })
 }
 
+/// A seed that cannot produce a code would store a permanent broken second
+/// factor with the card masking the typo, so it is refused before encrypting.
+fn check_totp_seed(seed: &str) -> Result<(), VaultToolError> {
+    if seed.trim().is_empty() {
+        return Err(VaultToolError::Message("the TOTP seed is empty".to_owned()));
+    }
+    forge_connectors::vault::crypto::totp_from_uri(seed, std::time::SystemTime::now())
+        .map(|_| ())
+        .map_err(|error| {
+            VaultToolError::Message(format!("the TOTP seed cannot produce a code: {error}"))
+        })
+}
+
 fn build_new_cipher(
     keys: &Unlocked,
     user_id: &str,
     input: &CreateInput,
     kind: &str,
 ) -> Result<Value, VaultToolError> {
+    if input.totp.is_some() && kind != "login" {
+        return Err(VaultToolError::Message(format!(
+            "a TOTP seed applies to a login item, not a {kind}"
+        )));
+    }
     let base = Value::Null;
     let mut cipher = json!({
         "type": match kind { "card" => 3, "note" => 2, _ => 1 },
@@ -1611,6 +1629,7 @@ fn build_new_cipher(
                     .insert("uris".to_owned(), json!([{ "uri": encrypted, "match": Value::Null }]));
             }
             if let Some(totp) = &input.totp {
+                check_totp_seed(totp)?;
                 login.insert("totp".to_owned(), json!(keys.encrypt_item_str(&base, totp)?));
             }
             cipher["login"] = Value::Object(login);
@@ -1650,8 +1669,21 @@ fn apply_patch(
     patch: &PatchInput,
 ) -> Result<Value, VaultToolError> {
     // A PUT deserializes the same CipherData a create does, and the fetched
-    // cipher does not carry this field, so the update stamps it here.
-    cipher["encryptedFor"] = json!(user_id);
+    // cipher does not carry this field, so the update stamps it here. A body
+    // that already names its owner keeps it: an organization cipher's value
+    // describes the ciphertext, and rewriting it to the personal id would
+    // contradict what was encrypted.
+    let carried =
+        cipher.get("encryptedFor").and_then(Value::as_str).is_some_and(|owner| !owner.is_empty());
+    if !carried {
+        cipher["encryptedFor"] = json!(user_id);
+    }
+    if let Some(totp) = &patch.totp {
+        if cipher.get("type").and_then(Value::as_u64) != Some(1) {
+            return Err(VaultToolError::Message("a TOTP seed applies to a login item".to_owned()));
+        }
+        check_totp_seed(totp)?;
+    }
     if let Some(name) = &patch.name {
         cipher["name"] = json!(keys.encrypt_item_str(&cipher, name)?);
     }
@@ -2662,6 +2694,23 @@ mod tests {
         let out = apply_patch(&unlocked, "user-1", cipher.clone(), &patch).expect("the patch");
         assert_eq!(out["encryptedFor"], "user-1", "a PUT deserializes the same CipherData");
 
+        // An organization-owned cipher's body names the org; the update must
+        // not contradict the ciphertext by rewriting it to the personal id.
+        let org = serde_json::json!({
+            "id": "c",
+            "type": 1,
+            "organizationId": "org-1",
+            "encryptedFor": "org-1",
+            "name": "old",
+            "login": {},
+        });
+        // A folder move needs no crypto, so the owner guard is what is under
+        // test rather than the org key this fixture does not hold.
+        let move_patch =
+            PatchInput { folder_id: Some("folder-1".to_owned()), ..Default::default() };
+        let org_out = apply_patch(&unlocked, "user-1", org, &move_patch).expect("the patch");
+        assert_eq!(org_out["encryptedFor"], "org-1", "the fetched owner survives");
+
         assert_eq!(out["login"]["totp"], cipher["login"]["totp"]);
         assert_eq!(out["login"]["password"], cipher["login"]["password"]);
         assert_eq!(out["fields"], cipher["fields"]);
@@ -2728,6 +2777,71 @@ mod tests {
         let out = apply_patch(&unlocked, "user-1", cipher, &patch).expect("the patch");
         let stored = out.pointer("/login/totp").and_then(Value::as_str).expect("the seed");
         assert_eq!(unlocked.decrypt_item_str(&out, stored).expect("decrypt"), "JBSWY3DPEHPK3PXP");
+    }
+
+    /// A seed that cannot produce a code would store a permanent broken second
+    /// factor with the card masking the typo, so it is refused before it is
+    /// encrypted. An empty seed decodes as valid base32, so it is named here.
+    #[test]
+    fn a_totp_seed_that_cannot_produce_a_code_is_refused() {
+        let unlocked = Unlocked {
+            user_key: forge_connectors::vault::crypto::make_symmetric_key(),
+            private_key: None,
+            org_keys: std::collections::HashMap::new(),
+            failed_orgs: Vec::new(),
+            user_key_fingerprint: String::new(),
+        };
+
+        for seed in ["", "not!base32"] {
+            let input = CreateInput {
+                name: "bank".to_owned(),
+                totp: Some(seed.to_owned()),
+                ..Default::default()
+            };
+            let error = build_new_cipher(&unlocked, "user-1", &input, "login")
+                .map(|_| ())
+                .expect_err(&format!("the create must refuse '{seed}'"));
+            assert!(error.to_string().contains("TOTP"), "'{seed}': {error}");
+
+            let cipher = serde_json::json!({ "id": "c", "type": 1, "name": "old", "login": {} });
+            let patch = PatchInput { totp: Some(seed.to_owned()), ..Default::default() };
+            let error = apply_patch(&unlocked, "user-1", cipher, &patch)
+                .map(|_| ())
+                .expect_err(&format!("the patch must refuse '{seed}'"));
+            assert!(error.to_string().contains("TOTP"), "'{seed}': {error}");
+        }
+    }
+
+    /// `login.totp` belongs to a login; accepting it on a note or a card
+    /// would either vanish or grow a login object on the wrong item.
+    #[test]
+    fn a_totp_seed_on_a_note_or_card_is_refused() {
+        let unlocked = Unlocked {
+            user_key: forge_connectors::vault::crypto::make_symmetric_key(),
+            private_key: None,
+            org_keys: std::collections::HashMap::new(),
+            failed_orgs: Vec::new(),
+            user_key_fingerprint: String::new(),
+        };
+        let seed = "JBSWY3DPEHPK3PXP";
+
+        for kind in ["note", "card"] {
+            let input = CreateInput {
+                name: "x".to_owned(),
+                totp: Some(seed.to_owned()),
+                ..Default::default()
+            };
+            assert!(
+                build_new_cipher(&unlocked, "user-1", &input, kind).is_err(),
+                "a {kind} does not take a TOTP seed"
+            );
+        }
+        let card = serde_json::json!({ "id": "c", "type": 3, "name": "old" });
+        let patch = PatchInput { totp: Some(seed.to_owned()), ..Default::default() };
+        assert!(
+            apply_patch(&unlocked, "user-1", card, &patch).is_err(),
+            "a card does not take a TOTP seed",
+        );
     }
 
     /// Removing the containment checks would let a prompt-injected call read
@@ -4010,34 +4124,49 @@ mod tests {
     }
 
     /// A sync that carries no user id cannot stamp the cipher, so the create
-    /// fails by name instead of sending a body the server rejects.
+    /// fails by name instead of sending a body the server rejects. An empty
+    /// id is as unusable as an absent one.
     #[tokio::test]
     async fn a_create_without_a_synced_user_id_is_refused() {
         use forge_connectors::vault::crypto::{make_symmetric_key, sha256_hex};
 
-        let sync = serde_json::json!({ "profile": { "key": "unlocked-key" } }).to_string();
-        let address =
-            serve_steps(vec![Step { path: "/api/sync", reply: Reply::Json(sync), pause: None }])
-                .await;
-        let (workspace, facade, caller, _dir, mut rx, _session) =
-            unlocked_worker_workspace(address, make_symmetric_key(), sha256_hex(b"unlocked-key"));
-        let asked = caller.clone();
-        let call = {
-            let facade = Arc::clone(&facade);
-            tokio::spawn(async move {
-                facade
-                    .create(&asked, &CreateInput { name: "bank".to_owned(), ..Default::default() })
-                    .await
-            })
-        };
-        let draft = parked_draft(&mut rx).await;
-        approve(&workspace, &caller, draft.id);
-        let result = call.await.expect("the call finishes");
+        for profile in [
+            serde_json::json!({ "key": "unlocked-key" }),
+            serde_json::json!({ "key": "unlocked-key", "id": "" }),
+        ] {
+            let sync = serde_json::json!({ "profile": profile }).to_string();
+            let address = serve_steps(vec![Step {
+                path: "/api/sync",
+                reply: Reply::Json(sync),
+                pause: None,
+            }])
+            .await;
+            let (workspace, facade, caller, _dir, mut rx, _session) = unlocked_worker_workspace(
+                address,
+                make_symmetric_key(),
+                sha256_hex(b"unlocked-key"),
+            );
+            let asked = caller.clone();
+            let call = {
+                let facade = Arc::clone(&facade);
+                tokio::spawn(async move {
+                    facade
+                        .create(
+                            &asked,
+                            &CreateInput { name: "bank".to_owned(), ..Default::default() },
+                        )
+                        .await
+                })
+            };
+            let draft = parked_draft(&mut rx).await;
+            approve(&workspace, &caller, draft.id);
+            let result = call.await.expect("the call finishes");
 
-        assert!(
-            matches!(&result, Err(VaultToolError::Message(message)) if message.contains("account id")),
-            "{result:?}",
-        );
+            assert!(
+                matches!(&result, Err(VaultToolError::Message(message)) if message.contains("account id")),
+                "{result:?}",
+            );
+        }
     }
 
     /// A missing organization key falls back; any other decrypt failure locks

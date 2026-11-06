@@ -107,10 +107,12 @@ impl VaultClient {
 
     /// Read one response body, mapping a non-2xx status to its named error.
     /// The body is zeroized on every path: a token response's body carries
-    /// the access and refresh tokens.
+    /// the access and refresh tokens. `fields` scopes which error fields may
+    /// be surfaced, so the identity route never reads the API's pointers.
     async fn send_body(
         &self,
         resp: reqwest::Response,
+        fields: ErrorFields,
     ) -> Result<zeroize::Zeroizing<String>, VaultError> {
         let status = resp.status();
         let retry_after = retry_after(&resp);
@@ -118,14 +120,14 @@ impl VaultClient {
             resp.text().await.map_err(|error| VaultError::Http(error.without_url()))?,
         );
         if !status.is_success() {
-            return Err(api_error(status.as_u16(), retry_after, safe_error(&body)));
+            return Err(api_error(status.as_u16(), retry_after, safe_error(&body, fields)));
         }
         Ok(body)
     }
 
     /// Read one response as JSON. An empty success body is `Value::Null`.
     async fn send_json(&self, resp: reqwest::Response) -> Result<Value, VaultError> {
-        let body = self.send_body(resp).await?;
+        let body = self.send_body(resp, ErrorFields::Api).await?;
         if body.is_empty() {
             return Ok(Value::Null);
         }
@@ -138,7 +140,24 @@ impl VaultClient {
         &self,
         resp: reqwest::Response,
     ) -> Result<T, VaultError> {
-        let body = self.send_body(resp).await?;
+        self.send_typed_with(resp, ErrorFields::Api).await
+    }
+
+    /// The identity endpoints' own parse: an error there is read through the
+    /// OAuth pair only, never the API's wider pointer set.
+    async fn send_typed_oauth<T: DeserializeOwned>(
+        &self,
+        resp: reqwest::Response,
+    ) -> Result<T, VaultError> {
+        self.send_typed_with(resp, ErrorFields::Oauth).await
+    }
+
+    async fn send_typed_with<T: DeserializeOwned>(
+        &self,
+        resp: reqwest::Response,
+        fields: ErrorFields,
+    ) -> Result<T, VaultError> {
+        let body = self.send_body(resp, fields).await?;
         serde_json::from_str(&body).map_err(|e| VaultError::InvalidResponse(e.to_string()))
     }
 
@@ -149,7 +168,7 @@ impl VaultClient {
             .unauth(reqwest::Method::POST, "/identity/accounts/prelogin")
             .json(&serde_json::json!({ "email": email }));
         let resp = send_request(request).await?;
-        self.send_typed(resp).await
+        self.send_typed_oauth(resp).await
     }
 
     /// `POST /identity/connect/token` with the password grant.
@@ -178,7 +197,7 @@ impl VaultClient {
         for (_, value) in &mut form {
             value.zeroize();
         }
-        self.send_typed(sent?).await
+        self.send_typed_oauth(sent?).await
     }
 
     /// `POST /identity/connect/token` with the refresh grant.
@@ -190,7 +209,7 @@ impl VaultClient {
         ];
         let request = self.unauth(reqwest::Method::POST, "/identity/connect/token").form(&form);
         let resp = send_request(request).await?;
-        self.send_typed(resp).await
+        self.send_typed_oauth(resp).await
     }
 
     /// `GET /api/sync`: the profile and every cipher and folder.
@@ -394,7 +413,11 @@ impl VaultClient {
         let retry_after = retry_after(&resp);
         if !status.is_success() {
             let body = resp.text().await.map_err(|error| VaultError::Http(error.without_url()))?;
-            return Err(api_error(status.as_u16(), retry_after, safe_error(&body)));
+            return Err(api_error(
+                status.as_u16(),
+                retry_after,
+                safe_error(&body, ErrorFields::Api),
+            ));
         }
         if let Some(declared) = resp.content_length()
             && declared > max_bytes
@@ -443,15 +466,34 @@ fn retry_after(resp: &reqwest::Response) -> Option<u64> {
         .and_then(|value| value.trim().parse::<u64>().ok())
 }
 
-/// The server's own error text and nothing else. A proxy that echoes the
-/// request body must not put the master-password hash into a tool result or
-/// the audit file; the token endpoint is the reason this exists. Vaultwarden
-/// states an API refusal in `message`, Rocket's catcher nests its reason under
-/// `error`, and the identity endpoint uses the OAuth `error` pair.
-fn safe_error(body: &str) -> String {
+/// Which fields of an error body a route may surface.
+///
+/// **The identity endpoints read the OAuth pair and nothing else.** They take
+/// the master-password hash in a form body, so a proxy that re-encodes that
+/// form into an error-named field must not reach a tool result or the audit
+/// file through a pointer the API routes need.
+#[derive(Clone, Copy)]
+enum ErrorFields {
+    Oauth,
+    Api,
+}
+
+const OAUTH_ERROR_POINTERS: [&str; 2] = ["/error", "/error_description"];
+const API_ERROR_POINTERS: [&str; 5] =
+    ["/error", "/error_description", "/message", "/error/description", "/error/reason"];
+
+/// The server's own error text and nothing else. Vaultwarden states an API
+/// refusal in `message`, Rocket's catcher nests its reason under `error`, and
+/// the identity endpoint uses the OAuth `error` pair. A body that does not
+/// parse contributes nothing.
+fn safe_error(body: &str, fields: ErrorFields) -> String {
     let Ok(value) = serde_json::from_str::<Value>(body) else { return String::new() };
-    ["/error", "/error_description", "/message", "/error/description", "/error/reason"]
-        .into_iter()
+    let pointers: &[&str] = match fields {
+        ErrorFields::Oauth => &OAUTH_ERROR_POINTERS,
+        ErrorFields::Api => &API_ERROR_POINTERS,
+    };
+    pointers
+        .iter()
         .find_map(|pointer| {
             value.pointer(pointer).and_then(Value::as_str).filter(|text| !text.is_empty())
         })
@@ -637,10 +679,45 @@ mod tests {
     }
 
     /// A body that echoes the request carries secrets in fields the client
-    /// never reads; none of them may reach a tool result or the audit.
+    /// never reads; none of them may reach a tool result or the audit. A
+    /// body it cannot parse is not error text either.
     #[test]
     fn an_echoed_body_contributes_no_error_text() {
-        assert_eq!(safe_error(r#"{"password":"hunter2","username":"hi@example.com"}"#), "");
+        assert_eq!(
+            safe_error(r#"{"password":"hunter2","username":"hi@example.com"}"#, ErrorFields::Api),
+            ""
+        );
+        assert_eq!(safe_error("<html>password=hunter2</html>", ErrorFields::Api), "");
+    }
+
+    /// Rocket's catcher can answer `reason` with no description; the pointer
+    /// must stand on its own rather than only behind a sibling.
+    #[test]
+    fn an_api_error_keeps_a_reason_with_no_description() {
+        let body = r#"{"error":{"code":404,"reason":"Not Found","description":""}}"#;
+        assert_eq!(safe_error(body, ErrorFields::Api), "Not Found");
+    }
+
+    /// The identity route keeps only its OAuth pair: the API's `message` and
+    /// nested pointers are not read there, so a proxy that re-encodes the
+    /// token form into one of them cannot reach the error text.
+    #[tokio::test]
+    async fn an_identity_error_body_keeps_only_the_oauth_pair() {
+        let body =
+            r#"{"message":"invalid_grant","error":"","error_description":"","password":"hunter2"}"#;
+        let (address, server) = serve_once("400 Bad Request", body, "").await;
+        let client = VaultClient::new(&format!("http://{address}")).unwrap();
+
+        let error =
+            client.login_password("hi@vedhavyas.dev", "the-password-hash", None).await.unwrap_err();
+        let text = error.to_string();
+
+        assert!(
+            !text.contains("invalid_grant"),
+            "an API pointer reached the identity error: {text}"
+        );
+        assert!(!text.contains("hunter2"), "the echoed form reached the identity error: {text}");
+        server.await.unwrap();
     }
 
     /// A relative download is the API route and takes the bearer; an absolute
