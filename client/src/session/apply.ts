@@ -16,7 +16,7 @@
  * the record.
  */
 
-import { eventsOf, joinOfEvents, withEvents } from '../chat/join';
+import { eventsOf, joinOfEvents, withEvents, type TaskJoin } from '../chat/join';
 import { outcomesOf } from '../chat/outcomes';
 import { fold } from '../chat/units';
 import { FALLBACK_FLOOR_DB, fractionOf } from '../composer/meter';
@@ -760,8 +760,8 @@ function settled(held: SessionRecord): SessionRecord {
  *   which opens a turn on a queued prompt; the chat refuses that cut and joins
  *   the row to the turn above it.
  *
- * Nothing draws these turns whole: a view reads them flattened, so a
- * difference here is a row count rather than a picture.
+ * **The boundary is the window's unit**: a turn that leaves it takes its facts
+ * with it, and no page draws the cut.
  *
  * **The record keeps the ceiling a fresh read sends**: `SUBSCRIBE_TURNS`, the
  * server's count (`crates/forge-server/src/transport/wire.rs`), which its own
@@ -780,21 +780,20 @@ function appendFrame(conversation: Conversation, message: unknown): Conversation
   const opens =
     last === undefined || (fold([message]).length > 0 && !isSystem(message) && opensATurn(message));
   if (opens) {
-    return windowed({
-      ...held,
-      turns: [...held.turns, { key: null, messages: [message], events }],
-      join: withEvents(held.join, events),
-    });
+    return windowed(
+      { ...held, turns: [...held.turns, { events }], join: withEvents(held.join, events) },
+      held.join,
+    );
   }
   if (last === undefined) return held;
-  return windowed({
-    ...held,
-    turns: [
-      ...held.turns.slice(0, -1),
-      { ...last, messages: [...last.messages, message], events: [...last.events, ...events] },
-    ],
-    join: withEvents(held.join, events),
-  });
+  return windowed(
+    {
+      ...held,
+      turns: [...held.turns.slice(0, -1), { ...last, events: [...last.events, ...events] }],
+      join: withEvents(held.join, events),
+    },
+    held.join,
+  );
 }
 
 /**
@@ -804,10 +803,16 @@ function appendFrame(conversation: Conversation, message: unknown): Conversation
  * task frame's owner link, a latched failure all read what earlier turns wrote
  * - so the surviving window is replayed rather than patched. That happens once
  * per turn the window sheds, never per frame.
+ *
+ * `was` is the join before this frame, so a frame that stated no task fact
+ * keeps the outcomes it already had rather than rebuilding them.
  */
-function windowed(conversation: Conversation): Conversation {
+function windowed(conversation: Conversation, was: TaskJoin): Conversation {
   const over = conversation.turns.length - SUBSCRIBE_TURNS;
-  if (over <= 0) return { ...conversation, outcomes: outcomesOf(conversation.join) };
+  if (over <= 0) {
+    if (conversation.join === was) return conversation;
+    return { ...conversation, outcomes: outcomesOf(conversation.join) };
+  }
   const turns = conversation.turns.slice(over);
   const join = joinOfEvents(turns);
   return { ...conversation, turns, join, outcomes: outcomesOf(join) };

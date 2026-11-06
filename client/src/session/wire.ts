@@ -185,16 +185,13 @@ export interface MonitorRecord {
 }
 
 /**
- * One turn of the transcript: what names it, the frames it ran as, and the
- * task facts those frames state.
+ * One turn of the record's conversation: the task facts its frames stated.
  *
- * `key` is `null` on every turn of a transcript-derived conversation - the name
- * comes from a `Result` frame and a transcript holds none - so it is carried
- * for a live session and must not be keyed on.
+ * **The frames themselves are not kept.** A whole read walks them once and a
+ * live frame is folded as it lands, so all a window trim needs to replay is
+ * the facts - and the bodies, which no page draws from this record, go.
  */
 export interface Turn {
-  key: string | null;
-  messages: unknown[];
   events: JoinEvent[];
 }
 
@@ -573,24 +570,22 @@ function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : {};
 }
 
-/** One turn, with the frames it fails to carry read as none rather than as a
- * shape the row below would have to test for. */
-/** The read's conversation, with its join folded once for every frame it hands over. */
+/**
+ * The read's conversation, with its join folded once for every frame it hands
+ * over. A turn whose frames do not parse reads as none rather than as a shape
+ * the rest of this would have to test for.
+ */
 function conversationFrom(held: Record<string, unknown>): Conversation {
-  const turns = list(held['turns']).map(turnFrom);
-  const join = joinFrom(turns);
+  const read = list(held['turns']).map((turn) => list(record(turn)['messages']));
+  // The read's join is the whole walk, exactly what `outcomesFrom` builds over
+  // the same frames: a fresh read cannot disagree with the page's own fold.
+  const join = joinFrom(read.map((messages) => ({ messages })));
   return {
-    turns,
+    turns: read.map((messages) => ({ events: messages.flatMap(eventsOf) })),
     compaction_count: number(held['compaction_count']) ?? 0,
     join,
     outcomes: outcomesOf(join),
   };
-}
-
-function turnFrom(value: unknown): Turn {
-  const held = record(value);
-  const messages = list(held['messages']);
-  return { key: text(held['key']), messages, events: messages.flatMap(eventsOf) };
 }
 
 function list(value: unknown): unknown[] {

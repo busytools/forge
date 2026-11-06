@@ -244,140 +244,67 @@ describe('applyUpdate', () => {
       expect(held.conversation.outcomes).toEqual(outcomesFrom([{ messages: frames }]));
     });
 
-    it('appends a chat_appended frame to the turn it belongs to', () => {
-      const held = empty();
-      const next = applyUpdate(held, {
-        chat_appended: {
-          key: SLOT,
-          msg: {
-            type: 'assistant',
-            uuid: 'u1',
-            message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] },
-          },
-        },
-      });
+    /**
+     * The record keeps what the join reads and drops the frame it came from.
+     * A body kept "for a reader" here is the leak this cut exists to close.
+     */
+    it('keeps no frame it has folded: the facts stay and the body goes', () => {
+      const body = 'the-body-the-record-must-not-keep';
+      const held = landed(
+        applyUpdate(empty(), { chat_appended: { key: SLOT, msg: prompt('go', 'p-0') } }),
+        toolUse('call-launch', 'Bash'),
+      );
+      const next = landed(
+        held,
+        toolResult('call-launch', `Command running in background with ID: t-launch ${body}`),
+      );
 
-      expect(next.conversation.turns).toHaveLength(1);
-      expect(next.conversation.turns[0]?.messages).toHaveLength(1);
+      const kept = JSON.stringify(next.conversation);
+      expect(kept, 'the record kept the body of a frame it had folded').not.toContain(body);
+      // The fact the frame stated is still there, so the absence above is the
+      // body going and not the frame never having been read.
+      expect(kept, 'the fold kept no fact from the frame it read').toContain('t-launch');
     });
 
     it('opens a turn for what a person said, and joins the answer to it', () => {
-      const spoken = applyUpdate(empty(), {
-        chat_appended: { key: SLOT, msg: prompt('hello') },
-      });
-      const answered = applyUpdate(spoken, {
-        chat_appended: {
-          key: SLOT,
-          msg: {
-            type: 'assistant',
-            uuid: 'u2',
-            message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] },
-          },
-        },
+      const spoken = landed(empty(), prompt('hello'));
+      const answered = landed(spoken, {
+        type: 'assistant',
+        uuid: 'u2',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] },
       });
 
       expect(answered.conversation.turns).toHaveLength(1);
-      expect(answered.conversation.turns[0]?.messages).toHaveLength(2);
     });
 
     it('answers a second prompt with a turn of its own', () => {
-      const first = applyUpdate(empty(), { chat_appended: { key: SLOT, msg: prompt('one') } });
-      const second = applyUpdate(first, { chat_appended: { key: SLOT, msg: prompt('two') } });
+      const first = landed(empty(), prompt('one'));
+      const second = landed(first, prompt('two'));
 
       expect(second.conversation.turns).toHaveLength(2);
     });
 
-    it('joins a tool result the fold draws nothing out of', () => {
-      const held = applyUpdate(empty(), { chat_appended: { key: SLOT, msg: prompt('one') } });
-      const next = applyUpdate(held, {
-        chat_appended: {
-          key: SLOT,
-          msg: {
-            type: 'user',
-            uuid: 'u2',
-            message: {
-              role: 'user',
-              content: [{ type: 'tool_result', tool_use_id: 'tu1', content: 'a\nb' }],
-            },
-          },
-        },
-      });
+    it('keeps a tool result and a system frame inside the turn the prompt opened', () => {
+      let held = landed(empty(), prompt('one'));
+      held = landed(held, toolResult('tu1', 'a\nb'));
+      held = landed(held, { type: 'system', subtype: 'init', session_id: 's', tools: [] });
 
-      expect(next.conversation.turns).toHaveLength(1);
-      expect(next.conversation.turns[0]?.messages).toHaveLength(2);
-    });
-
-    it('keeps a system frame inside the turn it arrived in', () => {
-      const held = applyUpdate(empty(), { chat_appended: { key: SLOT, msg: prompt('hello') } });
-      const next = applyUpdate(held, {
-        chat_appended: {
-          key: SLOT,
-          msg: { type: 'system', subtype: 'init', session_id: 's', tools: [] },
-        },
-      });
-
-      expect(next.conversation.turns).toHaveLength(1);
-      expect(next.conversation.turns[0]?.messages).toHaveLength(2);
+      expect(held.conversation.turns, 'a frame that ends nothing opened a turn').toHaveLength(1);
     });
 
     /**
      * The record keeps the window a fresh read sends, so a long-lived seat
-     * retains no more than a reload would hand it. The chat draws from its own
-     * fold, not this conversation.
+     * retains no more than a reload would hand it. The window is whole turns:
+     * a trim never cuts a turn's facts in half.
      */
     it('keeps the newest whole turns a fresh read would send', () => {
       const opened = 25;
       let held = empty();
       for (let at = 0; at < opened; at += 1) {
-        held = applyUpdate(held, {
-          chat_appended: { key: SLOT, msg: prompt(`turn-${at}`, `u-${at}`) },
-        });
+        held = landed(held, prompt(`turn-${at}`, `u-${at}`));
       }
 
       expect(held.conversation.turns).toHaveLength(20);
-      // The newest turn is whole, and the window starts at the oldest turn
-      // still inside it.
-      expect(held.conversation.turns[19]?.messages).toHaveLength(1);
-      expect(held.conversation.turns[0]?.messages[0]).toMatchObject({
-        message: { content: [{ text: `turn-${opened - 20}` }] },
-      });
-      expect(
-        JSON.stringify(held.conversation.turns),
-        'a turn older than the window stayed',
-      ).not.toContain('turn-4"');
-    });
-
-    /** A turn is kept whole: the window never cuts one message short. */
-    it('keeps every message of the turns the window holds', () => {
-      let held = empty();
-      for (let turn = 0; turn < 25; turn += 1) {
-        held = applyUpdate(held, {
-          chat_appended: { key: SLOT, msg: prompt(`turn-${turn}`, `p-${turn}`) },
-        });
-        for (let part = 0; part < 2; part += 1) {
-          held = applyUpdate(held, {
-            chat_appended: {
-              key: SLOT,
-              msg: {
-                type: 'assistant',
-                uuid: `a-${turn}-${part}`,
-                message: {
-                  role: 'assistant',
-                  content: [{ type: 'text', text: `turn-${turn}-${part}` }],
-                },
-              },
-            },
-          });
-        }
-      }
-
-      expect(held.conversation.turns).toHaveLength(20);
-      for (const turn of held.conversation.turns) {
-        expect(turn.messages, 'the window kept a turn without its messages').toHaveLength(3);
-      }
-      expect(held.conversation.turns[0]?.messages[0]).toMatchObject({
-        message: { content: [{ text: 'turn-5' }] },
-      });
     });
 
     it('keeps the compaction count when the window trims', () => {
@@ -398,52 +325,68 @@ describe('applyUpdate', () => {
     /**
      * The strip reads the record's materialised join, so the window's risk is
      * pinned here: an ending inside it still lands, one whose turn left is
-     * gone - the same loss a reload takes. The whole walk stays the authority
-     * at both checkpoints, which is what makes the trim's replay exact.
+     * gone - the same loss a reload takes. The whole walk over the surviving
+     * frames stays the authority at both checkpoints, which is what makes the
+     * trim's replay exact.
      */
     it('loses an ending only when its turn leaves the window, as a reload does', () => {
-      let held = applyUpdate(empty(), {
-        chat_appended: { key: SLOT, msg: prompt('opening', 'p-0') },
-      });
-      held = applyUpdate(held, {
-        chat_appended: {
-          key: SLOT,
-          msg: {
-            type: 'system',
-            subtype: 'task_notification',
-            tool_use_id: 'call-window',
-            status: 'failed',
-            patch: { status: 'failed', end_time: 1_793_700_000_000 },
-          },
-        },
-      });
-      // Nineteen turns after it leaves the ending's turn still inside the window.
+      const frames: unknown[] = [
+        prompt('opening', 'p-0'),
+        taskFrame({
+          subtype: 'task_notification',
+          tool_use_id: 'call-window',
+          status: 'failed',
+          patch: { status: 'failed', end_time: 1_793_700_000_000 },
+        }),
+      ];
+      // Nineteen turns after it: the ending's turn is still inside the window,
+      // while a link and a later ending land in turns that survive the trim.
       for (let turn = 1; turn <= 19; turn += 1) {
-        held = applyUpdate(held, {
-          chat_appended: { key: SLOT, msg: prompt(`turn-${turn}`, `p-${turn}`) },
-        });
+        frames.push(prompt(`turn-${turn}`, `p-${turn}`));
+        if (turn === 1) {
+          frames.push(
+            taskFrame({ subtype: 'task_started', task_id: 't-late', tool_use_id: 'call-late' }),
+          );
+        }
+        if (turn === 5) {
+          frames.push(
+            taskFrame({
+              subtype: 'task_notification',
+              tool_use_id: 'call-late',
+              status: 'failed',
+              patch: { end_time: 2_222 },
+            }),
+          );
+        }
       }
+      let held = empty();
+      for (const frame of frames) held = landed(held, frame);
+
       expect(
         held.conversation.outcomes,
-        'the folded join drifted from a whole walk of the turns it holds',
-      ).toEqual(outcomesFrom(held.conversation.turns));
+        'the folded join drifted from a whole walk of the frames it holds',
+      ).toEqual(outcomesFrom([{ messages: frames }]));
       expect(
         held.conversation.outcomes.calls.get('call-window')?.failed,
         "the newest ending did not reach the strip's join",
       ).toBe(true);
 
-      // One more turn and the ending's turn is the first the window drops.
-      held = applyUpdate(held, {
-        chat_appended: { key: SLOT, msg: prompt('turn-20', 'p-20') },
-      });
+      // One more turn and the ending's turn is the first the window drops. The
+      // surviving frames are the reference: what the window keeps, it keeps
+      // exactly as a whole walk of them would.
+      held = landed(held, prompt('turn-20', 'p-20'));
       expect(
         held.conversation.outcomes,
         'the replay of the surviving window drifted from a whole walk of it',
-      ).toEqual(outcomesFrom(held.conversation.turns));
+      ).toEqual(outcomesFrom([{ messages: frames.slice(2) }]));
       expect(
         held.conversation.outcomes.calls.get('call-window'),
         'an ending older than the window outlived it',
       ).toBeUndefined();
+      expect(
+        held.conversation.outcomes.calls.get('call-late')?.failed,
+        "a surviving turn's ending was lost with the dropped turn",
+      ).toBe(true);
     });
   });
 

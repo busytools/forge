@@ -2044,12 +2044,23 @@ function occupantAs(name: string): SessionUpdate {
   return { [name]: Object.values(occupant('new'))[0] };
 }
 
-/** A prompt as the CLI writes one: the frame shape the dev fixture carries. */
+/**
+ * A prompt as the CLI writes one: the frame shape the dev fixture carries.
+ *
+ * It carries a tool result naming the text as well - the record keeps a
+ * frame's join facts and not its body, so this is what a test reads back.
+ */
 function spoke(text: string, uuid = 'u1'): Record<string, unknown> {
   return {
     type: 'user',
     uuid,
-    message: { role: 'user', content: [{ type: 'text', text }] },
+    message: {
+      role: 'user',
+      content: [
+        { type: 'text', text },
+        { type: 'tool_result', tool_use_id: text, content: '' },
+      ],
+    },
     session_id: 's',
   };
 }
@@ -2069,17 +2080,14 @@ function chatFrame(at: number): SessionUpdate {
 }
 
 /**
- * Every word a record's turns carry, in the order its frames arrived.
+ * Every word the record's turns carry, in the order its frames arrived.
  *
- * The record holds wire frames as they came, typed `unknown`, so the shape
- * `spoke` built is narrowed here rather than restated by the production types.
+ * The record keeps each frame's join facts and not the frame, so a test reads
+ * back the id `spoke` names its tool result by.
  */
 function spoken(page: Watching): string[] {
   return (page.read().wire?.conversation.turns ?? []).flatMap((turn) =>
-    turn.messages.map((frame) => {
-      const content = (frame as { message?: { content?: { text?: string }[] } }).message?.content;
-      return (content ?? []).map((part) => part.text ?? '').join('');
-    }),
+    turn.events.flatMap((event) => (event.kind === 'result' ? [event.id] : [])),
   );
 }
 
