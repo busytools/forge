@@ -100,7 +100,7 @@
    * Whether this client may type: the controller, or the hand-off's door
    * while nobody has claimed it.
    */
-  const typing = $derived(mayType(handOff.current !== null));
+  const typing = $derived(mayType());
 
   function send(bytes: Uint8Array): void {
     // **The person's input is the hand-off's or their own control.** Outside
@@ -267,6 +267,12 @@
     if (term !== null) term.options.disableStdin = !typing;
   });
 
+  // **Taking the keyboard focuses the terminal.** The person presses take
+  // control and types: the next keystroke belongs to the shell, not the bar.
+  $effect(() => {
+    if (controlling() && term !== null) term.focus();
+  });
+
   // **The byte stream stops while the tab is hidden.** A page that cannot draw
   // the frames would only grow the server's backlog; a resume repaints.
   $effect(() => {
@@ -342,11 +348,12 @@
       {stateLine}
     </span>
     <span class="tb-acts">
-      {#if handOff.current === null && phase === 'live'}
-        <!-- **The person can take the keyboard without an agent asking**: the
-             same role the browser has, and the agent's tools are refused
-             while it is held. **The press is drawn** while the server
-             answers, and a refusal lands in the state line. -->
+      {#if phase === 'live'}
+        <!-- **The person takes the keyboard explicitly**, during a hand-off
+             too: the ask raises the surface as a viewer, and this press is
+             what lets them type. The agent's own call takes it back. **The
+             press is drawn** while the server answers, and a refusal lands
+             in the state line. -->
         <button
           type="button"
           class="tb-btn"

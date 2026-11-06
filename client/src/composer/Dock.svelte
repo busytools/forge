@@ -1662,7 +1662,7 @@
       <div class="d-q">{ask.request.reason}</div>
       <div class="desc">
         {raiseFailed ??
-          "Open terminal raises the seat's terminal, exactly as it stands. The session waits, with no timeout, for your answer, and cannot read or write the terminal while it does."}
+          "Open terminal raises the seat's terminal, exactly as it stands; take control there to type. The session waits, with no timeout, for your answer, and cannot read or write the terminal while it does."}
       </div>
     {:else if ask.kind === 'vault'}
       <div class="d-head">

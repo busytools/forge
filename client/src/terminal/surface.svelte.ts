@@ -218,10 +218,15 @@ export function installTerminalSurface(connection: Connection): () => void {
     if (surface.phase === 'closed') return;
     if (surface.seat !== null && !sameSeat(surface.seat, state.seat)) return;
     if (surface.id !== null && state.id !== surface.id) return;
+    // **Losing the keyboard is said, not merely drawn.** A client that held
+    // the role and finds it gone hears which kind of hand took it: another
+    // client's name is on the bar, and an agent's turn says so.
+    const lost = surface.viewer !== null && surface.controller === surface.viewer;
     surface.controller = state.controller;
     // The answer landed, whatever it was: the bar draws the role, not a wait.
     surface.control_pending = null;
-    surface.control_reason = null;
+    surface.control_reason =
+      lost && state.controller === null ? 'the agent took the keyboard' : null;
   });
   // **A refused take or release is drawn.** The push is the success path;
   // the server's own refusal names this operation, and a bar that showed
@@ -414,16 +419,14 @@ export function controlling(): boolean {
 }
 
 /**
- * Whether this client may type into the raised terminal: the controller, or a
- * hand-off's door while no client has claimed it.
+ * Whether this client may type into the raised terminal.
  *
- * **A hand-off's keyboard is one client's.** The first client to type claims
- * it; once the claim is pushed, every other client falls back to viewing, so
- * two hands never join one prompt.
+ * **Only the controller types, and the controller is always explicit**: a
+ * parked hand-off raises the surface as a viewer, and the person takes the
+ * keyboard from the bar. Nothing is granted to the first client to type.
  */
-export function mayType(held: boolean): boolean {
-  if (controlling()) return true;
-  return held && surface.controller === null;
+export function mayType(): boolean {
+  return controlling();
 }
 
 /**

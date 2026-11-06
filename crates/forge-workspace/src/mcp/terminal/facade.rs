@@ -16,7 +16,7 @@ use forge_primitives::terminal::{TerminalExit, TerminalState};
 use forge_terminal::Key;
 use tokio::time::{Instant, timeout};
 
-use crate::terminal::{TerminalEntry, controlled_error, wire_state};
+use crate::terminal::{TerminalEntry, wire_state};
 use crate::workspace::Workspace;
 
 /// What `terminal__open` asks for.
@@ -199,6 +199,11 @@ impl TerminalFacade for ProdTerminalFacade {
         let workspace = self.workspace()?;
         refuse_when_held(&workspace, seat)?;
         let entry = workspace.terminal_by_id(seat, id)?;
+        // **An agent's write takes the keyboard from the person.** The holder
+        // hears it through the control stream, and the write lands rather than
+        // being refused: a tool call that cannot act is a dead end for the
+        // session.
+        entry.clear_control();
         if let Some(text) = text.filter(|text| !text.is_empty()) {
             entry.terminal.write_text(&text).map_err(|error| error.to_string())?;
         }
@@ -307,9 +312,8 @@ impl TerminalFacade for ProdTerminalFacade {
         if workspace.terminal_held(seat) {
             return Err("a hand-off is already parked on this terminal".to_owned());
         }
-        if workspace.terminal_controlled(seat) {
-            return Err(controlled_error());
-        }
+        // **The park takes the keyboard** (under its own lock) from a person
+        // who holds it; the ending hands the agent the keyboard back.
         let (parked, answer) = workspace.register_terminal_hand_off(seat, id, reason)?;
         let guard =
             ResolveOnDrop { workspace: Arc::clone(&workspace), id: parked, caller: seat.clone() };
@@ -361,12 +365,12 @@ impl TerminalFacade for ProdTerminalFacade {
 /// **The screen and the PTY belong to the person while a hand-off is
 /// parked.** Every tool that touches either is refused, so a parallel call or
 /// a subagent cannot read their typing or write into their prompt.
+///
+/// **A person's own take-control does not refuse anything**: it is theirs to
+/// hold, and a tool that acts takes it back (see `write` and `hand_off`).
 fn refuse_when_held(workspace: &Workspace, seat: &SessionSlot) -> Result<(), String> {
     if workspace.terminal_held(seat) {
         return Err(held_error());
-    }
-    if workspace.terminal_controlled(seat) {
-        return Err(controlled_error());
     }
     Ok(())
 }
@@ -385,9 +389,6 @@ fn refusal_now(blind: Blind<'_>) -> Option<String> {
     let (workspace, seat) = blind?;
     if workspace.terminal_held(seat) {
         return Some(held_error());
-    }
-    if workspace.terminal_controlled(seat) {
-        return Some(controlled_error());
     }
     None
 }

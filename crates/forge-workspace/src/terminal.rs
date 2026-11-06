@@ -87,26 +87,6 @@ impl TerminalEntry {
         let _ = self.control.send(Some(viewer));
     }
 
-    /// Claim the control only where nobody holds it, telling every attached
-    /// viewer when the claim lands. **The hand-off's door**: the first client
-    /// to type during a parked hand-off owns the keyboard, and a client that
-    /// loses the race is a viewer rather than a second hand on the secret.
-    pub fn claim_control(&self, viewer: u64) -> bool {
-        if viewer == 0 {
-            return false;
-        }
-        if self
-            .controller
-            .compare_exchange(0, viewer, Ordering::Relaxed, Ordering::Relaxed)
-            .is_err()
-        {
-            return false;
-        }
-        self.touch();
-        let _ = self.control.send(Some(viewer));
-        true
-    }
-
     /// Give the person's control back to the agent whatever connection holds
     /// it, which is what the end of a hand-off owes: the ask parked the
     /// keyboard, and the ending takes it back.
@@ -153,14 +133,6 @@ impl TerminalEntry {
             held,
         }
     }
-}
-
-/// The sentence a call gets when the person holds the terminal's keyboard,
-/// shared so the tool family and the park describe one fact one way.
-pub(crate) fn controlled_error() -> String {
-    "the person has taken control of this terminal: its screen and input are theirs until they \
-     release it"
-        .to_owned()
 }
 
 /// The wire state, from the crate's own.
@@ -291,48 +263,19 @@ impl Workspace {
         self.terminal_if_any(slot).is_some_and(|entry| entry.controller().is_some())
     }
 
-    /// The hand-off door's keystrokes: the first client to type claims the
-    /// keyboard, and the claim and the write are one step under the park's
-    /// own lock.
+    /// The person's own take: always explicit, and always landing.
     ///
-    /// **A byte typed as the ask ended is refused**, so nothing typed during
-    /// the park lands after the agent has its keyboard back, and a client
-    /// that loses the claim is a viewer rather than a second hand on the
-    /// secret.
-    pub fn write_handoff_keyboard(
-        &self,
-        slot: &SessionSlot,
-        id: u16,
-        viewer: u64,
-        bytes: &[u8],
-    ) -> Result<(), String> {
-        let parked = self.terminal_handoffs.lock();
-        if !parked.values().any(|(owner, _, _)| owner == slot) {
-            return Err("the terminal hand-off has ended".to_owned());
-        }
-        let entry = self.terminal_by_id(slot, id)?;
-        if entry.controller() != Some(viewer) && !entry.claim_control(viewer) {
-            return Err("another client holds the keyboard".to_owned());
-        }
-        entry.terminal.write_bytes(bytes).map_err(|error| error.to_string())
-    }
-
-    /// The person's own take, refused while a hand-off holds the keyboard.
-    ///
-    /// **Checked under the hand-off lock**: a take racing a park either lands
-    /// before the park exists or is refused, never half of each. **The id is
-    /// the terminal the caller is viewing**: a replaced shell has a new id,
-    /// and a take that landed on it would hand a role no push could reach.
+    /// **A take is allowed while a hand-off parks**, because a park opens the
+    /// surface rather than handing out the keyboard: the person reads it,
+    /// takes control, and types. **The id is the terminal the caller is
+    /// viewing**: a replaced shell has a new id, and a take that landed on it
+    /// would hand a role no push could reach.
     pub fn take_terminal_control(
         &self,
         slot: &SessionSlot,
         id: u16,
         viewer: u64,
     ) -> Result<(), String> {
-        let parked = self.terminal_handoffs.lock();
-        if parked.values().any(|(owner, _, _)| owner == slot) {
-            return Err("a terminal hand-off holds the keyboard; use the hand-off card".to_owned());
-        }
         let entry = self.terminal_by_id(slot, id)?;
         entry.take_control(viewer);
         Ok(())
@@ -420,14 +363,12 @@ impl Workspace {
         let id = uuid::Uuid::new_v4();
         let handoff = TerminalHandOff { id, reason: reason.to_owned(), terminal, secret };
         {
-            // **The control check and the park share the lock**, so a take
-            // landing now cannot leave a hand-off parked on a terminal whose
-            // keyboard the person holds - the state in which a byte could
-            // land after the ask ends.
+            // **The park owns the keyboard, and takes it under its own lock**:
+            // a person's take that landed first loses it to the park, and the
+            // holder hears it through the control stream. The park then raises
+            // the surface as a viewer, and the person takes control to type.
             let mut parked = self.terminal_handoffs.lock();
-            if entry.controller().is_some() {
-                return Err(controlled_error());
-            }
+            entry.clear_control();
             parked.insert(id, (caller.clone(), handoff.clone(), sender));
         }
         // **The strip says the input is the person's** while the ask waits,
@@ -703,11 +644,11 @@ mod tests {
         workspace.close_terminal(&slot);
     }
 
-    /// **The person can take the terminal without an agent asking.** While a
-    /// client holds the role the tools are refused, another client's take
-    /// overrides the holder, and a release hands the agent the input back.
+    /// **The person's take is theirs, and an agent's call takes it back.**
+    /// Another client's take overrides the holder; a read is allowed while
+    /// the person holds the keyboard; a write takes it from them.
     #[tokio::test]
-    async fn a_client_take_control_blinds_the_agent_until_release() {
+    async fn an_agents_write_takes_the_keyboard_from_the_person() {
         let (workspace, _rx) = Workspace::testing_stub();
         workspace.seed_test_project("proj", "/tmp");
         let slot = SessionSlot::lead("TestOrg", "proj");
@@ -717,19 +658,19 @@ mod tests {
         assert!(!workspace.terminal_held(&slot), "which is not a hand-off");
         let facade = crate::mcp::terminal::facade::ProdTerminalFacade::from_workspace(&workspace);
         assert!(
-            facade.read(&slot, entry.id, None, 10, 1024).await.is_err(),
-            "a read while the person controls is refused",
+            facade.read(&slot, entry.id, None, 10, 1024).await.is_ok(),
+            "a read while the person controls is allowed",
         );
         assert!(
-            facade.write(&slot, entry.id, Some("x".to_owned()), Vec::new()).await.is_err(),
-            "a write while the person controls is refused",
+            facade.write(&slot, entry.id, Some("x".to_owned()), Vec::new()).await.is_ok(),
+            "a write lands and takes the keyboard from the person",
         );
+        assert!(!workspace.terminal_controlled(&slot), "and the person no longer holds it");
         entry.take_control(8);
         assert_eq!(entry.controller(), Some(8), "another client's take overrides the holder");
         assert!(!entry.release_control(7), "the old holder's release does not land");
         assert!(entry.release_control(8), "the holder releases it");
         assert!(!workspace.terminal_controlled(&slot), "the agent owns the input again");
-        assert!(facade.read(&slot, entry.id, None, 10, 1024).await.is_ok(), "and reads again");
         workspace.close_terminal(&slot);
     }
 
@@ -947,10 +888,11 @@ mod tests {
         assert!(workspace.terminal_if_any(&unstarted).is_none(), "and none was registered");
     }
 
-    /// **The park's ending takes the keyboard even from a claim that landed.**
-    /// A claim read under the same lock as the ending cannot outlive it.
+    /// **The person takes the keyboard during a park, and the ending clears
+    /// it.** The ask raises the surface as a viewer; the take is the person's
+    /// explicit door, and the ending hands the keyboard back to the agent.
     #[tokio::test]
-    async fn the_hand_off_ending_clears_a_claimed_keyboard() {
+    async fn a_take_lands_during_a_park_and_the_ending_clears_it() {
         let (workspace, _rx) = Workspace::testing_stub();
         workspace.seed_test_project("proj", "/tmp");
         let slot = SessionSlot::lead("TestOrg", "proj");
@@ -960,10 +902,10 @@ mod tests {
             .expect("a hand-off parks");
 
         assert!(
-            workspace.write_handoff_keyboard(&slot, entry.id, 7, b"echo door\r").is_ok(),
-            "the door claims the keyboard with its first byte",
+            workspace.take_terminal_control(&slot, entry.id, 7).is_ok(),
+            "the person's take lands while the ask waits",
         );
-        assert!(workspace.terminal_controlled(&slot), "and the person holds it");
+        assert!(workspace.terminal_controlled(&slot), "and they hold the keyboard");
 
         assert!(workspace.resolve_terminal_hand_off(
             parked,
@@ -975,45 +917,6 @@ mod tests {
             },
         ));
         assert!(!workspace.terminal_controlled(&slot), "the ending gave the keyboard back");
-        assert!(
-            workspace.write_handoff_keyboard(&slot, entry.id, 8, b"echo late\r").is_err(),
-            "a byte after the ending cannot land",
-        );
-        entry.terminal.close();
-    }
-
-    /// **A take cannot land while a hand-off is parked**, checked under the
-    /// park's own lock; the ending opens the door again.
-    #[tokio::test]
-    async fn a_take_is_refused_while_a_hand_off_is_parked() {
-        let (workspace, _rx) = Workspace::testing_stub();
-        workspace.seed_test_project("proj", "/tmp");
-        let slot = SessionSlot::lead("TestOrg", "proj");
-        let entry = workspace.terminal_for(&slot).expect("a terminal");
-        let (parked, _rx) = workspace
-            .register_terminal_hand_off(&slot, entry.id, "the sudo password")
-            .expect("a hand-off parks");
-
-        assert!(
-            workspace.take_terminal_control(&slot, entry.id, 7).is_err(),
-            "a take landed while a hand-off held the keyboard",
-        );
-        assert!(!workspace.terminal_controlled(&slot), "and no role was handed out");
-
-        assert!(workspace.resolve_terminal_hand_off(
-            parked,
-            &slot,
-            TerminalHandOffAnswer {
-                ending: HandOffEnding::Done,
-                source: forge_primitives::browser::HandOffSource::Takeover,
-                client: None,
-            },
-        ));
-        assert!(
-            workspace.take_terminal_control(&slot, entry.id, 7).is_ok(),
-            "the person's own take is theirs again once the ask is answered",
-        );
-        assert!(workspace.terminal_controlled(&slot), "and they hold it");
         entry.terminal.close();
     }
 
@@ -1053,17 +956,18 @@ mod tests {
     /// check shares the lock with the insert, so a take racing a hand-off
     /// cannot leave one behind.
     #[tokio::test]
-    async fn a_park_is_refused_while_the_person_holds_the_keyboard() {
+    async fn a_park_takes_the_keyboard_from_the_person() {
         let (workspace, _rx) = Workspace::testing_stub();
         workspace.seed_test_project("proj", "/tmp");
         let slot = SessionSlot::lead("TestOrg", "proj");
         let entry = workspace.terminal_for(&slot).expect("a terminal");
         entry.take_control(7);
         assert!(
-            workspace.register_terminal_hand_off(&slot, entry.id, "the sudo password").is_err(),
-            "a hand-off parked on a terminal the person holds",
+            workspace.register_terminal_hand_off(&slot, entry.id, "the sudo password").is_ok(),
+            "a hand-off parks over a person's take",
         );
-        assert!(!workspace.terminal_held(&slot), "and no ask was registered");
+        assert!(workspace.terminal_held(&slot), "and the ask is registered");
+        assert!(!workspace.terminal_controlled(&slot), "while the park owns the keyboard");
         entry.terminal.close();
     }
 

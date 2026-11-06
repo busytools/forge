@@ -109,9 +109,11 @@ impl TerminalTool {
                  named specials pressed in order: enter, tab, escape, up, down, left, right, \
                  home, end, page_up, page_down, backspace, ctrl_c, ctrl_d, ctrl_z, ctrl_l. \
                  Nothing is a command API: the bytes reach the shell as a person's would. \
-                 Refused while a hand-off is parked, because the person owns the input then. \
-                 Make sure the terminal has finished running a command before typing (see \
-                 terminal__wait) - keystrokes typed while a program is busy go to that program."
+                 If the person holds the keyboard, this call takes it from them (their client \
+                 says so). Refused while a hand-off is parked, because the person owns the \
+                 input then. Make sure the terminal has finished running a command before \
+                 typing (see terminal__wait) - keystrokes typed while a program is busy go to \
+                 that program."
             }
             Self::Read => {
                 "Read this seat's terminal as plain text, never raw escapes. The text is the \
@@ -147,11 +149,11 @@ impl TerminalTool {
                  ask draws a card on the seat's strip and parks, with no timeout, until they \
                  answer; if the surface is not up, the card's Open terminal button raises it. \
                  **You are blind while it is parked**: terminal__read and terminal__write are \
-                 refused. Their keystrokes go to the PTY rather than to you, but the shell may \
-                 echo them, so a read after the hand-off can carry what was typed. The person \
-                 can also take control of the terminal without asking; the same tools are \
-                 refused while they hold it, and it comes back when they release it or lower \
-                 the surface. `reason` is \
+                 refused. The ask takes the keyboard from the person if they held it, and the \
+                 raised surface is a viewer: they take control there to type, and the ending \
+                 hands the keyboard back to you. Their keystrokes go to the PTY rather than to \
+                 you, but the shell may echo them, so a read after the hand-off can carry what \
+                 was typed. `reason` is \
                  what they should do. The answer is the ending only - done means carry on; \
                  not_now means decide what to do instead; feedback means they sent you a message \
                  about it. Verify the outcome by reading the artifact or the terminal, never by \

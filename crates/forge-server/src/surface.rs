@@ -125,19 +125,8 @@ impl ViewSurface {
         Ok(entry)
     }
 
-    /// The hand-off door's keystrokes, claimed and written under the park's
-    /// own lock so a byte typed as the ask ends cannot land after it.
-    pub fn write_handoff_keyboard(
-        &self,
-        seat: &SessionSlot,
-        id: u16,
-        viewer: u64,
-        bytes: &[u8],
-    ) -> Result<(), String> {
-        self.workspace.write_handoff_keyboard(seat, id, viewer, bytes)
-    }
-
-    /// The person's own take, refused while a hand-off holds the keyboard.
+    /// The person's own take: always explicit, and landing even during a
+    /// parked hand-off, whose surface opens as a viewer's.
     pub fn take_terminal_control(
         &self,
         seat: &SessionSlot,

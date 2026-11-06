@@ -281,9 +281,9 @@ struct TerminalViewing {
 #[derive(Default)]
 struct TerminalViewingState {
     viewing: Option<TerminalViewing>,
-    /// **The role this connection holds, even while its surface is lowered**,
-    /// so the connection ending gives the keyboard back. A lower is not a
-    /// release; a dropped socket must not leave the agent blind.
+    /// **The role this connection holds, so a dropped socket gives the
+    /// keyboard back.** A lower releases it explicitly; this is the crash
+    /// path, where no detach ever arrives.
     role: Option<(std::sync::Arc<forge_workspace::terminal::TerminalEntry>, u64)>,
 }
 
@@ -1900,7 +1900,6 @@ where
                 dictate,
                 &mut viewers.terminal,
                 me,
-                updates.as_ref().is_some_and(|(_, answering)| *answering),
                 frame_route(&bytes, dictate),
             );
             return Ok(());
@@ -2862,11 +2861,14 @@ where
             attach_terminal(socket, state, terminal, me, seat, id, cols, rows, reply_to).await
         }
         ClientMessage::TerminalDetach => {
-            // **Lowering is a detach, not a release.** The drop takes this
-            // viewer's count off the terminal, and the role stays with the
-            // person who took it (`TerminalViewingState::role`) until they
-            // release it or the connection ends; a lower that handed the
-            // keyboard back is what made switching clients lose control.
+            // **A lower is an implicit release.** Going back to chat gives the
+            // keyboard up: the drop takes this viewer's count off the
+            // terminal, and the role this connection held goes with it, so a
+            // lowered terminal never keeps the agent out. A connection that
+            // still holds one when the socket ends is released by the drop.
+            if let Some((entry, viewer)) = terminal.role.take() {
+                entry.release_control(viewer);
+            }
             terminal.viewing = None;
             Ok(())
         }
@@ -2938,8 +2940,8 @@ where
                     )
                     .await;
                 }
-                // **The connection now owns the role**, so the socket ending
-                // gives it back even if the surface was lowered in between.
+                // **The connection now owns the role**, so a socket that dies
+                // without lowering gives the keyboard back.
                 let held = terminal.viewing.as_ref().map(|viewing| viewing.entry.clone());
                 if let Some(entry) = held {
                     terminal.role = Some((entry, me));
@@ -3697,7 +3699,6 @@ fn take_frame(
     dictate: &Streaming,
     terminal: &mut TerminalViewingState,
     me: u64,
-    answering: bool,
     route: FrameRoute,
 ) {
     match route {
@@ -3724,12 +3725,12 @@ fn take_frame(
                 );
                 return;
             }
-            // **The keyboard is the controller's, whether a hand-off parked
-            // it there or the person took it.** Outside both, the surface is a
-            // viewer and the bytes are refused, so an observer's keystrokes
-            // never join a command they did not ask for.
-            let controlling = viewing.entry.controller() == Some(me);
-            if controlling {
+            // **The keyboard is the controller's, and nobody is granted it
+            // implicitly**: a hand-off raises the surface as a viewer, and the
+            // person takes control from the bar to type. Outside that, the
+            // surface is a viewer and the bytes are refused, so an observer's
+            // keystrokes never join a command they did not ask for.
+            if viewing.entry.controller() == Some(me) {
                 if let Err(why) = surface.terminal_write(&viewing.seat, id, &bytes) {
                     tracing::debug!(
                         event_name = "terminal_input_failed",
@@ -3740,36 +3741,10 @@ fn take_frame(
                 }
                 return;
             }
-            if answering {
-                // **The hand-off's door is one client**, and the claim and
-                // the write are one step under the park's own lock: a client
-                // that loses the claim views, and a byte typed as the ask
-                // ended never lands after it.
-                match surface.write_handoff_keyboard(&viewing.seat, id, me, &bytes) {
-                    Ok(()) => {
-                        // **The door's claim is this connection's role**, so
-                        // a lower keeps it and the socket ending gives it
-                        // back.
-                        let entry = viewing.entry.clone();
-                        terminal.role = Some((entry, me));
-                    }
-                    Err(why) => {
-                        tracing::debug!(
-                            event_name = "terminal_input_refused",
-                            id,
-                            reason = %why,
-                            "a terminal input frame was refused",
-                        );
-                    }
-                }
-                return;
-            }
             tracing::debug!(
-                event_name = "terminal_input_outside_handoff",
+                event_name = "terminal_input_not_controlling",
                 id,
-                answering,
-                controlling,
-                "a terminal input frame arrived outside the hand-off or controller that owns the keyboard",
+                "a terminal input frame arrived from a connection that does not hold the keyboard",
             );
         }
         FrameRoute::Audio(samples) => {

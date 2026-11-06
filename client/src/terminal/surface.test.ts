@@ -356,7 +356,7 @@ describe('the terminal surface store', () => {
     stop();
   });
 
-  it("gives a hand-off's keyboard to the one client that claimed it", async () => {
+  it('gives the keyboard only to the client that took it, and says when it goes', async () => {
     const stop = installTerminalSurface(stillConnection());
     await opened(4);
     pushed.view?.({
@@ -370,16 +370,24 @@ describe('the terminal surface store', () => {
       viewer: 9,
       controller: null,
     });
-    expect(mayType(true), 'the first client to type may claim the keyboard').toBe(true);
+    expect(mayType(), 'a parked hand-off is a viewer until the person takes control').toBe(false);
 
-    // The claim lands: this client typed first and holds it.
     pushed.control?.({ seat, id: 4, controller: 9 });
-    expect(mayType(true), 'the claimer keeps typing').toBe(true);
+    expect(mayType(), 'the client holding the role types').toBe(true);
+    expect(controlling(), 'and it holds the role').toBe(true);
 
-    // Another client typed first: this one falls back to viewing.
+    // The agent's own call takes it back: this client is told in words.
+    pushed.control?.({ seat, id: 4, controller: null });
+    expect(mayType(), 'a stolen keyboard types nothing').toBe(false);
+    expect(surface.control_reason, 'a person who lost the role to an agent is told').toBe(
+      'the agent took the keyboard',
+    );
+
+    // Taking it again clears the notice; another client's take names them.
+    pushed.control?.({ seat, id: 4, controller: 9 });
+    expect(surface.control_reason, 'the notice goes with the next role').toBe(null);
     pushed.control?.({ seat, id: 4, controller: 12 });
-    expect(mayType(true), 'the loser of the claim falls back to viewing').toBe(false);
-    expect(mayType(false), 'and it cannot type outside a hand-off either').toBe(false);
+    expect(mayType(), 'the loser of a take types nothing').toBe(false);
     expect(controlling(), 'nor does it hold the role').toBe(false);
     stop();
   });
@@ -411,18 +419,18 @@ describe('the terminal surface store', () => {
       line({ terminal: terminalSummary({ state: { ...terminalSummary().state, running: true } }) }),
       "the agent's run",
     ).toBe('the agent is running a command');
-    // A parked hand-off nobody claimed waits for whoever takes it.
+    // A parked hand-off nobody took waits for the person's own take.
     expect(line({ terminal: terminalSummary({ held: true }) }), 'the hand-off waits').toBe(
       'waiting for you',
     );
-    // **A parked hand-off another client claimed is not "waiting for you"**:
+    // **A parked hand-off another client took is not "waiting for you"**:
     // the holder wins the line.
     expect(
       line({ terminal: terminalSummary({ held: true }), controller: 12 }),
       'a hand-off held elsewhere',
     ).toBe('another client has the keyboard');
     // A refusal replaces the line, in the server's own words.
-    const refused = 'a terminal hand-off holds the keyboard; use the hand-off card';
+    const refused = 'this connection is not viewing that terminal';
     expect(line({ controlReason: refused }), 'the refusal').toBe(refused);
     // **Liveness outranks a refusal**: a sentence about a keyboard says
     // nothing about a terminal that is gone or a shell that exited.

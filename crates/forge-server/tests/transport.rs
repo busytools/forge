@@ -12481,11 +12481,11 @@ async fn an_attach_is_repainted_at_the_clients_grid() {
     assert_eq!(attached, Some((100, 41)), "the repaint is laid out at the client's grid");
 }
 
-/// **Lowering the surface keeps the role.** The person who took the keyboard
-/// keeps it until they release it or the connection ends; a lower that handed
-/// it back is what made switching clients lose control.
+/// **Lowering the surface gives the keyboard up, and so does the connection
+/// ending.** Control is taken explicitly and lost implicitly; nothing holds
+/// the agent out after the person goes back to chat.
 #[tokio::test]
-async fn lowering_the_surface_keeps_the_persons_control() {
+async fn lowering_the_surface_releases_the_persons_control() {
     let dir = tempfile::tempdir().expect("a config dir");
     std::fs::create_dir_all(dir.path().join("proj")).expect("the project's directory");
     let fleet = Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])]).expect("the fleet builds");
@@ -12525,16 +12525,43 @@ async fn lowering_the_surface_keeps_the_persons_control() {
     assert!(taken, "the take was pushed");
     assert!(fleet.workspace().terminal_controlled(&seat), "the person holds it");
 
-    // **The lower is not a release.**
+    // **The lower is an implicit release.**
     send(&mut socket, ClientMessage::TerminalDetach).await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && fleet.workspace().terminal_controlled(&seat) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     assert!(
-        fleet.workspace().terminal_controlled(&seat),
-        "lowering the surface handed the keyboard back",
+        !fleet.workspace().terminal_controlled(&seat),
+        "lowering the surface kept the keyboard",
     );
 
-    // **The connection ending is**: nothing may hold the agent blind after
-    // the client is gone.
+    // **And the connection ending is too**: a socket that dies while holding
+    // the role must not leave the agent out. A lower detached this
+    // connection, so the take comes after a fresh attach, as the page does.
+    send(
+        &mut socket,
+        ClientMessage::TerminalView {
+            seat: seat.clone(),
+            id: Some(id),
+            cols: None,
+            rows: None,
+            reply_to: None,
+        },
+    )
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut reattached = false;
+    while Instant::now() < deadline && !reattached {
+        let Some(message) = next_server_within(&mut socket, 500).await else { continue };
+        if matches!(message, ServerMessage::TerminalView { .. }) {
+            reattached = true;
+        }
+    }
+    assert!(reattached, "the re-raise attached again");
+    send(&mut socket, ClientMessage::TerminalControl { seat: seat.clone(), id, take: true }).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(fleet.workspace().terminal_controlled(&seat), "the take landed again");
     drop(socket);
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline && fleet.workspace().terminal_controlled(&seat) {

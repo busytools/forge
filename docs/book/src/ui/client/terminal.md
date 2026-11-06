@@ -62,22 +62,19 @@ never draws an empty terminal over a live shell. Fit, unicode11, search,
 clipboard (OSC 52) and image (Sixel and iTerm2 IIP) are loaded beside it.
 **Kitty graphics is not drawn**; that gap is named rather than hidden.
 
-**The keyboard is the terminal's only while the person holds it.** There are
-two doors to that hold, and they are the browser's controller role: **take
-control** on the bar, which the person uses without an agent asking, and a
-parked hand-off, which an agent asks for. One holder at a time across
-clients - another client's take overrides it - and the agent's tools are
-refused while it is held. **The role survives a switch between clients**:
-whoever took it keeps it, even with the surface lowered, until they release
-it or the connection ends; a lower that handed the keyboard back is what
-made switching windows lose control. **A parked hand-off is one client's keyboard too**: the first
-client to type claims it, the bar of any other client reads `another client
-has the keyboard`, and the take control door is closed while the ask waits;
-the ending returns the keyboard to the agent. Outside both - and, once
-another client has claimed a hand-off, on every other client - the raised
-surface is a viewer: the key bar and the terminal's own input are inert, and
-the server refuses a keystroke that arrives anyway, while the output frames
-keep it live. Inside the hold,
+**The keyboard is taken explicitly and lost implicitly.** The person presses
+**take control** on the bar, and only then do the key bar and the terminal
+take their keys. One holder at a time across clients - another client's take
+overrides it - and the agent's own call takes it back from the person.
+**Every loss is said**: a client that lost the role reads `another client has
+the keyboard` (or `the agent took the keyboard`), so nobody types into a
+keyboard they no longer hold. **Going back to chat gives the keyboard up**,
+and so does the connection ending; a lower is not something a terminal keeps
+the agent out with. **A parked hand-off raises the surface as a viewer**:
+take control there to type, and the ending returns the keyboard to the agent.
+Outside the role the raised surface is a viewer: the key bar and the
+terminal's own input are inert, and the server refuses a keystroke that
+arrives anyway, while the output frames keep it live. Inside the role,
 Ctrl-C, Ctrl-D, Ctrl-Z and Ctrl-L reach the PTY untouched. **Cmd+J raises and
 lowers the surface on the desktop app**, on a seat whose read answers, where
 the page handles it; a browser tab keeps that chord for itself, so there the
