@@ -99,6 +99,11 @@ export const REDRAWS = new Set([
   'slack_draft_resolved',
   'browser_hand_off_pending',
   'browser_hand_off_resolved',
+  // A terminal hand-off is the same shape again, and a terminal that opened,
+  // exited or closed moves the row's strip.
+  'terminal_hand_off_pending',
+  'terminal_hand_off_resolved',
+  'terminal_changed',
   // A held configuration write moves its seat's row exactly as the asks
   // above do: into the needs-you group while the dock waits, and back out
   // when the reader answers.

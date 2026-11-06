@@ -90,6 +90,7 @@ pub mod settings;
 pub mod slack;
 pub mod subagents;
 pub mod tasks;
+pub mod terminal;
 pub mod token_usage;
 pub mod turn_error;
 pub mod usage;

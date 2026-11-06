@@ -77,6 +77,26 @@ const DARK: Record<string, string> = {
   '--teal': '#4ec9c9',
   '--violet': '#b79ae0',
   '--hot': '#ffb058',
+  // **The terminal's 16 ANSI colours are their own values.** A terminal
+  // palette's job is fidelity to what programs expect, not to the client's
+  // prose tiers, so they sit beside the tokens above rather than being
+  // derived from them. The cursor and selection reuse `--accent` and `--s3`.
+  '--ansi-black': '#1b1f27',
+  '--ansi-red': '#f47067',
+  '--ansi-green': '#7ee787',
+  '--ansi-yellow': '#d29922',
+  '--ansi-blue': '#6cb6ff',
+  '--ansi-magenta': '#dcbdfb',
+  '--ansi-cyan': '#39c5cf',
+  '--ansi-white': '#b1bac4',
+  '--ansi-bright-black': '#6e7681',
+  '--ansi-bright-red': '#ff938a',
+  '--ansi-bright-green': '#aff5b4',
+  '--ansi-bright-yellow': '#e3b341',
+  '--ansi-bright-blue': '#79c0ff',
+  '--ansi-bright-magenta': '#f0b6ff',
+  '--ansi-bright-cyan': '#56d4dd',
+  '--ansi-bright-white': '#f0f6fc',
 };
 
 /**

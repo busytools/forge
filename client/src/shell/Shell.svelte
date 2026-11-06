@@ -34,6 +34,7 @@
   import { DEFAULT_SETTINGS, type ClientSettings, type SessionSlot } from '../wire/types';
   import { clientAxes, ownSettingsFrame, settingsFrame } from '../settings/frame';
   import { installBrowser, uninstallBrowser } from '../browser/surface.svelte';
+  import { installTerminalSurface } from '../terminal/surface.svelte';
   import { forgetVoices } from '../voice/registry';
   import Router from './Router.svelte';
 
@@ -61,6 +62,8 @@
   // Raw, so the connection is handed around as the object it is rather than
   // as a reactive proxy of it.
   let connection = $state.raw<Connection | null>(null);
+  /** The terminal link's listeners for the connection it was made for. */
+  let stopTerminal: (() => void) | null = null;
   let connectionStatus = $state<ConnectionStatus>('connecting');
   /**
    * What the live connection's greeting said this client's protocol does not
@@ -106,6 +109,7 @@
   onDestroy(() => {
     destroyed = true;
     uninstallBrowser();
+    stopTerminal?.();
     setPerfSocket(null);
     connection?.close();
   });
@@ -436,6 +440,11 @@
     // its overlay to this connection, and a page drives the server's browser
     // over this socket.
     installBrowser(connected.connection);
+    // **The terminal follows the connection it draws through**: its attach,
+    // its frames and its state pushes all ride this socket (or the shell's
+    // own, when the page does not hold one).
+    stopTerminal?.();
+    stopTerminal = installTerminalSurface(connected.connection);
     // **The web build's perf records ride this socket.** The shell writes its
     // own through `client_perf`; a page has no file, so the server holds it.
     setPerfSocket((records) => connected.connection.clientPerf?.(records) ?? false);

@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge · the terminal surface</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130;
+    --line:#222a3c; --ctl:#516590;
+    --text:#c9d1d9; --muted:#8f98a8; --dim:#788294;
+    --accent:#f47600; --hot:#ffb058; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
+    --blue:#61a0e0; --teal:#4ec9c9; --violet:#b79ae0;
+    --ansi-black:#1b1f27; --ansi-red:#f47067; --ansi-green:#7ee787;
+    --ansi-yellow:#d29922; --ansi-blue:#6cb6ff; --ansi-magenta:#dcbdfb;
+    --ansi-cyan:#39c5cf; --ansi-white:#b1bac4;
+    --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Fira Code", ui-monospace, Menlo, monospace;
+    --fs-prose: 15.5px; --fs-data: 14px; --fs-label: 12.5px; --r: 12px;
+  }
+  body { background:
+      radial-gradient(1200px 560px at 6% -14%, rgba(244,118,0,.09), transparent 58%),
+      radial-gradient(900px 480px at 98% 108%, rgba(91,156,248,.06), transparent 60%),
+      var(--bg);
+    background-attachment: fixed; color: var(--text); font-family: var(--ui);
+    font-size: var(--fs-prose); line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  .page { max-width: 1420px; margin: 0 auto; padding: 30px 22px 90px; }
+  h1 { font-size: 18px; font-weight: 500; margin-bottom: 6px; }
+  .sub { color: var(--dim); max-width: 98ch; margin-bottom: 8px; }
+  h2 { font-size: var(--fs-prose); font-weight: 500; margin: 44px 0 10px; }
+  .mono { font-family: var(--mono); } .dim { color: var(--dim); }
+  .tile { border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+    background: linear-gradient(180deg, rgba(13,17,26,.65), rgba(4,5,10,.4));
+    padding: 12px 14px 14px; margin-top: 18px; }
+  .tcap { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); margin-bottom: 10px; }
+  .tcap b { color: var(--text); font-weight: 400; }
+  .tnote { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 9px; }
+
+  /* The surface: bar over the terminal. */
+  .term { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--bg); }
+  .bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; min-height: 44px;
+    padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--s1);
+    font-family: var(--mono); font-size: var(--fs-label); }
+  .bar .back, .bar .act { min-height: 32px; padding: 3px 10px; border: 1px solid var(--line);
+    border-radius: 6px; background: var(--s2); color: var(--text); font: inherit; }
+  .bar .back { margin-right: auto; }
+  .bar .title { color: var(--text); }
+  .bar .state { color: var(--muted); }
+  .bar .state.held { color: var(--warn); }
+  /* The parked ask's reason rides the raised bar too: the dock is behind it. */
+  .bar.ask { padding: 6px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap;
+    gap: 6px 12px; }
+  .bar.ask .why { color: var(--warn); overflow-wrap: anywhere; }
+  .bar.ask .fo { color: var(--muted); }
+  .screen { padding: 10px 12px 14px; font-family: var(--mono); font-size: 13px; line-height: 1.45;
+    min-height: 260px; white-space: pre-wrap; }
+  .p { color: var(--ansi-green); } .c { color: var(--text); }
+  .g { color: var(--ansi-bright-black, #6e7681); }
+  .r { color: var(--ansi-red); } .y { color: var(--ansi-yellow); }
+  .b { color: var(--ansi-blue); } .cur { background: var(--accent); color: var(--bg); }
+  .keys { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; border-top: 1px solid var(--line);
+    background: var(--s1); }
+  .keys span { min-width: 44px; min-height: 44px; display: grid; place-items: center;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--s2);
+    font-family: var(--mono); font-size: var(--fs-label); }
+
+  /* The strip row and the ask card. */
+  .strip { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 14px; }
+  .seg { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px;
+    border: 1px solid transparent; border-radius: 999px; background: none;
+    color: var(--dim); font-family: var(--mono); font-size: var(--fs-label); }
+  .seg .go { color: var(--muted); }
+  .glyph { width: 15px; height: 15px; flex: none; fill: none; stroke: currentColor;
+    stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+  .dot.idle { background: var(--accent); }
+  .dot.warn { width: 9px; height: 9px; background: var(--warn);
+    clip-path: polygon(50% 3%, 97% 95%, 3% 95%); }
+  .x { color: var(--bad); font-weight: 500; }
+  .ring { width: 8px; height: 8px; border: 2px solid var(--accent); border-radius: 50%; display: inline-block; }
+  .btn { min-height: 28px; padding: 2px 10px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--s2); color: var(--text); font: inherit; }
+  .btn.p { border-color: var(--accent); color: var(--accent); }
+  .btn.d { color: var(--muted); }
+  .card { border: 1px solid var(--line); border-radius: 14px; background: var(--s1);
+    padding: 14px 16px; margin-top: 12px; max-width: 760px; }
+  .card h3 { font-size: var(--fs-prose); font-weight: 500; }
+  .card .why { color: var(--muted); margin: 6px 0 12px; }
+  .card .acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .card .fo { font-family: var(--mono); font-size: var(--fs-label); color: var(--warn); }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>the terminal surface</h1>
+  <p class="sub">One terminal per seat, in the server process. The bar names the terminal, its
+    shell and its cwd, and carries the state in words. The screen is the server's own grid,
+    repainted as a VT stream on attach and then fed the shell's bytes.</p>
+
+  <div class="tile">
+    <div class="tcap"><b>the surface</b> · raised by the strip's show or a hand-off's Open</div>
+    <div class="term">
+      <div class="bar">
+        <span class="back">back to chat</span>
+        <span class="title">terminal 1 · zsh · /Users/vedhavyas/Projects/forge</span>
+        <span class="state held">waiting for you</span>
+        <span class="act">Done</span>
+        <span class="act">Not now</span>
+      </div>
+      <div class="bar ask"><span class="why">sudo needs the account password before the
+        reinstall can run</span><span class="fo">typing is hidden</span></div>
+      <div class="screen"><span class="p">vedhavyas@mac-studio:~/Projects/forge $</span> <span class="c">cargo nextest run -p forge-terminal</span>
+<span class="g">   Compiling forge-terminal v1.2.0</span>
+<span class="g">    Finished `test` profile [unoptimized + debuginfo] target(s)</span>
+<span class="g">     Running tests/…</span>
+<span class="ok">test result: ok.</span> 32 passed; 0 failed; 0 ignored
+<span class="p">vedhavyas@mac-studio:~/Projects/forge $</span> <span class="c">sudo -v</span>
+<span class="y">Password:</span> <span class="cur"> </span></div>
+      <div class="keys">
+        <span>Ctrl</span><span>Alt</span><span>Esc</span><span>Tab</span><span>^C</span>
+        <span>↑</span><span>↓</span><span>←</span><span>→</span><span>Enter</span>
+        <span>/</span><span>-</span><span>|</span><span>~</span>
+      </div>
+    </div>
+    <div class="tnote">the touch key bar is drawn under <span class="mono">pointer: coarse</span>: a
+      finger cannot produce Escape, Tab or an arrow, and every key is a 44px target. Ctrl and Alt
+      are sticky for the next character the soft keyboard types, and the whole bar is inert
+      outside the person's own control: the surface is a viewer then, and the server refuses a
+      keystroke that arrives anyway. A parked hand-off raises the surface as a viewer too - take
+      control there to type. Whoever loses the role reads
+      <span class="mono">another client has the keyboard</span>, or
+      <span class="mono">the agent took the keyboard</span> when an agent's call took it.</div>
+  </div>
+
+  <div class="tile">
+    <div class="tcap"><b>the bar, no ask parked</b> · the person's own door to the keyboard</div>
+    <div class="term"><div class="bar">
+      <span class="back">back to chat</span>
+      <span class="title">terminal 1 · zsh · /Users/vedhavyas/Projects/forge</span>
+      <span class="state">view only</span>
+      <span class="act">take control</span>
+    </div></div>
+    <div class="tnote">while this page holds the role the state says <span class="mono">you have control</span>
+      and the door reads <b>release control</b>. One holder at a time, like the browser's controller: another
+      client's take overrides it, an agent's write or hand-off takes it back, and going back to chat
+      gives it up - a lower never keeps the agent out. The person takes it explicitly every time.</div>
+  </div>
+
+  <div class="tile">
+    <div class="tcap"><b>the bar while a take is answered</b> · the press, the refusal and the other holder</div>
+    <div class="term"><div class="bar">
+      <span class="back">back to chat</span>
+      <span class="title">terminal 1 · zsh · /Users/vedhavyas/Projects/forge</span>
+      <span class="state">view only</span>
+      <span class="act">taking control...</span>
+    </div></div>
+    <div class="term"><div class="bar">
+      <span class="back">back to chat</span>
+      <span class="title">terminal 1 · zsh · /Users/vedhavyas/Projects/forge</span>
+      <span class="state">this connection is not viewing that terminal</span>
+      <span class="act">take control</span>
+    </div></div>
+    <div class="term"><div class="bar">
+      <span class="back">back to chat</span>
+      <span class="title">terminal 1 · zsh · /Users/vedhavyas/Projects/forge</span>
+      <span class="state">another client has the keyboard</span>
+      <span class="act">take control</span>
+    </div></div>
+    <div class="tnote">a take or release is drawn while the server answers - <b>taking control...</b>,
+      <b>releasing...</b> - and a refusal replaces the state line in the server's own words, until the
+      ask ends, the control push lands or a fresh repaint arrives; the bar carries the parked ask's
+      <b>Done</b> and <b>Not now</b> while it waits. A client that lost the keyboard to another
+      client's take reads <span class="mono">another client has the keyboard</span>; a client that
+      lost it to an agent's call reads <span class="mono">the agent took the keyboard</span>.</div>
+  </div>
+
+  <div class="tile">
+    <div class="tcap"><b>the strip's row</b> · drawn for every seat; a refused read draws the note</div>
+    <div class="strip">
+      <span class="seg"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></svg><span class="ring"></span>terminal <span class="dim">a command is running</span> <span class="go">show</span></span>
+      <span class="seg"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></svg><span class="dot warn"></span>terminal <span class="dim">waiting for you</span> <span class="go">hide</span></span>
+      <span class="seg"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></svg><span class="dot idle"></span>terminal <span class="dim">idle</span> <span class="go">show</span></span>
+      <span class="seg"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></svg><span class="x">x</span>terminal <span class="dim">exited</span> <span class="go">show</span></span>
+      <span class="seg"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></svg><span class="dot idle"></span>terminal <span class="dim">off</span> <span class="go">start</span></span>
+      <span class="seg"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 11 2-2-2-2"/><path d="M11 13h4"/><rect width="18" height="18" x="3" y="3" rx="2" ry="2"/></svg>terminal <span class="dim">the seat has no session yet - start it first</span></span>
+    </div>
+    <div class="tnote">the states are words as well as colour: a running command, a person's input
+      wanted, idle-but-the-agent's, an exited shell, or no terminal yet. <b>Start</b> is the
+      person's own door on a seat no agent has opened. A seat with no working tree - its read
+      refused - gets no door: the row says why instead.</div>
+  </div>
+
+  <div class="tile">
+    <div class="tcap"><b>the hand-off's card</b> · the one thing only the person can do</div>
+    <div class="card">
+      <h3>terminal hand-off · terminal 1</h3>
+      <p class="why">sudo needs the account password before the reinstall can run.</p>
+      <div class="acts">
+        <button class="btn p">Open terminal</button>
+        <button class="btn">Done</button>
+        <button class="btn d">Not now</button>
+        <span class="fo">typing is hidden: the program is reading a secret</span>
+      </div>
+    </div>
+    <div class="tnote">the agent is blind while this is parked: <span class="mono">terminal__read</span> and <span class="mono">terminal__write</span> are refused, and the tool gets the ending only. <b>Open terminal</b> raises the surface as a viewer - take control there to type - and the ending hands the keyboard back to the agent. The keystrokes go to the PTY, not into the agent's turn; the shell may echo them, so a read after the hand-off can carry what was typed.</div>
+  </div>
+</div>
+</body>
+</html>

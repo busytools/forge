@@ -6,6 +6,7 @@
   import { runningAt } from '../chat/conversation';
   import { drawsSurface, navigateBrowser } from '../browser/link';
   import { closeSurface, openSurface, surface } from '../browser/surface.svelte';
+  import { clearControlRefusal, closeTerminal, handOff } from '../terminal/surface.svelte';
   import Icon from '../components/Icon.svelte';
   import { slotOf, subjectKey } from '../protocol';
   import { variantOf } from '../session/apply';
@@ -62,7 +63,8 @@
   /** How long a landed take's border holds its green beat, which the book states. */
   const BEAT_MS = 450;
 
-  let { record, slot, connection, seat, dictation, reading, voice }: ComposerProps = $props();
+  let { record, slot, connection, seat, refused, dictation, reading, voice }: ComposerProps =
+    $props();
 
   /**
    * Every box this composer has opened, held for as long as it lives: leaving a
@@ -404,6 +406,9 @@
     if (held.kind === 'settings_write') {
       return { mark: 'settings', label: 'config write waiting', tone: 'att' as const };
     }
+    if (held.kind === 'terminal_hand_off') {
+      return { mark: 'bell', label: 'terminal waiting', tone: 'att' as const };
+    }
     if (held.kind === 'vault') {
       return { mark: 'decide', label: 'vault waiting', tone: 'att' as const };
     }
@@ -526,6 +531,52 @@
     if (held !== null && held.kind === 'browser_hand_off') {
       box.shownHandOff = held.request.id;
       box.ended = null;
+    }
+  });
+
+  /**
+   * **The raised terminal's bar carries the answer.** The dock is behind the
+   * surface while it is up, so a parked terminal hand-off with no reachable
+   * Done would hold the session for ever; the bar reads this and draws them.
+   */
+  /** The hand-off this page last drew, so its ending can be told from its absence. */
+  let drawnHandOff: string | null = null;
+  $effect(() => {
+    const held = ask;
+    if (held !== null && held.kind === 'terminal_hand_off') {
+      const id = held.request.id;
+      drawnHandOff = id;
+      handOff.current = {
+        id,
+        reason: held.request.reason,
+        secret: held.request.secret,
+        respond: (ending) => {
+          remember(id);
+          try {
+            void connection.dispatch(
+              {
+                respond_terminal_hand_off: {
+                  key: slot,
+                  id,
+                  answer: { ending: { type: ending }, source: 'takeover' },
+                },
+              },
+              slot,
+            );
+          } catch (error) {
+            report('the answer was not sent', error);
+          }
+          void closeTerminal();
+        },
+      };
+    } else {
+      // **The ask leaving the record is its ending**: a take's refusal that
+      // named it is not true any more.
+      if (drawnHandOff !== null) {
+        drawnHandOff = null;
+        clearControlRefusal();
+      }
+      handOff.current = null;
     }
   });
 
@@ -1081,6 +1132,10 @@
         box.ended = { tone: 'warn', text: message.why };
         return;
       }
+      if (message.what === 'respond_terminal_hand_off') {
+        box.ended = { tone: 'warn', text: message.why };
+        return;
+      }
       if (message.what === 'respond_settings_write') {
         box.ended = { tone: 'warn', text: message.why };
         return;
@@ -1410,11 +1465,17 @@
     const tabbables = (): HTMLElement[] => {
       const at = rootOf();
       if (at === null) return [];
-      return [
+      const all = [
         ...at.querySelectorAll<HTMLElement>(
           'textarea, input, button, [href], [tabindex]:not([tabindex="-1"])',
         ),
       ].filter((el) => !el.hasAttribute('disabled') && el.offsetParent !== null);
+      // **The field leads whatever else the box holds.** The live row's chips
+      // sit above it in the DOM, and a Tab from the page must still come to
+      // the box's own keyboard rather than to a strip button.
+      return field !== null && all.includes(field)
+        ? [field, ...all.filter((el) => el !== field)]
+        : all;
     };
     const onKey = (event: KeyboardEvent): void => {
       if (event.defaultPrevented) return;
@@ -1738,6 +1799,7 @@
       return `question:${current.request.toolId}:${String(current.request.index)}`;
     }
     if (current.kind === 'browser_hand_off') return `handoff:${current.request.id}`;
+    if (current.kind === 'terminal_hand_off') return `terminal:${current.request.id}`;
     if (current.kind === 'settings_write') return `settings:${current.request.id}`;
     if (current.kind === 'vault') return `vault:${current.request.id}`;
     return `slack:${current.request.id}`;
@@ -1756,6 +1818,7 @@
     if (
       current.kind === 'slack_draft' ||
       current.kind === 'browser_hand_off' ||
+      current.kind === 'terminal_hand_off' ||
       current.kind === 'document_hand_off' ||
       current.kind === 'settings_write' ||
       current.kind === 'vault'
@@ -1924,6 +1987,7 @@
     <LiveRow
       info={pinnedRow.of(seatKey)}
       {slot}
+      sessionless={refused !== null}
       ask={askChip}
       draft={draftChip}
       onask={swapToAsk}

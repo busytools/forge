@@ -848,6 +848,17 @@ default.
 | `quality`       | integer | `75`    | Lossy WebP quality for the frames between key frames, `0` to `100`. A key frame is lossless regardless: the first frame of a surface and every frame after a resize or a pause. A value over `100` fails the load (`[browser] quality must be 0 to 100`). |
 | `idle_minutes`  | integer | `30`    | The idle release, on the server's clock: after this many minutes with no browser call and no viewer attached, the profile's host is closed. The close ends the host and its tabs; the cache and logins stay, and the next call starts a fresh host whose boot tab the first page call adopts. **A viewer attached or a hand-off waiting on the person holds the profile open** - the sweep skips both rather than closing a page someone is looking at. A lower does not reset the clock; the next call or attach does. **The clocks live in the server's memory**, so a restart grants every browser a fresh window. |
 
+## `[terminal]`
+
+The terminal one per seat: the shell it runs, how much scrollback the
+model keeps, and when an idle one closes. Absent means every default.
+
+| Key                | Type    | Default  | Notes                                                                                                                                                                                                                                                                                                                                                       |
+| ------------------ | ------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `shell`            | string  | `$SHELL` | The shell a seat's terminal runs. An absent key uses the person's own `$SHELL`, falling back to `/bin/zsh` on macOS and `/bin/sh` elsewhere. zsh, bash and fish get forge's OSC 133 integration, so commands and their exit codes are exact; another shell starts with no integration and the classifier says `heuristic`. An empty value fails the load (`[terminal] shell must name a shell; remove the key to use $SHELL`). |
+| `scrollback_lines` | integer | `2000`   | The scrollback the server's screen model keeps, in lines. `0` keeps none. What `terminal__read` reads is bounded by this, so a seat that needs a deeper history raises it; the client's own xterm buffer is separate and bounded at 2,000.                                                                                                                   |
+| `idle_minutes`     | integer | `0`      | Minutes an untouched, unattached terminal may sit before the idle clock closes it. `0` is off, which is the default: a seat's terminal lives as long as the seat. A terminal with a client attached or a hand-off waiting on the person is never closed by the clock.                                                                                        |
+
 ## `[client]`
 
 Which of the sets forge ships a client draws with. Absent means every
@@ -936,7 +947,7 @@ fallbacks". That covers the top level, `[[orgs]]`, `[[orgs.projects]]`,
 `[[accounts]]`, `[models."<name>"]`, `[handoff]` and
 `[orgs.projects.handoff]`, `[[slack]]`, `[gotify]`, `[systemone]`,
 `[gateway]`, `[dictate]`, `[tts]`, `[huggingface]`, `[plugins]`, `[server]`,
-`[browser]`, `[client]` and `[sessions]`.
+`[browser]`, `[terminal]`, `[client]` and `[sessions]`.
 
 Two retired keys are declared ghosts rather than unknown keys, so a
 stale `forge.toml` still boots and warns instead of failing:
@@ -1101,6 +1112,8 @@ accepts has no class.
 | `[server] allowed_origins` | Live. The next socket upgrade reads the new list; connections already open are untouched. |
 | `[browser]` `idle_minutes` | Live. The service reads the idle clock on every pass. |
 | `[browser]` `fps`, `quality` | Next session: applies to the next browser host. A host already running keeps the encoding it was created with. |
+| `[terminal]` `shell`, `scrollback_lines` | Next session: applies to the next terminal a seat opens; a terminal already running keeps the shell and screen model it was built with. |
+| `[terminal]` `idle_minutes` | Live. The idle clock reads it on every pass. |
 | `[client] mark`, `theme`, `font` | Live. The server pushes the whole effective config on every applied reload, and an open client re-themes, re-fonts and re-marks itself from it without a reconnect. |
 | `[documents] max_size_mib` | Live. The next document read uses the new ceiling. |
 | `[usage] poll_seconds` | Live. The poller adopts the new interval on its next tick. |

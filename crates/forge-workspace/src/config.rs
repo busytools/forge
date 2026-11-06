@@ -166,6 +166,11 @@ struct ForgeToml {
     /// and when an idle profile closes. Absent section keeps the defaults.
     #[serde(default)]
     browser: BrowserSettings,
+    /// Optional `[terminal]` section - the shell a seat's terminal runs, how
+    /// much scrollback it keeps, and when an idle one closes. Absent section
+    /// keeps the defaults.
+    #[serde(default)]
+    terminal: TerminalSettings,
     /// Optional `[documents]` section - the ceiling on one handed
     /// document. Absent section keeps the 10 MiB default.
     #[serde(default)]
@@ -209,6 +214,7 @@ impl std::fmt::Debug for ForgeToml {
             .field("server", &self.server)
             .field("client", &self.client)
             .field("browser", &self.browser)
+            .field("terminal", &self.terminal)
             .field("documents", &self.documents)
             .field("usage", &self.usage)
             .field("sessions", &self.sessions)
@@ -417,6 +423,37 @@ impl Default for BrowserSettings {
     fn default() -> Self {
         Self { fps: 30, quality: 75, idle_minutes: 30 }
     }
+}
+
+/// The `[terminal]` table: the shell a seat's terminal runs, how much
+/// scrollback the model keeps, and when an idle terminal closes. Unknown
+/// fields are rejected so a mistyped key fails the load instead of being
+/// ignored.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct TerminalSettings {
+    /// The shell to run. Empty means `$SHELL`, falling back to `/bin/zsh`
+    /// on macOS.
+    pub shell: String,
+    /// The scrollback the model keeps, in lines. 0 keeps none.
+    pub scrollback_lines: usize,
+    /// Minutes an untouched, unattached terminal may sit before it closes.
+    /// 0 is off.
+    pub idle_minutes: u64,
+}
+
+impl Default for TerminalSettings {
+    fn default() -> Self {
+        Self { shell: default_terminal_shell(), scrollback_lines: 2000, idle_minutes: 0 }
+    }
+}
+
+/// The shell a terminal runs when `[terminal] shell` names none: the
+/// person's own `$SHELL`, or the platform's login shell.
+fn default_terminal_shell() -> String {
+    std::env::var("SHELL").ok().filter(|shell| !shell.trim().is_empty()).unwrap_or_else(|| {
+        if cfg!(target_os = "macos") { "/bin/zsh" } else { "/bin/sh" }.to_owned()
+    })
 }
 
 /// One `[documents]` table. Unknown fields are rejected so a mistyped
@@ -928,6 +965,10 @@ pub(crate) struct LoadedConfig {
     /// `[browser]` section knobs, resolved: the encoding rate and quality,
     /// and the idle release's bound. Absent section keeps the defaults.
     pub browser: BrowserSettings,
+    /// `[terminal]` section knobs, resolved: the shell to run, the
+    /// scrollback bound and the idle clock. Absent section keeps the
+    /// defaults.
+    pub terminal: TerminalSettings,
     /// The ceiling on one handed document, in bytes: `[documents]
     /// max_size_mib` resolved, 10 MiB when the key is absent. Read by the
     /// document read, which refuses over it.
@@ -972,6 +1013,7 @@ impl std::fmt::Debug for LoadedConfig {
             .field("server", &self.server)
             .field("client", &self.client)
             .field("browser", &self.browser)
+            .field("terminal", &self.terminal)
             .field("document_max_bytes", &self.document_max_bytes)
             .field("usage_poll_interval", &self.usage_poll_interval)
             .field("sessions", &self.sessions)
@@ -1134,6 +1176,22 @@ pub(crate) fn session_env(
     env
 }
 
+/// A seat's children's environment: the server's own first, then the
+/// account and project tables over it.
+///
+/// **The `claude` child gets this by inheritance; a terminal's shell does
+/// not**, because its spawner hands it a map instead of inheriting and
+/// overriding. Without the server's own set the shell has no `HOME` and
+/// the shell integration reads the person's rc from nowhere.
+pub(crate) fn seat_env(
+    project: &LoadedProject,
+    account_env: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut env: HashMap<String, String> = std::env::vars().collect();
+    env.extend(session_env(project, account_env));
+    env
+}
+
 /// Sorted key NAMES a project contributes - never values; these tables
 /// hold tokens.
 pub(crate) fn applied_env_keys(project: &LoadedProject) -> String {
@@ -1176,6 +1234,7 @@ impl LoadedConfig {
             server: ServerConfig::default(),
             client: ClientConfig::default(),
             browser: BrowserSettings::default(),
+            terminal: TerminalSettings::default(),
             document_max_bytes: DEFAULT_DOCUMENT_MAX_MIB * 1024 * 1024,
             usage_poll_interval: Duration::from_secs(DEFAULT_USAGE_POLL_SECONDS),
             sessions: SessionsConfig::default(),
@@ -1707,6 +1766,13 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
             message: format!("[browser] quality must be 0 to 100, not {}", browser.quality),
         });
     }
+    let terminal = parsed.terminal;
+    if terminal.shell.trim().is_empty() {
+        return Err(WorkspaceError::ConfigInvalid {
+            path,
+            message: "[terminal] shell must name a shell; remove the key to use $SHELL".to_owned(),
+        });
+    }
     // A listener that never binds never hands a client its names either, so
     // a stale key there is not worth refusing the boot over - the call the
     // pre-split section made for every key at once.
@@ -1788,6 +1854,7 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
         server,
         client,
         browser,
+        terminal,
         document_max_bytes,
         usage_poll_interval,
         sessions,
@@ -4259,6 +4326,26 @@ provider = "anthropic"
             env.get("GLOBAL_ONLY").map(String::as_str),
             Some("global"),
             "and the global layer still arrives, so the above are overrides not absences",
+        );
+    }
+
+    /// **A seat's children start from the server's own environment.** The
+    /// `claude` child inherits it; a terminal's shell is handed a map, so
+    /// without this set it has no `HOME` and the shell integration reads the
+    /// person's rc from nowhere. The config tables still win over it.
+    #[test]
+    fn seat_env_carries_the_servers_own_environment_below_the_config_tables() {
+        let dir = tempdir().expect("tempdir");
+        write_config(dir.path(), precedence_config());
+        let config = load_from_dir(dir.path()).expect("precedence fixture loads");
+        let account = &config.accounts[0];
+        let env = seat_env(named(&config, "forge"), &account.env);
+        let home = std::env::var("HOME").expect("the test process has a HOME");
+        assert_eq!(env.get("HOME"), Some(&home), "the server's own HOME survives");
+        assert_eq!(
+            env.get("ALL_THREE").map(String::as_str),
+            Some("project"),
+            "and the project's table still overrides it",
         );
     }
 

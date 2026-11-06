@@ -556,6 +556,7 @@ mod tests {
                 worker: MockWorkerFacade::new().into_arc(),
                 // The exact composition the spawn uses.
                 browser: ProdBrowserFacade::from_workspace(&workspace),
+                terminal: crate::mcp::terminal::facade::MockTerminalFacade::new().into_arc(),
                 documents: crate::mcp::documents::facade::ProdDocumentFacade::from_workspace(
                     &workspace,
                 ),

@@ -98,6 +98,12 @@
     border: 1.5px solid rgba(244,118,0,.3); border-top-color: var(--accent);
     animation: spin 900ms linear infinite; flex: none; }
   .live-segs { display: flex; align-items: center; gap: 2px; flex: none; }
+  /* The terminal's own state mark: a ring while a command runs, a dot when
+     idle, a cross when the shell exited. */
+  .live-chip .tmark { width: 8px; height: 8px; flex: none; border-radius: 50%;
+    border: 2px solid var(--accent); }
+  .live-chip .tmark.idle { width: 6px; height: 6px; border: 0; background: var(--accent); }
+  .live-chip .tmark.bad { border-color: var(--bad); }
   .live-chip { flex: none; display: inline-flex; align-items: center; gap: 6px;
     font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
     background: none; border: 1px solid transparent; border-radius: 999px;
@@ -528,6 +534,7 @@ not fit collapse behind <span class="mono">+N</span>, which lists them.</p>
             <span class="sep">&middot;</span><span>4.8k written</span></span>
           <span class="div"></span>
           <span class="live-segs">
+            <span class="live-chip"><span class="tmark"></span>terminal <span class="q">&middot; a command is running</span></span>
             <span class="live-chip"><svg class="ic"><use href="#i-git"/></svg>web-home-layout <span class="q">&middot; dirty</span></span>
             <span class="live-chip"><svg class="ic"><use href="#i-tasks"/></svg>tasks <span class="n">1 of 3</span></span>
             <span class="live-chip"><svg class="ic"><use href="#i-users"/></svg>subagents <span class="n">3 running</span></span>
@@ -732,6 +739,11 @@ on the folded bar.</p>
             <svg class="chevc" width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7.823 1.677 4.927 4.573A.25.25 0 0 0 5.104 5H7.25v3.236a.75.75 0 1 0 1.5 0V5h2.146a.25.25 0 0 0 .177-.427L8.177 1.677a.25.25 0 0 0-.354 0Z"/></svg></div>
         </div></div></div></div>
         <div class="surf" style="margin-top:8px"><div class="slot"><div class="ask-body"><div class="dock">
+          <div class="qbar"><span class="qm"><svg class="ic"><use href="#i-bell"/></svg></span>
+            <span class="t">terminal hand-off &middot; terminal 1</span>
+            <svg class="chevc" width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7.823 1.677 4.927 4.573A.25.25 0 0 0 5.104 5H7.25v3.236a.75.75 0 1 0 1.5 0V5h2.146a.25.25 0 0 0 .177-.427L8.177 1.677a.25.25 0 0 0-.354 0Z"/></svg></div>
+        </div></div></div></div>
+        <div class="surf" style="margin-top:8px"><div class="slot"><div class="ask-body"><div class="dock">
           <div class="qbar"><span class="qm"><svg class="ic"><use href="#i-settings"/></svg></span>
             <span class="t">orgs.Default.projects.forge.max_workers</span>
             <svg class="chevc" width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7.823 1.677 4.927 4.573A.25.25 0 0 0 5.104 5H7.25v3.236a.75.75 0 1 0 1.5 0V5h2.146a.25.25 0 0 0 .177-.427L8.177 1.677a.25.25 0 0 0-.354 0Z"/></svg></div>
@@ -743,7 +755,8 @@ on the folded bar.</p>
         </div></div></div></div>
       </div>
       <p class="note" style="margin:8px 0 0">Question, permission, held post, document hand-off,
-      browser hand-off, a held configuration write and a held vault call: one line each, the
+      browser hand-off, terminal hand-off, a held vault call and a held configuration write: one
+      line each, the
       kind's mark leading.</p>
     </div>
   </div>

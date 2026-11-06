@@ -257,6 +257,153 @@ struct BrowserViewing {
     tabs: Option<tokio::sync::watch::Receiver<BrowserTabList>>,
 }
 
+/// The terminal this connection is viewing.
+struct TerminalViewing {
+    seat: forge_primitives::SessionSlot,
+    id: u16,
+    entry: std::sync::Arc<forge_workspace::terminal::TerminalEntry>,
+    output: tokio::sync::broadcast::Receiver<forge_workspace::terminal::OutputChunk>,
+    /// The controller every viewer follows, so a take or a release reaches
+    /// all of a terminal's bars, not only the one that pressed.
+    control: tokio::sync::watch::Receiver<Option<u64>>,
+    /// This connection's own viewer number, which a bar compares against the
+    /// controller to say whether the role is its own.
+    viewer: u64,
+    /// Set by `terminal_pause`: frames keep arriving from the terminal, and
+    /// the loop drops them until a resume sends a fresh repaint.
+    paused: bool,
+    /// The last sequence written, so a resume can tell the client where the
+    /// stream continues.
+    last_seq: u32,
+}
+
+/// This connection's terminal half.
+#[derive(Default)]
+struct TerminalViewingState {
+    viewing: Option<TerminalViewing>,
+    /// **The role this connection holds, so a dropped socket gives the
+    /// keyboard back.** A lower releases it explicitly; this is the crash
+    /// path, where no detach ever arrives.
+    role: Option<(std::sync::Arc<forge_workspace::terminal::TerminalEntry>, u64)>,
+}
+
+impl Drop for TerminalViewingState {
+    fn drop(&mut self) {
+        if let Some((entry, viewer)) = self.role.take() {
+            entry.release_control(viewer);
+        }
+    }
+}
+
+/// The viewer halves one connection carries: the browser tab it draws and
+/// the terminal it is attached to. **One value rather than four arguments**,
+/// because the read loop already carries the connection's whole mutable
+/// state and the pair would push every handler past the arity a reader can
+/// hold.
+#[derive(Default)]
+struct Viewers {
+    browser: BrowserViewing,
+    terminal: TerminalViewingState,
+}
+
+impl Drop for TerminalViewing {
+    fn drop(&mut self) {
+        // **The viewer count comes off however the attachment ends**: a
+        // lowered surface, a dropped socket and a re-attach all pass here.
+        // The role is the connection's rather than the viewing's -
+        // `TerminalViewingState` holds it - so a lower does not release it.
+        self.entry.attached.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Send the attached terminal's screen as a VT stream, and where the stream
+/// continues from.
+async fn send_terminal_view<S>(
+    socket: &mut ClientSocket<S>,
+    viewing: &TerminalViewing,
+    repaint: &[u8],
+) -> anyhow::Result<()>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
+{
+    send(
+        socket,
+        ServerMessage::TerminalView {
+            seat: viewing.seat.clone(),
+            id: viewing.id,
+            cols: viewing.entry.terminal.cols(),
+            rows: viewing.entry.terminal.rows(),
+            seq: viewing.last_seq,
+            screen: String::from_utf8_lossy(repaint).into_owned(),
+            viewers: u32::try_from(
+                viewing.entry.attached.load(std::sync::atomic::Ordering::Relaxed),
+            )
+            .unwrap_or(u32::MAX),
+            viewer: viewing.viewer,
+            controller: viewing.entry.controller(),
+        },
+    )
+    .await
+}
+
+/// What the terminal has for the loop.
+enum TerminalEvent {
+    Chunk(forge_workspace::terminal::OutputChunk),
+    /// The person's control moved to or from a viewer.
+    Control(Option<u64>),
+    /// The viewer fell further behind than the broadcast holds: the next
+    /// thing it hears is a fresh screen, not a lossy byte stream.
+    Resync,
+    /// The terminal went away.
+    Gone,
+}
+
+/// The next thing this connection's terminal has for the loop.
+async fn next_terminal_event(viewing: &mut Option<TerminalViewing>) -> Option<TerminalEvent> {
+    let Some(viewing) = viewing.as_mut() else { return std::future::pending().await };
+    // **The exit is watched beside the stream.** The connection holds the
+    // terminal, so the broadcast never closes while a viewer is attached; the
+    // shell's own exit is what says the viewer is drawing a dead screen.
+    let mut exit = viewing.entry.terminal.exit_stream();
+    if !viewing.entry.terminal.is_alive() {
+        return Some(TerminalEvent::Gone);
+    }
+    loop {
+        let chunk = tokio::select! {
+            chunk = viewing.output.recv() => chunk,
+            _ = exit.changed() => return Some(TerminalEvent::Gone),
+            changed = viewing.control.changed() => {
+                if changed.is_ok() {
+                    return Some(TerminalEvent::Control(*viewing.control.borrow()));
+                }
+                continue;
+            }
+        };
+        match chunk {
+            Ok(chunk) => {
+                if viewing.paused {
+                    viewing.last_seq = chunk.seq;
+                    continue;
+                }
+                viewing.last_seq = chunk.seq;
+                return Some(TerminalEvent::Chunk(chunk));
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(lost)) => {
+                tracing::debug!(
+                    event_name = "terminal_viewer_lagged",
+                    id = viewing.id,
+                    lost,
+                    "a terminal viewer fell behind and is being resynced"
+                );
+                return Some(TerminalEvent::Resync);
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                return Some(TerminalEvent::Gone);
+            }
+        }
+    }
+}
+
 /// What a viewer has to say to the loop.
 enum ViewEvent {
     Frame(BrowserFrame),
@@ -633,9 +780,9 @@ where
     // prompt as able to answer it, and the core parks a turn on that reply
     // rather than failing it.
     let mut updates: Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)> = None;
-    // The tab this connection is viewing and the seat's tab rows it follows,
-    // each once the client asks.
-    let mut browser = BrowserViewing::default();
+    // The browser tab this connection is viewing (and the seat's tab rows it
+    // follows) and the terminal it is attached to, each once the client asks.
+    let mut viewers = Viewers::default();
     // Answers the read loop hands off rather than awaiting, so a slow handler
     // holds nothing behind it (#2445): a reply-carrying command's answer, or a
     // subscribe's record when that read ran off the loop.
@@ -655,7 +802,7 @@ where
         &mut holds,
         &mut updates,
         &mut dictate,
-        &mut browser,
+        &mut viewers,
         AnswerLanes { reads: &mut reads, answers: &mut answers },
         SettingsPush { receiver: settings, sent: sent_settings },
         caller,
@@ -962,7 +1109,7 @@ async fn run_connection<S>(
     holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
-    browser: &mut BrowserViewing,
+    viewers: &mut Viewers,
     lanes: AnswerLanes<'_>,
     settings_push: SettingsPush,
     caller: Caller,
@@ -1014,7 +1161,7 @@ where
                 batch::flush(socket, held.take()).await?;
                 let arrival = Arrival { caller, at: Instant::now() };
                 handle_client(
-                    socket, state, watching, holds, updates, dictate, browser, reads, arrival, msg,
+                    socket, state, watching, holds, updates, dictate, viewers, reads, arrival, msg,
                 )
                 .await?;
                 // **An ask that queued behind a read is served as soon as no
@@ -1026,9 +1173,8 @@ where
                     match next {
                         Queued::Ask(at, message) => {
                             handle_message(
-                                socket, state, watching, holds, updates, dictate, browser, reads,
-                                Arrival { caller, at },
-                                message,
+                                socket, state, watching, holds, updates, dictate, viewers, reads,
+                                Arrival { caller, at }, message,
                             )
                             .await?;
                         }
@@ -1059,7 +1205,7 @@ where
                             match next {
                                 Queued::Ask(at, message) => {
                                     handle_message(
-                                        socket, state, watching, holds, updates, dictate, browser,
+                                        socket, state, watching, holds, updates, dictate, viewers,
                                         reads, Arrival { caller, at }, message,
                                     )
                                     .await?;
@@ -1177,7 +1323,7 @@ where
             }
             // **The viewed profile's frames and state, raced as one future**
             // because `select!` wants one borrow of the viewer.
-            event = next_view_event(&mut browser.viewing) => {
+            event = next_view_event(&mut viewers.browser.viewing) => {
                 // What the core already said goes out first, the same rule
                 // every send here keeps.
                 batch::flush(socket, held.take()).await?;
@@ -1190,7 +1336,7 @@ where
                         transport.deliver(&frame).await?;
                     }
                     ViewEvent::State(state) => {
-                        let Some(viewing) = browser.viewing.as_ref() else { continue };
+                        let Some(viewing) = viewers.browser.viewing.as_ref() else { continue };
                         send(
                             socket,
                             ServerMessage::BrowserView {
@@ -1207,7 +1353,7 @@ where
                     // **The page navigated on its own**: a link click or a
                     // fragment moves the bar's arrows, and nobody asked.
                     ViewEvent::Nav(nav) => {
-                        let Some(viewing) = browser.viewing.as_ref() else { continue };
+                        let Some(viewing) = viewers.browser.viewing.as_ref() else { continue };
                         send(
                             socket,
                             ServerMessage::BrowserNavState {
@@ -1231,7 +1377,7 @@ where
                     // one case that is cancelled here, once: nothing can
                     // answer it.
                     ViewEvent::File(ask) => {
-                        let Some(viewing) = browser.viewing.as_ref() else { continue };
+                        let Some(viewing) = viewers.browser.viewing.as_ref() else { continue };
                         // **A chooser belongs to its tab's viewer.** A viewer
                         // watching another tab is never asked to pick for it.
                         if ask.tab != viewing.tab {
@@ -1275,7 +1421,7 @@ where
                     // watcher's connection receives the broadcast and drops
                     // it; the save door is the controller's.
                     ViewEvent::Download { download, dropped, lost } => {
-                        let Some(viewing) = browser.viewing.as_ref() else { continue };
+                        let Some(viewing) = viewers.browser.viewing.as_ref() else { continue };
                         // **A save is the tab's too**: a controller watching
                         // another tab is not offered this file. A notice
                         // that names no tab is the profile's, and it is this
@@ -1306,7 +1452,7 @@ where
                     // Only the controller hears; a watcher's connection drops
                     // the packet rather than playing another person's page.
                     ViewEvent::Audio(packet) => {
-                        let Some(viewing) = browser.viewing.as_ref() else { continue };
+                        let Some(viewing) = viewers.browser.viewing.as_ref() else { continue };
                         if viewing.view.borrow().controller != Some(me) {
                             continue;
                         }
@@ -1318,9 +1464,9 @@ where
                     // and the client re-attaches when it opens the surface
                     // again.
                     ViewEvent::Failed(reason) => {
-                        let Some(viewed) = browser.viewing.as_ref() else { continue };
+                        let Some(viewed) = viewers.browser.viewing.as_ref() else { continue };
                         let (id, tab) = (viewed.id, viewed.tab);
-                        browser.viewing = None;
+                        viewers.browser.viewing = None;
                         // **The gone viewer comes off the profile too.** The
                         // connection lives on, so without this the profile
                         // kept a phantom viewer and a role held by a surface
@@ -1336,7 +1482,7 @@ where
             // **The strip's rows, once it asked for them.** A tab that
             // opens, closes or changes hands is pushed as the whole list, so
             // the client never has to poll a read it already subscribed to.
-            changed = next_tab_change(&mut browser.tabs) => {
+            changed = next_tab_change(&mut viewers.browser.tabs) => {
                 let Some(list) = changed else { continue };
                 batch::flush(socket, held.take()).await?;
                 send(
@@ -1351,6 +1497,51 @@ where
                     },
                 )
                 .await?;
+            }
+            // **The attached terminal's bytes, once a viewer asked.** The
+            // frames are this terminal's own stream; a lag past the broadcast
+            // resyncs with a fresh screen rather than a lossy read.
+            event = next_terminal_event(&mut viewers.terminal.viewing) => {
+                batch::flush(socket, held.take()).await?;
+                let Some(event) = event else { continue };
+                match event {
+                    TerminalEvent::Chunk(chunk) => {
+                        let Some(viewing) = viewers.terminal.viewing.as_ref() else { continue };
+                        let mut transport = super::frame::SocketFrames { socket: &mut *socket };
+                        transport.deliver_terminal(viewing.id, chunk.seq, &chunk.bytes).await?;
+                    }
+                    TerminalEvent::Control(controller) => {
+                        let Some(viewing) = viewers.terminal.viewing.as_ref() else { continue };
+                        // **The role follows the controller**: a steal or a
+                        // hand-off's ending clears this connection's, so its
+                        // socket ending releases only what it actually holds.
+                        let held = controller == Some(viewing.viewer);
+                        let entry = viewing.entry.clone();
+                        viewers.terminal.role = if held { Some((entry, viewing.viewer)) } else { None };
+                        send(
+                            socket,
+                            ServerMessage::TerminalControl {
+                                seat: viewing.seat.clone(),
+                                id: viewing.id,
+                                controller,
+                            },
+                        )
+                        .await?;
+                    }
+                    TerminalEvent::Resync => {
+                        if let Some(viewing) = viewers.terminal.viewing.as_mut() {
+                            let (repaint, seq) = viewing.entry.terminal.repaint_and_seq();
+                            viewing.last_seq = seq.saturating_sub(1);
+                            send_terminal_view(socket, viewing, &repaint).await?;
+                        }
+                    }
+                    TerminalEvent::Gone => {
+                        // The shell exited; the workspace's own `TerminalChanged`
+                        // update is what tells the strip, so the viewer is just
+                        // let go here.
+                        viewers.terminal.viewing = None;
+                    }
+                }
             }
             // **The keepalive's beat.** A ping that went unanswered past the
             // bound is the evidence, never a quiet read: a busy connection
@@ -1472,6 +1663,10 @@ fn stamp(command: Command, me: u64) -> Command {
         Command::RespondBrowserHandOff { key, id, mut answer } => {
             answer.client = Some(me);
             Command::RespondBrowserHandOff { key, id, answer }
+        }
+        Command::RespondTerminalHandOff { key, id, mut answer } => {
+            answer.client = Some(me);
+            Command::RespondTerminalHandOff { key, id, answer }
         }
         other => other,
     }
@@ -1684,7 +1879,7 @@ async fn handle_client<S>(
     holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
-    browser: &mut BrowserViewing,
+    viewers: &mut Viewers,
     reads: &mut Reads,
     arrival: Arrival,
     msg: Message,
@@ -1700,7 +1895,13 @@ where
         // server takes.** Nothing binary comes from a client for the browser:
         // browser frames are the server's to send.
         Message::Binary(bytes) => {
-            take_frame(&state.surface, dictate, me, frame_route(&bytes, dictate));
+            take_frame(
+                &state.surface,
+                dictate,
+                &mut viewers.terminal,
+                me,
+                frame_route(&bytes, dictate),
+            );
             return Ok(());
         }
         _ => return Ok(()),
@@ -1739,7 +1940,7 @@ where
         .await;
     };
     handle_message(
-        socket, state, watching, holds, updates, dictate, browser, reads, arrival, client,
+        socket, state, watching, holds, updates, dictate, viewers, reads, arrival, client,
     )
     .await
 }
@@ -1876,6 +2077,116 @@ where
     }
 }
 
+/// Attach this connection to a seat's terminal as a viewer.
+///
+/// **The answer is the screen as a VT stream**, so a page that opens a
+/// terminal nobody has drawn yet has content immediately; frames follow.
+async fn attach_terminal<S>(
+    socket: &mut ClientSocket<S>,
+    state: &Arc<TransportState>,
+    terminal: &mut TerminalViewingState,
+    me: u64,
+    seat: forge_primitives::SessionSlot,
+    id: Option<u16>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+    reply_to: Option<u64>,
+) -> anyhow::Result<()>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
+{
+    // A re-attach replaces what this connection was viewing; the old
+    // attachment's drop takes its viewer count off, and the role is the
+    // connection's own (`TerminalViewingState::role`), so a repaint never
+    // hands back a keyboard the person is holding.
+    terminal.viewing = None;
+    match state.surface.terminal_attach_or_open(&seat, id) {
+        Ok(entry) => {
+            // **The grid the client will draw on**, set before the repaint is
+            // taken: a repaint laid out for another grid is one the client
+            // cannot draw, and skipping it read as the screen flushing.
+            if let (Some(cols), Some(rows)) = (cols, rows)
+                && let Err(why) = entry.terminal.resize(cols, rows)
+            {
+                tracing::debug!(
+                    event_name = "terminal_attach_resize_failed",
+                    seat = %seat.display(),
+                    reason = %why,
+                    "an attach's grid was refused",
+                );
+            }
+            let output = entry.terminal.subscribe();
+            // **The repaint reflects every chunk below this sequence**, so a
+            // chunk still queued from before it is ignored by the client
+            // rather than drawn twice.
+            let (repaint, seq) = entry.terminal.repaint_and_seq();
+            let last_seq = seq.saturating_sub(1);
+            // The attach may have opened the terminal, so the id is the
+            // entry's own; the answer names what was attached.
+            let id = entry.id;
+            let control = entry.control_stream();
+            let viewing = TerminalViewing {
+                seat: seat.clone(),
+                id,
+                entry,
+                output,
+                control,
+                viewer: me,
+                paused: false,
+                last_seq,
+            };
+            send_terminal_view(socket, &viewing, &repaint).await?;
+            terminal.viewing = Some(viewing);
+            match reply_to {
+                Some(ask) => {
+                    send(
+                        socket,
+                        ServerMessage::Reply {
+                            reply_to: ask,
+                            body: json!({ "ok": true, "id": id }),
+                        },
+                    )
+                    .await
+                }
+                None => Ok(()),
+            }
+        }
+        Err(why) => {
+            tracing::debug!(
+                event_name = "terminal_attach_refused",
+                seat = %seat.display(),
+                id,
+                reason = %why,
+                "a terminal attach was refused",
+            );
+            match reply_to {
+                Some(ask) => {
+                    send(
+                        socket,
+                        ServerMessage::Reply {
+                            reply_to: ask,
+                            body: json!({ "ok": false, "why": why }),
+                        },
+                    )
+                    .await
+                }
+                None => {
+                    send(
+                        socket,
+                        ServerMessage::Error {
+                            what: "terminal_view".to_owned(),
+                            why,
+                            seat: Some(seat),
+                            dispatch_id: None,
+                        },
+                    )
+                    .await
+                }
+            }
+        }
+    }
+}
+
 /// [`handle_client`] with the message already read, so a subscribe that
 /// queued behind a read off the loop takes the same path the socket's own did.
 async fn handle_message<S>(
@@ -1885,7 +2196,7 @@ async fn handle_message<S>(
     holds: &mut Holds<'_>,
     updates: &mut Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)>,
     dictate: &mut Streaming,
-    browser: &mut BrowserViewing,
+    viewers: &mut Viewers,
     reads: &mut Reads,
     arrival: Arrival,
     client: ClientMessage,
@@ -1895,6 +2206,7 @@ where
 {
     let caller = arrival.caller;
     let arrived_at = arrival.at;
+    let Viewers { browser, terminal } = viewers;
     let viewing = &mut browser.viewing;
     let tabs = &mut browser.tabs;
     let me = caller.id;
@@ -2544,6 +2856,122 @@ where
         }
         ClientMessage::BrowserViewPage { seat, target, reply_to } => {
             attach_view(socket, state, viewing, me, seat, reply_to, None, Some(target)).await
+        }
+        ClientMessage::TerminalView { seat, id, cols, rows, reply_to } => {
+            attach_terminal(socket, state, terminal, me, seat, id, cols, rows, reply_to).await
+        }
+        ClientMessage::TerminalDetach => {
+            // **A lower is an implicit release.** Going back to chat gives the
+            // keyboard up: the drop takes this viewer's count off the
+            // terminal, and the role this connection held goes with it, so a
+            // lowered terminal never keeps the agent out. A connection that
+            // still holds one when the socket ends is released by the drop.
+            if let Some((entry, viewer)) = terminal.role.take() {
+                entry.release_control(viewer);
+            }
+            terminal.viewing = None;
+            Ok(())
+        }
+        ClientMessage::TerminalResize { seat, id, cols, rows } => {
+            match state.surface.terminal_resize(&seat, id, cols, rows) {
+                Ok(()) => Ok(()),
+                Err(why) => {
+                    send(
+                        socket,
+                        ServerMessage::Error {
+                            what: "terminal_resize".to_owned(),
+                            why,
+                            seat: Some(seat),
+                            dispatch_id: None,
+                        },
+                    )
+                    .await
+                }
+            }
+        }
+        ClientMessage::TerminalPause { paused } => {
+            if let Some(viewing) = terminal.viewing.as_mut() {
+                viewing.paused = paused;
+                if !paused {
+                    // **A resume is a fresh repaint**: the frames the pause
+                    // dropped are not replayed, so the client is told where
+                    // the screen is now and continues from there.
+                    let (repaint, seq) = viewing.entry.terminal.repaint_and_seq();
+                    viewing.last_seq = seq.saturating_sub(1);
+                    send_terminal_view(socket, viewing, &repaint).await?;
+                }
+            }
+            Ok(())
+        }
+        ClientMessage::TerminalControl { seat, id, take } => {
+            let attached = terminal
+                .viewing
+                .as_ref()
+                .is_some_and(|viewing| viewing.seat == seat && viewing.id == id);
+            if !attached {
+                // **A take that does not land is answered.** The bar drew the
+                // role as the person's, and a silent drop would leave it
+                // claiming one the server never gave.
+                return send(
+                    socket,
+                    ServerMessage::Error {
+                        what: "terminal_control".to_owned(),
+                        why: "this connection is not viewing that terminal".to_owned(),
+                        seat: Some(seat),
+                        dispatch_id: None,
+                    },
+                )
+                .await;
+            }
+            if take {
+                // **A parked hand-off owns the keyboard.** The bar hides
+                // take while one waits, and the refusal is checked under the
+                // park's own lock, so a take cannot race a park into place
+                // and hand out a role the person cannot see.
+                if let Err(why) = state.surface.take_terminal_control(&seat, id, me) {
+                    return send(
+                        socket,
+                        ServerMessage::Error {
+                            what: "terminal_control".to_owned(),
+                            why,
+                            seat: Some(seat),
+                            dispatch_id: None,
+                        },
+                    )
+                    .await;
+                }
+                // **The connection now owns the role**, so a socket that dies
+                // without lowering gives the keyboard back.
+                let held = terminal.viewing.as_ref().map(|viewing| viewing.entry.clone());
+                if let Some(entry) = held {
+                    terminal.role = Some((entry, me));
+                }
+            } else if let Some(viewing) = terminal.viewing.as_ref()
+                && viewing.entry.release_control(me)
+            {
+                terminal.role = None;
+            }
+            Ok(())
+        }
+        ClientMessage::TerminalClose { seat, id } => {
+            match state.surface.terminal_close(&seat, id) {
+                Ok(()) => {
+                    terminal.viewing = None;
+                    Ok(())
+                }
+                Err(why) => {
+                    send(
+                        socket,
+                        ServerMessage::Error {
+                            what: "terminal_close".to_owned(),
+                            why,
+                            seat: Some(seat),
+                            dispatch_id: None,
+                        },
+                    )
+                    .await
+                }
+            }
         }
         ClientMessage::BrowserDetach => {
             // **Lowering is a detach.** It takes this viewer's count off the
@@ -3225,6 +3653,8 @@ enum FrameRoute {
     /// The samples of a dictation frame, for the seats this connection
     /// started.
     Audio(Vec<f32>),
+    /// One client's terminal input, for the terminal this connection views.
+    TerminalInput { id: u16, bytes: Vec<u8> },
     /// A binary message that is not a frame this server takes.
     Refused(super::frame::Refusal),
     /// A dictation frame, but this connection has not started a take to give
@@ -3253,6 +3683,7 @@ fn frame_route(bytes: &[u8], dictate: &Streaming) -> FrameRoute {
             }
             FrameRoute::Audio(samples)
         }
+        super::frame::Frame::TerminalInput { id, bytes } => FrameRoute::TerminalInput { id, bytes },
     }
 }
 
@@ -3263,8 +3694,59 @@ fn frame_route(bytes: &[u8], dictate: &Streaming) -> FrameRoute {
 /// streaming into a server that cannot take it is information about that
 /// client, not a problem forge has, and the record is what makes it
 /// legible either way.
-fn take_frame(surface: &ViewSurface, dictate: &Streaming, me: u64, route: FrameRoute) {
+fn take_frame(
+    surface: &ViewSurface,
+    dictate: &Streaming,
+    terminal: &mut TerminalViewingState,
+    me: u64,
+    route: FrameRoute,
+) {
     match route {
+        FrameRoute::TerminalInput { id, bytes } => {
+            // **Only the answering connection viewing the terminal may type
+            // into it, and only while a hand-off is parked.** The keystrokes
+            // go client to server to the PTY master and are not a command, an
+            // update or a log line; the shell may echo them, so a read after
+            // the hand-off resolves can carry what was typed.
+            let Some(viewing) = terminal.viewing.as_ref() else {
+                tracing::debug!(
+                    event_name = "terminal_input_unattached",
+                    id,
+                    "a terminal input frame arrived on a connection viewing no terminal",
+                );
+                return;
+            };
+            if viewing.id != id {
+                tracing::debug!(
+                    event_name = "terminal_input_wrong_terminal",
+                    id,
+                    attached = viewing.id,
+                    "a terminal input frame named a terminal this connection is not viewing",
+                );
+                return;
+            }
+            // **The keyboard is the controller's, and nobody is granted it
+            // implicitly**: a hand-off raises the surface as a viewer, and the
+            // person takes control from the bar to type. Outside that, the
+            // surface is a viewer and the bytes are refused, so an observer's
+            // keystrokes never join a command they did not ask for.
+            if viewing.entry.controller() == Some(me) {
+                if let Err(why) = surface.terminal_write(&viewing.seat, id, &bytes) {
+                    tracing::debug!(
+                        event_name = "terminal_input_failed",
+                        id,
+                        reason = %why,
+                        "a terminal input frame could not be written",
+                    );
+                }
+                return;
+            }
+            tracing::debug!(
+                event_name = "terminal_input_not_controlling",
+                id,
+                "a terminal input frame arrived from a connection that does not hold the keyboard",
+            );
+        }
         FrameRoute::Audio(samples) => {
             // Offered to each seat this connection started, kept only where
             // the live take is THIS connection's - a seat's take can be
@@ -4094,6 +4576,7 @@ fn refusal_tag(refusal: &DispatchError) -> &'static str {
         // tag, because one tag cannot route two opposite outcomes.
         DispatchError::EmptySlackFeedback { .. } => "empty_slack_feedback",
         DispatchError::NoBrowserHandOffWaiting { .. } => "respond_browser_hand_off",
+        DispatchError::NoTerminalHandOffWaiting { .. } => "respond_terminal_hand_off",
         DispatchError::NoSettingsWriteWaiting { .. } => "respond_settings_write",
         DispatchError::NoVaultAskWaiting { .. } => "respond_vault_ask",
         DispatchError::NoDocumentHandOffWaiting { .. } => "respond_document_hand_off",

@@ -107,6 +107,9 @@ jobs:
               # The speaking engine's crate is on the macOS job's build and
               # its voice facade drives it.
               - 'crates/forge-tts/**'
+              # The per-seat terminal's crate is in that graph too: the
+              # server carries its bytes.
+              - 'crates/forge-terminal/**'
               - 'crates/forge-capture/**'
               - 'crates/forge-system-one/**'
               - 'crates/forge-sdk/**'

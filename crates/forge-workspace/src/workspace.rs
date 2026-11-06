@@ -554,6 +554,15 @@ pub(crate) type ParkedBrowserHandOff = (
     tokio::sync::oneshot::Sender<forge_primitives::browser::HandOffEnding>,
 );
 
+/// One parked terminal hand-off: the session that asked, the hand-off itself,
+/// and the sender the blocked `terminal__hand_off` handler awaits. No clock
+/// ends it - only an answer, or the handler's own drop.
+pub(crate) type ParkedTerminalHandOff = (
+    SessionSlot,
+    forge_primitives::terminal::TerminalHandOff,
+    tokio::sync::oneshot::Sender<forge_primitives::browser::HandOffEnding>,
+);
+
 /// A seat's occupant that died, held until a reader has been shown the
 /// seat AND the recovery has announced itself - so a crash nobody watched
 /// is still readable when someone looks, and the recovery that answers it
@@ -716,7 +725,7 @@ pub struct Workspace {
     /// its pool. It carries account health state updated on every spawn
     /// and refreshed by the in-memory usage poller, and it is what the
     /// gateway's selection walk reads to choose an account.
-    accounts: Arc<forge_gateway::AccountPool>,
+    pub(crate) accounts: Arc<forge_gateway::AccountPool>,
     /// Dictation preflight: the per-model progress the launchpad
     /// renders, the flag Escape sets, and the loaded engine held for
     /// the run. Populated by `start_dictate_preflight`; inert when
@@ -1126,6 +1135,23 @@ pub struct Workspace {
     /// blocked `browser_hand_off` handler awaits the sender, with no timeout,
     /// for as long as the person takes.
     pub(crate) browser_handoffs: Mutex<HashMap<uuid::Uuid, ParkedBrowserHandOff>>,
+    /// The per-seat terminals, created lazily on first use and living as long
+    /// as the seat: `/new`, `/resume` and a handoff leave the PTY, its shell
+    /// and its scrollback untouched; a release ends the seat and its
+    /// terminal.
+    pub(crate) terminals: Mutex<HashMap<SessionSlot, Arc<crate::terminal::TerminalEntry>>>,
+    /// Terminal hand-offs parked for the person at a client, keyed by their
+    /// id and carrying the session that asked. The blocked `terminal__hand_off`
+    /// handler awaits the sender, with no timeout, for as long as the person
+    /// takes.
+    pub(crate) terminal_handoffs: Mutex<HashMap<uuid::Uuid, ParkedTerminalHandOff>>,
+    /// The id the next terminal takes. **One per seat today**, but the wire
+    /// carries an id so a second terminal per seat is additive rather than a
+    /// protocol change.
+    pub(crate) next_terminal_id: std::sync::atomic::AtomicU16,
+    /// Set the first time the idle clock starts, so a second terminal does not
+    /// start a second clock.
+    pub(crate) terminal_clock_started: std::sync::atomic::AtomicBool,
     /// Configuration writes held for the reader's approval, keyed by the
     /// write's id and carrying the session that asked. Its own registry for
     /// the same reason the draft's is: a held write exists on a seat with no
@@ -2642,6 +2668,10 @@ impl Workspace {
             slack_ledger_failures: Mutex::new(std::collections::HashSet::new()),
             slack_drafts: Mutex::new(HashMap::new()),
             browser_handoffs: Mutex::new(HashMap::new()),
+            terminals: Mutex::new(HashMap::new()),
+            terminal_handoffs: Mutex::new(HashMap::new()),
+            next_terminal_id: std::sync::atomic::AtomicU16::new(1),
+            terminal_clock_started: std::sync::atomic::AtomicBool::new(false),
             settings_writes: Mutex::new(HashMap::new()),
             parked_vault_asks: Mutex::new(HashMap::new()),
             pending_seq: Mutex::new(HashMap::new()),
@@ -3739,6 +3769,8 @@ impl Workspace {
             let worker_facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(self);
             let browser_facade =
                 crate::mcp::browser::facade::ProdBrowserFacade::from_workspace(self);
+            let terminal_facade =
+                crate::mcp::terminal::facade::ProdTerminalFacade::from_workspace(self);
             let documents_facade =
                 crate::mcp::documents::facade::ProdDocumentFacade::from_workspace(self);
             let review_facade = crate::mcp::review::facade::ProdReviewFacade::from_arc(self);
@@ -3762,6 +3794,7 @@ impl Workspace {
                     workspace: workspace_facade,
                     worker: worker_facade,
                     browser: browser_facade,
+                    terminal: terminal_facade,
                     documents: documents_facade,
                     review: review_facade,
                     cron: cron_facade,
@@ -6672,6 +6705,15 @@ impl Workspace {
                     });
                 }
             }
+            Command::RespondTerminalHandOff { key, id, .. } => {
+                let waiting = self.terminal_handoff_waiting(*id, key);
+                if !waiting {
+                    return Err(DispatchError::NoTerminalHandOffWaiting {
+                        key: key.clone(),
+                        id: *id,
+                    });
+                }
+            }
             Command::AnswerDocumentHandOff { key, id, .. } => {
                 let waiting = self.document_handoff_waiting(*id, key);
                 if !waiting {
@@ -6777,6 +6819,13 @@ impl Workspace {
                 _ => {}
             }
             let key = key.clone();
+            // **A hand-off parked by the outgoing occupant cannot outlive
+            // it.** `/new` and `/resume` replace the session that is waiting,
+            // and a park left behind would blind the new occupant's first
+            // terminal call with an ask nobody owns.
+            if matches!(&cmd, Command::NewSession { .. } | Command::ResumeSession { .. }) {
+                self.abandon_terminal_hand_offs(&key);
+            }
             // /new and /resume re-spawn on the already-pooled handle, where
             // get_agent_handle_at_key's stamp never runs.
             let resuming = matches!(&cmd, Command::ResumeSession { .. });
@@ -7181,6 +7230,27 @@ impl Workspace {
                     let answered = self.resolve_browser_hand_off(id, &key, answer);
                     if !answered {
                         return Err(DispatchError::NoBrowserHandOffWaiting {
+                            key: key.clone(),
+                            id,
+                        });
+                    }
+                }
+                Command::RespondTerminalHandOff { key, id, answer } => {
+                    // Same shape as the browser arm above: the guard already
+                    // refused one that is not waiting, and the answer names
+                    // its own hand.
+                    tracing::debug!(
+                        event_name = "terminal_hand_off_answered",
+                        key = ?key,
+                        id = %id,
+                        ending = ?answer.ending,
+                        source = ?answer.source,
+                        client = answer.client,
+                        "a client answered a parked terminal hand-off"
+                    );
+                    let answered = self.resolve_terminal_hand_off(id, &key, answer);
+                    if !answered {
+                        return Err(DispatchError::NoTerminalHandOffWaiting {
                             key: key.clone(),
                             id,
                         });
@@ -8380,6 +8450,10 @@ impl Workspace {
         // after it does not keep the tab for a session that has ended; the
         // async tab close follows.
         self.release_browser_seat(session_key);
+        // **The seat ended, so its terminal ends with it.** A `/new` or
+        // `/resume` swaps the occupant and never reaches this path, which is
+        // what leaves the PTY, its shell and its scrollback untouched.
+        self.close_terminal(session_key);
         crate::dictate::teardown_for_closed_session(self, session_key);
         // A parked write is not a prompt the gone session can answer, and a
         // reused label must not draw the previous occupant's edit on a dock.
@@ -8748,6 +8822,14 @@ impl Workspace {
             asks.extend(parked.values().filter(|(owner, _, _)| owner == slot).map(
                 |(_, handoff, _)| {
                     crate::protocol::PendingAsk::BrowserHandOff(Box::new(handoff.clone()))
+                },
+            ));
+        }
+        {
+            let parked = self.terminal_handoffs.lock();
+            asks.extend(parked.values().filter(|(owner, _, _)| owner == slot).map(
+                |(_, handoff, _)| {
+                    crate::protocol::PendingAsk::TerminalHandOff(Box::new(handoff.clone()))
                 },
             ));
         }
@@ -20504,6 +20586,9 @@ mod worker_respawn_tests {
                 workspace: crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace),
                 worker: crate::mcp::workers::facade::ProdWorkerFacade::from_arc(workspace),
                 browser: crate::mcp::browser::facade::ProdBrowserFacade::from_workspace(workspace),
+                terminal: crate::mcp::terminal::facade::ProdTerminalFacade::from_workspace(
+                    workspace,
+                ),
                 documents: crate::mcp::documents::facade::ProdDocumentFacade::from_workspace(
                     workspace,
                 ),

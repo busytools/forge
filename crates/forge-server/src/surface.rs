@@ -106,6 +106,77 @@ impl ViewSurface {
         }
     }
 
+    /// The terminal a client asked to view, with this connection counted as
+    /// a viewer. **An attach naming a terminal the seat no longer has is
+    /// refused**; an attach naming none opens the seat's terminal, which is
+    /// the person's door on a seat no agent has touched.
+    pub fn terminal_attach_or_open(
+        &self,
+        seat: &SessionSlot,
+        id: Option<u16>,
+    ) -> Result<Arc<forge_workspace::terminal::TerminalEntry>, String> {
+        let entry = match id {
+            Some(id) => self.workspace.terminal_by_id(seat, id)?,
+            // **The person's door on an untouched seat.** An attach that
+            // names no terminal opens the seat's, creating it on first use.
+            None => self.workspace.open_terminal(seat)?,
+        };
+        entry.attached.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(entry)
+    }
+
+    /// The person's own take: always explicit, and landing even during a
+    /// parked hand-off, whose surface opens as a viewer's.
+    pub fn take_terminal_control(
+        &self,
+        seat: &SessionSlot,
+        id: u16,
+        viewer: u64,
+    ) -> Result<(), String> {
+        self.workspace.take_terminal_control(seat, id, viewer)
+    }
+
+    /// The person's close door: end the terminal's process group.
+    pub fn terminal_close(&self, seat: &SessionSlot, id: u16) -> Result<(), String> {
+        self.workspace.terminal_by_id(seat, id)?;
+        self.workspace.close_terminal(seat);
+        Ok(())
+    }
+
+    /// The attached surface changed size.
+    pub fn terminal_resize(
+        &self,
+        seat: &SessionSlot,
+        id: u16,
+        cols: u16,
+        rows: u16,
+    ) -> Result<(), String> {
+        let entry = self.workspace.terminal_by_id(seat, id)?;
+        entry.terminal.resize(cols, rows).map_err(|error| error.to_string())
+    }
+
+    /// The person's own keystrokes, written to the PTY. They are not logged
+    /// or forwarded, but the shell may echo them onto the screen the terminal
+    /// tools read once the hand-off resolves.
+    pub fn terminal_write(&self, seat: &SessionSlot, id: u16, bytes: &[u8]) -> Result<(), String> {
+        let entry = self.workspace.terminal_by_id(seat, id)?;
+        entry.terminal.write_bytes(bytes).map_err(|error| error.to_string())
+    }
+
+    /// Whether a hand-off parked on the seat's terminal owns its input.
+    pub fn terminal_held(&self, seat: &SessionSlot) -> bool {
+        self.workspace.terminal_held(seat)
+    }
+
+    /// The seat's terminal as the record draws it, when it has one.
+    pub fn terminal(
+        &self,
+        seat: &SessionSlot,
+    ) -> Option<forge_primitives::terminal::TerminalSummary> {
+        let held = self.workspace.terminal_held(seat);
+        self.workspace.terminal_if_any(seat).map(|entry| entry.summary(seat, held))
+    }
+
     /// How many pool scans this surface started. Test-only: the single-flight
     /// guard's whole claim is that two concurrent misses start one.
     #[cfg(any(test, feature = "testing"))]
