@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onMount } from 'svelte';
   import { Terminal as Xterm } from '@xterm/xterm';
   import { FitAddon } from '@xterm/addon-fit';
   import { Unicode11Addon } from '@xterm/addon-unicode11';
@@ -9,6 +9,7 @@
   import { terminalRecord } from './record.svelte';
   import { terminalLink } from './link';
   import {
+    attachSurface,
     closeTerminal,
     controlTerminal,
     controlling,
@@ -36,9 +37,6 @@
   let reason = $state<string | null>(null);
   /** The seat's terminal as its record carries it, which the update keeps fresh. */
   const summary = $derived(terminalRecord.terminal);
-  let readOpen = $state(false);
-  let readText = $state('');
-  let readEl = $state<HTMLElement | null>(null);
   let mounted = true;
   /** Whether this mount pushed a page-history entry. */
   let pushed = false;
@@ -172,6 +170,11 @@
       instance.open(host);
       fitted.fit();
     }
+    // **The attach carries the grid this surface just fitted**, so the first
+    // repaint draws at once instead of being skipped for another round trip.
+    if (surface.phase === 'opening') {
+      void attachSurface(instance.cols, instance.rows);
+    }
     instance.onData((data) => {
       // **A finger has no Ctrl or Alt**, so the bar's two sticky keys turn the
       // next character the soft keyboard produces into the control byte or an
@@ -292,33 +295,6 @@
     return () => window.removeEventListener('popstate', back);
   });
 
-  /** Read the screen into a focusable region: a reader who cannot use a
-   *  canvas terminal still gets the content, and anyone can copy it. */
-  /** The control that opened the read region, so focus can go back to it. */
-  let readReturn: HTMLElement | null = null;
-
-  function readScreen(from: EventTarget | null): void {
-    if (term === null) return;
-    const buffer = term.buffer.active;
-    const lines: string[] = [];
-    for (let index = 0; index < buffer.length; index += 1) {
-      const line = buffer.getLine(index);
-      if (line !== undefined) lines.push(line.translateToString(true));
-    }
-    readText = lines.join('\n').trimEnd();
-    readReturn = from instanceof HTMLElement ? from : null;
-    readOpen = true;
-    // **The region takes focus**, so a reader who cannot use the canvas
-    // arrives at the text they asked for rather than at the top of the page.
-    void tick().then(() => readEl?.focus());
-  }
-
-  /** Close the read region and hand focus back to its door. */
-  function closeRead(): void {
-    readOpen = false;
-    readReturn?.focus();
-    readReturn = null;
-  }
 
   /** The touch bar's sticky modifiers: the next character carries them. */
   let ctrlArmed = $state(false);
@@ -345,11 +321,15 @@
 </script>
 
 <div class="tn" role="dialog" aria-modal="true" aria-label="the seat's terminal">
-  <header class="tn-bar">
-    <button type="button" class="tn-back" onclick={lower} aria-label="back to chat">
+  <!-- **The browser takeover's bar, not a terminal-shaped one.** The same
+       `tb-` dress and the same doors: back to chat, the title, the state in
+       words, take or release control, and the parked ask's Done and Not now.
+       A person who has used the browser surface has used this one. -->
+  <header class="tn-bar tb-row">
+    <button type="button" class="tb-btn d" onclick={lower} aria-label="back to chat">
       back to chat
     </button>
-    <span class="tn-title" {title}>{title}</span>
+    <span class="tb-title" {title}>{title}</span>
     <span
       class="tn-state"
       role="status"
@@ -359,73 +339,49 @@
     >
       {stateLine}
     </span>
-    {#if handOff.current !== null}
-      <!-- **The ask is on the raised bar too**: the dock is behind this
-           surface, and the person needs the reason for the typing they are
-           about to do, and whether it is hidden. -->
-      <span class="tn-ask">
-        {handOff.current.reason}{handOff.current.secret ? ' · typing is hidden' : ''}
-      </span>
-    {/if}
-    <button
-      type="button"
-      class="tn-act"
-      aria-pressed={readOpen}
-      onclick={(event) => {
-        if (readOpen) {
-          closeRead();
-        } else {
-          readScreen(event.currentTarget);
-        }
-      }}
-    >
-      read the screen
-    </button>
-    {#if handOff.current === null && phase === 'live'}
-      <!-- **The person can take the keyboard without an agent asking**: the
-           same role the browser has, and the agent's tools are refused while
-           it is held. **The press is drawn** while the server answers, and a
-           refusal lands in the state line. -->
-      <button
-        type="button"
-        class="tn-act"
-        aria-pressed={controlling()}
-        disabled={surface.control_pending !== null}
-        onclick={() => controlTerminal(!controlling())}
-      >
-        {surface.control_pending === true
-          ? 'taking control...'
-          : surface.control_pending === false
-            ? 'releasing...'
-            : controlling()
-              ? 'release control'
-              : 'take control'}
-      </button>
-    {/if}
-    {#if handOff.current !== null}
-      <!-- **The parked ask's answer lives here while the surface is up**: the
-           dock is behind this layer, and a hand-off with no reachable Done
-           would hold the session for ever. -->
-      <button type="button" class="tn-act tn-done" onclick={() => handOff.current?.respond('done')}>
-        Done
-      </button>
-      <button type="button" class="tn-act" onclick={() => handOff.current?.respond('not_now')}>
-        Not now
-      </button>
-    {/if}
-    <button
-      type="button"
-      class="tn-act"
-      onclick={() => {
-        const seat = surface.seat;
-        const id = surface.id;
-        if (seat !== null && id !== null) terminalLink().close(seat, id);
-        lower();
-      }}
-    >
-      close
-    </button>
+    <span class="tb-acts">
+      {#if handOff.current === null && phase === 'live'}
+        <!-- **The person can take the keyboard without an agent asking**: the
+             same role the browser has, and the agent's tools are refused
+             while it is held. **The press is drawn** while the server
+             answers, and a refusal lands in the state line. -->
+        <button
+          type="button"
+          class="tb-btn"
+          aria-pressed={controlling()}
+          disabled={surface.control_pending !== null}
+          onclick={() => controlTerminal(!controlling())}
+        >
+          {surface.control_pending === true
+            ? 'taking control...'
+            : surface.control_pending === false
+              ? 'releasing...'
+              : controlling()
+                ? 'release control'
+                : 'take control'}
+        </button>
+      {/if}
+      {#if handOff.current !== null}
+        <!-- **The parked ask's answer lives here while the surface is up**:
+             the dock is behind this layer, and a hand-off with no reachable
+             Done would hold the session for ever. -->
+        <button type="button" class="tb-btn" onclick={() => handOff.current?.respond('done')}>
+          Done
+        </button>
+        <button type="button" class="tb-btn d" onclick={() => handOff.current?.respond('not_now')}>
+          Not now
+        </button>
+      {/if}
+    </span>
   </header>
+  {#if handOff.current !== null}
+    <!-- **The ask is on the raised bar too**: the dock is behind this
+         surface, and the person needs the reason for the typing they are
+         about to do, and whether it is hidden. -->
+    <div class="tb-ask">
+      {handOff.current.reason}{handOff.current.secret ? ' · typing is hidden' : ''}
+    </div>
+  {/if}
 
   {#if phase === 'failed'}
     <div class="tn-state-page" role="status">
@@ -477,17 +433,6 @@
     </div>
   {/if}
 
-  {#if readOpen}
-    <div
-      class="tn-read"
-      role="region"
-      tabindex="-1"
-      bind:this={readEl}
-      aria-label="the terminal screen as text"
-    >
-      <pre>{readText}</pre>
-    </div>
-  {/if}
 </div>
 
 <style>
@@ -499,37 +444,18 @@
     flex-direction: column;
     background: var(--bg);
   }
+  /* The bar's own dress is the browser takeover's (`tb-row`/`tb-btn` in
+     web.css); this carries only what is the terminal's - the full-window
+     layer's background and the state line in words. */
   .tn-bar {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px 12px;
-    min-height: 44px;
-    padding: 6px 12px;
     border-bottom: 1px solid var(--line);
     background: var(--s1);
     color: var(--text);
-  }
-  .tn-title {
-    /* **Shrinkable and wrap-tolerant**: a phone's bar holds a title, a state
-       and four buttons, and a nowrap row overflowed the screen. */
-    flex: 1 1 6ch;
-    min-width: 0;
-    font-weight: 500;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
   .tn-state {
     color: var(--muted);
     font-size: 12.5px;
     white-space: nowrap;
-  }
-  .tn-ask {
-    flex: 1 1 100%;
-    color: var(--warn);
-    font-size: 12.5px;
-    overflow-wrap: anywhere;
   }
   .tn-state.held {
     color: var(--warn);
@@ -539,20 +465,6 @@
   }
   .tn-state.bad {
     color: var(--bad);
-  }
-  .tn-back,
-  .tn-act {
-    min-height: 32px;
-    padding: 3px 10px;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    background: var(--s2);
-    color: var(--text);
-    font: inherit;
-    cursor: pointer;
-  }
-  .tn-back {
-    margin-right: auto;
   }
   .tn-body {
     position: relative;
@@ -596,37 +508,13 @@
     color: var(--text);
     font: inherit;
   }
-  /* **An inert key is drawn inert**: the bar keeps its own colours, so the
-     state has to be said rather than left to the platform's default. */
-  .tn-keys button:disabled,
-  .tn-act:disabled {
+  /* **An inert key is drawn inert**: the key bar keeps its own colours, so
+     the state has to be said rather than left to the platform's default. */
+  .tn-keys button:disabled {
     opacity: 0.45;
     cursor: default;
   }
-  .tn-keys button:disabled:hover,
-  .tn-act:disabled:hover {
+  .tn-keys button:disabled:hover {
     background: var(--s2);
-  }
-  .tn-read {
-    max-height: 40vh;
-    overflow: auto;
-    outline-offset: -2px;
-    padding: 12px;
-    border-top: 1px solid var(--line);
-    background: var(--s1);
-    color: var(--text);
-    font-family: var(--mono, ui-monospace, Menlo, monospace);
-    font-size: 12.5px;
-  }
-  .tn-read pre {
-    margin: 0;
-    font: inherit;
-    white-space: pre-wrap;
-  }
-  @media (pointer: coarse) {
-    .tn-back,
-    .tn-act {
-      min-height: 44px;
-    }
   }
 </style>

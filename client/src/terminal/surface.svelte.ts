@@ -69,6 +69,8 @@ export function sameSeat(one: SessionSlot, other: SessionSlot): boolean {
 
 /** The newest repaint, for a component that mounts after it landed. */
 let newestScreen: string | null = null;
+/** The open the mounted surface answers once it has a grid to draw on. */
+let pendingOpen: { gen: number; settle: (why: string | null) => void } | null = null;
 /** The listeners the mounted surface draws through. */
 const views = new SvelteSet<(view: TerminalViewMessage) => void>();
 const frames = new SvelteSet<(frame: TerminalOutput) => void>();
@@ -256,7 +258,9 @@ async function reattach(): Promise<void> {
   if (seat === null || id === null) return;
   const mine = ++generation;
   try {
-    const attached = await terminalLink().show(seat, id);
+    // **The repaint is asked for at the client's own grid**, so it draws the
+    // moment it lands rather than being skipped for a second round trip.
+    const attached = await terminalLink().show(seat, id, surface.cols, surface.rows);
     if (mine !== generation) return;
     surface.id = attached;
     surface.phase = 'live';
@@ -294,23 +298,55 @@ export async function openTerminal(seat: SessionSlot, id: number | null): Promis
   pending = [];
   pendingBytes = 0;
   needResync = false;
+  // **The attach waits for the surface that will draw it.** The grid comes
+  // from the mounted terminal's own fit, so the first repaint is laid out
+  // for the client instead of being skipped and re-asked for - the flush the
+  // person saw when a second client attached.
+  pendingOpen?.settle('the terminal was opened again');
+  return await new Promise((resolve) => {
+    pendingOpen = { gen: mine, settle: resolve };
+  });
+}
+
+/**
+ * Attach the surface once it has a grid to draw on, answering the open the
+ * row is waiting for. Called by the mounted surface after its fit.
+ */
+export async function attachSurface(cols: number, rows: number): Promise<void> {
+  const seat = surface.seat;
+  if (seat === null) return;
+  const mine = generation;
+  const id = surface.id;
   try {
-    const attached = await link.show(seat, id);
-    if (mine !== generation) return null;
+    const attached = await terminalLink().show(seat, id, cols, rows);
+    if (mine !== generation) return;
     surface.id = attached;
+    surface.cols = cols;
+    surface.rows = rows;
     surface.phase = 'live';
-    return null;
+    surface.reason = null;
+    if (pendingOpen?.gen === mine) {
+      pendingOpen.settle(null);
+      pendingOpen = null;
+    }
   } catch (why) {
-    if (mine !== generation) return null;
+    if (mine !== generation) return;
+    const message = why instanceof Error ? why.message : String(why);
     surface.phase = 'failed';
-    surface.reason = why instanceof Error ? why.message : String(why);
-    return surface.reason;
+    surface.reason = message;
+    if (pendingOpen?.gen === mine) {
+      pendingOpen.settle(message);
+      pendingOpen = null;
+    }
   }
 }
 
 /** Lower the surface; the terminal keeps running. */
 export async function closeTerminal(): Promise<string | null> {
   const mine = ++generation;
+  // A surface closed before it attached answers the open it was given.
+  pendingOpen?.settle(null);
+  pendingOpen = null;
   const link = terminalLink();
   try {
     await link.hide();

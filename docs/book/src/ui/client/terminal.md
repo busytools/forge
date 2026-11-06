@@ -13,9 +13,10 @@ git tree runs in its worktree under the tree it was spawned on, a worker in
 a non-git tree in that tree; the lead in the project directory - and `/new`,
 `/resume` and a handoff leave the PTY, its shell and its scrollback
 untouched. It lives as long as the seat: releasing the seat ends it, and an
-explicit close, the shell exiting, an idle close or forge exiting also ends
-it. `[terminal] idle_minutes` closes one nobody is attached to, no hand-off
-is waiting on, and nothing has called after that long, and the strip's row
+explicit `terminal__close`, the shell exiting, an idle close or forge exiting
+also ends it. `[terminal] idle_minutes` closes one nobody is attached to, no
+hand-off is waiting on, no client holds the keyboard of, and nothing has
+called after that long, and the strip's row
 goes back to **off**. **A raised surface
 belongs to the seat it was opened on**: switching seats lowers it, and the
 old terminal keeps running.
@@ -38,7 +39,7 @@ typed.
 | Region | Shows | Read from |
 |---|---|---|
 | The hand-off's card | `terminal hand-off · terminal N`, the agent's reason, **Open terminal**, **Done** and **Not now** before the surface is up, and `typing is hidden: the program is reading a secret` when the PTY has ECHO off. Once the surface is live the card leaves the actions to its bar | the `terminal_hand_off` ask, and the page's own surface state |
-| The surface's bar | **back to chat**, `terminal N · <shell> · <cwd>`, the state line - `the agent is running a command`, `waiting for you`, `another client has the keyboard`, `the agent is waiting for input`, `the shell exited`, `the terminal closed`, `you have control`, `view only`, `opening the terminal`, or the server's sentence when it failed or refused a take - and, while a hand-off is parked, its reason, `typing is hidden`, **Done** and **Not now**; then **read the screen**, **take control** / **release control** when no ask is parked (`taking control...` / `releasing...` while the server answers), and **close** | the terminals state push, the record's `terminal`, the page's own surface state and the parked ask |
+| The surface's bar | the browser takeover's own bar: **back to chat**, `terminal N · <shell> · <cwd>`, the state line - `the agent is running a command`, `waiting for you`, `another client has the keyboard`, `the agent is waiting for input`, `the shell exited`, `the terminal closed`, `you have control`, `view only`, `opening the terminal`, or the server's sentence when it failed or refused a take - and, while a hand-off is parked, its reason, `typing is hidden`, **Done** and **Not now**; then **take control** / **release control** when no ask is parked (`taking control...` / `releasing...` while the server answers). **No other door**: back to chat is the close, and the screen is read through the terminal's own accessibility tree | the terminals state push, the record's `terminal`, the page's own surface state and the parked ask |
 | The surface | the terminal under the bar, filling the rest: the shell's screen, its colours and its cursor | the attach's `terminal_view` repaint, then the kind-4 output frames |
 | The strip's row | one pill, like the browser's: the terminal glyph, the state mark, `terminal`, the state in words - `a command is running`, `waiting for you`, `a password is wanted`, `exited`, `idle`, `off` - and **show** / **hide**, or **start** on a seat with no terminal. **The row is the person's door even before an agent opens one.** On a seat with no working tree - the read refused, a worker never spawned, a slot naming no project - the row is a note, not a door: `terminal` and `the seat has no session yet - start it first`, because a terminal opened there would run with no record for the page to draw | the session record's `terminal`, the pushed `terminal_changed` update, and the seat read's refusal for the no-working-tree state |
 | The touch key bar | under `pointer: coarse`: Ctrl and Alt (sticky), Esc, Tab, Ctrl-C, the four arrows, Enter, `/`, `-`, `\|` and `~`, each at a 44px target | the page's pointer capability |
@@ -49,9 +50,11 @@ typed.
 **The client is a viewer, and xterm.js is the renderer.** The attach answers
 with the visible screen as a VT stream - the server's grid, its colours and
 its cursor - and every later frame is the shell's own bytes, so the client
-sees exactly what the shell wrote. **The repaint is laid out at the server's
-grid**, so a first raise sends the size the client fitted to and draws the
-repaint that comes back; frames that land while xterm.js is still loading are
+sees exactly what the shell wrote. **The attach carries the size the client
+fitted to**, so the repaint comes laid out for the client's own grid and is
+drawn at once - a repaint for another grid would have to be skipped and asked
+for again, which is what read as the screen flushing on a second client.
+Frames that land while xterm.js is still loading are
 held rather than dropped, up to a 1 MB bound, past which the surface asks for
 a fresh repaint instead of drawing a fragment. The DOM renderer is the default;
 `@xterm/addon-webgl` is loaded behind a try so a renderer that will not paint
@@ -63,9 +66,11 @@ clipboard (OSC 52) and image (Sixel and iTerm2 IIP) are loaded beside it.
 two doors to that hold, and they are the browser's controller role: **take
 control** on the bar, which the person uses without an agent asking, and a
 parked hand-off, which an agent asks for. One holder at a time across
-clients - another client's take overrides it - the agent's tools are refused
-while it is held, and lowering the surface or dropping the connection
-releases it. **A parked hand-off is one client's keyboard too**: the first
+clients - another client's take overrides it - and the agent's tools are
+refused while it is held. **The role survives a switch between clients**:
+whoever took it keeps it, even with the surface lowered, until they release
+it or the connection ends; a lower that handed the keyboard back is what
+made switching windows lose control. **A parked hand-off is one client's keyboard too**: the first
 client to type claims it, the bar of any other client reads `another client
 has the keyboard`, and the take control door is closed while the ask waits;
 the ending returns the keyboard to the agent. Outside both - and, once
@@ -86,17 +91,17 @@ touch key bar is required rather than a fallback, every control it offers is
 keyboard types.
 
 **Accessibility is honest about its limit.** xterm.js's `screenReaderMode`
-exposes the buffer, and **read the screen** puts the same text into a
-focusable region, so a reader who cannot use a canvas terminal still gets the
-content and anyone can copy it; closing the region hands focus back to its
-door. The raised surface is a dialog (`role="dialog"`, `aria-modal`), its
-state line is a live region, and every state forge draws is text as well as
-colour. A terminal is a grid whose content programs control, so xterm.js
-cannot promise WCAG-level semantics for arbitrary curses output; the states
-forge draws are the part forge promises. The surface is not a Tab trap: Tab
-inside the terminal is the PTY's key, so a trap could not both leave it to
-the shell and confine focus, and the bar's controls stay in the document
-order instead. Contrast is checked where the token
+exposes the buffer as an accessibility tree, so a reader who cannot use a
+canvas terminal still gets its content; the bar carries no second copy of the
+screen, the same way the browser takeover has none, and both are read through
+their own surface. The raised surface is a dialog (`role="dialog"`,
+`aria-modal`), its state line is a live region, and every state forge draws
+is text as well as colour. A terminal is a grid whose content programs
+control, so xterm.js cannot promise WCAG-level semantics for arbitrary curses
+output; the states forge draws are the part forge promises. The surface is
+not a Tab trap: Tab inside the terminal is the PTY's key, so a trap could not
+both leave it to the shell and confine focus, and the bar's controls stay in
+the document order instead. Contrast is checked where the token
 set is, for the terminal's own chrome; a program chooses its own colours, so
 `ls --color` output is not a promise.
 

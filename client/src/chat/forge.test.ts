@@ -172,6 +172,48 @@ describe('the handoff card', () => {
   });
 });
 
+describe('the terminal card', () => {
+  it('names the terminal it opened and shows the screen it answered', () => {
+    const card = forgeCardOf(
+      'mcp__forge__terminal__open',
+      {},
+      result(
+        JSON.stringify({
+          id: 3,
+          shell: '/bin/zsh',
+          cwd: '/tmp/proj',
+          cols: 80,
+          rows: 24,
+          screen: 'vedhavyas@host:/tmp/proj $ ',
+        }),
+      ),
+    );
+    expect(card?.title, 'the terminal, not the tool').toBe('opened terminal 3');
+    expect(card?.pieces.find((piece) => piece.kind === 'tag')).toEqual({
+      kind: 'tag',
+      text: '/bin/zsh · /tmp/proj',
+    });
+    expect(card?.pieces.find((piece) => piece.kind === 'quote')).toEqual({
+      kind: 'quote',
+      text: 'vedhavyas@host:/tmp/proj $',
+    });
+  });
+
+  it('says how a command ended and what it printed', () => {
+    const card = forgeCardOf(
+      'mcp__forge__terminal__run',
+      { command: 'echo hi' },
+      result(JSON.stringify({ exit: { code: 2, signal: null }, text: 'hi', truncated: false })),
+    );
+    expect(card?.title).toBe('ran a command in a terminal');
+    expect(card?.chips).toEqual([{ text: 'exit 2', tone: 'bad' }]);
+    expect(card?.pieces.find((piece) => piece.kind === 'quote')).toEqual({
+      kind: 'quote',
+      text: 'hi',
+    });
+  });
+});
+
 describe('the tasks card', () => {
   it('names an update by the subject the echo carries, and says what moved', () => {
     const card = forgeCardOf(

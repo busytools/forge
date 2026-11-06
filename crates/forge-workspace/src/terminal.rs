@@ -370,8 +370,13 @@ impl Workspace {
             })
             .map(|(slot, _)| slot.clone())
             .collect();
-        let victims: Vec<SessionSlot> =
-            idle_slots.into_iter().filter(|slot| !self.terminal_held(slot)).collect();
+        // **A held or controlled terminal is in use**, whatever the clock
+        // says: sweeping one would take the ask or the keyboard from the
+        // person it belongs to.
+        let victims: Vec<SessionSlot> = idle_slots
+            .into_iter()
+            .filter(|slot| !self.terminal_held(slot) && !self.terminal_controlled(slot))
+            .collect();
         for slot in victims {
             tracing::debug!(
                 event_name = "terminal_idle_closed",

@@ -35,7 +35,6 @@ const link = {
   resize: vi.fn(),
   pause: vi.fn(),
   control: vi.fn(),
-  close: vi.fn(),
   onFrame: (fn: Listener<{ id: number; seq: number; bytes: Uint8Array }>) => {
     pushed.frame = fn;
     return () => {
@@ -89,6 +88,7 @@ import {
   controlTerminal,
   controlling,
   installTerminalSurface,
+  attachSurface,
   lowerForOtherSeat,
   mayType,
   onOutput,
@@ -139,6 +139,17 @@ function pushError(what: string, why: string): void {
   for (const fn of messageListeners) fn({ kind: 'error', what, why });
 }
 
+/**
+ * Open the surface and attach it, as the row and the mounted surface do: the
+ * attach waits for the grid, so a test that wants the open's answer drives
+ * both.
+ */
+async function opened(id: number | null = 4, cols = 80, rows = 24): Promise<string | null> {
+  const opening = openTerminal(seat, id);
+  await attachSurface(cols, rows);
+  return await opening;
+}
+
 describe('the terminal surface store', () => {
   afterEach(async () => {
     await closeTerminal();
@@ -149,7 +160,7 @@ describe('the terminal surface store', () => {
     const written: number[] = [];
     const off = onOutput((frame) => written.push(frame.seq));
 
-    expect(await openTerminal(seat, 4)).toBeNull();
+    expect(await opened(4)).toBeNull();
     expect(surface.phase).toBe('live');
     expect(surface.id).toBe(4);
 
@@ -169,18 +180,17 @@ describe('the terminal surface store', () => {
 
   it('lowers the surface without closing the terminal', async () => {
     const stop = installTerminalSurface(stillConnection());
-    await openTerminal(seat, 4);
+    await opened(4);
     expect(await closeTerminal()).toBeNull();
     expect(surface.phase).toBe('closed');
     expect(link.hide).toHaveBeenCalled();
-    expect(link.close).not.toHaveBeenCalled();
     stop();
   });
 
   it('fails the surface with the server sentence when the attach refuses', async () => {
     const stop = installTerminalSurface(stillConnection());
     link.show.mockRejectedValueOnce(new Error('this seat has no terminal open'));
-    expect(await openTerminal(seat, 4)).toBe('this seat has no terminal open');
+    expect(await opened(4)).toBe('this seat has no terminal open');
     expect(surface.phase).toBe('failed');
     stop();
   });
@@ -188,15 +198,15 @@ describe('the terminal surface store', () => {
   it('starts the seat a terminal when the attach names none', async () => {
     const stop = installTerminalSurface(stillConnection());
     link.show.mockResolvedValueOnce(7);
-    expect(await openTerminal(seat, null)).toBeNull();
-    expect(link.show).toHaveBeenCalledWith(seat, null);
+    expect(await opened(null)).toBeNull();
+    expect(link.show).toHaveBeenCalledWith(seat, null, 80, 24);
     expect(surface.id).toBe(7);
     stop();
   });
 
   it('keeps a frame that lands before the surface mounts, then writes it', async () => {
     const stop = installTerminalSurface(stillConnection());
-    await openTerminal(seat, 4);
+    await opened(4);
     pushed.view?.({ seat, id: 4, cols: 80, rows: 24, seq: 10, screen: '$ ', viewers: 1 });
     // xterm.js is a lazy chunk: the frames before it loads have no listener
     // to draw them, and a drop here is a hole in the screen.
@@ -210,7 +220,7 @@ describe('the terminal surface store', () => {
 
   it('does not write a held frame the newest repaint already carries', async () => {
     const stop = installTerminalSurface(stillConnection());
-    await openTerminal(seat, 4);
+    await opened(4);
     pushed.frame?.({ id: 4, seq: 11, bytes: new Uint8Array([2]) });
     // The attach lands after the chunk: its repaint reflects seq 11, so the
     // held copy would draw the same bytes twice.
@@ -224,7 +234,7 @@ describe('the terminal surface store', () => {
 
   it('takes a repaint when the held window overflowed instead of drawing a fragment', async () => {
     const stop = installTerminalSurface(stillConnection());
-    await openTerminal(seat, 4);
+    await opened(4);
     pushed.view?.({ seat, id: 4, cols: 80, rows: 24, seq: 10, screen: '$ ', viewers: 1 });
     // One frame past the hold limit drops the buffer and asks for a repaint.
     pushed.frame?.({ id: 4, seq: 11, bytes: new Uint8Array(1_000_001) });
@@ -235,7 +245,7 @@ describe('the terminal surface store', () => {
     link.show.mockClear();
     const off = onOutput((frame) => written.push(frame.seq));
     await vi.waitFor(() => {
-      expect(link.show).toHaveBeenCalledWith(seat, 4);
+      expect(link.show).toHaveBeenCalledWith(seat, 4, 80, 24);
     });
     expect(written).toEqual([]);
     off();
@@ -252,12 +262,14 @@ describe('the terminal surface store', () => {
         }),
     );
     const opening = openTerminal(seat, null);
+    const attaching = attachSurface(80, 24);
     // The repaint lands before the attach's answer, as it does when the two
     // messages cross.
     pushed.view?.({ seat, id: 7, cols: 80, rows: 24, seq: 1, screen: '$ ', viewers: 1 });
     const seen: string[] = [];
     const off = onScreen((view) => seen.push(view.screen));
     answer(7);
+    await attaching;
     await opening;
     expect(seen, 'a mount after the repaint still draws it').toEqual(['$ ']);
     off();
@@ -266,14 +278,14 @@ describe('the terminal surface store', () => {
 
   it('asks for a repaint laid out at the client size', async () => {
     const stop = installTerminalSurface(stillConnection());
-    await openTerminal(seat, 4);
+    await opened(4);
     pushed.view?.({ seat, id: 4, cols: 120, rows: 30, seq: 1, screen: 'wide', viewers: 1 });
     link.show.mockClear();
     link.resize.mockClear();
     expect(reconcileSurfaceSize(80, 24)).toBe(true);
     expect(link.resize).toHaveBeenCalledWith(seat, 4, 80, 24);
     await vi.waitFor(() => {
-      expect(link.show).toHaveBeenCalledWith(seat, 4);
+      expect(link.show).toHaveBeenCalledWith(seat, 4, 80, 24);
     });
     expect(reconcileSurfaceSize(80, 24), "the size is already the client's").toBe(false);
     stop();
@@ -281,7 +293,7 @@ describe('the terminal surface store', () => {
 
   it('lowers the surface when the page moves to another seat', async () => {
     const stop = installTerminalSurface(stillConnection());
-    await openTerminal(seat, 4);
+    await opened(4);
     await lowerForOtherSeat({ org: 'TestOrg', project: 'proj', label: 'other' });
     expect(surface.phase).toBe('closed');
     expect(link.hide).toHaveBeenCalled();
@@ -290,7 +302,7 @@ describe('the terminal surface store', () => {
 
   it('keeps the surface on the seat it belongs to', async () => {
     const stop = installTerminalSurface(stillConnection());
-    await openTerminal(seat, 4);
+    await opened(4);
     await lowerForOtherSeat({ ...seat });
     expect(surface.phase).toBe('live');
     stop();
@@ -306,11 +318,11 @@ describe('the terminal surface store', () => {
       onMessage: () => () => {},
     } as unknown as Connection;
     const stop = installTerminalSurface(connection);
-    await openTerminal(seat, 4);
+    await opened(4);
     link.show.mockClear();
     statuses[0]?.('open');
     await vi.waitFor(() => {
-      expect(link.show).toHaveBeenCalledWith(seat, 4);
+      expect(link.show).toHaveBeenCalledWith(seat, 4, 80, 24);
     });
     expect(surface.phase).toBe('live');
     stop();
@@ -318,7 +330,7 @@ describe('the terminal surface store', () => {
 
   it("takes and gives back the person's control", async () => {
     const stop = installTerminalSurface(stillConnection());
-    await openTerminal(seat, 4);
+    await opened(4);
     pushed.view?.({
       seat,
       id: 4,
@@ -346,7 +358,7 @@ describe('the terminal surface store', () => {
 
   it("gives a hand-off's keyboard to the one client that claimed it", async () => {
     const stop = installTerminalSurface(stillConnection());
-    await openTerminal(seat, 4);
+    await opened(4);
     pushed.view?.({
       seat,
       id: 4,
@@ -425,7 +437,7 @@ describe('the terminal surface store', () => {
 
   it('draws the take press until the server answers, and the refusal when it refuses', async () => {
     const stop = installTerminalSurface(stillConnection());
-    await openTerminal(seat, 4);
+    await opened(4);
     pushed.view?.({
       seat,
       id: 4,

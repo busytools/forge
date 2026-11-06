@@ -331,6 +331,14 @@ pub enum ClientMessage {
         /// on a seat every agent has left alone.**
         #[serde(default)]
         id: Option<u16>,
+        /// **The grid the client will draw on**, sent with the attach so the
+        /// repaint is laid out for it: a client that attached first and
+        /// resized after had to draw nothing until a second repaint arrived,
+        /// which read as the screen flushing.
+        #[serde(default)]
+        cols: Option<u16>,
+        #[serde(default)]
+        rows: Option<u16>,
         /// Answers the attach: `{"ok": true, "id": <the one attached>}` or
         /// `{"ok": false, "why": ...}`. A raise that cannot be answered is a
         /// dark surface, so a client that can wait sends one.

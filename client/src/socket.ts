@@ -588,7 +588,12 @@ export interface TerminalWire {
    * sentence; the screen arrives as a `terminal_view` message first, then the
    * output frames.
    */
-  terminalView(seat: SessionSlot, id: number | null): Promise<number>;
+  terminalView(
+    seat: SessionSlot,
+    id: number | null,
+    cols: number | null,
+    rows: number | null,
+  ): Promise<number>;
   /** Give the attached terminal up: the surface lowered. */
   terminalDetach(): boolean;
   /** The attached surface changed size, in columns and rows. */
@@ -600,8 +605,6 @@ export interface TerminalWire {
    * The change is pushed back to every viewer as a `terminal_control`.
    */
   terminalControl(seat: SessionSlot, id: number, take: boolean): boolean;
-  /** The person's close door. */
-  terminalClose(seat: SessionSlot, id: number): boolean;
   /** One client input frame: the keystrokes, as bytes. */
   terminalInput(id: number, bytes: Uint8Array): boolean;
   /** Every terminal output frame, with the id it belongs to. */
@@ -1647,10 +1650,10 @@ export function connect(
     browserNav: (back) => sendClient({ kind: 'browser_nav', back }),
     browserResize: (width, height, scale) =>
       sendClient({ kind: 'browser_resize', width, height, scale }),
-    terminalView(seat, id) {
+    terminalView(seat, id, cols, rows) {
       if (!isOpen()) return Promise.reject(new Error('the socket is not open'));
       const { replyTo, answer } = asked(ATTACH_BOUND_MS, 'terminal attach');
-      sendNow({ kind: 'terminal_view', seat, id, reply_to: replyTo });
+      sendNow({ kind: 'terminal_view', seat, id, cols, rows, reply_to: replyTo });
       return answer.then((body) => {
         if (typeof body !== 'object' || body === null) {
           throw new Error('the terminal attach answered nothing this page can read');
@@ -1674,7 +1677,6 @@ export function connect(
       sendClient({ kind: 'terminal_resize', seat, id, cols, rows }),
     terminalPause: (paused) => sendClient({ kind: 'terminal_pause', paused }),
     terminalControl: (seat, id, take) => sendClient({ kind: 'terminal_control', seat, id, take }),
-    terminalClose: (seat, id) => sendClient({ kind: 'terminal_close', seat, id }),
     terminalInput(id, bytes) {
       if (!isOpen()) return false;
       try {

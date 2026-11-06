@@ -539,6 +539,9 @@ enum Outbound {
     TerminalView {
         seat: Value,
         id: Option<u16>,
+        /// The grid the page will draw on, sent with the attach.
+        cols: Option<u16>,
+        rows: Option<u16>,
         reply: Option<u64>,
         answered: Option<oneshot::Sender<Result<Value, String>>>,
     },
@@ -560,11 +563,6 @@ enum Outbound {
         seat: Value,
         id: u16,
         take: bool,
-    },
-    /// The person's close door.
-    TerminalClose {
-        seat: Value,
-        id: u16,
     },
     /// One client input frame: the terminal id and the keystrokes, already at
     /// the wire's shape (the kind tag is prepended here).
@@ -842,12 +840,27 @@ impl Socket {
         let _ = self.tx.send(Outbound::BrowserResize { width, height, scale });
     }
 
-    /// Attach this connection to a seat's terminal, as a viewer.
-    pub async fn terminal_view(&self, seat: Value, id: Option<u16>) -> Result<Value, String> {
+    /// Attach this connection to a seat's terminal, as a viewer. `cols` and
+    /// `rows` are the grid the page will draw on, so the repaint is laid out
+    /// for it.
+    pub async fn terminal_view(
+        &self,
+        seat: Value,
+        id: Option<u16>,
+        cols: Option<u16>,
+        rows: Option<u16>,
+    ) -> Result<Value, String> {
         let reply = self.next_reply.fetch_add(1, Ordering::Relaxed);
         let (answered, answer) = oneshot::channel();
         self.tx
-            .send(Outbound::TerminalView { seat, id, reply: Some(reply), answered: Some(answered) })
+            .send(Outbound::TerminalView {
+                seat,
+                id,
+                cols,
+                rows,
+                reply: Some(reply),
+                answered: Some(answered),
+            })
             .map_err(|_| "the socket is closed".to_owned())?;
         match tokio::time::timeout(ATTACH_BOUND, answer).await {
             Ok(Ok(result)) => result,
@@ -877,11 +890,6 @@ impl Socket {
     /// Take the person's control of the attached terminal, or give it back.
     pub fn terminal_control(&self, seat: Value, id: u16, take: bool) {
         let _ = self.tx.send(Outbound::TerminalControl { seat, id, take });
-    }
-
-    /// The person's close door.
-    pub fn terminal_close(&self, seat: Value, id: u16) {
-        let _ = self.tx.send(Outbound::TerminalClose { seat, id });
     }
 
     /// One client input frame: the keystrokes, as bytes.
@@ -1041,7 +1049,6 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
         | Outbound::TerminalResize { .. }
         | Outbound::TerminalPause { .. }
         | Outbound::TerminalControl { .. }
-        | Outbound::TerminalClose { .. }
         | Outbound::TerminalInput { .. }
         | Outbound::StripAsk { replied: None, .. }
         // Nothing to probe while there is no connection: the redial's own
@@ -1599,13 +1606,15 @@ async fn run(
                                 ))
                                 .await;
                         }
-                        Outbound::TerminalView { seat, id, reply, answered } => {
+                        Outbound::TerminalView { seat, id, cols, rows, reply, answered } => {
                             let ok = writer
                                 .send(Message::Text(
                                     json!({
                                         "kind": "terminal_view",
                                         "seat": seat,
                                         "id": id,
+                                        "cols": cols,
+                                        "rows": rows,
                                         "reply_to": reply,
                                     })
                                         .to_string()
@@ -1667,15 +1676,6 @@ async fn run(
                                     })
                                     .to_string()
                                     .into(),
-                                ))
-                                .await;
-                        }
-                        Outbound::TerminalClose { seat, id } => {
-                            let _ = writer
-                                .send(Message::Text(
-                                    json!({ "kind": "terminal_close", "seat": seat, "id": id })
-                                        .to_string()
-                                        .into(),
                                 ))
                                 .await;
                         }

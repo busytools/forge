@@ -12225,7 +12225,13 @@ async fn a_terminal_opens_types_and_closes_over_the_socket() {
     .await;
     send(
         &mut socket,
-        ClientMessage::TerminalView { seat: seat.clone(), id: None, reply_to: Some(41) },
+        ClientMessage::TerminalView {
+            seat: seat.clone(),
+            id: None,
+            cols: None,
+            rows: None,
+            reply_to: Some(41),
+        },
     )
     .await;
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -12343,8 +12349,17 @@ async fn attach_answering(url: &str, seat: &SessionSlot, id: Option<u16>) -> (Cl
         },
     )
     .await;
-    send(&mut socket, ClientMessage::TerminalView { seat: seat.clone(), id, reply_to: Some(41) })
-        .await;
+    send(
+        &mut socket,
+        ClientMessage::TerminalView {
+            seat: seat.clone(),
+            id,
+            cols: None,
+            rows: None,
+            reply_to: Some(41),
+        },
+    )
+    .await;
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut attached = None;
     while Instant::now() < deadline && attached.is_none() {
@@ -12430,4 +12445,99 @@ async fn a_parked_handoff_gives_the_keyboard_to_one_client() {
     }
     assert!(released, "the ending released the hand-off's keyboard");
     assert!(!fleet.workspace().terminal_controlled(&seat), "the agent owns it again");
+}
+
+/// **The attach carries the grid the client will draw on.** A repaint laid
+/// out for the server's default grid is one the client cannot draw, which
+/// is what read as the screen flushing when a second client attached.
+#[tokio::test]
+async fn an_attach_is_repainted_at_the_clients_grid() {
+    let dir = tempfile::tempdir().expect("a config dir");
+    std::fs::create_dir_all(dir.path().join("proj")).expect("the project's directory");
+    let fleet = Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let seat = lead_seat();
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::TerminalView {
+            seat: seat.clone(),
+            id: None,
+            cols: Some(100),
+            rows: Some(41),
+            reply_to: Some(9),
+        },
+    )
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut attached = None;
+    while Instant::now() < deadline && attached.is_none() {
+        let Some(message) = next_server_within(&mut socket, 500).await else { continue };
+        if let ServerMessage::TerminalView { cols, rows, .. } = message {
+            attached = Some((cols, rows));
+        }
+    }
+    assert_eq!(attached, Some((100, 41)), "the repaint is laid out at the client's grid");
+}
+
+/// **Lowering the surface keeps the role.** The person who took the keyboard
+/// keeps it until they release it or the connection ends; a lower that handed
+/// it back is what made switching clients lose control.
+#[tokio::test]
+async fn lowering_the_surface_keeps_the_persons_control() {
+    let dir = tempfile::tempdir().expect("a config dir");
+    std::fs::create_dir_all(dir.path().join("proj")).expect("the project's directory");
+    let fleet = Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let seat = lead_seat();
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::TerminalView {
+            seat: seat.clone(),
+            id: None,
+            cols: None,
+            rows: None,
+            reply_to: None,
+        },
+    )
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut id = None;
+    while Instant::now() < deadline && id.is_none() {
+        let Some(message) = next_server_within(&mut socket, 500).await else { continue };
+        if let ServerMessage::TerminalView { id: attached, .. } = message {
+            id = Some(attached);
+        }
+    }
+    let id = id.expect("the attach answered with a repaint");
+
+    send(&mut socket, ClientMessage::TerminalControl { seat: seat.clone(), id, take: true }).await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut taken = false;
+    while Instant::now() < deadline && !taken {
+        let Some(message) = next_server_within(&mut socket, 500).await else { continue };
+        if let ServerMessage::TerminalControl { controller: Some(_), .. } = message {
+            taken = true;
+        }
+    }
+    assert!(taken, "the take was pushed");
+    assert!(fleet.workspace().terminal_controlled(&seat), "the person holds it");
+
+    // **The lower is not a release.**
+    send(&mut socket, ClientMessage::TerminalDetach).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        fleet.workspace().terminal_controlled(&seat),
+        "lowering the surface handed the keyboard back",
+    );
+
+    // **The connection ending is**: nothing may hold the agent blind after
+    // the client is gone.
+    drop(socket);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && fleet.workspace().terminal_controlled(&seat) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(!fleet.workspace().terminal_controlled(&seat), "the ended connection released it");
 }

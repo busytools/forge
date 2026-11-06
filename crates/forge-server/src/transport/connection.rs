@@ -281,6 +281,18 @@ struct TerminalViewing {
 #[derive(Default)]
 struct TerminalViewingState {
     viewing: Option<TerminalViewing>,
+    /// **The role this connection holds, even while its surface is lowered**,
+    /// so the connection ending gives the keyboard back. A lower is not a
+    /// release; a dropped socket must not leave the agent blind.
+    role: Option<(std::sync::Arc<forge_workspace::terminal::TerminalEntry>, u64)>,
+}
+
+impl Drop for TerminalViewingState {
+    fn drop(&mut self) {
+        if let Some((entry, viewer)) = self.role.take() {
+            entry.release_control(viewer);
+        }
+    }
 }
 
 /// The viewer halves one connection carries: the browser tab it draws and
@@ -298,11 +310,9 @@ impl Drop for TerminalViewing {
     fn drop(&mut self) {
         // **The viewer count comes off however the attachment ends**: a
         // lowered surface, a dropped socket and a re-attach all pass here.
+        // The role is the connection's rather than the viewing's -
+        // `TerminalViewingState` holds it - so a lower does not release it.
         self.entry.attached.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-        // **So does a control this viewer held**: a surface that goes away
-        // without releasing would leave the agent blind behind a role nobody
-        // is using.
-        self.entry.release_control(self.viewer);
     }
 }
 
@@ -1502,6 +1512,12 @@ where
                     }
                     TerminalEvent::Control(controller) => {
                         let Some(viewing) = viewers.terminal.viewing.as_ref() else { continue };
+                        // **The role follows the controller**: a steal or a
+                        // hand-off's ending clears this connection's, so its
+                        // socket ending releases only what it actually holds.
+                        let held = controller == Some(viewing.viewer);
+                        let entry = viewing.entry.clone();
+                        viewers.terminal.role = if held { Some((entry, viewing.viewer)) } else { None };
                         send(
                             socket,
                             ServerMessage::TerminalControl {
@@ -2073,17 +2089,33 @@ async fn attach_terminal<S>(
     me: u64,
     seat: forge_primitives::SessionSlot,
     id: Option<u16>,
+    cols: Option<u16>,
+    rows: Option<u16>,
     reply_to: Option<u64>,
 ) -> anyhow::Result<()>
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
 {
     // A re-attach replaces what this connection was viewing; the old
-    // attachment's drop takes its viewer count off and gives back a control
-    // it held.
+    // attachment's drop takes its viewer count off, and the role is the
+    // connection's own (`TerminalViewingState::role`), so a repaint never
+    // hands back a keyboard the person is holding.
     terminal.viewing = None;
     match state.surface.terminal_attach_or_open(&seat, id) {
         Ok(entry) => {
+            // **The grid the client will draw on**, set before the repaint is
+            // taken: a repaint laid out for another grid is one the client
+            // cannot draw, and skipping it read as the screen flushing.
+            if let (Some(cols), Some(rows)) = (cols, rows) {
+                if let Err(why) = entry.terminal.resize(cols, rows) {
+                    tracing::debug!(
+                        event_name = "terminal_attach_resize_failed",
+                        seat = %seat.display(),
+                        reason = %why,
+                        "an attach's grid was refused",
+                    );
+                }
+            }
             let output = entry.terminal.subscribe();
             // **The repaint reflects every chunk below this sequence**, so a
             // chunk still queued from before it is ignored by the client
@@ -2826,13 +2858,15 @@ where
         ClientMessage::BrowserViewPage { seat, target, reply_to } => {
             attach_view(socket, state, viewing, me, seat, reply_to, None, Some(target)).await
         }
-        ClientMessage::TerminalView { seat, id, reply_to } => {
-            attach_terminal(socket, state, terminal, me, seat, id, reply_to).await
+        ClientMessage::TerminalView { seat, id, cols, rows, reply_to } => {
+            attach_terminal(socket, state, terminal, me, seat, id, cols, rows, reply_to).await
         }
         ClientMessage::TerminalDetach => {
-            // **Lowering is a detach**: the drop takes this viewer's count off
-            // the terminal and gives back a control it held, so the idle
-            // clock and the agent both see the truth.
+            // **Lowering is a detach, not a release.** The drop takes this
+            // viewer's count off the terminal, and the role stays with the
+            // person who took it (`TerminalViewingState::role`) until they
+            // release it or the connection ends; a lower that handed the
+            // keyboard back is what made switching clients lose control.
             terminal.viewing = None;
             Ok(())
         }
@@ -2904,8 +2938,16 @@ where
                     )
                     .await;
                 }
+                // **The connection now owns the role**, so the socket ending
+                // gives it back even if the surface was lowered in between.
+                let held = terminal.viewing.as_ref().map(|viewing| viewing.entry.clone());
+                if let Some(entry) = held {
+                    terminal.role = Some((entry, me));
+                }
             } else if let Some(viewing) = terminal.viewing.as_ref() {
-                viewing.entry.release_control(me);
+                if viewing.entry.release_control(me) {
+                    terminal.role = None;
+                }
             }
             Ok(())
         }
@@ -3703,13 +3745,22 @@ fn take_frame(
                 // the write are one step under the park's own lock: a client
                 // that loses the claim views, and a byte typed as the ask
                 // ended never lands after it.
-                if let Err(why) = surface.write_handoff_keyboard(&viewing.seat, id, me, &bytes) {
-                    tracing::debug!(
-                        event_name = "terminal_input_refused",
-                        id,
-                        reason = %why,
-                        "a terminal input frame was refused",
-                    );
+                match surface.write_handoff_keyboard(&viewing.seat, id, me, &bytes) {
+                    Ok(()) => {
+                        // **The door's claim is this connection's role**, so
+                        // a lower keeps it and the socket ending gives it
+                        // back.
+                        let entry = viewing.entry.clone();
+                        terminal.role = Some((entry, me));
+                    }
+                    Err(why) => {
+                        tracing::debug!(
+                            event_name = "terminal_input_refused",
+                            id,
+                            reason = %why,
+                            "a terminal input frame was refused",
+                        );
+                    }
                 }
                 return;
             }

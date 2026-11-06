@@ -682,9 +682,15 @@ impl Bridge {
 
     /// Attach this connection to a seat's terminal, as a viewer; no id opens
     /// the seat's terminal, creating it when there is none.
-    pub async fn terminal_view(&self, seat: Value, id: Option<u16>) -> Result<Value, String> {
+    pub async fn terminal_view(
+        &self,
+        seat: Value,
+        id: Option<u16>,
+        cols: Option<u16>,
+        rows: Option<u16>,
+    ) -> Result<Value, String> {
         let socket = self.socket().ok_or_else(|| "the socket is not open".to_owned())?;
-        socket.terminal_view(seat, id).await
+        socket.terminal_view(seat, id, cols, rows).await
     }
 
     /// Stop viewing the attached terminal.
@@ -712,13 +718,6 @@ impl Bridge {
     pub fn terminal_control(&self, seat: Value, id: u16, take: bool) {
         if let Some(socket) = self.socket() {
             socket.terminal_control(seat, id, take);
-        }
-    }
-
-    /// The person's close door.
-    pub fn terminal_close(&self, seat: Value, id: u16) {
-        if let Some(socket) = self.socket() {
-            socket.terminal_close(seat, id);
         }
     }
 

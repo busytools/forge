@@ -465,8 +465,10 @@ mod commands {
         bridge: tauri::State<'_, Arc<Bridge>>,
         seat: Value,
         id: Option<u16>,
+        cols: Option<u16>,
+        rows: Option<u16>,
     ) -> Result<Value, String> {
-        bridge.terminal_view(seat, id).await
+        bridge.terminal_view(seat, id, cols, rows).await
     }
 
     /// Stop viewing the attached terminal.
@@ -502,12 +504,6 @@ mod commands {
         take: bool,
     ) {
         bridge.terminal_control(seat, id, take);
-    }
-
-    /// The person's close door.
-    #[tauri::command]
-    pub fn client_terminal_close(bridge: tauri::State<'_, Arc<Bridge>>, seat: Value, id: u16) {
-        bridge.terminal_close(seat, id);
     }
 
     /// One client input frame: the keystrokes, as bytes.
@@ -666,7 +662,6 @@ pub fn run() -> u8 {
             commands::client_terminal_resize,
             commands::client_terminal_pause,
             commands::client_terminal_control,
-            commands::client_terminal_close,
             commands::client_terminal_input,
             check_update,
             install_update,
@@ -736,7 +731,6 @@ pub fn run() -> u8 {
             commands::client_terminal_resize,
             commands::client_terminal_pause,
             commands::client_terminal_control,
-            commands::client_terminal_close,
             commands::client_terminal_input,
             check_update,
             install_update,

@@ -432,6 +432,12 @@ export type ClientMessage =
        * person's door on a seat no agent has touched.
        */
       id: number | null;
+      /**
+       * The grid the client will draw on, so the repaint is laid out for it.
+       * Null for an attach with no surface behind it.
+       */
+      cols: number | null;
+      rows: number | null;
       /** Answers the attach when the sender waits; the surface's open does. */
       reply_to?: number | null;
     }
@@ -453,8 +459,6 @@ export type ClientMessage =
    * the previous holder hears it lost the role.
    */
   | { kind: 'terminal_control'; seat: SessionSlot; id: number; take: boolean }
-  /** The person's close door: end the terminal's process group. */
-  | { kind: 'terminal_close'; seat: SessionSlot; id: number }
   /**
    * One page's own perf records, for a client with no shell to write them.
    *

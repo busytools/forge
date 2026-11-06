@@ -57,12 +57,18 @@ read as one system.
   web, lsp, skill, tool search, config, worktree, tool, and the one
   mutation row every edit draws whatever tool it was.
 - **A forge call** draws a card for its family - tasks, agents, cron,
-  documents, gotify, handoff, review, slack, voice - and the System One decisions
+  documents, gotify, handoff, review, slack, terminal, voice - and the System
+  One decisions
   draw as their own family, so a reader scanning for what the session decided
   does not find the three decision calls mixed among its cron and peer calls.
   The handoff's exit call is its own family: its family is handoff, it wears
   the handoff mark rather than the workers one, and it carries the note it
-  handed over.
+  handed over. A terminal call is the terminal family's: it wears the
+  terminal mark, titles itself by the terminal it acted on (`opened terminal
+  3`, `ran a command in a terminal`), chips the shell's state in words
+  (`running`, `waiting for input`, `exit 2`) and quotes the screen or the
+  command's own text; a parked `terminal__hand_off` says it waits for the
+  person and carries the ask's reason.
 - **A browser call** is the browser's, whatever server name carried it.
 - **A peer message** draws a card saying which way it went: `sent to` and
   `from` name the counterparty and its org, `failed` carries the

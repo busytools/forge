@@ -28,8 +28,15 @@ export interface TerminalLink {
   /**
    * Attach this connection to a seat's terminal; answers the id it attached.
    * `id` is null when the seat has no terminal yet: the server opens one.
+   * **`cols` and `rows` are the grid the client will draw on**, so the
+   * repaint comes laid out for it rather than being skipped.
    */
-  show(seat: SessionSlot, id: number | null): Promise<number>;
+  show(
+    seat: SessionSlot,
+    id: number | null,
+    cols: number | null,
+    rows: number | null,
+  ): Promise<number>;
   /** Give the surface up; the terminal keeps running. */
   hide(): Promise<void>;
   /** One client input frame: the keystrokes, as bytes. */
@@ -40,8 +47,6 @@ export interface TerminalLink {
   pause(paused: boolean): void;
   /** Take the person's control, or give it back. */
   control(seat: SessionSlot, id: number, take: boolean): void;
-  /** The person's close door. */
-  close(seat: SessionSlot, id: number): void;
   /** Every output frame, with the id it belongs to. */
   onFrame(listener: (frame: TerminalOutput) => void): () => void;
   /** Every attach snapshot: the screen as a VT stream and where it continues. */
@@ -119,8 +124,8 @@ function inShell(): boolean {
 function shellLink(): TerminalLink {
   return {
     attachable: true,
-    async show(seat, id) {
-      const answer: unknown = await invokeShell('client_terminal_view', { seat, id });
+    async show(seat, id, cols, rows) {
+      const answer: unknown = await invokeShell('client_terminal_view', { seat, id, cols, rows });
       const held =
         typeof answer === 'object' && answer !== null ? (answer as Record<string, unknown>) : {};
       if (held['ok'] !== true) {
@@ -154,11 +159,6 @@ function shellLink(): TerminalLink {
     control(seat, id, take) {
       void invokeShell('client_terminal_control', { seat, id, take }).catch((why) => {
         console.warn('the terminal control did not change', why);
-      });
-    },
-    close(seat, id) {
-      void invokeShell('client_terminal_close', { seat, id }).catch((why) => {
-        console.warn('the terminal was not closed', why);
       });
     },
     onFrame(listener) {
@@ -235,7 +235,7 @@ function shellLink(): TerminalLink {
 function wireLink(connection: Connection & TerminalWire): TerminalLink {
   return {
     attachable: true,
-    show: (seat, id) => connection.terminalView(seat, id),
+    show: (seat, id, cols, rows) => connection.terminalView(seat, id, cols, rows),
     hide: () => {
       connection.terminalDetach();
       return Promise.resolve();
@@ -251,11 +251,6 @@ function wireLink(connection: Connection & TerminalWire): TerminalLink {
     pause: (paused) => {
       if (!connection.terminalPause(paused)) {
         console.warn('the terminal stream was not paused: the socket is not open');
-      }
-    },
-    close: (seat, id) => {
-      if (!connection.terminalClose(seat, id)) {
-        console.warn('the terminal was not closed: the socket is not open');
       }
     },
     control: (seat, id, take) => {
@@ -302,7 +297,6 @@ export function terminalLink(): TerminalLink {
       resize: () => {},
       pause: () => {},
       control: () => {},
-      close: () => {},
       onFrame: () => () => {},
       onView: () => () => {},
       onControl: () => () => {},
