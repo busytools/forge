@@ -253,6 +253,16 @@
   let restoreTries = 0;
   /** When the restore being placed began, against [`RESTORE_MS`]. */
   let restoreStarted = 0;
+  /**
+   * Whether the entry's placement has settled.
+   *
+   * **The open places its reader; only a settled column follows.** While the
+   * list's model is still catching up with the rows the mount drew, the foot
+   * moves under a reader who has just arrived - holding at the model or
+   * gliding to it walks them down the conversation. Every pass until the
+   * model reaches the element's own end is the placement.
+   */
+  let openPlaced = false;
   let working: Chat | null = null;
   /**
    * The conversation built for one seat over one connection.
@@ -1545,6 +1555,12 @@
         working?.following(true);
         if (place !== null) places.forget(which);
       }
+      // **An entry places its reader; it does not travel to them.** The
+      // mount's first passes correct the list's estimates, and holding or
+      // gliding there walks the reader down the conversation. Set for both
+      // entry shapes: a restore has its own placer, and an open's settle is a
+      // correction, not a follow.
+      openPlaced = false;
       // **And so were the asks this column is holding.** They belong to the
       // conversation that is going, and their pages are not coming here.
       outstanding = 0;
@@ -2319,18 +2335,19 @@
     const max = foot - viewport.clientHeight;
     const model = modelFoot();
     let target = foot;
-    // **An open PLACES its reader; only a following column holds.** The hold
-    // stops the pin at the end the list has measured, so a row that grew in
-    // this update is not scrolled past before the measurement lands. That is
-    // the right answer while a turn is live and the reader is following it.
-    // It is the wrong answer on an open: a kept conversation's rows are
-    // already in the element while the list measures them a pass later, so
-    // the model's foot sits far ABOVE the element's - and holding there lands
-    // the reader near the top of the conversation and then walks them down as
-    // the measurement catches up. `placed` is null until an open's first pin
-    // has landed, so a null here is the open placing its reader: write the
-    // element's own foot and do not schedule the retries a hold would.
-    if (model !== null && max > model && placed !== null) {
+    // **An open PLACES its reader; only a settled following column holds.**
+    // The hold stops the pin at the end the list has measured, so a row that
+    // grew in this update is not scrolled past before the measurement lands.
+    // That is the right answer while a turn is live and the reader is
+    // following it. It is the wrong answer on an open: a kept conversation's
+    // rows are already in the element while the list measures them a pass
+    // later, so the model's foot sits far ABOVE the element's - and holding
+    // there lands the reader near the top of the conversation and then walks
+    // them down as the measurement catches up. `openPlaced` is false until
+    // the model reaches the element's own end, so it is the open placing its
+    // reader: write the element's own foot and do not schedule the retries a
+    // hold would.
+    if (model !== null && max > model && placed !== null && openPlaced) {
       // **The pin never passes the end the list has measured.** It holds
       // there and comes back for the growth on a later frame; the two-frame
       // budget bounds only the deferred retries, never the hold, so a stream
@@ -2359,6 +2376,7 @@
     if (
       !force &&
       placed !== null &&
+      openPlaced &&
       wantsMotion() &&
       Math.abs(want - viewport.scrollTop) > FOOT_QUANTUM
     ) {
@@ -2383,6 +2401,10 @@
     // Where the column last left the reader, which is the foot the browser
     // clamped the pin to.
     placed = viewport.scrollTop;
+    // **The mount has settled when the model reaches the element's own end.**
+    // Until then every pass is the entry placing its reader - instantly - and
+    // only the first growth after it is the column following.
+    if (!openPlaced && (model === null || max <= model)) openPlaced = true;
     // **The pin leaves the reader at the end it could reach**: the browser's,
     // or the list's own while the browser counts a row it has not drawn. Both
     // are the foot for the next arrival's decision - give or take the fraction
