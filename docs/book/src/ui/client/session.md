@@ -57,8 +57,8 @@ read as one system.
   web, lsp, skill, tool search, config, worktree, tool, and the one
   mutation row every edit draws whatever tool it was.
 - **A forge call** draws a card for its family - tasks, agents, cron,
-  documents, gotify, handoff, review, slack, terminal, voice - and the System
-  One decisions
+  documents, gotify, handoff, review, slack, terminal, vault, voice - and the
+  System One decisions
   draw as their own family, so a reader scanning for what the session decided
   does not find the three decision calls mixed among its cron and peer calls.
   The handoff's exit call is its own family: its family is handoff, it wears
@@ -68,7 +68,13 @@ read as one system.
   3`, `ran a command in a terminal`), chips the shell's state in words
   (`running`, `waiting for input`, `exit 2`) and quotes the screen or the
   command's own text; a parked `terminal__hand_off` says it waits for the
-  person and carries the ask's reason.
+  person and carries the ask's reason. A vault call is the vault family's: it
+  wears the key mark, titles itself by the item it touched (`created login
+  'bank'`, `moved item ... to the trash`, `searched the vault for 'bank'`),
+  chips a parked call `waiting for your approval` and a find by its count,
+  draws a search's rows and a folder list's names, and draws the one value a
+  reveal asked for - the card replaces the raw body, so a value left out of
+  the card would be a value the reader cannot find.
 - **A browser call** is the browser's, whatever server name carried it.
 - **A peer message** draws a card saying which way it went: `sent to` and
   `from` name the counterparty and its org, `failed` carries the

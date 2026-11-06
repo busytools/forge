@@ -48,6 +48,7 @@ export type ForgeFamily =
   | 'slack'
   | 'tasks'
   | 'terminal'
+  | 'vault'
   | 'voice';
 
 /**
@@ -64,6 +65,7 @@ const FORGE_FAMILIES = new Set<string>([
   'slack',
   'tasks',
   'terminal',
+  'vault',
   'voice',
 ]);
 
@@ -226,6 +228,7 @@ const FORGE_GLYPH: Record<ForgeFamily, string> = {
   slack: 'slack',
   tasks: 'tasks',
   terminal: 'square-terminal',
+  vault: 'vault',
   voice: 'sound',
 };
 

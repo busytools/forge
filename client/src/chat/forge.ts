@@ -494,7 +494,9 @@ export function forgeCardOf(
                     ? handoffCard(input, answer)
                     : family === 'terminal'
                       ? terminalCard(verbOf(name), input, answer)
-                      : agentsCard(verbOf(name), input, answer);
+                      : family === 'vault'
+                        ? vaultCard(verbOf(name), input, answer)
+                        : agentsCard(verbOf(name), input, answer);
   // A result that said more than the one block the card reads draws the rest
   // beside the card: the card replaces the body, and a block it swallowed
   // would be the one thing a reader could not find.
@@ -524,6 +526,7 @@ const FAMILY_NOUN: Record<ForgeFamily, string> = {
   agents: 'workers',
   handoff: 'handoff',
   terminal: 'terminal',
+  vault: 'the vault',
   voice: 'speech',
 };
 
@@ -563,6 +566,10 @@ export function forgeRowTitle(
     if (verb === 'post') return postTitle(null, str(held, 'conversation'));
     const spawned = verb === 'spawn' ? str(held, 'label') : null;
     if (spawned !== null && spawned.trim() !== '') return `spawned worker '${spawned}'`;
+    // A failed vault call reads in the success wording too, under the tail
+    // that says it failed.
+    const vault = family === 'vault' ? vaultSubject(verb, held, true) : null;
+    if (vault !== null) return vault;
   } else {
     const pending = pendingCard(family, verb, input);
     if (pending !== null) return pending.title;
@@ -587,6 +594,20 @@ export function forgeRowTitle(
  */
 function pendingCard(family: ForgeFamily, verb: string, input: unknown): ForgeCard | null {
   const held = obj(input);
+  // **A vault call is held on the dock, and that wait is the row's point**:
+  // the title names the item it would touch, and the chip says the call has
+  // not run yet. The input's secret values are never drawn - only the
+  // subject the reader is being asked about.
+  if (family === 'vault') {
+    const title = vaultSubject(verb, held, false);
+    if (title === null) return null;
+    return {
+      title,
+      chips: [{ text: 'waiting for your approval', tone: 'warn' }],
+      figure: null,
+      pieces: [],
+    };
+  }
   // **A terminal hand-off waits on the person, and that wait is the row's
   // point**: the ask's reason rides it while it is parked.
   if (family === 'terminal' && verb === 'hand_off') {
@@ -1064,6 +1085,233 @@ function terminalCard(verb: string, input: unknown, answer: unknown): ForgeCard 
         chips.push({ text: ending, tone: 'ok' });
       }
       return { title: `handed ${name} to the person`, chips, figure: null, pieces };
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * The title a vault row carries, in the tense the call's own state calls for:
+ * a held call is doing the thing, a failed one reads in the success wording
+ * under a tail that says it failed.
+ *
+ * `null` for a call whose input names no subject, so the row falls back to
+ * the family's noun rather than claiming an item nobody named.
+ */
+function vaultSubject(verb: string, held: Record<string, unknown>, done: boolean): string | null {
+  const id = str(held, 'id');
+  const name = str(held, 'name');
+  const item = id === null ? 'the item' : `item ${id}`;
+  switch (verb) {
+    case 'create': {
+      if (name === null || name.trim() === '') return null;
+      const kind = str(held, 'type') ?? 'login';
+      return `${done ? 'created' : 'creating'} ${kind} '${name}'`;
+    }
+    case 'update':
+      return `${done ? 'updated' : 'updating'} ${item}`;
+    case 'get':
+      return `${done ? 'read' : 'reading'} ${item}`;
+    case 'trash':
+      return `${done ? 'moved' : 'moving'} ${item} to the trash`;
+    case 'restore':
+      return `${done ? 'restored' : 'restoring'} ${item}`;
+    case 'totp_code':
+      return `${done ? 'computed' : 'computing'} a TOTP code for ${item}`;
+    case 'attachment_get': {
+      const of = str(held, 'item_id');
+      return `${done ? 'downloaded' : 'downloading'} an attachment from ${of === null ? 'the item' : `item ${of}`}`;
+    }
+    case 'attachment_put': {
+      const path = str(held, 'path');
+      return `${done ? 'uploaded' : 'uploading'} ${path === null ? 'a file' : `'${leafName(path)}'`}`;
+    }
+    case 'folder_list':
+      return done ? 'listed the folders' : 'listing folders';
+    case 'folder_create':
+      return name === null || name.trim() === ''
+        ? null
+        : `${done ? 'created' : 'creating'} folder '${name}'`;
+    case 'folder_update':
+      return name === null || name.trim() === ''
+        ? null
+        : `${done ? 'renamed' : 'renaming'} folder '${name}'`;
+    case 'folder_delete':
+      return `${done ? 'deleted' : 'deleting'} folder ${id ?? ''}`.trim();
+    default:
+      return null;
+  }
+}
+
+/** A vault item's type, in the word the family's own results use for it. */
+function itemKind(value: unknown): string | null {
+  if (typeof value === 'number') {
+    if (value === 1) return 'login';
+    if (value === 2) return 'note';
+    if (value === 3) return 'card';
+    return null;
+  }
+  return typeof value === 'string' && value !== '' ? value : null;
+}
+
+/** One revealed field's value as words: a value, or a card's expiry pair. */
+function shownValue(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number') return String(value);
+  const held = obj(value);
+  const month = str(held, 'expMonth');
+  const year = str(held, 'expYear');
+  return month === null || year === null ? null : `${month}/${year}`;
+}
+
+/**
+ * The vault family's card: which item a call touched, and what it found.
+ *
+ * The result's own fields name the subject, so the card is built from the
+ * ANSWER and never the input: an update's input is a patch, whose values are
+ * the secrets a card must not draw. `search` and `folder_list` answer rows
+ * and draw them as the family's list; a reveal draws the one value the caller
+ * asked for, because a card replaces the raw body that would otherwise hold
+ * it.
+ */
+function vaultCard(verb: string, input: unknown, answer: unknown): ForgeCard | null {
+  const asked = obj(input);
+  const held = obj(answer);
+  switch (verb) {
+    case 'search': {
+      const items = held['items'];
+      if (!Array.isArray(items)) return null;
+      const rows: ForgeListItem[] = [];
+      for (const raw of items) {
+        const item = obj(raw);
+        const name = str(item, 'name');
+        if (name === null) continue;
+        rows.push({
+          id: null,
+          state: null,
+          text: name,
+          tag: str(item, 'username'),
+          when: dayOf(str(item, 'updated_at')),
+        });
+      }
+      const query = str(asked, 'query');
+      const title =
+        query === null || query.trim() === ''
+          ? 'searched the vault'
+          : `searched the vault for '${query}'`;
+      return {
+        title,
+        chips: [{ text: `${rows.length} ${rows.length === 1 ? 'hit' : 'hits'}`, tone: 'plain' }],
+        figure: null,
+        pieces: listBody(rows, 'nothing matched'),
+      };
+    }
+    case 'get': {
+      const name = str(held, 'name');
+      if (name === null) return null;
+      const chips: ForgeChip[] = [];
+      const kind = itemKind(held['type']);
+      if (kind !== null) chips.push({ text: kind, tone: 'plain' });
+      if (str(held, 'deleted_date') !== null) chips.push({ text: 'trashed', tone: 'dim' });
+      if (held['favorite'] === true) chips.push({ text: 'favorite', tone: 'dim' });
+      const pairs: [string, string][] = [];
+      const folder = str(held, 'folder_id');
+      if (folder !== null) pairs.push(['folder', folder]);
+      const username = str(held, 'username');
+      if (username !== null) pairs.push(['username', username]);
+      const uris = held['uris'];
+      if (Array.isArray(uris)) {
+        const list = uris.filter((uri): uri is string => typeof uri === 'string');
+        if (list.length > 0) pairs.push(['uri', list.join(' \u{b7} ')]);
+      }
+      const pieces: ForgePiece[] = [];
+      if (pairs.length > 0) pieces.push({ kind: 'kv', pairs });
+      const revealed = obj(held['revealed']);
+      const field = str(revealed, 'field');
+      const value = shownValue(revealed['value']);
+      if (field !== null && value !== null) pieces.push({ kind: 'kv', pairs: [[field, value]] });
+      return { title: `read '${name}'`, chips, figure: null, pieces };
+    }
+    case 'create':
+    case 'update':
+    case 'trash':
+    case 'restore':
+    case 'folder_create':
+    case 'folder_update':
+    case 'folder_delete': {
+      const title = vaultSubject(verb, { ...asked, ...held }, true);
+      if (title === null) return null;
+      const id = str(held, 'id');
+      return {
+        title,
+        chips: [],
+        figure: null,
+        pieces: id === null ? [] : [{ kind: 'kv', pairs: [['id', id]] }],
+      };
+    }
+    case 'totp_code': {
+      const code = str(held, 'code');
+      if (code === null) return null;
+      const chips: ForgeChip[] = [{ text: code, tone: 'plain' }];
+      const period = countOf(held['period']);
+      if (period !== null) chips.push({ text: `period ${period}s`, tone: 'dim' });
+      const remaining = countOf(held['remaining']);
+      return {
+        title: 'computed a TOTP code',
+        chips,
+        figure: remaining === null ? null : `${remaining}s left`,
+        pieces: [],
+      };
+    }
+    case 'attachment_get': {
+      const path = str(held, 'path');
+      if (path === null) return null;
+      const pairs: [string, string][] = [['path', path]];
+      const size = countOf(held['size']);
+      if (size !== null) pairs.push(['size', `${size} bytes`]);
+      const sha = str(held, 'sha256');
+      if (sha !== null) pairs.push(['sha256', sha]);
+      return {
+        title: 'downloaded an attachment',
+        chips: [],
+        figure: null,
+        pieces: [{ kind: 'kv', pairs }],
+      };
+    }
+    case 'attachment_put': {
+      const name = str(held, 'name');
+      if (name === null) return null;
+      const chips: ForgeChip[] = [];
+      if (str(held, 'replaced') !== null) chips.push({ text: 'replaced', tone: 'dim' });
+      const pairs: [string, string][] = [];
+      const size = countOf(held['size']);
+      if (size !== null) pairs.push(['size', `${size} bytes`]);
+      const sha = str(held, 'sha256');
+      if (sha !== null) pairs.push(['sha256', sha]);
+      return {
+        title: `uploaded '${name}'`,
+        chips,
+        figure: null,
+        pieces: pairs.length === 0 ? [] : [{ kind: 'kv', pairs }],
+      };
+    }
+    case 'folder_list': {
+      const folders = held['folders'];
+      if (!Array.isArray(folders)) return null;
+      const rows: ForgeListItem[] = [];
+      for (const raw of folders) {
+        const folder = obj(raw);
+        const name = str(folder, 'name');
+        if (name === null) continue;
+        rows.push({ id: str(folder, 'id'), state: null, text: name, tag: null, when: null });
+      }
+      return {
+        title: 'folders',
+        chips: [{ text: `${rows.length}`, tone: 'plain' }],
+        figure: null,
+        pieces: listBody(rows, 'no folders'),
+      };
     }
     default:
       return null;
