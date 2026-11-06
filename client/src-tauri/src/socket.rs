@@ -1194,7 +1194,9 @@ async fn run(
         let mut pending: HashMap<u64, oneshot::Sender<Result<Value, String>>> = HashMap::new();
         // Attaches waiting on their answer, kept apart from a dispatch's:
         // their reply body is a verdict on the attach, not a command's value.
-        let mut attaches: HashMap<u64, oneshot::Sender<Result<Value, String>>> = HashMap::new();
+        // The kind travels with the sender, because the two attach families
+        // answer in different shapes.
+        let mut attaches: HashMap<u64, AttachWaiter> = HashMap::new();
         let mut closing = false;
         // **The link's own clock, counted in bytes.** `bytes_at` is the
         // counter's reading at the last beat that saw progress, `heard_at`
@@ -1513,7 +1515,7 @@ async fn run(
                                 .is_ok();
                             match (ok, reply, answered) {
                                 (true, Some(id), Some(tx)) => {
-                                    attaches.insert(id, tx);
+                                    attaches.insert(id, (AttachKind::Browser, tx));
                                 }
                                 (_, _, Some(tx)) => {
                                     let _ = tx.send(Err(
@@ -1539,7 +1541,7 @@ async fn run(
                                 .is_ok();
                             match (ok, reply, answered) {
                                 (true, Some(id), Some(tx)) => {
-                                    attaches.insert(id, tx);
+                                    attaches.insert(id, (AttachKind::Browser, tx));
                                 }
                                 (_, _, Some(tx)) => {
                                     let _ = tx.send(Err(
@@ -1624,7 +1626,7 @@ async fn run(
                                 .is_ok();
                             match (ok, reply, answered) {
                                 (true, Some(id), Some(tx)) => {
-                                    attaches.insert(id, tx);
+                                    attaches.insert(id, (AttachKind::Terminal, tx));
                                 }
                                 (_, _, Some(tx)) => {
                                     let _ = tx.send(Err(
@@ -1807,7 +1809,7 @@ async fn run(
         for (_, tx) in pending.drain() {
             let _ = tx.send(Err(why.to_owned()));
         }
-        for (_, tx) in attaches.drain() {
+        for (_, (_, tx)) in attaches.drain() {
             let _ = tx.send(Err(why.to_owned()));
         }
         awaiting.clear();
@@ -1849,6 +1851,23 @@ fn say(events: &mpsc::UnboundedSender<SocketEvent>, event: SocketEvent) {
     let _ = events.send(event);
 }
 
+/// Which attach an answer belongs to.
+///
+/// **A browser attach and a terminal attach share one reply space** - the page
+/// mints ids from one counter - but their answers have different shapes: the
+/// browser names the profile and tab it landed on, the terminal names the
+/// terminal id. Parsing one as the other is how a desktop terminal attach came
+/// back as "the server attached without naming the profile and tab".
+#[derive(Clone, Copy)]
+enum AttachKind {
+    Browser,
+    Terminal,
+}
+
+/// One waiting attach: the kind that decides how its answer is read, and the
+/// channel the verdict goes back on.
+type AttachWaiter = (AttachKind, oneshot::Sender<Result<Value, String>>);
+
 /// One server frame: replies are correlated here, a refusal goes to the
 /// oldest subscribe still waiting, the role frame becomes an event, and
 /// everything else crosses verbatim.
@@ -1857,7 +1876,7 @@ fn receive(
     bytes: usize,
     parse_ms: f64,
     pending: &mut HashMap<u64, oneshot::Sender<Result<Value, String>>>,
-    attaches: &mut HashMap<u64, oneshot::Sender<Result<Value, String>>>,
+    attaches: &mut HashMap<u64, AttachWaiter>,
     awaiting: &mut Vec<String>,
     events: &mpsc::UnboundedSender<SocketEvent>,
 ) {
@@ -1867,23 +1886,39 @@ fn receive(
             let body = value.get("body").cloned().unwrap_or(Value::Null);
             // **An attach's answer first**: its body is a verdict, and a
             // refusal is the surface's own sentence.
-            if let Some(tx) = id.and_then(|id| attaches.remove(&id)) {
-                let verdict = if body.get("ok").and_then(Value::as_bool) == Some(true) {
-                    match (
-                        body.get("profile").and_then(Value::as_str),
-                        body.get("tab").and_then(Value::as_u64),
-                    ) {
-                        (Some(profile), Some(tab)) => Ok(json!({ "profile": profile, "tab": tab })),
-                        _ => {
-                            Err("the server attached without naming the profile and tab".to_owned())
+            if let Some((kind, tx)) = id.and_then(|id| attaches.remove(&id)) {
+                let verdict = match kind {
+                    AttachKind::Browser => {
+                        if body.get("ok").and_then(Value::as_bool) == Some(true) {
+                            match (
+                                body.get("profile").and_then(Value::as_str),
+                                body.get("tab").and_then(Value::as_u64),
+                            ) {
+                                (Some(profile), Some(tab)) => {
+                                    Ok(json!({ "profile": profile, "tab": tab }))
+                                }
+                                _ => Err("the server attached without naming the profile and tab"
+                                    .to_owned()),
+                            }
+                        } else {
+                            Err(body
+                                .get("why")
+                                .and_then(Value::as_str)
+                                .unwrap_or("the browser could not be attached")
+                                .to_owned())
                         }
                     }
-                } else {
-                    Err(body
-                        .get("why")
-                        .and_then(Value::as_str)
-                        .unwrap_or("the browser could not be attached")
-                        .to_owned())
+                    AttachKind::Terminal => {
+                        if body.get("ok").and_then(Value::as_bool) == Some(true) {
+                            Ok(body)
+                        } else {
+                            Err(body
+                                .get("why")
+                                .and_then(Value::as_str)
+                                .unwrap_or("the terminal could not be attached")
+                                .to_owned())
+                        }
+                    }
                 };
                 let _ = tx.send(verdict);
                 return;
@@ -2662,6 +2697,74 @@ pub(crate) mod tests {
         let landed = waiting.await.expect("the task joins").expect("the attach landed");
         assert_eq!(landed["profile"], json!("Busytools/work"));
         assert_eq!(landed["tab"], json!(2));
+    }
+
+    /// **A terminal attach's answer is its terminal, not a browser verdict.**
+    /// The two attach families share one reply space, and parsing a terminal's
+    /// `{ok:true,id}` as a browser attach is what refused every desktop
+    /// terminal with "the server attached without naming the profile and tab".
+    #[tokio::test]
+    async fn a_terminal_attach_answers_its_terminal() {
+        let mut stub = stub().await;
+        let (socket, _rx) = connected(&stub).await;
+        let waiting = tokio::spawn({
+            let socket = socket.clone();
+            async move {
+                socket
+                    .terminal_view(
+                        json!({ "session": { "org": "a", "project": "b", "label": "lead" } }),
+                        None,
+                        Some(80),
+                        Some(24),
+                    )
+                    .await
+            }
+        });
+        let sent = stub.heard_until(|v| v["kind"] == "terminal_view").await;
+        assert_eq!(sent["cols"], json!(80), "the grid crosses with the ask");
+        let id = sent["reply_to"].as_u64().expect("the asker minted a reply id");
+        stub.say
+            .send(json!({
+                "kind": "reply",
+                "reply_to": id,
+                "body": { "ok": true, "id": 7 },
+            }))
+            .expect("broadcast");
+        let landed = waiting.await.expect("the task joins").expect("the terminal attached");
+        assert_eq!(landed["id"], json!(7), "the answer is the terminal it attached");
+        assert_eq!(landed.get("profile"), None, "no browser field is invented");
+    }
+
+    /// **A terminal refusal keeps the server's sentence.** The browser's
+    /// default never stands in for it on a terminal attach.
+    #[tokio::test]
+    async fn a_terminal_attach_answers_its_refusal_by_name() {
+        let mut stub = stub().await;
+        let (socket, _rx) = connected(&stub).await;
+        let waiting = tokio::spawn({
+            let socket = socket.clone();
+            async move {
+                socket
+                    .terminal_view(
+                        json!({ "session": { "org": "a", "project": "b", "label": "lead" } }),
+                        Some(3),
+                        None,
+                        None,
+                    )
+                    .await
+            }
+        });
+        let sent = stub.heard_until(|v| v["kind"] == "terminal_view").await;
+        let id = sent["reply_to"].as_u64().expect("the asker minted a reply id");
+        stub.say
+            .send(json!({
+                "kind": "reply",
+                "reply_to": id,
+                "body": { "ok": false, "why": "the terminal 3 is not this seat's" },
+            }))
+            .expect("broadcast");
+        let why = waiting.await.expect("the task joins").expect_err("the attach was refused");
+        assert!(why.contains("not this seat's"), "{why}");
     }
 
     /// **A strip ask carries its fields and answers through its own reply**:
