@@ -42,6 +42,7 @@ script-tests:
     python3 scripts/test_update_manifest.py
     python3 scripts/test_client_deps.py
     python3 scripts/test_quit_running_client.py
+    python3 scripts/test_require_main.py
     python3 scripts/test_check_groups.py
     python3 scripts/test_check_lock.py
     python3 scripts/test_ui_word_count.py
@@ -501,7 +502,7 @@ client-android-check: client-android-warnings
 # the bundle is built from the lockfile, never from whatever `node_modules`
 # the checkout happens to hold. The browser belongs to the server now, so a
 # client release carries no engine and no driver stack.
-client-release version: client-release-deps
+client-release version: sync-main client-release-deps
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -624,7 +625,7 @@ client-release version: client-release-deps
 # clean afterwards, so a Cargo.lock rewrite cannot ride out of a release.
 #
 # Build and stage the Android release APK.
-client-android-release version: client-release-deps
+client-android-release version: sync-main client-release-deps
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -789,7 +790,7 @@ client-android-release version: client-release-deps
 # cannot update.
 #
 # Stage the web release archive.
-client-web-release version: client-release-deps
+client-web-release version: sync-main client-release-deps
     #!/usr/bin/env bash
     set -euo pipefail
 
@@ -1163,8 +1164,18 @@ ci-watch run_id="":
     line="[OK] run $run_id: success at $head_sha"
     record "$line"; echo "$line"
 
+# Point the checkout at origin/main before anything is built from it.
+#
+# A release publishes whatever the tree holds, and every install recipe is one of its build steps. A
+# checkout behind origin/main therefore builds yesterday's code while the artefacts carry today's
+# version - measured on 2026-11-07, when five merged fixes were "installed" from the release commit
+# because local main was five commits stale. This fast-forwards a clean main and refuses everything
+# else; `release` already refuses a stale tree, and this is the same rule for the recipes it calls.
+sync-main:
+    ./scripts/require-main.sh
+
 # Build forge from this checkout into ~/.cargo/bin/forge with its shared libraries beside it (release, then zsh completions).
-install:
+install: sync-main
     ./scripts/install.sh
 
 # Untrust forge's retired proxy CA and delete its key material (idempotent, one-shot).
