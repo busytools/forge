@@ -2758,6 +2758,82 @@ describe('the conversation the chat draws', () => {
     stop();
   });
 
+  it('refuses an answer no newer than the newest frame it holds', () => {
+    // The boundary. An answer equal at its newest frame is not newer, and the
+    // rows it carries can be older than what is held, so taking it inverts the
+    // column exactly as a stale one does.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(record([rowAt('t1', 'first', '2026-10-01T10:00:00Z')], null));
+    server.send(
+      record(
+        [
+          rowAt('t1', 'first', '2026-10-01T10:00:00Z'),
+          rowAt('t2', 'second', '2026-10-01T10:01:00Z'),
+        ],
+        null,
+      ),
+    );
+    server.send(
+      record(
+        [
+          rowAt('t1', 'first', '2026-10-01T10:00:00Z'),
+          rowAt('t2', 'second', '2026-10-01T10:01:00Z'),
+          rowAt('t3', 'third', '2026-10-01T10:02:00Z'),
+        ],
+        null,
+      ),
+    );
+    expect(
+      get(chat.value).turns.map((row) => row.key),
+      'precondition: three rows held',
+    ).toEqual(['t1', 't2', 't3']);
+
+    server.send(
+      record(
+        [
+          rowAt('t2', 'second', '2026-10-01T10:01:00Z'),
+          rowAt('t1', 'first', '2026-10-01T10:00:00Z'),
+          rowAt('t3', 'third', '2026-10-01T10:02:00Z'),
+        ],
+        null,
+      ),
+    );
+
+    expect(
+      get(chat.value).turns.map((row) => row.key),
+      'the answer equal at its newest frame left the column alone',
+    ).toEqual(['t1', 't2', 't3']);
+    stop();
+  });
+
+  it('takes an answer newer by less than a millisecond', () => {
+    // The CLI stamps six fractional digits, and `Date.parse` drops the ones
+    // below a millisecond - so the compare has to read the fraction whole, or
+    // a newer answer is refused and the reconcile never happens.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(record([rowAt('t1', 'first', '2026-10-01T10:00:00.000500Z')], null));
+
+    server.send(
+      record(
+        [
+          rowAt('t1', 'first', '2026-10-01T10:00:00.000500Z'),
+          rowAt('t2', 'second', '2026-10-01T10:00:00.000900Z'),
+        ],
+        null,
+      ),
+    );
+
+    expect(
+      get(chat.value).turns.map((row) => row.key),
+      'the answer newer by four hundred microseconds landed',
+    ).toEqual(['t1', 't2']);
+    stop();
+  });
+
   it('refuses a subscribe answer for an occupant the seat has left', () => {
     // A `/new` or a `/resume` is a wipe, and an answer encoded under the
     // occupant it replaced is a picture of a conversation this seat no longer

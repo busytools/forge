@@ -427,7 +427,8 @@ function messagesOf(turn: PageTurn): unknown[] {
 }
 
 /**
- * The newest stamp a run of frames carries, in ms, or `null` when none parses.
+ * The newest stamp a run of frames carries, in ms with its fraction kept whole
+ * (see [`wireStampMs`]), or `null` when none parses.
  *
  * A turn's END, for asking whether a newer one follows it: the stamps are the
  * CLI's own, on every frame, so two slices of one conversation order
@@ -436,10 +437,8 @@ function messagesOf(turn: PageTurn): unknown[] {
 function newestStampMs(messages: readonly unknown[]): number | null {
   let newest: number | null = null;
   for (const message of messages as Array<{ timestamp?: unknown }>) {
-    const stamp = (message as { timestamp?: unknown } | null)?.timestamp;
-    if (typeof stamp !== 'string' || stamp === '') continue;
-    const at = Date.parse(stamp);
-    if (!Number.isFinite(at)) continue;
+    const at = wireStampMs((message as { timestamp?: unknown } | null)?.timestamp);
+    if (at === null) continue;
     if (newest === null || at > newest) newest = at;
   }
   return newest;
@@ -2374,20 +2373,20 @@ export class Chat {
         // refresh or a seat switch mid-queue meets the card and the row at
         // once, the exact duplicate the quieting exists to stop.
         if (subjectKey(message.subject) === this.key) {
-          // **The snapshot IS the newest page** (#2420): every session
+          // **A subscribe's answer is the newest page** (#2420): every session
           // subscribe is answered with the page a `more` would fetch, so a
-          // switch that asked for both would ship the conversation twice.
-          // Seed it instead, and ask `more` only when the answer brought no
-          // page.
-          // **The first load is seeded from the answer, and a saved
-          // conversation is reconciled from it.** A subscribe's answer is the
-          // newest page (#2420), so a column that missed frames while the seat
-          // was away can take it: what a page opened fresh draws is this same
-          // answer. **An answer for an occupant this conversation has left is
-          // a wipe, not a merge** - the rule `session/live.ts` keeps by epoch.
+          // switch that asked for both would ship the conversation twice. The
+          // first load is seeded from it and a saved conversation reconciled
+          // from it - a page opened fresh draws this same answer - and `more`
+          // is asked only when the answer brought no page. **An answer for an
+          // occupant this conversation has left is a wipe, not a merge** - the
+          // rule `session/live.ts` keeps by epoch.
           const fresh = !this.held.loaded;
           const header = (message.data as { header?: { session_id?: unknown } } | null)?.header;
-          const occupant = typeof header?.session_id === 'string' ? header.session_id : null;
+          const occupant =
+            typeof header?.session_id === 'string' && header.session_id !== ''
+              ? header.session_id
+              : null;
           const sameOccupant =
             occupant === null || this.held.sessionId === null || occupant === this.held.sessionId;
           if (sameOccupant) {
@@ -2413,14 +2412,14 @@ export class Chat {
             if (rows.length === 0 || !named) this.ask(null);
             else this.takePage(rows, cursor, 'newest');
           } else if (sameOccupant && rows.length > 0 && this.inFlight === null) {
-            // **The age guard is what keeps a stale answer out.** `takePage`
-            // asserts a newest page is newer than everything held, and a
-            // snapshot can be a picture the server built before frames this
-            // column already has; taking it inverts the column and moves its
-            // trim floor. A stamp-less answer cannot say either way, so it is
-            // left alone. `inFlight` is only this column's own page ask - it
-            // keeps a landing it is waiting for from being answered twice, and
-            // says nothing about any other read on the seat.
+            // **This is what keeps a stale answer out.** `takePage` places the
+            // page after everything held, and a snapshot can be a picture the
+            // server built before frames this column already has - taken, it
+            // inverts the column and moves its trim floor. Only a page newer
+            // than the newest held frame is taken, and a stamp-less answer
+            // cannot say either way, so it is left alone. `inFlight` is this
+            // column's own page ask: it keeps a landing it is waiting for from
+            // being answered twice, and says nothing about any other read.
             const pageNewest = newestStampMs(rows.flatMap((row) => messagesOf(row)));
             const heldNewest = newestStampMs(this.held.turns.flatMap((turn) => turn.messages));
             if (pageNewest !== null && (heldNewest === null || pageNewest > heldNewest)) {
