@@ -90,6 +90,113 @@ describe('a forge call with no card of its own', () => {
   });
 });
 
+describe('the settings row says what the call read or wrote', () => {
+  it('names the verb and the key, and counts a batch past two', () => {
+    expect(forgeRowTitle('mcp__forge__settings__get', { key: 'gotify.url' }, 'running')).toBe(
+      'settings \u{b7} read gotify.url',
+    );
+    expect(forgeRowTitle('mcp__forge__settings__index', {}, 'running')).toBe(
+      'settings \u{b7} read the catalogue',
+    );
+    expect(
+      forgeRowTitle(
+        'mcp__forge__settings__set',
+        { edits: [{ key: 'gotify.url', value: 'https://push' }] },
+        'running',
+      ),
+      'one key is named',
+    ).toBe('settings \u{b7} write gotify.url');
+    expect(
+      forgeRowTitle(
+        'mcp__forge__settings__set',
+        {
+          edits: [
+            { key: 'gotify.url', value: 'https://push' },
+            { key: 'client.theme', value: 'dark' },
+          ],
+        },
+        'running',
+      ),
+      'two keys are both named',
+    ).toBe('settings \u{b7} write gotify.url, client.theme');
+    expect(
+      forgeRowTitle(
+        'mcp__forge__settings__set',
+        {
+          edits: [
+            { key: 'a', value: 1 },
+            { key: 'b', value: 2 },
+            { key: 'c', value: 3 },
+          ],
+        },
+        'running',
+      ),
+      'past two the count carries the batch instead of a list nobody can scan',
+    ).toBe('settings \u{b7} write 3 keys');
+    expect(
+      forgeRowTitle('mcp__forge__settings__unset', { key: 'client.theme' }, 'running'),
+      'a clear is a write, and the key is its subject',
+    ).toBe('settings \u{b7} clear client.theme');
+    expect(
+      forgeRowTitle(
+        'mcp__forge__settings__set',
+        { edits: [{ key: 'client.theme', value: 'dark' }] },
+        'failed',
+      ),
+      'a failed write reads in the success wording, under the tail that says it failed',
+    ).toBe('settings \u{b7} write client.theme');
+    expect(
+      forgeRowTitle('mcp__forge__settings__get', {}, 'running'),
+      'an input that names no key keeps the family noun rather than inventing one',
+    ).toBe('settings');
+    expect(
+      forgeRowTitle('mcp__forge__settings__set', { edits: [] }, 'running'),
+      'an empty batch names no key either',
+    ).toBe('settings');
+  });
+
+  it('chips only a write that is still waiting on the reader', () => {
+    // Every settings write parks on the dock; a read is asked and answered
+    // without the reader, so a chip on it would name a wait that is not there.
+    expect(
+      forgeCardOf(
+        'mcp__forge__settings__set',
+        { edits: [{ key: 'client.theme', value: 'dark' }] },
+        undefined,
+      )?.chips,
+    ).toEqual([{ text: 'waiting for your approval', tone: 'warn' }]);
+    expect(
+      forgeCardOf('mcp__forge__settings__get', { key: 'gotify.url' }, undefined)?.chips,
+    ).toEqual([]);
+  });
+});
+
+describe('a slack read the page cannot card', () => {
+  it('names what it read rather than the family noun', () => {
+    expect(forgeRowTitle('mcp__forge__slack__me', {}, 'running')).toBe("read the token's identity");
+    expect(forgeRowTitle('mcp__forge__slack__history', { conversation: 'C1' }, 'running')).toBe(
+      'read the history of C1',
+    );
+    expect(
+      forgeRowTitle('mcp__forge__slack__replies', { conversation: 'C1', ts: '1.2' }, 'running'),
+    ).toBe('read the thread in C1');
+    expect(
+      forgeRowTitle('mcp__forge__slack__attachment', { file_id: 'F1', dir: 'docs/' }, 'running'),
+    ).toBe('downloaded attachment F1');
+    expect(
+      forgeRowTitle(
+        'mcp__forge__slack__attachment',
+        { path: '/tmp/brief.pdf', conversation: 'C1' },
+        'running',
+      ),
+    ).toBe("uploaded 'brief.pdf'");
+    expect(
+      forgeRowTitle('mcp__forge__slack__history', {}, 'running'),
+      'a read whose input names no target keeps the family noun',
+    ).toBe('conversations');
+  });
+});
+
 describe('a forge call the page cannot dress', () => {
   it('falls back to the raw text for each way a tasks result is not a card', () => {
     const update = 'mcp__forge__tasks__update';

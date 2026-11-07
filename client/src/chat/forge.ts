@@ -541,6 +541,62 @@ function leafName(path: string): string {
 }
 
 /**
+ * The settings family's title: which way the call went and what it touched.
+ *
+ * The family's own noun is the whole of what the glyph says, so a row titled
+ * `settings` repeated it and named nothing - a read and a five-key write
+ * looked alike collapsed. One or two keys are named; past that the count is
+ * what a reader can scan, and the payload behind the open keeps the rest.
+ * `null` for an input naming no subject, so the row keeps the family's noun
+ * rather than claiming a key nobody named.
+ */
+function settingsTitle(verb: string, held: Record<string, unknown>): string | null {
+  if (verb === 'index') return 'settings \u{b7} read the catalogue';
+  const key = str(held, 'key');
+  if (verb === 'get') return key === null ? null : `settings \u{b7} read ${key}`;
+  if (verb === 'unset') return key === null ? null : `settings \u{b7} clear ${key}`;
+  if (verb !== 'set') return null;
+  const edits = held['edits'];
+  if (!Array.isArray(edits)) return null;
+  const keys = edits.map((edit) => str(obj(edit), 'key'));
+  if (keys.some((one) => one === null || one.trim() === '')) return null;
+  const named = keys.filter((one): one is string => one !== null);
+  if (named.length === 0) return null;
+  return named.length <= 2
+    ? `settings \u{b7} write ${named.join(', ')}`
+    : `settings \u{b7} write ${named.length} keys`;
+}
+
+/**
+ * A Slack read whose answer the card refuses, titled by what it read.
+ *
+ * These verbs answer with a message list, a user list or a transferred file,
+ * none of which the family's card dresses - and with no subject in the title
+ * each drew the bare family noun, so a file transfer read as `conversations`.
+ * `null` for every verb the card already titles and for an input naming no
+ * target, which keeps the family's noun.
+ */
+function slackFallbackTitle(verb: string, held: Record<string, unknown>): string | null {
+  const conversation = str(held, 'conversation');
+  switch (verb) {
+    case 'me':
+      return "read the token's identity";
+    case 'history':
+      return conversation === null ? null : `read the history of ${conversation}`;
+    case 'replies':
+      return conversation === null ? null : `read the thread in ${conversation}`;
+    case 'attachment': {
+      const path = str(held, 'path');
+      if (path !== null && path.trim() !== '') return `uploaded '${leafName(path)}'`;
+      const file = str(held, 'file_id');
+      return file === null ? null : `downloaded attachment ${file}`;
+    }
+    default:
+      return null;
+  }
+}
+
+/**
  * What a forge call's row is titled by when it carries no card.
  *
  * Two cases have no card: a call still out, whose result has not landed, and
@@ -573,6 +629,14 @@ export function forgeRowTitle(
   } else {
     const pending = pendingCard(family, verb, input);
     if (pending !== null) return pending.title;
+  }
+  if (family === 'settings') {
+    const title = settingsTitle(verb, held);
+    if (title !== null) return title;
+  }
+  if (family === 'slack') {
+    const title = slackFallbackTitle(verb, held);
+    if (title !== null) return title;
   }
   if (family === 'voice') {
     const spoken = str(held, 'text');
@@ -677,6 +741,19 @@ function pendingCard(family: ForgeFamily, verb: string, input: unknown): ForgeCa
     return {
       title: `${removed ? 'removing' : 'reacting'} :${name}: in ${channel}`,
       chips: [{ text: 'waiting for your approval', tone: 'warn' }],
+      figure: null,
+      pieces: [],
+    };
+  }
+  // **A settings call is titled by what it touches**, and a write waits on
+  // the reader's approval: that wait is the row's point while the call parks.
+  if (family === 'settings') {
+    const title = settingsTitle(verb, held);
+    if (title === null) return null;
+    const writes = verb === 'set' || verb === 'unset';
+    return {
+      title,
+      chips: writes ? [{ text: 'waiting for your approval', tone: 'warn' }] : [],
       figure: null,
       pieces: [],
     };
