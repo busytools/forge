@@ -82,6 +82,10 @@ describe('a forge call with no card of its own', () => {
     expect(forgeRowTitle('mcp__forge__slack__search', { query: 'smoke test' }, 'failed')).toBe(
       'search \u{b7} smoke test',
     );
+    expect(
+      forgeRowTitle('mcp__forge__vault__create', { type: 'login', name: 'bank' }, 'failed'),
+      'a failed vault write reads in the success wording, under the failed tail',
+    ).toBe("created login 'bank'");
     expect(forgeRowTitle('Bash', {}, 'failed'), 'and no other call is titled here').toBeNull();
   });
 });
@@ -211,6 +215,102 @@ describe('the terminal card', () => {
       kind: 'quote',
       text: 'hi',
     });
+  });
+});
+
+describe('the vault card', () => {
+  it('names the item a held call would touch and says it is waiting', () => {
+    const card = forgeCardOf(
+      'mcp__forge__vault__create',
+      { type: 'login', name: 'bank', password: 'hunter2' },
+      undefined,
+    );
+    expect(card?.title, 'the item, not the tool').toBe("creating login 'bank'");
+    expect(card?.chips).toEqual([{ text: 'waiting for your approval', tone: 'warn' }]);
+    expect(JSON.stringify(card), 'the input secret is never drawn').not.toContain('hunter2');
+  });
+
+  it('says a held search waits too, naming the query', () => {
+    const card = forgeCardOf('mcp__forge__vault__search', { query: 'bank' }, undefined);
+    expect(card?.title).toBe("searching the vault for 'bank'");
+    expect(card?.chips).toEqual([{ text: 'waiting for your approval', tone: 'warn' }]);
+  });
+
+  it('draws a search as the rows it found and the count', () => {
+    const card = forgeCardOf(
+      'mcp__forge__vault__search',
+      { query: 'bank' },
+      result(
+        JSON.stringify({
+          items: [
+            {
+              id: 'i-1',
+              name: 'bank',
+              username: 'me',
+              uris: [],
+              folder: 'Money',
+              updated_at: '2026-11-06T10:00:00Z',
+            },
+          ],
+        }),
+      ),
+    );
+    expect(card?.title).toBe("searched the vault for 'bank'");
+    expect(card?.chips).toEqual([{ text: '1 hit', tone: 'plain' }]);
+    expect(itemsOf(card)).toMatchObject([{ text: 'bank', tag: 'me' }]);
+  });
+
+  it('draws the revealed value, which the card replaces the body to show', () => {
+    const card = forgeCardOf(
+      'mcp__forge__vault__get',
+      { id: 'i-1', reveal: 'password' },
+      result(
+        JSON.stringify({
+          id: 'i-1',
+          name: 'bank',
+          type: 1,
+          folder_id: 'f-1',
+          revealed: { field: 'password', value: 's3cret' },
+        }),
+      ),
+    );
+    expect(card?.title).toBe("read 'bank'");
+    expect(pairsOf(card)).toContainEqual(['folder id', 'f-1']);
+    expect(pairsOf(card)).toContainEqual(['password', 's3cret']);
+  });
+
+  it('names a write by its result and keeps the id a reader acts on', () => {
+    const card = forgeCardOf(
+      'mcp__forge__vault__create',
+      { name: 'bank' },
+      result(JSON.stringify({ id: 'i-1', name: 'bank', type: 'login' })),
+    );
+    expect(card?.title).toBe("created login 'bank'");
+    expect(pairsOf(card)).toContainEqual(['id', 'i-1']);
+  });
+
+  it('draws a TOTP code with its period and the time it has left', () => {
+    const card = forgeCardOf(
+      'mcp__forge__vault__totp_code',
+      { id: 'i-1' },
+      result(JSON.stringify({ code: '123456', period: 30, remaining: 21 })),
+    );
+    expect(card?.title).toBe('computed a TOTP code');
+    expect(card?.chips).toEqual([
+      { text: '123456', tone: 'plain' },
+      { text: 'period 30s', tone: 'dim' },
+    ]);
+    expect(card?.figure).toBe('21s left');
+  });
+
+  it('draws the folder list as rows', () => {
+    const card = forgeCardOf(
+      'mcp__forge__vault__folder_list',
+      {},
+      result(JSON.stringify({ folders: [{ id: 'f-1', name: 'Money' }] })),
+    );
+    expect(card?.title).toBe('folders');
+    expect(itemsOf(card)).toMatchObject([{ text: 'Money' }]);
   });
 });
 

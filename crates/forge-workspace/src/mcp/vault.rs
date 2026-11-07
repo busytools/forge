@@ -113,17 +113,18 @@ impl Tool for VaultCall {
                  held; the card names the item and the field and shows no value."
             }
             VaultTool::Create => {
-                "Create a login, secure note or card. `type` defaults to login. A card sets \
-                 cardholder_name, number, exp_month, exp_year, code and optionally brand; a \
-                 note uses notes. Pass `custom_fields` as [{name, value, type?}] with type \
-                 text, hidden or boolean. The call is held; the card says what is being \
+                "Create a login, secure note or card. `type` defaults to login. A login sets \
+                 username, password, uri and totp (an otpauth:// URI or the bare base32 seed); \
+                 a card sets cardholder_name, number, exp_month, exp_year, code and optionally \
+                 brand; a note uses notes. Pass `custom_fields` as [{name, value, type?}] with \
+                 type text, hidden or boolean. The call is held; the card says what is being \
                  created and masks every secret value."
             }
             VaultTool::Update => {
                 "Change fields on one item. `patch` accepts name, username, password, uri, \
-                 notes, cardholder_name, number, exp_month, exp_year, code, brand, folder_id \
-                 and custom_fields; only the fields present are changed. The call is held; \
-                 the card names the item and a masked diff, never the values."
+                 totp, notes, cardholder_name, number, exp_month, exp_year, code, brand, \
+                 folder_id and custom_fields; only the fields present are changed. The call is \
+                 held; the card names the item and a masked diff, never the values."
             }
             VaultTool::Trash => {
                 "Move one item to the trash (a soft delete). The call is held; the card names \
@@ -198,6 +199,7 @@ impl Tool for VaultCall {
                     ("username", "Login username."),
                     ("password", "Login password."),
                     ("uri", "Login URI."),
+                    ("totp", "Login TOTP seed: an otpauth:// URI or the bare base32 seed."),
                     ("notes", "Notes for any type."),
                     ("cardholder_name", "Card cardholder."),
                     ("number", "Card number."),
@@ -246,6 +248,7 @@ impl Tool for VaultCall {
                             "username": { "type": "string" },
                             "password": { "type": "string" },
                             "uri": { "type": "string" },
+                            "totp": { "type": "string" },
                             "notes": { "type": "string" },
                             "cardholder_name": { "type": "string" },
                             "number": { "type": "string" },
@@ -516,6 +519,27 @@ mod tests {
             .expect("the reveal carries a pattern");
         assert!(pattern.contains("custom:"), "the custom reveal is admitted: {pattern}");
         assert!(schema["properties"]["reveal"].get("enum").is_none());
+    }
+
+    /// A seed reaches the facade only if the schema names it: the schemas are
+    /// closed, so an unnamed argument is refused by the CLI before the call.
+    #[test]
+    fn the_create_and_update_schemas_accept_a_totp_seed() {
+        let facade = Arc::new(MockVaultFacade::new());
+        let schema = |tool| {
+            VaultCall {
+                facade: Arc::clone(&facade) as Arc<dyn VaultFacade>,
+                slot: SessionSlot::lead("Default", "forge"),
+                tool,
+            }
+            .input_schema()
+        };
+
+        assert!(schema(VaultTool::Create)["properties"].get("totp").is_some(), "create names totp");
+        assert!(
+            schema(VaultTool::Update)["properties"]["patch"]["properties"].get("totp").is_some(),
+            "update names totp",
+        );
     }
 
     /// A malformed argument fails before the facade runs.

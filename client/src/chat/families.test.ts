@@ -90,6 +90,8 @@ describe('the row a call is summarised under', () => {
       ['mcp__forge__settings__set', 'settings', 'settings'],
       ['mcp__forge__terminal__open', 'terminal', 'square-terminal'],
       ['mcp__forge__terminal__run', 'terminal', 'square-terminal'],
+      ['mcp__forge__vault__create', 'vault', 'vault'],
+      ['mcp__forge__vault__folder_list', 'vault', 'vault'],
       ['mcp__forge__voice__say', 'voice', 'sound'],
     ] as const) {
       expect(rowOf(name), `${name} is a forge family call`).toEqual({ kind: 'forge', family });
