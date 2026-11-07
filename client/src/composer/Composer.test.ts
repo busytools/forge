@@ -2658,6 +2658,69 @@ describe('the key', () => {
     expect(mic.held.stops, 'and the microphone is let go of on this side too').toBe(stops + 1);
   });
 
+  /**
+   * **A submit under way is the reader's words already kept.** A cancel on a
+   * draining take sends `submit:false` and clears the drain, so the words are
+   * spent; the unmount must leave it alone.
+   */
+  it('leaves a submitting take alone when the surface unmounts', async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+
+      key('ControlRight', 'keydown');
+      await opened();
+      harness.page.record = bound('right_cmd', 'auto', take());
+      flushSync();
+
+      vi.advanceTimersByTime(500);
+      key('ControlRight', 'keyup');
+      flushSync();
+      const sent = harness.sent.length;
+
+      await unmount(app as Record<string, unknown>);
+      app = null;
+      flushSync();
+
+      expect(harness.sent.length, 'a submit under way is not cancelled').toBe(sent);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * **An open in flight is the orphan one step earlier.** `take` is still null
+   * while `opening` is true, and the awaited open would install the take after
+   * the surface is gone. The queued cancel ends it the moment it exists.
+   */
+  it('cancels a take that lands after the surface unmounts', async () => {
+    mic.held.gated = true;
+    try {
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+
+      key('ControlRight', 'keydown');
+      await opened();
+      expect(harness.sent, 'nothing has started while the open is in flight').toHaveLength(0);
+
+      await unmount(app as Record<string, unknown>);
+      app = null;
+      flushSync();
+
+      mic.held.release?.();
+      await opened();
+
+      expect(harness.sent.at(-1)?.command, 'the take that landed is abandoned').toEqual({
+        dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: false },
+      });
+    } finally {
+      mic.held.gated = false;
+    }
+  });
+
   it('learns what the system default is from the first take that opens it', async () => {
     mic.held.resolved = { id: 'mic-2', label: 'Shure SM7B' };
     try {

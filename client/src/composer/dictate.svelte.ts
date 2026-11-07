@@ -136,13 +136,24 @@ export function bindPushToTalk(wiring: PushToTalk): void {
 
   // **A surface that goes stops its own take.** The microphone is the
   // client's, and a take left recording by a surface that unmounted - a
-  // route change, a seat switch - is one no live surface can stop: the next
-  // surface's start is refused by it, and the refusal used to release the
-  // take that was still recording. Abandoning here is the same door Escape
-  // uses, and it reaches the take wherever the reader moved to.
+  // route-name change, a teardown - is one no live surface can stop: the
+  // next surface's start is refused by it, and the refusal used to release
+  // the take that was still recording. Abandoning here is the same door
+  // Escape uses, and it reaches the take wherever the reader moved to.
+  //
+  // **An open in flight is the same orphan one step earlier**: `take` is
+  // still null while `opening` is true, and the awaited open would install
+  // the take after this ran. `act('cancel')` queues the abandon and applies
+  // it the moment the take exists. A take already submitting is left alone:
+  // a cancel there spends the words the reader chose to keep.
   onDestroy(() => {
-    const live = untrack(() => wiring.dictate().take);
-    if (live !== null) live.stop(false);
+    const dictate = wiring.dictate();
+    if (dictate.opening) {
+      dictate.act('cancel');
+      return;
+    }
+    const live = untrack(() => dictate.take);
+    if (live !== null && !live.submitted) live.stop(false);
   });
 
   // **The overlay holds the keyboard while a takeover is up**, so a bare

@@ -344,11 +344,15 @@ export class LocalTake {
     // object off the wire, and two of them are the same seat when their key
     // says so.
     if (subjectKey({ session: this.seat }) !== subjectKey({ session: at })) return;
-    // **A refusal answers a start that never ran**, so it is not this take's
-    // end. The record's own fold ignores it while a take is drawn
-    // (`apply.ts`); this side must too, or a refused second start stops the
-    // capture of the take that is still recording.
-    if (isRefused(payload['outcome'])) return;
+    // **A refusal answers a start that never ran**, so it is not the end of a
+    // take that is already recording. It is still the refused take's own end,
+    // and the refusal names the surface that asked: release only when it is
+    // this take's surface, and ignore another surface's. An older server
+    // sends no surface, and then the refusal is this take's.
+    if (isRefused(payload['outcome'])) {
+      const asked = payload['surface'];
+      if (asked !== undefined && asked !== this.surface) return;
+    }
     this.release();
   }
 

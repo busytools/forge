@@ -348,7 +348,7 @@ describe('a take on a socket that is up', () => {
     expect(w.ended()).toBe(1);
   });
 
-  it('keeps recording when a refused start answers a take that never ran', () => {
+  it("keeps recording when another surface's refused start answers a take that never ran", () => {
     const connection = fakeConnection();
     const mic = fakeMic();
     const w = wiring(connection);
@@ -360,8 +360,63 @@ describe('a take on a socket that is up', () => {
     });
 
     // A second start refused while this take is live: the refusal answers a
-    // start that never ran, so it is not this take's end. Releasing here stops
-    // the capture and leaves the server's take recording with no frames.
+    // start that never ran, and it names the surface that asked. Releasing
+    // here stops the capture and leaves the server's take recording with no
+    // frames.
+    connection.push({
+      kind: 'update',
+      update: {
+        dictate_ended: {
+          key: SEAT,
+          outcome: { refused: { message: 'this client is already dictating' } },
+          generation: 0,
+          surface: 'review',
+        },
+      },
+    });
+    expect(mic.stopped, 'another surface\'s refusal is not this take\'s end').toBe(false);
+    expect(w.ended(), 'and the take is not over on this side').toBe(0);
+  });
+
+  it("lets go when its own refused start answers a take that never ran", () => {
+    const connection = fakeConnection();
+    const mic = fakeMic();
+    const w = wiring(connection);
+    new LocalTake(mic, connection, DEFAULT_AXES, {
+      seat: SEAT,
+      surface: 'composer',
+      onLine: w.wiring.onLine,
+      onEnded: w.wiring.onEnded,
+    });
+
+    // The refusal names this take's own surface, so it is this take's end:
+    // nothing else will ever end a start the server refused.
+    connection.push({
+      kind: 'update',
+      update: {
+        dictate_ended: {
+          key: SEAT,
+          outcome: { refused: { message: 'this client is already dictating' } },
+          generation: 0,
+          surface: 'composer',
+        },
+      },
+    });
+    expect(mic.stopped, 'the refused take is let go of').toBe(true);
+    expect(w.ended(), 'and the take is over on this side').toBe(1);
+  });
+
+  it('lets go when a refusal names no surface, as an older server sends it', () => {
+    const connection = fakeConnection();
+    const mic = fakeMic();
+    const w = wiring(connection);
+    new LocalTake(mic, connection, DEFAULT_AXES, {
+      seat: SEAT,
+      surface: 'composer',
+      onLine: w.wiring.onLine,
+      onEnded: w.wiring.onEnded,
+    });
+
     connection.push({
       kind: 'update',
       update: {
@@ -372,8 +427,36 @@ describe('a take on a socket that is up', () => {
         },
       },
     });
-    expect(mic.stopped, 'a refusal resolves no take, so the capture keeps running').toBe(false);
-    expect(w.ended(), 'and the take is not over on this side').toBe(0);
+    expect(mic.stopped, 'a refusal with no surface is this take\'s').toBe(true);
+    expect(w.ended()).toBe(1);
+  });
+
+  it('lets go when a landed take ends', () => {
+    const connection = fakeConnection();
+    const mic = fakeMic();
+    const w = wiring(connection);
+    new LocalTake(mic, connection, DEFAULT_AXES, {
+      seat: SEAT,
+      surface: 'composer',
+      onLine: w.wiring.onLine,
+      onEnded: w.wiring.onEnded,
+    });
+
+    // A landed outcome is not a refusal, so the surface it names does not
+    // scope it: the seat's take is over and the capture is let go of.
+    connection.push({
+      kind: 'update',
+      update: {
+        dictate_ended: {
+          key: SEAT,
+          outcome: { landed: { text: 'hello', truncated: false } },
+          generation: 1,
+          surface: 'review',
+        },
+      },
+    });
+    expect(mic.stopped, 'a landed take is over, so the capture is let go of').toBe(true);
+    expect(w.ended()).toBe(1);
   });
 
   it("ignores another seat's ending", () => {
