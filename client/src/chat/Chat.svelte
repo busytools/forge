@@ -24,6 +24,7 @@
     HISTORY_WINDOW_BYTES,
     NOTHING,
     beingWritten,
+    inFlight,
     headMoved,
     runningAt,
     type Conversation,
@@ -357,7 +358,7 @@
    */
   function drawnKeys(turn: HeldTurn, stops: PageStops): string[] {
     const keys: string[] = [];
-    const units = turnFold(turn, slot, beingWritten(turn), !beingWritten(turn), stops);
+    const units = turnFold(turn, slot, inFlight(turn), !beingWritten(turn), stops);
     for (const unit of units) {
       keys.push(`${turn.key}:${unit.key}`);
       if (unit.kind !== 'leaves') continue;
@@ -2095,7 +2096,7 @@
   const newestRow = $derived.by((): { key: string; info: TurnInfo } | null => {
     const turn = newestTurn;
     if (turn === null) return null;
-    const units = turnFold(turn, slot, beingWritten(turn), !beingWritten(turn), stops);
+    const units = turnFold(turn, slot, inFlight(turn), !beingWritten(turn), stops);
     for (let at = units.length - 1; at >= 0; at -= 1) {
       const unit = units[at];
       if (unit !== undefined && unit.kind === 'report') return { key: unit.key, info: unit.info };

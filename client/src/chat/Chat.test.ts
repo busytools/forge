@@ -1154,6 +1154,56 @@ describe('the chat column as it draws', () => {
     ).toHaveLength(1);
   });
 
+  /**
+   * **The strip is the newest turn's report row, so the record has to reach
+   * it.** A Result that never arrived - a gap, a drop, a hold that expired -
+   * leaves the turn with no end frame of its own, and until the seat's answer
+   * takes the bar down the pinned row draws a clock counting the downtime
+   * under a live seat.
+   */
+  it('takes the strip down when the record ends a turn the frames built', async () => {
+    const server = stub();
+    draw({}, server);
+    server.answer([]);
+    server.send(appended(prompting('go')));
+    // The CLI's own `init` head, which is what marks the turn running first.
+    server.send(appended({ type: 'system', subtype: 'init', session_id: 's', uuid: 'init-1' }));
+    server.send(appended(frame('a-one', 100)));
+    await painted();
+    expect(pinnedRow.of(PIN), 'precondition: the strip draws the running turn').not.toBeNull();
+
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: false } },
+    });
+    await painted();
+
+    expect(pinnedRow.of(PIN), 'the record ended the turn the strip was drawing').toBeNull();
+  });
+
+  it('takes the strip down for a turn the record never marked running', async () => {
+    // The same take-back where nothing had marked the turn running first: a
+    // turn the frames opened and the seat never had to say was running, so the
+    // answer has to write the settlement rather than only clear a mark.
+    const server = stub();
+    draw({}, server);
+    server.answer([]);
+    server.send(appended(prompting('go')));
+    server.send(appended(frame('a-one', 100)));
+    await painted();
+    expect(pinnedRow.of(PIN), 'precondition: the strip draws the running turn').not.toBeNull();
+
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: false } },
+    });
+    await painted();
+
+    expect(pinnedRow.of(PIN), 'the record ended the turn the strip was drawing').toBeNull();
+  });
+
   it('reserves no space for a held row that never measured', async () => {
     // **The black plane** (Ved, 2026-10-11): a queued send's row is kept
     // mounted and empty while the pile draws its words (#1890), and the
