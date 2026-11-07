@@ -336,7 +336,7 @@ export class LocalTake {
   /** The seat's own updates: the server's end closes this side's take. */
   private messageArrived(message: ServerMessage): void {
     if (this.ended || message.kind !== 'update') return;
-    const [name] = variantOf(message.update);
+    const [name, payload] = variantOf(message.update);
     if (name !== 'dictate_ended') return;
     const at = slotOf(message.update);
     if (at === null) return;
@@ -344,6 +344,11 @@ export class LocalTake {
     // object off the wire, and two of them are the same seat when their key
     // says so.
     if (subjectKey({ session: this.seat }) !== subjectKey({ session: at })) return;
+    // **A refusal answers a start that never ran**, so it is not this take's
+    // end. The record's own fold ignores it while a take is drawn
+    // (`apply.ts`); this side must too, or a refused second start stops the
+    // capture of the take that is still recording.
+    if (isRefused(payload['outcome'])) return;
     this.release();
   }
 
@@ -389,6 +394,17 @@ export class LocalTake {
       // the take on the close either way.
     }
   }
+}
+
+/**
+ * Whether a `dictate_ended` outcome is a refusal.
+ *
+ * `DictateOutcome` is externally tagged: a unit variant crosses as its name
+ * alone, and `refused` crosses as an object around its message. A refusal
+ * answers a start that never ran, so it resolves no take.
+ */
+function isRefused(outcome: unknown): boolean {
+  return typeof outcome === 'object' && outcome !== null && 'refused' in outcome;
 }
 
 /** What a microphone that would not open says, in the vocabulary kept from the

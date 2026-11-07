@@ -348,6 +348,34 @@ describe('a take on a socket that is up', () => {
     expect(w.ended()).toBe(1);
   });
 
+  it('keeps recording when a refused start answers a take that never ran', () => {
+    const connection = fakeConnection();
+    const mic = fakeMic();
+    const w = wiring(connection);
+    new LocalTake(mic, connection, DEFAULT_AXES, {
+      seat: SEAT,
+      surface: 'composer',
+      onLine: w.wiring.onLine,
+      onEnded: w.wiring.onEnded,
+    });
+
+    // A second start refused while this take is live: the refusal answers a
+    // start that never ran, so it is not this take's end. Releasing here stops
+    // the capture and leaves the server's take recording with no frames.
+    connection.push({
+      kind: 'update',
+      update: {
+        dictate_ended: {
+          key: SEAT,
+          outcome: { refused: { message: 'this client is already dictating' } },
+          generation: 0,
+        },
+      },
+    });
+    expect(mic.stopped, 'a refusal resolves no take, so the capture keeps running').toBe(false);
+    expect(w.ended(), 'and the take is not over on this side').toBe(0);
+  });
+
   it("ignores another seat's ending", () => {
     const connection = fakeConnection();
     const mic = fakeMic();
