@@ -432,7 +432,7 @@ pub(crate) const DYNAMIC_WORKER_RESTART_NOTE: &str = "This session was restarted
 /// was in flight: a `--resume` that the CLI refuses falls back to a
 /// fresh session, so the history is named conditionally rather than
 /// relied on.
-pub const LEAD_RESTART_NOTE: &str = "forge restarted. Read the project handoff (`handoff.md` in the project's memory directory) and the task board before acting; they say what was in flight. Continue that work and do not restart what is finished. If a prior conversation is in the history above, treat it as the record of this seat's last run. The last turn was interrupted, so its final tool call may not have completed - check the state before continuing. If the history's timestamps disagree with the clock and the live schedules, believe the clock and the schedules.";
+pub const LEAD_RESTART_NOTE: &str = "forge restarted. Read the project handoff (`handoff.md` in the project's memory directory) and the task board before acting; they say what was in flight. Continue that work and do not restart what is finished. If a prior conversation is in the history above, treat it as the record of this seat's last run. The last turn was interrupted, so its final tool call may not have completed - check the state before continuing. Anything you sent before the restart may not have arrived; confirm it did before relying on it. If the history's timestamps disagree with the clock and the live schedules, believe the clock and the schedules.";
 
 /// One project a boot opens, and the kick its last state earns: the
 /// restart note when a turn was cut off, nothing when the seat was parked.
@@ -21231,7 +21231,8 @@ mod worker_respawn_tests {
     /// The lead restart note is the first turn a boot-resumed lead reads.
     /// Pinned so it sends the lead to the handoff and the board before it
     /// acts, keeps the history conditional (a refused resume falls back to
-    /// a fresh one), and goes to the clock over a stale history.
+    /// a fresh one), warns that a message sent before the restart may have
+    /// been lost, and goes to the clock over a stale history.
     #[test]
     fn the_lead_restart_note_names_the_handoff_the_board_and_the_clock() {
         assert!(LEAD_RESTART_NOTE.contains("forge restarted"), "the note says what happened");
@@ -21265,6 +21266,13 @@ mod worker_respawn_tests {
             ) && LEAD_RESTART_NOTE.contains("check the state before continuing"),
             "the note says why the seat is reading it and what the interruption may have left \
              half-done",
+        );
+        assert!(
+            LEAD_RESTART_NOTE.contains(
+                "Anything you sent before the restart may not have arrived; confirm it did \
+                 before relying on it"
+            ),
+            "the note warns that an outbound message may have died with the restart",
         );
         assert!(
             LEAD_RESTART_NOTE.contains(
