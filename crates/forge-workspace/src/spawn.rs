@@ -10671,17 +10671,17 @@ mod lead_charter_tests {
         }
     }
 
-    /// A commit subject, a PR body and a worker's report are claims;
-    /// the pushed tree is the evidence. Pinned at the merge gate so a
+    /// A commit subject, a PR body and an agent's report are claims;
+    /// the pushed commit is the object. Pinned at the merge gate so a
     /// report true only of a working tree cannot read as done.
     #[test]
     fn the_charter_checks_the_object_not_the_report() {
         for clause in [
-            "A commit subject, a PR body and a worker's report are claims, and the tree is the \
-             evidence",
-            "before reporting a change as done off one of them, `git show <sha>:<path>` the \
-             thing and quote it back",
-            "the report is true of the working tree and false of the pushed commit",
+            "A commit subject, a PR body and an agent's report are claims",
+            "before reporting a change as done off one, `git show <sha>:<path>` the thing and \
+             quote it back",
+            "the pushed commit is the object",
+            "a report can be true of the working tree and false of the commit",
         ] {
             assert!(
                 DEFAULT_LEAD_CHARTER.contains(clause),
