@@ -10660,7 +10660,8 @@ mod lead_charter_tests {
     fn the_charter_resends_after_a_worker_restart() {
         for clause in [
             "If the worker restarted since you last wrote to it, re-send the findings and \
-             confirm they landed before waiting on a round",
+             confirm they landed (its answer, never the earlier `sent`) before waiting on a \
+             round",
             "A message still queued to a worker when its session restarted can be gone",
             "re-send it and confirm it landed by a distinctive phrase in the worker's transcript \
              or by its answer",
