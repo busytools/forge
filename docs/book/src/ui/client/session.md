@@ -56,12 +56,14 @@ read as one system.
 - **A family row** carries a tool family's glyph: read, search, bash,
   web, lsp, skill, tool search, config, worktree, tool, and the one
   mutation row every edit draws whatever tool it was. An lsp call names
-  its operation and the file it ran on (`hover · client/src/chat/families.ts`,
-  with the line it asked about when it named one), because the glyph
+  its operation and its subject - the file it ran on
+  (`hover · /Users/vedhavyas/Projects/forge/client/src/chat/families.ts`,
+  with the line it asked about when it named one), or the query a symbol
+  search looked for (`workspaceSymbol · renderGroup`), because the glyph
   already says lsp.
 - **A forge call** draws a card for its family - tasks, agents, cron,
-  documents, gotify, handoff, review, settings, slack, terminal, vault,
-  voice - and the
+  documents, gotify, handoff, review, slack, terminal, vault, voice - and
+  the
   System One decisions
   draw as their own family, so a reader scanning for what the session decided
   does not find the three decision calls mixed among its cron and peer calls.
@@ -84,11 +86,14 @@ read as one system.
   unchanged: collapsed it says which way the call went and what it touched -
   `settings · read gotify.url`, `settings · write gotify.url, client.theme`,
   `settings · write 4 keys` (one or two keys are named, more are counted) -
-  and a write wears `waiting for your approval` while it parks on the dock.
-  A slack call whose answer the card does not dress - the token's identity,
-  a conversation's history, a thread, a transferred file - says what it read
-  (`read the history of C1`, `uploaded 'brief.pdf'`) rather than the family's
-  own noun.
+  and a write wears `waiting for your approval` while it parks on the dock,
+  `declined` if the reader turns it down. A slack call whose answer the card
+  does not dress - the token's identity, a conversation's history, a thread,
+  a user search, a transferred file - says what it read (`read the history
+  of C1`, `searched users for 'ved'`) rather than the family's own noun, and
+  an attachment carries its direction and its tense: `uploading
+  'brief.pdf'` while the dock still holds it, `downloaded attachment F1`
+  once the fetch answered.
 - **A browser call** is the browser's, whatever server name carried it.
 - **A peer message** draws a card saying which way it went: `sent to` and
   `from` name the counterparty and its org, `failed` carries the

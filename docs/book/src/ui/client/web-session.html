@@ -2566,6 +2566,13 @@ docs: The sprite a row draws, by the class it belongs to.</div>
           <details class="leaf">
             <summary><svg class="ic gl"><use href="#i-settings"/></svg><span class="tn">settings &#183; write gotify.url, client.theme</span><span class="fam-chip warn">waiting for your approval</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
           </details>
+          <!-- A declined write is a normal answer rather than a failure: the
+               row keeps the success mark, says `declined`, and its open is
+               the tool's own words. -->
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-settings"/></svg><span class="tn">settings &#183; write client.theme</span><span class="fam-chip warn">declined</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="fam-text">the reader declined; `client.theme` is unchanged and nothing was written</div></div>
+          </details>
           <details class="leaf" open>
             <summary><svg class="ic gl ok"><use href="#i-decide"/></svg><span class="tn">Is this one-line import fix mechanical and reversible?</span><span class="fam-chip ok">yes</span><span class="fam-fig">0.93</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">

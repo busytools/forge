@@ -154,6 +154,15 @@ describe('the text a command produced, as a page draws it', () => {
       }),
       'a position-bearing operation names the line it asked about',
     ).toBe('goToDefinition \u{b7} /Users/ved/Projects/forge/client/src/chat/units.ts:42');
+    expect(
+      headline('LSP', {
+        operation: 'workspaceSymbol',
+        filePath: 'src/a.ts',
+        line: 1,
+        query: 'renderGroup',
+      }),
+      'a symbol search names the query it searched for, not the file its cursor sat in',
+    ).toBe('workspaceSymbol \u{b7} renderGroup');
     // A call with no operation keeps the file; one with neither keeps its name.
     expect(headline('LSP', { filePath: 'a.rs' })).toBe('a.rs');
     expect(headline('LSP', {})).toBe('LSP');

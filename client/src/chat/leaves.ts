@@ -794,7 +794,11 @@ export function leafOf(
       forgeRowTitle(
         name,
         input,
-        settled === 'failed' || settled === 'killed' ? 'failed' : 'running',
+        settled === 'failed' || settled === 'killed'
+          ? 'failed'
+          : settled === 'pending' || settled === 'in_progress'
+            ? 'pending'
+            : 'settled',
       ) ??
       titleOf(name, input, record),
     command: field(input, 'command')?.trim() || null,
