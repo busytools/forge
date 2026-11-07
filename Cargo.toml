@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-capture", "crates/forge-dictate", "crates/forge-tts", "crates/forge-system-one", "crates/forge-gateway", "crates/forge-connectors", "crates/forge-browser", "crates/forge-terminal", "crates/forge-agent", "crates/forge-workspace", "crates/forge-server", "crates/forge-test-harness"]
+members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-capture", "crates/forge-dictate", "crates/forge-tts", "crates/forge-system-one", "crates/forge-supervise", "crates/forge-gateway", "crates/forge-connectors", "crates/forge-browser", "crates/forge-terminal", "crates/forge-agent", "crates/forge-workspace", "crates/forge-server", "crates/forge-test-harness"]
 
 [workspace.package]
 version = "1.2.3"
@@ -12,6 +12,9 @@ rust-version = "1.88"
 
 [workspace.dependencies]
 tokio = { version = "1.42", features = ["rt-multi-thread", "process", "io-util", "macros", "sync", "time", "fs"] }
+# The supervisor's stop signal. Already in the graph through h2, reqwest and
+# rmcp, so the direct edge costs no build time.
+tokio-util = { version = "0.7", features = ["rt"] }
 # The gateway's inference listener. Version-pinned to what reqwest's
 # stack already pulls, so the lock gains no second hyper.
 hyper = { version = "1.9", default-features = false, features = ["server", "http1"] }
@@ -108,6 +111,7 @@ forge-agent = { path = "crates/forge-agent", version = "=1.2.3" }
 forge-dictate = { path = "crates/forge-dictate", version = "=1.2.3" }
 forge-tts = { path = "crates/forge-tts", version = "=1.2.3" }
 forge-system-one = { path = "crates/forge-system-one", version = "=1.2.3" }
+forge-supervise = { path = "crates/forge-supervise", version = "=1.2.3" }
 forge-workspace = { path = "crates/forge-workspace", version = "=1.2.3" }
 forge-browser = { path = "crates/forge-browser", version = "=1.2.3" }
 forge-terminal = { path = "crates/forge-terminal", version = "=1.2.3" }

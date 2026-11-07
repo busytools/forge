@@ -81,12 +81,12 @@ fn run() -> anyhow::Result<()> {
         let workspace = forge_server::boot::start_core(&config_dir, cli.project.as_deref())?;
         // A headless server with no view serves nothing if the socket could
         // not bind: a supervisor watching the process would see a healthy
-        // zombie, so the failure is fatal. The handle is kept: the stop path
-        // takes the socket down before it drains, so no command can start a
-        // session behind the drain.
-        let mut socket = match forge_server::boot::serve_socket(&workspace).await? {
-            forge_server::boot::SocketServing::Bound(handle) => Some(handle),
-            forge_server::boot::SocketServing::Disabled => None,
+        // zombie, so the failure is fatal. The serve task is registered with
+        // the workspace's supervisor, and the stop path takes it down before
+        // the drain, so no command can start a session behind the drain.
+        let socket = match forge_server::boot::serve_socket(&workspace).await? {
+            forge_server::boot::SocketServing::Bound => true,
+            forge_server::boot::SocketServing::Disabled => false,
             forge_server::boot::SocketServing::BindFailed => {
                 return Err(anyhow::anyhow!(
                     "forge: the socket could not bind; a headless server with no view serves \
@@ -105,11 +105,11 @@ fn run() -> anyhow::Result<()> {
             _ = sigterm.recv() => {}
             _ = sighup.recv() => {}
         }
-        // The serve loop is dropped before the drain. Live connections
+        // The serve loop is stopped before the drain. Live connections
         // outlive the abort, so it is not what refuses a spawn: the
         // shutting-down gate is, and it is already up.
-        if let Some(handle) = socket.take() {
-            handle.abort();
+        if socket {
+            workspace.supervisor().stop("socket_serve");
         }
         // Awaited, not fired and left: the runtime is about to drop, and a
         // dropped runtime does not poll the session tasks' exit paths. A

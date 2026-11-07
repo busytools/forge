@@ -568,16 +568,15 @@ impl Workspace {
     }
 
     /// Spawn the chase sweep: a background pass every
-    /// [`CHASE_INTERVAL_SECS`] that delivers the crossings.
-    /// Idempotent; started once at boot. Mirrors
+    /// [`CHASE_INTERVAL_SECS`] that delivers the crossings. The registry
+    /// makes a second call a no-op; started once at boot. Mirrors
     /// [`Workspace::start_cron_scheduler`].
     pub fn start_chase_sweep(self: &Arc<Self>) {
-        if self.chase_sweep_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            return;
-        }
         let weak = Arc::downgrade(self);
         let span = tracing::info_span!("chase_sweep");
-        tokio::spawn(
+        self.supervisor.spawn("chase_sweep", forge_supervise::Policy::backoff(), move || {
+            let weak = weak.clone();
+            let span = span.clone();
             async move {
                 let period = std::time::Duration::from_secs(CHASE_INTERVAL_SECS);
                 let mut interval =
@@ -601,8 +600,8 @@ impl Workspace {
                     }
                 }
             }
-            .instrument(span),
-        );
+            .instrument(span)
+        });
     }
 }
 
