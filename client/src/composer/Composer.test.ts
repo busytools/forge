@@ -2631,6 +2631,33 @@ describe('the key', () => {
     expect(mic.held.stops, 'and the microphone is let go of on this side too').toBe(stops + 1);
   });
 
+  /**
+   * **A surface that goes stops its own take.** The microphone is the
+   * client's, and a take left recording by a surface that unmounted is one no
+   * live surface can stop: the next surface's start is refused by it, and the
+   * refusal used to release the take that was still recording.
+   */
+  it('stops its take when the surface unmounts', async () => {
+    const harness = open({ dictation: true });
+    harness.page.record = bound('right_cmd', 'auto');
+    flushSync();
+
+    key('ControlRight', 'keydown');
+    await opened();
+    harness.page.record = bound('right_cmd', 'auto', take());
+    flushSync();
+
+    const stops = mic.held.stops;
+    await unmount(app as Record<string, unknown>);
+    app = null;
+    flushSync();
+
+    expect(harness.sent.at(-1)?.command, 'the take is abandoned, not left recording').toEqual({
+      dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: false },
+    });
+    expect(mic.held.stops, 'and the microphone is let go of on this side too').toBe(stops + 1);
+  });
+
   it('learns what the system default is from the first take that opens it', async () => {
     mic.held.resolved = { id: 'mic-2', label: 'Shure SM7B' };
     try {

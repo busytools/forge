@@ -134,6 +134,17 @@ export function bindPushToTalk(wiring: PushToTalk): void {
   // the press began - the invariant the handlers are hoisted for.
   onDestroy(() => handlers.reset());
 
+  // **A surface that goes stops its own take.** The microphone is the
+  // client's, and a take left recording by a surface that unmounted - a
+  // route change, a seat switch - is one no live surface can stop: the next
+  // surface's start is refused by it, and the refusal used to release the
+  // take that was still recording. Abandoning here is the same door Escape
+  // uses, and it reaches the take wherever the reader moved to.
+  onDestroy(() => {
+    const live = untrack(() => wiring.dictate().take);
+    if (live !== null) live.stop(false);
+  });
+
   // **The overlay holds the keyboard while a takeover is up**, so a bare
   // modifier reaches the page as no keydown at all: the shell hears it as
   // `flagsChanged:` and forwards the raw side. It goes into the SAME handler
