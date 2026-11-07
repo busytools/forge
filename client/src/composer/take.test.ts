@@ -374,11 +374,11 @@ describe('a take on a socket that is up', () => {
         },
       },
     });
-    expect(mic.stopped, 'another surface\'s refusal is not this take\'s end').toBe(false);
+    expect(mic.stopped, "another surface's refusal is not this take's end").toBe(false);
     expect(w.ended(), 'and the take is not over on this side').toBe(0);
   });
 
-  it("lets go when its own refused start answers a take that never ran", () => {
+  it('lets go when its own refused start answers a take that never ran', () => {
     const connection = fakeConnection();
     const mic = fakeMic();
     const w = wiring(connection);
@@ -427,7 +427,7 @@ describe('a take on a socket that is up', () => {
         },
       },
     });
-    expect(mic.stopped, 'a refusal with no surface is this take\'s').toBe(true);
+    expect(mic.stopped, "a refusal with no surface is this take's").toBe(true);
     expect(w.ended()).toBe(1);
   });
 
