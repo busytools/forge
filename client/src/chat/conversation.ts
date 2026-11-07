@@ -2382,13 +2382,15 @@ export class Chat {
           // **The first load is seeded from the answer, and a saved
           // conversation is reconciled from it.** A subscribe's answer is the
           // newest page (#2420), so a column that missed frames while the seat
-          // was away has no other way back - a page opened fresh draws this
-          // same answer. A reconnect asks a page for itself (the status
-          // handler), so this must not steal an older ask's bookkeeping: hence
-          // the idle guard below.
+          // was away can take it: what a page opened fresh draws is this same
+          // answer. **An answer for an occupant this conversation has left is
+          // a wipe, not a merge** - the rule `session/live.ts` keeps by epoch.
           const fresh = !this.held.loaded;
           const header = (message.data as { header?: { session_id?: unknown } } | null)?.header;
-          this.noteSession(header?.session_id);
+          const occupant = typeof header?.session_id === 'string' ? header.session_id : null;
+          const sameOccupant =
+            occupant === null || this.held.sessionId === null || occupant === this.held.sessionId;
+          if (sameOccupant) this.noteSession(occupant);
           this.heard(runningOf(message.data));
           const data = (message.data ?? {}) as { conversation?: unknown };
           const conversation = (data.conversation ?? {}) as {
@@ -2398,35 +2400,29 @@ export class Chat {
           };
           cronNames.seed(conversation.cron_names);
           const rows = pageTurns(conversation.turns);
-          if (fresh) {
-            if (rows.length > 0) {
-              if (!Object.hasOwn(conversation, 'cursor')) {
-                // **An older server's record has no `cursor` field at all**
-                // (#2420): the page itself can be seeded, but the history
-                // above it is only named by a real page - which the `more` arm
-                // answers with the window's floor - so ask rather than read
-                // the history as ended.
-                this.ask(null);
-              } else {
-                // **The record carries its page's handle**, so the seed is the
-                // whole of what a switch reads: the turns, and the cursor a
-                // pull above them asks from.
-                const cursor = typeof conversation.cursor === 'string' ? conversation.cursor : null;
-                this.takePage(rows, cursor, 'newest');
-              }
-            } else {
-              this.ask(null);
+          // **An older server's record names no handle at all** (#2420): its
+          // page is named by a real `more`, answered from the window's floor,
+          // rather than by a handle the record does not have.
+          const named = Object.hasOwn(conversation, 'cursor');
+          const cursor = typeof conversation.cursor === 'string' ? conversation.cursor : null;
+          if (sameOccupant && fresh) {
+            if (rows.length === 0 || !named) this.ask(null);
+            else this.takePage(rows, cursor, 'newest');
+          } else if (sameOccupant && rows.length > 0 && this.inFlight === null) {
+            // **The age guard is what keeps a stale answer out.** `takePage`
+            // asserts a newest page is newer than everything held, and a
+            // snapshot can be a picture the server built before frames this
+            // column already has; taking it inverts the column and moves its
+            // trim floor. A stamp-less answer cannot say either way, so it is
+            // left alone. `inFlight` is only this column's own page ask - it
+            // keeps a landing it is waiting for from being answered twice, and
+            // says nothing about any other read on the seat.
+            const pageNewest = newestStampMs(rows.flatMap((row) => messagesOf(row)));
+            const heldNewest = newestStampMs(this.held.turns.flatMap((turn) => turn.messages));
+            if (pageNewest !== null && (heldNewest === null || pageNewest > heldNewest)) {
+              if (!named) this.ask(null);
+              else this.takePage(rows, cursor, 'newest');
             }
-          } else if (rows.length > 0 && this.inFlight === null) {
-            // **A saved conversation reconciles from the answer too.** The
-            // answer is the newest page, and a column that missed frames while
-            // the seat was away - a return, a re-subscribe, a stream that
-            // wedged - has no other way back: what a page opened fresh draws
-            // is this very answer. **Only with nothing in flight**, so an
-            // older ask keeps the bookkeeping its own landing is answered with.
-            const cursor =
-              typeof conversation.cursor === 'string' ? conversation.cursor : this.held.cursor;
-            this.takePage(rows, cursor, 'newest');
           }
           this.armed(message.data);
         }

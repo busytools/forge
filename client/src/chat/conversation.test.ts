@@ -56,6 +56,12 @@ const turn = (key: string | null, ...texts: string[]): PageTurn => ({
   })),
 });
 
+/** One page row whose frames carry stamps, which is what the age guard reads. */
+const rowAt = (key: string, text: string, when: string): PageTurn => ({
+  key,
+  messages: turn(key, text).messages.map((message) => stamped(message, when)),
+});
+
 /** One assistant message carrying prose. */
 const said = (text: string): unknown => ({
   type: 'assistant',
@@ -142,6 +148,20 @@ const record = (
       handoff,
       ...(cronNames === undefined ? {} : { cron_names: cronNames }),
     },
+  },
+});
+
+/** The same answer, for the occupant its header names. */
+const recordOf = (
+  session: string,
+  turns: PageTurn[],
+  cursor: string | null = null,
+): ServerMessage => ({
+  kind: 'snapshot',
+  subject: { session: LEAD },
+  data: {
+    header: { session_id: session },
+    conversation: { turns, cursor, compaction_count: 0, handoff: null },
   },
 });
 
@@ -2674,31 +2694,136 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
-   * **A saved conversation reconciles from an answer it did not ask for.**
+   * **A saved conversation reconciles from a newer answer it did not ask for.**
    *
-   * A subscribe this column did not ask for - a return, a re-subscribe - is
-   * answered with the newest page, and a conversation that missed frames while
-   * the seat was away has no other way back: a page opened fresh draws this
-   * very answer, and a loaded column used to throw it away (Ved, 2026-11-07:
-   * the desktop's turn strip held an hour-old turn's figures while a page
-   * opened beside it drew the live one).
+   * The desktop's strip read `78m 43s` for a turn that had ended while a page
+   * opened beside it drew the live one (Ved, 2026-11-07).
    */
   it('reconciles a saved conversation from a subscribe answer', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     const stop = chat.start();
-    server.send(page([turn('t1', 'first')], null));
+    server.send(record([rowAt('t1', 'first', '2026-10-01T10:00:00Z')], null));
     expect(
       get(chat.value).turns.map((row) => row.key),
       'precondition: the load',
     ).toEqual(['t1']);
 
-    server.send(record([turn('t1', 'first'), turn('t2', 'second')], null));
+    server.send(
+      record(
+        [
+          rowAt('t1', 'first', '2026-10-01T10:00:00Z'),
+          rowAt('t2', 'second', '2026-10-01T10:01:00Z'),
+        ],
+        null,
+      ),
+    );
 
     expect(
       get(chat.value).turns.map((row) => row.key),
       'the answer carried the turn the saved conversation never heard',
     ).toEqual(['t1', 't2']);
+    stop();
+  });
+
+  it('refuses a subscribe answer that is older than what is held', () => {
+    // A picture the server built before frames this column already has. Read
+    // as a newest page it inverts the column - the rows it carries first and
+    // the newer ones after - which also moves the trim floor back.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(record([rowAt('t1', 'first', '2026-10-01T10:00:00Z')], null));
+    server.send(
+      record(
+        [
+          rowAt('t1', 'first', '2026-10-01T10:00:00Z'),
+          rowAt('t2', 'second', '2026-10-01T10:01:00Z'),
+        ],
+        null,
+      ),
+    );
+    expect(
+      get(chat.value).turns.map((row) => row.key),
+      'precondition: the newer answer landed',
+    ).toEqual(['t1', 't2']);
+
+    server.send(record([rowAt('t1', 'first', '2026-10-01T10:00:00Z')], null));
+
+    expect(
+      get(chat.value).turns.map((row) => row.key),
+      'the older picture left the column alone',
+    ).toEqual(['t1', 't2']);
+    stop();
+  });
+
+  it('refuses a subscribe answer for an occupant the seat has left', () => {
+    // A `/new` or a `/resume` is a wipe, and an answer encoded under the
+    // occupant it replaced is a picture of a conversation this seat no longer
+    // runs - merging it would draw the old occupant's rows in the new one, and
+    // flip the id a saved place is keyed by.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(recordOf('a', [rowAt('t1', 'first', '2026-10-01T10:00:00Z')], '1'));
+    // The first load's fill ask is settled, so the swap has nothing to forget.
+    server.send(page([rowAt('t0', 'older', '2026-10-01T09:00:00Z')], '0'));
+    server.update({ session_replaced: { key: LEAD, session_id: 'b' } });
+
+    // The old occupant's answer lands before the new one's: seeding it would
+    // make the previous conversation the new occupant's own.
+    server.send(recordOf('a', [rowAt('t2', 'late', '2026-10-01T10:05:00Z')], null));
+
+    expect(
+      get(chat.value).turns.map((row) => row.key),
+      "the old occupant's page is not drawn for the new one",
+    ).toEqual([]);
+    expect(get(chat.value).sessionId, 'and it does not take the seat back').toBe('b');
+
+    server.send(recordOf('b', [rowAt('t9', 'ninth', '2026-10-01T11:00:00Z')], null));
+    expect(
+      get(chat.value).turns.map((row) => row.key),
+      "the new occupant's own page draws",
+    ).toEqual(['t9']);
+    stop();
+  });
+
+  it('asks a page for a saved conversation whose answer names no handle', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(record([rowAt('t1', 'first', '2026-10-01T10:00:00Z')], '1'));
+    // The first load's fill ask is settled, so what this test reads is the
+    // reconcile's own ask.
+    server.send(page([rowAt('t0', 'older', '2026-10-01T09:00:00Z')], '0'));
+
+    // An older server's record carries no cursor field at all (#2420). Its
+    // page is newer than what is held, but the handle above it is only named
+    // by a real page - so the page is asked for rather than the held handle
+    // being taken for this one's.
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: {
+        header: {},
+        conversation: {
+          turns: [rowAt('t2', 'second', '2026-10-01T10:01:00Z')],
+          compaction_count: 0,
+          handoff: null,
+        },
+      },
+    });
+
+    expect(
+      get(chat.value).turns.map((row) => row.key),
+      'the page is not taken on a handle the record does not have',
+    ).toEqual(['t0', 't1']);
+    expect(server.more().at(-1), 'a real page is asked for instead').toEqual({
+      kind: 'more',
+      conversation: LEAD,
+      before: null,
+      turns: MORE_TURNS,
+    });
     stop();
   });
 
@@ -2755,20 +2880,20 @@ describe('the conversation the chat draws', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     const stop = chat.start();
-    server.send(record([turn('t1', 'first')], '1'));
-    server.update({ chat_appended: { key: LEAD, msg: said('a live line') } });
+    server.send(record([rowAt('t1', 'first', '2026-10-01T10:00:00Z')], '1'));
+    // **The fill's own ask is settled first**, so the only thing that can keep
+    // the next answer out is the age guard this test is about - an ask left in
+    // flight would hold it out for the wrong reason.
+    server.send(page([rowAt('t0', 'older', '2026-10-01T09:00:00Z')], '0'));
     const asked = server.more().length;
 
-    // **Only the first load seeds the conversation from a snapshot**
-    // (#2420). A later snapshot can be a picture the server built
-    // before the live frames this chat already holds; reading it as a page
-    // would start a walk over a stale reach.
-    server.send(record([turn('t0', 'stale')], null));
+    server.send(record([rowAt('t0', 'older', '2026-10-01T09:00:00Z')], '0'));
+
     expect(server.more().length, 'the stale picture is not a read').toBe(asked);
     expect(
       get(chat.value).turns.map((row) => row.key),
-      'and it does not replace what is held',
-    ).toEqual(['t1']);
+      'and it does not reorder what is held',
+    ).toEqual(['t0', 't1']);
     stop();
   });
 
