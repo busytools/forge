@@ -136,11 +136,6 @@ impl Supervisor {
         if let Some(token) = state.tokens.get(name) {
             token.cancel();
         }
-        // **A stop during a backoff is still a stop.** The timer armed by the
-        // death carries the old generation, so bumping it here is what makes
-        // that timer's restart a no-op.
-        let generation = state.generations.get(name).copied().unwrap_or(0) + 1;
-        state.generations.insert(name.to_owned(), generation);
         drop(state);
         let _ = self.0.tx.send(Command::Stop { name: name.to_owned() });
         tracing::debug!(
@@ -232,7 +227,12 @@ async fn drive(weak: Weak<Inner>, mut rx: mpsc::UnboundedReceiver<Command>) {
                         start_run(&inner, &mut set, &mut runs, &name, generation, token, false);
                     }
                     Command::Restart { name, generation, token } => {
-                        start_run(&inner, &mut set, &mut runs, &name, generation, token, true);
+                        // **A stop during a backoff is still a stop.** The
+                        // timer armed by the death carries the run's token,
+                        // and a cancelled one must not resurrect the member.
+                        if !token.is_cancelled() {
+                            start_run(&inner, &mut set, &mut runs, &name, generation, token, true);
+                        }
                     }
                     Command::Stop { name } => abort_if_stopped(&inner, &name),
                 }
@@ -467,9 +467,14 @@ mod tests {
             }
         });
 
-        for _ in 0..3 {
+        // **The last failure is not advanced past.** The budget is spent on
+        // the third death, so a supervisor that restarts it instead would
+        // still be running when the snapshot is read.
+        for run in 0..3 {
             rx.recv().await.expect("a run started");
-            tokio::time::advance(Duration::from_millis(1)).await;
+            if run < 2 {
+                tokio::time::advance(Duration::from_millis(1)).await;
+            }
         }
         tokio::task::yield_now().await;
 
@@ -490,8 +495,9 @@ mod tests {
         );
     }
 
-    /// **A stopped member is never resurrected.** Catches a supervisor that
-    /// restarts the run its own stop aborted.
+    /// **A stopped member is never resurrected.** The run completes after
+    /// the stop, so a stop that failed to cancel it would restart it and the
+    /// second run would show on the channel.
     #[tokio::test(start_paused = true)]
     async fn a_stopped_member_is_not_restarted() {
         let supervisor = Supervisor::new();
@@ -500,12 +506,17 @@ mod tests {
             let tx = tx.clone();
             async move {
                 let _ = tx.send(());
-                std::future::pending::<()>().await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
         });
         rx.recv().await.expect("the run started");
 
         supervisor.stop("probe");
+        // The first advance lets the run finish; the second fires any restart
+        // timer the death scheduled, so a stop that failed to cancel the run
+        // shows its second run here.
+        tokio::time::advance(Duration::from_secs(120)).await;
+        tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_secs(120)).await;
         tokio::task::yield_now().await;
 
