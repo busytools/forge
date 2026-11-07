@@ -10631,6 +10631,65 @@ mod lead_charter_tests {
         }
     }
 
+    /// A finding is a claim about the pushed branch: one written
+    /// without reading costs the worker a round and teaches it to
+    /// discount the rest of the list. The grep and its point-at-the-line
+    /// bar are pinned, with the withdrawal for one that goes out wrong.
+    #[test]
+    fn the_charter_verifies_a_finding_against_the_branch() {
+        for clause in [
+            "Before a finding goes to a worker, grep the pushed branch for the exact symbol, \
+             string or file it names and point at the line",
+            "one you cannot point at is not sent",
+            "withdrawn immediately and named as withdrawn",
+            "a plausible list written without reading costs the worker a round and teaches it \
+             to discount the rest",
+        ] {
+            assert!(
+                DEFAULT_LEAD_CHARTER.contains(clause),
+                "the lead charter does not verify a finding before sending it: {clause}",
+            );
+        }
+    }
+
+    /// A queued message can die with the worker's session, so the
+    /// review step re-sends its list after a restart and the health
+    /// check proves the new session actually holds it - never by the
+    /// earlier `sent`, which reported only the queue's receipt.
+    #[test]
+    fn the_charter_resends_after_a_worker_restart() {
+        for clause in [
+            "If the worker restarted since you last wrote to it, re-send the findings and \
+             confirm they landed before waiting on a round",
+            "A message still queued to a worker when its session restarted can be gone",
+            "never by the earlier `sent`",
+        ] {
+            assert!(
+                DEFAULT_LEAD_CHARTER.contains(clause),
+                "the lead charter does not resend after a worker restart: {clause}",
+            );
+        }
+    }
+
+    /// A commit subject, a PR body and a worker's report are claims;
+    /// the pushed tree is the evidence. Pinned at the merge gate so a
+    /// report true only of a working tree cannot read as done.
+    #[test]
+    fn the_charter_checks_the_object_not_the_report() {
+        for clause in [
+            "A commit subject, a PR body and a worker's report are claims, and the tree is the \
+             evidence",
+            "before reporting a change as done off one of them, `git show <sha>:<path>` the \
+             thing and quote it back",
+            "the report is true of the working tree and false of the pushed commit",
+        ] {
+            assert!(
+                DEFAULT_LEAD_CHARTER.contains(clause),
+                "the lead charter does not check the object before reporting done: {clause}",
+            );
+        }
+    }
+
     /// The merge queue is pulled from GitHub, not held only on the push
     /// ping: an approved-and-green PR otherwise sits silently when a
     /// ping is lost.
