@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { ServerMessage, SessionUpdate } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
-import { Chat, beingWritten, type PageTurn, type Turn } from './conversation';
+import { Chat, beingWritten, inFlight, type PageTurn, type Turn } from './conversation';
 import { fold, type Unit } from './units';
 
 /**
@@ -179,7 +179,7 @@ const page = (turns: PageTurn[], cursor: string | null): ServerMessage => ({
 
 /** Whether the draw carries the bar, asked the way the row asks it. */
 const bar = (turn: Turn | undefined): boolean =>
-  turn !== undefined && running(fold(turn.messages, null, beingWritten(turn)));
+  turn !== undefined && running(fold(turn.messages, null, inFlight(turn), !beingWritten(turn)));
 
 /** Whether a row is the turn being written, asked the way the column asks it. */
 const writing = (turn: Turn | undefined): boolean => turn?.running === true;
@@ -487,6 +487,38 @@ describe('one row per running turn', () => {
 
     expect(writing(newest(chat)), 'the result ended the turn').toBe(false);
     expect(bar(newest(chat)), 'so the bar is gone').toBe(false);
+  });
+
+  /**
+   * A Result that never reached this client - a gap, a drop, a hold that
+   * expired - leaves the turn with no end frame, and the seat's answer is the
+   * only thing that says it is over. Until that answer settles it, the next
+   * prompt is folded into the turn that is over and the strip draws one turn
+   * for two. The strip's own half is `Chat.test.ts`'s.
+   *
+   * The `false` is written on the turn it was about, so the next turn opens
+   * clean and draws its bar as soon as its frames do - an answer inherited by
+   * every later turn would take that bar down too.
+   */
+  it('opens the next turn once the record ends a turn the frames built', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([], null));
+    server.update({ chat_appended: { key: LEAD, msg: typed('mine') } });
+    server.update({ chat_appended: { key: LEAD, msg: began() } });
+    server.update({ chat_appended: { key: LEAD, msg: said('working') } });
+    expect(bar(newest(chat)), 'precondition: the bar is up').toBe(true);
+
+    server.says(false);
+    server.update({ chat_appended: { key: LEAD, msg: typed('next') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('the next answer') } });
+
+    expect(
+      get(chat.value).turns.map((turn) => turn.key),
+      'the prompt opened a turn of its own',
+    ).toHaveLength(2);
+    expect(bar(newest(chat)), 'and the new turn draws its own bar').toBe(true);
   });
 
   it('reads a seat returned to after its turn died on the error frame', () => {
