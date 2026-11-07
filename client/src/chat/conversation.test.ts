@@ -156,11 +156,12 @@ const recordOf = (
   session: string,
   turns: PageTurn[],
   cursor: string | null = null,
+  running = false,
 ): ServerMessage => ({
   kind: 'snapshot',
   subject: { session: LEAD },
   data: {
-    header: { session_id: session },
+    header: { session_id: session, turn_in_flight: running },
     conversation: { turns, cursor, compaction_count: 0, handoff: null },
   },
 });
@@ -2785,6 +2786,29 @@ describe('the conversation the chat draws', () => {
       get(chat.value).turns.map((row) => row.key),
       "the new occupant's own page draws",
     ).toEqual(['t9']);
+    stop();
+  });
+
+  it('takes no liveness from an occupant the seat has left', () => {
+    // The late answer is NEWER by stamp, so age is not what refuses it - the
+    // occupant is - and its `turn_in_flight` is the previous occupant's turn,
+    // not this one's.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(recordOf('a', [rowAt('t1', 'first', '2026-10-01T10:00:00Z')], '1'));
+    server.send(page([rowAt('t0', 'older', '2026-10-01T09:00:00Z')], '0'));
+    server.update({ session_replaced: { key: LEAD, session_id: 'b' } });
+    server.send(recordOf('b', [rowAt('t9', 'ninth', '2026-10-01T11:00:00Z')], null));
+    const before = get(chat.value).turns.at(-1);
+    expect(before?.key, 'precondition: the new occupant drew its own page').toBe('t9');
+    expect(before?.running, 'precondition: nothing has marked its turn running').toBeUndefined();
+
+    server.send(recordOf('a', [rowAt('t2', 'late', '2026-10-01T12:00:00Z')], null, true));
+
+    const after = get(chat.value).turns.at(-1);
+    expect(after?.key, 'the page is not taken').toBe('t9');
+    expect(after?.running, "nor is the old occupant's liveness").toBeUndefined();
     stop();
   });
 

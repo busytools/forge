@@ -2390,15 +2390,19 @@ export class Chat {
           const occupant = typeof header?.session_id === 'string' ? header.session_id : null;
           const sameOccupant =
             occupant === null || this.held.sessionId === null || occupant === this.held.sessionId;
-          if (sameOccupant) this.noteSession(occupant);
-          this.heard(runningOf(message.data));
+          if (sameOccupant) {
+            this.noteSession(occupant);
+            this.heard(runningOf(message.data));
+          }
           const data = (message.data ?? {}) as { conversation?: unknown };
           const conversation = (data.conversation ?? {}) as {
             turns?: unknown;
             cursor?: unknown;
             cron_names?: unknown;
           };
-          cronNames.seed(conversation.cron_names);
+          // **Nothing of a left occupant's answer is taken**: not its queue
+          // (`armed` below), not the names its deliveries are drawn under.
+          if (sameOccupant) cronNames.seed(conversation.cron_names);
           const rows = pageTurns(conversation.turns);
           // **An older server's record names no handle at all** (#2420): its
           // page is named by a real `more`, answered from the window's floor,
@@ -2424,7 +2428,7 @@ export class Chat {
               else this.takePage(rows, cursor, 'newest');
             }
           }
-          this.armed(message.data);
+          if (sameOccupant) this.armed(message.data);
         }
         return;
       case 'update':
