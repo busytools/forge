@@ -48,6 +48,7 @@ clap_complete = { workspace = true }
 # diagnostics path beside it.
 dirs = { workspace = true }
 forge-primitives = { workspace = true }
+forge-supervise = { workspace = true }
 # The fleet reaches the workspace's tool surface through an async port.
 async-trait = { workspace = true }
 forge-workspace = { workspace = true }

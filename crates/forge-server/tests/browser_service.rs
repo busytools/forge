@@ -418,6 +418,8 @@ async fn a_tab_listing_never_creates_a_page() {
         &format!("http://127.0.0.1:{port}"),
         &scratch.path().join("output"),
         &chooser,
+        None,
+        "",
     )
     .await
     .expect("the driver starts");

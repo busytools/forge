@@ -1316,7 +1316,7 @@ fn browser_path(port: u16) -> Option<String> {
 async fn connect(port: u16, path: &str) -> Option<(Cdp, forge_browser::window::Events)> {
     match tokio::time::timeout(
         Duration::from_secs(5),
-        Cdp::connect_watch(port, path, Backlog::EveryEvent),
+        Cdp::connect_watch(port, path, Backlog::EveryEvent, None, ""),
     )
     .await
     {

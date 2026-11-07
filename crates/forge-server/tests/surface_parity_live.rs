@@ -93,6 +93,8 @@ async fn every_advertised_browser_tool_is_answered() {
         &format!("http://127.0.0.1:{port}"),
         &scratch.path().join("output"),
         &chooser,
+        None,
+        "",
     )
     .await
     .expect("the driver starts");

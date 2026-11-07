@@ -14,6 +14,7 @@
 //! it happens to have open chooses to expose.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -145,7 +146,13 @@ pub struct Driver {
     client: rmcp::Peer<rmcp::RoleClient>,
     /// Every notice the patched MCP surfaced, for the profile's own task.
     choosers: broadcast::Sender<DriverNotice>,
-    chooser_task: tokio::task::JoinHandle<()>,
+    /// The chooser acceptor's handle when it runs unsupervised; `None` when
+    /// the supervisor owns it.
+    chooser_task: Option<tokio::task::JoinHandle<()>>,
+    /// The supervisor that owns the chooser acceptor, when one is installed.
+    supervisor: Option<Arc<forge_supervise::Supervisor>>,
+    /// The name the chooser acceptor is registered under.
+    chooser_name: String,
     _chooser_socket: ChooserSocket,
 }
 
@@ -175,8 +182,20 @@ impl Driver {
         cdp_endpoint: &str,
         output_dir: &Path,
         chooser_socket: &Path,
+        supervisor: Option<Arc<forge_supervise::Supervisor>>,
+        chooser_name: &str,
     ) -> Result<Self, String> {
-        Self::start_within(node, cli, cdp_endpoint, output_dir, chooser_socket, START_TIMEOUT).await
+        Self::start_within(
+            node,
+            cli,
+            cdp_endpoint,
+            output_dir,
+            chooser_socket,
+            supervisor,
+            chooser_name,
+            START_TIMEOUT,
+        )
+        .await
     }
 
     /// [`Self::start`] with the handshake's budget given. **A seam for
@@ -188,6 +207,8 @@ impl Driver {
         cdp_endpoint: &str,
         output_dir: &Path,
         chooser_socket: &Path,
+        supervisor: Option<Arc<forge_supervise::Supervisor>>,
+        chooser_name: &str,
         handshake: Duration,
     ) -> Result<Self, String> {
         if !node.is_file() || !cli.is_file() {
@@ -245,7 +266,28 @@ impl Driver {
         // raises a chooser, and the handshake never clicks.
         let listener = bind_chooser_socket(chooser_socket)?;
         let (choosers, _) = broadcast::channel(8);
-        let chooser_task = tokio::spawn(serve_choosers(listener, choosers.clone()));
+        let chooser_task = match &supervisor {
+            Some(supervisor) => {
+                let listener = Arc::new(std::sync::Mutex::new(Some(listener)));
+                let choosers = choosers.clone();
+                supervisor.spawn(chooser_name, forge_supervise::Policy::Never, move || {
+                    let listener = Arc::clone(&listener);
+                    let choosers = choosers.clone();
+                    async move {
+                        let Some(listener) = listener
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .take()
+                        else {
+                            return;
+                        };
+                        serve_choosers(listener, choosers).await;
+                    }
+                });
+                None
+            }
+            None => Some(tokio::spawn(serve_choosers(listener, choosers.clone()))),
+        };
         let client = service.peer().clone();
         // **The MCP's backend is built on its first TOOL CALL, not on the
         // handshake.** Until one runs, no tab listener exists, Playwright has
@@ -279,6 +321,8 @@ impl Driver {
             client,
             choosers,
             chooser_task,
+            supervisor,
+            chooser_name: chooser_name.to_owned(),
             _chooser_socket: ChooserSocket { path: chooser_socket.to_path_buf() },
         })
     }
@@ -632,7 +676,11 @@ async fn serve_choosers(listener: UnixListener, choosers: broadcast::Sender<Driv
 
 impl Drop for Driver {
     fn drop(&mut self) {
-        self.chooser_task.abort();
+        match (&self.supervisor, &self.chooser_task) {
+            (Some(supervisor), _) => supervisor.stop(&self.chooser_name),
+            (None, Some(task)) => task.abort(),
+            (None, None) => {}
+        }
     }
 }
 

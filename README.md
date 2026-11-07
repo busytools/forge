@@ -29,6 +29,7 @@ forge-capture         leaf: microphone capture, depends on no forge-* crate
 forge-dictate     ->  capture
 forge-tts             leaf: speech synthesis, depends on no forge-* crate
 forge-system-one      leaf: decision-model client, depends on no forge-* crate
+forge-supervise       leaf: subsystem supervision, depends on no forge-* crate
 forge-terminal        leaf: the PTY and screen model, depends on no forge-* crate
 forge-gateway     ->  primitives
 forge-connectors  ->  primitives
@@ -48,6 +49,7 @@ forge-test-harness->  primitives + sdk
 | [`forge-tts`](crates/forge-tts) | The speech primitive: text in, audio chunks out. Owns the Kokoro-82M engine (ONNX Runtime in process, with Misaki's G2P), the model files a speaking model is made of, sentence splitting and the utterance bound. A leaf: it depends on no forge-* crate and knows nothing about a host. |
 | [`forge-system-one`](crates/forge-system-one) | The System One decision-model client: the `[systemone]` config shape, the wire question/answer types with their validation, and the HTTP call with its timeout and error mapping. Depends on no forge-* crate. |
 | [`forge-terminal`](crates/forge-terminal) | One terminal per seat: the PTY, the screen model and the read loop, the OSC 133 scanner and the shell integration scripts, the text extractor, the attach repaint, and the state classifier. `alacritty_terminal` is its only terminal dependency; the event loop is forge's own, because the client's stream is the raw bytes. A leaf: depends on no forge-* crate. |
+| [`forge-supervise`](crates/forge-supervise) | Supervision for forge's long-lived background tasks: one registry that starts a member's future, restarts a death with bounded backoff, refuses to resurrect a deliberate stop, and answers a snapshot of what is running. A leaf: depends on no forge-* crate. |
 | [`forge-gateway`](crates/forge-gateway) | The account pool: one backend per provider token (credential resolution, the usage probe's HTTP and payload mapping, billing shape), plus account selection by declared models, account health, probe scheduling and backoff. Depends on forge-primitives only. |
 | [`forge-connectors`](crates/forge-connectors) | One module per external integration: the Gotify and Slack connectors and the outbound Vaultwarden client. Depends on forge-primitives only. |
 | [`forge-sdk`](crates/forge-sdk) | The `claude` subprocess. Stream-json codec, transport, control dispatch, in-process MCP host, options builder. |

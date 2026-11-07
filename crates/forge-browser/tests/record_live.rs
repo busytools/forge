@@ -87,7 +87,7 @@ async fn a_recording_writes_the_viewport_to_an_mp4() {
         support::Host::start_with_events(&exe, &profile, port, &ring_name, "800x600", &[], &log);
     let id = support::wait_for_page(port, &log, BOUND);
     let (mut cdp, _events) =
-        Cdp::connect_watch(port, &format!("/devtools/page/{id}"), Backlog::EveryEvent)
+        Cdp::connect_watch(port, &format!("/devtools/page/{id}"), Backlog::EveryEvent, None, "")
             .await
             .expect("devtools");
     cdp.call(

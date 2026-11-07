@@ -902,17 +902,14 @@ pub struct Workspace {
     /// `pub(crate)` so the impl block in [`crate::review`] can reach it.
     pub(crate) review_activity:
         Mutex<HashMap<SessionSlot, Vec<crate::mcp::review::ReviewActivity>>>,
-    /// Set the first time [`Self::start_usage_poller`] runs. Subsequent
-    /// calls early-return to avoid spawning duplicate poller tasks.
-    usage_poller_started: std::sync::atomic::AtomicBool,
-    /// Set the first time [`Self::start_rotation_announcer`] runs, so a
-    /// second call cannot double every cooldown's roster frame.
-    rotation_announcer_started: std::sync::atomic::AtomicBool,
+    /// The process's subsystem supervisor: every long-lived background task
+    /// registers here, so a death is named and a restart is bounded.
+    pub(crate) supervisor: Arc<forge_supervise::Supervisor>,
     /// Set the first time [`Self::start_dictate_preflight`] runs, so a
     /// second call cannot spawn a second prewarm over the same models. Set
     /// before the `[dictate] enabled` gate: the flag reads "the boot wave
     /// asked for the prewarm", which is the one call a test can watch
-    /// without a 3 GB fetch (mirrors `usage_poller_started`).
+    /// without a 3 GB fetch.
     dictate_preflight_started: std::sync::atomic::AtomicBool,
     /// Records that the boot wave asked for the prewarm, set before the
     /// `[tts] enabled` gate: the flag reads "the wave asked", which is the
@@ -938,14 +935,6 @@ pub struct Workspace {
     /// The bind failure, if the listener could not start. Surfaced by
     /// the launchpad's gate label; `None` while loading or bound.
     gateway_bind_error: Mutex<Option<String>>,
-    /// Guards against double-spawning the cron scheduler (mirrors
-    /// `usage_poller_started`). Started once at boot from the binary.
-    /// `pub(crate)` so the impl block in [`crate::crons`] can reach it.
-    pub(crate) cron_scheduler_started: std::sync::atomic::AtomicBool,
-    /// Guards against double-spawning the chase sweep (mirrors
-    /// `cron_scheduler_started`). Started once at boot from the binary.
-    /// `pub(crate)` so the impl block in [`crate::chase`] can reach it.
-    pub(crate) chase_sweep_started: std::sync::atomic::AtomicBool,
     /// Sender half of the worker-kick channel (#259). Cloned via
     /// [`Self::enqueue_kick`] by `maybe_kick_worker_on_connected`
     /// (and any future kick site). The matching receiver lives in
@@ -1043,10 +1032,6 @@ pub struct Workspace {
     service_status: Arc<Mutex<Option<ServiceIssue>>>,
     /// Idempotence guard for the service-status probe.
     service_status_probe_started: std::sync::atomic::AtomicBool,
-    /// Idempotence guard for the claude version probe: a second start
-    /// would leave two loops each spawning `claude --version` and reaching
-    /// npm.
-    cli_version_probe_started: std::sync::atomic::AtomicBool,
     /// Whether the Gotify stream is currently connected. Set by the
     /// subsystem pump on `Connected` / `Disconnected`; read by the
     /// Inspector's status line.
@@ -1149,9 +1134,6 @@ pub struct Workspace {
     /// carries an id so a second terminal per seat is additive rather than a
     /// protocol change.
     pub(crate) next_terminal_id: std::sync::atomic::AtomicU16,
-    /// Set the first time the idle clock starts, so a second terminal does not
-    /// start a second clock.
-    pub(crate) terminal_clock_started: std::sync::atomic::AtomicBool,
     /// Configuration writes held for the reader's approval, keyed by the
     /// write's id and carrying the session that asked. Its own registry for
     /// the same reason the draft's is: a held write exists on a seat with no
@@ -1480,37 +1462,12 @@ async fn run_service_status_probe(
     let _ = update_tx.send(update);
 }
 
-/// Kick off the claude version probe on the tokio runtime: one fetch at
-/// boot, then a re-probe every [`CLI_VERSION_REFRESH_INTERVAL`]. A caller
-/// with no runtime gets a warn and holds no version rather than a task
-/// nobody would run.
-fn spawn_background_cli_version_probe(
-    started: &std::sync::atomic::AtomicBool,
-    cli_version: &Arc<Mutex<Option<CliVersionInfo>>>,
-    update_tx: &UpdateFanout,
-    prober: CliVersionProber,
-) {
-    if started.swap(true, std::sync::atomic::Ordering::AcqRel) {
-        return;
-    }
-    let run = run_cli_version_probe(Arc::clone(cli_version), update_tx.clone(), prober);
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        handle.spawn(run);
-    } else {
-        tracing::warn!(
-            target: "forge_workspace::workspace",
-            event_name = "cli_version_probe_skipped",
-            "no tokio runtime at construction; the claude version probe is skipped and the views show no claude version this run",
-        );
-    }
-}
-
 /// The claude version probe, off the boot path. Each result is merged into
 /// the store, which wakes the views when it changed what they draw.
 async fn run_cli_version_probe(
     cli_version: Arc<Mutex<Option<CliVersionInfo>>>,
     update_tx: UpdateFanout,
-    prober: CliVersionProber,
+    prober: Arc<CliVersionProber>,
 ) {
     let mut interval = tokio::time::interval(CLI_VERSION_REFRESH_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -2143,18 +2100,27 @@ impl Workspace {
         self.catalog_loaded.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// The process's subsystem supervisor. Every long-lived background task
+    /// registers here, so a death is named and a restart is bounded.
+    pub fn supervisor(&self) -> &Arc<forge_supervise::Supervisor> {
+        &self.supervisor
+    }
+
     /// Kick off the claude version probe on the tokio runtime: one fetch at
     /// boot, then a re-probe every [`CLI_VERSION_REFRESH_INTERVAL`]. The
     /// constructor is the only production caller, and the prober it takes
     /// is what lets a test drive this same launch. Idempotent - a second
     /// call is a no-op.
     fn start_cli_version_probe(&self, prober: CliVersionProber) {
-        spawn_background_cli_version_probe(
-            &self.cli_version_probe_started,
-            &self.cli_version,
-            &self.update_tx,
-            prober,
-        );
+        let cli_version = Arc::clone(&self.cli_version);
+        let update_tx = self.update_tx.clone();
+        let prober = Arc::new(prober);
+        self.supervisor.spawn("cli_version_probe", forge_supervise::Policy::backoff(), move || {
+            let cli_version = Arc::clone(&cli_version);
+            let update_tx = update_tx.clone();
+            let prober = Arc::clone(&prober);
+            async move { run_cli_version_probe(cli_version, update_tx, prober).await }
+        });
     }
 
     /// The `claude` CLI versions the core holds: what is installed on this
@@ -2623,13 +2589,10 @@ impl Workspace {
             domain_handles: Mutex::new(HashMap::new()),
             review_origin: Mutex::new(HashMap::new()),
             review_activity: Mutex::new(HashMap::new()),
-            usage_poller_started: std::sync::atomic::AtomicBool::new(false),
-            rotation_announcer_started: std::sync::atomic::AtomicBool::new(false),
+            supervisor: Arc::new(forge_supervise::Supervisor::new()),
             dictate_preflight_started: std::sync::atomic::AtomicBool::new(false),
             voice_prewarm_started: std::sync::atomic::AtomicBool::new(false),
             voice_prewarm_dispatched: std::sync::atomic::AtomicBool::new(false),
-            cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
-            chase_sweep_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             _single_instance_lock: single_instance_lock,
@@ -2648,7 +2611,6 @@ impl Workspace {
             last_fatal_error: Mutex::new(None),
             service_status,
             service_status_probe_started: std::sync::atomic::AtomicBool::new(false),
-            cli_version_probe_started: std::sync::atomic::AtomicBool::new(false),
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),
@@ -2671,7 +2633,6 @@ impl Workspace {
             terminals: Mutex::new(HashMap::new()),
             terminal_handoffs: Mutex::new(HashMap::new()),
             next_terminal_id: std::sync::atomic::AtomicU16::new(1),
-            terminal_clock_started: std::sync::atomic::AtomicBool::new(false),
             settings_writes: Mutex::new(HashMap::new()),
             parked_vault_asks: Mutex::new(HashMap::new()),
             pending_seq: Mutex::new(HashMap::new()),
@@ -4596,31 +4557,34 @@ impl Workspace {
     pub fn start_gateway_listener(self: &Arc<Self>) {
         let port = self.gateway_port;
         let weak = Arc::downgrade(self);
-        tokio::spawn(async move {
-            let Some(workspace) = weak.upgrade() else { return };
-            match forge_gateway::listener::GatewayListener::bind(port).await {
-                Ok(listener) => {
-                    *workspace.gateway_url.lock() = Some(listener.local_url());
-                    workspace.gateway_ready.store(true, std::sync::atomic::Ordering::Release);
-                    workspace.announce_accounts_changed();
-                    tracing::info!(
-                        target: "forge_workspace::workspace",
-                        port,
-                        "gateway listener bound",
-                    );
-                    let handler: Arc<dyn forge_gateway::listener::RouteHandler> =
-                        workspace.gateway.clone();
-                    listener.run(handler).await;
-                }
-                Err(error) => {
-                    *workspace.gateway_bind_error.lock() = Some(error.to_string());
-                    workspace.announce_accounts_changed();
-                    tracing::error!(
-                        target: "forge_workspace::workspace",
-                        error = %error,
-                        "the gateway listener could not start; the boot gate stays shut and \
-                         spawn attempts are refused until forge restarts",
-                    );
+        self.supervisor.spawn("gateway_listener", forge_supervise::Policy::Never, move || {
+            let weak = weak.clone();
+            async move {
+                let Some(workspace) = weak.upgrade() else { return };
+                match forge_gateway::listener::GatewayListener::bind(port).await {
+                    Ok(listener) => {
+                        *workspace.gateway_url.lock() = Some(listener.local_url());
+                        workspace.gateway_ready.store(true, std::sync::atomic::Ordering::Release);
+                        workspace.announce_accounts_changed();
+                        tracing::info!(
+                            target: "forge_workspace::workspace",
+                            port,
+                            "gateway listener bound",
+                        );
+                        let handler: Arc<dyn forge_gateway::listener::RouteHandler> =
+                            workspace.gateway.clone();
+                        listener.run(handler).await;
+                    }
+                    Err(error) => {
+                        *workspace.gateway_bind_error.lock() = Some(error.to_string());
+                        workspace.announce_accounts_changed();
+                        tracing::error!(
+                            target: "forge_workspace::workspace",
+                            error = %error,
+                            "the gateway listener could not start; the boot gate stays shut and \
+                             spawn attempts are refused until forge restarts",
+                        );
+                    }
                 }
             }
         });
@@ -4648,51 +4612,53 @@ impl Workspace {
     ///
     /// **A project row's `would_bind` is derived from the selection walk**,
     /// so both moments change what the home draws with nothing else to hang
-    /// an update on. Started once at boot; a second call is ignored, since a
-    /// second watcher would double every frame.
+    /// an update on. Started once at boot; the registry makes a second call
+    /// a no-op, since a second watcher would double every frame.
     pub fn start_rotation_announcer(self: &Arc<Self>) {
-        if self.rotation_announcer_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            tracing::debug!(
-                target: "forge_workspace::workspace",
-                event_name = "rotation_announcer_started_twice",
-                "start_rotation_announcer called more than once; ignoring",
-            );
-            return;
-        }
         let weak = Arc::downgrade(self);
-        let mut rotation = self.gateway.rotation_watch();
-        tokio::spawn(async move {
-            loop {
-                let Some(workspace) = weak.upgrade() else { return };
-                let thaw = workspace.gateway.soonest_cooldown_end(std::time::SystemTime::now());
-                drop(workspace);
-                match thaw {
-                    None => {
-                        // Nothing is cooling: the next wake is a write.
-                        if rotation.changed().await.is_err() {
-                            return;
-                        }
-                    }
-                    Some(end) => {
-                        let wait = end
-                            .duration_since(std::time::SystemTime::now())
-                            .unwrap_or(std::time::Duration::ZERO);
-                        // A cooldown that started or was replaced restarts
-                        // the sleep; the thaw itself ends it.
-                        tokio::select! {
-                            () = tokio::time::sleep(wait) => {}
-                            changed = rotation.changed() => {
-                                if changed.is_err() {
+        self.supervisor.spawn(
+            "rotation_announcer",
+            forge_supervise::Policy::backoff(),
+            move || {
+                let weak = weak.clone();
+                async move {
+                    let Some(workspace) = weak.upgrade() else { return };
+                    let mut rotation = workspace.gateway.rotation_watch();
+                    drop(workspace);
+                    loop {
+                        let Some(workspace) = weak.upgrade() else { return };
+                        let thaw =
+                            workspace.gateway.soonest_cooldown_end(std::time::SystemTime::now());
+                        drop(workspace);
+                        match thaw {
+                            None => {
+                                // Nothing is cooling: the next wake is a write.
+                                if rotation.changed().await.is_err() {
                                     return;
                                 }
                             }
+                            Some(end) => {
+                                let wait = end
+                                    .duration_since(std::time::SystemTime::now())
+                                    .unwrap_or(std::time::Duration::ZERO);
+                                // A cooldown that started or was replaced restarts
+                                // the sleep; the thaw itself ends it.
+                                tokio::select! {
+                                    () = tokio::time::sleep(wait) => {}
+                                    changed = rotation.changed() => {
+                                        if changed.is_err() {
+                                            return;
+                                        }
+                                    }
+                                }
+                            }
                         }
+                        let Some(workspace) = weak.upgrade() else { return };
+                        workspace.announce_accounts_changed();
                     }
                 }
-                let Some(workspace) = weak.upgrade() else { return };
-                workspace.announce_accounts_changed();
-            }
-        });
+            },
+        );
     }
 
     /// Spawn the background account-usage poller on the interval
@@ -4705,21 +4671,16 @@ impl Workspace {
     ///
     /// Called once at boot, AFTER `start_account_loading_tasks`
     /// (which subsumed the old `spawn_initial_account_probe` in #246).
-    /// A `usage_poller_started` flag guards against duplicate
-    /// spawns - second and later calls return without spawning so a
-    /// caller's programming error can't multiply the poll rate.
+    /// The supervisor's registry is the idempotency: a second call while
+    /// the poller is running is a no-op, so a caller's programming error
+    /// can't multiply the poll rate.
     pub fn start_usage_poller(self: &Arc<Self>) {
-        if self.usage_poller_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            tracing::debug!(
-                target: "forge_workspace::workspace",
-                "start_usage_poller called more than once; ignoring",
-            );
-            return;
-        }
         let weak = Arc::downgrade(self);
         let poll_interval = self.config_arc().usage_poll_interval;
         let span = tracing::info_span!("usage_poller");
-        tokio::spawn(
+        self.supervisor.spawn("usage_poller", forge_supervise::Policy::backoff(), move || {
+            let weak = weak.clone();
+            let span = span.clone();
             async move {
                 // Skip the immediate-fire tick: the boot-time loading
                 // tasks (`start_account_loading_tasks`, #246) already
@@ -4750,8 +4711,8 @@ impl Workspace {
                     workspace.refresh_account_usage_once().await;
                 }
             }
-            .instrument(span),
-        );
+            .instrument(span)
+        });
     }
 
     /// One pass of the usage poller: fetch OAuth usage for every
@@ -14527,6 +14488,12 @@ provider = "anthropic"
             ws.test_rotation_announcer_started(),
             "the boot call starts the one watcher, and a second call is a no-op",
         );
+        // The registry starts the watcher on its own task. Let it reach its
+        // first wait before the write, or the write lands before the watcher
+        // is listening and the cool's frame is never announced.
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
 
         let reset_at = SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

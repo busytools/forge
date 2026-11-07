@@ -260,6 +260,10 @@ pub struct BrowserService {
     pairing_queue: Mutex<Option<mpsc::UnboundedReceiver<PairingRequest>>>,
     /// Whether `start_pairing` has already spawned its consumer.
     pairing_started: AtomicBool,
+    /// The process's subsystem supervisor, installed by the boot. `None` in
+    /// a service built without one, where the long-lived readers run
+    /// unsupervised.
+    supervisor: Mutex<Option<Arc<forge_supervise::Supervisor>>>,
 }
 
 /// The idle release's settings, as the boot configures them.
@@ -304,9 +308,20 @@ impl BrowserService {
             pairing,
             pairing_queue: Mutex::new(Some(pairing_queue)),
             pairing_started: AtomicBool::new(false),
+            supervisor: Mutex::new(None),
         });
         service.start_pairing();
         service
+    }
+
+    /// Install the process's subsystem supervisor, so the idle sweep and the
+    /// browser's long-lived readers register with it.
+    pub fn set_supervisor(&self, supervisor: Arc<forge_supervise::Supervisor>) {
+        *self.supervisor.lock().unwrap_or_else(PoisonError::into_inner) = Some(supervisor);
+    }
+
+    fn supervisor(&self) -> Option<Arc<forge_supervise::Supervisor>> {
+        self.supervisor.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     /// Set the `[browser]` encoding pair every host spawned from here reads.
@@ -328,17 +343,22 @@ impl BrowserService {
     /// **Never call it before `configure_idle`**: a sweep with no policy has
     /// nothing to ask through and a tick with no settings does nothing.
     pub fn start_idle(self: &Arc<Self>) {
-        static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        if STARTED.swap(true, Ordering::AcqRel) {
+        let Some(supervisor) = self.supervisor() else {
+            tracing::warn!(
+                "the browser idle sweep was not started: no subsystem supervisor is installed"
+            );
             return;
-        }
+        };
         let service = Arc::clone(self);
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(idle::SWEEP);
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                interval.tick().await;
-                service.idle_pass().await;
+        supervisor.spawn("browser_idle_sweep", forge_supervise::Policy::backoff(), move || {
+            let service = Arc::clone(&service);
+            async move {
+                let mut interval = tokio::time::interval(idle::SWEEP);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    service.idle_pass().await;
+                }
             }
         });
     }
@@ -647,6 +667,7 @@ impl BrowserService {
             encoding: self.encoding(),
             launch: Arc::clone(&self.launch),
             stopped: Arc::clone(&self.stopped),
+            supervisor: self.supervisor(),
             tabs: Mutex::new(TabRegistry::default()),
             dialogs: Mutex::new(HashMap::new()),
             boot: Mutex::new(None),
@@ -3754,6 +3775,8 @@ pub struct Profile {
     launch: Arc<AsyncMutex<()>>,
     /// The service's stop flag, shared by every profile.
     stopped: Arc<AtomicBool>,
+    /// The process's subsystem supervisor, when the boot installed one.
+    supervisor: Option<Arc<forge_supervise::Supervisor>>,
     /// **Each tab's newest frame is its own watch.** One profile-wide slot
     /// let a background tab's paint replace the viewed tab's, and an attach
     /// burst - every tab asked for a key frame - could blank the surface.
@@ -4752,17 +4775,25 @@ impl Profile {
         let cli = driver::cli_path(stack);
         let endpoint = engine::endpoint(host.port);
         let chooser_socket = chooser_socket_path(&self.dir, self.id)?;
-        let driver = Driver::start(&node, &cli, &endpoint, &root.join("output"), &chooser_socket)
-            .await
-            .map_err(|why| {
-                tracing::warn!(
-                    "the browser driver did not start (event_name browser_driver_start_failed, \
+        let driver = Driver::start(
+            &node,
+            &cli,
+            &endpoint,
+            &root.join("output"),
+            &chooser_socket,
+            self.supervisor.clone(),
+            &format!("browser_chooser:{}", self.key),
+        )
+        .await
+        .map_err(|why| {
+            tracing::warn!(
+                "the browser driver did not start (event_name browser_driver_start_failed, \
                      profile {}, port {}): {why}",
-                    self.key,
-                    host.port,
-                );
-                why
-            })?;
+                self.key,
+                host.port,
+            );
+            why
+        })?;
         let driver = Arc::new(driver);
         // **A chooser answer rides this driver's MCP call**, and the race
         // tests replace this handle with a gated one.
@@ -5013,7 +5044,14 @@ impl Profile {
         // **A page is never armed by a driver alone.** The veto is installed
         // before the profile serves any call, so every document a tab starts
         // opens behind it.
-        if let Err(why) = veto::install(port, &self.dir).await {
+        if let Err(why) = veto::install(
+            port,
+            &self.dir,
+            self.supervisor.clone(),
+            &format!("passkey_veto:{}", self.key),
+        )
+        .await
+        {
             tracing::warn!(
                 "the passkey veto did not install for {} (event_name browser_veto_failed): {why}",
                 self.key
@@ -5547,7 +5585,7 @@ fn start_nav_watch(profile: Arc<Profile>, port: u16) -> tokio::task::JoinHandle<
                 return;
             };
             let Ok((mut cdp, mut events)) =
-                Cdp::connect_watch(port, &path, Backlog::EveryEvent).await
+                Cdp::connect_watch(port, &path, Backlog::EveryEvent, None, "").await
             else {
                 tokio::time::sleep(NAV_RETRY).await;
                 continue;
@@ -5626,7 +5664,7 @@ async fn page_cdp<'a>(
             return Err("the page's websocket is not on the host's port".to_owned());
         };
         let (cdp, events) =
-            Cdp::connect_watch(port, &path, Backlog::DropNewest(EVENT_BACKLOG)).await?;
+            Cdp::connect_watch(port, &path, Backlog::DropNewest(EVENT_BACKLOG), None, "").await?;
         state.cdp.insert(target.to_owned(), cdp);
         state.cdp_events.insert(target.to_owned(), events);
     }

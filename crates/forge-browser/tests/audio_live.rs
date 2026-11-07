@@ -49,7 +49,7 @@ async fn a_pages_sound_crosses_the_socket() {
     let mut host = support::Host::start(&exe, &profile, port, &ring_name, "800x600", &args, &log);
     let id = support::wait_for_page(port, &log, BOUND);
     let (mut cdp, _events) =
-        Cdp::connect_watch(port, &format!("/devtools/page/{id}"), Backlog::EveryEvent)
+        Cdp::connect_watch(port, &format!("/devtools/page/{id}"), Backlog::EveryEvent, None, "")
             .await
             .expect("devtools");
 

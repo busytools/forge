@@ -1,0 +1,21 @@
+[package]
+name = "forge-supervise"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Supervision for forge's long-lived background tasks: restart a dead member with bounded backoff, refuse to resurrect a deliberate stop, and answer a snapshot."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

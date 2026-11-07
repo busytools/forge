@@ -31,6 +31,62 @@ pub fn resolve_config_dir() -> anyhow::Result<PathBuf> {
     })
 }
 
+/// One panic, as the hook records it.
+struct PanicRecord {
+    thread: String,
+    payload: String,
+    location: String,
+    backtrace: Option<String>,
+}
+
+/// Install the process-wide panic hook, once.
+///
+/// Every panic is one ERROR line in the tracing log, and the previous hook
+/// still runs so stderr keeps its behaviour. Installed after the tracing
+/// subscriber and before anything is spawned, so a panic in the boot wave is
+/// recorded rather than lost.
+pub fn install_panic_hook() {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let thread = std::thread::current();
+            let record =
+                panic_record(thread.name().unwrap_or("unnamed"), info.payload(), info.location());
+            tracing::error!(
+                target: crate::logging::targets::APP_LIFECYCLE,
+                event_name = "panic",
+                thread = %record.thread,
+                payload = %record.payload,
+                location = %record.location,
+                backtrace = %record.backtrace.as_deref().unwrap_or(""),
+                "a thread panicked",
+            );
+            previous(info);
+        }));
+    });
+}
+
+/// The record one panic writes: the thread, the payload as a string, the
+/// file and line, and the backtrace when `RUST_BACKTRACE` is set.
+fn panic_record(
+    thread: &str,
+    payload: &(dyn std::any::Any + Send),
+    location: Option<&std::panic::Location<'_>>,
+) -> PanicRecord {
+    let payload = payload
+        .downcast_ref::<&str>()
+        .map(|text| (*text).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a panic with no message".to_owned());
+    let location = location
+        .map_or_else(String::new, |location| format!("{}:{}", location.file(), location.line()));
+    let backtrace = std::env::var_os("RUST_BACKTRACE")
+        .filter(|value| value.to_str() != Some("0"))
+        .map(|_| std::backtrace::Backtrace::force_capture().to_string());
+    PanicRecord { thread: thread.to_owned(), payload, location, backtrace }
+}
+
 /// Build the workspace and start the whole subsystem wave, in the order the
 /// boot has always started it.
 ///
@@ -45,6 +101,7 @@ pub fn resolve_config_dir() -> anyhow::Result<PathBuf> {
 /// `tokio::spawn`, verified by the headless boot test exercising it
 /// without one.
 pub fn start_core(config_dir: &Path, project: Option<&str>) -> anyhow::Result<Arc<Workspace>> {
+    install_panic_hook();
     let workspace = match Workspace::new(config_dir.to_path_buf()) {
         Ok(w) => Arc::new(w),
         Err(err) => return Err(anyhow::anyhow!("forge: {err}")),
@@ -127,54 +184,61 @@ fn install_handoff_skill(config_dir: &Path) {
 /// restart can take. `apply` runs for the subsystems the boot holds.
 fn start_config_watch<F>(workspace: &Arc<Workspace>, apply: F)
 where
-    F: Fn(&Workspace) + Send + 'static,
+    F: Fn(&Workspace) + Send + Sync + 'static,
 {
     let path = workspace.config_path();
     let weak = Arc::downgrade(workspace);
-    let (changed, mut edits) = tokio::sync::mpsc::unbounded_channel();
-    let watch = match forge_workspace::env::config_watch::watch(path.clone(), changed) {
-        Ok(watch) => watch,
-        Err(error) => {
-            tracing::warn!(
-                target: crate::logging::targets::APP_LIFECYCLE,
-                event_name = "config_watch_failed",
-                path = %path.display(),
-                error = %error,
-                "forge.toml is not being watched; an edit needs a restart this run",
-            );
-            return;
-        }
-    };
-    tokio::spawn(async move {
-        // The handle lives in this task, so the watch lives as long as the
-        // process (or, in a test, the runtime) without a handle outside.
-        let _watch = watch;
-        loop {
-            let _ = edits.recv().await;
-            let Some(workspace) = weak.upgrade() else { break };
-            match workspace.reload_config() {
-                Ok(reload) => {
-                    // A save that changed nothing is not an apply.
-                    if reload.changed.is_empty() && reload.restart_only.is_empty() {
-                        continue;
-                    }
-                    tracing::info!(
-                        target: crate::logging::targets::APP_LIFECYCLE,
-                        event_name = "config_reloaded",
-                        changed = ?reload.changed,
-                        restart_only = ?reload.restart_only,
-                        "forge.toml applied to the running forge",
-                    );
-                    apply(&workspace);
-                }
+    let apply = Arc::new(apply);
+    workspace.supervisor().spawn("config_watch", forge_supervise::Policy::backoff(), move || {
+        let path = path.clone();
+        let weak = weak.clone();
+        let apply = Arc::clone(&apply);
+        async move {
+            let (changed, mut edits) = tokio::sync::mpsc::unbounded_channel();
+            let watch = match forge_workspace::env::config_watch::watch(path.clone(), changed) {
+                Ok(watch) => watch,
                 Err(error) => {
                     tracing::warn!(
                         target: crate::logging::targets::APP_LIFECYCLE,
-                        event_name = "config_reload_rejected",
-                        path = %workspace.config_path().display(),
+                        event_name = "config_watch_failed",
+                        path = %path.display(),
                         error = %error,
-                        "forge.toml was not applied; the last good config stays live",
+                        "forge.toml is not being watched; an edit needs a restart this run",
                     );
+                    return;
+                }
+            };
+            // The handle lives in this task, so the watch lives as long
+            // as the process (or, in a test, the runtime) without a
+            // handle outside.
+            let _watch = watch;
+            loop {
+                let _ = edits.recv().await;
+                let Some(workspace) = weak.upgrade() else { break };
+                match workspace.reload_config() {
+                    Ok(reload) => {
+                        // A save that changed nothing is not an apply.
+                        if reload.changed.is_empty() && reload.restart_only.is_empty() {
+                            continue;
+                        }
+                        tracing::info!(
+                            target: crate::logging::targets::APP_LIFECYCLE,
+                            event_name = "config_reloaded",
+                            changed = ?reload.changed,
+                            restart_only = ?reload.restart_only,
+                            "forge.toml applied to the running forge",
+                        );
+                        apply(&workspace);
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            target: crate::logging::targets::APP_LIFECYCLE,
+                            event_name = "config_reload_rejected",
+                            path = %workspace.config_path().display(),
+                            error = %error,
+                            "forge.toml was not applied; the last good config stays live",
+                        );
+                    }
                 }
             }
         }
@@ -221,6 +285,7 @@ fn install_browser(
     // **The profile names are config's, not a client's**: every seat resolves
     // its profile from `forge.toml` here, at boot, rather than naming one.
     configure_fleet_profiles(workspace, &fleet);
+    fleet.set_supervisor(Arc::clone(workspace.supervisor()));
     fleet.start_idle();
     fleet.start_pairing();
     // **A host an unclean exit left behind is reaped before any profile is
@@ -533,14 +598,15 @@ fn start_subsystems(workspace: &Arc<Workspace>) {
 pub enum SocketServing {
     /// `[server] enabled = false`: nothing serves, by configuration.
     Disabled,
-    /// The socket is listening; the handle ends when the process does.
-    Bound(tokio::task::JoinHandle<()>),
+    /// The socket is listening; the serve task ends when the process does.
+    Bound,
     /// The bind failed, its log line already written.
     BindFailed,
 }
 
-/// Serve the socket on the address `[server]` names, spawning the serve
-/// task and returning its handle when one is serving.
+/// Serve the socket on the address `[server]` names, registering the serve
+/// task with the workspace's supervisor and returning whether one is
+/// serving.
 ///
 /// A bind that fails never fails the boot here: this is not on the boot
 /// path, and the failure is logged plus reported as
@@ -573,17 +639,46 @@ pub async fn serve_socket(workspace: &Arc<Workspace>) -> anyhow::Result<SocketSe
             // attached before this returns and the boot wave can spawn a
             // session whose first `Connected` finds a copy to land on.
             let updates = state.surface.subscribe_mirror();
-            let handle = tokio::spawn(async move {
-                if let Err(error) = crate::transport::serve(state, listener, updates).await {
-                    tracing::error!(
-                        target: crate::logging::targets::APP_LIFECYCLE,
-                        event_name = "server_socket_failed",
-                        error = %error,
-                        "the socket stopped serving",
-                    );
-                }
-            });
-            Ok(SocketServing::Bound(handle))
+            // The listener and the fold's receiver are not `Clone`, and a
+            // `Never` member is started once, so the factory takes them from
+            // their slots.
+            let listener = Arc::new(std::sync::Mutex::new(Some(listener)));
+            let updates = Arc::new(std::sync::Mutex::new(Some(updates)));
+            workspace.supervisor().spawn(
+                "socket_serve",
+                forge_supervise::Policy::Never,
+                move || {
+                    let listener = Arc::clone(&listener);
+                    let updates = Arc::clone(&updates);
+                    let state = Arc::clone(&state);
+                    async move {
+                        let Some(listener) = listener
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .take()
+                        else {
+                            return;
+                        };
+                        let Some(updates) = updates
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .take()
+                        else {
+                            return;
+                        };
+                        if let Err(error) = crate::transport::serve(state, listener, updates).await
+                        {
+                            tracing::error!(
+                                target: crate::logging::targets::APP_LIFECYCLE,
+                                event_name = "server_socket_failed",
+                                error = %error,
+                                "the socket stopped serving",
+                            );
+                        }
+                    }
+                },
+            );
+            Ok(SocketServing::Bound)
         }
         Err(error) => {
             tracing::error!(
@@ -709,8 +804,8 @@ pub fn stop_result(unready: &[forge_primitives::SessionSlot]) -> anyhow::Result<
 #[cfg(test)]
 mod tests {
     use super::{
-        BOOT_WAVE_WAIT, start_boot_wave, start_config_watch, start_subsystems, stop_result,
-        wait_for_accounts,
+        BOOT_WAVE_WAIT, panic_record, start_boot_wave, start_config_watch, start_subsystems,
+        stop_result, wait_for_accounts,
     };
     #[cfg(target_os = "macos")]
     use super::{configure_fleet_profiles, reap_then_prune};
@@ -718,6 +813,16 @@ mod tests {
     use std::time::Duration;
 
     use forge_workspace::Workspace;
+
+    /// **The panic record names the thread and the payload.** The hook
+    /// itself is process-global, so the formatter is what a test can drive;
+    /// a record that dropped either half would leave a panic unattributable.
+    #[test]
+    fn the_panic_record_names_the_thread_and_the_payload() {
+        let record = panic_record("forge-worker", &"the pump died", None);
+        assert_eq!(record.thread, "forge-worker", "the thread is named");
+        assert_eq!(record.payload, "the pump died", "the payload is the panic's own words");
+    }
 
     /// A stop whose teardown ran out of budget exits non-zero and names
     /// what was still running; a clean stop is a success.
@@ -997,7 +1102,7 @@ port = {port}
         assert_eq!(workspace.test_subscriber_count(), 0, "nothing is attached before the socket");
 
         let serving = super::serve_socket(&workspace).await.expect("the socket serves");
-        let super::SocketServing::Bound(handle) = serving else {
+        let super::SocketServing::Bound = serving else {
             panic!("the socket binds on a port the OS handed out");
         };
         // Read before anything awaits: the claim is the order the call returns in.
@@ -1013,7 +1118,7 @@ port = {port}
             workspace.emit_for_test_reported(forge_workspace::SessionUpdate::CatalogLoaded),
             "the fold's own stream takes the frame the boot wave would emit",
         );
-        handle.abort();
+        workspace.supervisor().stop("socket_serve");
     }
 
     /// The wait ends when the watch reports, so this bound is reached when no

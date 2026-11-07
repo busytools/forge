@@ -231,6 +231,8 @@ impl Cdp {
         port: u16,
         path: &str,
         backlog: Backlog,
+        supervisor: Option<Arc<forge_supervise::Supervisor>>,
+        name: &str,
     ) -> Result<(Self, Events), String> {
         let (events_tx, events) = match backlog {
             Backlog::EveryEvent => {
@@ -255,7 +257,7 @@ impl Cdp {
                 )
             }
         };
-        Self::connect(port, path, events_tx, events).await
+        Self::connect(port, path, events_tx, events, supervisor, name).await
     }
 
     async fn connect(
@@ -263,50 +265,83 @@ impl Cdp {
         path: &str,
         events_tx: EventSink,
         events: Events,
+        supervisor: Option<Arc<forge_supervise::Supervisor>>,
+        name: &str,
     ) -> Result<(Self, Events), String> {
         let url = format!("ws://127.0.0.1:{port}{path}");
         let (socket, _) = tokio_tungstenite::connect_async(&url).await.map_err(|why| {
             format!("the browser's devtools endpoint at {url} did not accept: {why}")
         })?;
-        let (sink, mut source) = socket.split();
+        let (sink, source) = socket.split();
         let replies: Replies = Arc::new(Mutex::new(HashMap::new()));
         let closed = Arc::new(Notify::new());
-        let reader_replies = Arc::clone(&replies);
-        let reader_closed = Arc::clone(&closed);
-        tokio::spawn(async move {
-            loop {
-                let frame = tokio::select! {
-                    frame = source.next() => frame,
-                    () = reader_closed.notified() => break,
-                };
-                let Some(Ok(Message::Text(text))) = frame else {
-                    if frame.is_none() {
-                        break;
-                    }
-                    continue;
-                };
-                let Ok(message) = serde_json::from_str::<Value>(&text) else { continue };
-                match message.get("id").and_then(Value::as_u64) {
-                    Some(id) => {
-                        let waiter = reader_replies
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .remove(&id);
-                        if let Some(waiter) = waiter {
-                            let _ = waiter.send(message);
+        // The stream and the event sink are not `Clone`, and a `Never`
+        // member is started once, so the factory takes them from their slots.
+        let source = Arc::new(Mutex::new(Some(source)));
+        let events_tx = Arc::new(Mutex::new(Some(events_tx)));
+        let reader = {
+            let replies = Arc::clone(&replies);
+            let closed = Arc::clone(&closed);
+            move || {
+                let source = Arc::clone(&source);
+                let events_tx = Arc::clone(&events_tx);
+                let reader_replies = Arc::clone(&replies);
+                let reader_closed = Arc::clone(&closed);
+                async move {
+                    let Some(mut source) =
+                        source.lock().unwrap_or_else(PoisonError::into_inner).take()
+                    else {
+                        return;
+                    };
+                    let Some(events_tx) =
+                        events_tx.lock().unwrap_or_else(PoisonError::into_inner).take()
+                    else {
+                        return;
+                    };
+                    loop {
+                        let frame = tokio::select! {
+                            frame = source.next() => frame,
+                            () = reader_closed.notified() => break,
+                        };
+                        let Some(Ok(Message::Text(text))) = frame else {
+                            if frame.is_none() {
+                                break;
+                            }
+                            continue;
+                        };
+                        let Ok(message) = serde_json::from_str::<Value>(&text) else { continue };
+                        match message.get("id").and_then(Value::as_u64) {
+                            Some(id) => {
+                                let waiter = reader_replies
+                                    .lock()
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .remove(&id);
+                                if let Some(waiter) = waiter {
+                                    let _ = waiter.send(message);
+                                }
+                            }
+                            None => {
+                                if matches!(forward_event(&events_tx, message), Forwarded::Closed) {
+                                    break;
+                                }
+                            }
                         }
                     }
-                    None => {
-                        if matches!(forward_event(&events_tx, message), Forwarded::Closed) {
-                            break;
-                        }
-                    }
+                    // The endpoint closed, or the surface did: every call
+                    // still waiting is answered as closed rather than left
+                    // hanging.
+                    reader_replies.lock().unwrap_or_else(PoisonError::into_inner).clear();
                 }
             }
-            // The endpoint closed, or the surface did: every call still
-            // waiting is answered as closed rather than left hanging.
-            reader_replies.lock().unwrap_or_else(PoisonError::into_inner).clear();
-        });
+        };
+        match supervisor {
+            Some(supervisor) => {
+                supervisor.spawn(name, forge_supervise::Policy::Never, reader);
+            }
+            None => {
+                tokio::spawn(reader());
+            }
+        }
         Ok((Self { sink, replies, next_id: 0, closed }, events))
     }
 

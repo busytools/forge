@@ -335,7 +335,12 @@ const PROTECTED_EVENTS: &[&str] = &["Target.attachedToTarget", "Runtime.executio
 /// the host.** A target's init scripts live with the CDP session that added
 /// them, so the event loop is the registration's lifetime. An `Err` means no
 /// pause was established and nothing is protected.
-pub async fn install(port: u16, profile: &Path) -> Result<(), Failure> {
+pub async fn install(
+    port: u16,
+    profile: &Path,
+    supervisor: Option<Arc<forge_supervise::Supervisor>>,
+    name: &str,
+) -> Result<(), Failure> {
     let ws_url = browser_endpoint(port).await.ok_or(Failure {
         stage: "browser endpoint",
         why: "the endpoint did not answer".to_owned(),
@@ -347,10 +352,12 @@ pub async fn install(port: u16, profile: &Path) -> Result<(), Failure> {
             why: "the endpoint is not on the host's port".to_owned(),
         });
     };
-    let (mut cdp, mut events) = Cdp::connect_watch(
+    let (mut cdp, events) = Cdp::connect_watch(
         port,
         path,
         Backlog::KeepNamed { methods: PROTECTED_EVENTS, ceiling: EVENT_BACKLOG },
+        supervisor.clone(),
+        &format!("cdp_window_reader:{port}"),
     )
     .await
     .map_err(|why| Failure { stage: "browser endpoint", why })?;
@@ -369,136 +376,162 @@ pub async fn install(port: u16, profile: &Path) -> Result<(), Failure> {
     .map_err(|why| Failure { stage: "Target.setAutoAttach", why })?;
     let profile = profile.to_path_buf();
     let armed_on = armed_set(port);
-    tokio::spawn(async move {
-        // **One target, one patch; one context, one evaluate.** A repeated
-        // report would register the script twice; the script is idempotent,
-        // but the conversation should not be.
-        let mut armed: HashSet<String> = HashSet::new();
-        let mut attempted: HashMap<String, u8> = HashMap::new();
-        let mut patched: HashSet<(String, i64)> = HashSet::new();
-        while let Some(event) = events.recv().await {
-            match event["method"].as_str() {
-                Some("Target.attachedToTarget") => {
-                    let session =
-                        event["params"]["sessionId"].as_str().unwrap_or_default().to_owned();
-                    let target =
-                        event["params"]["targetInfo"]["targetId"].as_str().unwrap_or_default();
-                    let kind = event["params"]["targetInfo"]["type"].as_str().unwrap_or_default();
-                    let url = event["params"]["targetInfo"]["url"].as_str().unwrap_or_default();
-                    let paused = event["params"]["waitingForDebugger"].as_bool() == Some(true);
-                    let plan = attach_plan(kind, paused);
-                    tracing::debug!(
-                        "the passkey veto has a target (event_name cef_passkey_veto_attached, \
+    // The connection and its event receiver are not `Clone`, and a `Never`
+    // member is started once, so the factory takes them from their slots.
+    let cdp = Arc::new(Mutex::new(Some(cdp)));
+    let events = Arc::new(Mutex::new(Some(events)));
+    let run = move || {
+        let cdp = Arc::clone(&cdp);
+        let events = Arc::clone(&events);
+        let profile = profile.clone();
+        let armed_on = Arc::clone(&armed_on);
+        async move {
+            let Some(mut cdp) = cdp.lock().unwrap_or_else(PoisonError::into_inner).take() else {
+                return;
+            };
+            let Some(mut events) = events.lock().unwrap_or_else(PoisonError::into_inner).take()
+            else {
+                return;
+            };
+            // **One target, one patch; one context, one evaluate.** A repeated
+            // report would register the script twice; the script is idempotent,
+            // but the conversation should not be.
+            let mut armed: HashSet<String> = HashSet::new();
+            let mut attempted: HashMap<String, u8> = HashMap::new();
+            let mut patched: HashSet<(String, i64)> = HashSet::new();
+            while let Some(event) = events.recv().await {
+                match event["method"].as_str() {
+                    Some("Target.attachedToTarget") => {
+                        let session =
+                            event["params"]["sessionId"].as_str().unwrap_or_default().to_owned();
+                        let target =
+                            event["params"]["targetInfo"]["targetId"].as_str().unwrap_or_default();
+                        let kind =
+                            event["params"]["targetInfo"]["type"].as_str().unwrap_or_default();
+                        let url = event["params"]["targetInfo"]["url"].as_str().unwrap_or_default();
+                        let paused = event["params"]["waitingForDebugger"].as_bool() == Some(true);
+                        let plan = attach_plan(kind, paused);
+                        tracing::debug!(
+                            "the passkey veto has a target (event_name cef_passkey_veto_attached, \
                          port {port}, session {session}, type {kind}, paused {paused}, arm {:?})",
-                        plan.arm
-                    );
-                    // **Every paused target is released, before the guard
-                    // below and whatever its kind.** A target re-reported
-                    // with a fresh session - the same page after a
-                    // navigation - is paused for that session too, and a
-                    // guard that dropped the report would leave the page
-                    // waiting for ever. The guard stops a second ARM, not a
-                    // second release.
-                    //
-                    // **A paused target's sessions answer no page-domain
-                    // command on this engine** (measured: `Page.enable` and
-                    // `Page.addScriptToEvaluateOnNewDocument` both time out
-                    // while the target waits). So the pause is released
-                    // first, and the script is registered for every document
-                    // after the one already under way; its existing world is
-                    // patched in place when the context is reported.
-                    if plan.resume {
-                        resume(&mut cdp, &session, port, &profile).await;
-                    }
-                    // **One arm per TARGET, not per session**, and **only a
-                    // target that has one.** `Target.attachToTarget` raises
-                    // another attach report for the same target, so a
-                    // session-keyed guard re-attaches for ever; a target
-                    // whose arm failed is tried again on its next report
-                    // rather than marked here, because a popup's page report
-                    // is the one that can be armed.
-                    if armed.contains(target) {
-                        continue;
-                    }
-                    // **Only a page or a fresh tab has a document to start.**
-                    // A worker, an iframe or the engine's own UI is not a
-                    // page: arming one earns a refused `Page.enable` per
-                    // domain and names a failure that is not one (rule 20).
-                    // It is resumed above all the same - see [`AttachPlan`].
-                    let Some(choice) = plan.arm else {
-                        tracing::debug!(
-                            "the passkey veto skipped a target with no document to start \
-                             (event_name cef_passkey_veto_skipped, port {port}, type {kind})"
+                            plan.arm
                         );
-                        continue;
-                    };
-                    // **A fresh tab with no document cannot be armed yet.**
-                    // A page's popup reports as `other` with an empty url
-                    // until its first document starts, and every page-domain
-                    // call on that session times out: the attempt holds this
-                    // loop while other targets wait - the stall #2534
-                    // forbids - and each timeout names a failure that is not
-                    // one. It is armed on its page report, once it has a
-                    // document.
-                    if !can_arm(kind, url) {
-                        tracing::debug!(
-                            "the passkey veto waits for a target's first document \
-                             (event_name cef_passkey_veto_unstarted, port {port}, type {kind})"
-                        );
-                        continue;
-                    }
-                    // **A fresh tab that failed twice is not tried again.** A
-                    // `PageSession` arm attaches, and that attach raises its
-                    // own report for the same target: without a bound, one
-                    // tab that cannot be armed would re-arm itself without
-                    // end. A page's own session arm never re-attaches, so its
-                    // failures are left to its next report.
-                    if choice == Arm::PageSession {
-                        let attempts = attempted.entry(target.to_owned()).or_default();
-                        if *attempts >= 2 {
+                        // **Every paused target is released, before the guard
+                        // below and whatever its kind.** A target re-reported
+                        // with a fresh session - the same page after a
+                        // navigation - is paused for that session too, and a
+                        // guard that dropped the report would leave the page
+                        // waiting for ever. The guard stops a second ARM, not a
+                        // second release.
+                        //
+                        // **A paused target's sessions answer no page-domain
+                        // command on this engine** (measured: `Page.enable` and
+                        // `Page.addScriptToEvaluateOnNewDocument` both time out
+                        // while the target waits). So the pause is released
+                        // first, and the script is registered for every document
+                        // after the one already under way; its existing world is
+                        // patched in place when the context is reported.
+                        if plan.resume {
+                            resume(&mut cdp, &session, port, &profile).await;
+                        }
+                        // **One arm per TARGET, not per session**, and **only a
+                        // target that has one.** `Target.attachToTarget` raises
+                        // another attach report for the same target, so a
+                        // session-keyed guard re-attaches for ever; a target
+                        // whose arm failed is tried again on its next report
+                        // rather than marked here, because a popup's page report
+                        // is the one that can be armed.
+                        if armed.contains(target) {
+                            continue;
+                        }
+                        // **Only a page or a fresh tab has a document to start.**
+                        // A worker, an iframe or the engine's own UI is not a
+                        // page: arming one earns a refused `Page.enable` per
+                        // domain and names a failure that is not one (rule 20).
+                        // It is resumed above all the same - see [`AttachPlan`].
+                        let Some(choice) = plan.arm else {
                             tracing::debug!(
-                                "the passkey veto gave a tab up (event_name \
-                                 cef_passkey_veto_unarmable, port {port}, type {kind})"
+                                "the passkey veto skipped a target with no document to start \
+                             (event_name cef_passkey_veto_skipped, port {port}, type {kind})"
+                            );
+                            continue;
+                        };
+                        // **A fresh tab with no document cannot be armed yet.**
+                        // A page's popup reports as `other` with an empty url
+                        // until its first document starts, and every page-domain
+                        // call on that session times out: the attempt holds this
+                        // loop while other targets wait - the stall #2534
+                        // forbids - and each timeout names a failure that is not
+                        // one. It is armed on its page report, once it has a
+                        // document.
+                        if !can_arm(kind, url) {
+                            tracing::debug!(
+                                "the passkey veto waits for a target's first document \
+                             (event_name cef_passkey_veto_unstarted, port {port}, type {kind})"
                             );
                             continue;
                         }
-                        *attempts += 1;
+                        // **A fresh tab that failed twice is not tried again.** A
+                        // `PageSession` arm attaches, and that attach raises its
+                        // own report for the same target: without a bound, one
+                        // tab that cannot be armed would re-arm itself without
+                        // end. A page's own session arm never re-attaches, so its
+                        // failures are left to its next report.
+                        if choice == Arm::PageSession {
+                            let attempts = attempted.entry(target.to_owned()).or_default();
+                            if *attempts >= 2 {
+                                tracing::debug!(
+                                    "the passkey veto gave a tab up (event_name \
+                                 cef_passkey_veto_unarmable, port {port}, type {kind})"
+                                );
+                                continue;
+                            }
+                            *attempts += 1;
+                        }
+                        let arm_on = match choice {
+                            Arm::Session => session,
+                            Arm::PageSession => {
+                                page_session(&mut cdp, target).await.unwrap_or(session)
+                            }
+                        };
+                        let registered = arm(&mut cdp, &arm_on, port, &profile).await;
+                        if registered {
+                            armed.insert(target.to_owned());
+                            armed_on
+                                .lock()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .insert(target.to_owned());
+                        }
                     }
-                    let arm_on = match choice {
-                        Arm::Session => session,
-                        Arm::PageSession => page_session(&mut cdp, target).await.unwrap_or(session),
-                    };
-                    let registered = arm(&mut cdp, &arm_on, port, &profile).await;
-                    if registered {
-                        armed.insert(target.to_owned());
-                        armed_on
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .insert(target.to_owned());
+                    Some("Runtime.executionContextCreated") => {
+                        let context = &event["params"]["context"];
+                        let session = event["sessionId"].as_str().unwrap_or_default();
+                        let Some(id) = context["id"].as_i64() else { continue };
+                        if !patched.insert((session.to_owned(), id)) {
+                            continue;
+                        }
+                        patch_context(&mut cdp, &event, context, port, &profile).await;
                     }
+                    _ => {}
                 }
-                Some("Runtime.executionContextCreated") => {
-                    let context = &event["params"]["context"];
-                    let session = event["sessionId"].as_str().unwrap_or_default();
-                    let Some(id) = context["id"].as_i64() else { continue };
-                    if !patched.insert((session.to_owned(), id)) {
-                        continue;
-                    }
-                    patch_context(&mut cdp, &event, context, port, &profile).await;
-                }
-                _ => {}
             }
+            // **The socket is gone, so the pause is gone with it.** Name the end
+            // rather than exit silently, and drop this port's armed set: a wait
+            // that still answered here would be answering for a veto that no
+            // longer exists.
+            tracing::debug!(
+                "the passkey veto ended (event_name cef_passkey_veto_ended, port {port}, profile {})",
+                profile.display(),
+            );
+            armed_targets().lock().unwrap_or_else(PoisonError::into_inner).remove(&port);
         }
-        // **The socket is gone, so the pause is gone with it.** Name the end
-        // rather than exit silently, and drop this port's armed set: a wait
-        // that still answered here would be answering for a veto that no
-        // longer exists.
-        tracing::debug!(
-            "the passkey veto ended (event_name cef_passkey_veto_ended, port {port}, profile {})",
-            profile.display(),
-        );
-        armed_targets().lock().unwrap_or_else(PoisonError::into_inner).remove(&port);
-    });
+    };
+    match supervisor {
+        Some(supervisor) => supervisor.spawn(name, forge_supervise::Policy::Never, run),
+        None => {
+            tokio::spawn(run());
+        }
+    }
     Ok(())
 }
 
