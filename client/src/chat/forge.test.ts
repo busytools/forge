@@ -73,7 +73,7 @@ describe('a forge call with no card of its own', () => {
       'a failed spawn uses the success wording, under a tail that says it failed',
     ).toBe("spawned worker 'reviewer'");
     expect(
-      forgeRowTitle('mcp__forge__agents__spawn', { label: 'reviewer' }, 'running'),
+      forgeRowTitle('mcp__forge__agents__spawn', { label: 'reviewer' }, 'pending'),
       'while a spawn still out reads in flight',
     ).toBe('spawning reviewer');
     expect(forgeRowTitle('mcp__forge__slack__post', { conversation: 'C1' }, 'failed')).toBe(
@@ -87,6 +87,204 @@ describe('a forge call with no card of its own', () => {
       'a failed vault write reads in the success wording, under the failed tail',
     ).toBe("created login 'bank'");
     expect(forgeRowTitle('Bash', {}, 'failed'), 'and no other call is titled here').toBeNull();
+  });
+});
+
+describe('the settings row says what the call read or wrote', () => {
+  it('names the verb and the key, and counts a batch past two', () => {
+    expect(forgeRowTitle('mcp__forge__settings__get', { key: 'gotify.url' }, 'settled')).toBe(
+      'settings \u{b7} read gotify.url',
+    );
+    expect(forgeRowTitle('mcp__forge__settings__index', {}, 'settled')).toBe(
+      'settings \u{b7} read the catalogue',
+    );
+    expect(
+      forgeRowTitle(
+        'mcp__forge__settings__set',
+        { edits: [{ key: 'gotify.url', value: 'https://push' }] },
+        'settled',
+      ),
+      'one key is named',
+    ).toBe('settings \u{b7} write gotify.url');
+    expect(
+      forgeRowTitle(
+        'mcp__forge__settings__set',
+        {
+          edits: [
+            { key: 'gotify.url', value: 'https://push' },
+            { key: 'client.theme', value: 'dark' },
+          ],
+        },
+        'settled',
+      ),
+      'two keys are both named',
+    ).toBe('settings \u{b7} write gotify.url, client.theme');
+    expect(
+      forgeRowTitle(
+        'mcp__forge__settings__set',
+        {
+          edits: [
+            { key: 'a', value: 1 },
+            { key: 'b', value: 2 },
+            { key: 'c', value: 3 },
+          ],
+        },
+        'settled',
+      ),
+      'past two the count carries the batch instead of a list nobody can scan',
+    ).toBe('settings \u{b7} write 3 keys');
+    expect(
+      forgeRowTitle('mcp__forge__settings__unset', { key: 'client.theme' }, 'settled'),
+      'a clear is a write, and the key is its subject',
+    ).toBe('settings \u{b7} clear client.theme');
+    expect(
+      forgeRowTitle(
+        'mcp__forge__settings__set',
+        { edits: [{ key: 'client.theme', value: 'dark' }] },
+        'failed',
+      ),
+      'a failed write reads in the success wording, under the tail that says it failed',
+    ).toBe('settings \u{b7} write client.theme');
+    expect(
+      forgeRowTitle('mcp__forge__settings__get', {}, 'settled'),
+      'an input that names no key keeps the family noun rather than inventing one',
+    ).toBe('settings');
+    expect(
+      forgeRowTitle('mcp__forge__settings__set', { edits: [] }, 'settled'),
+      'an empty batch names no key either',
+    ).toBe('settings');
+    expect(
+      forgeRowTitle('mcp__forge__settings__get', { key: '  ' }, 'settled'),
+      'a blank key is no subject',
+    ).toBe('settings');
+    expect(
+      forgeRowTitle('mcp__forge__settings__unset', { key: '  ' }, 'settled'),
+      'and a blank clear names none either',
+    ).toBe('settings');
+  });
+
+  it('marks a declined write rather than reading as a completed one', () => {
+    // A decline is a normal text result, so the call settles completed and
+    // its tone goes green: without a face on the row, a write that never
+    // happened reads exactly like one that did.
+    const declined = 'the reader declined; `client.theme` is unchanged and nothing was written';
+    const card = forgeCardOf(
+      'mcp__forge__settings__set',
+      { edits: [{ key: 'client.theme', value: 'dark' }] },
+      result(declined),
+    );
+    expect(card?.title).toBe('settings \u{b7} write client.theme');
+    expect(card?.chips).toEqual([{ text: 'declined', tone: 'warn' }]);
+    expect(card?.pieces).toEqual([{ kind: 'text', text: declined }]);
+    expect(
+      forgeCardOf(
+        'mcp__forge__settings__unset',
+        { key: 'client.theme' },
+        result('the reader declined; `client.theme` is unchanged and nothing was written'),
+      )?.chips,
+      'a clear that was declined says so too',
+    ).toEqual([{ text: 'declined', tone: 'warn' }]);
+    // **An applied write keeps the raw payload body.** Only the decline needs
+    // a face; a card on the clean answer would replace the body with a
+    // second rendering of the same text.
+    expect(
+      forgeCardOf(
+        'mcp__forge__settings__set',
+        { edits: [{ key: 'client.theme', value: 'dark' }] },
+        result('the reader approved; `client.theme` was written and takes effect live'),
+      ),
+    ).toBeNull();
+  });
+
+  it('chips only a write that is still waiting on the reader', () => {
+    // Every settings write parks on the dock; a read is asked and answered
+    // without the reader, so a chip on it would name a wait that is not there.
+    expect(
+      forgeCardOf(
+        'mcp__forge__settings__set',
+        { edits: [{ key: 'client.theme', value: 'dark' }] },
+        undefined,
+      )?.chips,
+    ).toEqual([{ text: 'waiting for your approval', tone: 'warn' }]);
+    expect(
+      forgeCardOf('mcp__forge__settings__get', { key: 'gotify.url' }, undefined)?.chips,
+    ).toEqual([]);
+    expect(
+      forgeCardOf('mcp__forge__settings__unset', { key: 'client.theme' }, undefined)?.chips,
+      'a clear parks on the dock exactly as a set does',
+    ).toEqual([{ text: 'waiting for your approval', tone: 'warn' }]);
+  });
+});
+
+describe('a slack read the page cannot card', () => {
+  it('names what it read rather than the family noun', () => {
+    expect(forgeRowTitle('mcp__forge__slack__me', {}, 'settled')).toBe("read the token's identity");
+    expect(forgeRowTitle('mcp__forge__slack__history', { conversation: 'C1' }, 'settled')).toBe(
+      'read the history of C1',
+    );
+    expect(
+      forgeRowTitle('mcp__forge__slack__replies', { conversation: 'C1', ts: '1.2' }, 'settled'),
+    ).toBe('read the thread in C1');
+    expect(
+      forgeRowTitle('mcp__forge__slack__attachment', { file_id: 'F1', dir: 'docs/' }, 'settled'),
+    ).toBe('downloaded attachment F1');
+    expect(
+      forgeRowTitle(
+        'mcp__forge__slack__attachment',
+        { path: '/tmp/brief.pdf', conversation: 'C1' },
+        'settled',
+      ),
+    ).toBe("uploaded 'brief.pdf'");
+    expect(
+      forgeRowTitle('mcp__forge__slack__history', {}, 'settled'),
+      'a read whose input names no target keeps the family noun',
+    ).toBe('conversations');
+    expect(
+      forgeRowTitle('mcp__forge__slack__history', { conversation: '  ' }, 'settled'),
+      'and a blank one names nothing either',
+    ).toBe('conversations');
+    expect(
+      forgeRowTitle('mcp__forge__slack__replies', { conversation: '  ' }, 'settled'),
+      'a blank thread names nothing either',
+    ).toBe('conversations');
+    expect(
+      forgeRowTitle('mcp__forge__slack__users', { query: 'ved' }, 'settled'),
+      'a user search names the people it looked for, not a bare search',
+    ).toBe("searched users for 'ved'");
+    expect(forgeRowTitle('mcp__forge__slack__users', {}, 'settled')).toBe('read the users');
+    expect(
+      forgeRowTitle('mcp__forge__slack__users', { query: '  ' }, 'settled'),
+      'a blank query reads the list rather than an empty search',
+    ).toBe('read the users');
+  });
+
+  it('reads an attachment in flight as in flight, and the fetch before the upload', () => {
+    const upload = { path: '/tmp/brief.pdf', conversation: 'C1' };
+    expect(
+      forgeRowTitle('mcp__forge__slack__attachment', upload, 'pending'),
+      'an upload the dock still holds is not uploaded yet',
+    ).toBe("uploading 'brief.pdf'");
+    expect(
+      forgeCardOf('mcp__forge__slack__attachment', upload, undefined)?.chips,
+      'and the row says the wait it is in',
+    ).toEqual([{ text: 'waiting for your approval', tone: 'warn' }]);
+    expect(
+      forgeRowTitle('mcp__forge__slack__attachment', { file_id: 'F1', dir: 'docs/' }, 'pending'),
+      'a fetch in flight is not downloaded yet',
+    ).toBe('downloading attachment F1');
+    expect(
+      forgeCardOf('mcp__forge__slack__attachment', { file_id: 'F1', dir: 'docs/' }, undefined)
+        ?.chips,
+      'a fetch is not held, so it carries no wait',
+    ).toEqual([]);
+    expect(
+      forgeRowTitle(
+        'mcp__forge__slack__attachment',
+        { file_id: 'F1', path: '/tmp/brief.pdf', dir: 'docs/', conversation: 'C1' },
+        'settled',
+      ),
+      'the server fetches whenever file_id is present, whatever else the call carries',
+    ).toBe('downloaded attachment F1');
   });
 });
 
@@ -1367,7 +1565,7 @@ describe('the voice card', () => {
 
   it('titles a say still out by the utterance it is speaking', () => {
     expect(
-      forgeRowTitle('mcp__forge__voice__say', { text: 'One moment.' }, 'running'),
+      forgeRowTitle('mcp__forge__voice__say', { text: 'One moment.' }, 'pending'),
       'a call still out names what it is saying',
     ).toBe('speaking \u{b7} One moment.');
   });

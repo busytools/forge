@@ -227,6 +227,20 @@ export function headline(name: string, input: unknown): string {
     const args = text('args');
     return args === null ? skill : `${skill} ${args}`;
   }
+  if (name === 'LSP') {
+    // **The row names the operation and its subject, never `LSP` twice.**
+    // The glyph is already the family's, so the bare tool name was the one
+    // thing on the row that said nothing about the call. A symbol search's
+    // subject is the query, not the file the cursor sat in: two searches in
+    // one file must not draw as one row.
+    const operation = text('operation');
+    const query = text('query');
+    if (query !== null) return operation === null ? query : `${operation} \u{b7} ${query}`;
+    const file = text('filePath');
+    if (file === null) return operation ?? name;
+    const line = typeof fields['line'] === 'number' ? `:${fields['line']}` : '';
+    return operation === null ? `${file}${line}` : `${operation} \u{b7} ${file}${line}`;
+  }
   return (
     text('file_path') ??
     // Before `path`, because the calls that carry both - a search's pattern

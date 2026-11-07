@@ -139,6 +139,35 @@ describe('the text a command produced, as a page draws it', () => {
     expect(headline('mcp__forge__agents__list', {})).toBe('mcp__forge__agents__list');
   });
 
+  it('names an LSP call by its operation and the file it ran on', () => {
+    // `LSP` alone is the family word the glyph already carries, so two calls
+    // on two files drew one indistinguishable row.
+    expect(headline('LSP', { operation: 'hover', filePath: 'client/src/chat/families.ts' })).toBe(
+      'hover \u{b7} client/src/chat/families.ts',
+    );
+    expect(
+      headline('LSP', {
+        operation: 'goToDefinition',
+        filePath: '/Users/ved/Projects/forge/client/src/chat/units.ts',
+        line: 42,
+        character: 7,
+      }),
+      'a position-bearing operation names the line it asked about',
+    ).toBe('goToDefinition \u{b7} /Users/ved/Projects/forge/client/src/chat/units.ts:42');
+    expect(
+      headline('LSP', {
+        operation: 'workspaceSymbol',
+        filePath: 'src/a.ts',
+        line: 1,
+        query: 'renderGroup',
+      }),
+      'a symbol search names the query it searched for, not the file its cursor sat in',
+    ).toBe('workspaceSymbol \u{b7} renderGroup');
+    // A call with no operation keeps the file; one with neither keeps its name.
+    expect(headline('LSP', { filePath: 'a.rs' })).toBe('a.rs');
+    expect(headline('LSP', {})).toBe('LSP');
+  });
+
   it('names a skill call by the skill it invoked, which is the argument it carries', () => {
     // Without this arm the row reads `skill` then `Skill` - the family and the
     // tool's own name twice, saying nothing - so two invocations in a row are
