@@ -422,12 +422,9 @@ impl Tool for SendMessage {
          own agent goes through the peer path, which reports `sent` once \
          the dispatch was issued and does not hold a mid-turn arrival. \
          \
-         A message still queued can also die with the target's session: \
-         a forge restart or a resume onto a new session id can drop it, \
-         and nothing errors. After any worker restart, re-send the \
-         outstanding list (or a pointer to it) and confirm it landed by \
-         a distinctive phrase in the worker's transcript or by its \
-         answer, never by the earlier `sent`. \
+         A message the target has not read yet can also die with its \
+         session: a forge restart or a resume onto a new session id \
+         drops it, and nothing errors. \
          \
          When the message you are about to send asserts that work is \
          done, reviewed, or verified, or hands over a pick where two or \
@@ -1518,30 +1515,20 @@ mod tests {
         );
     }
 
-    /// A `sent` is the queue's receipt, not the worker's read, and a
-    /// session replaced under a still-queued message loses it with no
-    /// error. A lead who trusts the earlier `sent` waits forever on a
-    /// list the new session never saw, so the resend duty and its proof
-    /// are pinned at the moment this tool is used.
+    /// A `sent` is the queue's receipt, not the target's read, and a
+    /// session replaced under an unread message loses it with no error.
+    /// "Not read yet" keeps it from contradicting the held-delivery
+    /// guarantee above it; the action stays in the lead charter.
     #[test]
     fn send_description_carries_the_queued_message_restart_rule() {
         let host = host();
         let tool = SendMessage { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
         assert!(
             tool.description().contains(
-                "A message still queued can also die with the target's session: a forge \
-                 restart or a resume onto a new session id can drop it, and nothing errors."
+                "A message the target has not read yet can also die with its session: a forge \
+                 restart or a resume onto a new session id drops it, and nothing errors."
             ),
-            "the restart loss and its silence stay stated: {}",
-            tool.description()
-        );
-        assert!(
-            tool.description().contains(
-                "After any worker restart, re-send the outstanding list (or a pointer to it) and \
-                 confirm it landed by a distinctive phrase in the worker's transcript or by its \
-                 answer, never by the earlier `sent`."
-            ),
-            "the resend duty and its proof are pinned: {}",
+            "the unread-message loss and its silence stay stated: {}",
             tool.description()
         );
     }
