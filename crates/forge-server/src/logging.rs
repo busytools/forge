@@ -131,6 +131,7 @@ pub const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     forge_workspace::browser=debug,\
     forge_browser=debug,\
     forge_workspace::mcp=debug,\
+    forge_workspace::gotify=debug,\
     forge_agent::mcp=debug,\
     forge_workspace::dictate=debug,\
     forge_workspace::subagent_cards=debug,\
@@ -510,6 +511,11 @@ mod tests {
         // the only record of a seat whose tree is silently not being read, so
         // the target needs the directive or the silence has no explanation.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_workspace::work=debug"));
+        // `forge_workspace::gotify` carries the subsystem's declines at
+        // `debug`: unconfigured, idle and already running are expected
+        // states, not forge problems. Without the directive the only record
+        // of a subsystem that is not running lands nowhere.
+        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_workspace::gotify=debug"));
         // `forge_workspace::browser` records the browser calls a session
         // made - what ran, for whom, how it ended - at `debug` because a
         // call is the session's own work. Without the directive the call
