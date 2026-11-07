@@ -78,6 +78,9 @@ tracing-subscriber = { workspace = true, features = ["json"] }
 # The FD soft-limit raise (#251), which belongs to the binary rather than
 # to any view.
 rlimit = { workspace = true }
+# The process-level crypto provider the boot installs: rustls refuses to
+# choose one while two provider features are in the graph.
+rustls = { workspace = true }
 # The fleet fixture's own directory, which the fixture holds and removes
 # with itself. Gated with `testing`, so no production build links it.
 tempfile = { workspace = true, optional = true }
