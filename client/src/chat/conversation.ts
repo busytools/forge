@@ -2379,9 +2379,13 @@ export class Chat {
           // switch that asked for both would ship the conversation twice.
           // Seed it instead, and ask `more` only when the answer brought no
           // page.
-          // **Only the first load is seeded from the subscribe's answer**
-          // (#2420). A reconnect asks a page for itself (the status handler),
-          // so its snapshot cannot steal an older ask's in-flight bookkeeping.
+          // **The first load is seeded from the answer, and a saved
+          // conversation is reconciled from it.** A subscribe's answer is the
+          // newest page (#2420), so a column that missed frames while the seat
+          // was away has no other way back - a page opened fresh draws this
+          // same answer. A reconnect asks a page for itself (the status
+          // handler), so this must not steal an older ask's bookkeeping: hence
+          // the idle guard below.
           const fresh = !this.held.loaded;
           const header = (message.data as { header?: { session_id?: unknown } } | null)?.header;
           this.noteSession(header?.session_id);
@@ -2393,8 +2397,8 @@ export class Chat {
             cron_names?: unknown;
           };
           cronNames.seed(conversation.cron_names);
+          const rows = pageTurns(conversation.turns);
           if (fresh) {
-            const rows = pageTurns(conversation.turns);
             if (rows.length > 0) {
               if (!Object.hasOwn(conversation, 'cursor')) {
                 // **An older server's record has no `cursor` field at all**
@@ -2413,6 +2417,16 @@ export class Chat {
             } else {
               this.ask(null);
             }
+          } else if (rows.length > 0 && this.inFlight === null) {
+            // **A saved conversation reconciles from the answer too.** The
+            // answer is the newest page, and a column that missed frames while
+            // the seat was away - a return, a re-subscribe, a stream that
+            // wedged - has no other way back: what a page opened fresh draws
+            // is this very answer. **Only with nothing in flight**, so an
+            // older ask keeps the bookkeeping its own landing is answered with.
+            const cursor =
+              typeof conversation.cursor === 'string' ? conversation.cursor : this.held.cursor;
+            this.takePage(rows, cursor, 'newest');
           }
           this.armed(message.data);
         }

@@ -2673,6 +2673,35 @@ describe('the conversation the chat draws', () => {
     expect(server.more().at(-1)?.before, 'from the handle it carried').toBe('5');
   });
 
+  /**
+   * **A saved conversation reconciles from an answer it did not ask for.**
+   *
+   * A subscribe this column did not ask for - a return, a re-subscribe - is
+   * answered with the newest page, and a conversation that missed frames while
+   * the seat was away has no other way back: a page opened fresh draws this
+   * very answer, and a loaded column used to throw it away (Ved, 2026-11-07:
+   * the desktop's turn strip held an hour-old turn's figures while a page
+   * opened beside it drew the live one).
+   */
+  it('reconciles a saved conversation from a subscribe answer', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    const stop = chat.start();
+    server.send(page([turn('t1', 'first')], null));
+    expect(
+      get(chat.value).turns.map((row) => row.key),
+      'precondition: the load',
+    ).toEqual(['t1']);
+
+    server.send(record([turn('t1', 'first'), turn('t2', 'second')], null));
+
+    expect(
+      get(chat.value).turns.map((row) => row.key),
+      'the answer carried the turn the saved conversation never heard',
+    ).toEqual(['t1', 't2']);
+    stop();
+  });
+
   it('asks nothing above a seed whose record carries no handle', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
