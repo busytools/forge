@@ -21231,7 +21231,8 @@ mod worker_respawn_tests {
     /// The lead restart note is the first turn a boot-resumed lead reads.
     /// Pinned so it sends the lead to the handoff and the board before it
     /// acts, keeps the history conditional (a refused resume falls back to
-    /// a fresh one), and goes to the clock over a stale history.
+    /// a fresh one), warns that a message sent before the restart may have
+    /// been lost, and goes to the clock over a stale history.
     #[test]
     fn the_lead_restart_note_names_the_handoff_the_board_and_the_clock() {
         assert!(LEAD_RESTART_NOTE.contains("forge restarted"), "the note says what happened");
