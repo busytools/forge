@@ -111,6 +111,10 @@
     const left = untrack(() => previousSeat);
     if (left !== key) {
       pauseVoice(left);
+      // **Leaving a seat is the reader's move away from its ending line.**
+      // The box it was drawn in is reset, so coming back does not meet a line
+      // about something already read.
+      boxes.held(left)?.moved();
       previousSeat = key;
     }
   });
@@ -131,6 +135,36 @@
   let clock = $state(Date.now());
   /** The field, so focus can go back to it when the box returns. */
   let field = $state<HTMLElement | null>(null);
+  /**
+   * Whether the composer itself is taking the keyboard back.
+   *
+   * An ask standing down mounts the field again and this box focuses it, so
+   * the focus that lands with an ending line is the line's own arrival rather
+   * than the reader's next move - it must not take the line away in the same
+   * frame it was drawn.
+   */
+  let refocusing = false;
+  /**
+   * The reader's next move in the field, which is what takes an ending line
+   * away: a key or a focus there. The rule lives once, in {@link Box.moved},
+   * so an ending kind added later gets the same lifetime without opting in.
+   */
+  $effect(() => {
+    const node = field;
+    if (node === null) return;
+    const moved = (): void => {
+      if (refocusing) return;
+      box.moved();
+    };
+    // Keys go through the field's own handler as well; this one is the rule's,
+    // and it runs for every key rather than only the ones the box answers.
+    node.addEventListener('keydown', moved);
+    node.addEventListener('focus', moved);
+    return () => {
+      node.removeEventListener('keydown', moved);
+      node.removeEventListener('focus', moved);
+    };
+  });
   /**
    * The box the dictation panel hangs above.
    *
@@ -788,7 +822,10 @@
   $effect(() => {
     if (ask !== null) return;
     if (surface.phase !== 'closed') return;
-    if (field !== null) field.focus();
+    if (field === null) return;
+    refocusing = true;
+    field.focus();
+    refocusing = false;
   });
 
   // The dock's box belongs to the prompt, so what was written in it goes when
