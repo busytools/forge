@@ -344,7 +344,10 @@ impl BrowserService {
     /// nothing to ask through and a tick with no settings does nothing.
     pub fn start_idle(self: &Arc<Self>) {
         let Some(supervisor) = self.supervisor() else {
-            tracing::warn!(
+            // The shipped boot installs the supervisor before this call, so
+            // this is only a service built without one (tests).
+            tracing::debug!(
+                event_name = "browser_idle_sweep_unstarted",
                 "the browser idle sweep was not started: no subsystem supervisor is installed"
             );
             return;
@@ -686,6 +689,8 @@ impl BrowserService {
             restarted: AtomicBool::new(false),
             mute_dropped: AtomicBool::new(false),
             host_generation: AtomicU64::new(0),
+            next_chooser: AtomicU64::new(0),
+            next_veto: AtomicU64::new(0),
             host_suspect: Mutex::new(None),
             #[cfg(test)]
             successor: Mutex::new(None),
@@ -3889,6 +3894,15 @@ pub struct Profile {
     /// carries the host that reported it; an event from a receiver that was
     /// replaced is refused even when the tab numbers collide.
     host_generation: AtomicU64,
+    /// **The chooser acceptor's name is per driver, not per profile.** A
+    /// replaced driver can outlive its successor for the length of an
+    /// in-flight chooser answer, and a shared name would let its `drop` stop
+    /// the new acceptor.
+    next_chooser: AtomicU64,
+    /// **The veto loop's name is per install, not per profile.** A host
+    /// rebuild can leave the old loop alive on the old endpoint, and a shared
+    /// name would make the new install a silent no-op.
+    next_veto: AtomicU64,
     /// A fresh driver still could not list this profile's pages: the host it
     /// was listed from is wedged, and is ended on the first path that can
     /// take `file_decision` without waiting on the call that found it, or is
@@ -4775,6 +4789,11 @@ impl Profile {
         let cli = driver::cli_path(stack);
         let endpoint = engine::endpoint(host.port);
         let chooser_socket = chooser_socket_path(&self.dir, self.id)?;
+        let chooser_name = format!(
+            "browser_chooser:{}:{}",
+            self.key,
+            self.next_chooser.fetch_add(1, Ordering::Relaxed)
+        );
         let driver = Driver::start(
             &node,
             &cli,
@@ -4782,7 +4801,7 @@ impl Profile {
             &root.join("output"),
             &chooser_socket,
             self.supervisor.clone(),
-            &format!("browser_chooser:{}", self.key),
+            &chooser_name,
         )
         .await
         .map_err(|why| {
@@ -5044,13 +5063,9 @@ impl Profile {
         // **A page is never armed by a driver alone.** The veto is installed
         // before the profile serves any call, so every document a tab starts
         // opens behind it.
-        if let Err(why) = veto::install(
-            port,
-            &self.dir,
-            self.supervisor.clone(),
-            &format!("passkey_veto:{}", self.key),
-        )
-        .await
+        let veto_name =
+            format!("passkey_veto:{}:{}", self.key, self.next_veto.fetch_add(1, Ordering::Relaxed));
+        if let Err(why) = veto::install(port, &self.dir, self.supervisor.clone(), &veto_name).await
         {
             tracing::warn!(
                 "the passkey veto did not install for {} (event_name browser_veto_failed): {why}",

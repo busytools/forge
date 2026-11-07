@@ -279,6 +279,11 @@ impl Cdp {
         // member is started once, so the factory takes them from their slots.
         let source = Arc::new(Mutex::new(Some(source)));
         let events_tx = Arc::new(Mutex::new(Some(events_tx)));
+        // The reader forgets itself when its endpoint closes: its name
+        // carries a per-host port, so leaving it registered would grow with
+        // every host.
+        let supervise = supervisor.clone();
+        let reader_name = name.to_owned();
         let reader = {
             let replies = Arc::clone(&replies);
             let closed = Arc::clone(&closed);
@@ -287,6 +292,8 @@ impl Cdp {
                 let events_tx = Arc::clone(&events_tx);
                 let reader_replies = Arc::clone(&replies);
                 let reader_closed = Arc::clone(&closed);
+                let supervise = supervise.clone();
+                let reader_name = reader_name.clone();
                 async move {
                     let Some(mut source) =
                         source.lock().unwrap_or_else(PoisonError::into_inner).take()
@@ -331,12 +338,22 @@ impl Cdp {
                     // still waiting is answered as closed rather than left
                     // hanging.
                     reader_replies.lock().unwrap_or_else(PoisonError::into_inner).clear();
+                    if let Some(supervisor) = &supervise {
+                        supervisor.forget(&reader_name);
+                    }
                 }
             }
         };
         match supervisor {
             Some(supervisor) => {
-                supervisor.spawn(name, forge_supervise::Policy::Never, reader);
+                // **A no-op is a refusal.** A reader already registered under
+                // this name is the old host's connection; the caller must not
+                // believe a fresh one is listening.
+                if !supervisor.spawn(name, forge_supervise::Policy::Never, reader) {
+                    return Err(format!(
+                        "a devtools reader with the name '{name}' was already running"
+                    ));
+                }
             }
             None => {
                 tokio::spawn(reader());

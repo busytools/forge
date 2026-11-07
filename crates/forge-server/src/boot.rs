@@ -189,23 +189,51 @@ where
     let path = workspace.config_path();
     let weak = Arc::downgrade(workspace);
     let apply = Arc::new(apply);
+    // **The first watch is installed before the member starts.** An edit in
+    // the window between this call and the driver's first poll is not
+    // missed, and a failed install is one WARN rather than a restart
+    // ladder.
+    let (changed, edits) = tokio::sync::mpsc::unbounded_channel();
+    let first = match forge_workspace::env::config_watch::watch(path.clone(), changed) {
+        Ok(watch) => Some((watch, edits)),
+        Err(error) => {
+            tracing::warn!(
+                target: crate::logging::targets::APP_LIFECYCLE,
+                event_name = "config_watch_failed",
+                path = %path.display(),
+                error = %error,
+                "forge.toml is not being watched; an edit needs a restart this run",
+            );
+            return;
+        }
+    };
+    let first = Arc::new(std::sync::Mutex::new(first));
     workspace.supervisor().spawn("config_watch", forge_supervise::Policy::backoff(), move || {
         let path = path.clone();
         let weak = weak.clone();
         let apply = Arc::clone(&apply);
+        let first = Arc::clone(&first);
         async move {
-            let (changed, mut edits) = tokio::sync::mpsc::unbounded_channel();
-            let watch = match forge_workspace::env::config_watch::watch(path.clone(), changed) {
-                Ok(watch) => watch,
-                Err(error) => {
-                    tracing::warn!(
-                        target: crate::logging::targets::APP_LIFECYCLE,
-                        event_name = "config_watch_failed",
-                        path = %path.display(),
-                        error = %error,
-                        "forge.toml is not being watched; an edit needs a restart this run",
-                    );
-                    return;
+            let first_watch =
+                first.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+            let (watch, mut edits) = if let Some(pair) = first_watch {
+                pair
+            } else {
+                // A restart after the first install needs a fresh watch and
+                // channel.
+                let (changed, edits) = tokio::sync::mpsc::unbounded_channel();
+                match forge_workspace::env::config_watch::watch(path.clone(), changed) {
+                    Ok(watch) => (watch, edits),
+                    Err(error) => {
+                        tracing::warn!(
+                            target: crate::logging::targets::APP_LIFECYCLE,
+                            event_name = "config_watch_failed",
+                            path = %path.display(),
+                            error = %error,
+                            "forge.toml is not being watched; an edit needs a restart this run",
+                        );
+                        return;
+                    }
                 }
             };
             // The handle lives in this task, so the watch lives as long

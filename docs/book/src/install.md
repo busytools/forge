@@ -144,8 +144,8 @@ the same source on the second platform. The client's CEF job serves every
 crate in `forge-server`'s dependency graph -
 `forge-browser`, `forge-server`, `forge-workspace`, `forge-agent`,
 `forge-gateway`, `forge-connectors`, `forge-dictate`, `forge-tts`,
-`forge-terminal`, `forge-capture`, `forge-system-one`, `forge-sdk` and
-`forge-primitives` -
+`forge-terminal`, `forge-capture`, `forge-system-one`, `forge-supervise`,
+`forge-sdk` and `forge-primitives` -
 and the inputs
 that resolve or build them: `Cargo.lock`, the root `Cargo.toml`,
 `rust-toolchain.toml`, `clippy.toml`, `scripts/` and the nextest config.

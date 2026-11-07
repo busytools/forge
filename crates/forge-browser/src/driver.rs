@@ -270,7 +270,7 @@ impl Driver {
             Some(supervisor) => {
                 let listener = Arc::new(std::sync::Mutex::new(Some(listener)));
                 let choosers = choosers.clone();
-                supervisor.spawn(chooser_name, forge_supervise::Policy::Never, move || {
+                if !supervisor.spawn(chooser_name, forge_supervise::Policy::Never, move || {
                     let listener = Arc::clone(&listener);
                     let choosers = choosers.clone();
                     async move {
@@ -283,7 +283,14 @@ impl Driver {
                         };
                         serve_choosers(listener, choosers).await;
                     }
-                });
+                }) {
+                    tracing::warn!(
+                        event_name = "browser_chooser_name_collision",
+                        chooser = %chooser_name,
+                        "a chooser acceptor with this driver's name was already running; \
+                         the new one is not",
+                    );
+                }
                 None
             }
             None => Some(tokio::spawn(serve_choosers(listener, choosers.clone()))),
@@ -677,7 +684,12 @@ async fn serve_choosers(listener: UnixListener, choosers: broadcast::Sender<Driv
 impl Drop for Driver {
     fn drop(&mut self) {
         match (&self.supervisor, &self.chooser_task) {
-            (Some(supervisor), _) => supervisor.stop(&self.chooser_name),
+            (Some(supervisor), _) => {
+                supervisor.stop(&self.chooser_name);
+                // The name is per driver, and a stopped member would
+                // otherwise stay in the registry for every replaced driver.
+                supervisor.forget(&self.chooser_name);
+            }
             (None, Some(task)) => task.abort(),
             (None, None) => {}
         }

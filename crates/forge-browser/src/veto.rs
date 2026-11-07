@@ -380,11 +380,17 @@ pub async fn install(
     // member is started once, so the factory takes them from their slots.
     let cdp = Arc::new(Mutex::new(Some(cdp)));
     let events = Arc::new(Mutex::new(Some(events)));
+    // The loop forgets itself when the host's endpoint closes: its name is
+    // per install, so leaving it in the registry would grow with every host.
+    let supervise = supervisor.clone();
+    let run_name = name.to_owned();
     let run = move || {
         let cdp = Arc::clone(&cdp);
         let events = Arc::clone(&events);
         let profile = profile.clone();
         let armed_on = Arc::clone(&armed_on);
+        let supervise = supervise.clone();
+        let run_name = run_name.clone();
         async move {
             let Some(mut cdp) = cdp.lock().unwrap_or_else(PoisonError::into_inner).take() else {
                 return;
@@ -524,10 +530,24 @@ pub async fn install(
                 profile.display(),
             );
             armed_targets().lock().unwrap_or_else(PoisonError::into_inner).remove(&port);
+            if let Some(supervisor) = &supervise {
+                supervisor.forget(&run_name);
+            }
         }
     };
     match supervisor {
-        Some(supervisor) => supervisor.spawn(name, forge_supervise::Policy::Never, run),
+        Some(supervisor) => {
+            // **A no-op install is a refused install.** The name is per
+            // host, so a member already running under it is the old loop on
+            // the old endpoint; the caller must not believe the new host is
+            // protected.
+            if !supervisor.spawn(name, forge_supervise::Policy::Never, run) {
+                return Err(Failure {
+                    stage: "the passkey veto loop",
+                    why: "a veto loop with that name was already running".to_owned(),
+                });
+            }
+        }
         None => {
             tokio::spawn(run());
         }

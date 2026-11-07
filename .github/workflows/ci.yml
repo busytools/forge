@@ -112,6 +112,9 @@ jobs:
               - 'crates/forge-terminal/**'
               - 'crates/forge-capture/**'
               - 'crates/forge-system-one/**'
+              # The supervisor is a direct dependency of the server, so a
+              # change to it may break this job's build.
+              - 'crates/forge-supervise/**'
               - 'crates/forge-sdk/**'
               - 'crates/forge-primitives/**'
               - 'Cargo.lock'

@@ -10,8 +10,8 @@ forge-capture    ───── leaf (microphone capture; depends on no forge-*
 forge-dictate    ───→ capture (dictation)
 forge-tts        ───── leaf (speech synthesis; depends on no forge-* crate)
 forge-system-one ───── leaf (decision-model client; depends on no forge-* crate)
-forge-supervise  ───── leaf (subsystem supervision; depends on no forge-* crate)
 forge-terminal   ───── leaf (the PTY and screen model; depends on no forge-* crate)
+forge-supervise  ───── leaf (subsystem supervision; depends on no forge-* crate)
 forge-gateway    ───→ primitives
 forge-connectors ───→ primitives
 forge-sdk        ───→ primitives

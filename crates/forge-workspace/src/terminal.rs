@@ -558,6 +558,12 @@ impl Workspace {
 
     /// Start the idle clock, once. The registry makes a second call a no-op.
     fn ensure_terminal_clock(self: &Arc<Self>) {
+        // **No runtime means no clock this run**, the same early return the
+        // task had before the registry: a terminal created outside a runtime
+        // has no tick to sweep with.
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
         let weak = Arc::downgrade(self);
         self.supervisor.spawn(
             "terminal_idle_clock",

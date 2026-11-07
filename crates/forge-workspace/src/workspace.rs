@@ -2112,6 +2112,19 @@ impl Workspace {
     /// is what lets a test drive this same launch. Idempotent - a second
     /// call is a no-op.
     fn start_cli_version_probe(&self, prober: CliVersionProber) {
+        // **No runtime means no probe this run.** The registry would defer
+        // the member until a runtime appeared, but a workspace built outside
+        // one is a test's or a caller's construction, not a boot: say so
+        // once and hold no version rather than start a task nobody would
+        // run.
+        if tokio::runtime::Handle::try_current().is_err() {
+            tracing::warn!(
+                target: "forge_workspace::workspace",
+                event_name = "cli_version_probe_skipped",
+                "no tokio runtime at construction; the claude version probe is skipped and the views show no claude version this run",
+            );
+            return;
+        }
         let cli_version = Arc::clone(&self.cli_version);
         let update_tx = self.update_tx.clone();
         let prober = Arc::new(prober);
@@ -4616,14 +4629,17 @@ impl Workspace {
     /// a no-op, since a second watcher would double every frame.
     pub fn start_rotation_announcer(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
+        // **The subscribe happens before the member starts**, so a cooldown
+        // written between this call and the driver's first poll is seen.
+        let rotation = self.gateway.rotation_watch();
         self.supervisor.spawn(
             "rotation_announcer",
             forge_supervise::Policy::backoff(),
             move || {
                 let weak = weak.clone();
+                let mut rotation = rotation.clone();
                 async move {
                     let Some(workspace) = weak.upgrade() else { return };
-                    let mut rotation = workspace.gateway.rotation_watch();
                     drop(workspace);
                     loop {
                         let Some(workspace) = weak.upgrade() else { return };
@@ -14488,12 +14504,6 @@ provider = "anthropic"
             ws.test_rotation_announcer_started(),
             "the boot call starts the one watcher, and a second call is a no-op",
         );
-        // The registry starts the watcher on its own task. Let it reach its
-        // first wait before the write, or the write lands before the watcher
-        // is listening and the cool's frame is never announced.
-        for _ in 0..50 {
-            tokio::task::yield_now().await;
-        }
 
         let reset_at = SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
