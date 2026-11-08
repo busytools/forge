@@ -841,6 +841,99 @@ async fn headless_boot_serves_the_home_and_stops_clean() {
     assert!(status.success(), "and stops clean in turn: {status}");
 }
 
+/// One shipped file's bytes, for comparing what the boot wrote.
+fn shipped_file(skill: &str, name: &str) -> Vec<u8> {
+    forge_workspace::shipped_skills()
+        .iter()
+        .find(|shipped| shipped.name == skill)
+        .and_then(|shipped| shipped.files.iter().find(|(file, _)| *file == name))
+        .map(|(_, contents)| contents.as_bytes().to_vec())
+        .expect("the shipped skill carries the file")
+}
+
+/// **The upgrade path is the real first boot.** Handoff's bytes did not
+/// change in this release, so its install is `Unchanged`; a loop that took
+/// that as the end of the job would leave the wizard uninstalled in every
+/// existing config dir while every fresh-dir test stayed green.
+#[tokio::test]
+async fn the_boot_installs_the_wizard_over_an_existing_handoff_skill() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (mut server, _port, Scratch { home: _, config, bin: _ }) = spawn_serving(
+        two_free_ports,
+        |port, gateway| {
+            let (home, config) = write_fixture(dir.path(), port, gateway);
+            let handoff = forge_workspace::shipped_skills()
+                .iter()
+                .find(|skill| skill.name == "handoff")
+                .expect("handoff ships");
+            forge_workspace::install_skill(&config, handoff).expect("pre-install handoff");
+            Scratch { home, config, bin: None }
+        },
+        |_| {},
+    )
+    .await;
+
+    let wizard = config.join("skills").join("wizard");
+    assert_eq!(
+        std::fs::read(wizard.join("SKILL.md")).expect("the wizard lands over an unchanged handoff"),
+        shipped_file("wizard", "SKILL.md"),
+        "the wizard's skill file is the shipped one",
+    );
+    assert_eq!(
+        std::fs::read(wizard.join("template.sh")).expect("the wizard's template lands"),
+        shipped_file("wizard", "template.sh"),
+    );
+    assert_eq!(
+        std::fs::read(config.join("skills").join("handoff").join("SKILL.md"))
+            .expect("handoff stays installed"),
+        shipped_file("handoff", "SKILL.md"),
+        "handoff's installed bytes are untouched",
+    );
+
+    let holder = server.id().expect("the server has a pid while it runs");
+    terminate(holder).await;
+    let _ = tokio::time::timeout(stop_wait(), server.wait()).await;
+}
+
+/// **One skill's failure is its own line.** A handoff poisoned into a
+/// directory must not stop the wizard from installing, and the boot must
+/// still come up and serve.
+#[tokio::test]
+async fn a_poisoned_handoff_skill_does_not_stop_the_wizard() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (mut server, port, Scratch { home: _, config, bin: _ }) = spawn_serving(
+        two_free_ports,
+        |port, gateway| {
+            let (home, config) = write_fixture(dir.path(), port, gateway);
+            std::fs::create_dir_all(config.join("skills").join("handoff").join("SKILL.md"))
+                .expect("poison handoff");
+            Scratch { home, config, bin: None }
+        },
+        |_| {},
+    )
+    .await;
+
+    let wizard = config.join("skills").join("wizard");
+    assert_eq!(
+        std::fs::read(wizard.join("SKILL.md")).expect("the other skill still installs"),
+        shipped_file("wizard", "SKILL.md"),
+    );
+    assert!(wizard.join("template.sh").exists(), "the whole wizard installs");
+
+    let url = format!("ws://127.0.0.1:{port}/socket");
+    let transcript = walk("subscribe home\n", &url).await;
+    assert!(
+        transcript
+            .iter()
+            .any(|message| message["kind"] == "snapshot" && message["subject"] == "home"),
+        "the boot still serves: {transcript:?}",
+    );
+
+    let holder = server.id().expect("the server has a pid while it runs");
+    terminate(holder).await;
+    let _ = tokio::time::timeout(stop_wait(), server.wait()).await;
+}
+
 /// One forge per config dir, headless included: the second boot is refused
 /// in the holder's own words.
 #[tokio::test]

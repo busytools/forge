@@ -964,11 +964,16 @@ const SKILL: &str = include_str!("handoff/SKILL.md");
 const WIZARD_SKILL: &str = include_str!("wizard/SKILL.md");
 const WIZARD_TEMPLATE: &str = include_str!("wizard/template.sh");
 
-/// One skill forge ships: its name, and every file that lands in
-/// `<config_dir>/skills/<name>/`.
+/// One skill forge ships: its name, every file that lands in
+/// `<config_dir>/skills/<name>/`, and the files a previous version
+/// installed that the current asset no longer carries.
 pub struct ShippedSkill {
     pub name: &'static str,
     pub files: &'static [(&'static str, &'static str)],
+    /// **Only these names, and `*.tmp` leftovers, are ever swept.** The
+    /// skills directory is the person's own as well as forge's: anything
+    /// else they put beside ours is theirs and is left alone.
+    pub retired: &'static [&'static str],
 }
 
 const HANDOFF_FILES: &[(&str, &str)] = &[("SKILL.md", SKILL)];
@@ -981,8 +986,8 @@ const WIZARD_FILES: &[(&str, &str)] =
 /// bytes are what an existing config dir already holds and what the handoff
 /// prompt invokes; the wizard is a second directory beside it.
 const SHIPPED_SKILLS: &[ShippedSkill] = &[
-    ShippedSkill { name: "handoff", files: HANDOFF_FILES },
-    ShippedSkill { name: "wizard", files: WIZARD_FILES },
+    ShippedSkill { name: "handoff", files: HANDOFF_FILES, retired: &[] },
+    ShippedSkill { name: "wizard", files: WIZARD_FILES, retired: &[] },
 ];
 
 /// The skills forge installs at boot.
@@ -1012,70 +1017,152 @@ pub fn skill_path(config_dir: &Path, name: &str) -> PathBuf {
 
 /// Install one shipped skill into [`skill_dir`].
 ///
-/// **forge.toml stays hand-authored and forge never writes it; these skill
-/// directories are forge's own inside the config dir.** Every file is
-/// compared byte for byte and rewritten, atomically through a temp file in
-/// the same directory, only when the shipped text differs. A file the asset
-/// no longer carries is removed, and nothing outside the skill's own
-/// directory is ever read for removal or written.
+/// **forge.toml is not written by this path; these skill directories are
+/// forge's own inside the config dir.** Every file is compared byte for byte
+/// and only the ones that differ are rewritten, all staged as temp files
+/// first and renamed together, so a two-file skill cannot land half-updated.
+/// A `*.tmp` leftover or a name the skill retired is removed; nothing else
+/// in the directory is, because the person's own files live there too.
 pub fn install_skill(config_dir: &Path, skill: &ShippedSkill) -> std::io::Result<SkillInstall> {
     let dir = skill_dir(config_dir, skill.name);
     let mut held_a_copy = false;
-    let mut differs = false;
+    let mut differing: Vec<(&'static str, &'static str)> = Vec::new();
     for (name, contents) in skill.files {
         match std::fs::read(dir.join(name)) {
             Ok(existing) => {
                 held_a_copy = true;
                 if existing != contents.as_bytes() {
-                    differs = true;
+                    differing.push((name, contents));
                 }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => differs = true,
-            Err(error) => return Err(error),
-        }
-    }
-    let mut stale: Vec<PathBuf> = Vec::new();
-    if dir.is_dir() {
-        for entry in std::fs::read_dir(&dir)? {
-            let entry = entry?;
-            let file_name = entry.file_name();
-            let shipped = skill.files.iter().any(|(name, _)| file_name == *name);
-            // **Only regular files are swept.** A leftover temp from a failed
-            // write is one of them; a subdirectory the person put there is
-            // not forge's to remove.
-            if !shipped && entry.file_type()?.is_file() {
-                stale.push(entry.path());
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                differing.push((name, contents));
             }
+            Err(error) => return Err(named(&error, &dir.join(name))),
         }
     }
+
+    let sweep = sweep_candidates(&dir, skill)?;
     let outcome = if !held_a_copy {
         SkillInstall::Created
-    } else if differs || !stale.is_empty() {
-        SkillInstall::Replaced
-    } else {
+    } else if differing.is_empty() && sweep.is_empty() {
         return Ok(SkillInstall::Unchanged);
+    } else {
+        SkillInstall::Replaced
     };
+
     std::fs::create_dir_all(&dir)?;
-    for (name, contents) in skill.files {
+    // **All content is staged before any of it is renamed into place.** A
+    // two-file skill whose second write failed would otherwise leave the
+    // first file new and the second old.
+    let mut staged: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(differing.len());
+    for (name, contents) in &differing {
         let path = dir.join(name);
         let temp = dir.join(format!("{name}.tmp"));
-        // **Nothing half-written is left behind.** The temp sits in the config
-        // dir a sync daemon watches, so a failed write or rename removes it.
-        if let Err(error) =
-            std::fs::write(&temp, contents.as_bytes()).and_then(|()| std::fs::rename(&temp, &path))
-        {
+        if let Err(error) = std::fs::write(&temp, contents.as_bytes()) {
             let _ = std::fs::remove_file(&temp);
-            return Err(error);
+            remove_all(&staged);
+            return Err(named(&error, &path));
+        }
+        staged.push((temp, path));
+    }
+    for (temp, path) in &staged {
+        // **Nothing half-written is left behind.** The temps sit in the
+        // config dir a sync daemon watches, so a failure removes every one.
+        if let Err(error) = std::fs::rename(temp, path) {
+            remove_all(&staged);
+            return Err(named(&error, path));
         }
     }
-    for path in stale {
-        if let Err(error) = std::fs::remove_file(&path)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            return Err(error);
+
+    // **A removal that fails is not an install that failed.** The new bytes
+    // are already on disk; the leftover is retried on the next boot, and a
+    // WARN says so without sending the boot down its failure line.
+    let mut removed = 0_usize;
+    for path in &sweep {
+        match std::fs::remove_file(path) {
+            Ok(()) => {
+                removed += 1;
+                tracing::debug!(
+                    target: "forge_workspace::skills",
+                    event_name = "skill_file_removed",
+                    skill = skill.name,
+                    path = %path.display(),
+                    "a retired skill file was removed",
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => tracing::warn!(
+                target: "forge_workspace::skills",
+                event_name = "skill_file_remove_failed",
+                skill = skill.name,
+                path = %path.display(),
+                %error,
+                "a retired skill file could not be removed; the install itself is unaffected",
+            ),
         }
+    }
+    if removed > 0 {
+        tracing::info!(
+            target: "forge_workspace::skills",
+            event_name = "skill_files_swept",
+            skill = skill.name,
+            removed,
+            "retired skill files were removed",
+        );
     }
     Ok(outcome)
+}
+
+/// The files inside one skill's directory that are forge's to remove: a
+/// `*.tmp` leftover from a failed write, or a name the skill retired.
+///
+/// **A symlinked directory is never swept.** Reading it would take the
+/// removal outside the config dir, which is not forge's to touch.
+fn sweep_candidates(dir: &Path, skill: &ShippedSkill) -> std::io::Result<Vec<PathBuf>> {
+    let Ok(metadata) = std::fs::symlink_metadata(dir) else { return Ok(Vec::new()) };
+    // **The symlink check comes before `is_dir`, which follows it.** Reading
+    // through the link would take the removal out of the config dir.
+    if metadata.file_type().is_symlink() {
+        tracing::debug!(
+            target: "forge_workspace::skills",
+            event_name = "skill_sweep_skipped",
+            skill = skill.name,
+            path = %dir.display(),
+            "the skill directory is a symlink; nothing is swept",
+        );
+        return Ok(Vec::new());
+    }
+    if !metadata.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut sweep = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let swept = file_name.to_str().is_some_and(|name| {
+            let is_temp = std::path::Path::new(name)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("tmp"));
+            is_temp || skill.retired.contains(&name)
+        });
+        // **Only regular files.** A subdirectory is the person's, whatever
+        // its name looks like.
+        if swept && entry.file_type()?.is_file() {
+            sweep.push(entry.path());
+        }
+    }
+    Ok(sweep)
+}
+
+fn remove_all(staged: &[(PathBuf, PathBuf)]) {
+    for (temp, _) in staged {
+        let _ = std::fs::remove_file(temp);
+    }
+}
+
+fn named(error: &std::io::Error, path: &Path) -> std::io::Error {
+    std::io::Error::new(error.kind(), format!("{}: {error}", path.display()))
 }
 
 /// A prompt held because the seat was swapping its occupant.
@@ -2986,34 +3073,126 @@ fix the parser, then the client row.";
         );
     }
 
-    /// A file the asset no longer carries is the skill's no more, and the
-    /// sweep never leaves the skill's own directory.
+    /// **Only `*.tmp` leftovers and names the skill retired are swept.**
+    /// `<config_dir>/skills/` is the person's own directory too, so a note, a
+    /// helper or a subdirectory beside `SKILL.md` survives a boot that
+    /// rewrites the skill.
     #[test]
-    fn a_stale_file_in_a_skill_directory_is_removed() {
+    fn the_sweep_takes_only_tmp_files_and_retired_names() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let retired =
+            ShippedSkill { name: "wizard", files: WIZARD_FILES, retired: &["old-stage.sh"] };
+        install_skill(dir.path(), &retired).expect("install");
+        let root = skill_dir(dir.path(), "wizard");
+        std::fs::write(root.join("leftover.tmp"), "half a write").expect("temp");
+        std::fs::write(root.join("old-stage.sh"), "#!/bin/sh\n").expect("retired");
+        std::fs::write(root.join("note.md"), "mine").expect("user file");
+        std::fs::create_dir(root.join("helpers")).expect("user dir");
+        std::fs::write(root.join("helpers").join("old-stage.sh"), "keep").expect("inside a dir");
+
+        assert_eq!(install_skill(dir.path(), &retired).expect("install"), SkillInstall::Replaced);
+        assert!(!root.join("leftover.tmp").exists(), "a leftover temp is swept");
+        assert!(!root.join("old-stage.sh").exists(), "a retired name is swept");
+        assert!(root.join("note.md").exists(), "the person's file survives");
+        assert!(root.join("helpers").join("old-stage.sh").exists(), "a subdirectory is theirs");
+    }
+
+    /// The shipped skills retire nothing today, so an unrecognised file is
+    /// not even a change, let alone a removal.
+    #[test]
+    fn a_shipped_skill_sweeps_nothing_it_did_not_retire() {
         let dir = tempfile::tempdir().expect("tempdir");
         let wizard = skill_named("wizard");
         install_skill(dir.path(), wizard).expect("install");
-        let stale = skill_dir(dir.path(), "wizard").join("old-stage.sh");
-        std::fs::write(&stale, "#!/bin/sh\n").expect("stale file");
-        let elsewhere = skill_dir(dir.path(), "handoff").join("keep.txt");
-        std::fs::create_dir_all(elsewhere.parent().expect("parent")).expect("handoff dir");
-        std::fs::write(&elsewhere, "not this skill's").expect("other skill");
-
-        assert_eq!(install_skill(dir.path(), wizard).expect("install"), SkillInstall::Replaced);
-        assert!(!stale.exists(), "the stale file is gone");
-        assert!(elsewhere.exists(), "another skill's directory is never swept");
+        let user_file = skill_dir(dir.path(), "wizard").join("old-stage.sh");
+        std::fs::write(&user_file, "#!/bin/sh\n").expect("user file");
+        assert_eq!(
+            install_skill(dir.path(), wizard).expect("install"),
+            SkillInstall::Unchanged,
+            "an unknown file is not the skill's to sweep",
+        );
+        assert!(user_file.exists(), "and it is still there");
     }
 
-    /// A directory where a file belongs is a read error, not "absent": the
-    /// install refuses rather than writing through it.
+    /// A file the asset carries that has gone missing is put back, and the
+    /// whole skill reports replaced.
     #[test]
-    fn an_unreadable_skill_file_is_an_error() {
+    fn a_deleted_file_comes_back_on_the_next_install() {
         let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(skill_path(dir.path(), "handoff")).expect("dir in its place");
-        assert!(
-            install_skill(dir.path(), skill_named("handoff")).is_err(),
-            "an unreadable skill is an error",
+        let wizard = skill_named("wizard");
+        install_skill(dir.path(), wizard).expect("install");
+        let template = skill_dir(dir.path(), "wizard").join("template.sh");
+        std::fs::remove_file(&template).expect("delete");
+        assert_eq!(install_skill(dir.path(), wizard).expect("install"), SkillInstall::Replaced);
+        assert_eq!(std::fs::read(&template).expect("read"), WIZARD_TEMPLATE.as_bytes());
+    }
+
+    /// **A file the asset still carries is not rewritten when a sibling
+    /// changes.** A whole-directory rewrite would move this file's mtime and
+    /// hand a sync daemon two writes where one was owed.
+    #[test]
+    fn a_second_install_rewrites_only_the_file_that_differs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wizard = skill_named("wizard");
+        install_skill(dir.path(), wizard).expect("install");
+        let root = skill_dir(dir.path(), "wizard");
+        let template = root.join("template.sh");
+        let before = std::fs::metadata(&template).expect("stat").modified().expect("mtime");
+        let skill_md = root.join("SKILL.md");
+        let mut bytes = std::fs::read(&skill_md).expect("read");
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0x01;
+        std::fs::write(&skill_md, bytes).expect("edit");
+        assert_eq!(install_skill(dir.path(), wizard).expect("install"), SkillInstall::Replaced);
+        let after = std::fs::metadata(&template).expect("stat").modified().expect("mtime");
+        assert_eq!(before, after, "the unchanged file is left alone");
+        assert_eq!(std::fs::read(&skill_md).expect("read"), WIZARD_SKILL.as_bytes());
+    }
+
+    /// A file this process may not read is an error from the read itself,
+    /// and the bytes on disk are untouched.
+    #[test]
+    fn an_unreadable_skill_file_is_an_error_and_leaves_the_bytes_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let skill_md = skill_path(dir.path(), "handoff");
+        std::fs::create_dir_all(skill_md.parent().expect("parent")).expect("dir");
+        std::fs::write(&skill_md, b"mine").expect("write");
+        std::fs::set_permissions(&skill_md, std::fs::Permissions::from_mode(0o000)).expect("mode");
+        let result = install_skill(dir.path(), skill_named("handoff"));
+        // Restore before asserting, so the tempdir can clean up either way.
+        std::fs::set_permissions(&skill_md, std::fs::Permissions::from_mode(0o644)).expect("mode");
+
+        let error = result.expect_err("an unreadable skill file is an error");
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "the read's own error, not a later write: {error}",
         );
+        assert_eq!(std::fs::read(&skill_md).expect("read"), b"mine", "the bytes are untouched");
+    }
+
+    /// **A removal that fails is not an install that failed.** The new bytes
+    /// are on disk; the leftover is retried next boot and a WARN says so.
+    #[test]
+    fn a_failed_sweep_does_not_fail_the_install() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wizard = skill_named("wizard");
+        install_skill(dir.path(), wizard).expect("install");
+        let root = skill_dir(dir.path(), "wizard");
+        let leftover = root.join("leftover.tmp");
+        std::fs::write(&leftover, "half a write").expect("temp");
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o555)).expect("mode");
+        let result = install_skill(dir.path(), wizard);
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).expect("mode");
+
+        assert_eq!(
+            result.expect("a failed removal is not an install failure"),
+            SkillInstall::Replaced,
+            "the sweep was owed, so the skill reads replaced",
+        );
+        assert!(leftover.exists(), "the leftover is left for the next boot");
     }
 
     /// The name the prompt invokes is the name the skill declares and the
@@ -3055,6 +3234,9 @@ fix the parser, then the client row.";
             Path::new("/tmp/cfg").join("skills").join("wizard").join("SKILL.md"),
             "the install directory is the frontmatter's name",
         );
+        // **Pinned on the words, not the wrap**: the file is prose, and a
+        // clause that happens to straddle a line is still the same promise.
+        let flat = WIZARD_SKILL.split_whitespace().collect::<Vec<_>>().join(" ");
         for (clause, why) in [
             ("terminal__open", "the seat's own terminal"),
             ("terminal__hand_off", "the human-only hand-off"),
@@ -3063,14 +3245,24 @@ fix the parser, then the client row.";
             ("browser_hand_off", "the tab hand-off"),
             ("`open_url` in the script is the fallback", "the no-browser fallback"),
             ("`settings__get`", "credentials: settings first"),
-            ("`vault__search`", "then the vault"),
+            (
+                "when it is a stored credential and your tool list carries the vault family",
+                "the \
+              vault is conditional on the family",
+            ),
+            ("If the family was withheld from this session, ask your lead", "the withheld family"),
             ("`ask_secret` in the terminal", "then hidden entry"),
             ("Never ask for a secret in chat", "no secret in chat"),
-            ("memory/wizards/<slug>.md", "the stage file a handoff resumes"),
+            ("never embedded in the script", "a found value is not written into the script"),
+            ("`gh variable`", "the CI destination set"),
+            ("`wizards/<slug>.md`", "the stage file a handoff resumes"),
+            ("a worker keeps its stage in its own `workers/<label>.md`", "the seat rule"),
+            ("if confirm \"Delete the old webhook?\"", "the confirm idiom"),
             ("the `handoff` skill's", "the handoff pointer, not a copy of it"),
             ("never invent UI steps", "the no-invented-UI boundary"),
         ] {
-            assert!(WIZARD_SKILL.contains(clause), "the wizard skill drops '{clause}' ({why})");
+            let clause = clause.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(flat.contains(&clause), "the wizard skill drops '{clause}' ({why})");
         }
         assert!(
             WIZARD_TEMPLATE.contains("Wizard library") && WIZARD_TEMPLATE.contains("STAGES"),

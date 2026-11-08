@@ -163,23 +163,26 @@ pub fn start_core(config_dir: &Path, project: Option<&str>) -> anyhow::Result<Ar
 
 /// Install the skills forge ships into the config dir.
 ///
-/// **forge.toml is never written; these skill directories are.** Each skill
-/// is forge's own text, compared byte for byte, so an upgrade refreshes it
-/// and a boot with identical copies touches nothing. One skill's failure is
-/// its own line: the rest still install.
+/// **forge.toml is not written by this path; these skill directories are.**
+/// Each skill is forge's own text, compared byte for byte, so an upgrade
+/// refreshes what differs and a boot with identical copies touches nothing.
+/// One skill's failure is its own line: the rest still install.
 fn install_shipped_skills(config_dir: &Path) {
     for skill in forge_workspace::shipped_skills() {
         let dir = forge_workspace::skill_dir(config_dir, skill.name);
         match forge_workspace::install_skill(config_dir, skill) {
             Ok(forge_workspace::SkillInstall::Unchanged) => {}
-            Ok(outcome) => {
-                let action = match outcome {
-                    forge_workspace::SkillInstall::Created => "created",
-                    forge_workspace::SkillInstall::Replaced => "replaced",
-                    forge_workspace::SkillInstall::Unchanged => continue,
+            Ok(
+                outcome @ (forge_workspace::SkillInstall::Created
+                | forge_workspace::SkillInstall::Replaced),
+            ) => {
+                let action = if outcome == forge_workspace::SkillInstall::Created {
+                    "created"
+                } else {
+                    "replaced"
                 };
                 tracing::info!(
-                    target: "forge_workspace::handoff",
+                    target: "forge_workspace::skills",
                     event_name = skill_installed_event(skill.name),
                     skill = skill.name,
                     path = %dir.display(),
@@ -189,16 +192,29 @@ fn install_shipped_skills(config_dir: &Path) {
             }
             Err(error) => {
                 tracing::warn!(
-                    target: "forge_workspace::handoff",
+                    target: "forge_workspace::skills",
                     event_name = skill_install_failed_event(skill.name),
                     skill = skill.name,
                     path = %dir.display(),
+                    consequence = skill_failure_consequence(skill.name),
                     %error,
-                    "the skill could not be installed; a prompt that invokes it falls back to \
-                     its own steps",
+                    "the skill could not be installed",
                 );
             }
         }
+    }
+}
+
+/// What a failed install leaves behind, per skill.
+///
+/// **Handoff degrades; the wizard is absent.** A handoff turn carries its
+/// three steps in the judgment prompt as a fallback, while nothing invokes
+/// the wizard but its own text - so the line says which of the two happened
+/// rather than one sentence standing for both.
+fn skill_failure_consequence(name: &str) -> &'static str {
+    match name {
+        "handoff" => "a handoff turn falls back to the prompt's own steps",
+        _ => "the skill is absent until a boot installs it",
     }
 }
 
@@ -878,8 +894,8 @@ pub fn stop_result(unready: &[forge_primitives::SessionSlot]) -> anyhow::Result<
 #[cfg(test)]
 mod tests {
     use super::{
-        BOOT_WAVE_WAIT, install_crypto_provider, panic_record, start_boot_wave, start_config_watch,
-        start_subsystems, stop_result, wait_for_accounts,
+        BOOT_WAVE_WAIT, install_crypto_provider, install_shipped_skills, panic_record,
+        start_boot_wave, start_config_watch, start_subsystems, stop_result, wait_for_accounts,
     };
     #[cfg(target_os = "macos")]
     use super::{configure_fleet_profiles, reap_then_prune};
@@ -938,6 +954,39 @@ mod tests {
                     && fields.contains("event_name=\"rustls_crypto_provider\"")
             }),
             "the boot entry logs the provider install before it builds anything: {events:?}",
+        );
+    }
+
+    /// **Each skill's install line keeps its own name.** Handoff's pair is
+    /// what existing traces and greps know, so it must not move; the wizard's
+    /// is its own rather than folded into handoff's line, and a boot with
+    /// nothing to write says nothing.
+    #[test]
+    fn the_boot_names_each_skills_install_event() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events = crate::test_support::logged(|| install_shipped_skills(dir.path()));
+
+        for (skill, event) in
+            [("handoff", "handoff_skill_installed"), ("wizard", "wizard_skill_installed")]
+        {
+            assert!(
+                events.iter().any(|(level, fields)| {
+                    *level == tracing::Level::INFO
+                        && fields.contains(&format!("event_name=\"{event}\""))
+                        && fields.contains(&format!("skill=\"{skill}\""))
+                        && fields.contains("action=\"created\"")
+                }),
+                "{skill}'s install line is named {event}: {events:?}",
+            );
+        }
+        assert_eq!(super::skill_install_failed_event("handoff"), "handoff_skill_install_failed");
+        assert_eq!(super::skill_install_failed_event("wizard"), "wizard_skill_install_failed");
+
+        let second = crate::test_support::logged(|| install_shipped_skills(dir.path()));
+        assert!(
+            !second.iter().any(|(_, fields)| fields.contains("_skill_installed")
+                || fields.contains("_skill_install_failed")),
+            "an unchanged boot writes no install line: {second:?}",
         );
     }
 
