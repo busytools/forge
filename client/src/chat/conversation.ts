@@ -71,11 +71,10 @@ export interface Turn {
   /**
    * The newest row of a conversation whose seat has a turn in flight.
    *
-   * A second fact beside `live`, and it is kept current rather than
-   * stamped: the core says whether a turn is running and a page read while one
-   * is carries no `result` frame to say it, so a newer answer has to be able to
-   * take this back. `live` cannot carry it, since a turn the frames built stays
-   * live for good.
+   * A second fact beside `live`: a page read while a turn runs carries no
+   * `result` frame to say so, so the seat's answer is written here when it
+   * arrives - and a `false` from it takes the bar back, which `live` cannot do
+   * since a turn the frames built stays live for good.
    */
   running?: boolean;
   /**
@@ -214,14 +213,28 @@ export function runningAt(
  *
  * Two carriers of the one fact. `live` is a turn the frames built, which stays
  * true until a page settles it; `running` is the core's own answer, kept
- * current so a turn that ends can take it back.
+ * current so a turn that ends can take it back. **This one is the frames'
+ * side** - a turn may still take the closing rows of the exchange it was - and
+ * [`inFlight`] is the record's, which is what a bar or a new prompt follows.
  *
- * **One copy, because two views fold from it**: the turn's row, and the strip
- * pinned above the box while the turn is written. A view that read this
- * differently would draw the running row of a turn the other has settled.
+ * **One copy, because every view folds from the pair**: the turn's own row,
+ * the newest row the strip pins, and the keys the draw is seeded with. A view
+ * that read them differently would draw the running row of a turn the others
+ * have settled.
  */
 export function beingWritten(turn: Turn): boolean {
   return turn.live || turn.running === true;
+}
+
+/**
+ * Whether the record still has this turn in flight: what the running bar draws
+ * on, and what decides whether a prompt joins the turn or opens one below it.
+ *
+ * The record's `false` outranks `live`; a turn opened after the answer carries
+ * no mark, so its own bar draws at once.
+ */
+export function inFlight(turn: Turn): boolean {
+  return beingWritten(turn) && turn.running !== false;
 }
 
 /** What the chat draws from. */
@@ -1747,18 +1760,23 @@ export class Chat {
     this.soon();
   }
 
-  /**
-   * The core's answer moved, so the newest row may have.
-   *
-   * **Re-answered rather than stamped.** A page read while a turn runs ends on
-   * the turn being written and carries no `result` frame for it, so the row
-   * cannot say it alone - and an answer only ever attached at ingest could
-   * never be taken back, leaving a running bar on a turn that ended.
-   */
+  /** The record's answer about a turn in flight, written on the newest turn. */
   private heard(running: boolean): void {
-    if (running === this.turnRunning) return;
     this.turnRunning = running;
-    this.fold((held) => this.answered(held));
+    this.fold((held) => this.recorded(this.answered(held), running));
+  }
+
+  /**
+   * The record's word, written on the turn that was newest when it arrived: a
+   * turn opened after the answer keeps no mark, so its own bar draws at once.
+   */
+  private recorded(held: Conversation, running: boolean): Conversation {
+    const last = held.turns.length - 1;
+    const turn = held.turns[last];
+    if (turn === undefined) return held;
+    const wanted = running && (!carriesResult(turn) || turn.running === true);
+    if (turn.running === wanted) return held;
+    return { ...held, turns: [...held.turns.slice(0, last), { ...turn, running: wanted }] };
   }
 
   /**
@@ -2851,6 +2869,10 @@ export class Chat {
                   fromPage,
                 ),
                 live: !settledRow(index),
+                // **The record's mark survives a landing.** A rebuilt turn
+                // that forgot it would draw the bar again for a turn the core
+                // has ended, which is what the mark exists to stop.
+                ...(match.running === undefined ? {} : { running: match.running }),
                 also,
               },
         );
@@ -3486,19 +3508,18 @@ export class Chat {
     // that drew it were only ever a stand-in for it.
     if (variant === 'turn_complete' || variant === 'turn_cancelled' || variant === 'turn_error') {
       // **The record is the truth for a COMPLETION, not this frame.** The
-      // CLI ends a turn per delivered prompt, so a mid-turn message turns
-      // one outward turn into several CLI turns - and each completion fires
-      // here while the seat is still running. `heard(false)` on its own
-      // killed the live row (its clock, its thinking count) until a
-      // remount; the store's record says whether the seat has a turn in
-      // flight. A genuine end still settles at once: the refresh below
-      // draws the page that carries its result. **An error or a cancel is
-      // an end in itself** - the core says so on this frame - so it takes
-      // the bar down directly.
-      if (variant === 'turn_complete') {
-        this.heard(this.heldRunning());
-      } else {
+      // CLI ends a turn per delivered prompt, so a mid-turn message turns one
+      // outward turn into several CLI turns - each completion fires here while
+      // the seat is still running - and a genuine end settles at once through
+      // the page the refresh below asks for. **A cancel is an end in itself.**
+      // **And an error asks the record**: `turn_error` names a dispatch that
+      // failed - a peer's row pressed into the chat before it was sent, a
+      // worker's kick - so it says nothing about the seat's own turn, and the
+      // turn that row opened has no mark to clear.
+      if (variant === 'turn_cancelled') {
         this.heard(false);
+      } else {
+        this.heard(this.heldRunning());
       }
       this.refresh();
       // The plan-limit next steps ride the turn's own failure (#1638), where
@@ -4065,15 +4086,16 @@ export class Chat {
       // mid-turn has its row from a page, and a frame that opened a row
       // beside it would be one turn in two.
       //
-      // **Being written is asked of the fold's own rule rather than of `live`**
-      // - a turn the frames built stays live for good (#1486), so a row that
-      // carries the frame it ended on is over whatever the flags say, and a
-      // prompt arriving after it must still open the next turn's row.
+      // **Being written is asked of the record as well as of `live`**
+      // (#1486, `inFlight`): a turn the frames built stays live for good, so a
+      // row that carries the frame it ended on is over whatever the flags say,
+      // and one the core has ended - with no Result in it - stops taking
+      // prompts, which is the transcript fold's own rule.
       //
       // **And a compaction's continuation is the exception**, in the fold and
       // here alike: it belongs in the turn holding its boundary, so a turn of
       // its own would draw the boundary's row and a second, summary-only one.
-      const writing = last !== undefined && beingWritten(last) && !carriesResult(last);
+      const writing = last !== undefined && inFlight(last) && !carriesResult(last);
       const joinsBoundary =
         last !== undefined && isContinuationPrompt(message) && holdsBoundary(last);
       const opens =
