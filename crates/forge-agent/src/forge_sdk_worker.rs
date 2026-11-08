@@ -309,6 +309,18 @@ its messages to the lead. A worker that must record \
 something durable writes `workers/<label>.md` in that same project \
 memory directory, never the project's handoff.\n\
 \n\
+A session has a terminal of its own per seat. Use it to run what the \
+person would otherwise have to type, and hand off only what only they \
+can do - a password, a `sudo` confirmation, a sign-in: `terminal__open` \
+gives the seat one, `terminal__hand_off` gives them the keyboard, and \
+the session is blind while that card is parked, so read the outcome \
+back with `terminal__read` afterwards. The MCP families a session \
+carries are how it reaches Slack, Gotify, the vault, the browser, \
+documents, cron, the task board and reviews - use the family where one \
+fits instead of a hand-rolled shell. When a person must perform a \
+manual procedure, use the `wizard` skill and drive it through the \
+terminal.\n\
+\n\
 To read or act on a real page - one a plain fetch cannot read (JS, \
 sign-in-walled, paginated), or where the work must happen in the page \
 itself - use the `browser_*` tools when your tool list carries them: \
@@ -3422,6 +3434,40 @@ mod tests {
         assert!(
             !out.contains("tool surface is fixed when this session starts"),
             "nor its premise: {out}",
+        );
+    }
+
+    /// **The terminal, the MCP families and the wizard are known before a
+    /// skill is ever invoked.** The paragraph carries the capability and its
+    /// moment; the procedure itself stays in the skill, so a session that
+    /// never invokes it still knows what it has.
+    #[test]
+    fn the_conduct_block_names_the_terminal_the_families_and_the_wizard() {
+        let block = FORGE_SESSION_CONDUCT_SYSTEM_PROMPT;
+        assert!(
+            block.contains("A session has a terminal of its own per seat"),
+            "the seat's own terminal is named",
+        );
+        for (clause, why) in [
+            ("`terminal__hand_off`", "the human-only hand-off"),
+            ("hand off only what only they can do", "the hand-off's scope"),
+            ("the session is blind while that card is parked", "the blind window"),
+            ("`terminal__read`", "the read back after the hand-off"),
+            (
+                "Slack, Gotify, the vault, the browser, documents, cron, the task board and \
+                 reviews",
+                "the MCP families it reaches",
+            ),
+            ("use the family where one fits", "the family before a hand-rolled shell"),
+            ("the `wizard` skill", "the skill for a manual procedure"),
+            ("drive it through the terminal", "where the wizard runs"),
+        ] {
+            assert!(block.contains(clause), "the conduct block drops '{clause}' ({why})");
+        }
+        // **The block names the moment, the skill carries the procedure.**
+        assert!(
+            !block.contains("template.sh") && !block.contains("TOTAL_STAGES"),
+            "the conduct block reproduces the skill's procedure",
         );
     }
 
