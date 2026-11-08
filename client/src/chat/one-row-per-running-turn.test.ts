@@ -14,7 +14,7 @@ import { fold, type Unit } from './units';
  * and nothing arriving mid-turn may split it in two. A turn the client watched
  * open is the frames path; a turn it reached mid-flight has its row from a
  * page, and the seat's own answer - `header.turn_in_flight` - is what says so.
- * The answer is re-read rather than stamped, so a page that lands before it
+ * The answer is stamped on the turn it is about, so a page that lands before it
  * still gets the bar, and a turn that ends takes it back.
  */
 
@@ -490,11 +490,11 @@ describe('one row per running turn', () => {
   });
 
   /**
-   * A Result that never reached this client - a gap, a drop, a hold that
-   * expired - leaves the turn with no end frame, and the seat's answer is the
-   * only thing that says it is over. Until that answer settles it, the next
-   * prompt is folded into the turn that is over and the strip draws one turn
-   * for two. The strip's own half is `Chat.test.ts`'s.
+   * A turn can lose its Result - a gap, a drop, a hold that expired - and then
+   * no frame of its own says it is over; the seat's answer is the only thing
+   * that does. Until that answer settles it, the next prompt is folded into
+   * the turn that is over and the strip draws one turn for two. The strip's
+   * own half is `Chat.test.ts`'s.
    *
    * The `false` is written on the turn it was about, so the next turn opens
    * clean and draws its bar as soon as its frames do - an answer inherited by
@@ -519,6 +519,23 @@ describe('one row per running turn', () => {
       'the prompt opened a turn of its own',
     ).toHaveLength(2);
     expect(bar(newest(chat)), 'and the new turn draws its own bar').toBe(true);
+  });
+
+  it('keeps the bar when a dispatch failure names no turn', () => {
+    // `turn_error` is the core's word on a DISPATCH that failed - a peer's
+    // delivery, a kicked worker - not on the seat's own turn, so it may clear
+    // a mark but must not settle a turn the record has not ended.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([], null));
+    server.update({ chat_appended: { key: LEAD, msg: typed('mine') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('working') } });
+    expect(bar(newest(chat)), 'precondition: the bar is up').toBe(true);
+
+    server.update({ turn_error: { key: LEAD } });
+
+    expect(bar(newest(chat)), 'a dispatch failure did not take the bar down').toBe(true);
   });
 
   it('reads a seat returned to after its turn died on the error frame', () => {

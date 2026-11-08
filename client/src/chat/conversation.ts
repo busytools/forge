@@ -71,11 +71,10 @@ export interface Turn {
   /**
    * The newest row of a conversation whose seat has a turn in flight.
    *
-   * A second fact beside `live`, and it is kept current rather than
-   * stamped: the core says whether a turn is running and a page read while one
-   * is carries no `result` frame to say it, so a newer answer has to be able to
-   * take this back. `live` cannot carry it, since a turn the frames built stays
-   * live for good.
+   * A second fact beside `live`: a page read while a turn runs carries no
+   * `result` frame to say so, so the seat's answer is written here when it
+   * arrives - and a `false` from it takes the bar back, which `live` cannot do
+   * since a turn the frames built stays live for good.
    */
   running?: boolean;
   /**
@@ -231,12 +230,8 @@ export function beingWritten(turn: Turn): boolean {
  * Whether the record still has this turn in flight: what the running bar draws
  * on, and what decides whether a prompt joins the turn or opens one below it.
  *
- * **The record's `false` outranks `live` here**, while `beingWritten` still
- * lets the turn take its closing frames. A Result that never reached this
- * client - a gap, a drop, a hold that expired - leaves nothing else that would
- * take the bar down, and the strip above the box would draw a clock counting
- * the downtime under a live seat. A turn opened after the answer carries no
- * mark at all, so the next turn draws its bar as soon as its frames do.
+ * The record's `false` outranks `live`; a turn opened after the answer carries
+ * no mark, so its own bar draws at once.
  */
 export function inFlight(turn: Turn): boolean {
   return beingWritten(turn) && turn.running !== false;
@@ -1766,31 +1761,21 @@ export class Chat {
   }
 
   /**
-   * The core's answer moved, so the newest row may have.
-   *
-   * **An answer is never attached at ingest alone.** A page read while a turn
-   * runs ends on the turn being written and carries no `result` frame for it,
-   * so a mark only ever set when the page landed could never be taken back,
-   * leaving a running bar on a turn that ended.
-   *
-   * **Every answer is a fold, even one that moves nothing**: the word is
-   * written onto the turn it is about (see `recorded`), and a `false` about a
-   * turn no earlier answer had marked has to land somewhere.
+   * The record's answer about a turn in flight, re-read rather than left to the
+   * page that landed. `settle` writes it onto the newest turn; a frame that may
+   * only clear a mark passes `false`.
    */
-  private heard(running: boolean): void {
+  private heard(running: boolean, settle = true): void {
     this.turnRunning = running;
-    this.fold((held) => this.recorded(this.answered(held), running));
+    this.fold((held) => {
+      const answered = this.answered(held);
+      return settle ? this.recorded(answered, running) : answered;
+    });
   }
 
   /**
-   * The record's word about the newest turn, written where the answer arrives.
-   *
-   * **Stamped at the answer rather than re-answered on every fold.** A turn
-   * opened after the answer must not inherit it: `undefined` is a turn no
-   * answer has reached, and it keeps `live`'s meaning, so the next turn draws
-   * its bar as soon as its frames do. What this writes is the take-back - a
-   * `false` on the turn the record was talking about - which is what stops a
-   * running row whose Result never reached this client.
+   * The record's word, written on the turn that was newest when it arrived: a
+   * turn opened after the answer keeps no mark, so its own bar draws at once.
    */
   private recorded(held: Conversation, running: boolean): Conversation {
     const last = held.turns.length - 1;
@@ -2891,6 +2876,10 @@ export class Chat {
                   fromPage,
                 ),
                 live: !settledRow(index),
+                // **The record's mark survives a landing.** A rebuilt turn
+                // that forgot it would draw the bar again for a turn the core
+                // has ended, which is what the mark exists to stop.
+                ...(match.running === undefined ? {} : { running: match.running }),
                 also,
               },
         );
@@ -3538,7 +3527,10 @@ export class Chat {
       if (variant === 'turn_complete') {
         this.heard(this.heldRunning());
       } else {
-        this.heard(false);
+        // **Only a cancel settles the turn.** `turn_error` names a dispatch
+        // that failed - a peer's delivery, a worker's kick - not the seat's
+        // own turn, so it may clear a mark but must not write one.
+        this.heard(false, variant === 'turn_cancelled');
       }
       this.refresh();
       // The plan-limit next steps ride the turn's own failure (#1638), where

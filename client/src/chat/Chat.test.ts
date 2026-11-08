@@ -251,6 +251,19 @@ const frame = (uuid: string, input: number): unknown => ({
   },
 });
 
+/** One assistant frame calling a tool, whose row draws as work in flight. */
+const toolCall = (id: string, name: string): unknown => ({
+  type: 'assistant',
+  uuid: `a-${id}`,
+  timestamp: '2026-10-01T06:00:01Z',
+  message: {
+    id: `m-${id}`,
+    role: 'assistant',
+    model: 'claude-opus-5',
+    content: [{ type: 'tool_use', id, name, input: {} }],
+  },
+});
+
 /**
  * The reader's own frame, which is the one kind a turn opens at: the
  * transcript fold answers false for every Assistant frame, so a turn of the
@@ -1156,9 +1169,9 @@ describe('the chat column as it draws', () => {
 
   /**
    * **The strip is the newest turn's report row, so the record has to reach
-   * it.** A Result that never arrived - a gap, a drop, a hold that expired -
-   * leaves the turn with no end frame of its own, and until the seat's answer
-   * takes the bar down the pinned row draws a clock counting the downtime
+   * it.** A turn can lose its Result - a gap, a drop, a hold that expired -
+   * and then no frame of its own says it is over: until the seat's answer
+   * takes the bar down, the pinned row draws a clock counting the downtime
    * under a live seat.
    */
   it('takes the strip down when the record ends a turn the frames built', async () => {
@@ -1202,6 +1215,54 @@ describe('the chat column as it draws', () => {
     await painted();
 
     expect(pinnedRow.of(PIN), 'the record ended the turn the strip was drawing').toBeNull();
+  });
+
+  it('keeps the bar down when a page lands over the settled turn', async () => {
+    // The landing rebuilds the turn it matches, and a rebuild that forgets the
+    // record's mark brings the bar back - a page read before the CLI wrote a
+    // result for that turn is exactly that landing.
+    const server = stub();
+    draw({}, server);
+    server.answer([]);
+    server.send(appended(prompting('go')));
+    server.send(appended(frame('a-one', 100)));
+    await painted();
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: false } },
+    });
+    await painted();
+    expect(pinnedRow.of(PIN), 'precondition: the record took the bar down').toBeNull();
+
+    server.answer([{ key: null, messages: [prompting('go'), frame('a-one', 100)] }]);
+    await painted();
+
+    expect(pinnedRow.of(PIN), 'the landing did not bring the bar back').toBeNull();
+  });
+
+  it('stops drawing a call as running once the record ends the turn', async () => {
+    // The call's own result never arrived, and the record says the turn is
+    // over: the fold's rule is that an unanswered call in a settled turn is
+    // over, so its row must not keep drawing as work in flight.
+    const server = stub();
+    draw({}, server);
+    server.answer([]);
+    server.send(appended(prompting('go')));
+    server.send(appended(toolCall('c1', 'Bash')));
+    await painted();
+    /** The ring a call draws while it is out; a settled one draws a mark instead. */
+    const ring = (): Element | null => document.querySelector('[data-k^="call-"] .st .ring');
+    expect(ring(), 'precondition: the unanswered call draws as work in flight').not.toBeNull();
+
+    server.send({
+      kind: 'snapshot',
+      subject: { session: LEAD },
+      data: { header: { turn_in_flight: false } },
+    });
+    await painted();
+
+    expect(ring(), 'the record ended the turn, so the call is no longer in flight').toBeNull();
   });
 
   it('reserves no space for a held row that never measured', async () => {
@@ -2021,7 +2082,7 @@ describe('the arrival mark', () => {
     // **`live` is "built by frames", not "still being written".** A seat
     // opened while a turn runs gets its newest row from a page (`live: false`,
     // `running: true`) and the frames join that row - so the gate is
-    // `beingWritten`, the predicate the fold and the pin both use.
+    // `beingWritten`, which is what decides that frames still join it.
     vi.useFakeTimers();
     try {
       const server = stub();

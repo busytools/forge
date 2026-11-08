@@ -2,7 +2,7 @@
   import Icon from '../components/Icon.svelte';
   import Card from './Card.svelte';
   import CompactionPoint from './CompactionPoint.svelte';
-  import { beingWritten, inFlight, type Turn as HeldTurn } from './conversation';
+  import { inFlight, type Turn as HeldTurn } from './conversation';
   import Leaves from './Leaves.svelte';
   import Hooks from './Hooks.svelte';
   import Notice from './Notice.svelte';
@@ -69,7 +69,7 @@
     stops?: PageStops;
   } = $props();
 
-  const folded = $derived(turnFold(turn, slot, inFlight(turn), !beingWritten(turn), stops));
+  const folded = $derived(turnFold(turn, slot, inFlight(turn), !inFlight(turn), stops));
 
   /**
    * The fold's units, less the one row the pin is carrying.
