@@ -133,6 +133,43 @@ describe("the conversation draws at the terminal's density", () => {
   });
 
   /**
+   * **A row is its line.** A tool row carried 3px above and below on top of
+   * the run's own margins, which stood two consecutive rows 26.25px apart
+   * against the 20.925px of the prose they sit among (Ved, 2026-11-08). The
+   * ground a hovered or running row draws is now the line's own box; the
+   * horizontal inset stays, because it keeps the glyph and the text off the
+   * band's edge.
+   *
+   * **The body's top margin carries the 3px the row no longer spends**, so an
+   * opened row's body keeps its distance from the line.
+   */
+  it('draws an information row as its line, with no air of its own', () => {
+    /**
+     * One whole selector's declarations, matched exactly: `declared` reads a
+     * fragment, and `.body` is a prefix of `.bodytext` (whose `margin: 4px 0`
+     * would answer for it) while the row's selector prefixes a dozen `.gl`
+     * rules that declare padding of their own.
+     */
+    const ruleOf = (selector: string): string => {
+      const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // A control: an unmatched selector would let the assertions below read
+      // green over nothing.
+      const found = new RegExp(`^\\s*${escaped}\\s*\\{([^{}]*)\\}`, 'm').exec(SHEET)?.[1];
+      expect(found, `the sheet has no rule of its own for ${selector}`).toBeDefined();
+      return found ?? '';
+    };
+
+    expect(
+      /padding:\s*0 9px 0 8px\b/.test(ruleOf('details.leaf > summary, div.leaf > .rrow')),
+      'a row spends air above or below its line',
+    ).toBe(true);
+    expect(
+      /margin:\s*6px 0 6px 27px\b/.test(ruleOf('.body')),
+      "the body drops the row's former top spacing",
+    ).toBe(true);
+  });
+
+  /**
    * A table row is a line, near enough. 4px top and bottom took a row to
    * 1.96em against the 1.25em the view this client replaced drew, which is the
    * airiness that made a six-row state table read as a page of its own.

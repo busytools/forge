@@ -662,9 +662,10 @@
 
   /* one call, opening on its own - a half-step under the prose, kept distinct
      by its muted tone rather than by the size alone. A `.rrow` is the same row
-     without a disclosure: a static line has no pointer and no hover. */
+     without a disclosure: a static line has no pointer and no hover.
+     No vertical padding: a row is its line, and the hover ground hugs it. */
   details.leaf > summary, div.leaf > .rrow { list-style: none; display: flex; align-items: center;
-    gap: 8px; padding: 3px 9px 3px 8px; border-radius: 7px; cursor: pointer;
+    gap: 8px; padding: 0 9px 0 8px; border-radius: 7px; cursor: pointer;
     font-family: var(--mono); font-size: 15px; color: var(--muted); }
   div.leaf > .rrow { cursor: default; }
   details.leaf > summary::-webkit-details-marker { display: none; }
@@ -690,7 +691,7 @@
   /* A call that stands alone and breaks the run: a question's card. A peer
      block and a monitor's call join the list, and an edit is a family
      inside the group, drawn above. */
-  .body { margin: 3px 0 6px 27px; }
+  .body { margin: 6px 0 6px 27px; }
   /* The chrome a code panel and a call's plain body share; other result
      shapes keep their own. Hook rows do not compose it. */
   .panel { border: 1px solid var(--line); border-radius: 9px; background: var(--s2);
