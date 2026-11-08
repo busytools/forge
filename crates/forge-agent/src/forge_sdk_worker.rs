@@ -3739,8 +3739,9 @@ mod tests {
         // client.** The phone is a viewer of that same fleet; the block must
         // not describe a client-hosted browser or a phone-only one.
         assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("those tools reach only the server's browser, through this session's own tab"),
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "those tools reach only the server's browser, through this session's own tab"
+            ),
             "the browser paragraph names the fleet the tools reach",
         );
         assert!(
