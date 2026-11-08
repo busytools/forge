@@ -775,3 +775,34 @@ describe('what one hunk line costs to read', () => {
     expect(leaf.mutation?.omitted, 'and nothing says omitted').toBeNull();
   });
 });
+
+describe('a call whose title depends on how far it got', () => {
+  /**
+   * **The leaf hands the title an outcome, not a boolean.** A held upload is
+   * `uploading 'brief.pdf'` until it answers and `uploaded 'brief.pdf'` after;
+   * a title built from a two-way `running | failed` split cannot say either
+   * without lying about the other, and this is the wiring that carries the
+   * third state.
+   */
+  it('tenses a Slack attachment by whether its result has landed', () => {
+    const upload = { path: '/tmp/brief.pdf', conversation: 'C1' };
+    const held = leafOf('t1', 'mcp__forge__slack__attachment', upload, undefined);
+    expect(held.title, 'the dock still holds it').toBe("uploading 'brief.pdf'");
+    expect(held.forge?.chips, 'and the row says so').toEqual([
+      { text: 'waiting for your approval', tone: 'warn' },
+    ]);
+    const sent = leafOf('t2', 'mcp__forge__slack__attachment', upload, answered('uploaded'));
+    expect(sent.title, 'only the answer makes it past tense').toBe("uploaded 'brief.pdf'");
+    expect(sent.forge, 'and the raw answer is what its open holds').toBeNull();
+    const fetching = leafOf(
+      't3',
+      'mcp__forge__slack__attachment',
+      { file_id: 'F1', dir: 'docs/' },
+      undefined,
+    );
+    expect(fetching.title, 'a fetch in flight is not downloaded yet').toBe(
+      'downloading attachment F1',
+    );
+    expect(fetching.forge?.chips, 'a fetch is not held').toEqual([]);
+  });
+});

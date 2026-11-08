@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { ServerMessage, SessionUpdate } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
-import { Chat, beingWritten, type PageTurn, type Turn } from './conversation';
+import { Chat, inFlight, type PageTurn, type Turn } from './conversation';
 import { fold, type Unit } from './units';
 
 /**
@@ -14,7 +14,7 @@ import { fold, type Unit } from './units';
  * and nothing arriving mid-turn may split it in two. A turn the client watched
  * open is the frames path; a turn it reached mid-flight has its row from a
  * page, and the seat's own answer - `header.turn_in_flight` - is what says so.
- * The answer is re-read rather than stamped, so a page that lands before it
+ * The answer is stamped on the turn it is about, so a page that lands before it
  * still gets the bar, and a turn that ends takes it back.
  */
 
@@ -179,7 +179,7 @@ const page = (turns: PageTurn[], cursor: string | null): ServerMessage => ({
 
 /** Whether the draw carries the bar, asked the way the row asks it. */
 const bar = (turn: Turn | undefined): boolean =>
-  turn !== undefined && running(fold(turn.messages, null, beingWritten(turn)));
+  turn !== undefined && running(fold(turn.messages, null, inFlight(turn), !inFlight(turn)));
 
 /** Whether a row is the turn being written, asked the way the column asks it. */
 const writing = (turn: Turn | undefined): boolean => turn?.running === true;
@@ -489,6 +489,62 @@ describe('one row per running turn', () => {
     expect(bar(newest(chat)), 'so the bar is gone').toBe(false);
   });
 
+  /**
+   * A turn can lose its Result - a gap, a drop, a hold that expired - and then
+   * no frame of its own says it is over; the seat's answer is the only thing
+   * that does. Until that answer settles it, the next prompt is folded into
+   * the turn that is over and the strip draws one turn for two. The strip's
+   * own half is `Chat.test.ts`'s.
+   *
+   * The `false` is written on the turn it was about, so the next turn opens
+   * clean and draws its bar as soon as its frames do - an answer inherited by
+   * every later turn would take that bar down too.
+   */
+  it('opens the next turn once the record ends a turn the frames built', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([], null));
+    server.update({ chat_appended: { key: LEAD, msg: typed('mine') } });
+    server.update({ chat_appended: { key: LEAD, msg: began() } });
+    server.update({ chat_appended: { key: LEAD, msg: said('working') } });
+    expect(bar(newest(chat)), 'precondition: the bar is up').toBe(true);
+
+    server.says(false);
+    server.update({ chat_appended: { key: LEAD, msg: typed('next') } });
+    server.update({ chat_appended: { key: LEAD, msg: said('the next answer') } });
+
+    expect(
+      get(chat.value).turns.map((turn) => turn.key),
+      'the prompt opened a turn of its own',
+    ).toHaveLength(2);
+    expect(bar(newest(chat)), 'and the new turn draws its own bar').toBe(true);
+  });
+
+  it('takes the bar down when a dispatch of a peer row fails', () => {
+    // **The core presses a peer's row into the chat before dispatching it**
+    // (`push_peer_user_turn_into_chat`), so the client opens a live turn no
+    // frame has marked running. When the dispatch fails, `turn_error` is the
+    // only word about it, and the record says no turn is in flight: the bar
+    // goes, and the refresh's own page cannot bring it back.
+    const peer = typed('[Message id=m-1 from agent x] do the thing');
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([], null));
+    server.update({ chat_appended: { key: LEAD, msg: peer } });
+    expect(bar(newest(chat)), 'precondition: the peer row opened a live turn').toBe(true);
+
+    server.update({ turn_error: { key: LEAD } });
+
+    expect(bar(newest(chat)), 'the failed dispatch left no turn running').toBe(false);
+
+    // The refresh the frame asks for lands a page with no result in it, which
+    // rebuilds the turn: the settlement has to survive that too.
+    server.send(page([{ key: null, messages: [peer] }], null));
+    expect(bar(newest(chat)), 'nor does the refresh page bring it back').toBe(false);
+  });
+
   it('reads a seat returned to after its turn died on the error frame', () => {
     // The store's answer is its last snapshot stepped by the frames since, and
     // the CLI's error - after which no result follows - is a frame that ends
@@ -587,9 +643,9 @@ describe('one row per running turn', () => {
     expect(writing(newest(chat)), 'the snapshot answers, incomplete tail and all').toBe(true);
   });
 
-  it('takes the bar back when the core says the turn errored', () => {
-    // A take-back with no result frame behind it: the update the server sends
-    // when a turn ends badly is the only thing that says so.
+  it('keeps the bar when a dispatch failure arrives mid-turn', () => {
+    // `turn_error` names a dispatch that failed, not the seat's turn: the
+    // record still has one in flight, so the bar stays.
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
@@ -599,7 +655,7 @@ describe('one row per running turn', () => {
 
     server.update({ turn_error: { key: LEAD } });
 
-    expect(writing(newest(chat)), 'the turn is over').toBe(false);
+    expect(writing(newest(chat)), "the dispatch failure did not end the seat's turn").toBe(true);
   });
 
   it('does not raise the bar again on a row that already ended', () => {

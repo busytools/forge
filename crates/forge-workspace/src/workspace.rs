@@ -15,6 +15,7 @@ use forge_primitives::tasks::TaskId;
 use forge_primitives::{AvailableAgent, AvailableCommand, Message, SDKSessionInfo, SessionId};
 use std::io::Write as _;
 
+use crate::gotify::GotifySubsystem;
 use crate::mcp::peers::types::{MessageId, WrappedKind, WrappedPrompt};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
@@ -1033,8 +1034,9 @@ pub struct Workspace {
     /// Idempotence guard for the service-status probe.
     service_status_probe_started: std::sync::atomic::AtomicBool,
     /// Whether the Gotify stream is currently connected. Set by the
-    /// subsystem pump on `Connected` / `Disconnected`; read by the
-    /// Inspector's status line.
+    /// subsystem pump on `Connected` / `Disconnected`, and cleared by the
+    /// stop path and the pump's exit guard; read by the Inspector's status
+    /// line.
     /// `pub(crate)` so the impl block in [`crate::gotify`] can reach it.
     pub(crate) gotify_connected: Mutex<bool>,
     /// Gotify application name -> numeric appid map, fetched from the
@@ -1044,10 +1046,11 @@ pub struct Workspace {
     /// `pub(crate)` so the impl block in [`crate::gotify`] can reach it.
     pub(crate) gotify_app_index: Mutex<HashMap<String, u64>>,
     /// Shutdown handle for the running Gotify subsystem. `Some` while the
-    /// stream task is live; dropping/sending stops it. `None` when idle
-    /// (no subscriptions) or unconfigured. Guards against double-starting.
+    /// pump runs; dropping/sending stops it, and the pump's own exit guard
+    /// clears it when the task ends. `None` when idle (no subscriptions) or
+    /// unconfigured. Guards against double-starting.
     /// `pub(crate)` so the impl block in [`crate::gotify`] can reach it.
-    pub(crate) gotify_subsystem: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    pub(crate) gotify_subsystem: Mutex<Option<GotifySubsystem>>,
     /// One Slack client per `[[slack]]` entry, resolved at boot. Empty
     /// keeps the Slack connector dormant. `pub(crate)` so the impl
     /// blocks in [`crate::slack`] and `crate::mcp::slack` can reach it.
@@ -8252,6 +8255,9 @@ impl Workspace {
         // Up before anything is torn down: from here on a spawn refuses,
         // and a mint cannot land behind the drain below.
         self.shutting_down.store(true, std::sync::atomic::Ordering::Release);
+        // A pump left to the task's drop reports a stream end at every
+        // clean stop; signalling it reaches its own shutdown branch.
+        self.stop_gotify_subsystem();
         // Release any live dictation before the pools go: a recording
         // task outliving its session's teardown would otherwise hold
         // the microphone for a composer nobody can reach.

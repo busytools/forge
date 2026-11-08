@@ -202,20 +202,77 @@ impl Workspace {
     /// and translates its events into the `gotify_*` state below and
     /// `GotifyHost::deliver` calls. Called at boot and after a subscribe
     /// grows the active set.
+    ///
+    /// The pump's exit guard clears the handle when the task ends, so a
+    /// pump that dies no longer wedges the subsystem: the next call here
+    /// starts a new one.
     pub fn start_gotify_subsystem(self: &Arc<Self>) {
-        let Some(cfg) = self.gotify_config() else { return };
-        if self.gotify_subs.lock().is_empty() {
+        let Some(cfg) = self.gotify_config() else {
+            tracing::debug!(
+                target: "forge_workspace::gotify",
+                event_name = "gotify_subsystem_declined",
+                reason = "no_config",
+                "the Gotify subsystem did not start",
+            );
+            return;
+        };
+        let subscriptions = self.gotify_subs.lock().len();
+        if subscriptions == 0 {
+            tracing::debug!(
+                target: "forge_workspace::gotify",
+                event_name = "gotify_subsystem_declined",
+                reason = "no_subscriptions",
+                "the Gotify subsystem did not start",
+            );
             return;
         }
         let mut guard = self.gotify_subsystem.lock();
         if guard.is_some() {
+            drop(guard);
+            tracing::debug!(
+                target: "forge_workspace::gotify",
+                event_name = "gotify_subsystem_declined",
+                reason = "already_running",
+                "the Gotify subsystem did not start",
+            );
             return;
         }
+        let token = Arc::new(());
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-        *guard = Some(shutdown_tx);
+        *guard = Some(GotifySubsystem { token: Arc::clone(&token), shutdown: shutdown_tx });
         drop(guard);
+        tracing::info!(
+            target: "forge_workspace::gotify",
+            event_name = "gotify_subsystem_started",
+            host = url_host(&cfg.url),
+            subscriptions,
+            "the Gotify subsystem started",
+        );
         let host: Arc<dyn GotifyHost> = Arc::new(SubsystemHost::new(self));
-        tokio::spawn(forge_connectors::gotify::run_subsystem(host, cfg, shutdown_rx));
+        // Detached: dropping the handle lets the task run on its own, and
+        // the exit guard is what observes its end.
+        let _pump = self.spawn_gotify_subsystem_task(
+            token,
+            forge_connectors::gotify::run_subsystem(host, cfg, shutdown_rx),
+        );
+    }
+
+    /// Spawn the Gotify pump behind the guard that clears this run's
+    /// handle and liveness however the task ends: a return, a cancellation,
+    /// or an unwind. Returns the task handle so a test can await the end.
+    fn spawn_gotify_subsystem_task<F>(
+        self: &Arc<Self>,
+        token: Arc<()>,
+        pump: F,
+    ) -> tokio::task::JoinHandle<()>
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let workspace = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let _exit = GotifyExitGuard { workspace, token };
+            pump.await;
+        })
     }
 
     /// Stop the Gotify subsystem once no subscriptions remain: signal the
@@ -225,11 +282,89 @@ impl Workspace {
         if !self.gotify_subs.lock().is_empty() {
             return;
         }
-        if let Some(shutdown_tx) = self.gotify_subsystem.lock().take() {
-            let _ = shutdown_tx.send(());
-            *self.gotify_connected.lock() = false;
+        self.stop_gotify_subsystem();
+    }
+
+    /// Signal the running pump to stop and mark the connector
+    /// disconnected, whatever subscriptions remain. The workspace's
+    /// shutdown calls this so a clean stop reaches the pump's own exit
+    /// rather than leaving the handle armed for the task's drop.
+    pub(crate) fn stop_gotify_subsystem(&self) {
+        // The handle lock is held across the flag write, as in the exit
+        // guard: a subscribe can arm a new run the moment the handle is
+        // taken, and a late write would blank that run's liveness.
+        let subsystem = {
+            let mut slot = self.gotify_subsystem.lock();
+            let subsystem = slot.take();
+            if subsystem.is_some() {
+                *self.gotify_connected.lock() = false;
+            }
+            subsystem
+        };
+        if let Some(subsystem) = subsystem {
+            let _ = subsystem.shutdown.send(());
         }
     }
+}
+
+/// One running Gotify pump as the workspace stores it: the shutdown signal
+/// plus the token that tells this run from a later one.
+pub(crate) struct GotifySubsystem {
+    token: Arc<()>,
+    shutdown: tokio::sync::oneshot::Sender<()>,
+}
+
+/// Clears a finished pump's handle and liveness when its task ends.
+///
+/// A guard rather than a trailing statement: an unwind reaches it too,
+/// which is the defect this exists for - a panicking stream task left the
+/// handle armed and no start could revive the subsystem.
+struct GotifyExitGuard {
+    workspace: std::sync::Weak<Workspace>,
+    token: Arc<()>,
+}
+
+impl Drop for GotifyExitGuard {
+    fn drop(&mut self) {
+        let Some(workspace) = self.workspace.upgrade() else { return };
+        let cleared = {
+            // The handle lock is held across the flag write: a stop-then-
+            // resubscribe can arm a new run the moment this one's handle is
+            // taken, and a late write would blank that run's liveness.
+            let mut slot = workspace.gotify_subsystem.lock();
+            let ours = slot.as_ref().is_some_and(|run| Arc::ptr_eq(&run.token, &self.token));
+            if ours {
+                slot.take();
+                *workspace.gotify_connected.lock() = false;
+            }
+            ours
+        };
+        if cleared {
+            // A handle still armed here means nobody asked this run to
+            // stop: the stream task died under it, or the pump unwound.
+            let reason = if std::thread::panicking() { "panic" } else { "stream_ended" };
+            tracing::warn!(
+                target: "forge_workspace::gotify",
+                event_name = "gotify_subsystem_exited",
+                reason,
+                "the Gotify subsystem exited without a shutdown",
+            );
+        } else {
+            tracing::info!(
+                target: "forge_workspace::gotify",
+                event_name = "gotify_subsystem_exited",
+                reason = "shutdown",
+                "the Gotify subsystem stopped",
+            );
+        }
+    }
+}
+
+/// The host a configured Gotify url names, for a log line: the scheme's
+/// authority and nothing after it, so the client token never rides along.
+fn url_host(url: &str) -> &str {
+    let authority = url.split_once("://").map_or(url, |(_, rest)| rest);
+    authority.split('/').next().unwrap_or_default()
 }
 
 /// The [`GotifyHost`] the forge-connectors pump drives: a
@@ -1034,6 +1169,207 @@ mod tests {
         let (announced_key, gotify, _) = next_connectors_changed(&mut rx);
         assert_eq!(announced_key, lead, "a teardown routes the same way");
         assert!(gotify.is_empty(), "and announces what the teardown left");
+    }
+
+    /// A workspace with a real `[gotify]` config and one subscription, so
+    /// `start_gotify_subsystem` takes its start path rather than declining.
+    /// The url is a refused local port, so a pump the real start spawns
+    /// fails its dial without reaching anything.
+    fn subsystem_fixture() -> (Arc<Workspace>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.gotify = Some(forge_primitives::GotifyConfig {
+            url: "http://127.0.0.1:1".to_owned(),
+            client_token: "Ctest".to_owned(),
+        });
+        let (ws, _rx) =
+            Workspace::testing_stub_with_config(dir.path().to_owned(), config).expect("stub");
+        ws.seed_test_gotify_subscription(gotify_sub("forge", &[], None));
+        (ws, dir)
+    }
+
+    /// The defect: a pump whose stream task dies leaves its handle armed,
+    /// and every later start no-ops against it. A dead pump clears the
+    /// handle and liveness, so the next start runs.
+    ///
+    /// Mutant: clear only on the shutdown path - a trailing statement,
+    /// which is what left the subsystem wedged.
+    #[tokio::test]
+    async fn a_dead_pump_clears_its_handle_and_the_next_start_runs() {
+        let (ws, _dir) = subsystem_fixture();
+        let token = Arc::new(());
+        let (shutdown, _shutdown_rx) = tokio::sync::oneshot::channel();
+        *ws.gotify_subsystem.lock() = Some(GotifySubsystem { token: Arc::clone(&token), shutdown });
+        ws.seed_test_gotify_connected(true);
+
+        // The pump body returning is the stream task ending under it.
+        ws.spawn_gotify_subsystem_task(token, async {}).await.expect("the pump task returns");
+
+        assert!(ws.gotify_subsystem.lock().is_none(), "a dead pump's handle is cleared");
+        assert!(!ws.gotify_connected(), "and liveness goes false with it");
+
+        ws.start_gotify_subsystem();
+        assert!(ws.gotify_subsystem.lock().is_some(), "a second start runs");
+    }
+
+    /// An unwind inside the pump - a panic out of `route` or a host call -
+    /// clears the handle too. A panic in the inner stream task is the other
+    /// shape: it ends that task, the pump returns normally, and the exit
+    /// guard reports `stream_ended`.
+    ///
+    /// Mutant: a trailing statement instead of a guard, where the unwind
+    /// skips it.
+    #[tokio::test]
+    async fn a_panicking_pump_clears_its_handle() {
+        let (ws, _dir) = subsystem_fixture();
+        let token = Arc::new(());
+        let (shutdown, _shutdown_rx) = tokio::sync::oneshot::channel();
+        *ws.gotify_subsystem.lock() = Some(GotifySubsystem { token: Arc::clone(&token), shutdown });
+        ws.seed_test_gotify_connected(true);
+
+        let task = ws.spawn_gotify_subsystem_task(token, async {
+            panic!("the pump unwound before it could clear its handle");
+        });
+        let error = task.await.expect_err("the pump task unwinds");
+        assert!(error.is_panic(), "the task ended by unwinding, not cancellation");
+
+        assert!(ws.gotify_subsystem.lock().is_none(), "an unwind clears the handle too");
+        assert!(!ws.gotify_connected(), "and liveness goes false with it");
+    }
+
+    /// A guard that fires after its run was stopped must leave a run armed
+    /// since alone: stop-then-resubscribe can start the next pump before
+    /// the old task unwinds.
+    ///
+    /// Mutant: take the slot unconditionally, where the stale guard
+    /// disarms a live pump and clears its liveness.
+    #[tokio::test]
+    async fn a_stale_guard_leaves_a_newer_runs_handle_armed() {
+        let (ws, _dir) = subsystem_fixture();
+        let stale = Arc::new(());
+        let (stale_tx, _stale_rx) = tokio::sync::oneshot::channel();
+        *ws.gotify_subsystem.lock() =
+            Some(GotifySubsystem { token: Arc::clone(&stale), shutdown: stale_tx });
+        let task = ws.spawn_gotify_subsystem_task(stale, async {});
+
+        // The stale run's task has not run yet: its stop took the handle
+        // and a new subscription armed a new run.
+        let newer = Arc::new(());
+        let (newer_tx, _newer_rx) = tokio::sync::oneshot::channel();
+        *ws.gotify_subsystem.lock() =
+            Some(GotifySubsystem { token: Arc::clone(&newer), shutdown: newer_tx });
+        ws.seed_test_gotify_connected(true);
+
+        task.await.expect("the stale pump task returns");
+
+        let slot = ws.gotify_subsystem.lock();
+        let held = slot.as_ref().expect("the newer run's handle stays armed");
+        assert!(Arc::ptr_eq(&held.token, &newer), "the stale guard took nothing");
+        drop(slot);
+        assert!(ws.gotify_connected(), "and left the newer run's liveness alone");
+    }
+
+    /// A clean stop signals the pump, so its exit guard takes the shutdown
+    /// branch instead of reporting a stream end at every process stop.
+    ///
+    /// Mutant: leave the handle to the task's drop, where every clean stop
+    /// logs a stream end.
+    #[tokio::test]
+    async fn a_workspace_shutdown_stops_the_gotify_pump() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let (ws, _dir) = subsystem_fixture();
+        let token = Arc::new(());
+        let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
+        *ws.gotify_subsystem.lock() = Some(GotifySubsystem { token: Arc::clone(&token), shutdown });
+        ws.seed_test_gotify_connected(true);
+        // The pump body ends on the shutdown signal, as the real pump does.
+        let pump = ws.spawn_gotify_subsystem_task(token, async {
+            let _ = shutdown_rx.await;
+        });
+
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::Registry::default().with(caught.clone());
+        {
+            let _default = tracing::subscriber::set_default(subscriber);
+            ws.shutdown_within(std::time::Duration::from_secs(5)).await;
+            pump.await.expect("the pump task returns");
+        }
+
+        assert!(ws.gotify_subsystem.lock().is_none(), "shutdown takes the handle");
+        assert!(!ws.gotify_connected(), "and marks the connector disconnected");
+        let records = caught.0.lock().expect("capture").clone();
+        assert!(
+            records.iter().any(|(level, _, fields)| {
+                *level == tracing::Level::INFO
+                    && fields.contains("gotify_subsystem_exited")
+                    && fields.contains("reason=\"shutdown\"")
+            }),
+            "the guard takes the shutdown branch, not the stream-ended one: {records:?}",
+        );
+    }
+
+    /// One captured tracing record: its level, its target and its fields.
+    #[derive(Clone, Default)]
+    struct Caught(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String, String)>>>);
+
+    #[derive(Default)]
+    struct CaughtFields(String);
+
+    impl tracing::field::Visit for CaughtFields {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if !self.0.is_empty() {
+                self.0.push(' ');
+            }
+            let _ = std::fmt::write(&mut self.0, format_args!("{}={value:?}", field.name()));
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Caught {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = CaughtFields::default();
+            event.record(&mut fields);
+            self.0.lock().expect("capture").push((
+                *event.metadata().level(),
+                event.metadata().target().to_owned(),
+                fields.0,
+            ));
+        }
+    }
+
+    /// A decline is a normal state, so it is recorded at debug and never
+    /// warns. `forge-server`'s logging test pins the directive that keeps
+    /// the record readable.
+    ///
+    /// Mutant: put any decline back at warn, where every boot without
+    /// Gotify reads as a problem.
+    #[test]
+    fn a_declined_start_is_recorded_at_debug() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let (ws, _rx) = Workspace::testing_stub();
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::Registry::default().with(caught.clone());
+        tracing::subscriber::with_default(subscriber, || ws.start_gotify_subsystem());
+
+        let records = caught.0.lock().expect("capture").clone();
+        assert!(
+            records.iter().any(|(level, target, fields)| {
+                *level == tracing::Level::DEBUG
+                    && target == "forge_workspace::gotify"
+                    && fields.contains("gotify_subsystem_declined")
+                    && fields.contains("reason=\"no_config\"")
+            }),
+            "a start with no Gotify config declines at debug: {records:?}",
+        );
+        assert!(
+            records.iter().all(|(level, _, _)| *level != tracing::Level::WARN),
+            "no decline is a warning: {records:?}",
+        );
     }
 
     /// A write that changed nothing announces nothing: an unsubscribe for an

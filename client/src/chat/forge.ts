@@ -469,6 +469,25 @@ export function forgeCardOf(
     if (firstText(result.content) === null || trailingTexts(result.content).length > 0) return null;
     return acknowledgementCard(verbOf(name), input);
   }
+  // **A declined settings write is a normal answer, not an error.** It
+  // settles completed and takes the success tone, so without a face on the
+  // row a write the reader turned down reads exactly like one that went
+  // through. A chip, not a tail: the tail's two tones are the failure reason
+  // and a despawn's `kept`, and the CSS spells those prefixes itself. The
+  // tool's own words stay the body.
+  if (family === 'settings' && (verbOf(name) === 'set' || verbOf(name) === 'unset')) {
+    const said = firstText(result.content);
+    if (said !== null && said.startsWith('the reader declined')) {
+      const title = settingsTitle(verbOf(name), obj(input));
+      if (title === null) return null;
+      return {
+        title,
+        chips: [{ text: 'declined', tone: 'warn' }],
+        figure: null,
+        pieces: [{ kind: 'text', text: said }],
+      };
+    }
+  }
   // The tasks list is the one verb that opens its result with a clock line,
   // so it reads past it; every other result parses as the plain JSON it is.
   const answer =
@@ -541,20 +560,93 @@ function leafName(path: string): string {
 }
 
 /**
+ * The settings family's title: which way the call went and what it touched.
+ *
+ * The family's own noun is the whole of what the glyph says, so a row titled
+ * `settings` repeated it and named nothing - a read and a five-key write
+ * looked alike collapsed. One or two keys are named; past that the count is
+ * what a reader can scan, and the payload behind the open keeps the rest.
+ * `null` for an input naming no subject, so the row keeps the family's noun
+ * rather than claiming a key nobody named.
+ */
+function settingsTitle(verb: string, held: Record<string, unknown>): string | null {
+  if (verb === 'index') return 'settings \u{b7} read the catalogue';
+  const key = str(held, 'key');
+  const subject = key === null || key.trim() === '' ? null : key;
+  if (verb === 'get') return subject === null ? null : `settings \u{b7} read ${subject}`;
+  if (verb === 'unset') return subject === null ? null : `settings \u{b7} clear ${subject}`;
+  if (verb !== 'set') return null;
+  const edits = held['edits'];
+  if (!Array.isArray(edits)) return null;
+  const keys = edits.map((edit) => str(obj(edit), 'key'));
+  if (keys.some((one) => one === null || one.trim() === '')) return null;
+  const named = keys.filter((one): one is string => one !== null);
+  if (named.length === 0) return null;
+  return named.length <= 2
+    ? `settings \u{b7} write ${named.join(', ')}`
+    : `settings \u{b7} write ${named.length} keys`;
+}
+
+/**
+ * A Slack read whose answer the card refuses, titled by what it read.
+ *
+ * These verbs answer with a message list, a thread's replies, a user search,
+ * a transferred file, or the token's identity, none of which the family's
+ * card dresses - and with no subject in the title each drew the bare family
+ * noun, so a file transfer read as `conversations`. `null` for every verb
+ * the card already titles and for an input naming no target, which keeps
+ * the family's noun.
+ */
+function slackFallbackTitle(verb: string, held: Record<string, unknown>): string | null {
+  const conversation = str(held, 'conversation');
+  switch (verb) {
+    case 'me':
+      return "read the token's identity";
+    case 'history':
+      return conversation === null || conversation.trim() === ''
+        ? null
+        : `read the history of ${conversation}`;
+    case 'replies':
+      return conversation === null || conversation.trim() === ''
+        ? null
+        : `read the thread in ${conversation}`;
+    case 'users': {
+      const query = str(held, 'query');
+      return query === null || query.trim() === ''
+        ? 'read the users'
+        : `searched users for '${query}'`;
+    }
+    case 'attachment': {
+      // **The fetch first, matching the server's own dispatch**: it reads
+      // `file_id` before `path`, so a call carrying both fetches.
+      const file = str(held, 'file_id');
+      if (file !== null && file.trim() !== '') return `downloaded attachment ${file}`;
+      const path = str(held, 'path');
+      return path === null || path.trim() === '' ? null : `uploaded '${leafName(path)}'`;
+    }
+    default:
+      return null;
+  }
+}
+
+/**
  * What a forge call's row is titled by when it carries no card.
  *
- * Two cases have no card: a call still out, whose result has not landed, and
- * a failed one, whose result IS the reason and draws as every failure does.
- * Either way the title comes from the call's own input where that names a
- * subject - in the SUCCESS card's own wording, so a failed write reads
- * `spawned worker 'reviewer'` under a tail that says it failed - and from the
- * family's own noun where the input names nothing. Never the tool:
+ * Three cases have no card: a call still out, whose result has not landed; a
+ * failed one, whose result IS the reason and draws as every failure does; and
+ * a settled one whose answer this module leaves undressed. Each is asked
+ * separately, because the same call's tense differs between them: a held
+ * upload is `uploading 'brief.pdf'` while it waits and `uploaded 'brief.pdf'`
+ * only once it answers. The title comes from the call's own input where that
+ * names a subject - in the SUCCESS card's own wording, so a failed write
+ * reads `spawned worker 'reviewer'` under a tail that says it failed - and
+ * from the family's own noun where the input names nothing. Never the tool:
  * `forge: slack__list` is the plumbing a reader scans past.
  */
 export function forgeRowTitle(
   name: string,
   input: unknown,
-  outcome: 'running' | 'failed',
+  outcome: 'pending' | 'settled' | 'failed',
 ): string | null {
   const family = forgeFamilyOf(name);
   if (family === null) return null;
@@ -570,9 +662,17 @@ export function forgeRowTitle(
     // that says it failed.
     const vault = family === 'vault' ? vaultSubject(verb, held, true) : null;
     if (vault !== null) return vault;
-  } else {
+  } else if (outcome === 'pending') {
     const pending = pendingCard(family, verb, input);
     if (pending !== null) return pending.title;
+  }
+  if (family === 'settings') {
+    const title = settingsTitle(verb, held);
+    if (title !== null) return title;
+  }
+  if (family === 'slack') {
+    const title = slackFallbackTitle(verb, held);
+    if (title !== null) return title;
   }
   if (family === 'voice') {
     const spoken = str(held, 'text');
@@ -588,8 +688,10 @@ export function forgeRowTitle(
 /**
  * A call still out, drawn from its own input.
  *
- * A Slack write waits on the dock, and that wait is the one thing the row
- * must not hide; a spawn says what it is bringing up. Every other verb has
+ * A held write parks on the dock, and that wait is the one thing the row must
+ * not hide: a vault write, a Slack post, edit, react or upload, a settings
+ * write and a terminal hand-off all say so. A spawn says what it is bringing
+ * up, and a fetch is in flight without being held. Every other verb has
  * nothing to draw until it answers and falls back to its raw text.
  */
 function pendingCard(family: ForgeFamily, verb: string, input: unknown): ForgeCard | null {
@@ -677,6 +779,42 @@ function pendingCard(family: ForgeFamily, verb: string, input: unknown): ForgeCa
     return {
       title: `${removed ? 'removing' : 'reacting'} :${name}: in ${channel}`,
       chips: [{ text: 'waiting for your approval', tone: 'warn' }],
+      figure: null,
+      pieces: [],
+    };
+  }
+  // **A Slack attachment is told apart by direction and tense**: a fetch is
+  // not held but is not done until it answers, and an upload is held on the
+  // dock exactly as a post is. The fetch comes first, matching the server's
+  // own dispatch on `file_id` before `path`.
+  if (family === 'slack' && verb === 'attachment') {
+    const file = str(held, 'file_id');
+    if (file !== null && file.trim() !== '') {
+      return {
+        title: `downloading attachment ${file}`,
+        chips: [],
+        figure: null,
+        pieces: [],
+      };
+    }
+    const path = str(held, 'path');
+    if (path === null || path.trim() === '') return null;
+    return {
+      title: `uploading '${leafName(path)}'`,
+      chips: [{ text: 'waiting for your approval', tone: 'warn' }],
+      figure: null,
+      pieces: [],
+    };
+  }
+  // **A settings call is titled by what it touches**, and a write waits on
+  // the reader's approval: that wait is the row's point while the call parks.
+  if (family === 'settings') {
+    const title = settingsTitle(verb, held);
+    if (title === null) return null;
+    const writes = verb === 'set' || verb === 'unset';
+    return {
+      title,
+      chips: writes ? [{ text: 'waiting for your approval', tone: 'warn' }] : [],
       figure: null,
       pieces: [],
     };

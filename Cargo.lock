@@ -1970,6 +1970,7 @@ dependencies = [
  "forge-workspace",
  "futures-util",
  "rlimit",
+ "rustls",
  "serde",
  "serde_json",
  "tempfile",

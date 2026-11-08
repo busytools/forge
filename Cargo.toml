@@ -93,6 +93,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # would reject it.
 redb = "2.6"
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
+# Both aws-lc-rs and ring reach rustls from other crates, so it cannot pick
+# one and the first TLS client panics; the server's boot installs aws-lc-rs.
+rustls = "0.23"
 
 # Local speech recognition (ggml-backed) and microphone capture for
 # forge-dictate. `metal` is opted into per-target by the crate. 0.4's static

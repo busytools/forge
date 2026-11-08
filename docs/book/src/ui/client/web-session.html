@@ -2458,7 +2458,7 @@ A widget that renders a scrollable list of items.</div>
           </details>
 
           <details class="leaf">
-            <summary><svg class="ic gl ok"><use href="#i-lsp"/></svg><span class="tn">hover &#183; client/src/chat/families.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <summary><svg class="ic gl ok"><use href="#i-lsp"/></svg><span class="tn">hover &#183; /Users/vedhavyas/Projects/forge/client/src/chat/families.ts</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
             <div class="body">
               <div class="panel bodytext"><span class="k">export function</span> <span class="f">iconOf</span>(row: <span class="f">KindRow</span>): <span class="k">string</span>
 docs: The sprite a row draws, by the class it belongs to.</div>
@@ -2548,6 +2548,30 @@ docs: The sprite a row draws, by the class it belongs to.</div>
                run. The input's secret values never reach the card. -->
           <details class="leaf">
             <summary><svg class="ic gl"><use href="#i-vault"/></svg><span class="tn">creating login 'bank'</span><span class="fam-chip warn">waiting for your approval</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          </details>
+          <!-- The settings family's row: collapsed it says which way the call
+               went and what it touched, and the payload the tool answered with
+               is the whole of its open. One or two keys are named; a longer
+               batch is counted, because the row is a summary and the payload
+               behind it holds the rest. -->
+          <details class="leaf" open>
+            <summary><svg class="ic gl ok"><use href="#i-settings"/></svg><span class="tn">settings &#183; read gotify.url</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="pbody"><div class="prose"><p>{ "key": "gotify.url", "pattern": "gotify.url", "effect": "restart", "set": true, "value": "https://push.example" }</p></div></div>
+            </div>
+          </details>
+          <!-- A settings write parks on the dock like every other held write:
+               the title names the keys it would touch and the chip says the
+               call has not run yet. -->
+          <details class="leaf">
+            <summary><svg class="ic gl"><use href="#i-settings"/></svg><span class="tn">settings &#183; write gotify.url, client.theme</span><span class="fam-chip warn">waiting for your approval</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          </details>
+          <!-- A declined write is a normal answer rather than a failure: the
+               row keeps the success mark, says `declined`, and its open is
+               the tool's own words. -->
+          <details class="leaf">
+            <summary><svg class="ic gl ok"><use href="#i-settings"/></svg><span class="tn">settings &#183; write client.theme</span><span class="fam-chip warn">declined</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body"><div class="fam-text">the reader declined; `client.theme` is unchanged and nothing was written</div></div>
           </details>
           <details class="leaf" open>
             <summary><svg class="ic gl ok"><use href="#i-decide"/></svg><span class="tn">Is this one-line import fix mechanical and reversible?</span><span class="fam-chip ok">yes</span><span class="fam-fig">0.93</span><svg class="ic arw"><use href="#i-chev"/></svg></summary>
@@ -3373,14 +3397,18 @@ branch main, nothing to commit</div>
            state switcher above changes the body only; the row stands.
 
            The row never wraps: a chip past the width collapses behind +N. Its
-           figures lead while a turn is written, outside the scroll, so a
-           reader who has scrolled up can still see whether the turn is
-           working. One row of a turn, never two: while the row is pinned the
-           turn above draws none of it, and when the turn ends the finished row
-           holds here for a beat - the check and the cumulative - before it
-           goes back into the turn. An absent field is dropped rather than
-           dashed, because a dash is a claim that a value exists. A repository
-           event with no tree row to ride draws its note on the git chip. -->
+           figures lead while the seat's record says a turn is in flight,
+           outside the scroll, so a reader who has scrolled up can still see
+           whether the turn is working. A turn the record has ended leads with
+           nothing, even with no result in it: the row goes rather than
+           counting the downtime, and the turn draws its summary once the page
+           that carries it lands. One row of a turn, never two: while the row
+           is pinned the turn above draws none of it, and when the turn ends
+           the finished row holds here for a beat - the check and the
+           cumulative - before it goes back into the turn. An absent field is
+           dropped rather than dashed, because a dash is a claim that a value
+           exists. A repository event with no tree row to ride draws its note
+           on the git chip. -->
       <div class="surf">
       <div class="live-row" id="pin">
         <span class="live-fig"><span class="ring"></span>

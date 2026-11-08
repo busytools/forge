@@ -87,6 +87,24 @@ fn panic_record(
     PanicRecord { thread: thread.to_owned(), payload, location, backtrace }
 }
 
+/// Install the process-level rustls crypto provider, before anything can
+/// build a TLS client.
+///
+/// The graph carries both `aws-lc-rs` and `ring`, so rustls will not choose
+/// and the first handshake panics. `install_default` returns `Err` when a
+/// provider is already in place, which is the idempotent success case: a
+/// second boot entry or an embedding caller may run it again.
+fn install_crypto_provider() {
+    let already_installed =
+        rustls::crypto::aws_lc_rs::default_provider().install_default().is_err();
+    tracing::debug!(
+        target: crate::logging::targets::APP_LIFECYCLE,
+        event_name = "rustls_crypto_provider",
+        already_installed,
+        "the process-level rustls crypto provider is in place",
+    );
+}
+
 /// Build the workspace and start the whole subsystem wave, in the order the
 /// boot has always started it.
 ///
@@ -101,6 +119,10 @@ fn panic_record(
 /// `tokio::spawn`, verified by the headless boot test exercising it
 /// without one.
 pub fn start_core(config_dir: &Path, project: Option<&str>) -> anyhow::Result<Arc<Workspace>> {
+    // **The provider first, the hook second.** The graph carries both rustls
+    // providers, so the first TLS handshake panics unless one is installed;
+    // the hook is what names that panic if it ever happens again.
+    install_crypto_provider();
     install_panic_hook();
     let workspace = match Workspace::new(config_dir.to_path_buf()) {
         Ok(w) => Arc::new(w),
@@ -832,8 +854,8 @@ pub fn stop_result(unready: &[forge_primitives::SessionSlot]) -> anyhow::Result<
 #[cfg(test)]
 mod tests {
     use super::{
-        BOOT_WAVE_WAIT, panic_record, start_boot_wave, start_config_watch, start_subsystems,
-        stop_result, wait_for_accounts,
+        BOOT_WAVE_WAIT, install_crypto_provider, panic_record, start_boot_wave, start_config_watch,
+        start_subsystems, stop_result, wait_for_accounts,
     };
     #[cfg(target_os = "macos")]
     use super::{configure_fleet_profiles, reap_then_prune};
@@ -850,6 +872,49 @@ mod tests {
         let record = panic_record("forge-worker", &"the pump died", None);
         assert_eq!(record.thread, "forge-worker", "the thread is named");
         assert_eq!(record.payload, "the pump died", "the payload is the panic's own words");
+    }
+
+    /// The install is idempotent: the second call finds a provider in
+    /// place and returns cleanly rather than failing, and the process
+    /// carries a default afterwards. Rustls refuses to pick one itself
+    /// while both `aws-lc-rs` and `ring` are in the graph, which is the
+    /// panic this exists to prevent.
+    #[test]
+    fn installing_the_rustls_provider_twice_is_clean() {
+        install_crypto_provider();
+
+        install_crypto_provider();
+
+        assert!(
+            rustls::crypto::CryptoProvider::get_default().is_some(),
+            "the boot's install leaves a process-level rustls provider in place",
+        );
+        // The call a TLS client makes: without a default it panics, which
+        // is the Gotify stream task's first handshake.
+        let _ = rustls::ClientConfig::builder();
+    }
+
+    /// The boot entry installs the provider before it builds anything: a
+    /// TLS client can be built from anywhere downstream, and this graph
+    /// carries two provider features. An empty config dir refuses at
+    /// `Workspace::new`, so the install is the only boot step that runs
+    /// and the test never reaches the machine's single-instance lock.
+    #[test]
+    fn the_boot_entry_installs_the_provider_before_it_builds_anything() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let events = crate::test_support::logged(|| {
+            let booted = super::start_core(dir.path(), None);
+            assert!(booted.is_err(), "an empty config dir does not build a workspace");
+        });
+
+        assert!(
+            events.iter().any(|(level, fields)| {
+                *level == tracing::Level::DEBUG
+                    && fields.contains("event_name=\"rustls_crypto_provider\"")
+            }),
+            "the boot entry logs the provider install before it builds anything: {events:?}",
+        );
     }
 
     /// A stop whose teardown ran out of budget exits non-zero and names
