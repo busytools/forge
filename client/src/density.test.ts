@@ -170,6 +170,39 @@ describe("the conversation draws at the terminal's density", () => {
   });
 
   /**
+   * **The disclosure is the one control in a run of rows, and a finger needs
+   * 44px to reach it.** The tight line is right for a fine pointer; a coarse
+   * one takes the target instead. The static `.rrow` is pressed by nothing, so
+   * it keeps the line on every pointer.
+   */
+  it('gives the disclosure a 44px target under a coarse pointer', () => {
+    // The block's body, braces and all: a rule inside a media query nests a
+    // pair, and the flat readers above stop at the first `}`.
+    const bodies = [
+      ...SHEET.matchAll(/@media \(pointer: coarse\) \{((?:[^{}]|\{[^{}]*\})*)\}/g),
+    ].map((hit) => hit[1] ?? '');
+    // A control: no blocks read would let the assertion below pass over an
+    // empty search.
+    expect(bodies.length, 'the sheet carries no coarse-pointer block').toBeGreaterThan(0);
+
+    // The rules inside those blocks, selector list and declarations apart: a
+    // selector list is what the disclosure may be listed in, so the check is
+    // for an item that IS the disclosure rather than a substring.
+    const rules = bodies.flatMap((text) => [...text.matchAll(/([^{}]+)\{([^{}]*)\}/g)]);
+    const reach = rules.filter((hit) =>
+      (hit[1] ?? '').split(',').some((selector) => selector.trim() === 'details.leaf > summary'),
+    );
+    expect(reach, 'no coarse rule reaches the disclosure').toHaveLength(1);
+    expect(reach[0]?.[2] ?? '', "the disclosure is below a finger's target").toMatch(
+      /min-height:\s*44px/,
+    );
+    expect(
+      rules.filter((hit) => (hit[1] ?? '').includes('div.leaf > .rrow')),
+      'the static row is pressed by nothing and keeps the line',
+    ).toHaveLength(0);
+  });
+
+  /**
    * A table row is a line, near enough. 4px top and bottom took a row to
    * 1.96em against the 1.25em the view this client replaced drew, which is the
    * airiness that made a six-row state table read as a page of its own.
