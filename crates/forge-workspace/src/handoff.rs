@@ -970,9 +970,10 @@ const WIZARD_TEMPLATE: &str = include_str!("wizard/template.sh");
 pub struct ShippedSkill {
     pub name: &'static str,
     pub files: &'static [(&'static str, &'static str)],
-    /// **Only these names, and `*.tmp` leftovers, are ever swept.** The
-    /// skills directory is the person's own as well as forge's: anything
-    /// else they put beside ours is theirs and is left alone.
+    /// **Only these names, and a temp file the installer itself left
+    /// behind, are ever swept.** The skills directory is the person's own as
+    /// well as forge's: anything else they put beside ours is theirs and is
+    /// left alone.
     pub retired: &'static [&'static str],
 }
 
@@ -1024,9 +1025,11 @@ pub fn skill_path(config_dir: &Path, name: &str) -> PathBuf {
 /// **forge.toml is not written by this path; these skill directories are
 /// forge's own inside the config dir.** Every file is compared byte for byte
 /// and only the ones that differ are rewritten, all staged as temp files
-/// first and renamed together, so a two-file skill cannot land half-updated.
-/// A `*.tmp` leftover or a name the skill retired is removed; nothing else
-/// in the directory is, because the person's own files live there too.
+/// first and renamed together, so a failed write never lands a half-updated
+/// skill. A failed second rename can still leave the files split, and the
+/// next boot finishes it. A temp file this installer left behind, or a name
+/// the skill retired, is removed; nothing else in the directory is, because
+/// the person's own files live there too.
 pub fn install_skill(config_dir: &Path, skill: &ShippedSkill) -> std::io::Result<SkillInstall> {
     let dir = skill_dir(config_dir, skill.name);
     // **A symlinked skill directory is refused, not followed.** Writing
@@ -1114,7 +1117,7 @@ pub fn install_skill(config_dir: &Path, skill: &ShippedSkill) -> std::io::Result
                     event_name = "skill_file_removed",
                     skill = skill.name,
                     path = %path.display(),
-                    "a retired skill file was removed",
+                    "a skill file was removed",
                 );
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -1124,7 +1127,7 @@ pub fn install_skill(config_dir: &Path, skill: &ShippedSkill) -> std::io::Result
                 skill = skill.name,
                 path = %path.display(),
                 %error,
-                "a retired skill file could not be removed; the install itself is unaffected",
+                "a skill file could not be removed; the install itself is unaffected",
             ),
         }
     }
@@ -1134,7 +1137,7 @@ pub fn install_skill(config_dir: &Path, skill: &ShippedSkill) -> std::io::Result
             event_name = "skill_files_swept",
             skill = skill.name,
             removed,
-            "retired skill files were removed",
+            "skill files were removed",
         );
     }
     Ok(outcome)

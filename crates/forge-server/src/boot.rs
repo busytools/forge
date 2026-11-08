@@ -210,7 +210,10 @@ fn install_line(outcome: forge_workspace::SkillInstall) -> Option<(&'static str,
             Some(("replaced", "the skill was written at boot"))
         }
         forge_workspace::SkillInstall::Swept => {
-            Some(("swept", "the skill's leftover files were removed at boot"))
+            // **Not "were removed":** a removal can fail and its WARN sits
+            // beside this line, so the INFO says what was owed, not what
+            // happened.
+            Some(("swept", "the skill's leftover files were due for removal at boot"))
         }
         forge_workspace::SkillInstall::Unchanged => None,
     }

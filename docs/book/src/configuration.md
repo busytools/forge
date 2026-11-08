@@ -19,10 +19,10 @@ ships. The handoff skill lands at `<config_dir>/skills/handoff/SKILL.md`,
 and the wizard at `<config_dir>/skills/wizard/SKILL.md`, with the bash
 library its stages ride beside it at `template.sh`. Forge installs both
 at boot, compares every file byte for byte, and rewrites only what
-differs, so an unchanged copy is left untouched. Only a `*.tmp` leftover
-from a failed write, or a name the skill retires, is ever removed;
-anything else you put in those directories is left alone. They are
-forge's own; `forge.toml` stays yours.
+differs, so an unchanged copy is left untouched. Only a temporary file
+the installer itself left behind, or a name the skill retires, is ever
+removed; anything else you put in those directories is left alone. They
+are forge's own; `forge.toml` stays yours.
 
 ## Where it lives
 
