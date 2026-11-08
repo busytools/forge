@@ -37,7 +37,6 @@ _STAGE_INDEX=0
 ENV_FILE="${ENV_FILE:-.env}"
 WRITTEN_ENV=()    # KEYs written to ENV_FILE this run
 WRITTEN_SECRET=() # secret NAMEs set this run
-SKIPPED=()        # things we couldn't do (e.g. gh missing)
 _ENV_TMP=""       # the temp a write_env is staging
 
 _cleanup() {
@@ -141,9 +140,11 @@ confirm() {
   return 1
 }
 
-# _existing KEY: current value of KEY in ENV_FILE, if any. **The key is
-# matched as an exact field**, never as a pattern; only awk's own failure
-# stops the run, while "no such line" is a normal miss.
+# _existing KEY: current value of KEY in ENV_FILE. Returns 0 and prints the
+# value, 1 when there is no such line, 2 when the file could not be read.
+# **It never calls `_stop` itself**: ask/ask_secret run it in a command
+# substitution, where an exit only ends the subshell and its message would be
+# captured as the value. The caller turns 2 into the wizard's own message.
 _existing() {
   [[ -f "$ENV_FILE" ]] || return 1
   local key="$1" line status=0
@@ -153,18 +154,19 @@ _existing() {
     'index($0, key "=") == 1 { found = $0 } END { if (found != "") { print found; exit 0 } exit 1 }' \
     "$ENV_FILE") || status=$?
   if (( status == 1 )); then return 1; fi
-  if (( status != 0 )); then
-    _stop "could not read $ENV_FILE (awk exit $status); nothing was changed"
-  fi
+  if (( status != 0 )); then return 2; fi
   printf '%s' "${line#*=}"
 }
 
 # ask KEY "Prompt" reads a value into $KEY. Offers the existing .env value as
 # a default on re-runs (Enter keeps it). Visible input (non-secret).
 ask() {
-  local key="$1" prompt="$2" current input
+  local key="$1" prompt="$2" current status=0 input
   _valid_key "$key"
-  current=$(_existing "$key" || true)
+  current=$(_existing "$key") || status=$?
+  if (( status > 1 )); then
+    _stop "could not read $ENV_FILE; check that it is readable, then re-run"
+  fi
   if [[ -n "$current" ]]; then
     printf '  %s%s%s %s[Enter keeps current]%s ' "$BOLD" "$prompt" "$RESET" "$DIM" "$RESET"
   else
@@ -177,9 +179,12 @@ ask() {
 
 # ask_secret KEY "Prompt" is like ask, but input is hidden.
 ask_secret() {
-  local key="$1" prompt="$2" current input
+  local key="$1" prompt="$2" current status=0 input
   _valid_key "$key"
-  current=$(_existing "$key" || true)
+  current=$(_existing "$key") || status=$?
+  if (( status > 1 )); then
+    _stop "could not read $ENV_FILE; check that it is readable, then re-run"
+  fi
   if [[ -n "$current" ]]; then
     printf '  %s%s%s %s[Enter keeps current]%s ' "$BOLD" "$prompt" "$RESET" "$DIM" "$RESET"
   else
@@ -198,15 +203,22 @@ write_env() {
   local key="$1" value="$2" status=0
   _valid_key "$key"
   _no_newline "$key" "$value"
-  touch "$ENV_FILE"
-  _ENV_TMP=$(mktemp "${ENV_FILE}.XXXXXX")
+  touch "$ENV_FILE" || _stop "could not create $ENV_FILE"
+  _ENV_TMP=$(mktemp "${ENV_FILE}.XXXXXX") \
+    || _stop "could not create a temp file beside $ENV_FILE"
   awk -v key="$key" 'index($0, key "=") != 1' "$ENV_FILE" > "$_ENV_TMP" || status=$?
   if (( status != 0 )); then
     rm -f "$_ENV_TMP"; _ENV_TMP=""
     _stop "could not read $ENV_FILE (awk exit $status); nothing was written"
   fi
-  printf '%s=%s\n' "$key" "$value" >> "$_ENV_TMP"
-  mv "$_ENV_TMP" "$ENV_FILE"
+  if ! printf '%s=%s\n' "$key" "$value" >> "$_ENV_TMP"; then
+    rm -f "$_ENV_TMP"; _ENV_TMP=""
+    _stop "could not write the new value for $key; nothing was changed"
+  fi
+  if ! mv "$_ENV_TMP" "$ENV_FILE"; then
+    rm -f "$_ENV_TMP"; _ENV_TMP=""
+    _stop "could not replace $ENV_FILE with the new value for $key"
+  fi
   _ENV_TMP=""
   if [[ " ${WRITTEN_ENV[*]:-} " != *" $key "* ]]; then WRITTEN_ENV+=("$key"); fi
   printf '  %s✓ wrote%s %s → %s\n' "$GREEN" "$RESET" "$key" "$ENV_FILE"
@@ -245,10 +257,6 @@ finish() {
   printf '\n%s%s  ✓ Setup complete%s\n' "$BOLD" "$GREEN" "$RESET"
   (( ${#WRITTEN_ENV[@]} ))    && note "wrote ${#WRITTEN_ENV[@]} value(s) to $ENV_FILE: ${WRITTEN_ENV[*]}"
   (( ${#WRITTEN_SECRET[@]} )) && note "set ${#WRITTEN_SECRET[@]} GitHub secret(s): ${WRITTEN_SECRET[*]}"
-  if (( ${#SKIPPED[@]} )); then
-    printf '\n'; warn "still to do by hand:"
-    for s in "${SKIPPED[@]}"; do note "  - $s"; done
-  fi
   printf '\n'
 }
 
