@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
@@ -34,7 +35,10 @@ function readable(raw: string): string {
   return raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\s*\{/g, ' {');
 }
 
-const SHEET = readable(readFileSync(new URL('./assets/web.css', import.meta.url), 'utf8'));
+// A path rather than `new URL(..., import.meta.url)`: jsdom hands a test an
+// http URL, which `readFileSync` refuses. The npm script runs from the client
+// root, and a wrong directory fails this loudly rather than silently.
+const SHEET = readable(readFileSync('src/assets/web.css', 'utf8'));
 
 /**
  * The declarations of the first rule whose selector contains `fragment`.
@@ -174,31 +178,63 @@ describe("the conversation draws at the terminal's density", () => {
    * 44px to reach it.** The tight line is right for a fine pointer; a coarse
    * one takes the target instead. The static `.rrow` is pressed by nothing, so
    * it keeps the line on every pointer.
+   *
+   * **Read as what reaches the element, not as a selector spelling.** The
+   * target may come from a rule naming the leaf row or from the sheet's
+   * blanket `details > summary`; a pin on the leaf's own spelling would keep
+   * passing after the element lost the target, and would keep failing while
+   * another rule gave it one.
    */
   it('gives the disclosure a 44px target under a coarse pointer', () => {
     // The block's body, braces and all: a rule inside a media query nests a
-    // pair, and the flat readers above stop at the first `}`.
+    // pair, and the flat readers above stop at the first `}`. Any spelling of
+    // the condition counts - a list or an `and` still reaches the pointer.
     const bodies = [
-      ...SHEET.matchAll(/@media \(pointer: coarse\) \{((?:[^{}]|\{[^{}]*\})*)\}/g),
-    ].map((hit) => hit[1] ?? '');
+      ...SHEET.matchAll(/@media \(([^{}]*pointer: coarse[^{}]*)\) \{((?:[^{}]|\{[^{}]*\})*)\}/g),
+    ].map((hit) => hit[2] ?? '');
     // A control: no blocks read would let the assertion below pass over an
     // empty search.
     expect(bodies.length, 'the sheet carries no coarse-pointer block').toBeGreaterThan(0);
 
-    // The rules inside those blocks, selector list and declarations apart: a
-    // selector list is what the disclosure may be listed in, so the check is
-    // for an item that IS the disclosure rather than a substring.
-    const rules = bodies.flatMap((text) => [...text.matchAll(/([^{}]+)\{([^{}]*)\}/g)]);
-    const reach = rules.filter((hit) =>
-      (hit[1] ?? '').split(',').some((selector) => selector.trim() === 'details.leaf > summary'),
+    // Each rule as its selector list and declarations, matched against a real
+    // element rather than compared as text.
+    const rules = bodies.flatMap((text) =>
+      [...text.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((hit) => ({
+        selectors: (hit[1] ?? '')
+          .split(',')
+          .map((selector) => selector.trim())
+          .filter((selector) => selector !== ''),
+        declarations: hit[2] ?? '',
+      })),
     );
-    expect(reach, 'no coarse rule reaches the disclosure').toHaveLength(1);
-    expect(reach[0]?.[2] ?? '', "the disclosure is below a finger's target").toMatch(
-      /min-height:\s*44px/,
+    const reaching = (element: Element) =>
+      rules.filter((rule) => rule.selectors.some((selector) => element.matches(selector)));
+
+    const leaf = document.createElement('div');
+    leaf.className = 'leaf';
+    const row = document.createElement('details');
+    row.className = 'leaf';
+    const disclosure = document.createElement('summary');
+    row.appendChild(disclosure);
+    leaf.appendChild(row);
+    // A control: an element the sheet matches nothing of would make the
+    // search below empty for the wrong reason.
+    expect(disclosure.matches('details > summary'), 'the probe is not a disclosure').toBe(true);
+
+    const target = reaching(disclosure).filter((rule) =>
+      /min-height:\s*44px/.test(rule.declarations),
     );
     expect(
-      rules.filter((hit) => (hit[1] ?? '').includes('div.leaf > .rrow')),
-      'the static row is pressed by nothing and keeps the line',
+      target.length,
+      'no coarse rule gives the disclosure a 44px target, so a finger cannot reach it',
+    ).toBeGreaterThan(0);
+
+    const still = document.createElement('div');
+    still.className = 'rrow';
+    leaf.appendChild(still);
+    expect(
+      reaching(still).map((rule) => rule.selectors.join(', ')),
+      'a coarse rule reaches the static row, which is pressed by nothing and should keep the line',
     ).toHaveLength(0);
   });
 

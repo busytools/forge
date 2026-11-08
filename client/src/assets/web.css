@@ -1932,9 +1932,6 @@ details.leaf > summary, div.leaf > .rrow { list-style: none; display: flex; alig
   gap: 8px; padding: 0 9px 0 8px; border-radius: 7px; cursor: pointer;
   font-family: var(--mono); font-size: 15px; color: var(--muted); }
 div.leaf > .rrow { cursor: default; }
-/* The disclosure is the run's one control, and a finger needs 44px to reach it;
-   the static `.rrow` is pressed by nothing and stays its line. */
-@media (pointer: coarse) { details.leaf > summary { min-height: 44px; } }
 details.leaf > summary::-webkit-details-marker { display: none; }
 details.leaf > summary:hover { background: rgba(27,33,48,.4); }
 details.leaf[open] > summary { color: var(--text); }
