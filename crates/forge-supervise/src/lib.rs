@@ -166,7 +166,10 @@ impl Supervisor {
             }
             state.members.remove(name);
             state.factories.remove(name);
-            state.generations.remove(name);
+            // **The generation outlives the member.** Removing it would let
+            // the next spawn reuse a number an old run's completion still
+            // carries, and that completion's cleanup would take the new
+            // run's abort handle.
             let keys: Vec<(String, u64)> = state
                 .aborts
                 .keys()
@@ -264,20 +267,15 @@ async fn drive(weak: Weak<Inner>, mut rx: mpsc::UnboundedReceiver<Command>) {
                         start_run(&inner, &mut set, &mut runs, &name, generation, token, None);
                     }
                     Command::Restart { name, generation, token, reason } => {
-                        // **A stop during a backoff is still a stop.** The
-                        // timer armed by the death carries the run's token,
-                        // and a cancelled one must not resurrect the member.
-                        if !token.is_cancelled() {
-                            start_run(
-                                &inner,
-                                &mut set,
-                                &mut runs,
-                                &name,
-                                generation,
-                                token,
-                                Some(&reason),
-                            );
-                        }
+                        start_run(
+                            &inner,
+                            &mut set,
+                            &mut runs,
+                            &name,
+                            generation,
+                            token,
+                            Some(&reason),
+                        );
                     }
                     Command::Stop { name, generation } => {
                         abort_run(&inner, &name, generation);
@@ -313,6 +311,12 @@ fn start_run(
     token: CancellationToken,
     restart: Option<&str>,
 ) {
+    // **A cancelled run is never started.** A stale queued `Start` or a
+    // restart timer that outlived its stop carries a cancelled token, and
+    // the generation alone can match again after a forget.
+    if token.is_cancelled() {
+        return;
+    }
     let (factory, restarts) = {
         let mut state = inner.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.generations.get(name).copied() != Some(generation) {
@@ -389,14 +393,15 @@ fn on_exit(inner: &Arc<Inner>, runs: &mut HashMap<Id, Run>, id: Id, error: Optio
         return;
     }
     let Some(member) = state.members.get_mut(&run.name) else { return };
-    member.last_error = Some(reason.clone());
     match member.policy {
         Policy::Never => {
             // **A report-only member that returns is not a failure.** The
             // normal end of a per-host reader is a clean return; only a
-            // panic claims forge's health. Rule 20 applies.
+            // panic claims forge's health. Rule 20 applies, and a clean
+            // return leaves no error for the snapshot to draw as one.
             if clean {
                 member.state = MemberState::Stopped;
+                member.last_error = None;
                 tracing::debug!(
                     target: "forge_supervise",
                     event_name = "subsystem_exited",
@@ -405,6 +410,7 @@ fn on_exit(inner: &Arc<Inner>, runs: &mut HashMap<Id, Run>, id: Id, error: Optio
                 );
             } else {
                 member.state = MemberState::GivenUp { after: 0 };
+                member.last_error = Some(reason.clone());
                 tracing::warn!(
                     target: "forge_supervise",
                     event_name = "subsystem_exited",
@@ -415,6 +421,7 @@ fn on_exit(inner: &Arc<Inner>, runs: &mut HashMap<Id, Run>, id: Id, error: Optio
             }
         }
         Policy::Backoff { start, cap, give_up_after, reset_after } => {
+            member.last_error = Some(reason.clone());
             if ran_for >= reset_after {
                 member.restarts = 0;
             }
@@ -703,6 +710,11 @@ mod tests {
         let member = member(&supervisor, "probe");
         assert_eq!(member.state, MemberState::Stopped, "a clean return is not a give-up");
         assert_eq!(member.restarts, 0, "nothing was restarted");
+        assert!(
+            member.last_error.is_none(),
+            "a clean return records no error: {:?}",
+            member.last_error,
+        );
     }
 
     /// **A report-only member that panics is given up with its payload.**
