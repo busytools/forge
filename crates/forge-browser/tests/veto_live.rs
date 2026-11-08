@@ -81,7 +81,7 @@ async fn the_installed_veto_refuses_a_page_a_passkey_call() {
         .await
         .unwrap_or_else(|why| panic!("the host never came ready: {why} (log: {})", host.log()));
 
-    let installed = veto::install(port, &profile).await;
+    let installed = veto::install(port, &profile, None, "").await;
     assert!(installed.is_ok(), "the veto installs (log: {}): {:?}", host.log(), installed.err());
 
     // The page a person would see: navigate the boot tab to the served page
@@ -92,8 +92,9 @@ async fn the_installed_veto_refuses_a_page_a_passkey_call() {
     let path = websocket
         .strip_prefix(&forge_browser::spawn::ws_prefix(port))
         .expect("the endpoint is on the host's port");
-    let (mut cdp, _events) =
-        Cdp::connect_watch(port, path, Backlog::EveryEvent).await.expect("a page connection");
+    let (mut cdp, _events) = Cdp::connect_watch(port, path, Backlog::EveryEvent, None, "")
+        .await
+        .expect("a page connection");
     let navigated = cdp
         .call("Page.navigate", serde_json::json!({ "url": carried }), None)
         .await

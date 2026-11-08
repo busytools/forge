@@ -1,7 +1,7 @@
 # forge - project guide
 
 A Rust workspace around Anthropic's `claude` CLI: a server that runs
-multi-session orchestration, and the clients that draw it. Fourteen crates,
+multi-session orchestration, and the clients that draw it. Fifteen crates,
 layered acyclically:
 
 ```
@@ -11,6 +11,7 @@ forge-dictate    ───→ capture (dictation)
 forge-tts        ───── leaf (speech synthesis; depends on no forge-* crate)
 forge-system-one ───── leaf (decision-model client; depends on no forge-* crate)
 forge-terminal   ───── leaf (the PTY and screen model; depends on no forge-* crate)
+forge-supervise  ───── leaf (subsystem supervision; depends on no forge-* crate)
 forge-gateway    ───→ primitives
 forge-connectors ───→ primitives
 forge-sdk        ───→ primitives
@@ -53,6 +54,11 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   consumes them. A leaf: no forge-* dependency, and no knowledge of a seat,
   a socket or a session - the workspace keys it by the slot, the server
   carries its bytes, and the client draws them.
+- **`forge-supervise`** - supervision for forge's long-lived background
+  tasks: one registry that starts a member's future, restarts a death with
+  bounded backoff, refuses to resurrect a deliberate stop, and answers a
+  snapshot of what is running. A leaf: no forge-* dependency, and a
+  member's own loop stays in the crate that owns it.
 - **`forge-gateway`** - the account pool: one backend per `forge.toml`
   provider token (credential resolution, the usage probe's HTTP +
   payload mapping, billing shape), plus account selection by declared
@@ -232,6 +238,10 @@ Work top-down; first match wins.
     through the view surface in `forge-server` and never
     `forge-workspace`, and starts no subsystem of its own.
 14. **A wire-conformance scenario?** -> `forge-test-harness`.
+15. **Supervision of a long-lived background task?** (its restart policy,
+    its stop, the snapshot of what is running) -> `forge-supervise`. A
+    leaf: it may not depend on any forge-* crate, and a member's own loop
+    stays in the crate that owns it.
 
 **The view surface is built, reads and writes.** A view reads the core
 through named verbs by subject - `roster`, `session`, `agents`,

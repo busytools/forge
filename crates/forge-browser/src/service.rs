@@ -219,6 +219,10 @@ pub struct BrowserService {
     /// removed, so another profile's entry is served while that work runs.
     gates: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
     ids: AtomicU16,
+    /// **The registry names are minted here, once per service.** A name
+    /// keyed per profile could repeat when a closed profile is reopened,
+    /// and the old incarnation's driver would stop the new one's member.
+    names: Arc<AtomicU64>,
     /// The idle policy: how many minutes an untouched profile may sit.
     /// `None` until the boot configures it, and no sweep runs then.
     idle: Mutex<Option<Idle>>,
@@ -260,6 +264,10 @@ pub struct BrowserService {
     pairing_queue: Mutex<Option<mpsc::UnboundedReceiver<PairingRequest>>>,
     /// Whether `start_pairing` has already spawned its consumer.
     pairing_started: AtomicBool,
+    /// The process's subsystem supervisor, installed by the boot. `None` in
+    /// a service built without one, where the long-lived readers run
+    /// unsupervised.
+    supervisor: Mutex<Option<Arc<forge_supervise::Supervisor>>>,
 }
 
 /// The idle release's settings, as the boot configures them.
@@ -291,6 +299,7 @@ impl BrowserService {
             profiles: AsyncMutex::new(HashMap::new()),
             gates: Mutex::new(HashMap::new()),
             ids: AtomicU16::new(1),
+            names: Arc::new(AtomicU64::new(0)),
             idle: Mutex::new(None),
             rows: Mutex::new(HashMap::new()),
             holds: Mutex::new(HashSet::new()),
@@ -304,9 +313,20 @@ impl BrowserService {
             pairing,
             pairing_queue: Mutex::new(Some(pairing_queue)),
             pairing_started: AtomicBool::new(false),
+            supervisor: Mutex::new(None),
         });
         service.start_pairing();
         service
+    }
+
+    /// Install the process's subsystem supervisor, so the idle sweep and the
+    /// browser's long-lived readers register with it.
+    pub fn set_supervisor(&self, supervisor: Arc<forge_supervise::Supervisor>) {
+        *self.supervisor.lock().unwrap_or_else(PoisonError::into_inner) = Some(supervisor);
+    }
+
+    fn supervisor(&self) -> Option<Arc<forge_supervise::Supervisor>> {
+        self.supervisor.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
     /// Set the `[browser]` encoding pair every host spawned from here reads.
@@ -328,17 +348,25 @@ impl BrowserService {
     /// **Never call it before `configure_idle`**: a sweep with no policy has
     /// nothing to ask through and a tick with no settings does nothing.
     pub fn start_idle(self: &Arc<Self>) {
-        static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        if STARTED.swap(true, Ordering::AcqRel) {
+        let Some(supervisor) = self.supervisor() else {
+            // The shipped boot installs the supervisor before this call, so
+            // this is only a service built without one (tests).
+            tracing::debug!(
+                event_name = "browser_idle_sweep_unstarted",
+                "the browser idle sweep was not started: no subsystem supervisor is installed"
+            );
             return;
-        }
+        };
         let service = Arc::clone(self);
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(idle::SWEEP);
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                interval.tick().await;
-                service.idle_pass().await;
+        supervisor.spawn("browser_idle_sweep", forge_supervise::Policy::backoff(), move || {
+            let service = Arc::clone(&service);
+            async move {
+                let mut interval = tokio::time::interval(idle::SWEEP);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    interval.tick().await;
+                    service.idle_pass().await;
+                }
             }
         });
     }
@@ -647,6 +675,7 @@ impl BrowserService {
             encoding: self.encoding(),
             launch: Arc::clone(&self.launch),
             stopped: Arc::clone(&self.stopped),
+            supervisor: self.supervisor(),
             tabs: Mutex::new(TabRegistry::default()),
             dialogs: Mutex::new(HashMap::new()),
             boot: Mutex::new(None),
@@ -665,6 +694,7 @@ impl BrowserService {
             restarted: AtomicBool::new(false),
             mute_dropped: AtomicBool::new(false),
             host_generation: AtomicU64::new(0),
+            names: Arc::clone(&self.names),
             host_suspect: Mutex::new(None),
             #[cfg(test)]
             successor: Mutex::new(None),
@@ -3754,6 +3784,8 @@ pub struct Profile {
     launch: Arc<AsyncMutex<()>>,
     /// The service's stop flag, shared by every profile.
     stopped: Arc<AtomicBool>,
+    /// The process's subsystem supervisor, when the boot installed one.
+    supervisor: Option<Arc<forge_supervise::Supervisor>>,
     /// **Each tab's newest frame is its own watch.** One profile-wide slot
     /// let a background tab's paint replace the viewed tab's, and an attach
     /// burst - every tab asked for a key frame - could blank the surface.
@@ -3866,6 +3898,10 @@ pub struct Profile {
     /// carries the host that reported it; an event from a receiver that was
     /// replaced is refused even when the tab numbers collide.
     host_generation: AtomicU64,
+    /// **The service's registry-name counter.** The chooser and veto names
+    /// are minted from it, so a reopened profile never repeats a name an old
+    /// incarnation's member still holds.
+    names: Arc<AtomicU64>,
     /// A fresh driver still could not list this profile's pages: the host it
     /// was listed from is wedged, and is ended on the first path that can
     /// take `file_decision` without waiting on the call that found it, or is
@@ -4670,6 +4706,13 @@ impl Profile {
         self.view_for(tab).send_replace(BrowserViewState { controller, viewers });
     }
 
+    /// A registry name for one per-driver or per-install member. **The
+    /// counter is the service's**, so a reopened profile never repeats a
+    /// name an old incarnation's member still holds.
+    fn next_member_name(&self, prefix: &str) -> String {
+        format!("{prefix}:{}:{}", self.key, self.names.fetch_add(1, Ordering::Relaxed))
+    }
+
     /// Bring the profile's host and driver up, or keep the ones already up.
     async fn ensure(self: &Arc<Self>, root: &Path, stack: &Path) -> Result<(), String> {
         let mut state = self.state.lock().await;
@@ -4752,17 +4795,26 @@ impl Profile {
         let cli = driver::cli_path(stack);
         let endpoint = engine::endpoint(host.port);
         let chooser_socket = chooser_socket_path(&self.dir, self.id)?;
-        let driver = Driver::start(&node, &cli, &endpoint, &root.join("output"), &chooser_socket)
-            .await
-            .map_err(|why| {
-                tracing::warn!(
-                    "the browser driver did not start (event_name browser_driver_start_failed, \
+        let chooser_name = self.next_member_name("browser_chooser");
+        let driver = Driver::start(
+            &node,
+            &cli,
+            &endpoint,
+            &root.join("output"),
+            &chooser_socket,
+            self.supervisor.clone(),
+            &chooser_name,
+        )
+        .await
+        .map_err(|why| {
+            tracing::warn!(
+                "the browser driver did not start (event_name browser_driver_start_failed, \
                      profile {}, port {}): {why}",
-                    self.key,
-                    host.port,
-                );
-                why
-            })?;
+                self.key,
+                host.port,
+            );
+            why
+        })?;
         let driver = Arc::new(driver);
         // **A chooser answer rides this driver's MCP call**, and the race
         // tests replace this handle with a gated one.
@@ -5013,7 +5065,9 @@ impl Profile {
         // **A page is never armed by a driver alone.** The veto is installed
         // before the profile serves any call, so every document a tab starts
         // opens behind it.
-        if let Err(why) = veto::install(port, &self.dir).await {
+        let veto_name = self.next_member_name("passkey_veto");
+        if let Err(why) = veto::install(port, &self.dir, self.supervisor.clone(), &veto_name).await
+        {
             tracing::warn!(
                 "the passkey veto did not install for {} (event_name browser_veto_failed): {why}",
                 self.key
@@ -5547,7 +5601,7 @@ fn start_nav_watch(profile: Arc<Profile>, port: u16) -> tokio::task::JoinHandle<
                 return;
             };
             let Ok((mut cdp, mut events)) =
-                Cdp::connect_watch(port, &path, Backlog::EveryEvent).await
+                Cdp::connect_watch(port, &path, Backlog::EveryEvent, None, "").await
             else {
                 tokio::time::sleep(NAV_RETRY).await;
                 continue;
@@ -5626,7 +5680,7 @@ async fn page_cdp<'a>(
             return Err("the page's websocket is not on the host's port".to_owned());
         };
         let (cdp, events) =
-            Cdp::connect_watch(port, &path, Backlog::DropNewest(EVENT_BACKLOG)).await?;
+            Cdp::connect_watch(port, &path, Backlog::DropNewest(EVENT_BACKLOG), None, "").await?;
         state.cdp.insert(target.to_owned(), cdp);
         state.cdp_events.insert(target.to_owned(), events);
     }
@@ -12280,6 +12334,50 @@ mod server_guards {
             )
             .await;
         service.find("O/default").await.expect("the profile")
+    }
+
+    /// **A reopened profile does not reuse a member name.** The name is
+    /// minted from the service's counter, so the old incarnation's driver,
+    /// dropping after its successor started, cannot stop the new
+    /// incarnation's acceptor.
+    #[tokio::test]
+    async fn a_reopened_profile_mints_a_fresh_member_name() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let supervisor = Arc::new(forge_supervise::Supervisor::new());
+        service.set_supervisor(Arc::clone(&supervisor));
+
+        let seat = SessionSlot::lead("O", "p");
+        let first = service.entry(&seat).await.expect("the first profile");
+        let first_name = first.next_member_name("browser_chooser");
+        // The first incarnation's driver holds a pending acceptor.
+        supervisor.spawn(&first_name, forge_supervise::Policy::Never, || async {
+            std::future::pending::<()>().await;
+        });
+        service.close(&seat).await.expect("the profile closes");
+
+        let second = service.entry(&seat).await.expect("the second profile");
+        let second_name = second.next_member_name("browser_chooser");
+        assert_ne!(first_name, second_name, "a reopened profile mints a fresh member name");
+        supervisor.spawn(&second_name, forge_supervise::Policy::Never, || async {
+            std::future::pending::<()>().await;
+        });
+
+        // The old incarnation's driver drops after its successor registered:
+        // its stop and forget reach only its own name.
+        supervisor.stop(&first_name);
+        supervisor.forget(&first_name);
+
+        let member = supervisor
+            .snapshot()
+            .into_iter()
+            .find(|member| member.name == second_name)
+            .expect("the second incarnation's member is registered");
+        assert!(
+            matches!(&member.state, forge_supervise::MemberState::Running { .. }),
+            "the second incarnation's member survives: {:?}",
+            member.state,
+        );
     }
 
     /// **An event deferred while the host is dying goes back for the next

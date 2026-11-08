@@ -556,22 +556,29 @@ impl Workspace {
         });
     }
 
-    /// Start the idle clock, once.
+    /// Start the idle clock, once. The registry makes a second call a no-op.
     fn ensure_terminal_clock(self: &Arc<Self>) {
-        if self.terminal_clock_started.swap(true, Ordering::SeqCst) {
-            return;
-        }
+        // **No runtime means no clock this run**, the same early return the
+        // task had before the registry: a terminal created outside a runtime
+        // has no tick to sweep with.
         if tokio::runtime::Handle::try_current().is_err() {
             return;
         }
         let weak = Arc::downgrade(self);
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(CLOCK_TICK).await;
-                let Some(workspace) = weak.upgrade() else { return };
-                workspace.sweep_idle_terminals();
-            }
-        });
+        self.supervisor.spawn(
+            "terminal_idle_clock",
+            forge_supervise::Policy::backoff(),
+            move || {
+                let weak = weak.clone();
+                async move {
+                    loop {
+                        tokio::time::sleep(CLOCK_TICK).await;
+                        let Some(workspace) = weak.upgrade() else { return };
+                        workspace.sweep_idle_terminals();
+                    }
+                }
+            },
+        );
     }
 }
 

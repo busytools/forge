@@ -348,7 +348,7 @@ impl Drop for Live {
 async fn connect(port: u16, path: &str) -> (Cdp, forge_browser::window::Events) {
     tokio::time::timeout(
         Duration::from_secs(5),
-        Cdp::connect_watch(port, path, Backlog::EveryEvent),
+        Cdp::connect_watch(port, path, Backlog::EveryEvent, None, ""),
     )
     .await
     .expect("the page's devtools endpoint answers")

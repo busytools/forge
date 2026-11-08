@@ -207,7 +207,7 @@ hard rule 27).
 
 ## Where code goes
 
-The workspace is fourteen crates with a strictly acyclic dependency graph,
+The workspace is fifteen crates with a strictly acyclic dependency graph,
 and putting something in the wrong one is the most common structural
 review comment. The
 [architecture page](https://busytools.github.io/forge/architecture.html)

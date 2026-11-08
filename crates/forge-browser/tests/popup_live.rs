@@ -273,10 +273,15 @@ async fn a_pages_popup_gets_a_handle_and_becomes_a_tab_of_its_own() {
     wait_for_closed(&host, 1, BOUND).await;
     let left = wait_for_pages(port, 1, BOUND).await;
     assert_eq!(left.len(), 1, "the popup is the page left standing: {left:?}");
-    let (mut popup_cdp, _popup_events) =
-        Cdp::connect_watch(port, &format!("/devtools/page/{}", left[0]), Backlog::EveryEvent)
-            .await
-            .expect("the popup still answers its devtools endpoint");
+    let (mut popup_cdp, _popup_events) = Cdp::connect_watch(
+        port,
+        &format!("/devtools/page/{}", left[0]),
+        Backlog::EveryEvent,
+        None,
+        "",
+    )
+    .await
+    .expect("the popup still answers its devtools endpoint");
     assert_eq!(
         evaluate(&mut popup_cdp, "location.href").await,
         Value::String("about:blank".to_owned()),
@@ -533,7 +538,7 @@ fn wait_for_ring(name: &str, host: &support::Host) -> Ring {
 async fn connect(port: u16, path: &str) -> Option<(Cdp, forge_browser::window::Events)> {
     match tokio::time::timeout(
         Duration::from_secs(5),
-        Cdp::connect_watch(port, path, Backlog::EveryEvent),
+        Cdp::connect_watch(port, path, Backlog::EveryEvent, None, ""),
     )
     .await
     {

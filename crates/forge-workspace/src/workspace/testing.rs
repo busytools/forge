@@ -235,12 +235,16 @@ impl Workspace {
         self.update_tx.answering_count()
     }
 
-    /// Whether the usage poller's start has run. Test-only: the poller's
-    /// first tick is a minute out and its pass reaches the network, so a
-    /// cross-crate boot test reads the guard rather than watching it poll.
+    /// Whether the usage poller is registered and running. Test-only: the
+    /// poller's first tick is a minute out and its pass reaches the network,
+    /// so a cross-crate boot test reads the registry rather than watching it
+    /// poll.
     #[cfg(any(test, feature = "testing"))]
     pub fn test_usage_poller_started(&self) -> bool {
-        self.usage_poller_started.load(std::sync::atomic::Ordering::Acquire)
+        self.supervisor.snapshot().iter().any(|member| {
+            member.name == "usage_poller"
+                && matches!(&member.state, forge_supervise::MemberState::Running { .. })
+        })
     }
 
     /// Whether the dictate prewarm's start has run. Test-only: the start
@@ -489,13 +493,10 @@ impl Workspace {
             domain_handles: Mutex::new(HashMap::new()),
             review_origin: Mutex::new(HashMap::new()),
             review_activity: Mutex::new(HashMap::new()),
-            usage_poller_started: std::sync::atomic::AtomicBool::new(false),
-            rotation_announcer_started: std::sync::atomic::AtomicBool::new(false),
+            supervisor: Arc::new(forge_supervise::Supervisor::new()),
             dictate_preflight_started: std::sync::atomic::AtomicBool::new(false),
             voice_prewarm_started: std::sync::atomic::AtomicBool::new(false),
             voice_prewarm_dispatched: std::sync::atomic::AtomicBool::new(false),
-            cron_scheduler_started: std::sync::atomic::AtomicBool::new(false),
-            chase_sweep_started: std::sync::atomic::AtomicBool::new(false),
             kick_dispatcher_tx,
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             _single_instance_lock: None,
@@ -514,7 +515,6 @@ impl Workspace {
             last_fatal_error: Mutex::new(None),
             service_status: Arc::new(Mutex::new(None)),
             service_status_probe_started: std::sync::atomic::AtomicBool::new(false),
-            cli_version_probe_started: std::sync::atomic::AtomicBool::new(false),
             gotify_connected: Mutex::new(false),
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),
@@ -537,7 +537,6 @@ impl Workspace {
             terminals: Mutex::new(HashMap::new()),
             terminal_handoffs: Mutex::new(HashMap::new()),
             next_terminal_id: std::sync::atomic::AtomicU16::new(1),
-            terminal_clock_started: std::sync::atomic::AtomicBool::new(false),
             settings_writes: Mutex::new(HashMap::new()),
             parked_vault_asks: Mutex::new(HashMap::new()),
             pending_seq: Mutex::new(HashMap::new()),
@@ -640,10 +639,13 @@ impl Workspace {
         }
     }
 
-    /// Whether the rotation announcer was started, so a test pins that the
-    /// boot call actually reaches the one watcher.
+    /// Whether the rotation announcer is registered and running, so a test
+    /// pins that the boot call actually reaches the one watcher.
     pub fn test_rotation_announcer_started(&self) -> bool {
-        self.rotation_announcer_started.load(std::sync::atomic::Ordering::Acquire)
+        self.supervisor.snapshot().iter().any(|member| {
+            member.name == "rotation_announcer"
+                && matches!(&member.state, forge_supervise::MemberState::Running { .. })
+        })
     }
 
     /// Drain every app-level `Command` captured since the last call.

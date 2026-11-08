@@ -1805,6 +1805,7 @@ dependencies = [
  "chrono",
  "forge-primitives",
  "forge-sdk",
+ "forge-supervise",
  "futures-util",
  "libc",
  "objc2",
@@ -1964,6 +1965,7 @@ dependencies = [
  "forge-primitives",
  "forge-sdk",
  "forge-server",
+ "forge-supervise",
  "forge-tts",
  "forge-workspace",
  "futures-util",
@@ -1979,6 +1981,15 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "forge-supervise"
+version = "1.2.3"
+dependencies = [
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -2058,6 +2069,7 @@ dependencies = [
  "forge-gateway",
  "forge-primitives",
  "forge-sdk",
+ "forge-supervise",
  "forge-system-one",
  "forge-terminal",
  "forge-tts",
@@ -5442,6 +5454,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",

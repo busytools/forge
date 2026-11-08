@@ -1,6 +1,6 @@
 # Architecture
 
-Fourteen crates, layered so the dependency graph stays acyclic.
+Fifteen crates, layered so the dependency graph stays acyclic.
 
 ```
 forge-primitives      leaf: pure data, no logic, no I/O, no async
@@ -9,6 +9,7 @@ forge-dictate     ->  capture
 forge-tts             leaf: speech synthesis, depends on no forge-* crate
 forge-system-one      leaf: decision-model client, depends on no forge-* crate
 forge-terminal        leaf: the PTY and screen model, depends on no forge-* crate
+forge-supervise       leaf: subsystem supervision, depends on no forge-* crate
 forge-gateway     ->  primitives
 forge-connectors  ->  primitives
 forge-sdk         ->  primitives
@@ -27,6 +28,7 @@ forge-test-harness->  primitives + sdk
 | `forge-tts`          | The speech primitive: text in, audio chunks out. Owns the Kokoro-82M engine (ONNX Runtime in process, with Misaki and its bundled espeak-ng for G2P), the model files a speaking model is made of, sentence splitting and the utterance bound. A leaf: it depends on no forge-* crate and knows nothing about a seat, a tool or a wire. |
 | `forge-system-one`   | The System One decision-model client: the `[systemone]` config shape, the wire question/answer types and their validation, the HTTP call with its timeout and error mapping. A leaf: depends on no forge-* crate, and its types stay there for consumers to import.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `forge-terminal`     | One terminal per seat: the PTY, the screen model and the read loop, the OSC 133 scanner and the shell integration scripts, the text extractor, the attach repaint, and the state classifier. `alacritty_terminal` is its only terminal dependency; the event loop is forge's own because the client's stream is the raw bytes and that loop consumes them. A leaf: it depends on no forge-* crate and knows nothing about a seat, a socket or a session - the workspace keys it by the slot, the server carries its bytes, the client draws them. |
+| `forge-supervise`    | Supervision for forge's long-lived background tasks: one registry that starts a member's future, restarts a death with bounded backoff, refuses to resurrect a deliberate stop, and answers a snapshot of what is running. A leaf: it depends on no forge-* crate, and a member's own loop stays in the crate that owns it. |
 | `forge-gateway`      | The account pool: one backend per provider token (credential resolution, the usage probe's HTTP and payload mapping, billing shape), plus account selection by declared models, account health, probe scheduling and backoff. Depends on forge-primitives only; the `claude --version` user agent and TLS-trust plumbing arrive through the host port forge-agent implements.                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `forge-connectors`   | One module per external integration: the Gotify and Slack connectors and the outbound Vaultwarden client behind the vault family. Depends on forge-primitives only; Gotify's workspace state and message dispatch arrive through the host port forge-workspace implements, and the vault's session, tokens and unlocked account live there.                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `forge-sdk`          | The `claude` subprocess. Stream-json codec, transport, control dispatch, the in-process MCP host, and the options builder.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -108,6 +110,10 @@ Work top-down; the first match wins.
     read of the core goes through the view surface in `forge-server`,
     never through `forge-workspace`.
 13. **A wire-conformance scenario** goes in `forge-test-harness`.
+14. **Supervision of a long-lived background task** (its restart policy,
+    its stop, the snapshot of what is running) goes in `forge-supervise`.
+    A leaf: it depends on no forge-* crate, and a member's own loop stays
+    in the crate that owns it.
 
 **The view surface is built, reads and writes.** A view reads the core
 through named verbs by subject - `roster`, `session`, `agents`,

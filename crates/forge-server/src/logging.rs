@@ -130,6 +130,7 @@ pub const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     forge_workspace::work=debug,\
     forge_workspace::browser=debug,\
     forge_browser=debug,\
+    forge_supervise=debug,\
     forge_workspace::mcp=debug,\
     forge_workspace::gotify=debug,\
     forge_agent::mcp=debug,\
@@ -465,6 +466,15 @@ mod tests {
         // transport, surface and boot records ride it alongside the session
         // reads. Without the directive those records land nowhere at all.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_server=debug"));
+        // `forge_supervise` pins the registry's start and stop records at
+        // `debug`: without the directive the two lines that say a member
+        // came up or was stopped land nowhere at all.
+        let supervise_target = "forge_supervise=debug";
+        assert!(
+            DEFAULT_LOG_DIRECTIVES.split(',').any(|directive| directive.trim() == supervise_target),
+            "the supervisor's start and stop records keep their directive ({supervise_target}): \
+             {DEFAULT_LOG_DIRECTIVES}",
+        );
         // `forge_agent::userdata::catalog::scan` carries the scan's
         // module-path records at `debug`: an unparseable transcript line, a
         // session with no on-disk file, an anchor no row names. Each is one

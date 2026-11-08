@@ -5,8 +5,8 @@
 //! Everything here stays on `Workspace` as a second `impl` block, so
 //! every caller (the boot path in [`crate::workspace`], the
 //! `mcp::cron` facade, `spawn::deliver_cron_prompt`, a view's boot)
-//! keeps its path. The `crons`, `cron_scheduler_started` and `update_tx`
-//! fields these methods own are `pub(crate)` for the same reason `db` is:
+//! keeps its path. The `crons` and `update_tx` fields these methods own
+//! are `pub(crate)` for the same reason `db` is:
 //! so this sibling module can reach them without a wrapper. A fired cron
 //! with no live session parks in [`crate::parked`]. Schedule math lives in
 //! [`crate::mcp::cron::schedule`]; the MCP tool surface in
@@ -520,15 +520,14 @@ impl Workspace {
 
     /// Spawn the cron scheduler: a background task that wakes every
     /// `CRON_TICK_INTERVAL` (~60s), fires every due cron, and exits when
-    /// the workspace drops. Idempotent (a second call no-ops). Mirrors
-    /// [`Workspace::start_usage_poller`]; started once at boot.
+    /// the workspace drops. The registry makes a second call a no-op.
+    /// Mirrors [`Workspace::start_usage_poller`]; started once at boot.
     pub fn start_cron_scheduler(self: &Arc<Self>) {
-        if self.cron_scheduler_started.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            return;
-        }
         let weak = Arc::downgrade(self);
         let span = tracing::info_span!("cron_scheduler");
-        tokio::spawn(
+        self.supervisor.spawn("cron_scheduler", forge_supervise::Policy::backoff(), move || {
+            let weak = weak.clone();
+            let span = span.clone();
             async move {
                 let mut interval = tokio::time::interval_at(
                     tokio::time::Instant::now() + CRON_TICK_INTERVAL,
@@ -543,8 +542,8 @@ impl Workspace {
                     workspace.fire_due_crons(std::time::SystemTime::now());
                 }
             }
-            .instrument(span),
-        );
+            .instrument(span)
+        });
     }
 }
 
@@ -2433,10 +2432,10 @@ provider = "anthropic"
         );
     }
 
-    /// The swap-once guard: the first `start_cron_scheduler` flips
-    /// `cron_scheduler_started` and runs exactly one tick loop, and a
-    /// second call is a no-op. The due cron is the observable that the
-    /// guard opens - a guard that never opens fires nothing.
+    /// The registry's idempotency: the first `start_cron_scheduler`
+    /// registers the member and runs exactly one tick loop, and a second
+    /// call is a no-op. The due cron is the observable that the start
+    /// opens - a start that never runs fires nothing.
     #[tokio::test(start_paused = true)]
     async fn start_cron_scheduler_fires_a_due_cron_once_despite_a_second_start() {
         use forge_primitives::cron::{CronEntry, CronId, CronKind};
@@ -2460,8 +2459,8 @@ provider = "anthropic"
         ws.enable_test_dispatch_intercept();
         ws.start_cron_scheduler();
         assert!(
-            ws.cron_scheduler_started.load(std::sync::atomic::Ordering::Acquire),
-            "the first start flips the swap-once guard",
+            ws.supervisor().snapshot().iter().any(|member| member.name == "cron_scheduler"),
+            "the first start registers the scheduler",
         );
 
         // Let the spawned task poll once so its interval is registered

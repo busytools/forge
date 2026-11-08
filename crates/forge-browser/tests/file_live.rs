@@ -61,7 +61,7 @@ async fn a_page_file_chooser_is_answered_with_a_server_path() {
         support::Host::start_with_events(&exe, &profile, port, &ring_name, "800x600", &[], &log);
     let id = support::wait_for_page(port, &log, BOUND);
     let (mut cdp, _events) =
-        Cdp::connect_watch(port, &format!("/devtools/page/{id}"), Backlog::EveryEvent)
+        Cdp::connect_watch(port, &format!("/devtools/page/{id}"), Backlog::EveryEvent, None, "")
             .await
             .expect("devtools");
     cdp.call(
