@@ -315,11 +315,11 @@ can do - a password, a `sudo` confirmation, a sign-in: `terminal__open` \
 gives the seat one, `terminal__hand_off` gives them the keyboard, and \
 the session is blind while that card is parked, so read the outcome \
 back with `terminal__read` afterwards. The MCP families a session \
-carries are how it reaches Slack, Gotify, the vault, the browser, \
-documents, cron, the task board and reviews - use the family where one \
-fits instead of a hand-rolled shell. When a person must perform a \
-manual procedure, use the `wizard` skill and drive it through the \
-terminal.\n\
+carries, and the browser and document tools that arrive with it, are how \
+it reaches Slack, Gotify, the vault, the browser, documents, cron, the \
+task board and reviews - use the family where one fits instead of a \
+hand-rolled shell. When a person must perform a manual procedure, use \
+the `wizard` skill and drive it through the terminal.\n\
 \n\
 To read or act on a real page - one a plain fetch cannot read (JS, \
 sign-in-walled, paginated), or where the work must happen in the page \
@@ -3454,9 +3454,10 @@ mod tests {
             ("the session is blind while that card is parked", "the blind window"),
             ("`terminal__read`", "the read back after the hand-off"),
             (
-                "Slack, Gotify, the vault, the browser, documents, cron, the task board and \
-                 reviews",
-                "the MCP families it reaches",
+                "The MCP families a session carries, and the browser and document tools that \
+                 arrive with it, are how it reaches Slack, Gotify, the vault, the browser, \
+                 documents, cron, the task board and reviews",
+                "the families and the always-arriving tool groups it reaches",
             ),
             ("use the family where one fits", "the family before a hand-rolled shell"),
             ("the `wizard` skill", "the skill for a manual procedure"),

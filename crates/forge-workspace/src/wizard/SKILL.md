@@ -1,6 +1,6 @@
 ---
 name: wizard
-description: Generate an interactive bash wizard that walks a person through steps only they can perform - provisioning infrastructure, setting up credentials or CI secrets, walking an unfamiliar third-party dashboard, or running a one-off migration or cutover - driven through this seat's terminal, opening dashboards in the forge browser, finding a credential in settings or the vault before asking, and recording the stage so a handoff can resume it. Don't invoke this for steps the agent can perform itself.
+description: Generate an interactive bash wizard that walks a person through steps only they can perform - provisioning infrastructure, setting up credentials or CI secrets, walking an unfamiliar third-party dashboard, or running a one-off migration or cutover - driven through this seat's terminal, opening dashboards in the forge browser, finding a credential in settings or, when the session carries that family, the vault before asking, and recording the stage so a handoff can resume it. Don't invoke this for steps the agent can perform itself.
 disable-model-invocation: false
 ---
 
@@ -9,9 +9,9 @@ disable-model-invocation: false
 A **wizard** is a bash script that walks a person, step by step, through a manual procedure
 that's tedious to do by hand and tedious to re-explain to an agent every time. It opens each
 destination, says exactly what to do, captures the values, writes them where they belong
-(`.env`, GitHub secrets), confirms before anything irreversible, and shows how many stages are
-left. It might configure third-party services, run a one-off migration, or move the project from
-one state to another.
+(`.env`, `gh secret`, `gh variable`), confirms before anything irreversible, and shows how many
+stages are left. It might configure third-party services, run a one-off migration, or move the
+project from one state to another.
 
 The UX is already solved by [template.sh](template.sh): stage-by-stage progress, confirmation
 gates, hidden secret entry, idempotent `.env` upserts, `gh secret`/`gh variable` writes, and a
@@ -45,7 +45,8 @@ from this page.
 ## Destinations: this seat's browser
 
 When a stage sends the person to a dashboard, open it in the seat's browser and hand the tab
-over. Never send them to their own browser and never print a bare URL for them to retype.
+over. That is the plan: never send them to their own browser and never print a bare URL for
+them to retype.
 
 - `browser_navigate` opens the page in this session's own tab, in the profile forge resolves
   from the org and project.
@@ -65,28 +66,32 @@ Before a stage asks the person for a value, look for it in this order:
 1. **`settings__get`** when the value is a key in `forge.toml`. `settings__index` lists what
    exists and `settings__get` answers the effective value; use it for anything forge itself is
    configured with.
-2. **`vault__search`, then `vault__get`** when it is a stored credential. The search answers
-   metadata only, so reveal the one field you need with `vault__get`.
+2. **`vault__search`, then `vault__get`**, when it is a stored credential and your tool list
+   carries the vault family. The search answers metadata only, so reveal the one field you need
+   with `vault__get`. If the family was withheld from this session, ask your lead for it rather
+   than working around it.
 3. **`ask_secret` in the terminal** when it is in neither. Hidden entry, in the seat's terminal,
    written straight to where it belongs.
 
 Never ask for a secret in chat, and never write one into a file that is not its destination: a
-key goes to `.env`, to `gh secret`, or to the vault, and nowhere else. A value found in step 1
-or 2 is offered to the stage as its default instead of a prompt.
+key goes to `.env`, to `gh secret`, to `gh variable`, or to the vault, and nowhere else. A value
+found in settings or the vault is written to its real destination by its stage, never embedded
+in the script.
 
 ## A wizard that outlives the session
 
-A long procedure can outlive the turn that started it. Keep its state at
-`memory/wizards/<slug>.md` in the session's project memory directory, as a current-state
-document rewritten in place:
+A long procedure can outlive the turn that started it. Keep its state at `wizards/<slug>.md` in
+the session's project memory directory, as a current-state document rewritten in place:
 
 - the stage the wizard reached, and the stage it is on;
 - every value captured, by name and by destination - never the secret itself;
 - what remains, and what stopped a stage;
 - how to re-run it: the script's path and the environment it needs.
 
-A handoff points at that file by path. The handoff procedure itself is the `handoff` skill's,
-not this one's.
+**The seat decides where that file lives.** A lead keeps it at `wizards/<slug>.md`; a worker
+keeps its stage in its own `workers/<label>.md` in the same directory, the way the always-on
+rule has it, and tells its lead where it is. A handoff points at that file by path. The handoff
+procedure itself is the `handoff` skill's, not this one's.
 
 ## Process
 
@@ -131,6 +136,17 @@ CI actually needs, and `confirm` before any irreversible action. Each `stage` cl
 only the current step is visible: keep a stage to one focused task so nothing the person needs
 scrolls away. Don't touch the library above the marker.
 
+**A gate needs its own arm.** `confirm` returns non-zero when the answer is no, and a bare call
+would end the whole wizard there under `set -e`. Give every gate both answers:
+
+```bash
+if confirm "Delete the old webhook?"; then
+  delete_webhook
+else
+  note "kept the old webhook"
+fi
+```
+
 **Done when:** the script holds one `stage` per step from step 1, `TOTAL_STAGES` matches, and the
 library is byte-identical to `template.sh` above the marker.
 
@@ -145,7 +161,7 @@ library is byte-identical to `template.sh` above the marker.
   input is theirs alone. Read the outcome back after every hand-off.
 
 **Done when:** the wizard has run to its closing summary, or the stage it stopped at is recorded
-in `memory/wizards/<slug>.md` with what remains.
+in `wizards/<slug>.md` with what remains.
 
 ## Boundaries
 
