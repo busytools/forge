@@ -1000,6 +1000,10 @@ pub fn shipped_skills() -> &'static [ShippedSkill] {
 pub enum SkillInstall {
     Created,
     Replaced,
+    /// The content was already current; only a `*.tmp` leftover or a
+    /// retired file was removed. **No file was written**, so a boot that
+    /// sees this must not say the skill was written.
+    Swept,
     Unchanged,
 }
 
@@ -1025,6 +1029,24 @@ pub fn skill_path(config_dir: &Path, name: &str) -> PathBuf {
 /// in the directory is, because the person's own files live there too.
 pub fn install_skill(config_dir: &Path, skill: &ShippedSkill) -> std::io::Result<SkillInstall> {
     let dir = skill_dir(config_dir, skill.name);
+    // **A symlinked skill directory is refused, not followed.** Writing
+    // through it would put forge's files wherever the link points, and the
+    // sweep would read outside the config dir.
+    if let Ok(metadata) = std::fs::symlink_metadata(&dir)
+        && metadata.file_type().is_symlink()
+    {
+        tracing::warn!(
+            target: "forge_workspace::skills",
+            event_name = "skill_dir_is_a_symlink",
+            skill = skill.name,
+            path = %dir.display(),
+            "the skill directory is a symlink; nothing is installed through it",
+        );
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{}: the skill directory is a symlink", dir.display()),
+        ));
+    }
     let mut held_a_copy = false;
     let mut differing: Vec<(&'static str, &'static str)> = Vec::new();
     for (name, contents) in skill.files {
@@ -1042,11 +1064,15 @@ pub fn install_skill(config_dir: &Path, skill: &ShippedSkill) -> std::io::Result
         }
     }
 
-    let sweep = sweep_candidates(&dir, skill)?;
+    let sweep = sweep_candidates(&dir, skill);
     let outcome = if !held_a_copy {
         SkillInstall::Created
     } else if differing.is_empty() && sweep.is_empty() {
         return Ok(SkillInstall::Unchanged);
+    } else if differing.is_empty() {
+        // **A sweep is not a write.** The content was already current, so
+        // the boot's line must not claim the skill was written.
+        SkillInstall::Swept
     } else {
         SkillInstall::Replaced
     };
@@ -1114,45 +1140,31 @@ pub fn install_skill(config_dir: &Path, skill: &ShippedSkill) -> std::io::Result
     Ok(outcome)
 }
 
-/// The files inside one skill's directory that are forge's to remove: a
-/// `*.tmp` leftover from a failed write, or a name the skill retired.
+/// The files inside one skill's directory that are forge's to remove: the
+/// `{file}.tmp` one of its own files leaves when a write failed, or a name
+/// the skill retires.
 ///
-/// **A symlinked directory is never swept.** Reading it would take the
-/// removal outside the config dir, which is not forge's to touch.
-fn sweep_candidates(dir: &Path, skill: &ShippedSkill) -> std::io::Result<Vec<PathBuf>> {
-    let Ok(metadata) = std::fs::symlink_metadata(dir) else { return Ok(Vec::new()) };
-    // **The symlink check comes before `is_dir`, which follows it.** Reading
-    // through the link would take the removal out of the config dir.
-    if metadata.file_type().is_symlink() {
-        tracing::debug!(
-            target: "forge_workspace::skills",
-            event_name = "skill_sweep_skipped",
-            skill = skill.name,
-            path = %dir.display(),
-            "the skill directory is a symlink; nothing is swept",
-        );
-        return Ok(Vec::new());
-    }
-    if !metadata.is_dir() {
-        return Ok(Vec::new());
-    }
+/// **Only its own temp names.** The directory sits in a sync-replicated
+/// tree, so any other `.tmp` beside it belongs to something else. A name the
+/// asset still ships is never swept, even when it is also listed as retired:
+/// a future asset ending in `.tmp` would otherwise delete itself on its next
+/// boot.
+fn sweep_candidates(dir: &Path, skill: &ShippedSkill) -> Vec<PathBuf> {
     let mut sweep = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let file_name = entry.file_name();
-        let swept = file_name.to_str().is_some_and(|name| {
-            let is_temp = std::path::Path::new(name)
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("tmp"));
-            is_temp || skill.retired.contains(&name)
-        });
-        // **Only regular files.** A subdirectory is the person's, whatever
-        // its name looks like.
-        if swept && entry.file_type()?.is_file() {
-            sweep.push(entry.path());
+    let mut push = |path: PathBuf| {
+        if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_file()) {
+            sweep.push(path);
+        }
+    };
+    for (name, _) in skill.files {
+        push(dir.join(format!("{name}.tmp")));
+    }
+    for retired in skill.retired {
+        if !skill.files.iter().any(|(name, _)| name == retired) {
+            push(dir.join(retired));
         }
     }
-    Ok(sweep)
+    sweep
 }
 
 fn remove_all(staged: &[(PathBuf, PathBuf)]) {
@@ -3073,28 +3085,54 @@ fix the parser, then the client row.";
         );
     }
 
-    /// **Only `*.tmp` leftovers and names the skill retired are swept.**
-    /// `<config_dir>/skills/` is the person's own directory too, so a note, a
-    /// helper or a subdirectory beside `SKILL.md` survives a boot that
-    /// rewrites the skill.
+    /// **Only its own `{file}.tmp` leftovers and names the skill retired are
+    /// swept.** `<config_dir>/skills/` is the person's own directory too, and
+    /// it sits in a sync-replicated tree, so a note, a helper, a foreign temp
+    /// or a subdirectory beside `SKILL.md` survives a boot that rewrites the
+    /// skill.
     #[test]
-    fn the_sweep_takes_only_tmp_files_and_retired_names() {
+    fn the_sweep_takes_only_its_own_temps_and_retired_names() {
         let dir = tempfile::tempdir().expect("tempdir");
         let retired =
             ShippedSkill { name: "wizard", files: WIZARD_FILES, retired: &["old-stage.sh"] };
         install_skill(dir.path(), &retired).expect("install");
         let root = skill_dir(dir.path(), "wizard");
-        std::fs::write(root.join("leftover.tmp"), "half a write").expect("temp");
+        std::fs::write(root.join("SKILL.md.tmp"), "half a write").expect("temp");
         std::fs::write(root.join("old-stage.sh"), "#!/bin/sh\n").expect("retired");
         std::fs::write(root.join("note.md"), "mine").expect("user file");
+        std::fs::write(root.join("someone-else.tmp"), "theirs").expect("foreign temp");
         std::fs::create_dir(root.join("helpers")).expect("user dir");
         std::fs::write(root.join("helpers").join("old-stage.sh"), "keep").expect("inside a dir");
 
-        assert_eq!(install_skill(dir.path(), &retired).expect("install"), SkillInstall::Replaced);
-        assert!(!root.join("leftover.tmp").exists(), "a leftover temp is swept");
+        assert_eq!(
+            install_skill(dir.path(), &retired).expect("install"),
+            SkillInstall::Swept,
+            "a sweep alone is not a rewrite",
+        );
+        assert!(!root.join("SKILL.md.tmp").exists(), "its own leftover temp is swept");
         assert!(!root.join("old-stage.sh").exists(), "a retired name is swept");
         assert!(root.join("note.md").exists(), "the person's file survives");
+        assert!(root.join("someone-else.tmp").exists(), "a foreign temp is not forge's");
         assert!(root.join("helpers").join("old-stage.sh").exists(), "a subdirectory is theirs");
+    }
+
+    /// A name the asset still ships is never swept, even if a retired list
+    /// names it: a future asset ending in `.tmp` would delete itself.
+    #[test]
+    fn a_name_the_asset_still_ships_is_never_swept() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let retired =
+            ShippedSkill { name: "wizard", files: WIZARD_FILES, retired: &["template.sh"] };
+        install_skill(dir.path(), &retired).expect("install");
+        assert_eq!(
+            install_skill(dir.path(), &retired).expect("install"),
+            SkillInstall::Unchanged,
+            "a shipped file listed as retired is still not swept",
+        );
+        assert!(
+            skill_dir(dir.path(), "wizard").join("template.sh").exists(),
+            "the shipped file is there",
+        );
     }
 
     /// The shipped skills retire nothing today, so an unrecognised file is
@@ -3172,8 +3210,8 @@ fix the parser, then the client row.";
         assert_eq!(std::fs::read(&skill_md).expect("read"), b"mine", "the bytes are untouched");
     }
 
-    /// **A removal that fails is not an install that failed.** The new bytes
-    /// are on disk; the leftover is retried next boot and a WARN says so.
+    /// **A removal that fails is not an install that failed.** The content is
+    /// already current; the leftover is retried next boot and a WARN says so.
     #[test]
     fn a_failed_sweep_does_not_fail_the_install() {
         use std::os::unix::fs::PermissionsExt;
@@ -3181,7 +3219,7 @@ fix the parser, then the client row.";
         let wizard = skill_named("wizard");
         install_skill(dir.path(), wizard).expect("install");
         let root = skill_dir(dir.path(), "wizard");
-        let leftover = root.join("leftover.tmp");
+        let leftover = root.join("SKILL.md.tmp");
         std::fs::write(&leftover, "half a write").expect("temp");
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o555)).expect("mode");
         let result = install_skill(dir.path(), wizard);
@@ -3189,10 +3227,53 @@ fix the parser, then the client row.";
 
         assert_eq!(
             result.expect("a failed removal is not an install failure"),
-            SkillInstall::Replaced,
-            "the sweep was owed, so the skill reads replaced",
+            SkillInstall::Swept,
+            "the content was already current; only the sweep was owed",
         );
         assert!(leftover.exists(), "the leftover is left for the next boot");
+    }
+
+    /// **No file is renamed until every differing file is staged.** With a
+    /// directory sitting where the second temp belongs, the first file must
+    /// still hold its edited bytes and leave no temp behind.
+    #[test]
+    fn a_staged_write_that_fails_leaves_every_file_as_it_was() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let wizard = skill_named("wizard");
+        install_skill(dir.path(), wizard).expect("install");
+        let root = skill_dir(dir.path(), "wizard");
+        let skill_md = root.join("SKILL.md");
+        let template = root.join("template.sh");
+        let edited = b"edited by the person".to_vec();
+        std::fs::write(&skill_md, &edited).expect("edit");
+        std::fs::write(&template, b"edited too").expect("edit");
+        // The second file's temp cannot be written: a directory is there.
+        std::fs::create_dir(root.join("template.sh.tmp")).expect("block the second temp");
+
+        assert!(install_skill(dir.path(), wizard).is_err(), "the staged write fails");
+        assert_eq!(std::fs::read(&skill_md).expect("read"), edited, "nothing was renamed");
+        assert!(!root.join("SKILL.md.tmp").exists(), "the staged temp is cleaned up");
+    }
+
+    /// **A symlinked skill directory is refused, not written through and not
+    /// swept.** Both would reach a tree outside the config dir.
+    #[test]
+    fn a_symlinked_skill_directory_is_refused_and_left_alone() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::write(outside.path().join("SKILL.md.tmp"), "half a write").expect("leftover");
+        std::fs::create_dir_all(dir.path().join("skills")).expect("skills dir");
+        symlink(outside.path(), skill_dir(dir.path(), "wizard")).expect("symlink");
+
+        let error = install_skill(dir.path(), skill_named("wizard")).expect_err("refused");
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::InvalidInput,
+            "a refusal, not a write: {error}",
+        );
+        assert!(outside.path().join("SKILL.md.tmp").exists(), "nothing outside is swept");
+        assert!(!outside.path().join("SKILL.md").exists(), "nothing outside is written");
     }
 
     /// The name the prompt invokes is the name the skill declares and the
@@ -3251,12 +3332,18 @@ fix the parser, then the client row.";
               vault is conditional on the family",
             ),
             ("If the family was withheld from this session, ask your lead", "the withheld family"),
+            ("If forge has no `[vault]` configured", "the unconfigured vault"),
             ("`ask_secret` in the terminal", "then hidden entry"),
             ("Never ask for a secret in chat", "no secret in chat"),
             ("never embedded in the script", "a found value is not written into the script"),
+            (
+                "the agent types it at the stage's own prompt with `terminal__write`",
+                "the prompt's answer",
+            ),
             ("`gh variable`", "the CI destination set"),
             ("`wizards/<slug>.md`", "the stage file a handoff resumes"),
-            ("a worker keeps its stage in its own `workers/<label>.md`", "the seat rule"),
+            ("a worker in its own `workers/<label>.md`", "the seat rule in the opening"),
+            ("a worker keeps it in its own `workers/<label>.md`", "the seat rule"),
             ("if confirm \"Delete the old webhook?\"", "the confirm idiom"),
             ("the `handoff` skill's", "the handoff pointer, not a copy of it"),
             ("never invent UI steps", "the no-invented-UI boundary"),

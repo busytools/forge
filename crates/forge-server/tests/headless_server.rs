@@ -934,6 +934,49 @@ async fn a_poisoned_handoff_skill_does_not_stop_the_wizard() {
     let _ = tokio::time::timeout(stop_wait(), server.wait()).await;
 }
 
+/// **A failed install is one line, and it says what the failure leaves
+/// behind.** The wizard's template poisoned into a directory makes its
+/// install fail; handoff still installs, the boot still serves, and the log
+/// names the wizard's own consequence rather than handoff's.
+#[tokio::test]
+async fn a_failed_wizard_install_is_logged_with_its_consequence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (mut server, _port, Scratch { home, config, bin: _ }) = spawn_serving(
+        two_free_ports,
+        |port, gateway| {
+            let (home, config) = write_fixture(dir.path(), port, gateway);
+            std::fs::create_dir_all(config.join("skills").join("wizard").join("template.sh"))
+                .expect("poison the wizard's template");
+            Scratch { home, config, bin: None }
+        },
+        |_| {},
+    )
+    .await;
+
+    assert_eq!(
+        std::fs::read(config.join("skills").join("handoff").join("SKILL.md"))
+            .expect("handoff still installs"),
+        shipped_file("handoff", "SKILL.md"),
+    );
+
+    // **The log is read after the stop**, when the appender has flushed;
+    // the install line is written at boot but the file lags it.
+    let holder = server.id().expect("the server has a pid while it runs");
+    terminate(holder).await;
+    let _ = tokio::time::timeout(stop_wait(), server.wait()).await;
+    let log = std::fs::read_to_string(home.join("server.log")).expect("read the server log");
+    assert!(
+        log.contains("\"event_name\":\"wizard_skill_install_failed\""),
+        "the failed install is logged: {log}",
+    );
+    assert!(
+        log.contains(
+            "\"consequence\":\"the skill may be missing or partly updated until a later boot writes it\""
+        ),
+        "the wizard's own consequence is stated: {log}",
+    );
+}
+
 /// One forge per config dir, headless included: the second boot is refused
 /// in the holder's own words.
 #[tokio::test]
