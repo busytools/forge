@@ -15,11 +15,19 @@ set -euo pipefail
 # Wizard library: delightful, consistent UX, identical across every wizard.
 # ──────────────────────────────────────────────────────────────────────────
 
-if [[ -t 1 ]] && command -v tput >/dev/null 2>&1 && [[ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]]; then
-  BOLD=$(tput bold); DIM=$(tput dim); RESET=$(tput sgr0)
-  BLUE=$(tput setaf 4); GREEN=$(tput setaf 2); YELLOW=$(tput setaf 3); RED=$(tput setaf 1)
+# **Every capability is probed, never assumed.** `tput dim` exits non-zero on
+# a TERM without it (ansi, rxvt) and `tput clear` on a TERM it does not know;
+# under `set -e` either would kill the wizard before its first line.
+if [[ -t 1 ]] && command -v tput >/dev/null 2>&1; then
+  BOLD=$(tput bold 2>/dev/null || true)
+  DIM=$(tput dim 2>/dev/null || true)
+  RESET=$(tput sgr0 2>/dev/null || true)
+  BLUE=$(tput setaf 4 2>/dev/null || true)
+  GREEN=$(tput setaf 2 2>/dev/null || true)
+  YELLOW=$(tput setaf 3 2>/dev/null || true)
+  CLEAR=$(tput clear 2>/dev/null || true)
 else
-  BOLD=""; DIM=""; RESET=""; BLUE=""; GREEN=""; YELLOW=""; RED=""
+  BOLD=""; DIM=""; RESET=""; BLUE=""; GREEN=""; YELLOW=""; CLEAR=""
 fi
 
 # Author sets this at the top of the stages section.
@@ -30,12 +38,19 @@ ENV_FILE="${ENV_FILE:-.env}"
 WRITTEN_ENV=()    # KEYs written to ENV_FILE this run
 WRITTEN_SECRET=() # secret NAMEs set this run
 SKIPPED=()        # things we couldn't do (e.g. gh missing)
+_ENV_TMP=""       # the temp a write_env is staging
+
+_cleanup() {
+  if [[ -n "$_ENV_TMP" && -f "$_ENV_TMP" ]]; then rm -f "$_ENV_TMP"; fi
+  return 0
+}
+trap _cleanup EXIT
 
 # _clear wipes the terminal so only the current step is on screen. No-op when
 # output isn't a terminal, so piped logs stay readable.
 _clear() {
   [[ -t 1 ]] || return 0
-  if command -v tput >/dev/null 2>&1; then tput clear; else printf '\033[2J\033[3J\033[H'; fi
+  if [[ -n "$CLEAR" ]]; then printf '%s' "$CLEAR"; else printf '\033[2J\033[3J\033[H'; fi
 }
 
 # banner "Title" shows the opening frame: what this wizard does.
@@ -43,9 +58,9 @@ banner() {
   _clear
   printf '\n%s%s  %s%s\n' "$BOLD" "$BLUE" "$1" "$RESET"
   printf '%s  %s stages%s\n\n' "$DIM" "$TOTAL_STAGES" "$RESET"
-  printf '%s  You drive the browser; this wizard tells you exactly what to do and\n' "$DIM"
-  printf '  captures the values you copy back. Stop any time with Ctrl-C and re-run\n'
-  printf '  later, since it remembers values already saved.%s\n' "$RESET"
+  printf '%s  This wizard tells you exactly what to do and captures the values you\n' "$DIM"
+  printf '  copy back. Stop any time with Ctrl-C and re-run later, since it remembers\n'
+  printf '  values already saved.%s\n' "$RESET"
   pause "Ready to start?"
 }
 
@@ -65,38 +80,82 @@ step() { printf '  %s•%s %s\n' "$BLUE" "$RESET" "$1"; }
 note() { printf '  %s%s%s\n' "$DIM" "$1" "$RESET"; }
 warn() { printf '  %s⚠ %s%s\n' "$YELLOW" "$1" "$RESET"; }
 
+# _stop MESSAGE prints a failure and ends the run. A CI value has no other
+# home, so a failed write stops the wizard rather than recording a name whose
+# value is nowhere; a re-run asks for it again.
+_stop() {
+  printf '  %s✗ %s%s\n' "$YELLOW" "$1" "$RESET"
+  exit 1
+}
+
+# _valid_key KEY aborts unless KEY is a shell-assignment-shaped name. **It is
+# never interpolated into a pattern**: as a regex, `A.B` would match a
+# different line and `A[` would empty the file.
+_valid_key() {
+  [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && return 0
+  _stop "$1 is not a valid environment variable name: use letters, digits and _, not starting with a digit"
+}
+
+# _no_newline KEY VALUE aborts when VALUE spans lines: an env file holds one
+# line per key.
+_no_newline() {
+  [[ "$2" != *$'\n'* ]] && return 0
+  _stop "$1 contains a newline, which $ENV_FILE cannot hold: put a multi-line value in the file its program reads, or in the vault"
+}
+
 # open_url URL opens it in the human's browser, cross-platform incl. WSL.
 # This is the fallback for when no browser is available: an agent driving the
 # wizard opens the page in the seat's browser and hands the tab over instead.
 open_url() {
-  local url="$1"
+  local url="$1" opener=""
   printf '  %s↗ opening%s %s\n' "$GREEN" "$RESET" "$url"
-  { if   command -v wslview     >/dev/null 2>&1; then wslview "$url"
-    elif command -v explorer.exe >/dev/null 2>&1; then explorer.exe "$url"
-    elif command -v xdg-open    >/dev/null 2>&1; then xdg-open "$url"
-    elif command -v open        >/dev/null 2>&1; then open "$url"
-    else warn "couldn't open a browser; visit it manually: $url"; fi
-  } >/dev/null 2>&1 || warn "couldn't open a browser, so visit it manually: $url"
+  if   command -v wslview      >/dev/null 2>&1; then opener="wslview"
+  elif command -v explorer.exe >/dev/null 2>&1; then opener="explorer.exe"
+  elif command -v xdg-open     >/dev/null 2>&1; then opener="xdg-open"
+  elif command -v open         >/dev/null 2>&1; then opener="open"
+  fi
+  if [[ -z "$opener" ]]; then
+    warn "couldn't open a browser; visit it manually: $url"
+    return 0
+  fi
+  # **The warning is emitted outside the redirection.** Redirecting the
+  # whole block would swallow it along with the opener's own noise.
+  "$opener" "$url" >/dev/null 2>&1 || warn "couldn't open a browser, so visit it manually: $url"
 }
 
 # pause "msg" waits for the human to confirm they've done the manual part.
 pause() {
   printf '  %s%s%s ' "$DIM" "${1:-Press Enter to continue}" "$RESET"
-  read -r _ || true
+  IFS= read -r _ || true
 }
 
-# confirm "question" is a y/N gate; returns success on yes.
+# confirm "question" is a y/N gate; returns success on yes. **A bare call
+# ends the wizard under `set -e` when the answer is no**, so this says so and
+# the skill shows the if/else idiom.
 confirm() {
   local reply=""
   printf '  %s? %s [y/N] ' "$YELLOW" "$1"
-  read -r reply || true
-  [[ "$reply" =~ ^[Yy] ]]
+  IFS= read -r reply || true
+  if [[ "$reply" =~ ^[Yy] ]]; then return 0; fi
+  printf '  %s· answered no: %s - nothing was changed%s\n' "$DIM" "$1" "$RESET"
+  return 1
 }
 
-# _existing KEY: current value of KEY in ENV_FILE, if any.
+# _existing KEY: current value of KEY in ENV_FILE, if any. **The key is
+# matched as an exact field**, never as a pattern; only awk's own failure
+# stops the run, while "no such line" is a normal miss.
 _existing() {
   [[ -f "$ENV_FILE" ]] || return 1
-  local line; line=$(grep -E "^${1}=" "$ENV_FILE" | tail -n1) || return 1
+  local key="$1" line status=0
+  # awk's own error is 2; 1 is this program's "no such line", the only exit
+  # that means a normal miss.
+  line=$(awk -v key="$key" \
+    'index($0, key "=") == 1 { found = $0 } END { if (found != "") { print found; exit 0 } exit 1 }' \
+    "$ENV_FILE") || status=$?
+  if (( status == 1 )); then return 1; fi
+  if (( status != 0 )); then
+    _stop "could not read $ENV_FILE (awk exit $status); nothing was changed"
+  fi
   printf '%s' "${line#*=}"
 }
 
@@ -104,13 +163,14 @@ _existing() {
 # a default on re-runs (Enter keeps it). Visible input (non-secret).
 ask() {
   local key="$1" prompt="$2" current input
+  _valid_key "$key"
   current=$(_existing "$key" || true)
   if [[ -n "$current" ]]; then
     printf '  %s%s%s %s[Enter keeps current]%s ' "$BOLD" "$prompt" "$RESET" "$DIM" "$RESET"
   else
     printf '  %s%s%s ' "$BOLD" "$prompt" "$RESET"
   fi
-  read -r input || true
+  IFS= read -r input || true
   [[ -z "$input" && -n "$current" ]] && input="$current"
   printf -v "$key" '%s' "$input"
 }
@@ -118,57 +178,65 @@ ask() {
 # ask_secret KEY "Prompt" is like ask, but input is hidden.
 ask_secret() {
   local key="$1" prompt="$2" current input
+  _valid_key "$key"
   current=$(_existing "$key" || true)
   if [[ -n "$current" ]]; then
     printf '  %s%s%s %s[Enter keeps current]%s ' "$BOLD" "$prompt" "$RESET" "$DIM" "$RESET"
   else
     printf '  %s%s%s ' "$BOLD" "$prompt" "$RESET"
   fi
-  read -rs input || true
+  IFS= read -rs input || true
   printf '\n'
   [[ -z "$input" && -n "$current" ]] && input="$current"
   printf -v "$key" '%s' "$input"
 }
 
 # write_env KEY VALUE upserts KEY=VALUE into ENV_FILE (creates it; replaces
-# any existing line). Idempotent.
+# any existing line). Idempotent. **The temp sits beside ENV_FILE**, so the
+# rename is atomic and a secret never lands in $TMPDIR.
 write_env() {
-  local key="$1" value="$2" tmp
+  local key="$1" value="$2" status=0
+  _valid_key "$key"
+  _no_newline "$key" "$value"
   touch "$ENV_FILE"
-  tmp=$(mktemp)
-  grep -vE "^${key}=" "$ENV_FILE" > "$tmp" || true
-  printf '%s=%s\n' "$key" "$value" >> "$tmp"
-  mv "$tmp" "$ENV_FILE"
-  WRITTEN_ENV+=("$key")
+  _ENV_TMP=$(mktemp "${ENV_FILE}.XXXXXX")
+  awk -v key="$key" 'index($0, key "=") != 1' "$ENV_FILE" > "$_ENV_TMP" || status=$?
+  if (( status != 0 )); then
+    rm -f "$_ENV_TMP"; _ENV_TMP=""
+    _stop "could not read $ENV_FILE (awk exit $status); nothing was written"
+  fi
+  printf '%s=%s\n' "$key" "$value" >> "$_ENV_TMP"
+  mv "$_ENV_TMP" "$ENV_FILE"
+  _ENV_TMP=""
+  if [[ " ${WRITTEN_ENV[*]:-} " != *" $key "* ]]; then WRITTEN_ENV+=("$key"); fi
   printf '  %s✓ wrote%s %s → %s\n' "$GREEN" "$RESET" "$key" "$ENV_FILE"
 }
 
-# set_secret NAME VALUE sets a GitHub Actions repo secret via gh. Falls back
-# to a warning (and records it) if gh is unavailable or unauthenticated.
+# set_secret NAME VALUE sets a GitHub Actions repo secret via gh. **A CI-only
+# value has no other home**, so a failure stops the stage instead of leaving
+# a name whose value is nowhere; nothing recorded means a re-run asks again.
 set_secret() {
   local name="$1" value="$2"
-  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    if printf '%s' "$value" | gh secret set "$name" >/dev/null 2>&1; then
-      WRITTEN_SECRET+=("$name")
-      printf '  %s✓ set%s GitHub secret %s\n' "$GREEN" "$RESET" "$name"
-      return
-    fi
-  fi
-  SKIPPED+=("GitHub secret $name (set it manually: gh secret set $name)")
-  warn "skipped GitHub secret $name: gh not ready; set it later"
+  command -v gh >/dev/null 2>&1 \
+    || _stop "GitHub secret $name needs the gh CLI, which is not installed: install gh and re-run"
+  gh auth status >/dev/null 2>&1 \
+    || _stop "GitHub secret $name needs gh signed in: run gh auth login, then re-run"
+  printf '%s' "$value" | gh secret set "$name" >/dev/null 2>&1 \
+    || _stop "GitHub secret $name was not set: the gh call failed. Nothing was recorded, so a re-run asks for it again"
+  WRITTEN_SECRET+=("$name")
+  printf '  %s✓ set%s GitHub secret %s\n' "$GREEN" "$RESET" "$name"
 }
 
 # set_var NAME VALUE sets a GitHub Actions repo variable (non-secret).
 set_var() {
   local name="$1" value="$2"
-  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    if gh variable set "$name" --body "$value" >/dev/null 2>&1; then
-      printf '  %s✓ set%s GitHub variable %s\n' "$GREEN" "$RESET" "$name"
-      return
-    fi
-  fi
-  SKIPPED+=("GitHub variable $name")
-  warn "skipped GitHub variable $name, gh not ready; set it later"
+  command -v gh >/dev/null 2>&1 \
+    || _stop "GitHub variable $name needs the gh CLI, which is not installed: install gh and re-run"
+  gh auth status >/dev/null 2>&1 \
+    || _stop "GitHub variable $name needs gh signed in: run gh auth login, then re-run"
+  gh variable set "$name" --body "$value" >/dev/null 2>&1 \
+    || _stop "GitHub variable $name was not set: the gh call failed. Nothing was recorded, so a re-run asks for it again"
+  printf '  %s✓ set%s GitHub variable %s\n' "$GREEN" "$RESET" "$name"
 }
 
 # finish clears, then shows a closing summary of everything configured.
@@ -187,6 +255,7 @@ finish() {
 # ──────────────────────────────────────────────────────────────────────────
 # STAGES: author this section. One stage() per step the human takes.
 # Replace the example below. Set TOTAL_STAGES to match the stages you write.
+# ENV_FILE is relative: run the wizard from the repo root it should land in.
 # ──────────────────────────────────────────────────────────────────────────
 
 TOTAL_STAGES=1
