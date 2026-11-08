@@ -774,16 +774,27 @@ async fn headless_boot_serves_the_home_and_stops_clean() {
     )
     .await;
 
-    // **The boot installs the handoff skill.** The write is the boot's own
+    // **The boot installs every shipped skill.** The write is the boot's own
     // act, so the binary is the only instrument that proves it happens; the
     // expected bytes are whatever the installer writes into a scratch tree.
     let scratch = tempfile::tempdir().expect("tempdir");
-    forge_workspace::install_skill(scratch.path()).expect("install the shipped skill");
-    let expected =
-        std::fs::read(forge_workspace::skill_path(scratch.path())).expect("read the shipped skill");
-    let skill = config.join("skills").join("handoff").join("SKILL.md");
-    let installed = std::fs::read(&skill).expect("the boot installs the handoff skill");
-    assert_eq!(installed, expected, "the installed skill is the shipped one, byte for byte");
+    for shipped in forge_workspace::shipped_skills() {
+        forge_workspace::install_skill(scratch.path(), shipped).expect("install the shipped skill");
+        for (name, contents) in shipped.files {
+            let expected =
+                std::fs::read(forge_workspace::skill_dir(scratch.path(), shipped.name).join(name))
+                    .expect("read the shipped skill");
+            assert_eq!(expected, contents.as_bytes(), "the installer writes the asset");
+            let installed = config.join("skills").join(shipped.name).join(name);
+            assert_eq!(
+                std::fs::read(&installed)
+                    .unwrap_or_else(|_| panic!("the boot installs {}/{name}", shipped.name)),
+                expected,
+                "{}/{name} is the shipped one, byte for byte",
+                shipped.name,
+            );
+        }
+    }
 
     let url = format!("ws://127.0.0.1:{port}/socket");
     let transcript = walk("subscribe home\n", &url).await;

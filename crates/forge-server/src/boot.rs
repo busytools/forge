@@ -143,7 +143,7 @@ pub fn start_core(config_dir: &Path, project: Option<&str>) -> anyhow::Result<Ar
         return Err(anyhow::anyhow!("forge: {err}"));
     }
 
-    install_handoff_skill(config_dir);
+    install_shipped_skills(config_dir);
     start_subsystems(&workspace);
     #[cfg(target_os = "macos")]
     {
@@ -161,39 +161,63 @@ pub fn start_core(config_dir: &Path, project: Option<&str>) -> anyhow::Result<Ar
     Ok(workspace)
 }
 
-/// Install the generated handoff skill into the config dir.
+/// Install the skills forge ships into the config dir.
 ///
-/// **forge.toml is never written; this one file is.** The skill is forge's
-/// own text, compared byte for byte, so an upgrade refreshes it and a boot
-/// with an identical copy touches nothing.
-fn install_handoff_skill(config_dir: &Path) {
-    let path = forge_workspace::skill_path(config_dir);
-    match forge_workspace::install_skill(config_dir) {
-        Ok(forge_workspace::SkillInstall::Unchanged) => {}
-        Ok(outcome) => {
-            let action = match outcome {
-                forge_workspace::SkillInstall::Created => "created",
-                forge_workspace::SkillInstall::Replaced => "replaced",
-                forge_workspace::SkillInstall::Unchanged => return,
-            };
-            tracing::info!(
-                target: "forge_workspace::handoff",
-                event_name = "handoff_skill_installed",
-                path = %path.display(),
-                action,
-                "the handoff skill was written at boot",
-            );
+/// **forge.toml is never written; these skill directories are.** Each skill
+/// is forge's own text, compared byte for byte, so an upgrade refreshes it
+/// and a boot with identical copies touches nothing. One skill's failure is
+/// its own line: the rest still install.
+fn install_shipped_skills(config_dir: &Path) {
+    for skill in forge_workspace::shipped_skills() {
+        let dir = forge_workspace::skill_dir(config_dir, skill.name);
+        match forge_workspace::install_skill(config_dir, skill) {
+            Ok(forge_workspace::SkillInstall::Unchanged) => {}
+            Ok(outcome) => {
+                let action = match outcome {
+                    forge_workspace::SkillInstall::Created => "created",
+                    forge_workspace::SkillInstall::Replaced => "replaced",
+                    forge_workspace::SkillInstall::Unchanged => continue,
+                };
+                tracing::info!(
+                    target: "forge_workspace::handoff",
+                    event_name = skill_installed_event(skill.name),
+                    skill = skill.name,
+                    path = %dir.display(),
+                    action,
+                    "the skill was written at boot",
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::handoff",
+                    event_name = skill_install_failed_event(skill.name),
+                    skill = skill.name,
+                    path = %dir.display(),
+                    %error,
+                    "the skill could not be installed; a prompt that invokes it falls back to \
+                     its own steps",
+                );
+            }
         }
-        Err(error) => {
-            tracing::warn!(
-                target: "forge_workspace::handoff",
-                event_name = "handoff_skill_install_failed",
-                path = %path.display(),
-                %error,
-                "the handoff skill could not be installed; a handoff turn falls back to the \
-                 prompt's own steps",
-            );
-        }
+    }
+}
+
+/// The log event names stay per-skill: handoff's pair is the one existing
+/// traces and greps know, and a new skill gets its own rather than being
+/// folded into handoff's line.
+fn skill_installed_event(name: &str) -> &'static str {
+    match name {
+        "handoff" => "handoff_skill_installed",
+        "wizard" => "wizard_skill_installed",
+        _ => "skill_installed",
+    }
+}
+
+fn skill_install_failed_event(name: &str) -> &'static str {
+    match name {
+        "handoff" => "handoff_skill_install_failed",
+        "wizard" => "wizard_skill_install_failed",
+        _ => "skill_install_failed",
     }
 }
 
