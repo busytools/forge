@@ -351,7 +351,10 @@ export class LocalTake {
     // sends no surface, and then the refusal is this take's.
     if (isRefused(payload['outcome'])) {
       const asked = payload['surface'];
-      if (asked !== undefined && asked !== this.surface) return;
+      // `!= null` covers both an absent field and a JSON `null` from
+      // `Option<String>`: either is an older server, and the refusal is this
+      // take's.
+      if (asked != null && asked !== this.surface) return;
     }
     this.release();
   }

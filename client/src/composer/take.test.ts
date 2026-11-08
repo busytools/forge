@@ -406,6 +406,34 @@ describe('a take on a socket that is up', () => {
     expect(w.ended(), 'and the take is over on this side').toBe(1);
   });
 
+  it('lets go when a refusal names a null surface, as Option::None sends it', () => {
+    const connection = fakeConnection();
+    const mic = fakeMic();
+    const w = wiring(connection);
+    new LocalTake(mic, connection, DEFAULT_AXES, {
+      seat: SEAT,
+      surface: 'composer',
+      onLine: w.wiring.onLine,
+      onEnded: w.wiring.onEnded,
+    });
+
+    // Rust's `Option<String>` serialises `None` as `null`, not as an absent
+    // field; a refusal with either is this take's.
+    connection.push({
+      kind: 'update',
+      update: {
+        dictate_ended: {
+          key: SEAT,
+          outcome: { refused: { message: 'this client is already dictating' } },
+          generation: 0,
+          surface: null,
+        },
+      },
+    });
+    expect(mic.stopped, "a null surface is this take's").toBe(true);
+    expect(w.ended()).toBe(1);
+  });
+
   it('lets go when a refusal names no surface, as an older server sends it', () => {
     const connection = fakeConnection();
     const mic = fakeMic();

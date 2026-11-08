@@ -2721,6 +2721,60 @@ describe('the key', () => {
     }
   });
 
+  /**
+   * **A take this page did not start is not its to stop.** The record can
+   * show one - a reloaded page, another view's on the seat - and the unmount
+   * must not reach `act('cancel')`, whose `shown()` path would stop it.
+   */
+  it('does not stop a take this page did not start when the surface unmounts', async () => {
+    const harness = open({ dictation: true });
+    harness.page.record = bound('right_cmd', 'auto', take());
+    flushSync();
+
+    const sent = harness.sent.length;
+    await unmount(app as Record<string, unknown>);
+    app = null;
+    flushSync();
+
+    expect(harness.sent.length, 'a take this page did not start is not its to stop').toBe(sent);
+  });
+
+  /**
+   * **A finish queued during the open is the reader's submit.** The unmount
+   * must not overwrite it with a cancel: that spends the words they pressed
+   * stop to keep.
+   */
+  it('lands a finish queued during the open when the surface unmounts', async () => {
+    mic.held.gated = true;
+    vi.useFakeTimers();
+    try {
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+
+      key('ControlRight', 'keydown');
+      await opened();
+      vi.advanceTimersByTime(500);
+      key('ControlRight', 'keyup');
+      flushSync();
+
+      await unmount(app as Record<string, unknown>);
+      app = null;
+      flushSync();
+
+      mic.held.release?.();
+      await opened();
+      vi.advanceTimersByTime(DRAIN_MS + FLUSH_SETTLE_MS + 10);
+
+      expect(harness.sent.at(-1)?.command, 'the queued submit lands').toEqual({
+        dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: true },
+      });
+    } finally {
+      vi.useRealTimers();
+      mic.held.gated = false;
+    }
+  });
+
   it('learns what the system default is from the first take that opens it', async () => {
     mic.held.resolved = { id: 'mic-2', label: 'Shure SM7B' };
     try {

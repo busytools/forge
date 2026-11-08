@@ -134,27 +134,12 @@ export function bindPushToTalk(wiring: PushToTalk): void {
   // the press began - the invariant the handlers are hoisted for.
   onDestroy(() => handlers.reset());
 
-  // **A surface that goes stops its own take.** The microphone is the
-  // client's, and a take left recording by a surface that unmounted - a
-  // route-name change, a teardown - is one no live surface can stop: the
-  // next surface's start is refused by it, and the refusal used to release
-  // the take that was still recording. Abandoning here is the same door
-  // Escape uses, and it reaches the take wherever the reader moved to.
-  //
-  // **An open in flight is the same orphan one step earlier**: `take` is
-  // still null while `opening` is true, and the awaited open would install
-  // the take after this ran. `act('cancel')` queues the abandon and applies
-  // it the moment the take exists. A take already submitting is left alone:
-  // a cancel there spends the words the reader chose to keep.
-  onDestroy(() => {
-    const dictate = wiring.dictate();
-    if (dictate.opening) {
-      dictate.act('cancel');
-      return;
-    }
-    const live = untrack(() => dictate.take);
-    if (live !== null && !live.submitted) live.stop(false);
-  });
+  // **A surface that goes stops its own take**, and only its own: the
+  // microphone is the client's, so a take left recording by a surface that
+  // unmounted - a route-name change, a teardown - is one no live surface can
+  // stop. [`Dictation::abandon`] owns the whole rule, including the open in
+  // flight and a submit already under way.
+  onDestroy(() => wiring.dictate().abandon());
 
   // **The overlay holds the keyboard while a takeover is up**, so a bare
   // modifier reaches the page as no keydown at all: the shell hears it as
@@ -694,5 +679,28 @@ export class Dictation {
       return;
     }
     void this.begin();
+  }
+
+  /**
+   * The surface is going: end this page's own take, and nothing else.
+   *
+   * A take left recording by a surface that unmounted is one no live surface
+   * can stop, so it is abandoned here. **An open in flight is the same orphan
+   * one step earlier** - `take` is still null while `opening` is true - and
+   * `act('cancel')` queues the abandon and applies it when the take exists. A
+   * `finish` already queued is the reader's submit and is left to land: a
+   * cancel there spends the words they chose to keep. A take already
+   * submitting is left alone for the same reason.
+   *
+   * **A take this page did not start is not its to stop**, so nothing here
+   * reaches `act`'s `shown()` path.
+   */
+  abandon(): void {
+    if (this.opening) {
+      if (this.#pending !== 'finish') this.act('cancel');
+      return;
+    }
+    const live = untrack(() => this.take);
+    if (live !== null && !live.submitted) live.stop(false);
   }
 }
