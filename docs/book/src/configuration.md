@@ -14,11 +14,15 @@ its credential is resolved per request, so a re-minted token reaches it.
 Everything a subsystem reads per use takes the new value, and the table
 below says what waits for a restart.
 
-One other file in the config directory belongs to forge: the generated
-handoff skill at `<config_dir>/skills/handoff/SKILL.md`. Forge installs
-it at boot, compares it byte for byte, and replaces it only when the
-shipped text differs, so an unchanged copy is left untouched. That file
-is forge's own; `forge.toml` stays yours.
+Two directories in the config directory belong to forge: the skills it
+ships. The handoff skill lands at `<config_dir>/skills/handoff/SKILL.md`,
+and the wizard at `<config_dir>/skills/wizard/SKILL.md`, with the bash
+library its stages ride beside it at `template.sh`. Forge installs both
+at boot, compares every file byte for byte, and rewrites only what
+differs, so an unchanged copy is left untouched. Only a temporary file
+the installer itself left behind, or a name the skill retires, is ever
+removed; anything else you put in those directories is left alone. They
+are forge's own; `forge.toml` stays yours.
 
 ## Where it lives
 

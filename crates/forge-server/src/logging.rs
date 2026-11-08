@@ -132,6 +132,7 @@ pub const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     forge_browser=debug,\
     forge_supervise=debug,\
     forge_workspace::mcp=debug,\
+    forge_workspace::skills=debug,\
     forge_workspace::gotify=debug,\
     forge_agent::mcp=debug,\
     forge_workspace::dictate=debug,\

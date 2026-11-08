@@ -143,7 +143,7 @@ pub fn start_core(config_dir: &Path, project: Option<&str>) -> anyhow::Result<Ar
         return Err(anyhow::anyhow!("forge: {err}"));
     }
 
-    install_handoff_skill(config_dir);
+    install_shipped_skills(config_dir);
     start_subsystems(&workspace);
     #[cfg(target_os = "macos")]
     {
@@ -161,39 +161,93 @@ pub fn start_core(config_dir: &Path, project: Option<&str>) -> anyhow::Result<Ar
     Ok(workspace)
 }
 
-/// Install the generated handoff skill into the config dir.
+/// Install the skills forge ships into the config dir.
 ///
-/// **forge.toml is never written; this one file is.** The skill is forge's
-/// own text, compared byte for byte, so an upgrade refreshes it and a boot
-/// with an identical copy touches nothing.
-fn install_handoff_skill(config_dir: &Path) {
-    let path = forge_workspace::skill_path(config_dir);
-    match forge_workspace::install_skill(config_dir) {
-        Ok(forge_workspace::SkillInstall::Unchanged) => {}
-        Ok(outcome) => {
-            let action = match outcome {
-                forge_workspace::SkillInstall::Created => "created",
-                forge_workspace::SkillInstall::Replaced => "replaced",
-                forge_workspace::SkillInstall::Unchanged => return,
-            };
-            tracing::info!(
-                target: "forge_workspace::handoff",
-                event_name = "handoff_skill_installed",
-                path = %path.display(),
-                action,
-                "the handoff skill was written at boot",
-            );
+/// **forge.toml is not written by this path; these skill directories are.**
+/// Each skill is forge's own text, compared byte for byte, so an upgrade
+/// refreshes what differs and a boot with identical copies touches nothing.
+/// One skill's failure is its own line: the rest still install.
+fn install_shipped_skills(config_dir: &Path) {
+    for skill in forge_workspace::shipped_skills() {
+        let dir = forge_workspace::skill_dir(config_dir, skill.name);
+        match forge_workspace::install_skill(config_dir, skill) {
+            Ok(outcome) => {
+                let Some((action, message)) = install_line(outcome) else { continue };
+                tracing::info!(
+                    target: "forge_workspace::skills",
+                    event_name = skill_installed_event(skill.name),
+                    skill = skill.name,
+                    path = %dir.display(),
+                    action,
+                    "{message}",
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::skills",
+                    event_name = skill_install_failed_event(skill.name),
+                    skill = skill.name,
+                    path = %dir.display(),
+                    consequence = skill_failure_consequence(skill.name),
+                    %error,
+                    "the skill could not be installed",
+                );
+            }
         }
-        Err(error) => {
-            tracing::warn!(
-                target: "forge_workspace::handoff",
-                event_name = "handoff_skill_install_failed",
-                path = %path.display(),
-                %error,
-                "the handoff skill could not be installed; a handoff turn falls back to the \
-                 prompt's own steps",
-            );
+    }
+}
+
+/// The line an install gets, or `None` when it changed nothing.
+///
+/// **A sweep is not a write**, so its line says what actually happened
+/// rather than claiming the skill was written.
+fn install_line(outcome: forge_workspace::SkillInstall) -> Option<(&'static str, &'static str)> {
+    match outcome {
+        forge_workspace::SkillInstall::Created => {
+            Some(("created", "the skill was written at boot"))
         }
+        forge_workspace::SkillInstall::Replaced => {
+            Some(("replaced", "the skill was written at boot"))
+        }
+        forge_workspace::SkillInstall::Swept => {
+            // **Not "were removed":** a removal can fail and its WARN sits
+            // beside this line, so the INFO says what was owed, not what
+            // happened.
+            Some(("swept", "the skill's leftover files were due for removal at boot"))
+        }
+        forge_workspace::SkillInstall::Unchanged => None,
+    }
+}
+
+/// What a failed install leaves behind, per skill.
+///
+/// **Handoff degrades; the wizard can be left mixed.** A handoff turn
+/// carries its three steps in the judgment prompt as a fallback, while the
+/// wizard's two files can be split across a failed rename, so the line says
+/// which of the two happened rather than one sentence standing for both.
+fn skill_failure_consequence(name: &str) -> &'static str {
+    match name {
+        "handoff" => "a handoff turn falls back to the prompt's own steps",
+        _ => "the skill may be missing or partly updated until a later boot writes it",
+    }
+}
+
+/// The log event names stay per-skill: handoff's pair is the one existing
+/// traces and greps know, and a new skill gets its own rather than being
+/// folded into handoff's line.
+fn skill_installed_event(name: &str) -> &'static str {
+    match name {
+        "handoff" => "handoff_skill_installed",
+        "wizard" => "wizard_skill_installed",
+        _ => "skill_installed",
+    }
+}
+
+fn skill_install_failed_event(name: &str) -> &'static str {
+    match name {
+        "handoff" => "handoff_skill_install_failed",
+        "wizard" => "wizard_skill_install_failed",
+        _ => "skill_install_failed",
     }
 }
 
@@ -854,8 +908,8 @@ pub fn stop_result(unready: &[forge_primitives::SessionSlot]) -> anyhow::Result<
 #[cfg(test)]
 mod tests {
     use super::{
-        BOOT_WAVE_WAIT, install_crypto_provider, panic_record, start_boot_wave, start_config_watch,
-        start_subsystems, stop_result, wait_for_accounts,
+        BOOT_WAVE_WAIT, install_crypto_provider, install_shipped_skills, panic_record,
+        start_boot_wave, start_config_watch, start_subsystems, stop_result, wait_for_accounts,
     };
     #[cfg(target_os = "macos")]
     use super::{configure_fleet_profiles, reap_then_prune};
@@ -915,6 +969,143 @@ mod tests {
             }),
             "the boot entry logs the provider install before it builds anything: {events:?}",
         );
+    }
+
+    /// **Each skill's install line keeps its own name.** Handoff's pair is
+    /// what existing traces and greps know, so it must not move; the wizard's
+    /// is its own rather than folded into handoff's line, and a boot with
+    /// nothing to write says nothing.
+    #[test]
+    fn the_boot_names_each_skills_install_event() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let events = crate::test_support::logged(|| install_shipped_skills(dir.path()));
+
+        for (skill, event) in
+            [("handoff", "handoff_skill_installed"), ("wizard", "wizard_skill_installed")]
+        {
+            assert!(
+                events.iter().any(|(level, fields)| {
+                    *level == tracing::Level::INFO
+                        && fields.contains(&format!("event_name=\"{event}\""))
+                        && fields.contains(&format!("skill=\"{skill}\""))
+                        && fields.contains("action=\"created\"")
+                }),
+                "{skill}'s install line is named {event}: {events:?}",
+            );
+        }
+        assert_eq!(super::skill_install_failed_event("handoff"), "handoff_skill_install_failed");
+        assert_eq!(super::skill_install_failed_event("wizard"), "wizard_skill_install_failed");
+
+        let second = crate::test_support::logged(|| install_shipped_skills(dir.path()));
+        assert!(
+            !second.iter().any(|(_, fields)| fields.contains("_skill_installed")
+                || fields.contains("_skill_install_failed")),
+            "an unchanged boot writes no install line: {second:?}",
+        );
+    }
+
+    /// A rewrite is named as one; a boot that only swept a leftover says so
+    /// rather than claiming it wrote the skill.
+    #[test]
+    fn a_replaced_install_names_its_action() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        install_shipped_skills(dir.path());
+        std::fs::write(
+            forge_workspace::skill_dir(dir.path(), "wizard").join("SKILL.md"),
+            b"edited",
+        )
+        .expect("edit");
+
+        let events = crate::test_support::logged(|| install_shipped_skills(dir.path()));
+        assert!(
+            events.iter().any(|(level, fields)| {
+                *level == tracing::Level::INFO
+                    && fields.contains("event_name=\"wizard_skill_installed\"")
+                    && fields.contains("action=\"replaced\"")
+            }),
+            "the rewrite is named: {events:?}",
+        );
+    }
+
+    /// **The sweep has its own records**: each removed path at debug, a count
+    /// at info, and an install line that says `swept`, not `written`.
+    #[test]
+    fn a_sweep_names_what_it_removed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        install_shipped_skills(dir.path());
+        std::fs::write(
+            forge_workspace::skill_dir(dir.path(), "wizard").join("SKILL.md.tmp"),
+            "half a write",
+        )
+        .expect("leftover");
+
+        let events = crate::test_support::logged(|| install_shipped_skills(dir.path()));
+        let has = |event: &str, level: tracing::Level| {
+            events.iter().any(|(seen, fields)| {
+                *seen == level && fields.contains(&format!("event_name=\"{event}\""))
+            })
+        };
+        assert!(has("skill_file_removed", tracing::Level::DEBUG), "the path is named: {events:?}");
+        assert!(has("skill_files_swept", tracing::Level::INFO), "the count is logged: {events:?}");
+        assert!(
+            events.iter().any(|(_, fields)| {
+                fields.contains("event_name=\"wizard_skill_installed\"")
+                    && fields.contains("action=\"swept\"")
+            }),
+            "a sweep is not a write: {events:?}",
+        );
+    }
+
+    /// A removal that fails is a WARN inside the install, and the boot's
+    /// install line still reports the sweep.
+    #[test]
+    fn a_failed_removal_warns_and_the_install_still_reports() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        install_shipped_skills(dir.path());
+        let skill_dir = forge_workspace::skill_dir(dir.path(), "wizard");
+        std::fs::write(skill_dir.join("SKILL.md.tmp"), "half a write").expect("leftover");
+        std::fs::set_permissions(&skill_dir, std::fs::Permissions::from_mode(0o555)).expect("mode");
+        let events = crate::test_support::logged(|| install_shipped_skills(dir.path()));
+        std::fs::set_permissions(&skill_dir, std::fs::Permissions::from_mode(0o755)).expect("mode");
+
+        assert!(
+            events.iter().any(|(level, fields)| {
+                *level == tracing::Level::WARN
+                    && fields.contains("event_name=\"skill_file_remove_failed\"")
+            }),
+            "the failed removal warns: {events:?}",
+        );
+        assert!(
+            events.iter().any(|(level, fields)| {
+                *level == tracing::Level::INFO
+                    && fields.contains("event_name=\"wizard_skill_installed\"")
+                    && fields.contains("action=\"swept\"")
+            }),
+            "the install still reports: {events:?}",
+        );
+    }
+
+    /// A symlinked skill directory is refused with a warning rather than
+    /// written through.
+    #[test]
+    fn a_symlinked_skill_directory_is_refused_with_a_warning() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::create_dir_all(dir.path().join("skills")).expect("skills dir");
+        symlink(outside.path(), forge_workspace::skill_dir(dir.path(), "wizard")).expect("symlink");
+
+        let events = crate::test_support::logged(|| install_shipped_skills(dir.path()));
+        assert!(
+            events.iter().any(|(level, fields)| {
+                *level == tracing::Level::WARN
+                    && fields.contains("event_name=\"skill_dir_is_a_symlink\"")
+                    && fields.contains("skill=\"wizard\"")
+            }),
+            "the refusal is a warning naming the skill: {events:?}",
+        );
+        assert!(!outside.path().join("SKILL.md").exists(), "nothing is written through it");
     }
 
     /// A stop whose teardown ran out of budget exits non-zero and names
