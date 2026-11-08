@@ -1760,17 +1760,10 @@ export class Chat {
     this.soon();
   }
 
-  /**
-   * The record's answer about a turn in flight, re-read rather than left to the
-   * page that landed. `settle` writes it onto the newest turn; a frame that may
-   * only clear a mark passes `false`.
-   */
-  private heard(running: boolean, settle = true): void {
+  /** The record's answer about a turn in flight, written on the newest turn. */
+  private heard(running: boolean): void {
     this.turnRunning = running;
-    this.fold((held) => {
-      const answered = this.answered(held);
-      return settle ? this.recorded(answered, running) : answered;
-    });
+    this.fold((held) => this.recorded(this.answered(held), running));
   }
 
   /**
@@ -3515,22 +3508,18 @@ export class Chat {
     // that drew it were only ever a stand-in for it.
     if (variant === 'turn_complete' || variant === 'turn_cancelled' || variant === 'turn_error') {
       // **The record is the truth for a COMPLETION, not this frame.** The
-      // CLI ends a turn per delivered prompt, so a mid-turn message turns
-      // one outward turn into several CLI turns - and each completion fires
-      // here while the seat is still running. `heard(false)` on its own
-      // killed the live row (its clock, its thinking count) until a
-      // remount; the store's record says whether the seat has a turn in
-      // flight. A genuine end still settles at once: the refresh below
-      // draws the page that carries its result. **An error or a cancel is
-      // an end in itself** - the core says so on this frame - so it takes
-      // the bar down directly.
-      if (variant === 'turn_complete') {
-        this.heard(this.heldRunning());
+      // CLI ends a turn per delivered prompt, so a mid-turn message turns one
+      // outward turn into several CLI turns - each completion fires here while
+      // the seat is still running - and a genuine end settles at once through
+      // the page the refresh below asks for. **A cancel is an end in itself.**
+      // **And an error asks the record**: `turn_error` names a dispatch that
+      // failed - a peer's row pressed into the chat before it was sent, a
+      // worker's kick - so it says nothing about the seat's own turn, and the
+      // turn that row opened has no mark to clear.
+      if (variant === 'turn_cancelled') {
+        this.heard(false);
       } else {
-        // **Only a cancel settles the turn.** `turn_error` names a dispatch
-        // that failed - a peer's delivery, a worker's kick - not the seat's
-        // own turn, so it may clear a mark but must not write one.
-        this.heard(false, variant === 'turn_cancelled');
+        this.heard(this.heldRunning());
       }
       this.refresh();
       // The plan-limit next steps ride the turn's own failure (#1638), where

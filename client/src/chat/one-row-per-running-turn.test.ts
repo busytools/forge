@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { ServerMessage, SessionUpdate } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { SessionSlot } from '../wire/types';
-import { Chat, beingWritten, inFlight, type PageTurn, type Turn } from './conversation';
+import { Chat, inFlight, type PageTurn, type Turn } from './conversation';
 import { fold, type Unit } from './units';
 
 /**
@@ -179,7 +179,7 @@ const page = (turns: PageTurn[], cursor: string | null): ServerMessage => ({
 
 /** Whether the draw carries the bar, asked the way the row asks it. */
 const bar = (turn: Turn | undefined): boolean =>
-  turn !== undefined && running(fold(turn.messages, null, inFlight(turn), !beingWritten(turn)));
+  turn !== undefined && running(fold(turn.messages, null, inFlight(turn), !inFlight(turn)));
 
 /** Whether a row is the turn being written, asked the way the column asks it. */
 const writing = (turn: Turn | undefined): boolean => turn?.running === true;
@@ -521,21 +521,28 @@ describe('one row per running turn', () => {
     expect(bar(newest(chat)), 'and the new turn draws its own bar').toBe(true);
   });
 
-  it('keeps the bar when a dispatch failure names no turn', () => {
-    // `turn_error` is the core's word on a DISPATCH that failed - a peer's
-    // delivery, a kicked worker - not on the seat's own turn, so it may clear
-    // a mark but must not settle a turn the record has not ended.
+  it('takes the bar down when a dispatch of a peer row fails', () => {
+    // **The core presses a peer's row into the chat before dispatching it**
+    // (`push_peer_user_turn_into_chat`), so the client opens a live turn no
+    // frame has marked running. When the dispatch fails, `turn_error` is the
+    // only word about it, and the record says no turn is in flight: the bar
+    // goes, and the refresh's own page cannot bring it back.
+    const peer = typed('[Message id=m-1 from agent x] do the thing');
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
     server.send(page([], null));
-    server.update({ chat_appended: { key: LEAD, msg: typed('mine') } });
-    server.update({ chat_appended: { key: LEAD, msg: said('working') } });
-    expect(bar(newest(chat)), 'precondition: the bar is up').toBe(true);
+    server.update({ chat_appended: { key: LEAD, msg: peer } });
+    expect(bar(newest(chat)), 'precondition: the peer row opened a live turn').toBe(true);
 
     server.update({ turn_error: { key: LEAD } });
 
-    expect(bar(newest(chat)), 'a dispatch failure did not take the bar down').toBe(true);
+    expect(bar(newest(chat)), 'the failed dispatch left no turn running').toBe(false);
+
+    // The refresh the frame asks for lands a page with no result in it, which
+    // rebuilds the turn: the settlement has to survive that too.
+    server.send(page([{ key: null, messages: [peer] }], null));
+    expect(bar(newest(chat)), 'nor does the refresh page bring it back').toBe(false);
   });
 
   it('reads a seat returned to after its turn died on the error frame', () => {
@@ -636,9 +643,9 @@ describe('one row per running turn', () => {
     expect(writing(newest(chat)), 'the snapshot answers, incomplete tail and all').toBe(true);
   });
 
-  it('takes the bar back when the core says the turn errored', () => {
-    // A take-back with no result frame behind it: the update the server sends
-    // when a turn ends badly is the only thing that says so.
+  it('keeps the bar when a dispatch failure arrives mid-turn', () => {
+    // `turn_error` names a dispatch that failed, not the seat's turn: the
+    // record still has one in flight, so the bar stays.
     const server = fakeConnection();
     const chat = new Chat(server.connection, LEAD);
     chat.start();
@@ -648,7 +655,7 @@ describe('one row per running turn', () => {
 
     server.update({ turn_error: { key: LEAD } });
 
-    expect(writing(newest(chat)), 'the turn is over').toBe(false);
+    expect(writing(newest(chat)), "the dispatch failure did not end the seat's turn").toBe(true);
   });
 
   it('does not raise the bar again on a row that already ended', () => {

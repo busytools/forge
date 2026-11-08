@@ -1065,8 +1065,8 @@
       // **A turn still being written takes arrivals.** `live` alone is not
       // that state: a seat opened mid-flight has its newest row from a page
       // (`live: false`, `running: true`) and frames join it, and those rows
-      // are arrivals too - `beingWritten` is the predicate the fold and the
-      // pin both use.
+      // are arrivals too - `beingWritten` is what decides that frames still
+      // join it. The bar asks `inFlight`, which weighs the record as well.
       const turn = untrack(() => newestTurn);
       if (turn === null || !beingWritten(turn)) return;
       const at = turn.key;
