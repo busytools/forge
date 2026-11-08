@@ -68,8 +68,9 @@ Before a stage asks the person for a value, look for it in this order:
    configured with.
 2. **`vault__search`, then `vault__get`**, when it is a stored credential and your tool list
    carries the vault family. The search answers metadata only, so reveal the one field you need
-   with `vault__get`. If the family was withheld from this session, ask your lead for it rather
-   than working around it.
+   with `vault__get`. If the family was withheld from this session, ask your lead for it. If
+   forge has no `[vault]` configured, the vault is not a path for this value at all and hidden
+   entry is.
 3. **`ask_secret` in the terminal** when it is in neither. Hidden entry, in the seat's terminal,
    written straight to where it belongs.
 
@@ -80,18 +81,19 @@ in the script.
 
 ## A wizard that outlives the session
 
-A long procedure can outlive the turn that started it. Keep its state at `wizards/<slug>.md` in
-the session's project memory directory, as a current-state document rewritten in place:
+A long procedure can outlive the turn that started it. Keep its state in the session's project
+memory directory as a current-state document rewritten in place: a lead at `wizards/<slug>.md`,
+a worker in its own `workers/<label>.md` (the seat rule below). It carries:
 
 - the stage the wizard reached, and the stage it is on;
 - every value captured, by name and by destination - never the secret itself;
 - what remains, and what stopped a stage;
 - how to re-run it: the script's path and the environment it needs.
 
-**The seat decides where that file lives.** A lead keeps it at `wizards/<slug>.md`; a worker
-keeps its stage in its own `workers/<label>.md` in the same directory, the way the always-on
-rule has it, and tells its lead where it is. A handoff points at that file by path. The handoff
-procedure itself is the `handoff` skill's, not this one's.
+**The seat decides where that file lives.** A lead keeps the stage file at `wizards/<slug>.md`;
+a worker keeps it in its own `workers/<label>.md` in the same directory, the way the always-on
+rule has it, and tells its lead where it is. A handoff points at whichever of those files the
+seat owns, by path. The handoff procedure itself is the `handoff` skill's, not this one's.
 
 ## Process
 
@@ -112,7 +114,9 @@ may add, drop, or reorder.
 **Done when:** every stage is named in order, and for each captured value you know (a) where the
 person gets it, (b) where it is written (`.env`, a GitHub secret, both, or nowhere - some stages
 are pure actions), and (c) whether it is secret, for hidden entry, or public. A value that
-already exists in settings or the vault says so here, so its stage offers it rather than asking.
+already exists in settings or the vault needs no prompt from the person: the agent types it at
+the stage's own prompt with `terminal__write`, and the stage writes it to its destination as
+usual.
 
 ### 2. Map each stage's journey
 
@@ -161,7 +165,7 @@ library is byte-identical to `template.sh` above the marker.
   input is theirs alone. Read the outcome back after every hand-off.
 
 **Done when:** the wizard has run to its closing summary, or the stage it stopped at is recorded
-in `wizards/<slug>.md` with what remains.
+in the seat's own stage file with what remains.
 
 ## Boundaries
 

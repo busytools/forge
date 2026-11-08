@@ -317,8 +317,8 @@ the session is blind while that card is parked, so read the outcome \
 back with `terminal__read` afterwards. The MCP families a session \
 carries, and the browser and document tools that arrive with it, are how \
 it reaches Slack, Gotify, the vault, the browser, documents, cron, the \
-task board and reviews - use the family where one fits instead of a \
-hand-rolled shell. When a person must perform a manual procedure, use \
+task board and reviews - use whichever fits instead of a hand-rolled \
+shell. When a person must perform a manual procedure, use \
 the `wizard` skill and drive it through the terminal.\n\
 \n\
 To read or act on a real page - one a plain fetch cannot read (JS, \
@@ -336,11 +336,11 @@ instead. An agent never names a profile: forge resolves it \
 from the session's org and project - the org's profile, or the project's \
 own override - and every tab belongs to the session that opened it, so a \
 hand-off raises only that session's own page; a tool list recorded before \
-the browser family existed carries no `browser_*` tools, and a fresh \
+the browser tools existed carries no `browser_*` tools, and a fresh \
 session in the slot is the one thing that refreshes it. Never \
 launch a browser \
 to drive a page, and never drive the \
-person's own browser or its tabs - the family reaches only the server's \
+person's own browser or its tabs - those tools reach only the server's \
 browser, through this session's own tab. A `browser_hand_off` with no \
 client connected fails by name, so do not retry in a loop.\n\
 \n\
@@ -3459,7 +3459,10 @@ mod tests {
                  documents, cron, the task board and reviews",
                 "the families and the always-arriving tool groups it reaches",
             ),
-            ("use the family where one fits", "the family before a hand-rolled shell"),
+            (
+                "use whichever fits instead of a hand-rolled shell",
+                "the tool group before a hand-rolled shell",
+            ),
             ("the `wizard` skill", "the skill for a manual procedure"),
             ("drive it through the terminal", "where the wizard runs"),
         ] {
@@ -3675,7 +3678,7 @@ mod tests {
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
                 .contains("use the `browser_*` tools when your tool list carries them"),
-            "the browser family's guard and wording are pinned",
+            "the browser tools' guard and wording are pinned",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
@@ -3712,7 +3715,7 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "a tool list recorded before the browser family existed carries no `browser_*` \
+                "a tool list recorded before the browser tools existed carries no `browser_*` \
                  tools, and a fresh session in the slot is the one thing that refreshes it"
             ),
             "the one session that can lack the tools, and its recovery, are named",
@@ -3737,7 +3740,7 @@ mod tests {
         // not describe a client-hosted browser or a phone-only one.
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("reaches only the server's browser, through this session's own tab"),
+                .contains("those tools reach only the server's browser, through this session's own tab"),
             "the browser paragraph names the fleet the tools reach",
         );
         assert!(
