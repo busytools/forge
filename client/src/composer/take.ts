@@ -336,7 +336,7 @@ export class LocalTake {
   /** The seat's own updates: the server's end closes this side's take. */
   private messageArrived(message: ServerMessage): void {
     if (this.ended || message.kind !== 'update') return;
-    const [name] = variantOf(message.update);
+    const [name, payload] = variantOf(message.update);
     if (name !== 'dictate_ended') return;
     const at = slotOf(message.update);
     if (at === null) return;
@@ -344,6 +344,18 @@ export class LocalTake {
     // object off the wire, and two of them are the same seat when their key
     // says so.
     if (subjectKey({ session: this.seat }) !== subjectKey({ session: at })) return;
+    // **A refusal answers a start that never ran**, so it is not the end of a
+    // take that is already recording. It is still the refused take's own end,
+    // and the refusal names the surface that asked: release only when it is
+    // this take's surface, and ignore another surface's. An older server
+    // sends no surface, and then the refusal is this take's.
+    if (isRefused(payload['outcome'])) {
+      const asked = payload['surface'];
+      // `!= null` covers both an absent field and a JSON `null` from
+      // `Option<String>`: either is an older server, and the refusal is this
+      // take's.
+      if (asked != null && asked !== this.surface) return;
+    }
     this.release();
   }
 
@@ -389,6 +401,17 @@ export class LocalTake {
       // the take on the close either way.
     }
   }
+}
+
+/**
+ * Whether a `dictate_ended` outcome is a refusal.
+ *
+ * `DictateOutcome` is externally tagged: a unit variant crosses as its name
+ * alone, and `refused` crosses as an object around its message. A refusal
+ * answers a start that never ran, so it resolves no take.
+ */
+function isRefused(outcome: unknown): boolean {
+  return typeof outcome === 'object' && outcome !== null && 'refused' in outcome;
 }
 
 /** What a microphone that would not open says, in the vocabulary kept from the

@@ -2631,6 +2631,150 @@ describe('the key', () => {
     expect(mic.held.stops, 'and the microphone is let go of on this side too').toBe(stops + 1);
   });
 
+  /**
+   * **A surface that goes stops its own take.** The microphone is the
+   * client's, and a take left recording by a surface that unmounted is one no
+   * live surface can stop: the next surface's start is refused by it, and the
+   * refusal used to release the take that was still recording.
+   */
+  it('stops its take when the surface unmounts', async () => {
+    const harness = open({ dictation: true });
+    harness.page.record = bound('right_cmd', 'auto');
+    flushSync();
+
+    key('ControlRight', 'keydown');
+    await opened();
+    harness.page.record = bound('right_cmd', 'auto', take());
+    flushSync();
+
+    const stops = mic.held.stops;
+    await unmount(app as Record<string, unknown>);
+    app = null;
+    flushSync();
+
+    expect(harness.sent.at(-1)?.command, 'the take is abandoned, not left recording').toEqual({
+      dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: false },
+    });
+    expect(mic.held.stops, 'and the microphone is let go of on this side too').toBe(stops + 1);
+  });
+
+  /**
+   * **A submit under way is the reader's words already kept.** A cancel on a
+   * draining take sends `submit:false` and clears the drain, so the words are
+   * spent; the unmount must leave it alone.
+   */
+  it('leaves a submitting take alone when the surface unmounts', async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+
+      key('ControlRight', 'keydown');
+      await opened();
+      harness.page.record = bound('right_cmd', 'auto', take());
+      flushSync();
+
+      vi.advanceTimersByTime(500);
+      key('ControlRight', 'keyup');
+      flushSync();
+      const sent = harness.sent.length;
+
+      await unmount(app as Record<string, unknown>);
+      app = null;
+      flushSync();
+
+      expect(harness.sent.length, 'a submit under way is not cancelled').toBe(sent);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * **An open in flight is the orphan one step earlier.** `take` is still null
+   * while `opening` is true, and the awaited open would install the take after
+   * the surface is gone. The queued cancel ends it the moment it exists.
+   */
+  it('cancels a take that lands after the surface unmounts', async () => {
+    mic.held.gated = true;
+    try {
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+
+      key('ControlRight', 'keydown');
+      await opened();
+      expect(harness.sent, 'nothing has started while the open is in flight').toHaveLength(0);
+
+      await unmount(app as Record<string, unknown>);
+      app = null;
+      flushSync();
+
+      mic.held.release?.();
+      await opened();
+
+      expect(harness.sent.at(-1)?.command, 'the take that landed is abandoned').toEqual({
+        dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: false },
+      });
+    } finally {
+      mic.held.gated = false;
+    }
+  });
+
+  /**
+   * **A take this page did not start is not its to stop.** The record can
+   * show one - a reloaded page, another view's on the seat - and the unmount
+   * must not reach `act('cancel')`, whose `shown()` path would stop it.
+   */
+  it('does not stop a take this page did not start when the surface unmounts', async () => {
+    const harness = open({ dictation: true });
+    harness.page.record = bound('right_cmd', 'auto', take());
+    flushSync();
+
+    const sent = harness.sent.length;
+    await unmount(app as Record<string, unknown>);
+    app = null;
+    flushSync();
+
+    expect(harness.sent.length, 'a take this page did not start is not its to stop').toBe(sent);
+  });
+
+  /**
+   * **A finish queued during the open is the reader's submit.** The unmount
+   * must not overwrite it with a cancel: that spends the words they pressed
+   * stop to keep.
+   */
+  it('lands a finish queued during the open when the surface unmounts', async () => {
+    mic.held.gated = true;
+    vi.useFakeTimers();
+    try {
+      const harness = open({ dictation: true });
+      harness.page.record = bound('right_cmd', 'auto');
+      flushSync();
+
+      key('ControlRight', 'keydown');
+      await opened();
+      vi.advanceTimersByTime(500);
+      key('ControlRight', 'keyup');
+      flushSync();
+
+      await unmount(app as Record<string, unknown>);
+      app = null;
+      flushSync();
+
+      mic.held.release?.();
+      await opened();
+      vi.advanceTimersByTime(DRAIN_MS + FLUSH_SETTLE_MS + 10);
+
+      expect(harness.sent.at(-1)?.command, 'the queued submit lands').toEqual({
+        dictate_stop: { key: { org: 'Busytools', project: 'forge', label: 'lead' }, submit: true },
+      });
+    } finally {
+      vi.useRealTimers();
+      mic.held.gated = false;
+    }
+  });
+
   it('learns what the system default is from the first take that opens it', async () => {
     mic.held.resolved = { id: 'mic-2', label: 'Shure SM7B' };
     try {
