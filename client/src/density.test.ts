@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
@@ -34,7 +35,10 @@ function readable(raw: string): string {
   return raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\s*\{/g, ' {');
 }
 
-const SHEET = readable(readFileSync(new URL('./assets/web.css', import.meta.url), 'utf8'));
+// A path rather than `new URL(..., import.meta.url)`: jsdom hands a test an
+// http URL, which `readFileSync` refuses. The npm script runs from the client
+// root, and a wrong directory fails this loudly rather than silently.
+const SHEET = readable(readFileSync('src/assets/web.css', 'utf8'));
 
 /**
  * The declarations of the first rule whose selector contains `fragment`.
@@ -130,6 +134,108 @@ describe("the conversation draws at the terminal's density", () => {
   it('pads a code panel to less than a line', () => {
     expect(declared('.code pre', 'padding')).toBe('6px 10px');
     expect(declared('.code .lang', 'padding')).toBe('4px 10px');
+  });
+
+  /**
+   * **A row is its line.** A tool row carried 3px above and below on top of
+   * the run's own margins, which stood two consecutive rows 26.25px apart
+   * against the 20.925px of the prose they sit among (Ved, 2026-11-08). The
+   * ground a hovered or running row draws is now the line's own box; the
+   * horizontal inset stays, because it keeps the glyph and the text off the
+   * band's edge.
+   *
+   * **The body's top margin carries the 3px the row no longer spends**, so an
+   * opened row's body keeps its distance from the line.
+   */
+  it('draws an information row as its line, with no air of its own', () => {
+    /**
+     * One whole selector's declarations, matched exactly: `declared` reads a
+     * fragment, and `.body` is a prefix of `.bodytext` (whose `margin: 4px 0`
+     * would answer for it) while the row's selector prefixes a dozen `.gl`
+     * rules that declare padding of their own.
+     */
+    const ruleOf = (selector: string): string => {
+      const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // A control: an unmatched selector would let the assertions below read
+      // green over nothing.
+      const found = new RegExp(`^\\s*${escaped}\\s*\\{([^{}]*)\\}`, 'm').exec(SHEET)?.[1];
+      expect(found, `the sheet has no rule of its own for ${selector}`).toBeDefined();
+      return found ?? '';
+    };
+
+    expect(
+      /padding:\s*0 9px 0 8px\b/.test(ruleOf('details.leaf > summary, div.leaf > .rrow')),
+      'a row spends air above or below its line',
+    ).toBe(true);
+    expect(
+      /margin:\s*6px 0 6px 27px\b/.test(ruleOf('.body')),
+      "the body drops the row's former top spacing",
+    ).toBe(true);
+  });
+
+  /**
+   * **The disclosure is the one control in a run of rows, and a finger needs
+   * 44px to reach it.** The tight line is right for a fine pointer; a coarse
+   * one takes the target instead. The static `.rrow` is pressed by nothing, so
+   * it keeps the line on every pointer.
+   *
+   * **Read as what reaches the element, not as a selector spelling.** The
+   * target may come from a rule naming the leaf row or from the sheet's
+   * blanket `details > summary`; a pin on the leaf's own spelling would keep
+   * passing after the element lost the target, and would keep failing while
+   * another rule gave it one.
+   */
+  it('gives the disclosure a 44px target under a coarse pointer', () => {
+    // The block's body, braces and all: a rule inside a media query nests a
+    // pair, and the flat readers above stop at the first `}`. Any spelling of
+    // the condition counts - a list or an `and` still reaches the pointer.
+    const bodies = [
+      ...SHEET.matchAll(/@media \(([^{}]*pointer: coarse[^{}]*)\) \{((?:[^{}]|\{[^{}]*\})*)\}/g),
+    ].map((hit) => hit[2] ?? '');
+    // A control: no blocks read would let the assertion below pass over an
+    // empty search.
+    expect(bodies.length, 'the sheet carries no coarse-pointer block').toBeGreaterThan(0);
+
+    // Each rule as its selector list and declarations, matched against a real
+    // element rather than compared as text.
+    const rules = bodies.flatMap((text) =>
+      [...text.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((hit) => ({
+        selectors: (hit[1] ?? '')
+          .split(',')
+          .map((selector) => selector.trim())
+          .filter((selector) => selector !== ''),
+        declarations: hit[2] ?? '',
+      })),
+    );
+    const reaching = (element: Element) =>
+      rules.filter((rule) => rule.selectors.some((selector) => element.matches(selector)));
+
+    const leaf = document.createElement('div');
+    leaf.className = 'leaf';
+    const row = document.createElement('details');
+    row.className = 'leaf';
+    const disclosure = document.createElement('summary');
+    row.appendChild(disclosure);
+    leaf.appendChild(row);
+    // A control: an element the sheet matches nothing of would make the
+    // search below empty for the wrong reason.
+    expect(disclosure.matches('details > summary'), 'the probe is not a disclosure').toBe(true);
+
+    const target = reaching(disclosure).filter((rule) =>
+      /min-height:\s*44px/.test(rule.declarations),
+    );
+    expect(
+      target.length,
+      'no coarse rule gives the disclosure a 44px target, so a finger cannot reach it',
+    ).toBeGreaterThan(0);
+
+    const still = document.createElement('div');
+    still.className = 'rrow';
+    leaf.appendChild(still);
+    expect(
+      reaching(still).map((rule) => rule.selectors.join(', ')),
+      'a coarse rule reaches the static row, which is pressed by nothing and should keep the line',
+    ).toHaveLength(0);
   });
 
   /**

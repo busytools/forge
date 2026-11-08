@@ -1924,9 +1924,12 @@ details.leaf > summary .gl.err, div.leaf > .rrow .gl.err { color: var(--bad); }
    at the reading one - a run of rows at the reading size outweighed the words
    they sit among, and the data size read a touch small (Ved, 2026-10-04).
    A `.rrow` is the same row without a disclosure: a static line has no
-   pointer and no hover, because it opens nothing. */
+   pointer and no hover, because it opens nothing.
+   **No vertical padding, so a row is its line**: three pixels above and below
+   made a column of calls and notices read loose against the prose they sit
+   among (Ved, 2026-11-08). */
 details.leaf > summary, div.leaf > .rrow { list-style: none; display: flex; align-items: center;
-  gap: 8px; padding: 3px 9px 3px 8px; border-radius: 7px; cursor: pointer;
+  gap: 8px; padding: 0 9px 0 8px; border-radius: 7px; cursor: pointer;
   font-family: var(--mono); font-size: 15px; color: var(--muted); }
 div.leaf > .rrow { cursor: default; }
 details.leaf > summary::-webkit-details-marker { display: none; }
@@ -2200,7 +2203,9 @@ details.leaf[open] > summary .arw { color: var(--accent); }
    one thing its own launch result cannot: that result is a clean one. */
 details.leaf.running > summary { color: var(--text); }
 
-.body { margin: 3px 0 6px 27px; }
+/* The 6px top is the row's own former padding folded in, so the body keeps its
+   distance from the line now that the summary carries none. */
+.body { margin: 6px 0 6px 27px; }
 /* The chrome a code panel and a call's plain body share, declared once. Other
    result shapes - MCP prose, search hits, a dispatch's output, a Skill body -
    keep their own. A hook row's `.term` does NOT compose this: hook output
