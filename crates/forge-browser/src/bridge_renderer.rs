@@ -1,11 +1,14 @@
 //! The renderer half of the host opener bridge.
 //!
-//! Installed in every frame's context before any page script: a native object
-//! (`window.__forgeBridgeNative`) whose methods are process messages to the
-//! browser process, and the page shim (`bridge.js`) around `window.open`. A
-//! bridged popup's browser carries its bridge id in `extra_info`, which
-//! `on_browser_created` reads before the first context exists, so the popup's
-//! `window.opener` is installed before its first document's scripts run.
+//! Installed in every main frame's context before any page script: a native
+//! object (`window.__forgeBridgeNative`) whose methods are process messages to
+//! the browser process, and the page shim (`bridge.js`) around `window.open`.
+//! A subframe gets only the refusal shim (`bridge_frame.js`): no native object
+//! and no relay, so its `window.open` is the only thing this side touches
+//! there. A bridged popup's browser carries its bridge id in `extra_info`,
+//! which `on_browser_created` reads before the first context exists, so the
+//! popup's `window.opener` is installed before its first document's scripts
+//! run.
 //!
 //! **Nothing here decides trust.** The browser process derives both sides and
 //! their origins from the tab a message arrives on; this side only relays the

@@ -95,10 +95,12 @@ opener unless the page sets the shim's `window.name` marker itself. A second
 cross-site popup from the same page does not commit while the first is live
 (#2869), a bridged refused open answers a live proxy and the refusal arrives
 later as a `refused` event (#2898), and one page may hold sixteen popups at
-once. **A subframe never bridges**: a same-origin subframe answers null for
-every web address but the top frame's own origin, and a cross-origin subframe
-answers null for every web address. A same-origin popup keeps the engine's
-own popup path and its real, scriptable `window.opener`. **The takeover
+once. **A subframe is never given the bridge of its own**: its `window.open`
+answers null for every web address but the top frame's own origin, and a
+cross-origin subframe answers null for every web address. A same-origin
+subframe can still reach the top window's bridge, and the engine reports that
+call as the top frame's, so it acts as the page does. A same-origin popup
+keeps the engine's own popup path and its real, scriptable `window.opener`. **The takeover
 follows a popup in**: a surface showing the opener moves to the popup when it
 appears, and hands back to the opener when the popup closes, so a sign-in is
 seen without hunting the strip. The hand-off ask stays parked on the page it

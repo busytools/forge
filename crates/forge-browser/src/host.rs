@@ -423,6 +423,17 @@ impl Tabs {
 /// without end**: every popup is a browser of its own.
 const MAX_POPUP_TABS: usize = 16;
 
+/// **The gate key for a create fault that belongs to no page.** `Tabs::reserve`
+/// starts at 1 and never returns 0, so this is stable where a requested tab's
+/// number is not: `unreserve` rewinds the counter, and a popup admitted inside
+/// the create's nested loop advances it.
+const NO_OPENER: u16 = 0;
+
+/// The refusals a popup that was admitted resolves. **Both admission paths
+/// share this list**, so a kind added here is cleared by each of them, and a
+/// page is past what opening one hit.
+const ADMISSION_REFUSALS: [&str; 4] = ["bridged", "unbound", "create_failed", "subframe"];
+
 /// How long a popup is given to start its own first document before the host
 /// starts one. **Long enough to lose a race with nothing**: a popup that
 /// commits on its own does so within a frame or two, and one still empty at
@@ -825,17 +836,20 @@ impl PopupGate {
             let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
             let held = live.entry(opener).or_default();
             if *held >= MAX_POPUP_TABS {
-                if self.first_refusal(opener, "cap") {
-                    eprintln!(
-                        "cef host: a page's popup was refused (event_name cef_popup_refused, \
-                         profile {}, opener {opener}, popup {popup_id}, address {})",
-                        self.profile,
-                        origin_words(url)
-                    );
+                if let Some(line) =
+                    self.cap_refusal(opener, u64::try_from(popup_id).unwrap_or_default(), url)
+                {
+                    eprintln!("{line}");
                 }
                 return None;
             }
             *held += 1;
+        }
+        // **A popup admitted resolves the refusals a page hit opening one**,
+        // so its next one writes a line. The cap is not one of them: a freed
+        // place ends that episode, not the admission that refills it.
+        for kind in ADMISSION_REFUSALS {
+            self.clear_refusal(opener, kind);
         }
         let place = Arc::new(Place { opener, released: AtomicBool::new(false) });
         // **A replaced place is released before its key is taken.** The ids
@@ -1093,21 +1107,115 @@ impl PopupGate {
         if place.released.swap(true, Ordering::AcqRel) {
             return;
         }
-        let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(held) = live.get_mut(&place.opener) {
-            *held = held.saturating_sub(1);
-            if *held == 0 {
-                live.remove(&place.opener);
+        {
+            let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(held) = live.get_mut(&place.opener) {
+                *held = held.saturating_sub(1);
+                if *held == 0 {
+                    live.remove(&place.opener);
+                }
             }
         }
+        // **A freed place is the cap's episode boundary.** The page is under
+        // the cap again, so a later refusal is a new episode and its line is
+        // worth having; the admission that refills the place does not end the
+        // refusal, because the page never left it.
+        self.clear_refusal(place.opener, "cap");
     }
 
     /// Whether this refusal is the first of its kind for the tab or opener.
-    /// **The line is written once until the opener navigates or a popup is
-    /// admitted**, because a page can repeat a refusal and the host's stderr
-    /// is an append-only file.
+    /// **One line per reason, not one per attempt**: the host's stderr is an
+    /// append-only file. Each reason has its own clear rule - a tab's
+    /// navigation or end clears them all; a popup admitted clears the ones
+    /// opening one hits; a freed place clears the cap's; a too-large message
+    /// stays the document's until it goes.
     fn first_refusal(&self, who: u16, kind: &'static str) -> bool {
         self.refused_logged.lock().unwrap_or_else(PoisonError::into_inner).insert((who, kind))
+    }
+
+    /// Drop one refusal reason for a tab, so its next occurrence writes a
+    /// line again.
+    fn clear_refusal(&self, who: u16, kind: &'static str) {
+        self.refused_logged.lock().unwrap_or_else(PoisonError::into_inner).remove(&(who, kind));
+    }
+
+    /// The line for a page at its popup cap, when this attempt is the
+    /// episode's first. **One line per episode**: a freed place ends it,
+    /// because that is the page's only way back under the cap; an admission
+    /// refills the place without ending the refusal.
+    fn cap_refusal(&self, opener: u16, popup: u64, url: &str) -> Option<String> {
+        if !self.first_refusal(opener, "cap") {
+            return None;
+        }
+        Some(format!(
+            "cef host: a page's popup was refused (event_name cef_popup_refused, profile {}, \
+             opener {opener}, popup {popup}, address {})",
+            self.profile,
+            origin_words(url)
+        ))
+    }
+
+    /// The line for a browser the host could not create, when this attempt is
+    /// the episode's first. **One line per page, not one per attempt**: a
+    /// popup's fault is its opener's, and a requested tab's is the host's,
+    /// because that tab's number is rewound and reused.
+    fn create_failed_line(&self, opener: Option<u16>, tab: u16, url: &str) -> Option<String> {
+        if !self.first_refusal(opener.unwrap_or(NO_OPENER), "create_failed") {
+            return None;
+        }
+        let opener = opener.map_or_else(|| "none".to_owned(), |opener| opener.to_string());
+        Some(format!(
+            "cef host: a tab was not created (event_name cef_tab_create_failed, profile {}, \
+             tab {tab}, opener {opener}, address {})",
+            self.profile,
+            origin_words(url)
+        ))
+    }
+
+    /// **A requested tab that was created re-arms the create-fault line**: the
+    /// fault is over, so a later one is a new episode.
+    fn requested_create_succeeded(&self) {
+        self.clear_refusal(NO_OPENER, "create_failed");
+    }
+
+    /// **A create's whole bookkeeping, from its own outcome.** A created
+    /// browser re-arms the host's requested-tab line, so a fault that returns
+    /// later is a new episode; a failed one writes its line when the episode
+    /// is new. Both branches of `create_browser` call this, so the emission
+    /// and the re-arm cannot drift apart. Answers whether it wrote.
+    fn note_create(&self, opener: Option<u16>, tab: u16, url: &str, created: bool) -> bool {
+        if created {
+            if opener.is_none() {
+                self.requested_create_succeeded();
+            }
+            return false;
+        }
+        let Some(line) = self.create_failed_line(opener, tab, url) else {
+            return false;
+        };
+        eprintln!("{line}");
+        true
+    }
+
+    /// A message a subframe sends is refused before its arguments are read,
+    /// and answers the line to write when it is the first from that tab.
+    /// **One line per tab until its main frame navigates, or it ends, or a
+    /// popup is admitted from it**: the frame can repeat it, and the host's
+    /// stderr is an append-only file.
+    ///
+    /// The native object belongs to the main frame. A same-origin subframe
+    /// can still call the top window's object, but CEF reports that call as
+    /// the main frame's, so a page cannot make this line repeat today; it is
+    /// the gate a renderer that sends from a subframe meets.
+    fn refuse_subframe(&self, tab: u16) -> Option<String> {
+        if !self.first_refusal(tab, "subframe") {
+            return None;
+        }
+        Some(format!(
+            "cef host: a subframe tried the opener bridge (event_name \
+             cef_opener_bridge_subframe, profile {}, tab {tab})",
+            self.profile
+        ))
     }
 
     fn clear_refusals(&self, who: u16) {
@@ -1212,11 +1320,18 @@ impl PopupGate {
                 handle.clone(),
             );
             if let Err(why) = bound {
-                eprintln!(
-                    "cef host: a bridge channel was not bound (event_name \
-                     cef_opener_bridge_unbound, profile {}, tab {tab}): {why}",
-                    self.profile
-                );
+                // **One line for the page, not one per attempt.** The handle
+                // is the page's, so it can repeat the refusal in a loop, and
+                // the host's stderr is an append-only file nobody rotates.
+                // Keyed by the opener because that is the page whose
+                // navigation or admitted popup clears it.
+                if self.first_refusal(opener, "unbound") {
+                    eprintln!(
+                        "cef host: a bridge channel was not bound (event_name \
+                         cef_opener_bridge_unbound, profile {}, tab {tab}, opener {opener}): {why}",
+                        self.profile
+                    );
+                }
                 // **A refusal the page can repeat must not spend a number**,
                 // or a handle that is not ours walks the counter to its u16
                 // ceiling and the next insert replaces a live tab.
@@ -1259,12 +1374,10 @@ impl PopupGate {
         );
         let host = browser.as_ref().and_then(cef::ImplBrowser::host);
         let (Some(browser), Some(host)) = (browser, host) else {
-            eprintln!(
-                "cef host: a tab was not created (event_name cef_tab_create_failed, profile {}, \
-                 tab {tab}, address {})",
-                self.profile,
-                origin_words(url)
-            );
+            // **A create fault can persist across a page's attempts**, and
+            // each attempt is a line otherwise; the note keys a popup's on
+            // its opener and a requested tab's on the host sentinel.
+            self.note_create(opener, tab, url, false);
             // **A channel bound for a browser that never existed goes with
             // it**, or a later popup could post into a channel no tab owns.
             if bridged.is_some() {
@@ -1273,6 +1386,10 @@ impl PopupGate {
             self.tabs.lock().unwrap_or_else(PoisonError::into_inner).unreserve(tab);
             return None;
         };
+        // **A create's bookkeeping follows its own outcome**: a requested tab
+        // that was created re-arms its fault line, so a fault that returns
+        // later is a new episode.
+        self.note_create(opener, tab, url, true);
         // **Only a requested tab is shown here.** A bridged popup's visibility
         // and focus are re-asserted by `on_load_end`, which every tab already
         // goes through; the raw call on a host whose pointer resolves null is
@@ -1350,13 +1467,8 @@ impl PopupGate {
             let mut live = self.live.lock().unwrap_or_else(PoisonError::into_inner);
             let held = live.entry(opener).or_default();
             if *held >= MAX_POPUP_TABS {
-                if self.first_refusal(opener, "cap") {
-                    eprintln!(
-                        "cef host: a page's popup was refused (event_name cef_popup_refused, \
-                         profile {}, opener {opener}, popup {id}, address {})",
-                        self.profile,
-                        origin_words(url)
-                    );
+                if let Some(line) = self.cap_refusal(opener, id, url) {
+                    eprintln!("{line}");
                 }
                 return Err("the page already holds its open popups' limit".to_owned());
             }
@@ -1375,9 +1487,13 @@ impl PopupGate {
             self.release(&place);
             return Err("the popup's browser could not be created".to_owned());
         };
-        // **A popup admitted clears the opener's refusal lines**: one line on
-        // entering a refusal and one on leaving it, not one per attempt.
-        self.clear_refusals(opener);
+        // **A popup admitted resolves the refusals opening one hits**: one
+        // line on entering a refusal and one on leaving it, not one per
+        // attempt. The cap is not one of them: a freed place ends that
+        // episode, and a too-large message is the document's until it goes.
+        for kind in ADMISSION_REFUSALS {
+            self.clear_refusal(opener, kind);
+        }
         if !noopener {
             // **The address waits for the role.** The renderer acknowledges
             // once `window.opener` is installed in its document; only then
@@ -1478,6 +1594,9 @@ impl PopupGate {
 
     /// One proxy's `location` write: the other side of the channel navigates.
     fn bridge_navigate(&self, from: u16, handle: &str, url: &str) {
+        // **A navigation the proxy may not steer to is silent**, as the
+        // platform's own window navigation is; a line per refusal would be a
+        // page-controlled log flood.
         if !bridge::navigable(url) {
             return;
         }
@@ -2454,14 +2573,15 @@ cef::wrap_client! {
             // **The bridge is the main frame's.** A subframe has no native
             // object, so a message from one is a renderer that reached past
             // its own document; it is refused here rather than routed as the
-            // top document's.
+            // top document's. **The check sits above the argument read on
+            // purpose**: such a message is refused before its arguments are
+            // parsed. Page script cannot drive one today, because a
+            // same-origin subframe's call on the top's object is reported as
+            // the main frame's; this is the gate a renderer meets.
             if frame.as_ref().is_some_and(|frame| frame.is_main() != 1) {
-                eprintln!(
-                    "cef host: a subframe tried the opener bridge (event_name \
-                     cef_opener_bridge_subframe, profile {}, tab {})",
-                    self.popups.profile,
-                    self.tab
-                );
+                if let Some(line) = self.popups.refuse_subframe(self.tab) {
+                    eprintln!("{line}");
+                }
                 return 1;
             }
             let name = CefString::from(&message.name()).to_string();
@@ -2647,6 +2767,187 @@ mod tests {
             "an abort for a popup that holds no place frees nothing"
         );
         drop(held);
+        crate::osr::Ring::unlink(&name);
+    }
+
+    /// **A popup admitted clears the refusals opening one hits.** The page is
+    /// past an unbound handle or a failed create, so its next one writes a
+    /// line; a mutation that clears only the cap leaves the non-cap kinds
+    /// asserted below behind.
+    #[test]
+    fn a_popup_admitted_clears_the_refusals_it_resolves() {
+        let name = format!("/forge-cef-test-clear-{}", std::process::id());
+        let ring = std::sync::Arc::new(crate::osr::Ring::create(&name, 4, 4).expect("a test ring"));
+        let popups = gate(&ring);
+        let mut held = Vec::new();
+        for id in 0..super::MAX_POPUP_TABS {
+            held.push(
+                popups
+                    .admit(1, i32::try_from(id).expect("a popup id"), "about:blank")
+                    .expect("a popup within the cap"),
+            );
+        }
+        assert!(popups.admit(1, 99, "about:blank").is_none(), "the cap refuses the next popup");
+        assert!(
+            !popups.first_refusal(1, "cap"),
+            "the cap line is behind the opener once it has been written"
+        );
+        assert!(popups.first_refusal(1, "unbound"), "the page's unbound refusal is recorded");
+        assert!(
+            popups.first_refusal(1, "create_failed"),
+            "the page's create-failure refusal is recorded"
+        );
+        assert!(popups.first_refusal(1, "subframe"), "the page's subframe refusal is recorded");
+        let (_, one) = &held[0];
+        popups.release(&one.place);
+        // **The cap refusal survives the admission.** The release before it
+        // is what ends the episode, so an admission that cleared a cap
+        // refusal would hide a later one from the same page.
+        assert!(popups.first_refusal(1, "cap"), "the cap refusal is recorded for the page");
+        assert!(popups.admit(1, 100, "about:blank").is_some(), "the freed place admits a popup");
+        assert!(
+            popups.first_refusal(1, "unbound"),
+            "the popup admitted cleared the unbound refusal, so the next one writes a line"
+        );
+        assert!(
+            popups.first_refusal(1, "create_failed"),
+            "the popup admitted cleared the create-failure refusal, so the next one writes a line"
+        );
+        assert!(
+            popups.first_refusal(1, "subframe"),
+            "the popup admitted cleared the subframe refusal, so the next one writes a line"
+        );
+        assert!(
+            !popups.first_refusal(1, "cap"),
+            "the popup admitted left the cap refusal alone; only a freed place ends it"
+        );
+        drop(held);
+        crate::osr::Ring::unlink(&name);
+    }
+
+    /// **A cap refusal writes one line per episode, and a freed place ends
+    /// it.** The second refusal in one episode answers no line; a place given
+    /// back is the page's way under the cap, so the refusal after it is a new
+    /// episode.
+    #[test]
+    fn the_cap_refusal_is_one_line_until_a_place_frees() {
+        let name = format!("/forge-cef-test-cap-line-{}", std::process::id());
+        let ring = std::sync::Arc::new(crate::osr::Ring::create(&name, 4, 4).expect("a test ring"));
+        let popups = gate(&ring);
+        let mut held = Vec::new();
+        for id in 0..super::MAX_POPUP_TABS {
+            held.push(
+                popups
+                    .admit(1, i32::try_from(id).expect("a popup id"), "about:blank")
+                    .expect("a popup within the cap"),
+            );
+        }
+        assert!(popups.admit(1, 99, "about:blank").is_none(), "the cap refuses the next popup");
+        assert!(
+            popups.cap_refusal(1, 98, "about:blank").is_none(),
+            "a second over-cap attempt writes nothing while the episode holds"
+        );
+        let (_, one) = &held[0];
+        popups.release(&one.place);
+        assert!(popups.admit(1, 100, "about:blank").is_some(), "the freed place admits a popup");
+        assert!(
+            popups.cap_refusal(1, 97, "about:blank").is_some(),
+            "the freed place ended the episode, so the next cap refusal writes a line"
+        );
+        drop(held);
+        crate::osr::Ring::unlink(&name);
+    }
+
+    /// **A create fault's line names its event and its opener.** A requested
+    /// tab has none to name and a popup names its opener.
+    #[test]
+    fn a_create_fault_line_names_its_event_and_opener() {
+        let name = format!("/forge-create-line-{}", std::process::id());
+        let ring = std::sync::Arc::new(crate::osr::Ring::create(&name, 4, 4).expect("a test ring"));
+        let popups = gate(&ring);
+        let line = popups
+            .create_failed_line(None, 5, "https://a.test/")
+            .expect("the first requested-tab fault is logged");
+        assert!(
+            line.contains("event_name cef_tab_create_failed,"),
+            "the line names its event: {line}"
+        );
+        assert!(line.contains("opener none"), "the line says there is no opener: {line}");
+        let line = popups
+            .create_failed_line(Some(3), 6, "https://b.test/")
+            .expect("the opener's first fault is logged");
+        assert!(line.contains("opener 3"), "the line names the opener: {line}");
+        crate::osr::Ring::unlink(&name);
+    }
+
+    /// **A create's note writes its line once and re-arms on a created tab.**
+    /// The four combinations: a failed popup writes one line per opener and a
+    /// created popup writes none; a failed requested tab writes one line
+    /// across attempts, and a created one re-arms it.
+    #[test]
+    fn a_create_note_writes_once_and_re_arms() {
+        let name = format!("/forge-create-note-{}", std::process::id());
+        let ring = std::sync::Arc::new(crate::osr::Ring::create(&name, 4, 4).expect("a test ring"));
+        let popups = gate(&ring);
+        // A popup's fault is its opener's, and another opener is a new one.
+        assert!(
+            popups.note_create(Some(3), 5, "https://a.test/", false),
+            "a popup's first fault writes a line"
+        );
+        assert!(
+            !popups.note_create(Some(3), 6, "https://a.test/", false),
+            "the same opener's second fault writes nothing"
+        );
+        assert!(
+            popups.note_create(Some(4), 7, "https://a.test/", false),
+            "another opener's first fault writes a line"
+        );
+        // A created popup writes nothing of its own.
+        assert!(
+            !popups.note_create(Some(3), 8, "https://a.test/", true),
+            "a created popup writes nothing"
+        );
+        // A requested tab's fault is the host's, whatever number it takes.
+        assert!(
+            popups.note_create(None, 9, "https://a.test/", false),
+            "the first requested-tab fault writes a line"
+        );
+        assert!(
+            !popups.note_create(None, 10, "https://a.test/", false),
+            "a second requested-tab fault writes nothing, even from another number"
+        );
+        // A created requested tab re-arms the host's line.
+        assert!(
+            !popups.note_create(None, 11, "https://a.test/", true),
+            "a created requested tab writes nothing"
+        );
+        assert!(
+            popups.note_create(None, 12, "https://a.test/", false),
+            "the created tab re-armed the host's line"
+        );
+        crate::osr::Ring::unlink(&name);
+    }
+
+    /// **A subframe's message writes one line per tab until its main frame
+    /// navigates, or it ends, or a popup is admitted from it.** The line names
+    /// its event, the frame can repeat it, and another tab's first message is
+    /// a new episode.
+    #[test]
+    fn a_repeated_subframe_message_logs_once() {
+        let name = format!("/forge-cef-test-subframe-{}", std::process::id());
+        let ring = std::sync::Arc::new(crate::osr::Ring::create(&name, 4, 4).expect("a test ring"));
+        let popups = gate(&ring);
+        let line = popups.refuse_subframe(7).expect("the first message from a frame is logged");
+        assert!(
+            line.contains("event_name cef_opener_bridge_subframe,"),
+            "the line names its event: {line}"
+        );
+        assert!(line.contains("tab 7"), "the line names the tab: {line}");
+        assert!(popups.refuse_subframe(7).is_none(), "the same frame's next message is not");
+        assert!(
+            popups.refuse_subframe(8).is_some(),
+            "another tab's first message is a new episode"
+        );
         crate::osr::Ring::unlink(&name);
     }
 
