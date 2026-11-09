@@ -143,6 +143,20 @@ impl KeychainGate {
     }
 
     fn store_now(purpose: &str, blob: &[u8]) -> Result<(), String> {
+        // **Delete before add.** The policy is fixed when the item is created,
+        // so replacing a blob is a new item; a duplicate would keep the old
+        // bytes and the old policy.
+        Self::remove_now(purpose)?;
+        match Self::add_now(purpose, blob)? {
+            SEC_SUCCESS => Ok(()),
+            other => Err(message(other)),
+        }
+    }
+
+    /// The item's add, answering the framework's status. Split out so the
+    /// tests' reachability probe asks exactly the question the store asks:
+    /// a probe that wrote a plainer item would pass where this one is refused.
+    fn add_now(purpose: &str, blob: &[u8]) -> Result<OSStatus, String> {
         let flags = if Self::availability_now().biometric {
             kSecAccessControlBiometryCurrentSet
         } else {
@@ -156,21 +170,12 @@ impl KeychainGate {
         )
         .map_err(|error| format!("the access-control policy could not be built: {error}"))?;
 
-        // **Delete before add.** The policy is fixed when the item is created,
-        // so replacing a blob is a new item; a duplicate would keep the old
-        // bytes and the old policy.
-        Self::remove_now(purpose)?;
-
         let mut attributes = base_attributes(purpose);
         attributes.add(&constant!(kSecValueData), &CFData::from_buffer(blob).as_CFType());
         attributes.add(&constant!(kSecAttrAccessControl), &control.as_CFType());
         // SAFETY: `attributes` is a live dictionary for the duration of the
         // call and the result reference is not asked for.
-        let status = unsafe { SecItemAdd(dictionary_ref(&attributes), ptr::null_mut()) };
-        match status {
-            SEC_SUCCESS => Ok(()),
-            other => Err(message(other)),
-        }
+        Ok(unsafe { SecItemAdd(dictionary_ref(&attributes), ptr::null_mut()) })
     }
 
     fn remove_now(purpose: &str) -> Result<(), String> {
@@ -355,39 +360,61 @@ mod tests {
     /// Whether this process's session can reach a keychain at all, and why not
     /// when it cannot.
     ///
-    /// A plain generic-password add says the answer without touching a policy:
-    /// a session outside the graphical login answers `errSecWrPerm` or
-    /// `errSecNotAvailable`, which is the harness's condition and not the
-    /// gate's.
+    /// **The probe asks the gate's own question**: an access-controlled data
+    /// protection item, the shape `store` creates, under a purpose unique to
+    /// the process so parallel test processes cannot race on one account. A
+    /// plain login-keychain item answers a narrower question and succeeds on
+    /// a runner whose binary is unsigned, which is how CI once failed here
+    /// after the probe said the keychain was reachable.
     fn keychain_unreachable() -> Option<String> {
+        let purpose = format!("self-check-{}", std::process::id());
+        let status = KeychainGate::add_now(&purpose, b"x").ok();
+        // Delete whatever the probe wrote, whatever it answered.
+        let _ = KeychainGate::remove_now(&purpose);
+        harness_refusal(status?)
+    }
+
+    /// Why the probe's status means this harness cannot exercise the live
+    /// item, or `None` when it can.
+    ///
+    /// **-34018 is the harness's refusal, not the gate's**: an
+    /// access-controlled item needs a signed app with an application
+    /// identifier, so CI's ad-hoc binary and an uninstalled debug build are
+    /// refused while a plain login-keychain item still succeeds. The live
+    /// path waits on the Developer ID-signed app, row afcdebf4.
+    fn harness_refusal(status: OSStatus) -> Option<String> {
         const ERR_SEC_WR_PERM: OSStatus = -61;
         const ERR_SEC_NOT_AVAILABLE: OSStatus = -25291;
-        let service = "dev.vedhavyas.forge.biometric.self-check";
-        let mut attributes = CFMutableDictionary::new();
-        attributes.add(&constant!(kSecClass), &constant!(kSecClassGenericPassword).as_CFType());
-        attributes.add(&constant!(kSecAttrService), &CFString::new(service).as_CFType());
-        attributes.add(&constant!(kSecAttrAccount), &CFString::new("probe").as_CFType());
-        attributes.add(&constant!(kSecValueData), &CFData::from_buffer(b"x").as_CFType());
-        // SAFETY: `attributes` is a live dictionary for the duration of the
-        // call and no result reference is asked for.
-        let status = unsafe { SecItemAdd(dictionary_ref(&attributes), ptr::null_mut()) };
-        let mut query = CFMutableDictionary::new();
-        query.add(&constant!(kSecClass), &constant!(kSecClassGenericPassword).as_CFType());
-        query.add(&constant!(kSecAttrService), &CFString::new(service).as_CFType());
-        query.add(&constant!(kSecAttrAccount), &CFString::new("probe").as_CFType());
-        // SAFETY: `query` is a live dictionary for the duration of the call.
-        unsafe { SecItemDelete(dictionary_ref(&query)) };
         match status {
-            SEC_SUCCESS => None,
             ERR_SEC_WR_PERM | ERR_SEC_NOT_AVAILABLE => Some(
                 "this process's session cannot open the login keychain (run the shell's tests \
                  from a graphical login, or the installed app)"
                     .to_owned(),
             ),
-            other => {
-                Some(format!("the self-check could not write a plain item: {}", message(other)))
-            }
+            ERR_SEC_MISSING_ENTITLEMENT => Some(
+                "this build is not signed for the data protection keychain, so the live \
+                 keychain item cannot be created here (the Developer ID-signed app is row \
+                 afcdebf4)"
+                    .to_owned(),
+            ),
+            _ => None,
         }
+    }
+
+    /// The classifier the probe relies on: the named refusals skip with their
+    /// reasons, and an unknown status is the gate's, not the harness's, so it
+    /// goes down to the real call rather than passing as a skip.
+    #[test]
+    fn the_harness_refusal_names_only_the_conditions_it_knows() {
+        assert!(harness_refusal(SEC_SUCCESS).is_none());
+        assert!(
+            harness_refusal(ERR_SEC_MISSING_ENTITLEMENT)
+                .is_some_and(|reason| reason.contains("afcdebf4")),
+            "an unsigned build is the harness's own refusal"
+        );
+        assert!(harness_refusal(-61).is_some(), "errSecWrPerm");
+        assert!(harness_refusal(-25291).is_some(), "errSecNotAvailable");
+        assert!(harness_refusal(-12345).is_none(), "an unknown status is the gate's");
     }
 
     /// Availability answers what the platform can do now: an LAContext is
