@@ -696,6 +696,8 @@ impl BrowserService {
             host_generation: AtomicU64::new(0),
             names: Arc::clone(&self.names),
             host_suspect: Mutex::new(None),
+            launching: AtomicBool::new(false),
+            last_launch_failure: Mutex::new(None),
             #[cfg(test)]
             successor: Mutex::new(None),
             rows: self.rows_sender(key.as_str()),
@@ -2857,8 +2859,37 @@ impl BrowserService {
         // teardown keeps, so an upload's answer cannot publish against a host
         // this door has ended.
         let _decision = profile.file_decision.lock().await;
+        // **A launch in flight is not a host to clear.** The flag is set while
+        // `start_host` runs and cleared when it installs or fails, so reading
+        // it before the state lock lets the door answer "a launch is in
+        // progress" instead of "no host is recorded", which reads as "nothing
+        // to do". The state lock would otherwise wait for the launch to end.
+        if profile.launching.load(Ordering::Acquire) {
+            return Ok(vec![BrowserPart::Text {
+                text: format!(
+                    "a browser launch is in progress for profile '{}'; the host is not up yet. \
+                     The launch is already running; the next call waits for it.",
+                    key.as_str()
+                ),
+            }]);
+        }
         let mut state = profile.state.lock().await;
         let Some(host) = state.host.as_ref() else {
+            // **A launch that failed is not a host to clear either**, and its
+            // reason is what the door owes the caller.
+            if let Some(failure) =
+                profile.last_launch_failure.lock().unwrap_or_else(PoisonError::into_inner).as_ref()
+            {
+                return Ok(vec![BrowserPart::Text {
+                    text: format!(
+                        "the last browser launch for profile '{}' failed: {} ({} s ago); no host \
+                         is recorded. The next call tries one.",
+                        key.as_str(),
+                        failure.why,
+                        failure.at.elapsed().as_secs()
+                    ),
+                }]);
+            }
             return Ok(vec![BrowserPart::Text { text: no_host_sentence(&key) }]);
         };
         let (pid, port) = (host.pid, host.port);
@@ -3907,6 +3938,14 @@ pub struct Profile {
     /// take `file_decision` without waiting on the call that found it, or is
     /// left running with its holder named.
     host_suspect: Mutex<Option<HostIdentity>>,
+    /// **A launch is in flight for this profile.** Set for the whole
+    /// `start_host`, so the end-host door can answer "a launch is in
+    /// progress" instead of "no host is recorded"; cleared when it succeeds
+    /// or fails.
+    launching: AtomicBool,
+    /// The last launch's failure, when one is recorded: the end-host door
+    /// answers it rather than "no host is recorded".
+    last_launch_failure: Mutex<Option<LaunchFailure>>,
     /// The driver a replacement installs under test, so a test can tell a
     /// replacement from a retry of the same fake. One-shot.
     #[cfg(test)]
@@ -3914,6 +3953,33 @@ pub struct Profile {
     /// **The same rows channel the service publishes on**, so a host's death
     /// can say so at once instead of waiting for a sweep.
     rows: watch::Sender<BrowserTabList>,
+}
+
+/// A launch's failure, as the end-host door reports it: the reason and when
+/// it happened, so a door asked after the launch can say the last one failed
+/// rather than "nothing is recorded".
+#[derive(Clone, Debug)]
+struct LaunchFailure {
+    why: String,
+    at: Instant,
+}
+
+/// Marks a profile's launch as in flight, and clears it on every exit
+/// including a panic. The door reads the flag to tell a launch in progress
+/// from a host that is simply not recorded.
+struct Launching<'a>(&'a AtomicBool);
+
+impl<'a> Launching<'a> {
+    fn new(flag: &'a AtomicBool) -> Self {
+        flag.store(true, Ordering::Release);
+        Self(flag)
+    }
+}
+
+impl Drop for Launching<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 /// The most a finished download may carry to a viewer.
@@ -4252,6 +4318,16 @@ async fn host_tail(profile: &Profile) -> String {
         .unwrap_or_default()
 }
 
+/// The host's own last words since its launch mark. **The log is append-only
+/// and shared across the profile's hosts**, so a launch that wrote nothing
+/// must not be reported with the previous host's dying words.
+async fn host_tail_since(profile: &Profile, from: u64) -> String {
+    let dir = profile.dir.clone();
+    tokio::task::spawn_blocking(move || spawn::log_tail_since(&spawn::host_log_path(&dir), from))
+        .await
+        .unwrap_or_default()
+}
+
 /// **A host the service deliberately ends is said in the log**, with the
 /// identity, the cause and the host's own last words. A host that had
 /// already gone is not recorded here.
@@ -4288,9 +4364,14 @@ fn log_host_ended(
 }
 
 /// The launch error a session reads: the reason, with the host's own last
-/// words when it left any.
+/// words when it left any. **A host that wrote nothing says so**, so the
+/// reader is not sent after the previous host's log.
 fn launch_error(why: String, tail: &str) -> String {
-    if tail.is_empty() { why } else { format!("{why}: {tail}") }
+    if tail.is_empty() {
+        format!("{why} (the host wrote nothing to its log)")
+    } else {
+        format!("{why}: {tail}")
+    }
 }
 
 /// How a host's death reads: a signal, an exit code, or a status this
@@ -4963,6 +5044,23 @@ impl Profile {
     /// passkey veto.
     async fn start_host(self: &Arc<Self>) -> Result<ActiveHost, String> {
         let _launch = self.launch.lock().await;
+        // **The door reads this flag while the launch runs**, so it answers
+        // "a launch is in progress" rather than "no host is recorded"; the
+        // guard clears it on every exit, a panic included.
+        let _launching = Launching::new(&self.launching);
+        // **A launch that already failed once gets a longer bound**: a cold
+        // start under load is not cut at the same 15 s that just failed.
+        // A success resets the record, so the next cold start starts at 15 s.
+        let bound =
+            if self.last_launch_failure.lock().unwrap_or_else(PoisonError::into_inner).is_some() {
+                spawn::LAUNCH_TIMEOUT * 2
+            } else {
+                spawn::LAUNCH_TIMEOUT
+            };
+        // **The tail starts at the spawn.** The log is append-only and shared
+        // across the profile's hosts, so a mark taken before the spawn keeps
+        // a launch that wrote nothing from quoting the previous host.
+        let mark = spawn::host_log_mark(&self.dir);
         // **The frame socket is a short path outside the profile**: a key
         // under app-support exceeds a Unix socket's address, and an org
         // profile is two segments deep.
@@ -5027,13 +5125,17 @@ impl Profile {
                      profile {}, port {port}): {why}",
                     self.key,
                 );
+                spawn::release_port(port);
+                self.record_launch_failure(&why);
                 reader.stop();
                 return Err(why);
             }
         };
-        if let Err(why) = spawn::wait_ready_for(pid, port, &ring_name).await {
-            let tail = host_tail(self).await;
+        if let Err(why) = spawn::wait_ready_for_bound(pid, port, &ring_name, bound).await {
+            let tail = host_tail_since(self, mark).await;
             let ended = spawn::end_verified(pid, port, &self.dir).await;
+            spawn::release_port(port);
+            self.record_launch_failure(&why);
             reader.stop();
             let outcome = if ended { "ended" } else { "refused" };
             log_host_ended(self, pid, port, HostEnd::NeverReady, outcome, &why, &tail);
@@ -5042,14 +5144,22 @@ impl Profile {
         let ring = match osr::Ring::open(&ring_name) {
             Ok(ring) => Arc::new(ring),
             Err(why) => {
-                let tail = host_tail(self).await;
+                let tail = host_tail_since(self, mark).await;
                 let ended = spawn::end_verified(pid, port, &self.dir).await;
+                spawn::release_port(port);
+                self.record_launch_failure(&why);
                 reader.stop();
                 let outcome = if ended { "ended" } else { "refused" };
                 log_host_ended(self, pid, port, HostEnd::NeverReady, outcome, &why, &tail);
                 return Err(launch_error(why, &tail));
             }
         };
+        // **The host owns the port now**, so the selection no longer needs to
+        // keep another profile off it.
+        spawn::release_port(port);
+        // **A launch that came up clears the failure**, so the next cold start
+        // gets the short bound and the door no longer reports a failed launch.
+        *self.last_launch_failure.lock().unwrap_or_else(PoisonError::into_inner) = None;
         // **The record is written once the host is READY**: it is what a
         // later boot reaps an unclean exit by, so it must never name a pid
         // that had not come up yet.
@@ -5287,6 +5397,13 @@ impl Profile {
             reader: Some(reader),
             monitor: Some(monitor),
         })
+    }
+
+    /// Record a launch failure so the end-host door can say the last launch
+    /// failed rather than "no host is recorded".
+    fn record_launch_failure(&self, why: &str) {
+        *self.last_launch_failure.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(LaunchFailure { why: why.to_owned(), at: Instant::now() });
     }
 
     /// Take everything a host owned when it goes: its tab numbers, the boot
@@ -12221,7 +12338,8 @@ mod server_guards {
         ATTACH_TIMEOUT, Caught, FakeDriver, ended, foreign_browser_endpoint, records, saw, seed_tab,
     };
     use super::{
-        BrowserService, Call, DeferredTabEvent, Driven, Profile, ReconcilePass, pair_tab_events,
+        BrowserService, Call, DeferredTabEvent, Driven, LaunchFailure, Profile, ReconcilePass,
+        pair_tab_events,
     };
     use crate::control::HostEvent;
     use crate::driver::TabDriver;
@@ -12231,7 +12349,7 @@ mod server_guards {
     use serde_json::{Value, json};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex, PoisonError};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use tracing_subscriber::layer::SubscriberExt as _;
 
     /// One row of a driver's listing.
@@ -12940,6 +13058,7 @@ mod server_guards {
         let (pid, _input, _events) =
             crate::spawn::spawn_with(exe, &profile.dir, port, &ring, 4, 4, 0, (15, 75), &frames)
                 .expect("the stand-in host spawns");
+        crate::spawn::release_port(port);
         let mut waited = 0;
         while !crate::spawn::gone(pid) {
             assert!(waited < 5_000, "the stand-in host did not exit");
@@ -12962,6 +13081,7 @@ mod server_guards {
         let (pid, _input, _events) =
             crate::spawn::spawn_with(exe, &profile.dir, port, &ring, 4, 4, 0, (15, 75), &frames)
                 .expect("the live stand-in host spawns");
+        crate::spawn::release_port(port);
         (pid, port)
     }
 
@@ -13667,6 +13787,45 @@ mod server_guards {
         let answer = text_of(&parts);
         assert!(answer.contains("no browser host is recorded"), "{answer}");
         assert!(answer.contains("profile 'O/default'"), "the profile is named: {answer}");
+    }
+
+    /// **A door with a launch in flight says so.** The profile's launch flag is
+    /// set and no host is installed; the door answers "a launch is in progress"
+    /// rather than "nothing is recorded".
+    #[tokio::test]
+    async fn the_end_host_door_says_a_launch_is_in_progress() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        let profile = profile_for_test(&service).await;
+        profile.launching.store(true, Ordering::Release);
+
+        let parts =
+            service.call(&lead, "browser_end_host", json!({})).await.expect("the door answers");
+        let answer = text_of(&parts);
+        assert!(answer.contains("a browser launch is in progress"), "{answer}");
+        assert!(answer.contains("profile 'O/default'"), "{answer}");
+        profile.launching.store(false, Ordering::Release);
+    }
+
+    /// **A door after a failed launch says the failure, not "nothing is
+    /// recorded".** The last failure is on the profile, so the door reports its
+    /// reason.
+    #[tokio::test]
+    async fn the_end_host_door_says_the_last_launch_failed() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        let profile = profile_for_test(&service).await;
+        *profile.last_launch_failure.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(LaunchFailure { why: "the host never answered".to_owned(), at: Instant::now() });
+
+        let parts =
+            service.call(&lead, "browser_end_host", json!({})).await.expect("the door answers");
+        let answer = text_of(&parts);
+        assert!(answer.contains("the last browser launch"), "{answer}");
+        assert!(answer.contains("the host never answered"), "{answer}");
+        assert!(answer.contains("profile 'O/default'"), "{answer}");
     }
 
     /// **The keep is both halves: the attach timeout and a popup.** A timeout
