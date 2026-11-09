@@ -8953,8 +8953,8 @@ describe('the dock', () => {
    *  can leave the record without this client pressing anything - another view
    *  answers it, or the core ends it - and a bar left carrying a refusal would
    *  name a state that is gone until a repaint happens to clear it. The
-   *  sentence here is the server's one `terminal_control` refusal; a parked
-   *  hand-off allows a take, so the clear is not tied to that wording. */
+   *  sentence is the server's not-viewing refusal, set exactly as the bar
+   *  would draw it; the clear itself does not read the sentence. */
   it('clears a take refusal when the terminal hand-off ends', () => {
     const harness = open({ record: record({ pending_asks: [terminalHandOffAsk()] }) });
     // The refusal the bar would be drawing beside a live take control.

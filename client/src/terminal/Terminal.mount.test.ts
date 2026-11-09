@@ -34,8 +34,20 @@ const seat = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
 let shown: ReturnType<typeof mount> | null = null;
 
+/**
+ * The button a reader finds by its name, which is how the bar's doors are
+ * chosen: the client carries no testing-library, so the query is the DOM's own
+ * buttons read by their text rather than a class of the day.
+ */
+function buttonNamed(name: string): HTMLButtonElement | null {
+  const found = [...document.querySelectorAll('button')].find(
+    (each) => (each.textContent ?? '').trim() === name,
+  );
+  return found instanceof HTMLButtonElement ? found : null;
+}
+
 /** Mount the raised surface with the store already live. */
-function open(): void {
+function open(parked = false): void {
   surface.phase = 'live';
   surface.seat = seat;
   surface.id = 1;
@@ -43,18 +55,25 @@ function open(): void {
   surface.controller = null;
   surface.control_pending = null;
   surface.control_reason = null;
+  // **A park names an existing terminal**, so the record carries a live one:
+  // a null here would draw "the terminal closed" over a live surface, which
+  // production cannot produce.
   terminalRecord.seat = seat;
-  terminalRecord.terminal = null;
+  terminalRecord.terminal = {
+    id: 1,
+    shell: '/bin/zsh',
+    cwd: '/tmp',
+    cols: 80,
+    rows: 24,
+    alive: true,
+    state: { running: false, input_expected: null, exit: null, source: 'exact' },
+    title: '',
+    held: parked,
+  };
   const target = document.createElement('div');
   document.body.appendChild(target);
   shown = mount(Terminal, { target });
   flushSync();
-}
-
-/** The bar's take/release door, which the surface draws while it is live. */
-function controlDoor(): HTMLButtonElement | null {
-  const found = document.querySelector('.tn-control');
-  return found instanceof HTMLButtonElement ? found : null;
 }
 
 beforeEach(() => {
@@ -85,6 +104,8 @@ afterEach(() => {
   surface.phase = 'closed';
   surface.seat = null;
   surface.id = null;
+  surface.viewer = null;
+  surface.controller = null;
   surface.control_reason = null;
   terminalRecord.seat = null;
   terminalRecord.terminal = null;
@@ -107,16 +128,28 @@ describe('the raised terminal bar', () => {
       secret: false,
       respond: () => {},
     };
-    open();
+    open(true);
 
-    const door = controlDoor();
-    expect(door, 'the bar drew no take-control door').not.toBeNull();
-    expect(door?.textContent?.trim()).toBe('take control');
+    expect(buttonNamed('take control'), 'the bar drew no take-control door').not.toBeNull();
     // The parked ask is on the bar at the same time, so the door is drawn
     // beside a real hand-off rather than on a bar with no ask at all.
+    expect(buttonNamed('Done'), 'the ask has no answer door').not.toBeNull();
     expect(document.body.textContent, 'the ask is not the one drawn').toContain(
       'sudo needs the account password',
     );
-    expect(document.body.textContent, 'the ask has no answer door').toContain('Done');
+  });
+
+  /** **The door is the surface's, not the ask's.** A live surface with
+   *  nothing parked draws it too, and it reads release control while this
+   *  client holds the role. */
+  it('draws the door with no hand-off parked, as take and as release', () => {
+    open();
+
+    expect(buttonNamed('take control'), 'the door is missing with no ask').not.toBeNull();
+    surface.viewer = 5;
+    surface.controller = 5;
+    flushSync();
+
+    expect(buttonNamed('release control'), 'the holder does not read release').not.toBeNull();
   });
 });

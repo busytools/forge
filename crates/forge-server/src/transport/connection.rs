@@ -2926,9 +2926,10 @@ where
             if take {
                 // **A parked hand-off does not close the take.** A park opens
                 // the surface as a viewer rather than handing out the
-                // keyboard, so the person reads it, takes control and types;
-                // the id was checked above, so a replaced shell refuses here
-                // instead of handing out a role no push could reach.
+                // keyboard, so the person reads it, takes control and types.
+                // The terminal is resolved by id here, so a shell replaced
+                // under a stale viewing is refused instead of handing out a
+                // role no push could reach.
                 if let Err(why) = state.surface.take_terminal_control(&seat, id, me) {
                     return send(
                         socket,

@@ -195,7 +195,8 @@
       // **Cmd+W is the window's on the desktop and the tab's in a browser**,
       // so this handler only fires where neither owns the chord - a phone's
       // hardware keyboard - and there it lowers the surface. Ctrl+W is the
-      // shell's.
+      // shell's, except in a browser on Windows or Linux, where the tab
+      // keeps it.
       if (event.metaKey && event.key.toLowerCase() === 'w') {
         if (event.type === 'keydown') void closeTerminal();
         // **Defensive only**: xterm yields no data key for meta+w either way,
