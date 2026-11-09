@@ -86,25 +86,41 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
   /**
    * Register one purpose's blob, replacing any blob already there.
    *
-   * **The encrypt asks for the gesture too**: the key is auth-bound for every
-   * use, so `init` calls `UserNotAuthenticatedException` until the person
-   * answers a prompt, and the prompt carries the cipher as its `CryptoObject`
-   * so the `doFinal` that writes the record is the authorised one. The
-   * consequence is that a device enrols with a prompt right after the
-   * password unlock that asked for it.
+   * **The encrypt asks for the gesture too.** The key is auth-bound for every
+   * use, so the cipher is not authorised until the person answers the prompt,
+   * and the prompt carries the cipher as its `CryptoObject` so the `doFinal`
+   * that writes the record is the authorised one (the per-use check lands at
+   * `doFinal`, so `init` is expected to succeed).
+   *
+   * **A key the OS invalidated is replaced here.** A fingerprint change
+   * invalidates a per-use key at use, not at `getKey`: the key comes back and
+   * `init` throws `KeyPermanentlyInvalidatedException`. Catching it, deleting
+   * the alias and generating again is what makes the card's "enrol again"
+   * true on this device.
    */
   @Command
   fun store(invoke: Invoke) {
     val args = invoke.parseArgs(StoreArgs::class.java)
     background(invoke) {
-      val key = keyFor(args.purpose, create = true)
+      var key = keyFor(args.purpose, create = true)
         ?: throw IllegalStateException("the keystore refused to make a key")
-      val cipher = Cipher.getInstance(TRANSFORMATION)
+      var cipher = Cipher.getInstance(TRANSFORMATION)
       try {
         cipher.init(Cipher.ENCRYPT_MODE, key)
+      } catch (invalidated: KeyPermanentlyInvalidatedException) {
+        deleteKey(args.purpose)
+        key = keyFor(args.purpose, create = true)
+          ?: throw IllegalStateException("the keystore refused to make a key")
+        cipher = Cipher.getInstance(TRANSFORMATION)
+        try {
+          cipher.init(Cipher.ENCRYPT_MODE, key)
+        } catch (unauthenticated: UserNotAuthenticatedException) {
+          // The auth bound is the intended state: the prompt below
+          // authorises this cipher.
+        }
       } catch (unauthenticated: UserNotAuthenticatedException) {
-        // The key's auth bound is the intended state: the prompt below is
-        // what authorises this cipher.
+        // The auth bound is the intended state: the prompt below authorises
+        // this cipher.
       }
       val host = activity as? androidx.fragment.app.FragmentActivity
       if (host == null) {
@@ -252,14 +268,21 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
     val args = invoke.parseArgs(PurposeArgs::class.java)
     background(invoke) {
       preferences().edit().remove(args.purpose).commit()
-      try {
-        keystore().deleteEntry(BiometricRecords.alias(args.purpose))
-      } catch (err: Exception) {
-        // A key already gone is the state revocation wants; anything else is
-        // reported, because the caller cannot tell the two apart otherwise.
-        if (err !is java.security.KeyStoreException) throw err
-      }
+      deleteKey(args.purpose)
       invoke.resolve()
+    }
+  }
+
+  /**
+   * Delete a purpose's key. A key already gone is the state a delete wants;
+   * anything else is reported, because the caller cannot tell the two apart
+   * otherwise.
+   */
+  private fun deleteKey(purpose: String) {
+    try {
+      keystore().deleteEntry(BiometricRecords.alias(purpose))
+    } catch (err: Exception) {
+      if (err !is java.security.KeyStoreException) throw err
     }
   }
 
