@@ -24,9 +24,12 @@
 //! seat's chat is HELD in a bounded ring** - a released seat, a dock's
 //! ending, a dictation's close, a prompt's queued row, an error - and the
 //! first heartbeat after the spell answers with the ring
-//! itself, in order, and then with the records: a snapshot per seat, which
-//! is what a record is, and that seat's newest page, which is the answer
-//! its `more` with no `before` would have carried. Only `chat_appended`
+//! itself, in order, and then with the seat the page is DRAWING: its record
+//! as the snapshot it is, and its newest page, which is the answer its `more`
+//! with no `before` would have carried. **Every other held seat is marked,
+//! not replayed**, and is handed the same two the moment `showing` names it:
+//! a reconcile that folded all of them at once is what froze a page holding
+//! fourteen seats nobody was looking at (#2944). Only `chat_appended`
 //! updates are left out of the ring, because the record's conversation
 //! rebuilds those. A subject that is not a seat is re-read on the reconcile
 //! rather than handed back: the home roster is copied here for the ask
@@ -2842,6 +2845,91 @@ mod tests {
         );
     }
 
+    /// **A stale beat with no seat drawn replays nothing** (#2944). A visited
+    /// seat stays subscribed and folded for the connection's life, so `held`
+    /// is populated while the page is on the home or the board - and a wake
+    /// there is a stale beat with no seat being drawn. Handing every held
+    /// record back on one is the whole 34 MB burst, and no seat is owed it.
+    #[tokio::test]
+    async fn a_stale_beat_with_no_seat_drawn_replays_nothing() {
+        let (bridge, mut rx) = bridge();
+        let server = stub().await;
+        bridge.connect(server.url.clone());
+        let other =
+            json!({ "session": { "org": "Busytools", "project": "forge", "label": "other" } });
+        bridge.subscribe(seat(), true, false);
+        bridge.subscribe(other.clone(), true, false);
+        sent(&bridge, snapshot(json!({ "conversation": { "turns": [] } })));
+        sent(
+            &bridge,
+            json!({
+                "kind": "snapshot",
+                "subject": other,
+                "data": { "conversation": { "turns": [] } },
+            }),
+        );
+        // The page is on a route with no seat on it.
+        bridge.showing(None);
+        drain(&mut rx);
+        park(&bridge);
+        bridge.heartbeat();
+        assert!(replayed(&mut rx).is_empty(), "no seat is being drawn, so no record comes back");
+    }
+
+    /// **A mark waits for a record, and dies with the subscription it was
+    /// about.** The handover spends it only on a record actually handed, so a
+    /// seat whose read never answered keeps it for the draw that finds one;
+    /// a seat let go and rejoined is answered whole by its new subscribe, so
+    /// the old mark must not outlive the record it was set for.
+    #[tokio::test]
+    async fn a_mark_waits_for_a_record_and_dies_with_the_subscription() {
+        let (bridge, mut rx) = bridge();
+        let server = stub().await;
+        bridge.connect(server.url.clone());
+        bridge.subscribe(seat(), true, false);
+        let key = crate::records::subject_key(&seat());
+        // Nothing answered this subscribe: the seat is held with no record.
+        bridge.showing(Some(slot()));
+        drain(&mut rx);
+        park(&bridge);
+        bridge.heartbeat();
+        assert!(
+            bridge.lock().behind.contains(&key),
+            "the drawn seat with no record keeps its mark"
+        );
+        assert!(replayed(&mut rx).is_empty(), "and nothing is handed for it");
+        bridge.showing(Some(slot()));
+        assert!(
+            bridge.lock().behind.contains(&key),
+            "a draw that found nothing does not spend the mark"
+        );
+
+        // The record lands, and the next draw hands it over.
+        sent(&bridge, snapshot(json!({ "conversation": { "turns": [] } })));
+        drain(&mut rx);
+        bridge.showing(Some(slot()));
+        assert_eq!(replayed(&mut rx), vec![seat()], "the record is handed once it exists");
+        assert!(!bridge.lock().behind.contains(&key), "and the mark goes with it");
+
+        // Released outright, and then by its last reader: either way the
+        // record the mark was about is gone. **No seat is drawn**, so the
+        // stale beat marks without replaying and the mark is still standing
+        // when the release lands.
+        bridge.showing(None);
+        park(&bridge);
+        bridge.heartbeat();
+        assert!(bridge.lock().behind.contains(&key));
+        bridge.release(&seat());
+        assert!(!bridge.lock().behind.contains(&key), "a release takes the mark with the record");
+
+        bridge.subscribe(seat(), true, false);
+        park(&bridge);
+        bridge.heartbeat();
+        assert!(bridge.lock().behind.contains(&key));
+        bridge.unsubscribe(&seat());
+        assert!(!bridge.lock().behind.contains(&key), "so does the last reader letting go");
+    }
+
     /// **A seat drawn after a park is handed what it missed, at the moment it
     /// is drawn** (#2944). The reconcile no longer replays a background seat,
     /// so the record folded here while the page was away is what answers the
@@ -2917,7 +3005,7 @@ mod tests {
         assert_eq!(
             caught["data"]["header"]["context"]["percent"],
             json!(0.5),
-            "carrying the frame the parked page never saw"
+            "with the parked frame folded into the record it hands over"
         );
         let ClientEvent::Inbound(page) = event(&mut rx, is_inbound_kind("page")).await else {
             unreachable!("filtered to inbound");
