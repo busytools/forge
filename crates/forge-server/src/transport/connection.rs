@@ -4469,13 +4469,8 @@ fn dispatch_answering(
         }
         Command::BiometricEnrol { enrolment, device, purpose, blob, .. } => {
             let (tx, rx) = oneshot::channel();
-            let command = Command::BiometricEnrol {
-                enrolment,
-                device,
-                purpose,
-                blob,
-                respond: Some(tx),
-            };
+            let command =
+                Command::BiometricEnrol { enrolment, device, purpose, blob, respond: Some(tx) };
             answered(state, command, to, rx, reply_tx);
         }
         Command::VaultEnrolmentMaterial { .. } => {
