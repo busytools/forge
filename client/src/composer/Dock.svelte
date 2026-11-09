@@ -1,5 +1,8 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import Prose from '../chat/Prose.svelte';
+  import { availability, enrolled, release, type Availability } from '../biometric';
+  import { decodeVaultMaterial, VAULT_PURPOSE } from '../biometric/vault';
   import Icon from '../components/Icon.svelte';
   import { closeSurface, openSurface, surface } from '../browser/surface.svelte';
   import {
@@ -906,6 +909,67 @@
   let masterPassword = $state('');
   let twoFactor = $state('');
 
+  /**
+   * The platform authenticator this device offers, and whether the vault is
+   * enrolled with it. Asked when a locked card arrives; `null` until the gate
+   * answers, which draws as the password card rather than as a gesture the
+   * card cannot perform.
+   */
+  let gate = $state<Availability | null>(null);
+  let vaultEnrolled = $state(false);
+  /** Whether the reader asked for the password on a device that has the gesture. */
+  let wantPassword = $state(false);
+  /** Whether the gesture is running, which is the card's working state. */
+  let releasing = $state(false);
+  /** Why the last gesture did not release: the card quotes it and keeps the
+   *  password beside it (a refusal never settles the card). */
+  let vaultRefusal = $state<string | null>(null);
+  let vaultBiometricButton = $state<HTMLButtonElement | null>(null);
+  let vaultPasswordEl = $state<HTMLElement | null>(null);
+
+  const vaultNeedsUnlock = $derived(ask.kind === 'vault' && ask.request.needsUnlock);
+  /** Whether the card's primary action is the platform gesture. */
+  const vaultBiometric = $derived(
+    vaultNeedsUnlock && !wantPassword && gate?.available === true && vaultEnrolled,
+  );
+
+  // The gate is asked per card, keyed on the prompt's own identity: the record
+  // is replaced on every frame, and a re-ask would reset the card under a
+  // running gesture. A new card starts from the password until the gate has
+  // answered.
+  $effect(() => {
+    void ownKey;
+    if (!untrack(() => vaultNeedsUnlock)) return;
+    wantPassword = false;
+    vaultRefusal = null;
+    releasing = false;
+    gate = null;
+    vaultEnrolled = false;
+    let live = true;
+    void (async () => {
+      const [held, isEnrolled] = await Promise.all([availability(), enrolled(VAULT_PURPOSE)]);
+      if (!live) return;
+      gate = held;
+      vaultEnrolled = isEnrolled;
+    })();
+    return () => {
+      live = false;
+    };
+  });
+
+  // **The keyboard lands on the gesture** once the card knows that is its
+  // primary action: Enter then runs it, the same way Enter submits the other
+  // cards. Keyed on the mode and the element, so a card that reaches the gate
+  // late lands there too.
+  $effect(() => {
+    if (collapsed || !vaultBiometric) return;
+    vaultBiometricButton?.focus({ preventScroll: true });
+  });
+  // And "use the password" lands in the field it just uncovered.
+  $effect(() => {
+    if (wantPassword) vaultPasswordEl?.focus();
+  });
+
   /** Whether the vault's send-back field is open, and the note it holds. */
   let vaultNoteOpen = $state(false);
   let vaultNote = $state('');
@@ -964,24 +1028,82 @@
    * A held vault call's verbs: approve runs the call, send-back hands it to
    * the agent with the reader's words, and decline runs nothing.
    *
-   * **A locked card cannot approve without the master password**, because
-   * the approval is what performs the unlock; a card whose session is already
-   * unlocked sends no unlock material at all.
+   * **A locked card cannot approve without unlock material**, because the
+   * approval is what performs the unlock: either the master password or the
+   * material a platform authenticator released. A card whose session is
+   * already unlocked sends no unlock material at all.
    */
-  function answerVault(decision: 'approve' | 'send_back' | 'decline'): void {
+  function answerVault(
+    decision: 'approve' | 'send_back' | 'decline',
+    released?: { refresh_token: string; user_key: string },
+  ): void {
     if (answered || ask.kind !== 'vault') return;
-    if (decision === 'approve' && ask.request.needsUnlock && masterPassword === '') return;
+    if (
+      decision === 'approve' &&
+      ask.request.needsUnlock &&
+      released === undefined &&
+      masterPassword === ''
+    ) {
+      return;
+    }
     if (decision === 'send_back' && vaultNote.trim() === '') return;
     const id = ask.request.id;
     const code = twoFactor.trim();
-    const unlock =
-      decision === 'approve' && ask.request.needsUnlock
-        ? { master_password: masterPassword, ...(code === '' ? {} : { two_factor: code }) }
-        : {};
+    let unlock = {};
+    if (decision === 'approve' && ask.request.needsUnlock) {
+      unlock =
+        released === undefined
+          ? { master_password: masterPassword, ...(code === '' ? {} : { two_factor: code }) }
+          : { released };
+    }
     const outcome = decision === 'send_back' ? { decision, note: vaultNote } : { decision };
     onanswer(id);
     if (decision === 'send_back') onsending();
     answer({ respond_vault_ask: { key: slot, id, answer: { ...outcome, ...unlock } } });
+  }
+
+  /**
+   * The card's primary action: the platform gesture where the gate offers it,
+   * else the password's approve.
+   *
+   * **A refused gesture never settles the card.** It stays, says the
+   * platform's reason, and the password is one click away - a broken sensor
+   * must not cost the person the call they were answering.
+   */
+  async function approveVault(): Promise<void> {
+    if (answered || ask.kind !== 'vault') return;
+    if (!vaultBiometric) {
+      answerVault('approve');
+      return;
+    }
+    if (releasing) return;
+    releasing = true;
+    vaultRefusal = null;
+    const released = await release(VAULT_PURPOSE);
+    releasing = false;
+    if (ask.kind !== 'vault' || answered) return;
+    if (released.outcome === 'released') {
+      const material = decodeVaultMaterial(released.blob);
+      if (material === null) {
+        vaultRefusal = 'the stored unlock material could not be read; use the password';
+        wantPassword = true;
+        return;
+      }
+      answerVault('approve', material);
+      return;
+    }
+    if (released.outcome === 'not_enrolled') {
+      vaultRefusal = 'this device has nothing enrolled; use the password';
+      wantPassword = true;
+      return;
+    }
+    vaultRefusal = released.reason;
+  }
+
+  /** The reader chose the password on a device that offers the gesture. */
+  function useVaultPassword(): void {
+    wantPassword = true;
+    vaultRefusal = null;
   }
 
   /**
@@ -1335,6 +1457,13 @@
       // A link inside a preview is the link's: tabbed onto it, Enter must
       // follow the link rather than answer the row the dock has marked.
       if (event.target instanceof Element && event.target.closest('a') !== null) return;
+      // **The gesture is a locked vault card's primary action**: Enter on the
+      // card runs it, the same way Enter submits the other cards.
+      if (vaultBiometric) {
+        event.preventDefault();
+        void approveVault();
+        return;
+      }
       event.preventDefault();
       submit(false);
       return;
@@ -1696,33 +1825,68 @@
         </div>
       {/if}
       {#if ask.request.needsUnlock}
-        <div class="unlock">
-          <Field
-            editor="dock"
-            class="fld"
-            element="input"
-            type="password"
-            bind:value={masterPassword}
-            placeholder="master password"
-            aria={{ label: 'the vault master password' }}
-            onkeydown={(event: KeyboardEvent) => {
-              onUnlockKey(event);
-            }}
-          />
-          <Field
-            editor="dock"
-            class="fld"
-            element="input"
-            bind:value={twoFactor}
-            placeholder="2FA code (optional)"
-            autocomplete="one-time-code"
-            inputmode="numeric"
-            aria={{ label: 'the two-factor code' }}
-            onkeydown={(event: KeyboardEvent) => {
-              onUnlockKey(event);
-            }}
-          />
-        </div>
+        {#if vaultBiometric}
+          <!-- The gesture leads and the password is one click beneath it: a
+               broken sensor is a working path away, never a dead end. A
+               refused gesture leaves the card standing, says why in the
+               platform's own words, and never settles the call. -->
+          <div class="unlock">
+            <button
+              class="btn p bio"
+              bind:this={vaultBiometricButton}
+              disabled={releasing}
+              onclick={() => {
+                void approveVault();
+              }}
+            >
+              {#if releasing}
+                waiting for {gate?.biometric ? 'Touch ID' : 'your device password'}…
+              {:else}
+                Unlock with {gate?.biometric ? 'Touch ID' : 'your device password'}
+              {/if}
+            </button>
+            <button class="btn link" onclick={useVaultPassword}>
+              use the Vaultwarden password
+            </button>
+            {#if vaultRefusal !== null}
+              <p class="desc why" role="alert">{vaultRefusal}</p>
+            {/if}
+          </div>
+        {:else}
+          {#if vaultRefusal !== null}
+            <p class="desc why" role="alert">{vaultRefusal}</p>
+          {/if}
+          <div class="unlock">
+            <Field
+              editor="dock"
+              class="fld"
+              element="input"
+              type="password"
+              bind:value={masterPassword}
+              placeholder="master password"
+              aria={{ label: 'the vault master password' }}
+              field={(el: HTMLElement | null) => {
+                vaultPasswordEl = el;
+              }}
+              onkeydown={(event: KeyboardEvent) => {
+                onUnlockKey(event);
+              }}
+            />
+            <Field
+              editor="dock"
+              class="fld"
+              element="input"
+              bind:value={twoFactor}
+              placeholder="2FA code (optional)"
+              autocomplete="one-time-code"
+              inputmode="numeric"
+              aria={{ label: 'the two-factor code' }}
+              onkeydown={(event: KeyboardEvent) => {
+                onUnlockKey(event);
+              }}
+            />
+          </div>
+        {/if}
       {/if}
     {:else}
       <div class="d-head">
@@ -1943,13 +2107,17 @@
     {#if ask.kind === 'vault'}
       <div class="acts">
         <!-- The call runs or it does not, and the send-back is the middle
-           door. A locked card's Approve waits for the master password, since
-           the approval is what performs the unlock. -->
-        <button
-          class="btn p"
-          disabled={ask.request.needsUnlock && masterPassword === ''}
-          onclick={() => answerVault('approve')}>Approve</button
-        >
+           door. A locked card's Approve waits for unlock material, since the
+           approval is what performs the unlock; where the platform gesture
+           leads, the gesture button IS the approve and this row carries the
+           two refusals. -->
+        {#if !vaultBiometric}
+          <button
+            class="btn p"
+            disabled={ask.request.needsUnlock && masterPassword === ''}
+            onclick={() => answerVault('approve')}>Approve</button
+          >
+        {/if}
         <button class="btn" bind:this={vaultSendBackButton} onclick={openVaultNote}
           >Send back with a note</button
         >
@@ -2000,8 +2168,17 @@
           <span><kbd>Tab</kbd> between the fold, Write it and Don't write</span>
           <span><kbd>Enter</kbd> activates</span>
         {:else if ask.kind === 'vault'}
-          <span><kbd>Tab</kbd> between the fields and the card's verbs</span>
-          <span><kbd>Enter</kbd> activates</span>
+          {#if vaultBiometric}
+            <span
+              ><kbd>Enter</kbd> unlocks with {gate?.biometric
+                ? 'Touch ID'
+                : 'your device password'}</span
+            >
+            <span><kbd>Tab</kbd> to the password, the send-back or the decline</span>
+          {:else}
+            <span><kbd>Tab</kbd> between the fields and the card's verbs</span>
+            <span><kbd>Enter</kbd> activates</span>
+          {/if}
         {:else}
           <span><kbd>Tab</kbd> between the actions</span>
           <span><kbd>Enter</kbd> activates</span>

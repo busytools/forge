@@ -91,11 +91,20 @@ call moves one. The draft carries no secret value at all, so nothing the card dr
 one; the value reaches the tool's result only after an approval. A card parked while the
 session is locked carries only what the call's arguments already say - the item's id, the field
 or the masked diff, an attachment's name and size - because naming the item needs the keys; the
-name appears on a card parked after an unlock. A locked session adds a masked
-master-password field and an optional 2FA code, and `Approve` stays unavailable until the
-password is entered, because the approval is what performs the unlock. The two ride only an
-approval: a send-back or a decline runs nothing. Its verbs are `Approve`, `Send back with a
-note` and `Decline`, and the send-back opens the same words field a held post's does.
+name appears on a card parked after an unlock.
+
+Where the device holds a biometric enrolment, the locked card leads with the gesture -
+`Unlock with Touch ID`, or the device password where no biometric is enrolled - with `use the
+Vaultwarden password` one link beneath it. Enter runs the gesture, the way Enter submits the
+other cards. The gesture is the approve: the unlock material it releases rides only an
+approval, and a send-back or a decline runs nothing. **A refused gesture never settles the
+call**: the card stands, says the platform's own reason under the button, and the password it
+offers is still one click away. Without an enrolment, or where the platform has no gate, the
+card is the password one: a masked master-password field and an optional 2FA code, with
+`Approve` unavailable until the password is entered, because the approval is what performs the
+unlock. Its verbs are `Approve`, `Send back with a note` and `Decline` - the gesture taking the
+Approve's place where it leads - and the send-back opens the same words field a held post's
+does.
 
 ## The five lists
 

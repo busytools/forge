@@ -3492,6 +3492,15 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   border: 1px solid var(--line); border-radius: 8px; background: var(--s1);
   color: var(--text); font-family: var(--mono); font-size: var(--fs-data); }
 .dock .unlock .fld::placeholder { color: var(--dim); }
+/* The gesture is the card's primary action and takes the row it needs; the
+   password is a link beneath it rather than a second button competing with
+   it. A refused gesture's reason sits under both, in the failure tone. */
+.dock .unlock .bio { flex: 1 1 100%; min-height: 40px; }
+.dock .unlock .link { border: 0; background: none; color: var(--dim); cursor: pointer;
+  font-family: var(--mono); font-size: var(--fs-data); padding: 4px 0;
+  text-decoration: underline; }
+.dock .unlock .link:hover { color: var(--text); }
+.dock .unlock .why { flex: 1 1 100%; margin: 0; color: var(--bad); }
 /* A long option list scrolls in place rather than pushing the foot off a
    phone: the prompt lane is a lane, not a page, and the words row below it
    must stay reachable however many options the wire sent. */
