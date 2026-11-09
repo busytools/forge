@@ -845,6 +845,12 @@ pub struct Workspace {
     /// forge UI level; their JSONLs persist on disk). Mutated via
     /// `insert_live_worker` / `remove_latest_worker` / `drain_live_workers`.
     live_workers: Mutex<HashMap<ProjectKey, Vec<crate::mcp::workers::types::WorkerEntry>>>,
+    /// The per-lead clock of the injected board sweep, keyed by the
+    /// lead's slot. In memory only, so a restart re-arms every lead:
+    /// the sweep is a moment, not a schedule the store should own.
+    /// `pub(crate)` so the impl block in [`crate::idle_sweep`] can
+    /// reach it.
+    pub(crate) idle_sweeps: Mutex<HashMap<SessionSlot, crate::idle_sweep::SweepClock>>,
     /// One claim per composed worker-worktree path, held while a spawn's
     /// ensure/insert or a despawn's removal is in flight. The live
     /// registry is per project; this is the repository-wide one, so two
@@ -965,6 +971,18 @@ pub struct Workspace {
     /// serialises writes.
     /// `pub(crate)` so the impl block in [`crate::crons`] can reach it.
     pub(crate) crons: Mutex<Vec<forge_primitives::CronEntry>>,
+    /// Set at boot when the durable crons could not be loaded: the store
+    /// could not open, or its read failed. The in-memory set is empty while
+    /// rows may still be on disk, so it is not the registry. `cron__list`
+    /// refuses on it rather than answering an empty array a caller would read
+    /// as "you have no crons".
+    ///
+    /// It gates `cron__list` only: under the same failed load `delete_cron`
+    /// still answers `NoSuchCron` from the empty set, and `create_cron` still
+    /// promises durability while `persist_cron` returns quietly. Both predate
+    /// this cut and the charter's list-then-delete flow is gated by the list
+    /// refusal; the siblings are #2943.
+    pub(crate) crons_load_failed: std::sync::atomic::AtomicBool,
     /// The live task list (`mcp__forge__tasks`). In-memory working set,
     /// loaded from the machine-local store at boot and persisted back
     /// after every mutation through the one [`Workspace::with_tasks_mut`]
@@ -2232,17 +2250,24 @@ impl Workspace {
 
         // Load durable forge crons into the in-memory working set. Boot
         // catch-up for entries that came due while forge was down runs after
-        // construction, once the dispatch machinery is live.
-        let crons = match &db {
-            Some(db) => crate::store::cron::list(db).unwrap_or_else(|error| {
+        // construction, once the dispatch machinery is live. A failed load
+        // leaves the set empty while rows may still be on disk, so mark the
+        // run's crons unavailable rather than letting `cron__list` report an
+        // empty registry.
+        let mut crons_load_failed = false;
+        let crons = if let Some(db) = &db {
+            crate::store::cron::list(db).unwrap_or_else(|error| {
                 tracing::warn!(
                     target: "forge_workspace::workspace",
                     %error,
                     "loading durable crons failed; starting with none this run",
                 );
+                crons_load_failed = true;
                 Vec::new()
-            }),
-            None => Vec::new(),
+            })
+        } else {
+            crons_load_failed = true;
+            Vec::new()
         };
         let tasks = match &db {
             Some(db) => crate::store::tasks::list(db).unwrap_or_else(|error| {
@@ -2595,6 +2620,7 @@ impl Workspace {
             command_senders: Mutex::new(HashMap::new()),
             session_teardowns: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
+            idle_sweeps: Mutex::new(HashMap::new()),
             worktree_claims: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             despawn_cleanups: Mutex::new(HashSet::new()),
             spawn_failures: Mutex::new(HashMap::new()),
@@ -2613,6 +2639,7 @@ impl Workspace {
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             _single_instance_lock: single_instance_lock,
             crons: Mutex::new(crons),
+            crons_load_failed: std::sync::atomic::AtomicBool::new(crons_load_failed),
             tasks: Mutex::new(tasks),
             parked_by_slot: Mutex::new(HashMap::new()),
             pending_handoffs: Mutex::new(HashMap::new()),

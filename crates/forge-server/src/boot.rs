@@ -674,6 +674,12 @@ fn start_subsystems(workspace: &Arc<Workspace>) {
     // drive instead of report.
     workspace.start_chase_sweep();
 
+    // Start the idle sweep: every ~60s a lead with nothing in flight is
+    // handed the board sweep, once per two hours, with a six-hour
+    // fallback for a lead that never goes idle. Delivery never wakes a
+    // sleeping session.
+    workspace.start_idle_sweep();
+
     // Start the Gotify subsystem when configured with at least one
     // durable subscription loaded at boot; no-op otherwise.
     workspace.start_gotify_subsystem();
@@ -1573,6 +1579,24 @@ port = 49201
         assert!(
             workspace.test_rotation_announcer_started(),
             "the boot wave starts the rotation announcer",
+        );
+    }
+
+    /// **The wave starts the idle sweep**: without the call the feature is
+    /// dark in every real boot while every unit test stays green.
+    #[tokio::test]
+    async fn the_boot_wave_starts_the_idle_sweep() {
+        let (workspace, _dir) = boot_fixture();
+        assert!(
+            !workspace.supervisor().snapshot().iter().any(|member| member.name == "idle_sweep"),
+            "the fixture starts with the idle sweep unstarted, or this test proves nothing",
+        );
+
+        start_subsystems(&workspace);
+
+        assert!(
+            workspace.supervisor().snapshot().iter().any(|member| member.name == "idle_sweep"),
+            "the boot wave starts the idle sweep",
         );
     }
 

@@ -483,6 +483,7 @@ impl Workspace {
             session_teardowns: Mutex::new(HashMap::new()),
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             live_workers: Mutex::new(HashMap::new()),
+            idle_sweeps: Mutex::new(HashMap::new()),
             worktree_claims: std::sync::Arc::new(parking_lot::Mutex::new(HashMap::new())),
             despawn_cleanups: Mutex::new(HashSet::new()),
             spawn_failures: Mutex::new(HashMap::new()),
@@ -501,6 +502,7 @@ impl Workspace {
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             _single_instance_lock: None,
             crons: Mutex::new(Vec::new()),
+            crons_load_failed: std::sync::atomic::AtomicBool::new(false),
             tasks: Mutex::new(Vec::new()),
             parked_by_slot: Mutex::new(HashMap::new()),
             pending_handoffs: Mutex::new(HashMap::new()),
@@ -723,6 +725,12 @@ impl Workspace {
     /// writing a real `forge.toml`. Test-only.
     pub fn seed_test_project(&self, name: &str, path: &str) {
         self.seed_test_project_inner(name, path, None, None);
+    }
+
+    /// Drop a project seeded by [`Self::seed_test_project`], so a test can
+    /// exercise the paths that react to a project leaving the config.
+    pub fn remove_test_project(&self, name: &str) {
+        self.test_extra_projects.lock().retain(|project| project.name != name);
     }
 
     /// [`Workspace::seed_test_project`] with a Slack binding, so a facade
