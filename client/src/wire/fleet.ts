@@ -196,6 +196,7 @@ export const HOME_WAKES: ReadonlyMap<string, string> = new Map([
     'biometric_enrolments_changed',
     'HomeWire.biometric, the device enrolments the settings page lists and the card reads',
   ],
+  ['vault_lock_changed', 'HomeWire.vault, the lock state and idle bound the settings card draws'],
 ]);
 
 /**

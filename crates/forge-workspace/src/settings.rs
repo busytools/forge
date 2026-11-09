@@ -206,6 +206,7 @@ fn edit_spec(path: &str) -> EditSpec {
         | "vault.url"
         | "vault.email"
         | "server.bind" => required(TEXT),
+        "vault.idle_minutes" => NUMBER,
         "slack[].workspace" | "slack[].token" => named(required(TEXT), "slack"),
         "slack[].poll_seconds"
         | "slack[].dm_poll_seconds"
@@ -905,6 +906,17 @@ const CONNECTOR_KEYS: &[ConfigKey] = &[
         class: EffectClass::Live,
         rows: |config| {
             vec![text_set("vault.email", config.vault.as_ref().map(|vault| vault.email.clone()))]
+        },
+    },
+    ConfigKey {
+        path: "vault.idle_minutes",
+        area: "connectors",
+        class: EffectClass::Live,
+        rows: |config| {
+            vec![number(
+                "vault.idle_minutes",
+                config.vault.as_ref().and_then(|vault| vault.idle_minutes),
+            )]
         },
     },
     ConfigKey {
@@ -1918,6 +1930,7 @@ timeout_ms = 1000
 [vault]
 url = "https://vault.test"
 email = "hi@vedhavyas.dev"
+idle_minutes = 30
 
 [[slack]]
 workspace = "Test Slack"

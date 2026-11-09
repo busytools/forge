@@ -2343,6 +2343,13 @@ pub enum SessionUpdate {
     VaultRotated {
         refresh_token: String,
     },
+    /// The shared vault session locked or unlocked outside a held card - the
+    /// idle bound passed, a refresh or a decryption failed, or an unlock
+    /// landed. Slot-less like the rotation: the session is process-wide, and
+    /// the settings page's vault card is what redraws.
+    VaultLockChanged {
+        locked: bool,
+    },
     /// One rendered clip of the seat's speech, mono 16-bit samples at
     /// `sample_rate`. Chunks arrive in `seq` order and every client with
     /// voice on for the seat plays them; a client with voice off receives
@@ -2448,7 +2455,8 @@ impl SessionUpdate {
             | Self::FatalError { .. }
             | Self::DictateModelsChanged { .. }
             | Self::BiometricEnrolmentsChanged { .. }
-            | Self::VaultRotated { .. } => None,
+            | Self::VaultRotated { .. }
+            | Self::VaultLockChanged { .. } => None,
         }
     }
 }
@@ -2794,6 +2802,9 @@ impl std::fmt::Debug for SessionUpdate {
                 .finish(),
             // The token is redacted: a Debug line must never carry it.
             Self::VaultRotated { .. } => f.write_str("VaultRotated"),
+            Self::VaultLockChanged { locked } => {
+                f.debug_struct("VaultLockChanged").field("locked", locked).finish()
+            }
             Self::CatalogLoaded => f.write_str("CatalogLoaded"),
             Self::CliVersionChanged => f.write_str("CliVersionChanged"),
             Self::AccountsChanged { accounts } => f

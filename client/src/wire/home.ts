@@ -583,6 +583,15 @@ export interface BiometricEnrolment {
   purposes: BiometricPurpose[];
 }
 
+/**
+ * The shared vault session as the settings card draws it: whether it holds
+ * its keys open and the idle bound the config set. No token or key is here.
+ */
+export interface VaultWire {
+  locked: boolean;
+  idle_minutes: number | null;
+}
+
 export interface HomeWire {
   projects: ProjectWire[];
   agents: AgentRow[];
@@ -625,6 +634,8 @@ export interface HomeWire {
    */
   biometric:
     { outcome: 'read'; value: BiometricEnrolment[] } | { outcome: 'failed'; value: string };
+  /** The shared vault session's state, or `null` when no `[vault]` is set. */
+  vault: VaultWire | null;
 }
 
 /** The lifecycles the core names. A value outside these is one this client is older than. */
@@ -940,6 +951,17 @@ export function homeFrom(data: HomeWire): HomeWire {
       },
     },
     biometric: biometricFrom(data.biometric),
+    vault: vaultFrom(data.vault),
+  };
+}
+
+/** The vault state, narrowed where it enters: unstated reads as no vault. */
+function vaultFrom(value: unknown): VaultWire | null {
+  if (value === null || typeof value !== 'object') return null;
+  const held = value as Record<string, unknown>;
+  return {
+    locked: held['locked'] === true,
+    idle_minutes: typeof held['idle_minutes'] === 'number' ? held['idle_minutes'] : null,
   };
 }
 

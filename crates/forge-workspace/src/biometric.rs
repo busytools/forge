@@ -485,6 +485,7 @@ mod tests {
         let config = crate::config::VaultConfig {
             url: "http://127.0.0.1:1".to_owned(),
             email: "a@b.c".to_owned(),
+            idle_minutes: None,
         };
         let session =
             Arc::new(crate::vault::test_session(&config, None, dir.path()).expect("a session"));
@@ -544,8 +545,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let (workspace, _updates) =
             Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
-        let config =
-            VaultConfig { url: "http://127.0.0.1:1".to_owned(), email: "a@b.c".to_owned() };
+        let config = VaultConfig {
+            url: "http://127.0.0.1:1".to_owned(),
+            email: "a@b.c".to_owned(),
+            idle_minutes: None,
+        };
         let session = Arc::new(test_session(&config, None, dir.path()).expect("a session"));
         test_install_unlocked(
             &session,

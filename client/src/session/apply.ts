@@ -559,6 +559,8 @@ export const IGNORED: readonly string[] = [
   // The vault's rotated token is the vault consumer's, which listens on its
   // own; a seat record keeps no vault state.
   'vault_rotated',
+  // The vault's lock state is the settings card's and the home read's.
+  'vault_lock_changed',
 ];
 
 /** Fold one update into the record. A variant it has nothing to do with leaves it alone. */

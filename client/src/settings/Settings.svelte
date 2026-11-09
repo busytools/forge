@@ -671,6 +671,10 @@
       onRevokeBiometric={(enrolment: string, purpose: string) => {
         void connection.dispatch({ biometric_revoke: { enrolment, purpose } });
       }}
+      vault={home.wire === null ? null : home.wire.vault}
+      onLockVault={() => {
+        void connection.dispatch('vault_lock');
+      }}
     />
 
     {#if editing && (dirty > 0 || saving || refusal !== null || saved || conflict !== null || restart.length > 0)}

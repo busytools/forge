@@ -62,6 +62,10 @@ pub(crate) struct VaultSection {
     pub url: Option<String>,
     #[serde(default)]
     pub email: Option<String>,
+    /// Minutes without a vault call after which the session locks itself.
+    /// Absent means no idle lock, which is what forge did before this key.
+    #[serde(default)]
+    pub idle_minutes: Option<u64>,
 }
 
 /// The validated `[vault]` section.
@@ -69,6 +73,8 @@ pub(crate) struct VaultSection {
 pub(crate) struct VaultConfig {
     pub url: String,
     pub email: String,
+    /// `None` when `idle_minutes` is unset: no idle lock.
+    pub idle_minutes: Option<u64>,
 }
 
 /// Hand-written because the email is the account's identity and the salt the
@@ -94,7 +100,12 @@ impl VaultSection {
         if email.is_empty() {
             return Err("`email` is required when `[vault]` is present".to_owned());
         }
-        Ok(Some(VaultConfig { url, email }))
+        // Zero would read as "lock instantly", which no one means; the way to
+        // have no idle lock is to leave the key out.
+        if self.idle_minutes == Some(0) {
+            return Err("`idle_minutes` must be at least 1; omit it for no idle lock".to_owned());
+        }
+        Ok(Some(VaultConfig { url, email, idle_minutes: self.idle_minutes }))
     }
 }
 
@@ -4614,6 +4625,7 @@ base_url = "http://localhost:18765"
         let config = VaultConfig {
             url: "https://vault.example.com".to_owned(),
             email: "me@example.com".to_owned(),
+            idle_minutes: None,
         };
 
         let text = format!("{config:?}");
@@ -4628,7 +4640,7 @@ base_url = "http://localhost:18765"
         write_config(
             dir.path(),
             &format!(
-                "{}\n[vault]\nurl = \"https://bitwarden.hub\"\nemail = \"hi@vedhavyas.dev\"\n",
+                "{}\n[vault]\nurl = \"https://bitwarden.hub\"\nemail = \"hi@vedhavyas.dev\"\nidle_minutes = 30\n",
                 minimal_config()
             ),
         );
@@ -4636,6 +4648,35 @@ base_url = "http://localhost:18765"
         let vault = config.vault.expect("the section reaches the loaded config");
         assert_eq!(vault.url, "https://bitwarden.hub");
         assert_eq!(vault.email, "hi@vedhavyas.dev");
+        assert_eq!(vault.idle_minutes, Some(30));
+    }
+
+    #[test]
+    fn an_absent_idle_bound_is_no_idle_lock() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!(
+                "{}\n[vault]\nurl = \"https://bitwarden.hub\"\nemail = \"hi@vedhavyas.dev\"\n",
+                minimal_config()
+            ),
+        );
+        let config = load_from_dir(dir.path()).expect("a complete section loads");
+        assert_eq!(config.vault.expect("the section reaches the loaded config").idle_minutes, None,);
+    }
+
+    #[test]
+    fn a_zero_idle_bound_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!(
+                "{}\n[vault]\nurl = \"https://bitwarden.hub\"\nemail = \"hi@vedhavyas.dev\"\nidle_minutes = 0\n",
+                minimal_config()
+            ),
+        );
+        let err = load_from_dir(dir.path()).expect_err("zero would lock instantly");
+        assert!(err.to_string().contains("`idle_minutes` must be at least 1"), "{err}");
     }
 
     #[test]

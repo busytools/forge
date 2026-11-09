@@ -137,6 +137,20 @@ pub struct HomeWire {
     /// reads. **No wrapped blob is here**: the list is read by every client,
     /// and the bytes stay behind a release.
     pub biometric: ReadWire<Vec<forge_primitives::biometric::BiometricEnrolment>>,
+    /// The shared vault session's lock state and idle bound, for the
+    /// settings vault card. **No token or key is here**: the card draws
+    /// whether the vault is open and when it locks itself.
+    pub vault: Option<VaultWire>,
+}
+
+/// The shared vault session as the settings card draws it.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct VaultWire {
+    /// Whether the session holds its keys open right now.
+    pub locked: bool,
+    /// The idle bound the config set, or `null` for no idle lock.
+    pub idle_minutes: Option<u64>,
 }
 
 /// The Extensions page's read: the plugin inventory, the PATH checks the
@@ -2130,6 +2144,9 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
             surface.fatal_error().map(|error| Value::String(error.user_message().to_owned())),
         ),
         biometric: surface.biometric_enrolments().into(),
+        vault: surface
+            .vault_state()
+            .map(|state| VaultWire { locked: state.locked, idle_minutes: state.idle_minutes }),
         agents: agent_rows,
         unseen: agents
             .all()

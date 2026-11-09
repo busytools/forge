@@ -412,6 +412,16 @@
             <div class="settings-setting"><span class="settings-setting-label"><code title="vault.url">url</code><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span><span class="settings-setting-value">https://vault.example.com</span></div>
             <div class="settings-setting"><span class="settings-setting-label"><code title="vault.email">email</code><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span><span class="settings-setting-value">me@example.com</span></div>
           </div>
+          <!-- The vault area's account card: the shared session's state and
+               the manual lock, app-level because one vault serves the whole
+               config dir. -->
+          <div class="settings-card" role="group" aria-labelledby="card-vault-lock">
+            <header class="settings-card-head">
+              <h3 id="card-vault-lock">vault</h3>
+              <span class="settings-card-grow"></span>
+            </header>
+            <div class="settings-setting"><span class="settings-setting-label"><code>unlocked</code><span class="settings-dim">locks after 30 minutes without use</span></span><span class="settings-setting-value"><span class="settings-btn ghost">lock</span></span></div>
+          </div>
           <!-- The vault area's device enrolments: the runtime list, not a
                config key. Each purpose carries its own revoke. -->
           <div class="settings-card" role="group" aria-labelledby="card-vault-devices">

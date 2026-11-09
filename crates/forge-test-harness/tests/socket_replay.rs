@@ -335,7 +335,7 @@ census!(SessionUpdate,
         DocumentHandOffPending struct, DocumentHandOffResolved struct,
         SettingsWritePending struct, SettingsWriteResolved struct,
         VaultAskPending struct, VaultAskResolved struct,
-        BiometricEnrolmentsChanged struct, VaultRotated struct,
+        BiometricEnrolmentsChanged struct, VaultRotated struct, VaultLockChanged struct,
         VoiceAudio struct, VoiceModeState struct,
     ],
     session_update_census, SESSION_UPDATE_VARIANTS);

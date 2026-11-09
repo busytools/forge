@@ -2248,8 +2248,11 @@ mod tests {
                 kick: None,
             },
         );
-        let config =
-            VaultConfig { url: format!("http://{address}"), email: "hi@vedhavyas.dev".to_owned() };
+        let config = VaultConfig {
+            url: format!("http://{address}"),
+            email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
+        };
         let session =
             Arc::new(test_session(&config, Some(dir.path()), dir.path()).expect("a session"));
         test_install_unlocked(
@@ -2317,6 +2320,7 @@ mod tests {
         let config = VaultConfig {
             url: "http://127.0.0.1:1".to_owned(),
             email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
         };
         let session = Arc::new(test_session(&config, None, Path::new("/tmp")).expect("a session"));
         *workspace.vault.write() = Some(session);
@@ -2391,6 +2395,7 @@ mod tests {
         let config = VaultConfig {
             url: "http://127.0.0.1:1".to_owned(),
             email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
         };
         let session =
             Arc::new(test_session(&config, Some(dir.path()), dir.path()).expect("a session"));
@@ -2547,6 +2552,7 @@ mod tests {
         let config = VaultConfig {
             url: "http://127.0.0.1:1".to_owned(),
             email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
         };
         let session =
             Arc::new(test_session(&config, Some(dir.path()), dir.path()).expect("a session"));
@@ -2947,6 +2953,7 @@ mod tests {
         let next = VaultConfig {
             url: "http://127.0.0.1:1".to_owned(),
             email: "other@example.com".to_owned(),
+            idle_minutes: None,
         };
         *workspace.vault.write() = Some(Arc::new(
             test_session(&next, Some(dir.path()), dir.path()).expect("the new session"),
@@ -3048,8 +3055,11 @@ mod tests {
         ])
         .await;
         let (workspace, mut rx) = Workspace::testing_stub();
-        let config =
-            VaultConfig { url: format!("http://{address}"), email: "hi@vedhavyas.dev".to_owned() };
+        let config = VaultConfig {
+            url: format!("http://{address}"),
+            email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
+        };
         let session = Arc::new(test_session(&config, None, Path::new("/tmp")).expect("session"));
         *workspace.vault.write() = Some(session);
         let facade = Arc::new(ProdVaultFacade::from_arc(&workspace));
@@ -3155,8 +3165,11 @@ mod tests {
         ])
         .await;
         let (workspace, mut rx) = Workspace::testing_stub();
-        let config =
-            VaultConfig { url: format!("http://{address}"), email: "hi@vedhavyas.dev".to_owned() };
+        let config = VaultConfig {
+            url: format!("http://{address}"),
+            email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
+        };
         let session = Arc::new(test_session(&config, None, Path::new("/tmp")).expect("session"));
         *workspace.vault.write() = Some(Arc::clone(&session));
         let facade = Arc::new(ProdVaultFacade::from_arc(&workspace));
@@ -3196,8 +3209,11 @@ mod tests {
         // A token answer with no access token: the redemption is refused.
         let address = serve_vault(vec![("/identity/connect/token", "{}".to_owned())]).await;
         let (workspace, mut rx) = Workspace::testing_stub();
-        let config =
-            VaultConfig { url: format!("http://{address}"), email: "hi@vedhavyas.dev".to_owned() };
+        let config = VaultConfig {
+            url: format!("http://{address}"),
+            email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
+        };
         let session = Arc::new(test_session(&config, None, Path::new("/tmp")).expect("session"));
         *workspace.vault.write() = Some(Arc::clone(&session));
         let facade = Arc::new(ProdVaultFacade::from_arc(&workspace));
@@ -3397,8 +3413,11 @@ mod tests {
         let name = encrypt_str("bank", &user_key).expect("encrypt the name");
         let (address, seen, release) = serve_paused_cipher(name).await;
         let dir = tempfile::tempdir().expect("tempdir");
-        let config =
-            VaultConfig { url: format!("http://{address}"), email: "hi@vedhavyas.dev".to_owned() };
+        let config = VaultConfig {
+            url: format!("http://{address}"),
+            email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
+        };
         let old =
             Arc::new(test_session(&config, Some(dir.path()), dir.path()).expect("the old session"));
         test_install_unlocked(
@@ -3488,6 +3507,7 @@ mod tests {
                 &VaultConfig {
                     url: format!("http://{address}"),
                     email: "hi@vedhavyas.dev".to_owned(),
+                    idle_minutes: None,
                 },
                 Some(dir.path()),
                 dir.path(),
@@ -3555,6 +3575,7 @@ mod tests {
                 &VaultConfig {
                     url: format!("http://{address}"),
                     email: "hi@vedhavyas.dev".to_owned(),
+                    idle_minutes: None,
                 },
                 Some(dir.path()),
                 dir.path(),
@@ -3626,6 +3647,7 @@ mod tests {
                 &VaultConfig {
                     url: format!("http://{address}"),
                     email: "hi@vedhavyas.dev".to_owned(),
+                    idle_minutes: None,
                 },
                 Some(dir.path()),
                 dir.path(),
@@ -3688,6 +3710,7 @@ mod tests {
                 &VaultConfig {
                     url: format!("http://{address}"),
                     email: "hi@vedhavyas.dev".to_owned(),
+                    idle_minutes: None,
                 },
                 Some(dir.path()),
                 dir.path(),
@@ -4365,6 +4388,7 @@ mod tests {
         let config = VaultConfig {
             url: "http://127.0.0.1:1".to_owned(),
             email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
         };
         let session =
             Arc::new(test_session(&config, Some(dir.path()), dir.path()).expect("a session"));

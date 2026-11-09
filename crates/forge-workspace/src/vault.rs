@@ -2,10 +2,11 @@
 //!
 //! One `VaultSession` per forge process, built from `[vault]` at boot and
 //! swapped on a reload that changes the section. It owns the tokens and the
-//! derived keys; the connector holds neither. There is no client-side idle
-//! timeout: a call that the server rejects with 401 tries the refresh token,
-//! and only a failed refresh locks the session and makes the next held call
-//! ask for the master password.
+//! derived keys; the connector holds neither. A call the server rejects with
+//! 401 tries the refresh token, and only a failed refresh locks the session
+//! and makes the next held call ask for the master password. `[vault]
+//! idle_minutes`, when set, locks an unused session on its first read after
+//! the bound.
 //!
 //! The master password never enters this struct. It arrives with one answer,
 //! is used to derive the master key, and is zeroized before the answer is
@@ -62,6 +63,10 @@ pub(crate) struct VaultSession {
     /// Where a rotation is announced: the enrolment blobs hold the old token
     /// and the client that owns one rewrites it from this.
     updates: UpdateFanout,
+    /// The configured idle bound in minutes, or `None` for no idle lock.
+    idle_minutes: Option<u64>,
+    /// When the session was last used, for the idle clock.
+    last_used: parking_lot::Mutex<Option<std::time::Instant>>,
     audit: Option<VaultAudit>,
 }
 
@@ -97,20 +102,59 @@ impl VaultSession {
             unlock_gate: tokio::sync::Mutex::new(()),
             refresh_gate: tokio::sync::Mutex::new(()),
             updates,
+            idle_minutes: config.idle_minutes,
+            last_used: parking_lot::Mutex::new(None),
             audit,
         })
     }
 
+    /// The idle bound the config set, for the settings card.
+    pub(crate) fn idle_minutes(&self) -> Option<u64> {
+        self.idle_minutes
+    }
+
     /// Whether the derived keys are absent. A session that has never
-    /// unlocked and one whose refresh failed both read locked.
+    /// unlocked, one whose refresh failed and one past its idle bound all
+    /// read locked.
     pub(crate) fn is_locked(&self) -> bool {
+        self.lock_if_idle();
         self.state.read().keys.is_none()
+    }
+
+    /// Lock a session that has gone unused past its configured bound. The
+    /// clock is read here rather than kept by a timer, so the lock lands on
+    /// the first touch after the bound - and a session nothing touches is
+    /// never read unlocked by anyone.
+    fn lock_if_idle(&self) {
+        let Some(minutes) = self.idle_minutes else { return };
+        if self.state.read().keys.is_none() {
+            return;
+        }
+        let Some(elapsed) = self.last_used.lock().as_ref().map(std::time::Instant::elapsed) else {
+            return;
+        };
+        if elapsed >= std::time::Duration::from_secs(minutes.saturating_mul(60)) {
+            tracing::info!(
+                event_name = "vault_idle_locked",
+                minutes,
+                "the vault session passed its idle bound and locked itself"
+            );
+            self.lock();
+        }
+    }
+
+    /// Stamp a use of the session, for the idle clock.
+    fn touch(&self) {
+        *self.last_used.lock() = Some(std::time::Instant::now());
     }
 
     /// The unlocked keys. A caller that needs crypto reads these; a locked
     /// session returns its own error rather than an option a caller forgets.
     pub(crate) fn keys(&self) -> Result<std::sync::Arc<Unlocked>, VaultError> {
-        self.state.read().keys.clone().ok_or(VaultError::Locked)
+        self.lock_if_idle();
+        let keys = self.state.read().keys.clone().ok_or(VaultError::Locked)?;
+        self.touch();
+        Ok(keys)
     }
 
     /// The material a client wraps to enrol this device: the current refresh
@@ -180,6 +224,9 @@ impl VaultSession {
             refresh: token.refresh_token.take(),
         });
         state.keys = Some(std::sync::Arc::new(unlocked));
+        drop(state);
+        self.touch();
+        let _ = self.updates.send(SessionUpdate::VaultLockChanged { locked: false });
         Ok(())
     }
 
@@ -228,6 +275,8 @@ impl VaultSession {
         });
         state.keys = Some(std::sync::Arc::new(unlocked));
         drop(state);
+        self.touch();
+        let _ = self.updates.send(SessionUpdate::VaultLockChanged { locked: false });
         if let Some(refresh_token) = rotated {
             self.announce_rotation(refresh_token);
         }
@@ -237,12 +286,16 @@ impl VaultSession {
     /// The current access token, or `Locked` when there is none. The clone is
     /// zeroized when the caller drops it.
     fn access_token(&self) -> Result<Zeroizing<String>, VaultError> {
-        self.state
+        self.lock_if_idle();
+        let token = self
+            .state
             .read()
             .tokens
             .as_ref()
             .map(|tokens| Zeroizing::new(tokens.access.clone()))
-            .ok_or(VaultError::Locked)
+            .ok_or(VaultError::Locked)?;
+        self.touch();
+        Ok(token)
     }
 
     /// Refresh the access token. A missing or rejected refresh token clears
@@ -299,10 +352,20 @@ impl VaultSession {
     }
 
     /// Drop the tokens and the derived keys. The key types zeroize on drop.
+    /// A lock that found a session open announces it, so every view's vault
+    /// card redraws - the settings page's own among them.
     pub(crate) fn lock(&self) {
-        let mut state = self.state.write();
-        state.tokens = None;
-        state.keys = None;
+        let was_unlocked = {
+            let mut state = self.state.write();
+            let was_unlocked = state.keys.is_some();
+            state.tokens = None;
+            state.keys = None;
+            was_unlocked
+        };
+        *self.last_used.lock() = None;
+        if was_unlocked {
+            let _ = self.updates.send(SessionUpdate::VaultLockChanged { locked: true });
+        }
     }
 
     /// A decryption failure under a key that has not changed means the account
@@ -684,11 +747,26 @@ impl VaultSession {
     }
 }
 
+/// The shared vault session as a view draws it: whether it is locked and the
+/// idle bound the config set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VaultState {
+    pub locked: bool,
+    pub idle_minutes: Option<u64>,
+}
+
 impl crate::workspace::Workspace {
     /// The material a client wraps to enrol this device, from the shared
     /// session - or `None` when it is locked or no `[vault]` is configured.
     pub(crate) fn vault_enrolment_material(&self) -> Option<VaultReleased> {
         self.vault.read().as_ref()?.enrolment_material()
+    }
+
+    /// The shared vault session as a view draws it - `None` when no `[vault]`
+    /// is configured.
+    pub fn vault_state(&self) -> Option<VaultState> {
+        let session = self.vault.read().clone()?;
+        Some(VaultState { locked: session.is_locked(), idle_minutes: session.idle_minutes() })
     }
 }
 
@@ -838,7 +916,11 @@ mod tests {
     use super::*;
 
     fn config() -> VaultConfig {
-        VaultConfig { url: "http://127.0.0.1:1".to_owned(), email: "hi@vedhavyas.dev".to_owned() }
+        VaultConfig {
+            url: "http://127.0.0.1:1".to_owned(),
+            email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
+        }
     }
 
     #[test]
@@ -908,8 +990,11 @@ mod tests {
     }
 
     fn session_for(address: std::net::SocketAddr) -> VaultSession {
-        let config =
-            VaultConfig { url: format!("http://{address}"), email: "hi@vedhavyas.dev".to_owned() };
+        let config = VaultConfig {
+            url: format!("http://{address}"),
+            email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
+        };
         let session = test_session(&config, None, Path::new("/tmp")).expect("a session");
         session.state.write().tokens =
             Some(Tokens { access: "stale".to_owned(), refresh: Some("good".to_owned()) });
@@ -951,6 +1036,70 @@ mod tests {
         );
     }
 
+    /// The idle bound locks the session on its next read, announces it, and
+    /// leaves an unconfigured session alone.
+    #[test]
+    fn the_idle_bound_locks_the_session_on_its_next_read() {
+        use crate::update_fanout::SubscriberRole;
+
+        let updates = UpdateFanout::default();
+        let mut announced = updates.subscribe(SubscriberRole::Answering);
+        let config = VaultConfig {
+            url: "http://127.0.0.1:1".to_owned(),
+            email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: Some(30),
+        };
+        let session = test_session_with_updates(&config, None, Path::new("/tmp"), updates.clone())
+            .expect("a session");
+        test_install_unlocked(
+            &session,
+            Unlocked {
+                user_key: crypto::make_symmetric_key(),
+                private_key: None,
+                org_keys: std::collections::HashMap::new(),
+                failed_orgs: Vec::new(),
+                user_key_fingerprint: String::new(),
+            },
+        );
+
+        // A use inside the bound keeps it open and re-stamps the clock.
+        *session.last_used.lock() =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(29 * 60));
+        assert!(!session.is_locked(), "a read inside the bound leaves the session open");
+        assert!(session.keys().is_ok());
+
+        // Past the bound, the next read locks it.
+        *session.last_used.lock() =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(31 * 60));
+        assert!(session.is_locked(), "a read past the bound locks the session");
+        assert!(session.keys().is_err());
+        match &*announced.try_recv().expect("the idle lock is announced").update {
+            SessionUpdate::VaultLockChanged { locked } => assert!(locked),
+            other => panic!("the idle lock announced something else: {other:?}"),
+        }
+
+        // No bound means no idle lock, however old the stamp.
+        let open = VaultConfig {
+            url: "http://127.0.0.1:1".to_owned(),
+            email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
+        };
+        let session = test_session(&open, None, Path::new("/tmp")).expect("a session");
+        test_install_unlocked(
+            &session,
+            Unlocked {
+                user_key: crypto::make_symmetric_key(),
+                private_key: None,
+                org_keys: std::collections::HashMap::new(),
+                failed_orgs: Vec::new(),
+                user_key_fingerprint: String::new(),
+            },
+        );
+        *session.last_used.lock() =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(365 * 24 * 60 * 60));
+        assert!(!session.is_locked(), "an unconfigured session never locks itself");
+    }
+
     /// A rotation is announced with the new token, and the frame's Debug never
     /// prints it.
     #[tokio::test]
@@ -965,8 +1114,11 @@ mod tests {
         .await;
         let updates = UpdateFanout::default();
         let mut announced = updates.subscribe(SubscriberRole::Answering);
-        let config =
-            VaultConfig { url: format!("http://{address}"), email: "hi@vedhavyas.dev".to_owned() };
+        let config = VaultConfig {
+            url: format!("http://{address}"),
+            email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
+        };
         let session = test_session_with_updates(&config, None, Path::new("/tmp"), updates.clone())
             .expect("a session");
         session.state.write().tokens =
@@ -1056,7 +1208,11 @@ mod tests {
     async fn a_session_without_a_refresh_token_locks_on_401() {
         let (address, server) = serve(vec![response("401 Unauthorized", "")]).await;
         let session = test_session(
-            &VaultConfig { url: format!("http://{address}"), email: "hi@vedhavyas.dev".to_owned() },
+            &VaultConfig {
+                url: format!("http://{address}"),
+                email: "hi@vedhavyas.dev".to_owned(),
+                idle_minutes: None,
+            },
             None,
             Path::new("/tmp"),
         )
@@ -1076,6 +1232,7 @@ mod tests {
         let config = VaultConfig {
             url: "http://127.0.0.1:1".to_owned(),
             email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
         };
         let config_dir = Path::new("/tmp");
         let session = test_session(&config, Some(dir.path()), config_dir).expect("session");

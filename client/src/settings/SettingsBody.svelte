@@ -4,7 +4,8 @@
   import Brand from '../components/Brand.svelte';
   import ClassMark from '../components/ClassMark.svelte';
   import BiometricCard from './BiometricCard.svelte';
-  import type { BiometricEnrolment } from '../wire/home';
+  import VaultLockCard from './VaultLockCard.svelte';
+  import type { BiometricEnrolment, VaultWire } from '../wire/home';
   import { PROTOCOL_VERSION } from '../protocol';
   import type { SettingsDocument, SettingsEditSpec, SettingsKey } from '../wire/settings';
   import InstanceCard from './InstanceCard.svelte';
@@ -60,6 +61,8 @@
     onSpeakingPreview = () => {},
     biometric = null,
     onRevokeBiometric = () => {},
+    vault = null,
+    onLockVault = () => {},
   }: {
     document: SettingsDocument;
     mark: string | null;
@@ -119,6 +122,9 @@
       | { outcome: 'failed'; value: string }
       | null;
     onRevokeBiometric?: (enrolment: string, purpose: string) => void;
+    /** The shared vault session's state; `null` before a home read. */
+    vault?: VaultWire | null;
+    onLockVault?: () => void;
   } = $props();
 
   const shown = $derived(selectedArea(document, selected));
@@ -281,6 +287,7 @@
         <p class="settings-empty">This area has no keys.</p>
       {:else}
         {#if area.id === 'vault'}
+          <VaultLockCard state={vault} onlock={onLockVault} />
           <BiometricCard
             read={biometric ?? {
               outcome: 'failed',

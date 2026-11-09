@@ -125,6 +125,7 @@ pub use target::{ProjectKey, SessionSlot, SessionTarget};
 pub use tts::{TtsSettings, TtsSnapshot, TtsView};
 
 pub use update_fanout::SeatUpdate;
+pub use vault::VaultState;
 pub use views::{
     AccountGatewayView, AccountLoadingRow, AccountPoolView, AccountUsageView, ProjectView,
 };

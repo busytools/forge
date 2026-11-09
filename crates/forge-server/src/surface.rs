@@ -20,6 +20,7 @@ pub mod reviews;
 pub mod roster;
 pub mod session;
 pub mod usage;
+pub mod vault;
 pub mod voice;
 pub mod workers;
 

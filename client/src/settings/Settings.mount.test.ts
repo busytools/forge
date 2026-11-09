@@ -327,11 +327,18 @@ describe('the settings page', () => {
             },
           ],
         },
+        vault: { locked: false, idle_minutes: 15 },
       },
     });
     flushSync();
 
     expect(document.body.textContent).toContain("Ved's MacBook Pro");
     expect(document.body.textContent, 'the revoke is drawn with its purpose').toContain('revoke');
+    expect(document.body.textContent, 'the account card draws its lock state').toContain(
+      'unlocked',
+    );
+    expect(document.body.textContent, 'and the idle bound it locks on').toContain(
+      'locks after 15 minutes without use',
+    );
   });
 });

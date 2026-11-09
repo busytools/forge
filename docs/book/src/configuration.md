@@ -636,13 +636,14 @@ family. Adding the section does not put the family into sessions that are
 already running: a session's tool catalogue is fixed when it spawns, so a
 live session gains the tools only from a new spawn.
 
-| Key     | Type   | Required | Notes                                                           |
-| ------- | ------ | -------- | --------------------------------------------------------------- |
-| `url`   | string | yes      | The Vaultwarden base URL, e.g. `https://vault.example.com`.     |
-| `email` | string | yes      | The account's email; it is the salt the master key derives with. |
+| Key            | Type    | Required | Notes                                                           |
+| -------------- | ------- | -------- | --------------------------------------------------------------- |
+| `url`          | string  | yes      | The Vaultwarden base URL, e.g. `https://vault.example.com`.     |
+| `email`        | string  | yes      | The account's email; it is the salt the master key derives with. |
+| `idle_minutes` | integer | no       | Minutes without a vault call after which the session locks. Omitted means no idle lock. |
 
-Both keys are mandatory once the section is present. A missing one refuses
-the load naming the key: ``[vault] `url` is required when `[vault]` is
+The two account keys are mandatory once the section is present. A missing one
+refuses the load naming the key: ``[vault] `url` is required when `[vault]` is
 present`` (or the same sentence for `email`). Setting the section from a
 session means sending both keys in one `settings__set` call: a single-key
 write leaves a half section the loader refuses, and that refusal comes back
@@ -652,14 +653,23 @@ URL: an `http://` one refuses the load with ``[vault] `url` must be an
 https:// URL; http is refused``. There is no built-in default, because
 `forge.toml` is the one source of truth for the account.
 
+`idle_minutes` is optional and omitted means no idle lock, which is what forge
+did before the key existed. A number of minutes locks the shared session on
+the first vault read after that much time without one, and the next vault call
+asks for the master password or a device gesture again; `0` refuses the load
+with ``[vault] `idle_minutes` must be at least 1; omit it for no idle lock``,
+because a zero bound would lock instantly and no one means that. The settings
+page's vault card draws the state and offers the manual lock, whichever way
+the session was locked.
+
 One session serves every agent and every session. It holds the derived keys
 in memory only, zeroized, and never stores the master password: the first
 vault call after a forge start parks a card whose masked field carries the
 password over the local answer channel, and one unlock serves every card
-parked behind it. There is no client-side idle timeout and no fixed lifetime;
-a call the server rejects with 401 tries the refresh token, and only a failed
-refresh locks the session and makes the next held call ask again. A reload
-that changes this section rebuilds the session, which locks it; a reload that
+parked behind it. A call the server rejects with 401 tries the refresh token,
+and only a failed refresh locks the session and makes the next held call ask
+again; `idle_minutes` adds the unused-session lock above. A reload that
+changes this section rebuilds the session, which locks it; a reload that
 leaves the section alone keeps it unlocked.
 
 Every vault operation is held for the reader's approval and appends one line

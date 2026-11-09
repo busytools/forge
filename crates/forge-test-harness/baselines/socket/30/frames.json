@@ -100,6 +100,7 @@
     "TurnError": "turn_error",
     "VaultAskPending": "vault_ask_pending",
     "VaultAskResolved": "vault_ask_resolved",
+    "VaultLockChanged": "vault_lock_changed",
     "VaultRotated": "vault_rotated",
     "VoiceAudio": "voice_audio",
     "VoiceModeState": "voice_mode_state",
@@ -1198,6 +1199,7 @@
         "projects",
         "service_status",
         "unseen",
+        "vault",
         "voice"
       ],
       "/data/accounts": [

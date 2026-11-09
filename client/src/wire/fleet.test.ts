@@ -253,6 +253,9 @@ const NOT_NEWS: readonly string[] = [
   // The rotated vault token is the vault consumer's own signal; no fleet row
   // and no home field carries it.
   'vault_rotated',
+  // The vault's lock state moves no fleet row; the home re-reads for it,
+  // because its snapshot carries the state the settings card draws.
+  'vault_lock_changed',
 ];
 
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
@@ -541,11 +544,11 @@ describe('the variant census', () => {
     ).toBe(true);
     expect(
       names.length,
-      'this count and the enum disagree, and `SessionUpdate` held 81 variants when it was last ' +
+      'this count and the enum disagree, and `SessionUpdate` held 82 variants when it was last ' +
         'set. Raise or lower it in the same edit that adds or removes one - the census below names ' +
         'the bucket an added variant belongs in - and if you moved no variant, the parse read a ' +
         'different set of names than the enum holds',
-    ).toBe(81);
+    ).toBe(82);
     expect(news.size, 'the `fleet_news` arms were not read out of live.rs at all').toBeGreaterThan(
       5,
     );
@@ -701,6 +704,7 @@ describe('the home variant census', () => {
       'dictate_models_changed',
       'fatal_error',
       'service_status',
+      'vault_lock_changed',
       'worker_status_changed',
     ]);
     expect([...HOME_IGNORES.keys()].sort()).toEqual([

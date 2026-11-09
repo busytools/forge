@@ -360,7 +360,7 @@ variants, 62 of them struct variants; the seven unit variants,
 `vault_lock`, cross as the name alone. An update is the same
 shape one level in,
 `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 78 of `SessionUpdate`'s 81 variants are struct variants too. The other
+and 79 of `SessionUpdate`'s 82 variants are struct variants too. The other
 three are why the update payload is not one shape: they are unit variants and
 cross as the name alone - `"catalog_loaded"`, `"cli_version_changed"` and
 `"dictate_availability"`.
