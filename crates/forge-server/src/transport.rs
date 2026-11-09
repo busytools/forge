@@ -286,22 +286,34 @@ pub mod wire;
 pub const PROTOCOL_VERSION: u32 = 29;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
-/// still there, and how long it may stay silent before it is reaped.
+/// still there, how long it may stay silent before it is reaped, and how long
+/// its own task may make no progress before a watchdog outside it ends the
+/// connection.
 ///
 /// **The socket carried none**, so a peer that vanished without closing - a
 /// slept machine, a wedged process, a network that went away - left its
 /// viewer attached and any companion waiting, with neither side told the
-/// other was gone. A test shortens the pair rather than waiting the shipping
+/// other was gone. A test shortens the set rather than waiting the shipping
 /// one out.
+///
+/// **The wedge bound is the task's, not the peer's.** A beat in the
+/// connection's own `select!` cannot fire while the connection is parked in
+/// an await, so `dead` covers a silent peer only while the loop still runs;
+/// `wedge` covers a loop that stopped running.
 #[derive(Clone, Copy, Debug)]
 pub struct Heartbeat {
     pub every: Duration,
     pub dead: Duration,
+    pub wedge: Duration,
 }
 
 impl Default for Heartbeat {
     fn default() -> Self {
-        Self { every: connection::HEARTBEAT_EVERY, dead: connection::HEARTBEAT_DEAD }
+        Self {
+            every: connection::HEARTBEAT_EVERY,
+            dead: connection::HEARTBEAT_DEAD,
+            wedge: connection::WEDGE_DEAD,
+        }
     }
 }
 

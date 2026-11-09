@@ -79,6 +79,15 @@ so the connection is torn down rather than the frame retried. The bound
 sits above the slowest frame measured - a 3.5 MB snapshot to a slow
 client, 31.6 s - and matches the ping's dead bound.
 
+**A connection whose own loop stops is ended as well.** The ping is a branch
+in the connection's loop, so it cannot see that loop parked in an await: a
+subsystem that never answers leaves the socket open with no ping, no reap and
+no error, which is how one freeze went unnoticed for 26.7 minutes. A watchdog
+outside the connection samples the loop's progress and ends the connection
+after 120 seconds without any, then runs the same teardown a clean close
+does. The bound is two write bounds, so a legitimate long write cannot trip
+it.
+
 ## The greeting
 
 The first message a client receives is the greeting, before it has asked

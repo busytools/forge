@@ -116,6 +116,78 @@ pub(crate) const HEARTBEAT_EVERY: Duration = Duration::from_secs(15);
 /// how fast a call on a paused host fails (a tool call's own bound is longer).
 pub(crate) const HEARTBEAT_DEAD: Duration = Duration::from_secs(60);
 
+/// How long a connection task may make no progress before a watchdog outside
+/// it ends the connection.
+///
+/// **The keepalive cannot watch its own task.** Its beat is a branch in the
+/// connection's own `select!`, so a task parked in an await never reaches it:
+/// no ping goes out, no reap happens, and the socket stays open while the
+/// server says nothing. That is the 2026-11-09 freeze, 26.7 minutes of
+/// silence with the process alive and the log's last line a hook response.
+///
+/// The longest legitimate stall in the loop is one bounded socket write
+/// ([`WRITE_BOUND`]), and a healthy idle loop still wakes on its own beat
+/// ([`HEARTBEAT_EVERY`]), so two write bounds leaves a full bound of margin
+/// over both. **Chosen, not measured**: the number it changes for a person is
+/// how fast a connection wedged behind a stalled subsystem is let go.
+pub(crate) const WEDGE_DEAD: Duration = Duration::from_secs(120);
+
+/// The connection loop's own clock, stamped once per pass and read from
+/// outside the task.
+///
+/// **A task cannot watch itself.** The keepalive answers a peer that went
+/// away while the loop still runs; it cannot see the loop itself parked in an
+/// await, because a `select!` branch never fires while another branch is being
+/// driven. This stamp is what [`supervise`] samples instead.
+#[derive(Debug)]
+struct Progress {
+    /// `tokio`'s clock rather than the standard one, so a test that pauses
+    /// time pauses the watchdog with it.
+    base: tokio::time::Instant,
+    at: std::sync::atomic::AtomicU64,
+}
+
+impl Progress {
+    fn new() -> Self {
+        Self { base: tokio::time::Instant::now(), at: std::sync::atomic::AtomicU64::new(0) }
+    }
+
+    /// One pass of the loop is behind this connection.
+    fn stamp(&self) {
+        let millis = u64::try_from(self.base.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.at.store(millis, Ordering::Relaxed);
+    }
+
+    /// How long the loop has been parked since its last pass.
+    fn silent_for(&self, now: tokio::time::Instant) -> Duration {
+        let last = Duration::from_millis(self.at.load(Ordering::Relaxed));
+        now.saturating_duration_since(self.base + last)
+    }
+}
+
+/// A connection task that stopped making progress.
+///
+/// Carried out to the log rather than raised as a failure: the connection is
+/// over, and what a reader can act on is which connection it was and for how
+/// long it said nothing.
+#[derive(Debug)]
+struct WedgeStalled {
+    bound: Duration,
+    silent: Duration,
+}
+
+impl std::fmt::Display for WedgeStalled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the connection made no progress for {:?}, past its {:?} bound",
+            self.silent, self.bound
+        )
+    }
+}
+
+impl std::error::Error for WedgeStalled {}
+
 /// One connection's keepalive: the ping it has out, if any.
 ///
 /// **A silent read is not evidence of a dead peer until something has been
@@ -675,6 +747,17 @@ struct Arrival {
     at: Instant,
 }
 
+/// Who this connection is, and the stamp its loop turns on.
+///
+/// The two travel together because they are the same task's: the caller names
+/// it in what it says, and the progress stamp is the proof it is still saying
+/// anything, read by the watchdog outside it.
+#[derive(Clone, Copy)]
+struct ConnectionIdentity<'a> {
+    caller: Caller,
+    progress: &'a Progress,
+}
+
 /// Greet, then serve the client until it goes.
 ///
 /// The greeting is what tells a client it is speaking to a forge rather
@@ -718,7 +801,7 @@ where
     {
         return;
     }
-    if let Err(error) = drive(&mut socket, &state, peer, settings, sent_settings).await {
+    if let Err(error) = supervise(&mut socket, &state, peer, settings, sent_settings).await {
         tracing::debug!(
             target: "forge_server::transport",
             event_name = "connection_ended",
@@ -726,6 +809,120 @@ where
             "the connection ended on an error rather than on the client closing",
         );
     }
+}
+
+/// What a connection leaves behind when it ends.
+///
+/// **Held by the supervisor rather than inside the connection future.** A
+/// wedged connection is dropped, not returned from, and a teardown written
+/// after the future's last await is teardown a reap never runs.
+struct ConnectionLife {
+    /// This connection's own number: the stamp that names which take is this
+    /// connection's, on the commands that start and stop one and on the
+    /// updates that come back.
+    me: u64,
+    watching: Watching,
+    /// The seats this connection claimed takes for, and whether it is
+    /// recording the read-aloud set. Here rather than inside the future
+    /// because the teardown that closes every one of them runs after it. A
+    /// refused start adds its seat too - the dispatch cannot tell a
+    /// registration from a refusal, both answering through the stream - and
+    /// only a take that ENDS takes it back out; a refusal leaves it, because
+    /// the take it answers never ran.
+    dictate: Streaming,
+}
+
+impl ConnectionLife {
+    fn new() -> Self {
+        Self {
+            me: mint_connection_id(),
+            watching: Watching::default(),
+            dictate: Streaming::default(),
+        }
+    }
+}
+
+/// Run one connection under the wedge watchdog.
+///
+/// **The keepalive cannot watch its own task**: its beat is a branch in the
+/// connection's own `select!`, so a connection parked in an await never
+/// reaches it. This watchdog sits outside the future, samples the loop's
+/// progress, and ends the connection when it stops - then runs the same
+/// teardown a clean end does, because a reap that leaked the seat, the take
+/// or the browser viewer would trade a silent hang for a silent leak.
+async fn supervise<S>(
+    socket: &mut ClientSocket<S>,
+    state: &Arc<TransportState>,
+    peer: std::net::SocketAddr,
+    settings: tokio::sync::watch::Receiver<Option<Arc<str>>>,
+    sent_settings: Option<Arc<str>>,
+) -> anyhow::Result<()>
+where
+    S: futures_util::Stream<Item = Result<Message, axum::Error>>
+        + futures_util::Sink<Message, Error = axum::Error>
+        + Unpin
+        + Send,
+{
+    let mut life = ConnectionLife::new();
+    let me = life.me;
+    let progress = Progress::new();
+    // The future's borrow of `life` ends with this block, whether the
+    // connection returned or the watchdog dropped it, which is what lets the
+    // teardown below run on either path.
+    let outcome = {
+        let connection = drive(socket, state, peer, settings, sent_settings, &mut life, &progress);
+        tokio::pin!(connection);
+        let mut sample = tokio::time::interval(state.heartbeat.every);
+        sample.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // The first tick is consumed because an interval fires at once.
+        sample.tick().await;
+        loop {
+            tokio::select! {
+                // **A connection that finished is never reported as wedged**:
+                // the completion is polled first, so a beat that comes due in
+                // the same pass cannot outrun the ending it would describe.
+                biased;
+                outcome = &mut connection => break outcome,
+                _ = sample.tick() => {
+                    let silent = progress.silent_for(tokio::time::Instant::now());
+                    if silent < state.heartbeat.wedge {
+                        continue;
+                    }
+                    // **A wedge is forge's own problem, so it is a warning**
+                    // and it names the connection a reader can act on.
+                    tracing::warn!(
+                        target: "forge_server::transport",
+                        event_name = "connection_wedged",
+                        client = me,
+                        peer = %peer,
+                        silent_ms = silent.as_secs_f64() * 1000.0,
+                        bound_seconds = state.heartbeat.wedge.as_secs(),
+                        "the connection made no progress past its bound, so it is ended: \
+                         something it awaited never answered",
+                    );
+                    break Err(anyhow::Error::new(WedgeStalled {
+                        bound: state.heartbeat.wedge,
+                        silent,
+                    }));
+                }
+            }
+        }
+    };
+    if let Err(error) = &outcome
+        && let Some(stalled) = error.downcast_ref::<WriteStalled>()
+    {
+        tracing::debug!(
+            target: "forge_server::transport",
+            event_name = "connection_write_stalled",
+            client = me,
+            bound_seconds = stalled.bound.as_secs(),
+            waited_ms = stalled.waited.as_secs_f64() * 1000.0,
+            "a frame write outlived its bound, so the connection is ended: the peer stopped \
+             reading",
+        );
+    }
+    finish(state, &mut life).await;
+    outcome
 }
 
 /// Read what a client sends, and hear what its subscriptions asked for.
@@ -742,6 +939,8 @@ async fn drive<S>(
     peer: std::net::SocketAddr,
     settings: tokio::sync::watch::Receiver<Option<Arc<str>>>,
     sent_settings: Option<Arc<str>>,
+    life: &mut ConnectionLife,
+    progress: &Progress,
 ) -> anyhow::Result<()>
 where
     S: futures_util::Stream<Item = Result<Message, axum::Error>>
@@ -751,28 +950,20 @@ where
 {
     // This connection's own number: the stamp that names which take is
     // this connection's, on the commands that start and stop one and on
-    // the updates that come back. Minted here so the teardown closes the
-    // take this connection started and no other.
-    let me = mint_connection_id();
+    // the updates that come back. Minted by the supervisor so the teardown
+    // closes the take this connection started and no other, on the reap path
+    // as well as this one.
+    let me = life.me;
     let caller = Caller { id: me, peer };
     // This connection is a client that can draw the viewer for as long as it
     // lives; the guard hands the count back on the way out.
     let _attached = AttachedClient::new(&state.surface);
-    let mut watching = Watching::default();
     // The seats THIS connection is holding, which is not the same list as the
     // seats it watches: every session subscribe holds - a sessionless seat's
     // watch waits for its session (#1706) - and a release is counted per seat,
     // so giving back a hold this connection never took would spend one another
     // connection is still using.
     let mut holds = Holds::new(&state.surface);
-    // The seats this connection has claimed takes for, oldest first, and
-    // whether it is recording the read-aloud set: a dictation frame carries
-    // no seat of its own, so these are what address it, and the teardown
-    // below closes every one of them. A refused start adds its seat here
-    // too - the dispatch cannot tell a registration from a refusal, both
-    // answering through the stream - and only a take that ENDS takes it
-    // back out; a refusal leaves it, because the take it answers never ran.
-    let mut dictate = Streaming::default();
     // None until the client's first SUBSCRIBE, which is what decides whether
     // this connection answers - not its first message, so a client whose first
     // word is a `more` or a command is not locked into observing. Registering
@@ -795,39 +986,31 @@ where
     let mut reads =
         Reads { one: None, waiting: std::collections::VecDeque::new(), reply: reply_tx };
 
-    let outcome = run_connection(
+    run_connection(
         socket,
         state,
-        &mut watching,
+        &mut life.watching,
         &mut holds,
         &mut updates,
-        &mut dictate,
+        &mut life.dictate,
         &mut viewers,
         AnswerLanes { reads: &mut reads, answers: &mut answers },
         SettingsPush { receiver: settings, sent: sent_settings },
-        caller,
+        ConnectionIdentity { caller, progress },
     )
-    .await;
-    // **A viewer's count comes off however the connection ends.** A socket
-    // error and a client closing both leave the profile's viewer set, and a
-    // role the gone viewer held is released with it.
-    if let Some(host) = state.browser_host.as_ref() {
-        host.detach(me).await;
-    }
-    if let Err(error) = &outcome
-        && let Some(stalled) = error.downcast_ref::<WriteStalled>()
-    {
-        tracing::debug!(
-            target: "forge_server::transport",
-            event_name = "connection_write_stalled",
-            client = me,
-            bound_seconds = stalled.bound.as_secs(),
-            waited_ms = stalled.waited.as_secs_f64() * 1000.0,
-            "a frame write outlived its bound, so the connection is ended: the peer stopped \
-             reading",
-        );
-    }
+    .await
+}
 
+/// Everything a connection leaves behind, undone on every way out of it: a
+/// clean close, a failed read, and a connection the watchdog dropped.
+///
+/// **This runs outside the connection future on purpose.** A wedged
+/// connection is dropped rather than returned from, and the straight-line
+/// code after a future's last await is code a drop never reaches.
+async fn finish(state: &Arc<TransportState>, life: &mut ConnectionLife) {
+    let me = life.me;
+    let dictate = &mut life.dictate;
+    let watching = &mut life.watching;
     // Every take this connection started ends with it: each is DROPPED
     // rather than submitted - its reader is gone, so nothing it produced
     // would land anywhere - and the seat is free for the next take. A
@@ -880,12 +1063,27 @@ where
     {
         Live::lock(&state.live).detach(slot);
     }
-    // Every hold this connection took goes back here, one release apiece -
-    // the same count the refusal and unsubscribe paths keep, so a seat two
-    // viewers show is only let go once. Nothing to say - the guard's own drop
-    // is the last word, and it also covers a panic on the way here.
-    drop(holds);
-    outcome
+    // **A viewer's count comes off however the connection ends.** A socket
+    // error and a client closing both leave the profile's viewer set, and a
+    // role the gone viewer held is released with it. **Last, and bounded**:
+    // the host that wedged the connection is exactly the one that can wedge
+    // its own detach, and it must not hold the seat's release behind it.
+    if let Some(host) = state.browser_host.as_ref()
+        && tokio::time::timeout(WRITE_BOUND, host.detach(me)).await.is_err()
+    {
+        tracing::debug!(
+            target: "forge_server::transport",
+            event_name = "browser_detach_stalled",
+            client = me,
+            bound_seconds = WRITE_BOUND.as_secs(),
+            "the host did not take the viewer's detach within the bound",
+        );
+    }
+    // Every hold this connection took goes back by the guard's own drop, one
+    // release apiece - the same count the refusal and unsubscribe paths keep,
+    // so a seat two viewers show is only let go once. It covers a panic on
+    // the way here too, and it has already run by the time a reap reaches
+    // this function: the guard lives in the connection future.
 }
 
 /// What this connection is streaming: the seats it has claimed takes for -
@@ -1112,7 +1310,7 @@ async fn run_connection<S>(
     viewers: &mut Viewers,
     lanes: AnswerLanes<'_>,
     settings_push: SettingsPush,
-    caller: Caller,
+    identity: ConnectionIdentity<'_>,
 ) -> anyhow::Result<()>
 where
     S: futures_util::Stream<Item = Result<Message, axum::Error>>
@@ -1122,6 +1320,7 @@ where
 {
     let AnswerLanes { reads, answers } = lanes;
     let SettingsPush { receiver: settings, sent: sent_settings } = settings_push;
+    let ConnectionIdentity { caller, progress } = identity;
     let me = caller.id;
     let mut held = Batch::default();
     let mut settings = settings;
@@ -1143,6 +1342,10 @@ where
     beat.tick().await;
     let keepalive = Keepalive::default();
     loop {
+        // **The watchdog's proof of life**, stamped where the loop turns
+        // rather than where it wakes: a branch parked in an await is exactly
+        // the case the beat in this same `select!` cannot see.
+        progress.stamp();
         let due = held.due();
         tokio::select! {
             // **A queued answer is read before the beat decides.** A pong can
@@ -1547,6 +1750,12 @@ where
             // bound is the evidence, never a quiet read: a busy connection
             // sends no ping at all while it works. A live peer answers the
             // ping itself, so this costs the app nothing.
+            //
+            // **This beat covers a peer that went away while the loop still
+            // runs.** It cannot cover the loop itself parked in an await - a
+            // branch never fires while another is being driven - so
+            // [`supervise`] samples `progress` from outside this task for
+            // that case.
             _ = beat.tick() => {
                 match keepalive.beat(Instant::now(), beat_dead) {
                     Beat::Wait => {}
@@ -5589,7 +5798,16 @@ mod tests {
             let state = Arc::clone(&state);
             async move {
                 let receiver = settings.subscribe();
-                drive(&mut peer, &state, attached_from(), receiver, None).await
+                drive(
+                    &mut peer,
+                    &state,
+                    attached_from(),
+                    receiver,
+                    None,
+                    &mut ConnectionLife::new(),
+                    &Progress::new(),
+                )
+                .await
             }
         });
 
@@ -7485,9 +7703,11 @@ mod tests {
         });
         let state = Arc::clone(state);
         let settings = crate::transport::settings_channel();
+        // The production path rather than `drive` alone: the teardown these
+        // tests assert on runs in `finish`, which a bare `drive` never calls.
         let driven = tokio::spawn(async move {
             let receiver = settings.subscribe();
-            drive(&mut peer, &state, attached_from(), receiver, None).await
+            supervise(&mut peer, &state, attached_from(), receiver, None).await
         });
         Driven { to_server, written, driven }
     }
