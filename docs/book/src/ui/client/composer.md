@@ -94,13 +94,15 @@ or the masked diff, an attachment's name and size - because naming the item need
 name appears on a card parked after an unlock.
 
 Where the device holds a biometric enrolment, the locked card leads with the gesture -
-`Unlock with Touch ID`, or the device password where no biometric is enrolled - with `use the
-Vaultwarden password` one link beneath it. Enter runs the gesture, the way Enter submits the
-other cards. The gesture is the approve: the unlock material it releases rides only an
-approval, and a send-back or a decline runs nothing. **A refused gesture never settles the
-call**: the card stands, says the platform's own reason under the button, and the password it
-offers is still one click away. Without an enrolment, or where the platform has no gate, the
-card is the password one: a masked master-password field and an optional 2FA code, with
+`Unlock with this device`, or `Unlock with the device password` where the gate's fallback is
+the password - with `use the Vaultwarden password` one link beneath it. Enter runs the
+gesture, the way Enter submits the other cards. The gesture is the approve: the unlock
+material it releases rides only an approval, and a send-back or a decline runs nothing. **A
+refused gesture never settles the call**: the card stands, says the platform's own reason
+under the button, and the password it offers is still one click away. **A lock frame turns an
+open card back into this one**, so a session that passed its idle bound asks for the password
+rather than letting an approve die. Without an enrolment, or where the platform has no gate,
+the card is the password one: a masked master-password field and an optional 2FA code, with
 `Approve` unavailable until the password is entered, because the approval is what performs the
 unlock. Its verbs are `Approve`, `Send back with a note` and `Decline` - the gesture taking the
 Approve's place where it leads - and the send-back opens the same words field a held post's

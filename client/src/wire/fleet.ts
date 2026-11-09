@@ -162,7 +162,7 @@ function chatNews(payload: Record<string, unknown>): FleetNews {
  * **Slot-less is not the same as home news.** A variant that names no seat
  * reaches only a home subscriber, so it has no other reader to lean on - but
  * the read it wakes has to be able to come back different. These are the
- * nine where it can: each has a field on `HomeWire` that moves with it.
+ * ten where it can: each has a field on `HomeWire` that moves with it.
  *
  * A variant belongs here by what the home's ANSWER holds, not by what its
  * name suggests: `DictateModelsChanged` is here because the band's dictation
