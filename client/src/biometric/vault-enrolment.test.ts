@@ -67,6 +67,20 @@ async function settled(): Promise<void> {
   for (let turn = 0; turn < 6; turn += 1) await Promise.resolve();
 }
 
+/**
+ * Poll until `what` holds. **A wait that runs out THROWS**: the rewrite's
+ * WebCrypto work resolves on the event loop, so a fixed number of turns is a
+ * race under load, and the deadline only stops a broken page hanging.
+ */
+async function until(what: () => boolean, why: string): Promise<void> {
+  const deadline = Date.now() + 4_000;
+  for (;;) {
+    if (what()) return;
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${why}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 function commandName(command: unknown): string | null {
   if (typeof command === 'string') return command;
   if (command === null || typeof command !== 'object') return null;
@@ -186,7 +200,10 @@ describe('a rotation', () => {
       kind: 'update',
       update: { vault_rotated: { refresh_token: 'refresh-2' } },
     });
-    await settled();
+    await until(
+      () => live.calls.slice(before).some((command) => commandName(command) === 'biometric_enrol'),
+      'the blob to be registered again',
+    );
 
     const rewritten = live.calls
       .slice(before)
@@ -225,7 +242,7 @@ describe('a rotation', () => {
       kind: 'update',
       update: { vault_rotated: { refresh_token: 'refresh-2' } },
     });
-    await settled();
+    await until(() => live.calls.slice(before).includes('vault_lock'), 'the vault to lock');
 
     expect(live.calls.slice(before)).toContain('vault_lock');
   });
