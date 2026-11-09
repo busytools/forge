@@ -30,7 +30,7 @@ pub(crate) enum CronCreateError {
     NoUpcomingOccurrence,
 }
 
-/// Why `cron__list` failed: the one condition that is not an empty registry,
+/// Why `cron__list` failed: the conditions that are not an empty registry,
 /// so an empty answer names exactly one state.
 ///
 /// The same unresolvable caller is what `delete_cron` answers with its own
@@ -41,6 +41,10 @@ pub(crate) enum CronListError {
     /// The caller couldn't be mapped to a project (transient race, or the
     /// session ended). Shouldn't happen for a live session.
     UnknownCallerProject,
+    /// This run's boot could not load the durable crons. The in-memory set is
+    /// empty while rows may still be on disk, so answering an empty list
+    /// would claim the caller has none.
+    Unavailable,
 }
 
 /// Why `cron__delete` failed. The last two are the two cases a refusal
@@ -74,8 +78,9 @@ pub(crate) trait CronFacade: Send + Sync {
     ) -> Result<CronEntry, CronCreateError>;
 
     /// The crons the caller registered, within its project. An empty answer
-    /// means the caller has none; a caller that cannot be resolved is an
-    /// error, not an empty set.
+    /// means the caller has none; a caller that cannot be resolved, or a run
+    /// whose durable crons could not be loaded, is an error, not an empty
+    /// set.
     fn list_crons(&self, caller: &SessionSlot) -> Result<Vec<CronEntry>, CronListError>;
 
     /// Delete the caller's own cron by id, within its project, and return
@@ -136,6 +141,9 @@ impl CronFacade for ProdCronFacade {
     fn list_crons(&self, caller: &SessionSlot) -> Result<Vec<CronEntry>, CronListError> {
         let ws = self.workspace.upgrade().ok_or(CronListError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(CronListError::UnknownCallerProject)?;
+        if ws.durable_crons_unavailable() {
+            return Err(CronListError::Unavailable);
+        }
         // Symmetric: every caller sees only its own crons - a lead
         // (`worker_label == None`) the lead crons, a worker its own.
         Ok(ws
@@ -371,6 +379,73 @@ mod prod_facade_tests {
         let left = facade.list_crons(&lead).expect("list");
         assert_eq!(left.len(), 1, "only the neighbour survives");
         assert_eq!(left[0].id, neighbour.id, "and it is the neighbour that survives");
+    }
+
+    const ONE_PROJECT_CONFIG: &str = r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+
+[[orgs.projects]]
+name = "forge"
+path = "/tmp/cron-store-fixture"
+
+[[accounts]]
+display_name = "acct-a"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#;
+
+    fn booted_workspace(dir: &tempfile::TempDir) -> Arc<Workspace> {
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/");
+        std::fs::write(forge.join("forge.toml"), ONE_PROJECT_CONFIG).expect("write forge.toml");
+        Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace boots"))
+    }
+
+    /// A boot that could not read its durable crons leaves the in-memory set
+    /// empty while the rows may still be on disk. An empty answer then reads
+    /// as "you have no crons", and a cleanup that trusts it leaves the old
+    /// ones firing.
+    #[test]
+    fn list_refuses_when_the_boot_could_not_load_the_store() {
+        // A file where the app-support base must be a directory, so the
+        // stores dir cannot be created and the boot opens no DB.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/");
+        std::fs::write(forge.join("forge.toml"), ONE_PROJECT_CONFIG).expect("write forge.toml");
+        std::fs::write(dir.path().join("app-support"), b"not a directory")
+            .expect("block the app-support base");
+
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace boots"));
+        let facade = ProdCronFacade::from_arc(&ws);
+
+        assert_eq!(
+            facade.list_crons(&SessionSlot::lead("TestOrg", "forge")),
+            Err(CronListError::Unavailable),
+            "a boot that could not load its durable crons must not answer as an empty registry",
+        );
+    }
+
+    /// The negative control for the refusal above: a healthy boot opens the
+    /// store, so an empty registry is a real answer rather than a failed load.
+    #[test]
+    fn a_healthy_boot_reads_an_empty_registry() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ws = booted_workspace(&dir);
+        let facade = ProdCronFacade::from_arc(&ws);
+
+        assert!(
+            !ws.durable_crons_unavailable(),
+            "a boot whose store opened is not an unavailable run",
+        );
+        assert_eq!(
+            facade.list_crons(&SessionSlot::lead("TestOrg", "forge")),
+            Ok(Vec::new()),
+            "a healthy boot with no crons answers empty rather than refusing",
+        );
     }
 
     /// **An unresolvable caller is a refusal from the real facade**, not an

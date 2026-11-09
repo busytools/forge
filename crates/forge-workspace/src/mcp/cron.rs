@@ -250,9 +250,8 @@ impl Tool for List {
     fn description(&self) -> &'static str {
         "List the durable crons you registered, in your project. Returns a JSON array of {id, \
          project, schedule, prompt, next_fire}. Use an id with cron__delete. An empty array means \
-         you have no crons registered, or that this run could not load its durable crons (the \
-         boot log names it); an unresolvable caller is an error rather than an empty list. \
-         Takes no \
+         you have no crons registered; an unresolvable caller, or a run that could not read the \
+         durable cron store, is an error rather than an empty list. Takes no \
          arguments. Any session in the project may call this."
     }
 
@@ -269,6 +268,14 @@ impl Tool for List {
             Ok(crons) => crons,
             Err(CronListError::UnknownCallerProject) => {
                 return tool_error("couldn't resolve your project".to_owned());
+            }
+            Err(CronListError::Unavailable) => {
+                return tool_error(
+                    "couldn't load durable crons this run (the forge log names why), so this is \
+                     not an empty cron list; crons may exist that this run cannot see. A forge \
+                     restart retries the load."
+                        .to_owned(),
+                );
             }
         };
         let arr: Vec<serde_json::Value> = crons.iter().map(cron_to_json).collect();
@@ -539,6 +546,34 @@ mod tests {
         assert_eq!(text_of(&out), "couldn't resolve your project");
     }
 
+    /// A boot that could not load the durable crons has an empty in-memory
+    /// set while rows may still be on disk. The tool must say so rather than
+    /// answering `[]`, which a caller reads as "you have no crons" and acts
+    /// on by deleting nothing.
+    #[tokio::test]
+    async fn list_reports_an_unavailable_store_as_an_error() {
+        let mock = Arc::new(MockCronFacade::new());
+        *mock.list_result.lock() = Some(Err(CronListError::Unavailable));
+        let tool = List { facade: mock.clone(), slot: caller_slot() };
+
+        let out = tool.call(input(serde_json::json!({}))).await;
+        assert!(
+            out.is_error,
+            "an unavailable cron store must not read as an empty registry: {}",
+            text_of(&out),
+        );
+        assert!(
+            text_of(&out).contains("couldn't load durable crons"),
+            "the error names the case: {}",
+            text_of(&out),
+        );
+        assert!(
+            text_of(&out).contains("not an empty cron list"),
+            "the error says the empty set is not the registry: {}",
+            text_of(&out),
+        );
+    }
+
     #[tokio::test]
     async fn delete_removes_by_id() {
         let mock = Arc::new(MockCronFacade::new());
@@ -657,23 +692,24 @@ mod tests {
             "an empty list must read as the caller having none, never as the project having \
              none: {list_desc}",
         );
-        // `[]` names exactly one state: the caller has no crons. The two
-        // conditions that used to share it are errors on the same verb now,
-        // so a description that warns about them again re-opens the ambiguity
-        // the error channel closed.
-        for stale in ["could not be resolved", "could not read its stored crons"] {
+        // `[]` names exactly one state: the caller has no crons. Every other
+        // condition - an unresolvable caller, a failed durable read - is an
+        // error on the same verb now, so a description that warns about them
+        // again re-opens the ambiguity the error channel closed.
+        for stale in [
+            "could not be resolved",
+            "could not read its stored crons",
+            "could not load its durable crons",
+        ] {
             assert!(
                 !list_desc.contains(stale),
                 "an empty list means one thing; the description must not carry the old \
                  '{stale}' caveat: {list_desc}",
             );
         }
-        // The one condition that still lists nothing without being an error:
-        // a run whose durable crons could not be loaded has an empty
-        // in-memory set, so the description keeps that caveat - and only it.
         assert!(
-            list_desc.contains("could not load its durable crons"),
-            "an empty list must own up to a run that could not load its crons: {list_desc}",
+            list_desc.contains("could not read the durable cron store"),
+            "the description must name the failed durable read: {list_desc}",
         );
     }
 

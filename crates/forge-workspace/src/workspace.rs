@@ -965,6 +965,12 @@ pub struct Workspace {
     /// serialises writes.
     /// `pub(crate)` so the impl block in [`crate::crons`] can reach it.
     pub(crate) crons: Mutex<Vec<forge_primitives::CronEntry>>,
+    /// Set at boot when the durable crons could not be loaded: the store
+    /// could not open, or its read failed. The in-memory set is empty while
+    /// rows may still be on disk, so it is not the registry. `cron__list`
+    /// refuses on it rather than answering an empty array a caller would read
+    /// as "you have no crons".
+    pub(crate) crons_load_failed: std::sync::atomic::AtomicBool,
     /// The live task list (`mcp__forge__tasks`). In-memory working set,
     /// loaded from the machine-local store at boot and persisted back
     /// after every mutation through the one [`Workspace::with_tasks_mut`]
@@ -2232,17 +2238,24 @@ impl Workspace {
 
         // Load durable forge crons into the in-memory working set. Boot
         // catch-up for entries that came due while forge was down runs after
-        // construction, once the dispatch machinery is live.
-        let crons = match &db {
-            Some(db) => crate::store::cron::list(db).unwrap_or_else(|error| {
+        // construction, once the dispatch machinery is live. A failed load
+        // leaves the set empty while rows may still be on disk, so mark the
+        // run's crons unavailable rather than letting `cron__list` report an
+        // empty registry.
+        let mut crons_load_failed = false;
+        let crons = if let Some(db) = &db {
+            crate::store::cron::list(db).unwrap_or_else(|error| {
                 tracing::warn!(
                     target: "forge_workspace::workspace",
                     %error,
                     "loading durable crons failed; starting with none this run",
                 );
+                crons_load_failed = true;
                 Vec::new()
-            }),
-            None => Vec::new(),
+            })
+        } else {
+            crons_load_failed = true;
+            Vec::new()
         };
         let tasks = match &db {
             Some(db) => crate::store::tasks::list(db).unwrap_or_else(|error| {
@@ -2613,6 +2626,7 @@ impl Workspace {
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             _single_instance_lock: single_instance_lock,
             crons: Mutex::new(crons),
+            crons_load_failed: std::sync::atomic::AtomicBool::new(crons_load_failed),
             tasks: Mutex::new(tasks),
             parked_by_slot: Mutex::new(HashMap::new()),
             pending_handoffs: Mutex::new(HashMap::new()),
