@@ -11050,6 +11050,28 @@ async fn a_refused_attach_answers_its_reply() {
     assert!(why.contains("tab 9") && why.contains("not open"), "{why}");
 }
 
+/// Advance the paused clock in steps, polling the client as real time would.
+///
+/// **A single jump is not time passing, and an unpolled client is not a
+/// client.** The server's keepalive writes one ping and then waits for the
+/// answer: a client nobody polls answers nothing, so the server writes
+/// nothing more and the watchdog reaps a connection that is perfectly
+/// healthy. Stepping the clock with the socket polled between steps is what
+/// real time with a real client does, while keeping the clock deterministic.
+async fn advance_polling(socket: &mut Client, duration: Duration) {
+    let step = Duration::from_millis(10);
+    let mut left = duration;
+    while left > Duration::ZERO {
+        let now = left.min(step);
+        tokio::select! {
+            () = tokio::time::advance(now) => {}
+            // A control frame, and tungstenite queues the answer itself.
+            _ = socket.next() => {}
+        }
+        left -= now;
+    }
+}
+
 /// **A healthy connection is never reaped.** The watchdog's bound means "no
 /// write completed", not "the loop did not turn": this client is idle, and the
 /// only thing that keeps the connection's clock moving is the keepalive's own
@@ -11074,7 +11096,7 @@ async fn a_healthy_idle_connection_is_not_reaped() {
     for round in 0..2 {
         // Well past the wedge bound each time, with the connection doing
         // nothing but its own pings.
-        tokio::time::advance(Duration::from_secs(1)).await;
+        advance_polling(&mut socket, Duration::from_secs(1)).await;
 
         send(&mut socket, ClientMessage::Ping).await;
         let answered = next_server_within(&mut socket, 2_000).await;
