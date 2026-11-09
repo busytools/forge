@@ -199,10 +199,8 @@ impl Workspace {
         let _ = self.update_tx.send(SessionUpdate::CronSchedulesChanged { key, crons });
     }
 
-    /// Whether this run's boot could not load the durable crons. The
-    /// in-memory set is then empty while rows may still be on disk, so it is
-    /// not the registry: `cron__list` refuses on this rather than answering
-    /// an empty array a caller would read as "you have no crons".
+    /// Whether this run's boot could not load the durable crons.
+    /// `cron__list` refuses on it.
     pub fn durable_crons_unavailable(&self) -> bool {
         self.crons_load_failed.load(std::sync::atomic::Ordering::SeqCst)
     }

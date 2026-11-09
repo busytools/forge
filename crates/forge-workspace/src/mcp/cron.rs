@@ -272,8 +272,8 @@ impl Tool for List {
             Err(CronListError::Unavailable) => {
                 return tool_error(
                     "couldn't load durable crons this run (the forge log names why), so this is \
-                     not an empty cron list; crons may exist that this run cannot see. A forge \
-                     restart retries the load."
+                     not an empty cron list; crons may exist that this run cannot see. Ask the \
+                     user to restart forge to retry the load."
                         .to_owned(),
                 );
             }

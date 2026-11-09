@@ -30,8 +30,7 @@ pub(crate) enum CronCreateError {
     NoUpcomingOccurrence,
 }
 
-/// Why `cron__list` failed: the conditions that are not an empty registry,
-/// so an empty answer names exactly one state.
+/// Why `cron__list` failed.
 ///
 /// The same unresolvable caller is what `delete_cron` answers with its own
 /// [`CronDeleteError::UnknownCallerProject`]; the variants stay per-verb
@@ -41,8 +40,7 @@ pub(crate) enum CronListError {
     /// The caller couldn't be mapped to a project (transient race, or the
     /// session ended). Shouldn't happen for a live session.
     UnknownCallerProject,
-    /// This run's boot could not load the durable crons. The in-memory set is
-    /// empty while rows may still be on disk, so answering an empty list
+    /// This run's boot could not load the durable crons, so an empty list
     /// would claim the caller has none.
     Unavailable,
 }
@@ -78,9 +76,7 @@ pub(crate) trait CronFacade: Send + Sync {
     ) -> Result<CronEntry, CronCreateError>;
 
     /// The crons the caller registered, within its project. An empty answer
-    /// means the caller has none; a caller that cannot be resolved, or a run
-    /// whose durable crons could not be loaded, is an error, not an empty
-    /// set.
+    /// means the caller has none.
     fn list_crons(&self, caller: &SessionSlot) -> Result<Vec<CronEntry>, CronListError>;
 
     /// Delete the caller's own cron by id, within its project, and return
@@ -404,10 +400,9 @@ provider = "anthropic"
         Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace boots"))
     }
 
-    /// A boot that could not read its durable crons leaves the in-memory set
-    /// empty while the rows may still be on disk. An empty answer then reads
-    /// as "you have no crons", and a cleanup that trusts it leaves the old
-    /// ones firing.
+    /// A boot whose store could not open leaves the in-memory set empty while
+    /// the rows may still be on disk. An empty answer then reads as "you have
+    /// no crons", and a cleanup that trusts it leaves the old ones firing.
     #[test]
     fn list_refuses_when_the_boot_could_not_load_the_store() {
         // A file where the app-support base must be a directory, so the
@@ -429,7 +424,50 @@ provider = "anthropic"
         );
     }
 
-    /// The negative control for the refusal above: a healthy boot opens the
+    /// The boot's other failing arm: the store opens, but its cron read
+    /// fails. A regression dropping the read arm's `true` would restore the
+    /// empty-list lie while the store-open test above stays green.
+    #[test]
+    fn list_refuses_when_the_open_store_could_not_read_its_crons() {
+        use redb::TableDefinition;
+
+        // The right table name under the wrong key/value types: the store
+        // opens, but opening it as the cron table fails.
+        const WRONG_CRONS: TableDefinition<u64, u64> = TableDefinition::new("crons");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/");
+        std::fs::write(forge.join("forge.toml"), ONE_PROJECT_CONFIG).expect("write forge.toml");
+        let app_support = dir.path().join("app-support");
+        std::fs::create_dir_all(app_support.join("stores")).expect("stores/");
+        let canonical = dir.path().canonicalize().expect("canonical config dir");
+        let db_path = crate::store::path_for(&app_support, &canonical);
+        {
+            let db = crate::store::Db::open(&db_path).expect("open db");
+            let txn = db.database().begin_write().expect("write txn");
+            {
+                txn.open_table(WRONG_CRONS).expect("create the mis-typed crons table");
+            }
+            txn.commit().expect("commit");
+        }
+
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace boots"));
+        let facade = ProdCronFacade::from_arc(&ws);
+
+        assert!(ws.db.lock().is_some(), "the store opened; only its cron read fails");
+        assert!(
+            ws.durable_crons_unavailable(),
+            "a failed cron read marks the registry unavailable",
+        );
+        assert_eq!(
+            facade.list_crons(&SessionSlot::lead("TestOrg", "forge")),
+            Err(CronListError::Unavailable),
+            "a boot whose store opened but whose cron read failed must not answer as empty",
+        );
+    }
+
+    /// The negative control for the refusals above: a healthy boot opens the
     /// store, so an empty registry is a real answer rather than a failed load.
     #[test]
     fn a_healthy_boot_reads_an_empty_registry() {
@@ -445,6 +483,32 @@ provider = "anthropic"
             facade.list_crons(&SessionSlot::lead("TestOrg", "forge")),
             Ok(Vec::new()),
             "a healthy boot with no crons answers empty rather than refusing",
+        );
+    }
+
+    /// The two halves the lead's answer actually composes: the production
+    /// facade over a boot with no durable store, driven through the tool.
+    #[tokio::test]
+    async fn the_tool_refuses_over_the_prod_facade_when_the_store_could_not_load() {
+        use forge_sdk::mcp::tool::{Tool, ToolInput};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/");
+        std::fs::write(forge.join("forge.toml"), ONE_PROJECT_CONFIG).expect("write forge.toml");
+        std::fs::write(dir.path().join("app-support"), b"not a directory")
+            .expect("block the app-support base");
+
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace boots"));
+        let facade = ProdCronFacade::from_arc(&ws);
+        let tool = crate::mcp::cron::List { facade, slot: SessionSlot::lead("TestOrg", "forge") };
+
+        let out = tool.call(ToolInput { value: serde_json::json!({}) }).await;
+        let text = crate::mcp::test_support::text_of(&out);
+        assert!(out.is_error, "the composed answer is an error: {text}");
+        assert!(
+            text.contains("couldn't load durable crons"),
+            "the composed answer names the failure: {text}",
         );
     }
 

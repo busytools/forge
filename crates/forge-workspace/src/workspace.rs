@@ -970,6 +970,12 @@ pub struct Workspace {
     /// rows may still be on disk, so it is not the registry. `cron__list`
     /// refuses on it rather than answering an empty array a caller would read
     /// as "you have no crons".
+    ///
+    /// It gates `cron__list` only: under the same failed load `delete_cron`
+    /// still answers `NoSuchCron` from the empty set, and `create_cron` still
+    /// promises durability while `persist_cron` returns quietly. Both predate
+    /// this cut and the charter's list-then-delete flow is gated by the list
+    /// refusal; the siblings are #2943.
     pub(crate) crons_load_failed: std::sync::atomic::AtomicBool,
     /// The live task list (`mcp__forge__tasks`). In-memory working set,
     /// loaded from the machine-local store at boot and persisted back
