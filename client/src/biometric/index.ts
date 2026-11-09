@@ -82,7 +82,7 @@ export async function remove(purpose: string): Promise<void> {
  * The platform's own words, which the card quotes. A rejection from the shell
  * is a string; anything else is not worded for a reader and gets a plain one.
  */
-function reasonOf(why: unknown): string {
+export function reasonOf(why: unknown): string {
   if (typeof why === 'string' && why !== '') return why;
   if (why instanceof Error && why.message !== '') return why.message;
   return 'the platform authenticator did not answer';

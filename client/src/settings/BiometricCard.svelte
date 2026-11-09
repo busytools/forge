@@ -1,6 +1,7 @@
 <script lang="ts">
   import InstanceCard from './InstanceCard.svelte';
   import { ago } from '../components/age';
+  import type { DeviceGate } from '../biometric/device';
   import type { BiometricEnrolment } from '../wire/home';
 
   /**
@@ -10,15 +11,21 @@
    *
    * **A revoke drops that purpose's blob only** - the device stays, the
    * account is untouched, and the device's next start is the master password
-   * until it enrols again. The list is read from the home; the frame that
-   * announces a change is what redraws this card.
+   * until it enrols again. **Enrolling is this device's own action**, drawn
+   * here: nothing enrols automatically, so a revoked device that is still
+   * connected cannot re-register itself. The list is read from the home; the
+   * frame that announces a change is what redraws this card.
    */
   let {
     read,
     onrevoke,
+    device = { outcome: 'reading' },
+    onenrol = () => {},
   }: {
     read: { outcome: 'read'; value: BiometricEnrolment[] } | { outcome: 'failed'; value: string };
     onrevoke: (enrolment: string, purpose: string) => void;
+    device?: DeviceGate;
+    onenrol?: () => void;
   } = $props();
 
   const nowSeconds = Math.floor(Date.now() / 1000);
@@ -26,24 +33,58 @@
   // `{:else if}` does not narrow a prop for the type-aware lint.
   const failure = $derived(read.outcome === 'failed' ? read.value : null);
   const devices = $derived(read.outcome === 'read' ? read.value : []);
-  const count = $derived(devices.length);
+  // **A failed read is not zero devices.** The head band draws no count when
+  // the list could not be read, rather than a `0` that reads as the truth.
+  const count = $derived(read.outcome === 'read' ? devices.length : null);
 
   /** A release's stamp, or the words for one that never happened. */
   function lastUsed(at: { secs_since_epoch: number } | null | undefined): string {
     if (at === null || at === undefined) return 'never used';
     return `last used ${ago(at.secs_since_epoch, nowSeconds)} ago`;
   }
+
+  /** This device's own state, in one line. */
+  const deviceLine = $derived.by(() => {
+    switch (device.outcome) {
+      case 'reading':
+        return 'checking this device';
+      case 'enrolled':
+        return 'enrolled - the gesture unlocks the vault here';
+      case 'ready':
+        return 'not enrolled - enrol while the vault is unlocked';
+      case 'needs_unlock':
+        return 'not enrolled - unlock the vault first';
+      case 'unavailable':
+        return `cannot unlock here: ${device.reason}`;
+      case 'failed':
+        return `the enrolment did not land: ${device.reason}`;
+    }
+  });
+  const canEnrol = $derived(
+    device.outcome === 'ready' || device.outcome === 'needs_unlock' || device.outcome === 'failed',
+  );
 </script>
 
 <InstanceCard label="devices" {count} countNoun={null} headingId="biometric-devices">
+  <div class="settings-setting" data-device="this">
+    <span class="settings-setting-label">
+      <code>this device</code>
+      <span class="settings-dim">{deviceLine}</span>
+    </span>
+    <span class="settings-setting-value">
+      {#if canEnrol}
+        <button type="button" class="settings-btn ghost" onclick={onenrol}>enrol</button>
+      {/if}
+    </span>
+  </div>
   {#if failure !== null}
     <p class="settings-empty">
       The enrolment list could not be read: {failure}
     </p>
   {:else if devices.length === 0}
     <p class="settings-empty">
-      No device has enrolled. Unlock the vault with the master password to enrol this device, and
-      later starts can use its authenticator instead.
+      No device has enrolled. Enrol this device above while the vault is unlocked, and later starts
+      can use its authenticator instead.
     </p>
   {:else}
     {#each devices as enrolment (enrolment.id)}
@@ -62,6 +103,7 @@
               <button
                 type="button"
                 class="settings-btn ghost"
+                aria-label={`revoke ${purpose.purpose} on ${enrolment.device}`}
                 onclick={() => onrevoke(enrolment.id, purpose.purpose)}>revoke</button
               >
             </span>

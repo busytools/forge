@@ -275,14 +275,16 @@ describe('the settings page', () => {
     ).toContain('not set · the bundled face');
   });
 
-  it('draws the device enrolments inside the vault area', () => {
+  it('draws the device enrolments beside the vault key card in connectors', () => {
+    // The server has no `vault` area: every `[vault]` key is area
+    // `connectors` and groups under `vault`, and this document is that shape.
     const vault: SettingsDocument = {
       ...settingsWire,
       areas: [
         {
-          id: 'vault',
-          name: 'vault',
-          note: 'the Vaultwarden account',
+          id: 'connectors',
+          name: 'connectors',
+          note: 'gotify, slack, system one, the vault and the plugin switch',
           keys: [
             {
               path: 'vault.url',
@@ -306,7 +308,7 @@ describe('the settings page', () => {
         document: vault,
         mark: null,
         cliVersion: null,
-        selected: 'vault',
+        selected: 'connectors',
         onSelect: () => {},
         draft: emptyDraft(),
         onToggleEditing: () => {},
@@ -327,6 +329,8 @@ describe('the settings page', () => {
             },
           ],
         },
+        device: { outcome: 'ready' },
+        onEnrolDevice: () => {},
         vault: { locked: false, idle_minutes: 15 },
       },
     });
@@ -334,6 +338,15 @@ describe('the settings page', () => {
 
     expect(document.body.textContent).toContain("Ved's MacBook Pro");
     expect(document.body.textContent, 'the revoke is drawn with its purpose').toContain('revoke');
+    expect(document.body.textContent, 'this device draws its own gate state').toContain(
+      'not enrolled - enrol while the vault is unlocked',
+    );
+    expect(
+      [...document.querySelectorAll('button')].some(
+        (button) => button.textContent?.trim() === 'enrol',
+      ),
+      "the enrol control is the person's own press",
+    ).toBe(true);
     expect(document.body.textContent, 'the account card draws its lock state').toContain(
       'unlocked',
     );

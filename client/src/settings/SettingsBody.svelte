@@ -5,6 +5,7 @@
   import ClassMark from '../components/ClassMark.svelte';
   import BiometricCard from './BiometricCard.svelte';
   import VaultLockCard from './VaultLockCard.svelte';
+  import type { DeviceGate } from '../biometric/device';
   import type { BiometricEnrolment, VaultWire } from '../wire/home';
   import { PROTOCOL_VERSION } from '../protocol';
   import type { SettingsDocument, SettingsEditSpec, SettingsKey } from '../wire/settings';
@@ -61,7 +62,9 @@
     onSpeakingPreview = () => {},
     biometric = null,
     onRevokeBiometric = () => {},
-    vault = null,
+    device = { outcome: 'reading' },
+    onEnrolDevice = () => {},
+    vault = undefined,
     onLockVault = () => {},
   }: {
     document: SettingsDocument;
@@ -122,8 +125,12 @@
       | { outcome: 'failed'; value: string }
       | null;
     onRevokeBiometric?: (enrolment: string, purpose: string) => void;
-    /** The shared vault session's state; `null` before a home read. */
-    vault?: VaultWire | null;
+    /** This device's own gate state, for the enrol control. */
+    device?: DeviceGate;
+    onEnrolDevice?: () => void;
+    /** The shared vault session's state: `undefined` before a home read,
+     *  `null` for a config with no `[vault]`. */
+    vault?: VaultWire | null | undefined;
     onLockVault?: () => void;
   } = $props();
 
@@ -286,16 +293,6 @@
       {:else if area.keys.length === 0 && added.length === 0}
         <p class="settings-empty">This area has no keys.</p>
       {:else}
-        {#if area.id === 'vault'}
-          <VaultLockCard state={vault} onlock={onLockVault} />
-          <BiometricCard
-            read={biometric ?? {
-              outcome: 'failed',
-              value: 'this server does not report biometric enrolments',
-            }}
-            onrevoke={(enrolment: string, purpose: string) => onRevokeBiometric(enrolment, purpose)}
-          />
-        {/if}
         {#if area.id === 'voice'}
           <SpeakingCard
             {speaking}
@@ -378,6 +375,19 @@
               />
             {/each}
           </InstanceCard>
+          {#if area.id === 'connectors' && group.label === 'vault'}
+            <VaultLockCard state={vault} onlock={onLockVault} />
+            <BiometricCard
+              read={biometric ?? {
+                outcome: 'failed',
+                value: 'this server does not report biometric enrolments',
+              }}
+              onrevoke={(enrolment: string, purpose: string) =>
+                onRevokeBiometric(enrolment, purpose)}
+              {device}
+              onenrol={onEnrolDevice}
+            />
+          {/if}
         {/each}
         {#each added as entry (entry.path)}
           {@const fields = ENTRY_FIELDS[entry.group] ?? []}

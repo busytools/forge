@@ -1,8 +1,14 @@
 /**
- * The vault's enrolment lifecycle: enrol this device from the material the
- * core hands out while its session is unlocked, release that material through
- * the gate on a later start, and rewrite the sealed bytes when the core
- * rotates the refresh token.
+ * The vault's enrolment lifecycle: enrol this device when the person asks,
+ * release that material through the gate on a later start, and rewrite the
+ * sealed bytes when the core rotates the refresh token.
+ *
+ * **Enrolment is never automatic.** A `vault_lock_changed` frame is slot-less
+ * and reaches every connected client, so enrolling on it made every connected
+ * client a permanent device and let a revoked phone re-register itself on the
+ * next unlock. The settings card's enrol control is the only caller, and it
+ * needs the session unlocked - which is the password - so a revocation sticks
+ * until the person enrols that device again.
  *
  * **The gate holds the wrapping key; the core holds the sealed material.**
  * This module is the only place that knows how the two fit together, and the
@@ -11,7 +17,7 @@
  */
 
 import type { Connection } from '../socket';
-import { release, store } from './index';
+import { reasonOf, release, remove, store } from './index';
 
 /** The connection half the commands need: one dispatch doorway. */
 export type VaultConnection = Pick<Connection, 'dispatch'>;
@@ -43,6 +49,13 @@ export type VaultRelease =
   | { outcome: 'refused'; reason: string }
   | { outcome: 'not_enrolled' };
 
+/** What one enrol attempt ended as, as the settings card draws it. */
+export type VaultEnrolment =
+  | { outcome: 'enrolled' }
+  | { outcome: 'needs_unlock' }
+  | { outcome: 'unavailable'; reason: string }
+  | { outcome: 'failed'; reason: string };
+
 /** Forget the material this run held: the vault locked, or the card settled. */
 export function forgetVaultMaterial(): void {
   held = null;
@@ -50,31 +63,43 @@ export function forgetVaultMaterial(): void {
 
 /**
  * Enrol this device, from the material the core hands out while its session
- * is unlocked. Called on the core's own `unlocked` frame, so the first
- * password login enrols and so does every later unlock that finds no current
- * blob.
+ * is unlocked. Called by the settings card's enrol control and nothing else:
+ * the person's own action, taken while the vault is open.
  *
- * A locked session answers no material and nothing is enrolled; a build with
- * no gate (or no WebCrypto) stays on the password path silently.
+ * A locked session answers no material and nothing is enrolled; a device
+ * whose gate cannot hold a key says why, so the card can tell the person
+ * instead of leaving the password path unexplained.
  */
-export async function enrolVault(connection: VaultConnection): Promise<void> {
+export async function enrolVault(connection: VaultConnection): Promise<VaultEnrolment> {
+  let material: VaultMaterial | null;
   try {
-    const material = await materialFrom(connection);
-    if (material === null) return;
-    const key = newWrappingKey();
-    if (key === null) return;
-    const sealed = await sealVaultMaterial(material, key);
-    if (sealed === null) return;
-    // **The gate first**: a blob registered before its key would be a record
-    // no release could open.
-    await store(VAULT_PURPOSE, key);
-    held = { material, key };
-    await writeEnrolment(connection, sealed);
-  } catch {
-    // A gate that cannot hold a key, or a browser that cannot make one,
-    // leaves this device on the password path. The card asks for the
-    // gesture only where `enrolled` answers yes, so nothing is promised.
+    material = await materialFrom(connection);
+  } catch (why) {
+    return { outcome: 'failed', reason: reasonOf(why) };
   }
+  if (material === null) return { outcome: 'needs_unlock' };
+  const key = newWrappingKey();
+  if (key === null) {
+    return { outcome: 'unavailable', reason: 'this browser cannot make a wrapping key' };
+  }
+  const sealed = await sealVaultMaterial(material, key);
+  if (sealed === null) return { outcome: 'failed', reason: 'the material could not be sealed' };
+  // **The gate first**: a blob registered before its key would be a record
+  // no release could open.
+  try {
+    await store(VAULT_PURPOSE, key);
+  } catch (why) {
+    return { outcome: 'unavailable', reason: reasonOf(why) };
+  }
+  held = { material, key };
+  let written: boolean;
+  try {
+    written = await writeEnrolment(connection, sealed);
+  } catch (why) {
+    return { outcome: 'failed', reason: reasonOf(why) };
+  }
+  if (!written) return { outcome: 'failed', reason: 'the core did not store the enrolment' };
+  return { outcome: 'enrolled' };
 }
 
 /**
@@ -89,7 +114,11 @@ export async function releaseVaultMaterial(connection: VaultConnection): Promise
   if (enrolment === null) return { outcome: 'not_enrolled' };
   const sealed = await sealedFrom(connection, enrolment);
   if (sealed === null) {
-    return { outcome: 'refused', reason: 'the core holds no enrolment for this device' };
+    // **The core holds nothing for this device.** The item the gate just
+    // opened is a registration the person already revoked, so it goes too
+    // rather than leaving a gesture that can never succeed.
+    void remove(VAULT_PURPOSE);
+    return { outcome: 'not_enrolled' };
   }
   const material = await openVaultMaterial(sealed, released.blob);
   if (material === null) {
@@ -103,13 +132,15 @@ export async function releaseVaultMaterial(connection: VaultConnection): Promise
 }
 
 /**
- * Rewrite the sealed bytes when the core rotates the refresh token, and lock
- * the vault when the rewrite cannot land - decision 15's own sentence.
+ * Keep the sealed bytes current while the session is open: rewrite them when
+ * the core rotates the refresh token, and lock the vault when the rewrite
+ * cannot land - decision 15's own sentence.
  *
- * **A client holding no material cannot rewrite**: it registered the sealed
- * bytes in another run, so this one lets the blob go stale and the next start
- * falls back to the password. That is the decision's other ending, not a
- * silent success.
+ * **A lock drops the material this run held**, so nothing outlives the
+ * session it was unlocked for. **A client holding no material cannot
+ * rewrite**: it registered the sealed bytes in another run, so this one lets
+ * the blob go stale and the next start falls back to the password. That is
+ * the decision's other ending, not a silent success.
  */
 export function watchVaultEnrolment(connection: VaultWatch): () => void {
   return connection.onMessage((message) => {
@@ -126,12 +157,7 @@ export function watchVaultEnrolment(connection: VaultWatch): () => void {
     }
     const lockChanged = update['vault_lock_changed'];
     if (lockChanged !== null && typeof lockChanged === 'object') {
-      if ((lockChanged as { locked?: unknown }).locked === false) {
-        // An unlock landed: the session's material is current again, so the
-        // blob is refreshed from it (the first password login's enrolment is
-        // this same path).
-        void enrolVault(connection);
-      }
+      if ((lockChanged as { locked?: unknown }).locked === true) forgetVaultMaterial();
       return;
     }
   });
@@ -189,7 +215,7 @@ async function writeEnrolment(connection: VaultConnection, blob: string): Promis
   const answer = await connection.dispatch({
     biometric_enrol: {
       enrolment,
-      device: deviceName(),
+      device: deviceName(enrolment),
       purpose: VAULT_PURPOSE,
       blob,
     },
@@ -202,7 +228,7 @@ async function writeEnrolment(connection: VaultConnection, blob: string): Promis
  * one - storage that is refused loses the id across a restart, so the release
  * path falls back to the password rather than naming a device it cannot.
  */
-function enrolmentId(): string | null {
+export function enrolmentId(): string | null {
   try {
     const stored = globalThis.localStorage.getItem(ENROLMENT_STORAGE);
     if (stored !== null && stored !== '') return stored;
@@ -228,12 +254,14 @@ function mintedId(): string | null {
 }
 
 /**
- * The device's name for the settings list. **The platform, not the model**:
- * the page has no hostname on any of the three clients, so two devices of one
- * platform are told apart by their enrolment stamps rather than their names.
+ * The device's name for the settings list. **The platform plus this
+ * enrolment's own serial**: the page has no hostname on any of the three
+ * clients, so the id the client minted is what tells two devices of one
+ * platform apart.
  */
-export function deviceName(): string {
+export function deviceName(enrolment: string): string {
   const data = (globalThis.navigator as { userAgentData?: { platform?: string } }).userAgentData;
   const platform = data?.platform ?? globalThis.navigator.platform;
-  return platform === undefined || platform === '' ? 'this device' : platform;
+  const name = platform === undefined || platform === '' ? 'this device' : platform;
+  return `${name} (${enrolment.slice(0, 8)})`;
 }

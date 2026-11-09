@@ -15,19 +15,24 @@
     state,
     onlock,
   }: {
-    state: VaultWire | null;
+    /** `undefined` is "the home has not been read yet"; `null` is a config
+     *  with no `[vault]` at all. The two draw differently: a definite
+     *  "not configured" over an unread home is a claim the page cannot make. */
+    state: VaultWire | null | undefined;
     onlock: () => void;
   } = $props();
 
   const idle = $derived(
-    state === null || state.idle_minutes === null
+    state === null || state === undefined || state.idle_minutes === null
       ? 'no idle lock'
       : `locks after ${state.idle_minutes} ${state.idle_minutes === 1 ? 'minute' : 'minutes'} without use`,
   );
 </script>
 
 <InstanceCard label="vault" count={null} headingId="vault-lock">
-  {#if state === null}
+  {#if state === undefined}
+    <p class="settings-empty">The vault state has not been read yet.</p>
+  {:else if state === null}
     <p class="settings-empty">No [vault] is configured, so there is no session to lock.</p>
   {:else}
     <div class="settings-setting">

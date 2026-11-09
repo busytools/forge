@@ -16,7 +16,14 @@ import {
   watchVaultEnrolment,
 } from './vault-enrolment';
 
-vi.mock('./index', () => ({ release: vi.fn(), store: vi.fn() }));
+vi.mock('./index', () => ({
+  // The real one is the module's own words; a refusal in these tests is a
+  // string, which is what it returns for one.
+  reasonOf: (why: unknown) =>
+    typeof why === 'string' ? why : 'the platform authenticator did not answer',
+  release: vi.fn(),
+  store: vi.fn(),
+}));
 
 const gateRelease = vi.mocked(release);
 const gateStore = vi.mocked(store);
@@ -258,5 +265,61 @@ describe('a rotation', () => {
     await settled();
 
     expect(connection.calls).toHaveLength(0);
+  });
+});
+
+describe("enrolment is the person's own action", () => {
+  /**
+   * **A lock frame is slot-less.** Every connected client sees another
+   * client's unlock, so enrolling on it made every one of them a device and
+   * let a revoked phone rewrite the row the settings page had just deleted.
+   * The watcher must never ask for material.
+   */
+  it('never enrols from an unlock frame', async () => {
+    const connection = aConnection(() => true);
+    watchVaultEnrolment(connection);
+
+    connection.listeners[0]?.({
+      kind: 'update',
+      update: { vault_lock_changed: { locked: false } },
+    });
+    await settled();
+
+    expect(connection.calls).toHaveLength(0);
+  });
+
+  /// A lock drops this run's material, so a later rotation has nothing to
+  /// rewrite with and does not pretend otherwise.
+  it('drops the held material when the vault locks', async () => {
+    const connection = aConnection((command) =>
+      commandName(command) === 'vault_enrolment_material' ? MATERIAL : true,
+    );
+    await enrolVault(connection);
+    const [, key] = gateStore.mock.calls[0] ?? [];
+    const enrolled = connection.calls.find(
+      (command) => commandName(command) === 'biometric_enrol',
+    ) as { biometric_enrol: { blob: string } };
+    gateRelease.mockResolvedValue({ outcome: 'released', blob: key as string });
+    const live = aConnection((command) => {
+      if (commandName(command) === 'biometric_release') {
+        return { blob: enrolled.biometric_enrol.blob };
+      }
+      return true;
+    });
+    await releaseVaultMaterial(live);
+    watchVaultEnrolment(live);
+
+    live.listeners[0]?.({
+      kind: 'update',
+      update: { vault_lock_changed: { locked: true } },
+    });
+    const before = live.calls.length;
+    live.listeners[0]?.({
+      kind: 'update',
+      update: { vault_rotated: { refresh_token: 'refresh-2' } },
+    });
+    await settled();
+
+    expect(live.calls.slice(before), 'a locked run holds nothing to rewrite with').toHaveLength(0);
   });
 });
