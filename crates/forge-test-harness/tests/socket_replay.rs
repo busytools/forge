@@ -1157,6 +1157,36 @@ fn frames_record() -> Value {
             cron_names: std::collections::BTreeMap::new(),
         }),
     );
+    // **The vault's own frames.** The client reads `refresh_token` by hand to
+    // rewrite its sealed blob, `locked` to drop the material and redraw the
+    // card, and the enrolment list's `device`, `purposes` and stamps for the
+    // settings card; a rename would fail no census line and silently stop
+    // both.
+    payload_sampled.insert(
+        "VaultRotated".to_owned(),
+        shape_of(&an_update(SessionUpdate::VaultRotated {
+            refresh_token: "sample-refresh-token".to_owned(),
+        })),
+    );
+    payload_sampled.insert(
+        "VaultLockChanged".to_owned(),
+        shape_of(&an_update(SessionUpdate::VaultLockChanged { locked: true })),
+    );
+    payload_sampled.insert(
+        "BiometricEnrolmentsChanged".to_owned(),
+        shape_of(&an_update(SessionUpdate::BiometricEnrolmentsChanged {
+            enrolments: vec![forge_primitives::biometric::BiometricEnrolment {
+                id: uuid::Uuid::new_v4(),
+                device: "this device".to_owned(),
+                created_at: std::time::SystemTime::UNIX_EPOCH,
+                purposes: vec![forge_primitives::biometric::BiometricPurpose {
+                    purpose: "vault".to_owned(),
+                    created_at: std::time::SystemTime::UNIX_EPOCH,
+                    last_used_at: None,
+                }],
+            }],
+        })),
+    );
     // **The repair's answer, where the numbers ARE the contract.** A client
     // resumes its own sequence from the last `seq` it is handed, and a rename
     // inside this payload - a frame's number, or the update it carries - would
@@ -2015,6 +2045,41 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
             },
         }),
     );
+    // **The vault's app-level commands**, which the client writes by hand:
+    // the enrolment's `enrolment`/`device`/`purpose`/`blob`, the release and
+    // revoke's two names, and the material request. A rename would leave the
+    // client's literal writing a key nothing reads with both sides' suites
+    // green.
+    sampled.insert(
+        "BiometricEnrol".to_owned(),
+        sample(Command::BiometricEnrol {
+            enrolment: uuid::Uuid::new_v4(),
+            device: "this device".to_owned(),
+            purpose: "vault".to_owned(),
+            blob: "c2FtcGxl".to_owned(),
+            respond: None,
+        }),
+    );
+    sampled.insert(
+        "BiometricRelease".to_owned(),
+        sample(Command::BiometricRelease {
+            enrolment: uuid::Uuid::new_v4(),
+            purpose: "vault".to_owned(),
+            respond: None,
+        }),
+    );
+    sampled.insert(
+        "BiometricRevoke".to_owned(),
+        sample(Command::BiometricRevoke {
+            enrolment: uuid::Uuid::new_v4(),
+            purpose: Some("vault".to_owned()),
+        }),
+    );
+    sampled.insert(
+        "VaultEnrolmentMaterial".to_owned(),
+        sample(Command::VaultEnrolmentMaterial { respond: None }),
+    );
+    sampled.insert("VaultLock".to_owned(), sample(Command::VaultLock));
     // **The held Slack draft's answer**, which the dock writes by hand: a
     // rename of `answer` or of the send-back's own `note` would leave the
     // client's literal writing a key nothing reads, with both sides' suites

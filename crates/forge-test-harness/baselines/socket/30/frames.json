@@ -216,6 +216,38 @@
     "Unsubscribe": "unsubscribe"
   },
   "payload_sampled": {
+    "BiometricEnrolmentsChanged": {
+      "": [
+        "kind",
+        "seq",
+        "span",
+        "update"
+      ],
+      "/update": [
+        "biometric_enrolments_changed"
+      ],
+      "/update/biometric_enrolments_changed": [
+        "enrolments"
+      ],
+      "/update/biometric_enrolments_changed/enrolments[]": [
+        "created_at",
+        "device",
+        "id",
+        "purposes"
+      ],
+      "/update/biometric_enrolments_changed/enrolments[]/created_at": [
+        "nanos_since_epoch",
+        "secs_since_epoch"
+      ],
+      "/update/biometric_enrolments_changed/enrolments[]/purposes[]": [
+        "created_at",
+        "purpose"
+      ],
+      "/update/biometric_enrolments_changed/enrolments[]/purposes[]/created_at": [
+        "nanos_since_epoch",
+        "secs_since_epoch"
+      ]
+    },
     "BrowserHandOffPending": {
       "": [
         "kind",
@@ -1381,6 +1413,34 @@
         "org",
         "project"
       ]
+    },
+    "VaultLockChanged": {
+      "": [
+        "kind",
+        "seq",
+        "span",
+        "update"
+      ],
+      "/update": [
+        "vault_lock_changed"
+      ],
+      "/update/vault_lock_changed": [
+        "locked"
+      ]
+    },
+    "VaultRotated": {
+      "": [
+        "kind",
+        "seq",
+        "span",
+        "update"
+      ],
+      "/update": [
+        "vault_rotated"
+      ],
+      "/update/vault_rotated": [
+        "refresh_token"
+      ]
     }
   },
   "client_sampled": {
@@ -1520,6 +1580,35 @@
     }
   },
   "command_sampled": {
+    "BiometricEnrol": {
+      "": [
+        "biometric_enrol"
+      ],
+      "/biometric_enrol": [
+        "blob",
+        "device",
+        "enrolment",
+        "purpose"
+      ]
+    },
+    "BiometricRelease": {
+      "": [
+        "biometric_release"
+      ],
+      "/biometric_release": [
+        "enrolment",
+        "purpose"
+      ]
+    },
+    "BiometricRevoke": {
+      "": [
+        "biometric_revoke"
+      ],
+      "/biometric_revoke": [
+        "enrolment",
+        "purpose"
+      ]
+    },
     "DictateReadAloudStart": {
       "": [
         "dictate_read_aloud_start"
@@ -1692,7 +1781,13 @@
         "path",
         "side"
       ]
-    }
+    },
+    "VaultEnrolmentMaterial": {
+      "": [
+        "vault_enrolment_material"
+      ]
+    },
+    "VaultLock": {}
   },
   "binary_frames": {
     "header_bytes": 1,
