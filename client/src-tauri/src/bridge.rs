@@ -24,9 +24,12 @@
 //! seat's chat is HELD in a bounded ring** - a released seat, a dock's
 //! ending, a dictation's close, a prompt's queued row, an error - and the
 //! first heartbeat after the spell answers with the ring
-//! itself, in order, and then with the records: a snapshot per seat, which
-//! is what a record is, and that seat's newest page, which is the answer
-//! its `more` with no `before` would have carried. Only `chat_appended`
+//! itself, in order, and then with the seat the page is DRAWING: its record
+//! as the snapshot it is, and its newest page, which is the answer its `more`
+//! with no `before` would have carried. **Every other held seat is marked,
+//! not replayed**, and is handed the same two the moment `showing` names it:
+//! a reconcile that folded all of them at once is what froze a page holding
+//! fourteen seats nobody was looking at (#2944). Only `chat_appended`
 //! updates are left out of the ring, because the record's conversation
 //! rebuilds those. A subject that is not a seat is re-read on the reconcile
 //! rather than handed back: the home roster is copied here for the ask
@@ -168,6 +171,15 @@ struct State {
     /// rather than asking again. Cleared by the answer, a refusal, or a new
     /// connection.
     refreshing: HashSet<String>,
+    /// The held seats whose page copy a stale beat proved untrustworthy.
+    ///
+    /// **A seat is marked when a reconcile proves the page was not current**,
+    /// whether or not this half counted a suppressed frame - a webview can
+    /// swallow one without the count noticing - and the mark is spent by
+    /// handing that seat its record: now, if it is the one being drawn, or
+    /// when `showing` names it (#2944). Fourteen of fifteen seats a park
+    /// replayed were seats nobody was drawing.
+    behind: HashSet<String>,
     /// When the page last asked for a subject, so the reconcile does not ask
     /// for the same one again inside the heartbeat window.
     ///
@@ -310,6 +322,7 @@ impl Bridge {
                 suppressed: 0,
                 parked: VecDeque::new(),
                 refreshing: HashSet::new(),
+                behind: HashSet::new(),
                 refreshed: HashMap::new(),
                 last_tasks: HashMap::new(),
                 home_stale: false,
@@ -869,6 +882,9 @@ impl Bridge {
             state.held.remove(&key);
             state.order.retain(|held| *held != key);
             state.records.release(&key);
+            // The mark was about the record that just went; a later subscribe
+            // answers a whole one of its own.
+            state.behind.remove(&key);
         }
         if let Some(socket) = &state.socket {
             socket.unsubscribe(what.clone());
@@ -883,6 +899,16 @@ impl Bridge {
     pub fn showing(&self, seat: Option<Value>) {
         let mut state = self.lock();
         state.shown = seat.as_ref().and_then(|held| serde_json::from_value(held.clone()).ok());
+        // **A seat drawn after a park is handed what it missed right here.**
+        // The reconcile skipped it while nobody was drawing it, and the copy
+        // this half folded since is the answer (#2944) - so a switch never
+        // waits on a server encode and never folds a seat that is not drawn.
+        if let Some(slot) = &state.shown {
+            let key = records::slot_key(slot);
+            if state.behind.contains(&key) {
+                self.catch_up(&mut state, &key);
+            }
+        }
         if let Some(socket) = &state.socket {
             socket.showing(seat);
         }
@@ -948,6 +974,7 @@ impl Bridge {
         state.held.remove(&key);
         state.order.retain(|held| *held != key);
         state.records.release(&key);
+        state.behind.remove(&key);
         // **The socket gives back the wire's count.** A relist raises it
         // above this side's readers, so looping the readers would leave a
         // subscription and its work-watch hold standing.
@@ -1280,14 +1307,18 @@ impl Bridge {
     /// frames the records do not rebuild, and a reconcile without them would
     /// be the drop rule 25 forbids.
     ///
-    /// Then the records, in the shapes the page already reads them: a seat's
-    /// record IS what the core's snapshot carries, so it goes back out as
-    /// that snapshot - its conversation riding the newest page its `more`
-    /// with no `before` would have carried, marked so the page can tell it
-    /// from an older-page answer. A subject that is not a seat is ASKED FOR
-    /// ANEW instead: its record folds nothing on this side (the page's own
-    /// home fold reads the frames), so a copy of it here would be stale,
-    /// while a re-subscribe answers with the truth.
+    /// **Then the seat the page is drawing, and no other** (#2944). A seat's
+    /// record is replayed as the snapshot the core would have carried, its
+    /// conversation riding the newest page its `more` with no `before` would
+    /// have carried. Every held seat is marked as possibly behind either way,
+    /// and the ones nobody is drawing are handed their copy when `showing`
+    /// names them: replaying fifteen records at once folded 34 MB on the
+    /// page's main thread while fourteen of those seats were not on screen.
+    ///
+    /// A subject that is not a seat is ASKED FOR ANEW instead: its record
+    /// folds nothing on this side (the page's own home fold reads the
+    /// frames), so a copy of it here would be stale, while a re-subscribe
+    /// answers with the truth.
     fn reconcile(&self) {
         // **The drain and its emits share one guard**, so a live frame
         // cannot slip between them and be overtaken by the held ones behind
@@ -1297,66 +1328,82 @@ impl Bridge {
         while let Some(message) = state.parked.pop_front() {
             self.emit(ClientEvent::Inbound(message));
         }
+        let shown = state.shown.as_ref().map(records::slot_key);
+        let seats: Vec<String> = state
+            .held
+            .iter()
+            .filter(|(_, watch)| watch.what.get("session").is_some())
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in seats {
+            state.behind.insert(key.clone());
+            if Some(&key) == shown.as_ref() {
+                self.catch_up(&mut state, &key);
+            }
+        }
         for (key, watch) in &state.held {
-            let Some(session) = watch.what.get("session") else {
-                // **A subject the page just re-read is not read again.** The
-                // page's return and this stale beat name one return, and the
-                // first beat after a lock is always stale.
-                let fresh = state
-                    .refreshed
-                    .get(key)
-                    .is_some_and(|at| at.elapsed() < Duration::from_millis(FRESH_MS));
-                if !fresh && let Some(socket) = &state.socket {
-                    records::refresh(socket, &watch.what, watch.answering, watch.review);
-                }
+            if watch.what.get("session").is_some() {
                 continue;
-            };
-            let Some(Ok(record)) = state.records.read(key) else { continue };
-            let snapshot = json!({
-                "kind": "snapshot",
-                "subject": watch.what,
-                "data": record,
-            });
-            // The catch-up snapshot's frame facts (#2513): the page's byte
-            // counters read every snapshot; nothing re-parses this one, so its
-            // parse is zero.
-            let bytes = serde_json::to_vec(&snapshot).map_or(0, |raw| raw.len());
-            self.emit(ClientEvent::Inbound(snapshot));
-            self.emit(ClientEvent::Framed { subject: watch.what.clone(), bytes, parse_ms: 0.0 });
-            let Some(turns) = record.get("conversation").and_then(|c| c.get("turns")) else {
-                continue;
-            };
-            // **The record's own cursor rides the page** (#2420): the
-            // record's conversation is the newest window `more` with no
-            // `before` would have carried, handle and all - including the
-            // window's floor - so the catch-up preserves the walk above it.
-            let cursor = record
-                .get("conversation")
-                .and_then(|conversation| conversation.get("cursor"))
-                .cloned()
-                .unwrap_or_default();
-            // **The record's cron pairing rides the page too.** The record
-            // stores the server's data whole, and this synthesized page is
-            // the only read a parked desktop page gets: dropping the pairing
-            // here would untitle a cron row that fired during the park
-            // (#1815).
-            let cron_names = record
-                .get("conversation")
-                .and_then(|conversation| conversation.get("cron_names"))
-                .cloned()
-                .unwrap_or_else(|| json!({}));
-            self.emit(ClientEvent::Inbound(json!({
+            }
+            // **A subject the page just re-read is not read again.** The
+            // page's return and this stale beat name one return, and the
+            // first beat after a lock is always stale.
+            let fresh = state
+                .refreshed
+                .get(key)
+                .is_some_and(|at| at.elapsed() < Duration::from_millis(FRESH_MS));
+            if !fresh && let Some(socket) = &state.socket {
+                records::refresh(socket, &watch.what, watch.answering, watch.review);
+            }
+        }
+    }
+
+    /// Hand one held seat the record this half folded while the page was away.
+    ///
+    /// **The copy, not an ask.** This half folds every seat's frames whether
+    /// or not the page draws it, so the record is current at the moment of
+    /// the switch and the catch-up costs no server encode. Nothing is handed
+    /// for a seat with no record (a refusal is not a record) - the mark stays
+    /// for the next draw rather than being spent on nothing.
+    fn catch_up(&self, state: &mut State, key: &str) {
+        let Some(watch) = state.held.get(key) else { return };
+        let what = watch.what.clone();
+        let session = what.get("session").cloned().unwrap_or_default();
+        let Some(Ok(record)) = state.records.read(key) else { return };
+        let snapshot = json!({ "kind": "snapshot", "subject": what.clone(), "data": record });
+        // The catch-up snapshot's frame facts (#2513): the page's byte
+        // counters read every snapshot; nothing re-parses this one, so its
+        // parse is zero.
+        let bytes = serde_json::to_vec(&snapshot).map_or(0, |raw| raw.len());
+        let page = record.get("conversation").and_then(|conversation| {
+            let turns = conversation.get("turns")?;
+            Some(json!({
                 "kind": "page",
                 "conversation": session,
-                "cursor": cursor,
+                // **The record's own cursor rides the page** (#2420): the
+                // record's conversation is the newest window `more` with no
+                // `before` would have carried, handle and all - including the
+                // window's floor - so the catch-up preserves the walk above it.
+                "cursor": conversation.get("cursor").cloned().unwrap_or_default(),
                 "turns": turns,
-                "cron_names": cron_names,
+                // **The record's cron pairing rides the page too.** The record
+                // stores the server's data whole, and this synthesized page is
+                // the only read a parked desktop page gets: dropping the pairing
+                // here would untitle a cron row that fired during the park
+                // (#1815).
+                "cron_names": conversation.get("cron_names").cloned().unwrap_or_else(|| json!({})),
                 // **Told apart from an answer**: a page read while an older
                 // ask is "in flight" would be spliced as an older page and
                 // scramble the order, so the page is marked as the catch-up
                 // it is.
                 "reconciled": true,
-            })));
+            }))
+        });
+        state.behind.remove(key);
+        self.emit(ClientEvent::Inbound(snapshot));
+        self.emit(ClientEvent::Framed { subject: what, bytes, parse_ms: 0.0 });
+        if let Some(page) = page {
+            self.emit(ClientEvent::Inbound(page));
         }
     }
 
@@ -2415,12 +2462,39 @@ mod tests {
         |event| matches!(event, ClientEvent::Inbound(_))
     }
 
+    /// Throw away what has already been emitted, so the next assertion reads
+    /// only the burst it is about.
+    fn drain(rx: &mut mpsc::UnboundedReceiver<ClientEvent>) {
+        while rx.try_recv().is_ok() {}
+    }
+
+    /// Every snapshot subject emitted so far, in the order they went out. The
+    /// bridge emits synchronously, so a burst is already queued when the call
+    /// that made it returns.
+    fn replayed(rx: &mut mpsc::UnboundedReceiver<ClientEvent>) -> Vec<Value> {
+        let mut subjects = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            if let ClientEvent::Inbound(message) = event
+                && message["kind"] == json!("snapshot")
+            {
+                subjects.push(message["subject"].clone());
+            }
+        }
+        subjects
+    }
+
     fn is_inbound_kind(kind: &'static str) -> impl Fn(&ClientEvent) -> bool {
         move |event| matches!(event, ClientEvent::Inbound(message) if message["kind"] == json!(kind))
     }
 
     fn seat() -> Value {
         json!({ "session": { "org": "Busytools", "project": "forge", "label": "lead" } })
+    }
+
+    /// The seat as `client_showing` carries it: the bare slot, not the
+    /// subject a subscribe addresses.
+    fn slot() -> Value {
+        seat()["session"].clone()
     }
 
     /// One frame in, driven where it lands rather than through the stub: the
@@ -2543,15 +2617,16 @@ mod tests {
     }
 
     /// A parked page's frames stop being emitted (the records still take
-    /// them), and the first heartbeat after the spell answers with the
-    /// catch-up: the held record as its own snapshot, and the newest page its
-    /// conversation makes.
+    /// them), and the first heartbeat after the spell answers the seat the
+    /// page is drawing with the catch-up: the held record as its own snapshot,
+    /// and the newest page its conversation makes.
     #[tokio::test]
     async fn a_parked_spell_reconciles_from_the_records() {
         let (bridge, mut rx) = bridge();
         let server = stub().await;
         bridge.connect(server.url.clone());
         bridge.subscribe(seat(), true, false);
+        bridge.showing(Some(slot()));
         sent(
             &bridge,
             snapshot(json!({
@@ -2655,6 +2730,7 @@ mod tests {
         connected(&bridge).await;
         bridge.subscribe(seat(), true, false);
         bridge.subscribe(seat(), true, false);
+        bridge.showing(Some(slot()));
         sent(&bridge, snapshot(json!({ "a": 1 })));
         event(&mut rx, is_inbound()).await;
         // Both readers reached the wire as their own subscribe.
@@ -2712,10 +2788,10 @@ mod tests {
         );
     }
 
-    /// **A stale heartbeat reconciles even with NOTHING counted.** A spell
-    /// whose frames the webview swallowed leaves no count here, and the
-    /// records still have to come back - the count is a bound on the
-    /// backlog, not the trigger.
+    /// **A stale heartbeat reconciles the DRAWN seat even with NOTHING
+    /// counted.** A spell whose frames the webview swallowed leaves no count
+    /// here, and the record the page is drawing still has to come back - the
+    /// count is a bound on the backlog, not the trigger.
     #[tokio::test]
     async fn a_stale_heartbeat_reconciles_with_nothing_counted() {
         let (bridge, mut rx) = bridge();
@@ -2724,6 +2800,8 @@ mod tests {
         bridge.subscribe(seat(), true, false);
         sent(&bridge, snapshot(json!({ "conversation": { "turns": [] } })));
         event(&mut rx, is_inbound()).await;
+        bridge.showing(Some(slot()));
+        drain(&mut rx);
         park(&bridge);
         bridge.heartbeat();
         assert_eq!(bridge.lock().suppressed, 0, "no frame arrived in the spell");
@@ -2731,6 +2809,218 @@ mod tests {
             unreachable!("filtered to inbound");
         };
         assert_eq!(caught["subject"], seat(), "the record comes back regardless");
+    }
+
+    /// **A reconcile replays the drawn seat and no other** (#2944). Fifteen
+    /// seats' records landing together was 34 MB folded on the page's main
+    /// thread, and fourteen of them were seats nobody was drawing. A seat
+    /// nobody draws is handed its copy when it is drawn, not before.
+    #[tokio::test]
+    async fn a_reconcile_replays_only_the_seat_on_screen() {
+        let (bridge, mut rx) = bridge();
+        let server = stub().await;
+        bridge.connect(server.url.clone());
+        let other =
+            json!({ "session": { "org": "Busytools", "project": "forge", "label": "other" } });
+        bridge.subscribe(seat(), true, false);
+        bridge.subscribe(other.clone(), true, false);
+        // Both seats hold a record the reconcile could replay.
+        sent(&bridge, snapshot(json!({ "conversation": { "turns": [] } })));
+        sent(
+            &bridge,
+            json!({
+                "kind": "snapshot",
+                "subject": other,
+                "data": { "conversation": { "turns": [] } },
+            }),
+        );
+        bridge.showing(Some(slot()));
+        drain(&mut rx);
+        park(&bridge);
+        bridge.heartbeat();
+        assert_eq!(
+            replayed(&mut rx),
+            vec![seat()],
+            "the drawn seat's record is the only one that comes back"
+        );
+    }
+
+    /// **A stale beat with no seat drawn replays nothing** (#2944). A visited
+    /// seat stays subscribed and folded for the connection's life, so `held`
+    /// is populated while the page is on the home or the board - and a wake
+    /// there is a stale beat with no seat being drawn. Handing every held
+    /// record back on one is the whole 34 MB burst, and no seat is owed it.
+    #[tokio::test]
+    async fn a_stale_beat_with_no_seat_drawn_replays_nothing() {
+        let (bridge, mut rx) = bridge();
+        let server = stub().await;
+        bridge.connect(server.url.clone());
+        let other =
+            json!({ "session": { "org": "Busytools", "project": "forge", "label": "other" } });
+        bridge.subscribe(seat(), true, false);
+        bridge.subscribe(other.clone(), true, false);
+        sent(&bridge, snapshot(json!({ "conversation": { "turns": [] } })));
+        sent(
+            &bridge,
+            json!({
+                "kind": "snapshot",
+                "subject": other,
+                "data": { "conversation": { "turns": [] } },
+            }),
+        );
+        // The page is on a route with no seat on it.
+        bridge.showing(None);
+        drain(&mut rx);
+        park(&bridge);
+        bridge.heartbeat();
+        assert!(replayed(&mut rx).is_empty(), "no seat is being drawn, so no record comes back");
+    }
+
+    /// **A mark waits for a record, and dies with the subscription it was
+    /// about.** The handover spends it only on a record actually handed, so a
+    /// seat whose read never answered keeps it for the draw that finds one;
+    /// a seat let go and rejoined is answered whole by its new subscribe, so
+    /// the old mark must not outlive the record it was set for.
+    #[tokio::test]
+    async fn a_mark_waits_for_a_record_and_dies_with_the_subscription() {
+        let (bridge, mut rx) = bridge();
+        let server = stub().await;
+        bridge.connect(server.url.clone());
+        bridge.subscribe(seat(), true, false);
+        let key = crate::records::subject_key(&seat());
+        // Nothing answered this subscribe: the seat is held with no record.
+        bridge.showing(Some(slot()));
+        drain(&mut rx);
+        park(&bridge);
+        bridge.heartbeat();
+        assert!(
+            bridge.lock().behind.contains(&key),
+            "the drawn seat with no record keeps its mark"
+        );
+        assert!(replayed(&mut rx).is_empty(), "and nothing is handed for it");
+        bridge.showing(Some(slot()));
+        assert!(
+            bridge.lock().behind.contains(&key),
+            "a draw that found nothing does not spend the mark"
+        );
+
+        // The record lands, and the next draw hands it over.
+        sent(&bridge, snapshot(json!({ "conversation": { "turns": [] } })));
+        drain(&mut rx);
+        bridge.showing(Some(slot()));
+        assert_eq!(replayed(&mut rx), vec![seat()], "the record is handed once it exists");
+        assert!(!bridge.lock().behind.contains(&key), "and the mark goes with it");
+
+        // Released outright, and then by its last reader: either way the
+        // record the mark was about is gone. **No seat is drawn**, so the
+        // stale beat marks without replaying and the mark is still standing
+        // when the release lands.
+        bridge.showing(None);
+        park(&bridge);
+        bridge.heartbeat();
+        assert!(bridge.lock().behind.contains(&key));
+        bridge.release(&seat());
+        assert!(!bridge.lock().behind.contains(&key), "a release takes the mark with the record");
+
+        bridge.subscribe(seat(), true, false);
+        park(&bridge);
+        bridge.heartbeat();
+        assert!(bridge.lock().behind.contains(&key));
+        bridge.unsubscribe(&seat());
+        assert!(!bridge.lock().behind.contains(&key), "so does the last reader letting go");
+    }
+
+    /// **A seat drawn after a park is handed what it missed, at the moment it
+    /// is drawn** (#2944). The reconcile no longer replays a background seat,
+    /// so the record folded here while the page was away is what answers the
+    /// switch - and nothing the parked stream carried is lost with it.
+    #[tokio::test]
+    async fn a_seat_drawn_after_a_park_is_handed_what_it_missed() {
+        let (bridge, mut rx) = bridge();
+        let server = stub().await;
+        bridge.connect(server.url.clone());
+        let other =
+            json!({ "session": { "org": "Busytools", "project": "forge", "label": "other" } });
+        bridge.subscribe(seat(), true, false);
+        bridge.subscribe(other.clone(), true, false);
+        sent(&bridge, snapshot(json!({ "conversation": { "turns": [] } })));
+        sent(
+            &bridge,
+            json!({
+                "kind": "snapshot",
+                "subject": other,
+                "data": {
+                    "header": { "context": { "percent": 0.1 } },
+                    "conversation": { "turns": [] },
+                },
+            }),
+        );
+        bridge.showing(Some(slot()));
+        drain(&mut rx);
+        // The page goes away, and a frame for the seat it is NOT drawing
+        // arrives while it is gone: the record folds it, the page does not see
+        // it. The chat row is the one the ring deliberately holds back, so the
+        // record's conversation is the only copy of it.
+        park(&bridge);
+        sent(
+            &bridge,
+            json!({
+                "kind": "update",
+                "update": {
+                    "context_usage_snapshot": { "percentage": 0.5, "key": other["session"] },
+                },
+            }),
+        );
+        sent(
+            &bridge,
+            json!({
+                "kind": "update",
+                "update": {
+                    "chat_appended": {
+                        "msg": {
+                            "type": "user",
+                            "uuid": "u1",
+                            "message": {
+                                "role": "user",
+                                "content": [{ "type": "text", "text": "hello" }],
+                            },
+                        },
+                        "key": other["session"],
+                    },
+                },
+            }),
+        );
+        bridge.heartbeat();
+        assert!(
+            !replayed(&mut rx).contains(&other),
+            "the drawn seat's reconcile does not carry the background seat's record"
+        );
+        // The person switches to it: the record comes back with the frame the
+        // park withheld, and the newest page its conversation makes.
+        bridge.showing(Some(other["session"].clone()));
+        let ClientEvent::Inbound(caught) = event(&mut rx, is_inbound_kind("snapshot")).await else {
+            unreachable!("filtered to inbound");
+        };
+        assert_eq!(caught["subject"], other, "the drawn seat is handed its record");
+        assert_eq!(
+            caught["data"]["header"]["context"]["percent"],
+            json!(0.5),
+            "with the parked frame folded into the record it hands over"
+        );
+        let ClientEvent::Inbound(page) = event(&mut rx, is_inbound_kind("page")).await else {
+            unreachable!("filtered to inbound");
+        };
+        assert_eq!(page["reconciled"], json!(true), "the page is the catch-up it is");
+        assert_eq!(page["conversation"], other["session"], "under the seat switched to");
+        assert_eq!(
+            page["turns"][0]["messages"][0]["uuid"],
+            json!("u1"),
+            "and it carries the chat row the park withheld"
+        );
+        // **The mark is spent, not standing**: a route that restates the same
+        // seat is not a second catch-up.
+        bridge.showing(Some(other["session"].clone()));
+        assert!(replayed(&mut rx).is_empty(), "a second showing hands nothing over");
     }
 
     /// **A refresh re-declares what was HELD, not a capability of its own.**
