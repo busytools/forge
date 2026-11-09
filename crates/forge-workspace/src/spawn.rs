@@ -10956,10 +10956,14 @@ mod lead_charter_tests {
     /// advice sits above that section, so the scan leaves it alone.
     #[test]
     fn the_charter_carries_the_board_sweep() {
-        const SWEEP: &str = "**Sweep the board at the start of every session, and on demand.** \
-             First `cron__list` and delete any sweep cron an older version of this charter had \
-             you create (`cron__delete`) - it keeps firing its sweep prompt into this session \
-             until it is removed. Never create a standing sweep cron.";
+        const SWEEP: &str = "**Sweep the board at the start of every session, when forge injects \
+             a sweep (it does when you have been idle, at most once every two hours, or six \
+             hours after the last sweep), and on demand.** First `cron__list` and delete any \
+             sweep cron an older version of this charter had you create (`cron__delete`) - it \
+             keeps firing its sweep prompt into this session until it is removed. Never create a \
+             standing sweep cron. End every sweep with the next three lead-owned backlog rows, \
+             each with one line on why it comes next; they are proposals, not dispatches, and \
+             only you start a worker on one.";
         const CLEANUP: &str = "First `cron__list` and delete any sweep cron an older version of \
              this charter had you create (`cron__delete`)";
         const REASON: &str =
@@ -10988,6 +10992,16 @@ mod lead_charter_tests {
         for (clause, why) in [
             (CLEANUP, "the old standing entry is removed, not only forbidden"),
             (REASON, "the reason the cleanup is owed"),
+            (
+                "when forge injects a sweep (it does when you have been idle, at most once every \
+                 two hours, or six hours after the last sweep)",
+                "the injected trigger, its throttle and its six-hour fallback",
+            ),
+            ("at most once every two hours", "the idle throttle"),
+            ("six hours after the last sweep", "the fallback is measured from the last sweep"),
+            ("End every sweep with the next three lead-owned backlog rows", "the next-pick rule"),
+            ("each with one line on why it comes next", "each pick says why it comes next"),
+            ("they are proposals, not dispatches", "a pick is not a dispatch"),
             (
                 "settle every row waiting on the user through one door",
                 "the sweep's scope: a dependency or resource wait has no door here",
