@@ -3359,8 +3359,7 @@ mod tests {
     #[test]
     fn an_exhausted_counter_never_hands_out_a_live_number_again() {
         use super::Tabs;
-        let mut tabs = Tabs::default();
-        tabs.next = u16::MAX - 1;
+        let mut tabs = Tabs { next: u16::MAX - 1, ..Tabs::default() };
         let last = tabs.reserve().expect("the ceiling itself is a real number");
         assert_eq!(last, u16::MAX);
         assert_eq!(tabs.reserve(), None, "a spent counter hands out no number at all");
