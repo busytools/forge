@@ -16,7 +16,7 @@
 use std::ptr;
 
 use base64::Engine as _;
-use core_foundation::base::{CFType, CFTypeRef, OSStatus, TCFType};
+use core_foundation::base::{CFOptionFlags, CFType, CFTypeRef, OSStatus, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::data::CFData;
 use core_foundation::dictionary::{CFDictionaryRef, CFMutableDictionary};
@@ -121,6 +121,26 @@ impl Gate for KeychainGate {
 
 impl KeychainGate {
     fn availability_now() -> Availability {
+        // **A data protection item with an access control needs a signed app
+        // with an application identifier**, so an ad-hoc build or one run
+        // from a checkout cannot enrol even though the sensor is there. The
+        // probe asks the same question `store` asks, and a failure is drawn
+        // as the reason rather than promising a gesture that cannot land.
+        static PROBE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let purpose = format!(
+            "availability-{}-{}",
+            std::process::id(),
+            PROBE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let refusal = match Self::add_now(&purpose, b"x") {
+            Ok(SEC_SUCCESS) => None,
+            Ok(other) => Some(message(other)),
+            Err(error) => Some(error),
+        };
+        let _ = Self::remove_now(&purpose);
+        if let Some(reason) = refusal {
+            return Availability { available: false, biometric: false, reason: Some(reason) };
+        }
         // Biometry usable now: enrolled, unlocked, not locked out. A Mac with
         // no Touch ID still answers, through the device password, which the
         // card draws as the non-biometric fallback.
@@ -157,13 +177,9 @@ impl KeychainGate {
     /// tests' reachability probe asks exactly the question the store asks:
     /// a probe that wrote a plainer item would pass where this one is refused.
     fn add_now(purpose: &str, blob: &[u8]) -> Result<OSStatus, String> {
-        let flags = if Self::availability_now().biometric {
-            kSecAccessControlBiometryCurrentSet
-        } else {
-            // No biometric on this Mac: the device password is the gesture,
-            // rather than an item nothing can read.
-            kSecAccessControlUserPresence
-        };
+        // `biometric_available`, not `availability_now`: the latter probes by
+        // calling this add, and asking it here would recurse.
+        let flags = access_flags(biometric_available());
         let control = SecAccessControl::create_with_protection(
             Some(ProtectionMode::AccessibleWhenUnlockedThisDeviceOnly),
             flags,
@@ -193,7 +209,10 @@ impl KeychainGate {
     /// prompt. The skipping form is the test's: it proves the item's policy
     /// wants a gesture on a machine where the test cannot answer one.
     fn read(purpose: &str, skip: bool) -> Release {
-        let mut query = base_query(purpose);
+        // **Data only**: asking for the attributes as well would make the
+        // framework answer a dictionary, which the success arm below wraps as
+        // CFData. The query is the item's own attributes plus the data.
+        let mut query = base_attributes(purpose);
         query.add(&constant!(kSecReturnData), &CFBoolean::true_value().as_CFType());
         if skip {
             query.add(
@@ -221,6 +240,13 @@ impl KeychainGate {
             other => Release::Refused { reason: message(other) },
         }
     }
+}
+
+/// The access-control flags a store uses: the biometric-only set where the
+/// sensor is there, user presence (the device password) where it is not,
+/// rather than an item nothing on that Mac can read.
+fn access_flags(biometric: bool) -> CFOptionFlags {
+    if biometric { kSecAccessControlBiometryCurrentSet } else { kSecAccessControlUserPresence }
 }
 
 fn account(purpose: &str) -> CFString {
@@ -401,6 +427,41 @@ mod tests {
         }
     }
 
+    /// The read's success arm, on an item that needs no gesture: a plain data
+    /// protection item carries no access control, so the gate's own query
+    /// returns its bytes and the CFData wrap is exercised wherever the
+    /// machine can make one.
+    #[test]
+    fn a_plain_item_reads_back_as_its_bytes() {
+        if let Some(reason) = keychain_unreachable() {
+            eprintln!("skipped: {reason}");
+            return;
+        }
+        let purpose = format!("plain-{}", std::process::id());
+        let mut attributes = base_attributes(&purpose);
+        attributes.add(&constant!(kSecValueData), &CFData::from_buffer(b"the bytes").as_CFType());
+        // SAFETY: `attributes` is a live dictionary for the duration of the
+        // call and no result reference is asked for.
+        let status = unsafe { SecItemAdd(dictionary_ref(&attributes), ptr::null_mut()) };
+        assert_eq!(status, SEC_SUCCESS, "the plain item is added: {}", message(status));
+        assert_eq!(
+            KeychainGate::read(&purpose, true),
+            Release::Released { blob: "dGhlIGJ5dGVz".to_owned() },
+            "the gate reads the item's bytes out of the CFData",
+        );
+        let _ = KeychainGate::remove_now(&purpose);
+    }
+
+    /// The policy choice is pinned: a sensor present gets the biometric-only
+    /// set, and a Mac without one falls back to user presence rather than an
+    /// item nothing can read.
+    #[test]
+    fn the_access_control_follows_the_sensor() {
+        assert_eq!(access_flags(true), kSecAccessControlBiometryCurrentSet);
+        assert_ne!(access_flags(true), kSecAccessControlUserPresence);
+        assert_eq!(access_flags(false), kSecAccessControlUserPresence);
+    }
+
     /// The classifier the probe relies on: the named refusals skip with their
     /// reasons, and an unknown status is the gate's, not the harness's, so it
     /// goes down to the real call rather than passing as a skip.
@@ -422,7 +483,15 @@ mod tests {
     #[tokio::test]
     async fn availability_answers_without_prompting() {
         let availability = KeychainGate.availability().await;
-        assert!(availability.available, "the gate is usable on macOS");
-        assert!(availability.reason.is_none());
+        // **Availability asks the same question the store asks**, so a
+        // harness that cannot create the item says so here too rather than
+        // promising a gesture that cannot land.
+        if keychain_unreachable().is_some() {
+            assert!(!availability.available, "an unreachable gate is unavailable");
+            assert!(availability.reason.is_some(), "and names the platform's reason");
+        } else {
+            assert!(availability.available, "the gate is usable on this machine");
+            assert!(availability.reason.is_none());
+        }
     }
 }
