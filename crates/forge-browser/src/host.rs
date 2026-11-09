@@ -392,10 +392,15 @@ impl Tabs {
     /// while the create is still in progress, and a number peeked beforehand
     /// would be handed out twice. A create that fails gives its number back
     /// through `unreserve` unless a nested admission has taken a newer one.
-    fn reserve(&mut self) -> u16 {
-        let tab = self.next.saturating_add(1).max(1);
+    ///
+    /// **`None` when every number is spent.** The number's width is the
+    /// wire's, so the counter cannot widen, and handing out a live tab's
+    /// number again would replace that tab; the caller refuses the tab
+    /// instead of inserting over one.
+    fn reserve(&mut self) -> Option<u16> {
+        let tab = self.next.checked_add(1)?;
         self.next = tab;
-        tab
+        Some(tab)
     }
 
     /// Give back a number whose browser was never created. **Only the newest
@@ -845,13 +850,24 @@ impl PopupGate {
             }
             *held += 1;
         }
+        let place = Arc::new(Place { opener, released: AtomicBool::new(false) });
+        // **A host whose numbers are spent refuses the popup**, and the place
+        // it took goes back with it: a place that is never released is a slot
+        // the opener's page never gets again.
+        let Some(tab) = self.tabs.lock().unwrap_or_else(PoisonError::into_inner).reserve() else {
+            self.release(&place);
+            if let Some(line) = self.exhausted_line(Some(opener), url) {
+                eprintln!("{line}");
+            }
+            return None;
+        };
         // **A popup admitted resolves the refusals a page hit opening one**,
         // so its next one writes a line. The cap is not one of them: a freed
-        // place ends that episode, not the admission that refills it.
+        // place ends that episode, not the admission that refills it. Only an
+        // admitted popup reaches this: a refused one resolved nothing.
         for kind in ADMISSION_REFUSALS {
             self.clear_refusal(opener, kind);
         }
-        let place = Arc::new(Place { opener, released: AtomicBool::new(false) });
         // **A replaced place is released before its key is taken.** The ids
         // CEF hands out are unique today, and a repeat would otherwise leak
         // the replaced reservation for the host's whole life.
@@ -863,7 +879,6 @@ impl PopupGate {
         if let Some(replaced) = replaced {
             self.release(&replaced);
         }
-        let tab = self.tabs.lock().unwrap_or_else(PoisonError::into_inner).reserve();
         let parts = self.parts(tab);
         let admitted = AdmittedPopup {
             tab,
@@ -1155,6 +1170,25 @@ impl PopupGate {
         ))
     }
 
+    /// The line for a host whose tab numbers are spent, once per opener
+    /// document. **A page can keep calling `window.open`**, so the line is
+    /// keyed rather than written per attempt; the opener's navigation or end
+    /// re-arms it, which is the grain of the document that saw the refusal.
+    /// A failed create at the ceiling can still hand its number back through
+    /// `unreserve`, so the refusal is not necessarily the host's last.
+    fn exhausted_line(&self, opener: Option<u16>, url: &str) -> Option<String> {
+        if !self.first_refusal(opener.unwrap_or(NO_OPENER), "exhausted") {
+            return None;
+        }
+        let opener = opener.map_or_else(|| "none".to_owned(), |opener| opener.to_string());
+        Some(format!(
+            "cef host: no tab number was left (event_name cef_tab_numbers_exhausted, profile {}, \
+             opener {opener}, address {})",
+            self.profile,
+            origin_words(url)
+        ))
+    }
+
     /// The line for a browser the host could not create, when this attempt is
     /// the episode's first. **One line per page, not one per attempt**: a
     /// popup's fault is its opener's, and a requested tab's is the host's,
@@ -1307,7 +1341,14 @@ impl PopupGate {
         emit_now: bool,
     ) -> Option<u16> {
         let births = self.hold_births();
-        let tab = self.tabs.lock().unwrap_or_else(PoisonError::into_inner).reserve();
+        // **A host whose numbers are spent refuses the tab** rather than
+        // inserting over the one that still holds the last number.
+        let Some(tab) = self.tabs.lock().unwrap_or_else(PoisonError::into_inner).reserve() else {
+            if let Some(line) = self.exhausted_line(opener, url) {
+                eprintln!("{line}");
+            }
+            return None;
+        };
         // **The channel is bound before the browser is created.** The create
         // runs a nested CEF loop, and the popup's first document can post to
         // its `window.opener` inside that loop; a channel bound afterwards
@@ -2858,6 +2899,45 @@ mod tests {
         crate::osr::Ring::unlink(&name);
     }
 
+    /// **A spent counter refuses the popup and gives its place back.** The
+    /// admission takes the opener's count and its place before the number; a
+    /// refusal that left either behind would shrink the opener's cap for the
+    /// host's whole life. The line is the opener document's first, and it
+    /// names the event.
+    #[test]
+    fn a_spent_counter_refuses_the_popup_and_returns_its_place() {
+        let name = format!("/forge-cef-test-spent-{}", std::process::id());
+        let ring = std::sync::Arc::new(crate::osr::Ring::create(&name, 4, 4).expect("a test ring"));
+        let popups = gate(&ring);
+        popups.tabs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).next = u16::MAX;
+        assert!(popups.admit(1, 0, "about:blank").is_none(), "a spent counter refuses the popup");
+        assert!(
+            popups.live.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty(),
+            "the refused popup's place is returned"
+        );
+        assert!(
+            popups.places.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty(),
+            "a refused popup takes no place key"
+        );
+        assert!(
+            popups.exhausted_line(Some(1), "about:blank").is_none(),
+            "the admission already wrote the opener's line"
+        );
+        let line = popups
+            .exhausted_line(Some(2), "https://a.test/")
+            .expect("the opener's first refusal is logged");
+        assert!(
+            line.contains("event_name cef_tab_numbers_exhausted,"),
+            "the line names its event: {line}"
+        );
+        assert!(line.contains("opener 2"), "the line names the opener: {line}");
+        assert!(
+            popups.exhausted_line(Some(2), "https://a.test/").is_none(),
+            "a second attempt in the same document writes nothing"
+        );
+        crate::osr::Ring::unlink(&name);
+    }
+
     /// **A create fault's line names its event and its opener.** A requested
     /// tab has none to name and a popup names its opener.
     #[test]
@@ -3295,8 +3375,8 @@ mod tests {
     fn a_number_is_reserved_before_its_browser_exists() {
         use super::Tabs;
         let mut tabs = Tabs::default();
-        let first = tabs.reserve();
-        assert_eq!(tabs.reserve(), first + 1, "each reservation takes the next number");
+        let first = tabs.reserve().expect("a number is free");
+        assert_eq!(tabs.reserve(), Some(first + 1), "each reservation takes the next number");
         assert_eq!(tabs.open.len(), 0, "a reservation opens no row of its own");
     }
 
@@ -3308,9 +3388,24 @@ mod tests {
     fn a_failed_create_does_not_consume_a_number() {
         use super::Tabs;
         let mut tabs = Tabs::default();
-        let refused = tabs.reserve();
+        let refused = tabs.reserve().expect("a number is free");
         tabs.unreserve(refused);
-        assert_eq!(tabs.reserve(), refused, "the refused number is handed out again");
+        assert_eq!(tabs.reserve(), Some(refused), "the refused number is handed out again");
+    }
+
+    /// **The counter refuses at its ceiling rather than repeating a number.**
+    /// The number's width is the wire's, so it cannot widen and must not wrap.
+    /// The saturating counter used to hand out `u16::MAX` for every
+    /// reservation after the ceiling, and a caller that inserted the number
+    /// again would replace the tab that still held it.
+    #[test]
+    fn a_spent_counter_hands_out_no_number_at_all() {
+        use super::Tabs;
+        let mut tabs = Tabs { next: u16::MAX - 1, ..Tabs::default() };
+        let last = tabs.reserve().expect("the ceiling is a number the counter hands out");
+        assert_eq!(last, u16::MAX, "the last number the counter can hand out is the ceiling");
+        assert_eq!(tabs.reserve(), None, "a spent counter hands out no number at all");
+        assert_eq!(tabs.reserve(), None, "and stays spent rather than repeating the last one");
     }
 
     /// **A nested admission keeps its number.** A create can run CEF's loop
@@ -3320,10 +3415,10 @@ mod tests {
     fn unreserve_leaves_a_later_reservation_alone() {
         use super::Tabs;
         let mut tabs = Tabs::default();
-        let outer = tabs.reserve();
-        let inner = tabs.reserve();
+        let outer = tabs.reserve().expect("a number is free");
+        let inner = tabs.reserve().expect("the next number is free");
         tabs.unreserve(outer);
-        assert_eq!(tabs.reserve(), inner + 1, "the inner reservation keeps its place");
+        assert_eq!(tabs.reserve(), Some(inner + 1), "the inner reservation keeps its place");
     }
 
     /// **A cue is acknowledged only when there is a host to show.** The
