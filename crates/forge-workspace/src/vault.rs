@@ -1040,6 +1040,13 @@ mod tests {
     /// leaves an unconfigured session alone.
     #[test]
     fn the_idle_bound_locks_the_session_on_its_next_read() {
+        /// A monotonic instant `seconds` in the past.
+        fn ago(seconds: u64) -> std::time::Instant {
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(seconds))
+                .expect("the monotonic clock is older than the test's span")
+        }
+
         use crate::update_fanout::SubscriberRole;
 
         let updates = UpdateFanout::default();
@@ -1063,14 +1070,12 @@ mod tests {
         );
 
         // A use inside the bound keeps it open and re-stamps the clock.
-        *session.last_used.lock() =
-            Some(std::time::Instant::now() - std::time::Duration::from_secs(29 * 60));
+        *session.last_used.lock() = Some(ago(29 * 60));
         assert!(!session.is_locked(), "a read inside the bound leaves the session open");
         assert!(session.keys().is_ok());
 
         // Past the bound, the next read locks it.
-        *session.last_used.lock() =
-            Some(std::time::Instant::now() - std::time::Duration::from_secs(31 * 60));
+        *session.last_used.lock() = Some(ago(31 * 60));
         assert!(session.is_locked(), "a read past the bound locks the session");
         assert!(session.keys().is_err());
         match &*announced.try_recv().expect("the idle lock is announced").update {
@@ -1095,8 +1100,7 @@ mod tests {
                 user_key_fingerprint: String::new(),
             },
         );
-        *session.last_used.lock() =
-            Some(std::time::Instant::now() - std::time::Duration::from_secs(365 * 24 * 60 * 60));
+        *session.last_used.lock() = Some(ago(365 * 24 * 60 * 60));
         assert!(!session.is_locked(), "an unconfigured session never locks itself");
     }
 

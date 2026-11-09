@@ -81,7 +81,11 @@ pub(crate) struct VaultConfig {
 /// master key derives with.
 impl std::fmt::Debug for VaultConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VaultConfig").field("url", &self.url).field("email", &"[redacted]").finish()
+        f.debug_struct("VaultConfig")
+            .field("url", &self.url)
+            .field("email", &"[redacted]")
+            .field("idle_minutes", &self.idle_minutes)
+            .finish()
     }
 }
 

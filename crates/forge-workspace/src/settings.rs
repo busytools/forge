@@ -206,7 +206,6 @@ fn edit_spec(path: &str) -> EditSpec {
         | "vault.url"
         | "vault.email"
         | "server.bind" => required(TEXT),
-        "vault.idle_minutes" => NUMBER,
         "slack[].workspace" | "slack[].token" => named(required(TEXT), "slack"),
         "slack[].poll_seconds"
         | "slack[].dm_poll_seconds"
@@ -232,7 +231,8 @@ fn edit_spec(path: &str) -> EditSpec {
         | "dictate.max_capture_minutes"
         | "tts.max_utterance_seconds"
         | "handoff.at_percent"
-        | "handoff.after_compactions" => NUMBER,
+        | "handoff.after_compactions"
+        | "vault.idle_minutes" => NUMBER,
         "server.allowed_origins" | "sessions.heal_backoff" => LIST,
         // client
         "client.mark" => choice(forge_primitives::client::MARK_NAMES),
