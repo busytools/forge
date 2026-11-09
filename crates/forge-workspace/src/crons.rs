@@ -199,6 +199,12 @@ impl Workspace {
         let _ = self.update_tx.send(SessionUpdate::CronSchedulesChanged { key, crons });
     }
 
+    /// Whether this run's boot could not load the durable crons.
+    /// `cron__list` refuses on it.
+    pub fn durable_crons_unavailable(&self) -> bool {
+        self.crons_load_failed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// The crons registered for `project_name`, whatever their owner. The
     /// two scoping consumers narrow it - `cron__list` to the caller's own
     /// crons, the Inspector SCHEDULES snapshot to the active tab's - while
