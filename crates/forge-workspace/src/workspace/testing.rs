@@ -501,6 +501,7 @@ impl Workspace {
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             _single_instance_lock: None,
             crons: Mutex::new(Vec::new()),
+            crons_load_failed: std::sync::atomic::AtomicBool::new(false),
             tasks: Mutex::new(Vec::new()),
             parked_by_slot: Mutex::new(HashMap::new()),
             pending_handoffs: Mutex::new(HashMap::new()),
