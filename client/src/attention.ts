@@ -24,16 +24,22 @@ export function observeAttention(cb: (watching: boolean) => void): (() => void) 
   const lost = (): void => cb(false);
   const gained = (): void => cb(!cannotPaint());
   const visibility = (): void => cb(!cannotPaint() && document.hasFocus());
+  // **A restore only, and its focus is read**: `pageshow` also fires on the
+  // initial load, where the boot reading has already decided and an unfocused
+  // window must stay paused. A bfcache restore comes back with neither a
+  // focus nor a visibility event on some engines.
+  const restored = (event: PageTransitionEvent): void => {
+    if (!event.persisted) return;
+    cb(!cannotPaint() && document.hasFocus());
+  };
   document.addEventListener('visibilitychange', visibility);
   window.addEventListener('focus', gained);
   window.addEventListener('blur', lost);
-  // A bfcache restore comes back visible with neither a focus nor a
-  // visibility event on some engines, so the page's own restore event arms it.
-  window.addEventListener('pageshow', gained);
+  window.addEventListener('pageshow', restored);
   return () => {
     document.removeEventListener('visibilitychange', visibility);
     window.removeEventListener('focus', gained);
     window.removeEventListener('blur', lost);
-    window.removeEventListener('pageshow', gained);
+    window.removeEventListener('pageshow', restored);
   };
 }

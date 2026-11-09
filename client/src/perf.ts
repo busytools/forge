@@ -438,8 +438,10 @@ function observeForeground(cb: () => void): (() => void) | null {
       if (closed) stop();
       else unlisten = stop;
     })
-    .catch(() => {
-      // No shell bridge is no resume signal; the DOM events still gate it.
+    .catch((why: unknown) => {
+      // **The Android arm is load-bearing**, so a failed install is said
+      // aloud: the loop would stay stopped after a resume with no clue.
+      console.warn('forge client: the frame probe foreground listener could not be installed', why);
     });
   return () => {
     closed = true;

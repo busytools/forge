@@ -18,6 +18,13 @@ import {
  */
 const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
 
+/** A `pageshow` the browser marks as a bfcache restore; jsdom has no constructor. */
+function bfcacheRestore(): void {
+  const event = new Event('pageshow');
+  Object.defineProperty(event, 'persisted', { value: true });
+  window.dispatchEvent(event);
+}
+
 /**
  * The probe's clock and frame source, driven by the test.
  *
@@ -574,6 +581,22 @@ describe('the frame probe', () => {
     expect(h.scheduled, 'a focus report arms the loop').toBe(true);
   });
 
+  /**
+   * **An initial `pageshow` must not undo the boot reading.** It fires on
+   * every load, after `startPerfProbe`, so arming on it would run the loop
+   * for an unfocused window exactly as the boot read just refused to.
+   */
+  it('does not arm an unfocused boot from the initial pageshow', () => {
+    const h = harness({ focused: false, realAttention: true });
+    try {
+      expect(h.scheduled, 'an unfocused boot schedules nothing').toBe(false);
+      window.dispatchEvent(new Event('pageshow'));
+      expect(h.scheduled, 'the initial pageshow is not a restore').toBe(false);
+    } finally {
+      h.probe.stop();
+    }
+  });
+
   /** **A hidden boot schedules nothing either**, and the first report arms it. */
   it('schedules no frame when the page boots hidden', () => {
     const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
@@ -610,10 +633,18 @@ describe('the frame probe', () => {
       document.dispatchEvent(new Event('visibilitychange'));
       expect(h.scheduled, 'a hidden document stops it').toBe(false);
 
-      // A bfcache restore is `pageshow`, with no focus or visibility event.
+      // An initial `pageshow` is not a restore, and a restore reads focus.
       hidden.mockReturnValue(false);
       window.dispatchEvent(new Event('pageshow'));
-      expect(h.scheduled, 'a pageshow restore restarts it').toBe(true);
+      expect(h.scheduled, 'the initial pageshow is not a restore').toBe(false);
+
+      focus.mockReturnValue(false);
+      bfcacheRestore();
+      expect(h.scheduled, 'a persisted restore without focus stays paused').toBe(false);
+
+      focus.mockReturnValue(true);
+      bfcacheRestore();
+      expect(h.scheduled, 'a persisted restore with focus arms it').toBe(true);
 
       hidden.mockReturnValue(true);
       document.dispatchEvent(new Event('visibilitychange'));
