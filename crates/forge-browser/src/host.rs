@@ -3313,6 +3313,25 @@ mod tests {
         assert_eq!(tabs.reserve(), refused, "the refused number is handed out again");
     }
 
+    /// **A counter at its ceiling refuses rather than replacing a live tab.**
+    /// The number's width is the wire's, so it cannot widen and must not wrap
+    /// onto a tab still open. The saturating counter used to hand out
+    /// `u16::MAX` for every reservation after the ceiling, and the insert that
+    /// followed replaced the tab that still held it.
+    #[test]
+    fn an_exhausted_counter_never_hands_out_a_live_number_again() {
+        use super::Tabs;
+        let mut tabs = Tabs::default();
+        tabs.next = u16::MAX - 1;
+        let last = tabs.reserve();
+        assert_eq!(last, u16::MAX, "the ceiling itself is a real number");
+        assert_ne!(
+            tabs.reserve(),
+            last,
+            "a number a live tab holds is never handed out a second time"
+        );
+    }
+
     /// **A nested admission keeps its number.** A create can run CEF's loop
     /// and admit a popup before failing; the outer create's unreserve must
     /// not rewind over the reservation the popup already holds.
