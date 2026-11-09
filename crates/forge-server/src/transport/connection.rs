@@ -2924,10 +2924,12 @@ where
                 .await;
             }
             if take {
-                // **A parked hand-off owns the keyboard.** The bar hides
-                // take while one waits, and the refusal is checked under the
-                // park's own lock, so a take cannot race a park into place
-                // and hand out a role the person cannot see.
+                // **A parked hand-off does not close the take.** A park opens
+                // the surface as a viewer rather than handing out the
+                // keyboard, so the person reads it, takes control and types.
+                // The terminal is resolved by id here, so a shell replaced
+                // under a stale viewing is refused instead of handing out a
+                // role no push could reach.
                 if let Err(why) = state.surface.take_terminal_control(&seat, id, me) {
                     return send(
                         socket,

@@ -568,13 +568,13 @@
     }
   });
 
+  /** The hand-off this page last drew, so its ending can be told from its absence. */
+  let drawnHandOff: string | null = null;
   /**
    * **The raised terminal's bar carries the answer.** The dock is behind the
    * surface while it is up, so a parked terminal hand-off with no reachable
    * Done would hold the session for ever; the bar reads this and draws them.
    */
-  /** The hand-off this page last drew, so its ending can be told from its absence. */
-  let drawnHandOff: string | null = null;
   $effect(() => {
     const held = ask;
     if (held !== null && held.kind === 'terminal_hand_off') {
@@ -604,8 +604,8 @@
         },
       };
     } else {
-      // **The ask leaving the record is its ending**: a take's refusal that
-      // named it is not true any more.
+      // **The ask leaving the record is its ending**: whatever the bar drew
+      // for it - a take's refusal included - stops being true.
       if (drawnHandOff !== null) {
         drawnHandOff = null;
         clearControlRefusal();
