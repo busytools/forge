@@ -255,6 +255,7 @@ just landed, and a refusal is logged at debug.
 | Reading | `Reading the conversation...` while the seat's first page is still out, with the sweep, no field |
 | A take that does not come up | the body stays, with the line above it: the microphone did not come up, or the device layer's own named failure |
 | A take that failed | the field comes back with the notice above it, no recording band and no stop control: the take produced no words, so the reader is told to re-speak rather than discover it |
+| A take that landed with a gap | the words land with the notice above the field, `this is what fitted · part of the take is missing`: the take hit its cap, a segment ran out of decode budget or stopped on a repetition loop, or a segment failed after words landed, so the reader knows part of what they said did not land rather than that they stopped speaking |
 | Voice on | the voice switch beside the mic in the accent: a plain speaker, with a mark beside it while a reply is sounding |
 | Voice off | the same switch, a struck-through speaker and dim, meaning this client is not listening to this seat |
 | Failed | `Input disabled due to error` and what to do: quit and start forge again |
