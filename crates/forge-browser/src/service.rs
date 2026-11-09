@@ -4366,7 +4366,7 @@ fn log_host_ended(
 /// The launch error a session reads: the reason, with the host's own last
 /// words when it left any. **A host that wrote nothing says so**, so the
 /// reader is not sent after the previous host's log.
-fn launch_error(why: String, tail: &str) -> String {
+fn launch_error(why: &str, tail: &str) -> String {
     if tail.is_empty() {
         format!("{why} (the host wrote nothing to its log)")
     } else {
@@ -5139,7 +5139,7 @@ impl Profile {
             reader.stop();
             let outcome = if ended { "ended" } else { "refused" };
             log_host_ended(self, pid, port, HostEnd::NeverReady, outcome, &why, &tail);
-            return Err(launch_error(why, &tail));
+            return Err(launch_error(&why, &tail));
         }
         let ring = match osr::Ring::open(&ring_name) {
             Ok(ring) => Arc::new(ring),
@@ -5151,7 +5151,7 @@ impl Profile {
                 reader.stop();
                 let outcome = if ended { "ended" } else { "refused" };
                 log_host_ended(self, pid, port, HostEnd::NeverReady, outcome, &why, &tail);
-                return Err(launch_error(why, &tail));
+                return Err(launch_error(&why, &tail));
             }
         };
         // **The host owns the port now**, so the selection no longer needs to
