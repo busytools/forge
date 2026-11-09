@@ -268,6 +268,22 @@ fn diagnostic_outcome(answer: &Result<Outcome, Error>) -> Option<(&'static str, 
     }
 }
 
+/// The store entry a finished answer earns, read with the cancel token at
+/// the write decision.
+///
+/// The early checks catch a cancel that landed before the answer was built,
+/// and [`finish_after_join`] catches one that landed during the join's
+/// normalize pass. Neither can cover the write itself: both writers read the
+/// token here first, and [`diagnostics::capture_take`] removes the directory
+/// it claimed when the token is set by the time the write finishes. Together
+/// that is what makes an abandoned take persist nothing.
+fn kept_diagnostics(
+    cancel: &CancelToken,
+    answer: &Result<Outcome, Error>,
+) -> Option<(&'static str, String)> {
+    if cancel.is_cancelled() { None } else { diagnostic_outcome(answer) }
+}
+
 /// Window texts back into one transcript. Trims and drops empties, so
 /// a silent stretch inside a take vanishes at the join instead of
 /// leaving a doubled space.
@@ -593,7 +609,7 @@ impl Engine {
         let audio = audio_duration(pcm.len());
         if peak < self.silence_floor {
             let _ = reply.send(Ok(Outcome::NoAudio { peak, audio }));
-            return Ok(Ticket { answer, cancel, segmenter: None });
+            return Ok(Ticket { answer, cancel, delivered: false, segmenter: None });
         }
 
         self.jobs
@@ -612,7 +628,7 @@ impl Engine {
                 queued_at,
             })
             .map_err(|_| Error::EngineStopped)?;
-        Ok(Ticket { answer, cancel, segmenter: None })
+        Ok(Ticket { answer, cancel, delivered: false, segmenter: None })
     }
 }
 
@@ -786,6 +802,7 @@ impl Capture {
                 Ok(Ticket {
                     answer: answer_rx,
                     cancel: self.cancel.clone(),
+                    delivered: false,
                     segmenter: Some(segmenter),
                 })
             }
@@ -839,6 +856,13 @@ impl Drop for Capture {
 pub struct Ticket {
     answer: Receiver<Result<Outcome, Error>>,
     cancel: CancelToken,
+    /// Set once the answer is in hand. A delivered ticket's own drop is not
+    /// an abandonment: on the direct path the diagnostics record is written
+    /// after the answer goes out, and the drop's cancel would delete the
+    /// take the worker is still writing. A host's clone from
+    /// [`Ticket::cancel_token`] keeps sharing the flag, so abandoning the
+    /// take after the answer still cancels it.
+    delivered: bool,
     /// The take's segmenter, on the capture path. Joined so no take
     /// thread outlives the value that owns its result; it holds no
     /// native state, so the join is tidiness and not the teardown
@@ -862,6 +886,10 @@ impl Ticket {
     /// put a runtime in every consumer to serve one.
     pub fn recv(mut self) -> Result<Outcome, Error> {
         let answer = self.answer.recv().map_err(|_| Error::EngineStopped)?;
+        // Disarmed before the drop runs: the answer is this ticket's job,
+        // and what the worker does after it - the direct path's record
+        // write - must not read as the caller walking away.
+        self.delivered = true;
         if let Some(segmenter) = self.segmenter.take() {
             let _ = segmenter.join();
         }
@@ -880,7 +908,9 @@ impl Ticket {
 
 impl Drop for Ticket {
     fn drop(&mut self) {
-        self.cancel.cancel();
+        if !self.delivered {
+            self.cancel.cancel();
+        }
         if let Some(segmenter) = self.segmenter.take() {
             let _ = segmenter.join();
         }
@@ -981,6 +1011,101 @@ fn window_action(
             }
         }
     }
+}
+
+/// The failure a job answers with, decided before its answer is built.
+///
+/// `session.run` is the only place a cancel token is observed, so a take
+/// cancelled after its last window has no run left to abort: without this
+/// check the worker builds a transcript for a take its caller abandoned, and
+/// a host persists words the user chose not to keep. A cancel outranks
+/// whatever failure the fold already carries, the same rule the take fold
+/// applies. Pulled out of the worker so the decision is tested without a
+/// loaded model, the way [`window_action`] is.
+fn failure_before_answer(cancel: &CancelToken, failure: Option<Error>) -> Option<Error> {
+    if cancel.is_cancelled() { Some(Error::Cancelled) } else { failure }
+}
+
+/// What one job's answer and diagnostics record come to.
+struct JobOutcome {
+    answer: Result<Outcome, Error>,
+    /// The stages the record is built from, with the normalize pass's own
+    /// timing already folded in.
+    stages: Stages,
+    /// The record this answer earns, read with the job's own token.
+    diag: Option<(&'static str, String)>,
+}
+
+/// Finish one job: read its token, build the answer, decide its record.
+///
+/// Taking `&Job` rather than a bare token is what keeps the wiring honest:
+/// every read in here is the job's own, so the worker cannot hand the
+/// answer one token and the record another. Drivable by a test over a
+/// prejoined job without a loaded model.
+fn finish_job(
+    job: &Job,
+    asr_parts: &[String],
+    failure: Option<Error>,
+    truncated: bool,
+    mut stages: Stages,
+    normalizer: Option<&crate::normalize::Normalizer>,
+) -> JobOutcome {
+    // `session.run` is the only place the recognizer observes a cancel, so
+    // a take cancelled after its last window has no run left to abort:
+    // read the token before anything is built.
+    let failure = failure_before_answer(&job.cancel, failure);
+    if let Some(error) = failure {
+        let answer = Err(error);
+        let diag = kept_diagnostics(&job.cancel, &answer);
+        return JobOutcome { answer, stages, diag };
+    }
+    let (asr, text) = finalize_transcript(asr_parts, |raw| match job.normalize {
+        // A normalizer that fails mid-session must not cost the speaker
+        // their words: fall back to the recognised text and say so, where a
+        // load failure above is fatal. A raw-only pipelined job skips the
+        // rewrite; its text joins the take's later, under one normalize
+        // pass.
+        Some(options) => normalize_text(normalizer, raw, options, &mut stages),
+        None => raw.to_owned(),
+    });
+    finish_after_join(job, asr, text, stages, truncated)
+}
+
+/// The answer a finished join amounts to.
+///
+/// Separated from [`finish_job`] because the join's normalize pass is the
+/// one stretch no early read covers: the read below is what turns a cancel
+/// that landed inside it into `Cancelled` rather than the words the pass
+/// rewrote. The routing from [`finish_job`] into here is pinned by
+/// inspection, not by a test: reaching this read past a live first read
+/// needs a cancel inside the normalizer call, and
+/// [`crate::normalize::Normalizer`] is a loaded GGUF behind a `LlamaModel`
+/// with no weightless double.
+fn finish_after_join(
+    job: &Job,
+    asr: String,
+    text: String,
+    stages: Stages,
+    truncated: bool,
+) -> JobOutcome {
+    let answer = if let Some(error) = failure_before_answer(&job.cancel, None) {
+        Err(error)
+    } else {
+        let transcript = Transcript { text, asr, stages: stages.clone(), truncated };
+        Ok(Outcome::Transcript(transcript))
+    };
+    let diag = kept_diagnostics(&job.cancel, &answer);
+    JobOutcome { answer, stages, diag }
+}
+
+/// Keep one direct job's diagnostics record.
+///
+/// The token is the job's own, read here rather than passed in, so the
+/// write cannot be wired to a different take's cancel. The caller has
+/// already decided the job earns a record: it is a direct job, the engine
+/// is not stopping, and its answer classified as one worth keeping.
+fn keep_job_record(job: &Job, dir: &Path, record: &diagnostics::TakeRecord<'_>) {
+    diagnostics::capture_take(dir, diagnostics::take_stamp(), record, &job.cancel);
 }
 
 /// The take's accumulated state across its windows.
@@ -1111,15 +1236,23 @@ fn worker(
         if cancellable {
             session.set_cancel_token(&job.cancel);
         }
-        in_flight
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .replace(job.cancel.clone());
+        // Only a job that recognizes audio runs a cancellable inference. A
+        // prejoined job only rewrites text the take already has, so
+        // installing it here would let a teardown's cancel discard words
+        // that are already in hand; `finish_after_join` still reads the
+        // take's own token.
+        let recognizing = job.prejoined.is_none();
+        if recognizing {
+            in_flight
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .replace(job.cancel.clone());
+        }
         // Re-checked after installing the token, not only before: teardown
         // between the first check and this line would have seen `None` in
         // `in_flight`, cancelled nothing, and then waited out a full
         // inference it believed it had aborted.
-        if stopping.load(Ordering::Relaxed) {
+        if recognizing && stopping.load(Ordering::Relaxed) {
             job.cancel.cancel();
         }
         // Each window runs on its own against the shared session; a
@@ -1137,7 +1270,9 @@ fn worker(
         // A pipelined finalize job carries text, not audio: it exists
         // so the join is normalized on the worker, where the normalizer
         // lives. Everything else recognizes its windows.
-        if let Some(raw) = job.prejoined {
+        // Cloned rather than moved so `finish_job` can still read the job's
+        // own token and settings; a join is one string against a take.
+        if let Some(raw) = job.prejoined.clone() {
             state.asr_parts.push(raw);
         } else {
             let windows = window_bounds(&job.pcm);
@@ -1168,30 +1303,18 @@ fn worker(
             }
         }
         let TakeState { asr_parts, window_records, truncated, failure, recognition_error } = state;
-        // The diagnostics record's copy of the stages is taken beside
-        // the answer rather than before it: the cleanup pass sets
+        // The diagnostics record's copy of the stages is taken beside the
+        // answer rather than before it: the cleanup pass sets
         // `Stages::normalize` on the way, so a clone made first would
         // report `normalizer_ran` false for a take that ran it.
-        let (diag_stages, answer) = if let Some(error) = failure {
-            (stages.clone(), Err(error))
-        } else {
-            let (asr, text) = finalize_transcript(&asr_parts, |raw| match &job.normalize {
-                // A normalizer that fails mid-session must not cost the
-                // speaker their words: fall back to the recognised text
-                // and say so, where a load failure above is fatal. A
-                // raw-only pipelined job skips the rewrite; its text
-                // joins the take's later, under one normalize pass.
-                Some(options) => normalize_text(normalizer.as_ref(), raw, *options, &mut stages),
-                None => raw.to_owned(),
-            });
-            // Consumed here rather than where `stages` is built: an
-            // error or a cancel discards the stages, and taking the
-            // load cost there would lose it for the process.
+        let JobOutcome { answer, stages: diag_stages, diag } =
+            finish_job(&job, &asr_parts, failure, truncated, stages, normalizer.as_ref());
+        // Consumed on a transcript rather than where `stages` is built: an
+        // error or a cancel discards the stages, and taking the load cost
+        // there would lose it for the process.
+        if matches!(&answer, Ok(Outcome::Transcript(_))) {
             first = false;
-            let transcript = Transcript { text, asr, stages, truncated };
-            (transcript.stages.clone(), Ok(Outcome::Transcript(transcript)))
-        };
-        let diag = diagnostic_outcome(&answer);
+        }
         in_flight.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
         let _ = job.reply.send(answer);
 
@@ -1221,7 +1344,7 @@ fn worker(
                 outcome,
                 recognition_error,
             };
-            diagnostics::capture_take(dir, diagnostics::take_stamp(), &record);
+            keep_job_record(&job, dir, &record);
         }
     }
 }
@@ -1583,30 +1706,44 @@ impl TakeSegmenter {
         let (folded_stages, audio, folded_truncated) = fold_stages(&self.parts);
         let aggregate = aggregate_parts(std::mem::take(&mut self.parts));
         let failed_before_join = matches!(&aggregate, Aggregate::Join { failed: Some(_), .. });
-        let answer = match aggregate {
-            Aggregate::Failed(error) => Err(error),
-            Aggregate::NoAudio { peak, audio } => Ok(Outcome::NoAudio { peak, audio }),
-            Aggregate::Join { raws: join_raws, failed } => {
-                let joined = join_window_texts(&join_raws);
-                match self.normalize_join(&joined, finish.options) {
-                    Ok(Outcome::Transcript(mut transcript)) => {
-                        // The take's stages: every segment's recognition
-                        // work plus the finalize's normalize pass, over
-                        // the span the take actually covers.
-                        let normalize = transcript.stages.normalize;
-                        transcript.stages = folded_stages.clone();
-                        transcript.stages.normalize = normalize;
-                        transcript.stages.audio = audio;
-                        transcript.truncated |=
-                            take_is_truncated(folded_truncated, finish.truncated, failed.is_some());
-                        Ok(Outcome::Transcript(transcript))
+        // The final drain may have settled the last window, so no
+        // `session.run` is left to observe a cancel. An abandoned take
+        // answers cancelled here rather than queueing a join whose words it
+        // would persist.
+        let answer = if self.take.cancel.is_cancelled() {
+            Err(Error::Cancelled)
+        } else {
+            match aggregate {
+                Aggregate::Failed(error) => Err(error),
+                Aggregate::NoAudio { peak, audio } => Ok(Outcome::NoAudio { peak, audio }),
+                Aggregate::Join { raws: join_raws, failed } => {
+                    let joined = join_window_texts(&join_raws);
+                    match self.normalize_join(&joined, finish.options) {
+                        Ok(Outcome::Transcript(mut transcript)) => {
+                            // The take's stages: every segment's recognition
+                            // work plus the finalize's normalize pass, over
+                            // the span the take actually covers.
+                            let normalize = transcript.stages.normalize;
+                            transcript.stages = folded_stages.clone();
+                            transcript.stages.normalize = normalize;
+                            transcript.stages.audio = audio;
+                            transcript.truncated |= take_is_truncated(
+                                folded_truncated,
+                                finish.truncated,
+                                failed.is_some(),
+                            );
+                            Ok(Outcome::Transcript(transcript))
+                        }
+                        Ok(other) => Ok(other),
+                        Err(error) => Err(error),
                     }
-                    Ok(other) => Ok(other),
-                    Err(error) => Err(error),
                 }
             }
         };
-        let diag = diagnostic_outcome(&answer);
+        // Read at the write, not only before the join: the token can be set
+        // between that read and this one, and an abandoned take keeps no
+        // record.
+        let diag = kept_diagnostics(&self.take.cancel, &answer);
         let diag_stages = match &answer {
             Ok(Outcome::Transcript(transcript)) => transcript.stages.clone(),
             _ => folded_stages,
@@ -1658,7 +1795,7 @@ impl TakeSegmenter {
                 outcome,
                 recognition_error: self.failed,
             };
-            diagnostics::capture_take(dir, diagnostics::take_stamp(), &record);
+            diagnostics::capture_take(dir, diagnostics::take_stamp(), &record, &self.take.cancel);
         }
     }
 
@@ -1799,6 +1936,34 @@ mod tests_engine {
         assert!(
             matches!(answer, Error::ModelLoad { .. }),
             "the cancelled job must still resolve, got: {answer:?}"
+        );
+    }
+
+    /// A ticket that delivered its answer is not an abandonment. The direct
+    /// path writes its diagnostics record after the answer goes out, so the
+    /// ticket's own drop cancelling the token would delete the take the
+    /// worker is still writing. A ticket dropped without its answer is an
+    /// abandonment and still cancels.
+    #[test]
+    fn a_delivered_ticket_does_not_cancel_its_take() {
+        let (reply, answer) = channel();
+        let cancel = CancelToken::new();
+        let ticket = Ticket { answer, cancel: cancel.clone(), delivered: false, segmenter: None };
+        reply
+            .send(Err(Error::Recognition { message: "x".into() }))
+            .expect("the answer is buffered");
+        let _ = ticket.recv();
+        assert!(
+            !cancel.is_cancelled(),
+            "a ticket whose answer was received must not cancel the take under its write"
+        );
+
+        let (_reply, answer) = channel::<Result<Outcome, Error>>();
+        let cancel = CancelToken::new();
+        drop(Ticket { answer, cancel: cancel.clone(), delivered: false, segmenter: None });
+        assert!(
+            cancel.is_cancelled(),
+            "a ticket dropped without its answer still abandons the take"
         );
     }
 
@@ -1992,18 +2157,6 @@ mod tests_engine {
     }
 
     #[test]
-    fn a_cancelled_take_never_keeps_words() {
-        let parts = vec![
-            Part::Transcript { raw: "early".into(), stages: Stages::default(), truncated: false },
-            Part::Failed(Error::Cancelled),
-        ];
-        match aggregate_parts(parts) {
-            Aggregate::Failed(Error::Cancelled) => {}
-            other => panic!("an abandoned take must keep nothing, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn a_cancel_after_another_failure_still_discards() {
         let parts = vec![
             Part::Transcript { raw: "early".into(), stages: Stages::default(), truncated: false },
@@ -2016,17 +2169,27 @@ mod tests_engine {
         }
     }
 
+    /// The fold's contract for a stopped engine: the words already
+    /// transcribed are kept and the stop is carried as the error. Teardown
+    /// is a different path and differs on both sides: with no words it
+    /// answers `Err(EngineStopped)` and `finish` skips the write, while with
+    /// words the fold keeps them - so what is pinned here is the fold's
+    /// input handling, not a teardown guarantee.
     #[test]
-    fn an_engine_stopped_take_keeps_prior_words() {
+    fn the_fold_keeps_prior_words_when_the_engine_stops() {
         let parts = vec![
             Part::Transcript { raw: "early".into(), stages: Stages::default(), truncated: false },
             Part::Failed(Error::EngineStopped),
         ];
         match aggregate_parts(parts) {
             Aggregate::Join { raws, failed: Some(Error::EngineStopped) } => {
-                assert_eq!(raws, ["early"], "a lost worker keeps the words already transcribed");
+                assert_eq!(
+                    raws,
+                    ["early"],
+                    "the fold keeps the words it has and carries the stopped engine"
+                );
             }
-            other => panic!("a lost worker must keep the words, got {other:?}"),
+            other => panic!("the fold must keep words and carry the stopped engine, got {other:?}"),
         }
     }
 
@@ -2052,41 +2215,158 @@ mod tests_engine {
         assert!(!take_is_truncated(false, false, false));
     }
 
-    /// The live path itself must mark the take truncated when a segment
-    /// failed after words landed: the client's "part of the take is
-    /// missing" copy depends on it, and dropping the flag would render a
-    /// mid-take gap as complete.
-    #[test]
-    fn a_failed_segment_marks_the_live_transcript_truncated() {
-        let (jobs, answers) = channel::<Job>();
+    /// Whether the store holds no take. An absent store and a bare root
+    /// both hold none: only an entry named `take-*` is a take, which is
+    /// the same shape the retention scan counts.
+    fn no_take_was_stored(store: &Path) -> bool {
+        match std::fs::read_dir(store) {
+            Ok(entries) => entries
+                .flatten()
+                .all(|entry| !entry.file_name().to_string_lossy().starts_with("take-")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+            Err(error) => panic!("the store could not be read: {error}"),
+        }
+    }
+
+    /// A job shaped like the worker's prejoined finalize: no audio, the
+    /// take's join as its text, and the token the test hands it.
+    fn prejoined_job(cancel: CancelToken) -> Job {
+        let (reply, _answer) = channel();
+        Job {
+            pcm: Vec::new(),
+            resample: Duration::ZERO,
+            audio: Duration::ZERO,
+            truncated: false,
+            normalize: Some(NormalizeOptions::default()),
+            prejoined: Some("early".to_owned()),
+            diagnose: false,
+            cancel,
+            reply,
+            queued_at: Instant::now(),
+        }
+    }
+
+    /// The fake worker behind every live-take finish test: it runs the same
+    /// per-job seam the real worker does, so a prejoined job's answer is the
+    /// join it was handed. `cancel_on_job` fires the take's token as the
+    /// worker takes the job, standing in for a cancel that lands after the
+    /// last window has settled. It gives up when the segmenter drops its
+    /// sender.
+    fn spawn_fake_worker(
+        answers: Receiver<Job>,
+        worker_cancel: CancelToken,
+        cancel_on_job: bool,
+    ) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || {
-            let Ok(job) = answers.recv() else { return };
-            let transcript = Transcript {
-                text: "early".to_owned(),
-                asr: "early".to_owned(),
-                stages: Stages::default(),
-                truncated: false,
-            };
-            let _ = job.reply.send(Ok(Outcome::Transcript(transcript)));
-        });
+            while let Ok(job) = answers.recv() {
+                if cancel_on_job {
+                    worker_cancel.cancel();
+                }
+                // The prejoined text is the take's join, so the seam builds
+                // the answer from it exactly as the worker would. Echoing
+                // rather than inventing the text is what makes a landed
+                // transcript assert the join.
+                let parts: Vec<String> = job.prejoined.clone().into_iter().collect();
+                let out = finish_job(&job, &parts, None, false, Stages::default(), None);
+                let _ = job.reply.send(out.answer);
+            }
+        })
+    }
+
+    /// Drive one live take's finish over [`spawn_fake_worker`].
+    fn finish_live_take(
+        parts: Vec<Part>,
+        cuts: Vec<(usize, usize)>,
+        cancel: CancelToken,
+        cancel_on_job: bool,
+        finish: FinishTake,
+        diagnostics_dir: Option<PathBuf>,
+    ) -> Receiver<Result<Outcome, Error>> {
+        let (jobs, answers) = channel::<Job>();
+        spawn_fake_worker(answers, cancel.clone(), cancel_on_job);
         let (answer_tx, answer_rx) = channel();
         let (progress_tx, _progress_rx) = channel();
         let dir = tempfile::tempdir().unwrap();
         let cfg = ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build();
+        // The parts ARE the settled segments, so the recording holds exactly
+        // their audio and the cut cursor sits at its end: finish sees no
+        // tail, and a record built here names the spans it was handed rather
+        // than ones production never produces.
+        let recorded = cuts.last().map_or(0, |&(_, end)| end);
+        let recording = crate::capture::Recording::new(recorded.max(1));
+        recording.push(&vec![0.5; recorded], recorded.max(1));
+        let settled = parts.len();
+        let failed = parts.iter().enumerate().find_map(|(index, part)| match part {
+            Part::Failed(error) => Some((index, error.to_string())),
+            Part::Transcript { .. } | Part::NoAudio { .. } => None,
+        });
         let segmenter = TakeSegmenter {
-            recording: Arc::new(crate::capture::Recording::new(16)),
+            recording: Arc::new(recording),
             jobs,
             silence_floor: -50.0,
-            diagnostics_dir: None,
+            diagnostics_dir,
             models: Arc::new(diagnostics::TakeModels::from_config(&cfg)),
-            take: TakeShared {
-                cancel: CancelToken::new(),
-                answer: answer_tx,
-                progress: progress_tx,
-            },
-            last_cut: 0,
-            cuts: Vec::new(),
-            parts: vec![
+            take: TakeShared { cancel, answer: answer_tx, progress: progress_tx },
+            last_cut: recorded,
+            cuts,
+            parts,
+            pending: Vec::new(),
+            settled,
+            first_queued_at: None,
+            first_settled_at: None,
+            failed,
+        };
+        segmenter.finish(finish);
+        answer_rx
+    }
+
+    /// The live path itself must mark the take truncated when a segment
+    /// failed after words landed: the client's "part of the take is
+    /// missing" copy depends on it, and dropping the flag would render a
+    /// mid-take gap as complete.
+    ///
+    /// Two windows of words, so the answer has to carry the join: a worker
+    /// that ignores the joined text passes on a single window alone.
+    #[test]
+    fn a_failed_segment_marks_the_live_transcript_truncated() {
+        let answer = finish_live_take(
+            vec![
+                Part::Transcript {
+                    raw: "early".into(),
+                    stages: Stages::default(),
+                    truncated: false,
+                },
+                Part::Transcript {
+                    raw: "later".into(),
+                    stages: Stages::default(),
+                    truncated: false,
+                },
+                Part::Failed(Error::Recognition { message: "one".into() }),
+            ],
+            vec![(0, 80), (80, 160), (160, 180)],
+            CancelToken::new(),
+            false,
+            FinishTake { options: NormalizeOptions::default(), truncated: false },
+            None,
+        );
+        match answer.recv().expect("the take must answer") {
+            Ok(Outcome::Transcript(transcript)) => {
+                assert!(transcript.truncated, "a failed segment leaves a gap");
+                assert_eq!(transcript.text, "early later", "the take lands the join it built");
+            }
+            other => panic!("a take with words and a failed segment must finalize, got {other:?}"),
+        }
+    }
+
+    /// The diagnostics record's own truncated flag on a failed segment:
+    /// `failed_before_join` is one of that field's three inputs, and the
+    /// existing store test only asserts a false value.
+    #[test]
+    fn a_failed_segment_records_a_truncated_take() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store");
+        let answer = finish_live_take(
+            vec![
                 Part::Transcript {
                     raw: "early".into(),
                     stages: Stages::default(),
@@ -2094,20 +2374,417 @@ mod tests_engine {
                 },
                 Part::Failed(Error::Recognition { message: "one".into() }),
             ],
+            vec![(0, 80), (80, 160)],
+            CancelToken::new(),
+            false,
+            FinishTake { options: NormalizeOptions::default(), truncated: false },
+            Some(store.clone()),
+        );
+        assert!(
+            matches!(answer.recv().expect("the take must answer"), Ok(Outcome::Transcript(_))),
+            "a take with words and a failed segment must finalize"
+        );
+        let take = std::fs::read_dir(&store)
+            .expect("the store")
+            .flatten()
+            .next()
+            .expect("the failed take still wrote its record")
+            .path();
+        let meta: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(take.join("meta.json")).unwrap())
+                .expect("meta.json parses");
+        assert_eq!(meta["truncated"], true, "a failed segment leaves a gap the record has to name");
+    }
+
+    /// A segment that stopped short (the decode budget, a repetition loop)
+    /// reaches the live answer as a truncated take, not only as a per-window
+    /// flag: the client's "part of the take is missing" copy rides this
+    /// input to `take_is_truncated`.
+    #[test]
+    fn a_truncated_segment_marks_the_live_transcript_truncated() {
+        let answer = finish_live_take(
+            vec![Part::Transcript {
+                raw: "early".into(),
+                stages: Stages::default(),
+                truncated: true,
+            }],
+            vec![(0, 80)],
+            CancelToken::new(),
+            false,
+            FinishTake { options: NormalizeOptions::default(), truncated: false },
+            None,
+        );
+        match answer.recv().expect("the take must answer") {
+            Ok(Outcome::Transcript(transcript)) => assert!(
+                transcript.truncated,
+                "a segment that stopped short leaves a gap in the take"
+            ),
+            other => panic!("a take with words must finalize, got {other:?}"),
+        }
+    }
+
+    /// The capture cap is the other input to the same flag: a take cut by
+    /// `max_capture` lands truncated even when every segment it did run
+    /// came back whole.
+    #[test]
+    fn a_capped_take_marks_the_live_transcript_truncated() {
+        let answer = finish_live_take(
+            vec![Part::Transcript {
+                raw: "early".into(),
+                stages: Stages::default(),
+                truncated: false,
+            }],
+            vec![(0, 80)],
+            CancelToken::new(),
+            false,
+            FinishTake { options: NormalizeOptions::default(), truncated: true },
+            None,
+        );
+        match answer.recv().expect("the take must answer") {
+            Ok(Outcome::Transcript(transcript)) => assert!(
+                transcript.truncated,
+                "the capture cap cuts the take short even when no segment stopped short"
+            ),
+            other => panic!("a take with words must finalize, got {other:?}"),
+        }
+    }
+
+    /// The flag's false branch, on a clean landed take: every other live
+    /// take test expects `true`, so a predicate that always reported a gap
+    /// would pass them all.
+    #[test]
+    fn a_clean_take_lands_untruncated() {
+        let answer = finish_live_take(
+            vec![Part::Transcript {
+                raw: "early".into(),
+                stages: Stages::default(),
+                truncated: false,
+            }],
+            vec![(0, 80)],
+            CancelToken::new(),
+            false,
+            FinishTake { options: NormalizeOptions::default(), truncated: false },
+            None,
+        );
+        match answer.recv().expect("the take must answer") {
+            Ok(Outcome::Transcript(transcript)) => {
+                assert!(!transcript.truncated, "a take that never stopped short lands whole");
+            }
+            other => panic!("a take with words must finalize, got {other:?}"),
+        }
+    }
+
+    /// A cancel can land after the take's last window has settled, while the
+    /// take is still transcribing. The only work left is the join, and a
+    /// prejoined job never calls `session.run`, the one place the token is
+    /// observed: without a check at the boundary the abandoned take answers
+    /// with its words and persists them.
+    #[test]
+    fn a_cancel_after_the_last_window_persists_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store");
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let answer = finish_live_take(
+            vec![Part::Transcript {
+                raw: "early".into(),
+                stages: Stages::default(),
+                truncated: false,
+            }],
+            vec![(0, 80)],
+            cancel,
+            false,
+            FinishTake { options: NormalizeOptions::default(), truncated: false },
+            Some(store.clone()),
+        );
+        match answer.recv().expect("the take must answer") {
+            Err(Error::Cancelled) => {}
+            other => panic!("an abandoned take must answer cancelled, got {other:?}"),
+        }
+        assert!(no_take_was_stored(&store), "an abandoned take persists nothing");
+    }
+
+    /// A cancel that lands after the segmenter's own check, while the join
+    /// is already queued: the seam reads the token again and answers
+    /// cancelled rather than the words it was handed, and the write keeps
+    /// nothing.
+    #[test]
+    fn a_cancel_during_the_join_persists_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store");
+        let answer = finish_live_take(
+            vec![Part::Transcript {
+                raw: "early".into(),
+                stages: Stages::default(),
+                truncated: false,
+            }],
+            vec![(0, 80)],
+            CancelToken::new(),
+            true,
+            FinishTake { options: NormalizeOptions::default(), truncated: false },
+            Some(store.clone()),
+        );
+        match answer.recv().expect("the take must answer") {
+            Err(Error::Cancelled) => {}
+            other => panic!("a cancelled join must answer cancelled, got {other:?}"),
+        }
+        assert!(no_take_was_stored(&store), "an abandoned take persists nothing");
+    }
+
+    /// A cancel that lands while the take's files are being written. The
+    /// token is live at entry, so neither the segmenter's branch read nor
+    /// the writer's entry sees it; the writer claims its directory first,
+    /// and the cancel lands while the files are still going out. The writer
+    /// must take the directory back - a check at its top could not.
+    ///
+    /// Driven through [`TakeSegmenter::finish`] rather than the helper so
+    /// the segmenter's own token is the one the writer sees, and the clone
+    /// this test fires is the host's `cancel_token()` handle: a delivered
+    /// ticket disarms its own drop, so only a host cancel reaches a take
+    /// whose answer has already gone out.
+    #[test]
+    fn a_cancel_during_the_write_takes_the_directory_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store");
+        let cancel = CancelToken::new();
+        let (jobs, answers) = channel::<Job>();
+        let worker = spawn_fake_worker(answers, CancelToken::new(), false);
+
+        // Five minutes of capture and a file per window: long enough that
+        // the claimed directory is visible while the write is still running.
+        let recorded = 5 * 60 * SAMPLE_RATE as usize;
+        let recording = crate::capture::Recording::new(recorded);
+        recording.push(&vec![0.5; recorded], recorded);
+        let window_count = 5_000;
+        let parts: Vec<Part> = (0..window_count)
+            .map(|i| Part::Transcript {
+                raw: format!("window {i}"),
+                stages: Stages::default(),
+                truncated: false,
+            })
+            .collect();
+        let cuts: Vec<(usize, usize)> =
+            (0..window_count).map(|i| (i * 100, (i + 1) * 100)).collect();
+        let (answer_tx, answer_rx) = channel();
+        let (progress_tx, _progress_rx) = channel();
+        let cfg = ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build();
+        let segmenter = TakeSegmenter {
+            recording: Arc::new(recording),
+            jobs,
+            silence_floor: -50.0,
+            diagnostics_dir: Some(store.clone()),
+            models: Arc::new(diagnostics::TakeModels::from_config(&cfg)),
+            take: TakeShared { cancel: cancel.clone(), answer: answer_tx, progress: progress_tx },
+            last_cut: recorded,
+            cuts,
+            parts,
             pending: Vec::new(),
-            settled: 0,
+            settled: window_count,
             first_queued_at: None,
             first_settled_at: None,
-            failed: Some((1, "recognition failed".to_owned())),
+            failed: None,
         };
-        segmenter.finish(FinishTake { options: NormalizeOptions::default(), truncated: false });
-        match answer_rx.recv().expect("the take must answer") {
-            Ok(Outcome::Transcript(transcript)) => {
-                assert!(transcript.truncated, "a failed segment leaves a gap");
-                assert_eq!(transcript.text, "early", "the words are kept");
+        let finishing = std::thread::spawn(move || {
+            segmenter.finish(FinishTake { options: NormalizeOptions::default(), truncated: false });
+        });
+
+        // The writer claims its directory before it writes anything: the
+        // moment it is there, fire the token while the files are landing.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let claimed = std::fs::read_dir(&store).is_ok_and(|entries| {
+                entries
+                    .flatten()
+                    .any(|entry| entry.file_name().to_string_lossy().starts_with("take-"))
+            });
+            if claimed {
+                break;
             }
-            other => panic!("a take with words and a failed segment must finalize, got {other:?}"),
+            assert!(Instant::now() < deadline, "the writer never claimed a take directory");
+            std::thread::sleep(Duration::from_millis(1));
         }
+        cancel.cancel();
+
+        finishing.join().expect("the finishing thread must not panic");
+        assert!(
+            matches!(answer_rx.recv().expect("the take must answer"), Ok(Outcome::Transcript(_))),
+            "the answer was built while the token was still live"
+        );
+        assert!(no_take_was_stored(&store), "a take cancelled inside its write persists nothing");
+        worker.join().expect("the fake worker must not panic");
+    }
+
+    /// The read after the join's normalize pass: a cancel that lands inside
+    /// it is invisible to the boundary read, and this phase is entered with
+    /// the token already set. It must answer cancelled, not the words the
+    /// pass rewrote.
+    #[test]
+    fn a_cancel_inside_the_normalize_pass_answers_cancelled() {
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let job = prejoined_job(cancel);
+        let out = finish_after_join(
+            &job,
+            "early".to_owned(),
+            "early".to_owned(),
+            Stages::default(),
+            false,
+        );
+        assert!(
+            matches!(out.answer, Err(Error::Cancelled)),
+            "a cancel inside the normalize pass must abort the answer, got {:?}",
+            out.answer
+        );
+        assert_eq!(out.diag, None, "an abandoned take keeps no record");
+    }
+
+    /// The segmenter's early check on the arm only it guards: a take whose
+    /// every segment failed has no words, so without the token read the
+    /// answer is the recognition error and `diagnostic_outcome` keeps a
+    /// record. An abandoned take must answer cancelled and write nothing.
+    #[test]
+    fn a_cancelled_take_with_no_words_persists_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store");
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let answer = finish_live_take(
+            vec![Part::Failed(Error::Recognition { message: "one".into() })],
+            vec![(0, 80)],
+            cancel,
+            false,
+            FinishTake { options: NormalizeOptions::default(), truncated: false },
+            Some(store.clone()),
+        );
+        match answer.recv().expect("the take must answer") {
+            Err(Error::Cancelled) => {}
+            other => panic!("an abandoned take must answer cancelled, got {other:?}"),
+        }
+        assert!(no_take_was_stored(&store), "an abandoned take persists nothing");
+    }
+
+    /// The write's own read, for a worker job whose answer was already
+    /// built when the token was cancelled: the classifier alone would keep
+    /// a record, so both write sites go through `kept_diagnostics`.
+    #[test]
+    fn a_cancelled_take_keeps_no_record_whatever_its_answer_says() {
+        let answer = Ok(Outcome::Transcript(Transcript {
+            text: "early".to_owned(),
+            asr: "early".to_owned(),
+            stages: Stages::default(),
+            truncated: false,
+        }));
+        let cancelled = CancelToken::new();
+        cancelled.cancel();
+        assert_eq!(
+            kept_diagnostics(&cancelled, &answer),
+            None,
+            "an abandoned take's words are never kept, even after the answer is built"
+        );
+        let live = CancelToken::new();
+        assert_eq!(
+            kept_diagnostics(&live, &answer).map(|(outcome, _)| outcome),
+            Some("transcript"),
+            "a live take keeps its record"
+        );
+    }
+
+    /// The direct path's write, with the job's own cancelled token:
+    /// [`keep_job_record`] derives the token from the job it is given, so a
+    /// fresh-token re-wiring cannot pass this.
+    #[test]
+    fn a_cancelled_direct_job_writes_no_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store");
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let (reply, _answer) = channel();
+        let job = Job {
+            pcm: Vec::new(),
+            resample: Duration::ZERO,
+            audio: Duration::ZERO,
+            truncated: false,
+            normalize: Some(NormalizeOptions::default()),
+            prejoined: None,
+            diagnose: true,
+            cancel,
+            reply,
+            queued_at: Instant::now(),
+        };
+        let audio = vec![0.5; 16];
+        let windows = Vec::new();
+        let stages = Stages::default();
+        let cfg = ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build();
+        let models = diagnostics::TakeModels::from_config(&cfg);
+        let record = diagnostics::TakeRecord {
+            audio: &audio,
+            windows: &windows,
+            joined: "early",
+            text: "early",
+            stages: &stages,
+            models: &models,
+            start_lag_ms: 0,
+            processing_ms: 0,
+            truncated: false,
+            outcome: "transcript",
+            recognition_error: None,
+        };
+        keep_job_record(&job, &store, &record);
+        assert!(no_take_was_stored(&store), "an abandoned direct take writes no record");
+    }
+
+    /// The worker's own half of the boundary, driven over a prejoined job
+    /// with no model: a take cancelled after its last window has no
+    /// `session.run` left to abort, so `finish_job` must read the token and
+    /// answer cancelled rather than build the words. It takes the job
+    /// itself, so the token it reads is the job's own by construction and
+    /// the worker cannot wire another.
+    #[test]
+    fn a_cancelled_prejoined_job_answers_cancelled() {
+        let cancelled = CancelToken::new();
+        cancelled.cancel();
+        let job = prejoined_job(cancelled);
+        let stages = Stages { audio: Duration::from_millis(1500), ..Stages::default() };
+        let out = finish_job(&job, &["early".to_owned()], None, false, stages.clone(), None);
+        assert!(
+            matches!(out.answer, Err(Error::Cancelled)),
+            "a cancelled take with a clean fold must not answer with its words, got {:?}",
+            out.answer
+        );
+        assert_eq!(out.stages, stages, "a cancelled job carries the stages it was given");
+        assert_eq!(out.diag, None, "an abandoned take keeps no record");
+
+        // A cancel outranks a failure the fold already carries, the same
+        // rule the take fold applies.
+        let cancelled = CancelToken::new();
+        cancelled.cancel();
+        let job = prejoined_job(cancelled);
+        let out = finish_job(
+            &job,
+            &[],
+            Some(Error::Recognition { message: "one".into() }),
+            false,
+            Stages::default(),
+            None,
+        );
+        assert!(
+            matches!(out.answer, Err(Error::Cancelled)),
+            "a cancel outranks the fold's own failure, got {:?}",
+            out.answer
+        );
+
+        // A live token builds the answer from the prejoined text, which is
+        // what the worker does with no normalizer configured.
+        let job = prejoined_job(CancelToken::new());
+        let out = finish_job(&job, &["early".to_owned()], None, false, Stages::default(), None);
+        match out.answer {
+            Ok(Outcome::Transcript(transcript)) => {
+                assert_eq!(transcript.text, "early", "the prejoined text is the answer");
+                assert_eq!(transcript.asr, "early", "and its raw recognition");
+            }
+            other => panic!("a live token must build the transcript, got {other:?}"),
+        }
+        assert!(out.diag.is_some(), "a landed take keeps its record");
     }
 
     #[test]
@@ -2593,6 +3270,16 @@ mod tests_window_outcomes {
         assert!(state.truncated, "a truncated window marks the take truncated");
         assert!(state.failure.is_none(), "a truncated window does not fail the take");
         assert_eq!(state.window_records.len(), 2);
+        assert_eq!(state.window_records[0].raw, "early", "each record keeps its own raw text");
+        assert_eq!(
+            state.window_records[1].raw, "so far",
+            "a truncated window's partial text is the record's raw"
+        );
+        assert_eq!(
+            (state.window_records[1].start_ms, state.window_records[1].end_ms),
+            (1000, 2000),
+            "the record carries the window's own span"
+        );
     }
 
     #[test]

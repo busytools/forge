@@ -25,6 +25,8 @@
 
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
+import { observeAttention, pageWatched } from './attention';
+import { canHost } from './browser/host';
 import { HEARTBEAT_TICK_MS } from './heartbeat';
 import { cannotPaint } from './paint';
 import { CLIENT_VERSION } from './protocol';
@@ -261,9 +263,11 @@ export interface PerfRecord {
   /** A `subscribe`: ms since the click that preceded it; absent when no
    *  click did, so a reconnect never invents one. */
   since_click_ms?: number;
-  /** A `frame` or a `tick`: whether the span it measures overlapped a hidden
-   *  window, measured when it is timed - a visibility gate rather than a
-   *  blocked thread (#2569). */
+  /** A `frame`, `tick`, `summary` or `quiet`: whether the span it measures
+   *  overlapped a period the page could not be watched, or a period the
+   *  window was not focused (which is how the desktop reports a locked screen
+   *  and is also why the frame loop was stopped), measured when it is timed,
+   *  so it names a gate rather than a blocked thread (#2569). */
   hidden?: boolean;
   /**
    * A `snapshot`'s JSON length in string units (UTF-16 code units), which is
@@ -372,6 +376,14 @@ interface ProbeOptions {
    *  or null where there is no document - which keeps the flag a fact rather
    *  than a claim (#2569). */
   observeVisibility?: (cb: (hidden: boolean) => void) => (() => void) | null;
+  /** Reports whether the page is being watched - visible and focused - as it
+   *  changes; returns its own disconnect, or null where there is no page.
+   *  This is the frame loop's own gate, not the gap's diagnosis. */
+  observeAttention?: (cb: (watching: boolean) => void) => (() => void) | null;
+  /** Reports a shell resume as one event; returns its disconnect, or null
+   *  where the page has no shell. Android's only arm: it reports neither
+   *  focus nor reliably a visibility change on return. */
+  observeForeground?: (cb: () => void) => (() => void) | null;
   /** Where finished records go; the shell write by default. */
   sink?: (records: PerfRecord[]) => void;
   version?: string;
@@ -405,6 +417,36 @@ function observeVisibility(cb: (hidden: boolean) => void): (() => void) | null {
   const report = (): void => cb(cannotPaint());
   document.addEventListener('visibilitychange', report);
   return () => document.removeEventListener('visibilitychange', report);
+}
+
+/**
+ * Reports a shell resume as one event; returns its disconnect, or null where
+ * the page has no shell.
+ *
+ * **Android reports neither focus nor reliably a visibility change on
+ * return** (the same reason `connect/resync.ts` listens for this event), so
+ * the shell's own resume is the only arm the probe gets there.
+ */
+function observeForeground(cb: () => void): (() => void) | null {
+  if (!canHost()) return null;
+  let closed = false;
+  let unlisten: (() => void) | null = null;
+  // The event module stays a lazy import so the web build never loads it.
+  void import('@tauri-apps/api/event')
+    .then(({ listen }) => listen('client://foreground', cb))
+    .then((stop) => {
+      if (closed) stop();
+      else unlisten = stop;
+    })
+    .catch((why: unknown) => {
+      // **The Android arm is load-bearing**, so a failed install is said
+      // aloud: the loop would stay stopped after a resume with no clue.
+      console.warn('forge client: the frame probe foreground listener could not be installed', why);
+    });
+  return () => {
+    closed = true;
+    unlisten?.();
+  };
 }
 
 function observeLongTasks(cb: (ms: number, name: string) => void): () => void {
@@ -587,6 +629,8 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
   const schedule = options.schedule ?? nextFrame;
   const observe = options.observeLongTasks ?? observeLongTasks;
   const heartbeat = options.observeHeartbeat ?? observeHeartbeat;
+  const attention = options.observeAttention ?? observeAttention;
+  const foreground = options.observeForeground ?? observeForeground;
   const defer =
     options.defer ??
     ((cb: () => void): void => {
@@ -656,6 +700,8 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     session: string | null;
   } | null = null;
   let cancelVisibility: (() => void) | null = null;
+  let cancelAttention: (() => void) | null = null;
+  let cancelForeground: (() => void) | null = null;
   /**
    * Whether the page is hidden now, and when it last stopped being hidden.
    *
@@ -671,9 +717,42 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     hiddenNow = hidden;
     if (!hidden) hiddenEndedAt = now();
   };
-  /** Whether the gap that opened at `from` overlapped a hidden period. */
+  /**
+   * Whether the page is being watched: visible and with focus. **The frame
+   * loop runs only while it is** - a locked screen or a hidden window gets
+   * no next frame, so an idle client stops waking the display 60 times a
+   * second for nobody.
+   */
+  let watching = pageWatched();
+  /** When the page was watched again, which is what names an away gap. */
+  let awayEndedAt: number | null = null;
+  const noteAttention = (next: boolean): void => {
+    // **One chain per watched period.** The repeated reports one comeback
+    // produces must not re-stamp the return, which would mark the next
+    // ordinary gap as a gated one.
+    if (next === watching) return;
+    watching = next;
+    if (!next) {
+      // Take back the frame already queued: cancelling it is what stops the
+      // loop, since a page that is merely unfocused keeps firing rAF.
+      cancelFrame?.();
+      cancelFrame = null;
+      return;
+    }
+    awayEndedAt = now();
+    cancelFrame = schedule(tick);
+  };
+  /**
+   * Whether the gap that opened at `from` overlapped a period nothing could
+   * be watched: a hidden window, or a lost focus - which is how the desktop
+   * reports a locked screen.
+   */
   function gapHidden(from: number): boolean {
-    return hiddenNow || (hiddenEndedAt !== null && hiddenEndedAt >= from);
+    return (
+      hiddenNow ||
+      (hiddenEndedAt !== null && hiddenEndedAt >= from) ||
+      (awayEndedAt !== null && awayEndedAt >= from)
+    );
   }
   let postBeats = 0;
   let postLate = 0;
@@ -768,6 +847,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       frames,
       slow,
       max_ms: maxMs,
+      hidden: gapHidden(windowStart),
       surface: windowSurface,
       session: windowSession,
     });
@@ -912,6 +992,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
             run_id: runId,
             ts_ms: Date.now(),
             ms: at - openAt,
+            hidden: gapHidden(openAt),
             surface: 'session',
             session: openSeat,
           });
@@ -1005,6 +1086,10 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       hiddenNow = typeof document !== 'undefined' && document.hidden;
       hiddenEndedAt = null;
       cancelVisibility = (options.observeVisibility ?? observeVisibility)?.(noteVisibility) ?? null;
+      watching = pageWatched();
+      awayEndedAt = null;
+      cancelAttention = attention(noteAttention);
+      cancelForeground = foreground(() => noteAttention(true));
       cancelHeartbeat = heartbeat(
         (lateMs) => {
           beats += 1;
@@ -1051,7 +1136,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
         surface,
         session,
       });
-      cancelFrame = schedule(tick);
+      cancelFrame = watching ? schedule(tick) : null;
     },
     stop(): void {
       // The waiting slow frame's record still lands: a partial window is
@@ -1063,10 +1148,14 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       cancelObserver?.();
       cancelHeartbeat?.();
       cancelVisibility?.();
+      cancelAttention?.();
+      cancelForeground?.();
       cancelFrame = null;
       cancelObserver = null;
       cancelHeartbeat = null;
       cancelVisibility = null;
+      cancelAttention = null;
+      cancelForeground = null;
     },
     setSurface(next: string | null, seat: string | null): void {
       surface = next;

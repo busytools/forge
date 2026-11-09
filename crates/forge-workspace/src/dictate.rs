@@ -1246,6 +1246,11 @@ enum TakeResolution<T> {
 /// channel answers immediately and forever, and a loop that keeps
 /// polling it busy-spins a core until the inference runs out on its
 /// own.
+///
+/// The select is biased to the stop arm: when the answer lands in the
+/// same poll as a queued stop, Esc wins and the answer is dropped
+/// unread. An unbiased select picks a random ready arm, which landed
+/// a cancelled take about half the time.
 async fn wait_for_take<T>(
     answer: &mut tokio::task::JoinHandle<T>,
     stop: &mut tokio::sync::mpsc::Receiver<bool>,
@@ -1253,13 +1258,14 @@ async fn wait_for_take<T>(
 ) -> TakeResolution<T> {
     loop {
         tokio::select! {
-            resolved = &mut *answer => break TakeResolution::Answered(resolved),
+            biased;
             decide = stop.recv() => {
                 if decide != Some(true) {
                     cancel.cancel();
                     break TakeResolution::Abandoned;
                 }
             }
+            resolved = &mut *answer => break TakeResolution::Answered(resolved),
         }
     }
 }
@@ -1271,6 +1277,10 @@ async fn wait_for_take<T>(
 /// sample cap fires only while audio arrives, so a take whose stream stops
 /// mid-take has nothing to notice it and would hold the seat until
 /// teardown.
+///
+/// The select is biased to the stop arm: a stop queued when a meter tick
+/// is ready in the same poll cancels the take, so the cap cannot submit
+/// one the user already cancelled.
 async fn record_until_stopped(
     key: &SessionSlot,
     capture: &forge_dictate::CaptureMeter,
@@ -1285,6 +1295,10 @@ async fn record_until_stopped(
     meter.set_missed_tick_behavior(MissedTickBehavior::Skip);
     loop {
         tokio::select! {
+            biased;
+            decide = stop.recv() => {
+                return decide.unwrap_or(false);
+            }
             _ = meter.tick() => {
                 // The cap stopped the capture on its own; submitting is
                 // what a release would have done.
@@ -1302,9 +1316,6 @@ async fn record_until_stopped(
                     generation,
                     initiator,
                 });
-            }
-            decide = stop.recv() => {
-                return decide.unwrap_or(false);
             }
         }
     }
@@ -2833,6 +2844,62 @@ mod dictate_lifecycle_tests {
             TakeResolution::Abandoned => {
                 panic!("a submit decision during a transcription must keep waiting")
             }
+        }
+    }
+
+    /// When the answer lands in the same poll as a queued stop, the
+    /// stop wins: Esc must cancel the take rather than land words the
+    /// user already abandoned. An unbiased select picks a random ready
+    /// arm, so this resolved as the answer about half the time.
+    #[tokio::test]
+    async fn a_queued_stop_beats_an_answer_that_is_already_ready() {
+        // Tokio redraws the start index on every select invocation, so
+        // rounds are independent coin flips: the mutant failed 10 of 10
+        // runs, first fail on round 3, 0, 0, 1, 0, 1, 2, 1, 2, 2. 64
+        // rounds put a false pass at 2^-64.
+        for round in 0..64u32 {
+            let mut answer = tokio::spawn(async move { round });
+            while !answer.is_finished() {
+                tokio::task::yield_now().await;
+            }
+            let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
+            stop_tx.send(false).await.expect("the channel is open");
+            let cancel = forge_dictate::CancelToken::new();
+
+            let resolution = wait_for_take(&mut answer, &mut stop_rx, &cancel).await;
+
+            assert!(
+                matches!(resolution, TakeResolution::Abandoned),
+                "round {round}: the take answered although the user's stop was queued"
+            );
+            assert!(cancel.is_cancelled(), "round {round}: the abandon fires this take's token");
+        }
+    }
+
+    /// A stop queued when the cap tick fires must cancel the take, not
+    /// submit it: the tick's submit path returns what the user already
+    /// refused. Under the paused clock the interval's first tick and a
+    /// zero cap are both ready on the first poll, so the two arms race
+    /// exactly as they do at the cap boundary.
+    #[tokio::test(start_paused = true)]
+    async fn a_queued_stop_beats_a_cap_tick_that_is_already_ready() {
+        let (_dir, engine) = synthetic_engine();
+        let stream = engine.capture_stream().expect("a stream take starts");
+        let meter = stream.capture.meter();
+        let updates = crate::update_fanout::UpdateFanout::default();
+        let key = key("capped");
+
+        // The same per-invocation redraw makes each round an independent
+        // coin flip; 64 rounds put a false pass at 2^-64.
+        for round in 0..64u32 {
+            let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
+            stop_tx.send(false).await.expect("the channel is open");
+
+            let submitted =
+                record_until_stopped(&key, &meter, &mut stop_rx, &updates, Duration::ZERO, 0, None)
+                    .await;
+
+            assert!(!submitted, "round {round}: the cap submitted a take the user cancelled");
         }
     }
 

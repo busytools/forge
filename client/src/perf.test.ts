@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -10,29 +11,50 @@ import {
 } from './perf';
 
 /**
+ * **jsdom answers `hasFocus()` from the last focused element, and these tests
+ * create none**, so a page that is focused in the world would read unfocused
+ * here. The probe's boot reading asks the page, so the harness owns the
+ * answer, and a boot case overrides it.
+ */
+const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+
+/** A `pageshow` the browser marks as a bfcache restore; jsdom has no constructor. */
+function bfcacheRestore(): void {
+  const event = new Event('pageshow');
+  Object.defineProperty(event, 'persisted', { value: true });
+  window.dispatchEvent(event);
+}
+
+/**
  * The probe's clock and frame source, driven by the test.
  *
  * The core is injected with these rather than reaching for `performance` and
  * `requestAnimationFrame` itself, which is the whole reason a known slow
  * frame can be produced here instead of hoped for on a machine.
  */
-function harness(options: { summaryIntervalMs?: number } = {}) {
+function harness(
+  options: { summaryIntervalMs?: number; focused?: boolean; realAttention?: boolean } = {},
+) {
+  focus.mockReturnValue(options.focused ?? true);
   const records: PerfRecord[][] = [];
   let clock = 1_000;
-  const callbacks: (() => void)[] = [];
+  const callbacks: { run: () => void; live: boolean }[] = [];
   let longTask: ((ms: number, name: string) => void) | null = null;
   let heartbeat: ((lateMs: number) => void) | null = null;
   let heartbeatFailed: ((why: string) => void) | null = null;
   let visibility: ((hidden: boolean) => void) | null = null;
+  let attention: ((watching: boolean) => void) | null = null;
   const deferred: (() => void)[] = [];
-  let stopped = false;
+  let cancelled = false;
 
   const probe = perfProbe({
     now: () => clock,
     schedule: (cb) => {
-      callbacks.push(cb);
+      const entry = { run: cb, live: true };
+      callbacks.push(entry);
       return () => {
-        stopped = true;
+        entry.live = false;
+        cancelled = true;
       };
     },
     observeLongTasks: (cb) => {
@@ -55,6 +77,16 @@ function harness(options: { summaryIntervalMs?: number } = {}) {
         visibility = null;
       };
     },
+    ...(options.realAttention === true
+      ? {}
+      : {
+          observeAttention: (cb: (watching: boolean) => void) => {
+            attention = cb;
+            return () => {
+              attention = null;
+            };
+          },
+        }),
     // The record for a slow frame is written one macrotask after it, so a
     // test owns that turn: `settle()` runs every deferred callback.
     defer: (cb) => {
@@ -74,9 +106,10 @@ function harness(options: { summaryIntervalMs?: number } = {}) {
   /** One frame's arrival, `ms` after the previous one. */
   const frame = (ms: number) => {
     clock += ms;
-    const cb = callbacks.shift();
-    if (cb === undefined) throw new Error('no frame is scheduled');
-    cb();
+    const entry = callbacks.find((candidate) => candidate.live);
+    if (entry === undefined) throw new Error('no frame is scheduled');
+    entry.live = false;
+    entry.run();
   };
 
   /** Move the test's clock without a frame: a mark's own timestamp. */
@@ -94,6 +127,16 @@ function harness(options: { summaryIntervalMs?: number } = {}) {
     failHeartbeat: (why = '') => heartbeatFailed?.(why),
     /** The page's visibility changing, as the browser reports it. */
     hidden: (hidden: boolean) => visibility?.(hidden),
+    /** Whether the page is being watched: visible, and with focus. */
+    watching: (watching: boolean) => attention?.(watching),
+    /** How many frame callbacks are waiting to run: one chain is one. */
+    get liveFrames() {
+      return callbacks.filter((entry) => entry.live).length;
+    },
+    /** Whether a frame callback is waiting to run. */
+    get scheduled() {
+      return callbacks.some((entry) => entry.live);
+    },
     /** The macrotask turn the slow frame's record is written on. */
     settle: () => {
       for (let cb = deferred.shift(); cb !== undefined; cb = deferred.shift()) cb();
@@ -101,8 +144,8 @@ function harness(options: { summaryIntervalMs?: number } = {}) {
     get beating() {
       return heartbeat !== null;
     },
-    get stopped() {
-      return stopped;
+    get cancelled() {
+      return cancelled;
     },
   };
 }
@@ -412,7 +455,7 @@ describe('the frame probe', () => {
   it('stops measuring where it was told to', () => {
     const h = harness();
     h.probe.stop();
-    expect(h.stopped).toBe(true);
+    expect(h.cancelled).toBe(true);
   });
 
   /**
@@ -478,6 +521,227 @@ describe('the frame probe', () => {
     h.settle();
     const shown = h.records.flat().filter((record) => record.kind === 'frame')[1];
     expect(shown?.hidden, 'and a gap on a painting window says it was not hidden').toBe(false);
+  });
+
+  /**
+   * **The frame loop is the page's one continuous rAF, and it stops when
+   * nobody is watching.** Left running behind a locked screen or a hidden
+   * window it schedules a frame every refresh for a page no one can see -
+   * measured 2026-11-09: 603 frames in a 10 s window with the screen locked.
+   * The attention port is visibility plus focus: a hidden window or tab, and
+   * the focus loss the desktop window reports when the screen locks.
+   */
+  it('schedules no frame while the page is not being watched', () => {
+    const h = harness();
+    h.frame(16);
+    expect(h.scheduled, 'the loop runs while the page is watched').toBe(true);
+
+    h.watching(false);
+    expect(h.scheduled, 'no frame waits behind a locked screen or a hidden window').toBe(false);
+  });
+
+  /**
+   * **The first frame back measures the away period, and names it a gate.**
+   * A gap read as a freeze is the thing the hidden flag exists to prevent,
+   * and this one was produced on purpose: the frame loop stopped rather than
+   * the thread blocking, so the resume frame carries the whole span with
+   * `hidden`, the same way a hidden window's gap does.
+   */
+  it('resumes when the page is watched again, naming the away gap as gated', () => {
+    const h = harness();
+    h.frame(16);
+    h.watching(false);
+    h.advance(5_000);
+    h.watching(true);
+    expect(h.scheduled, 'the loop is back').toBe(true);
+
+    h.frame(16);
+    h.settle();
+    const framed = h.records.flat().filter((record) => record.kind === 'frame');
+    expect(framed, 'the away period is one slow record, not a burst').toHaveLength(1);
+    expect(framed[0]?.ms, 'the whole away period is the first frame back').toBe(5_016);
+    expect(framed[0]?.hidden, 'and it is a gate, not a blocked thread').toBe(true);
+
+    h.frame(16);
+    expect(h.scheduled, 'the loop keeps running afterwards').toBe(true);
+  });
+
+  /**
+   * **A page that boots visible but unfocused schedules nothing.** The boot
+   * reading is the page's own answer - the question `Shell.svelte` seeds its
+   * notification state with - and no event corrects a window that never had
+   * focus, so a login item or an OS restore would otherwise run the loop for
+   * the whole unfocused period.
+   */
+  it('schedules no frame when the page boots visible but unfocused', () => {
+    const h = harness({ focused: false });
+    expect(h.scheduled, 'an unfocused boot schedules nothing').toBe(false);
+
+    h.watching(true);
+    expect(h.scheduled, 'a focus report arms the loop').toBe(true);
+  });
+
+  /**
+   * **An initial `pageshow` must not undo the boot reading.** It fires on
+   * every load, after `startPerfProbe`, so arming on it would run the loop
+   * for an unfocused window exactly as the boot read just refused to.
+   */
+  it('does not arm an unfocused boot from the initial pageshow', () => {
+    const h = harness({ focused: false, realAttention: true });
+    try {
+      expect(h.scheduled, 'an unfocused boot schedules nothing').toBe(false);
+      window.dispatchEvent(new Event('pageshow'));
+      expect(h.scheduled, 'the initial pageshow is not a restore').toBe(false);
+    } finally {
+      h.probe.stop();
+    }
+  });
+
+  /** **A hidden boot schedules nothing either**, and the first report arms it. */
+  it('schedules no frame when the page boots hidden', () => {
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+    try {
+      const h = harness();
+      expect(h.scheduled, 'a hidden boot schedules nothing').toBe(false);
+
+      hidden.mockReturnValue(false);
+      h.watching(true);
+      expect(h.scheduled, 'the first report arms it').toBe(true);
+    } finally {
+      hidden.mockRestore();
+    }
+  });
+
+  /**
+   * **The real listeners are the pause**, not only the state machine they
+   * feed: a blur must stop the loop, focus and a visible visibilitychange
+   * must start it, and a stop must take the listeners away.
+   */
+  it('pauses on the real blur and resumes on the real focus and visibility', () => {
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+    try {
+      const h = harness({ realAttention: true });
+      expect(h.scheduled, 'a watched boot runs the loop').toBe(true);
+
+      window.dispatchEvent(new Event('blur'));
+      expect(h.scheduled, 'blur stops the loop').toBe(false);
+
+      window.dispatchEvent(new Event('focus'));
+      expect(h.scheduled, 'focus restarts it').toBe(true);
+
+      hidden.mockReturnValue(true);
+      document.dispatchEvent(new Event('visibilitychange'));
+      expect(h.scheduled, 'a hidden document stops it').toBe(false);
+
+      // An initial `pageshow` is not a restore, and a restore reads focus.
+      hidden.mockReturnValue(false);
+      window.dispatchEvent(new Event('pageshow'));
+      expect(h.scheduled, 'the initial pageshow is not a restore').toBe(false);
+
+      focus.mockReturnValue(false);
+      bfcacheRestore();
+      expect(h.scheduled, 'a persisted restore without focus stays paused').toBe(false);
+
+      focus.mockReturnValue(true);
+      bfcacheRestore();
+      expect(h.scheduled, 'a persisted restore with focus arms it').toBe(true);
+
+      hidden.mockReturnValue(true);
+      document.dispatchEvent(new Event('visibilitychange'));
+      expect(h.scheduled, 'hidden again stops it').toBe(false);
+
+      hidden.mockReturnValue(false);
+      document.dispatchEvent(new Event('visibilitychange'));
+      expect(h.scheduled, 'a visible, focused document restarts it').toBe(true);
+
+      h.probe.stop();
+      window.dispatchEvent(new Event('blur'));
+      window.dispatchEvent(new Event('focus'));
+      expect(h.scheduled, 'a stopped probe takes its listeners away').toBe(false);
+    } finally {
+      hidden.mockRestore();
+    }
+  });
+
+  /** **A stopped probe is unsubscribed**, so no later report re-arms it. */
+  it('does not restart from a report after stop', () => {
+    const h = harness();
+    h.probe.stop();
+    h.watching(false);
+    h.watching(true);
+    expect(h.scheduled, 'a stopped probe is unsubscribed').toBe(false);
+  });
+
+  /** **One chain, never two**: a second arm on one return doubles the loop. */
+  it('keeps one frame chain across repeated pause and resume cycles', () => {
+    const h = harness();
+    expect(h.liveFrames, 'one chain while watched').toBe(1);
+    h.watching(true);
+    expect(h.liveFrames, 'a repeated watched report adds none').toBe(1);
+    h.watching(false);
+    expect(h.liveFrames, 'none while paused').toBe(0);
+    h.watching(true);
+    expect(h.liveFrames, 'one on the return').toBe(1);
+    h.watching(false);
+    expect(h.liveFrames, 'none on the second pause').toBe(0);
+    h.watching(true);
+    expect(h.liveFrames, 'one on the second return').toBe(1);
+  });
+
+  /**
+   * **A summary and a quiet say when their span crossed a gated period.**
+   * Both carry the away time in their own span, so without the flag a reader
+   * has only an adjacent frame record to attribute it to.
+   */
+  it('marks a summary and a quiet whose span crossed an away period', () => {
+    const h = harness({ summaryIntervalMs: 1_000 });
+    h.frame(16);
+    h.probe.noteConversationOpened('seat');
+    h.probe.noteDrawn('conversation');
+    h.watching(false);
+    h.advance(5_000);
+    h.watching(true);
+    h.frame(16);
+    h.settle();
+    h.frame(16);
+
+    const summary = h.records.flat().find((record) => record.kind === 'summary');
+    expect(summary?.hidden, 'the summary window crossed the away period').toBe(true);
+    const quiet = h.records.flat().find((record) => record.kind === 'quiet');
+    expect(quiet?.hidden, 'the open crossed the away period').toBe(true);
+
+    // A span nobody was away for says so.
+    const plain = harness({ summaryIntervalMs: 1_000 });
+    plain.frame(16);
+    plain.advance(1_100);
+    plain.frame(16);
+    plain.settle();
+    plain.probe.noteConversationOpened('seat');
+    plain.probe.noteDrawn('conversation');
+    plain.frame(16);
+
+    const watched = plain.records.flat().find((record) => record.kind === 'summary');
+    expect(watched?.hidden, 'a watched window is not marked').toBe(false);
+    const plainQuiet = plain.records.flat().find((record) => record.kind === 'quiet');
+    expect(plainQuiet?.hidden, 'an open nobody was away for is not marked').toBe(false);
+  });
+
+  /**
+   * **A repeated watched report is not a return.** One comeback fires focus
+   * and visibilitychange; re-stamping the return on the second would mark
+   * the next ordinary gap as a gated one.
+   */
+  it('does not treat a repeated watched report as an away period', () => {
+    const h = harness();
+    h.frame(16);
+    h.advance(500);
+    h.watching(true);
+    h.advance(100);
+    h.frame(120);
+    h.settle();
+
+    const framed = h.records.flat().filter((record) => record.kind === 'frame');
+    expect(framed[0]?.hidden, 'the gap crossed no away period').toBe(false);
   });
 
   /**

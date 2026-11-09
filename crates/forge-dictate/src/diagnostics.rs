@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
+use transcribe_cpp::CancelToken;
 
 use crate::audio::SAMPLE_RATE;
 use crate::config::ModelSpec;
@@ -126,7 +127,18 @@ pub(crate) fn claim_take_dir(dir: &Path, stamp: u128) -> std::io::Result<(String
 /// Write one take into `dir/take-<take_id>/` and prune the store to
 /// [`RETAINED_TAKES`]. Nothing here can fail the caller: every step
 /// logs its own failure and stops that take's capture.
-pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
+///
+/// `cancel` is this take's token. Its answer is sent before the write
+/// starts, so a cancel that lands while the write runs is seen here and
+/// nowhere else: the directory this call claimed is removed rather than
+/// left to persist and count toward retention. When the removal itself
+/// fails, the directory is left in place and the failure is logged.
+pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>, cancel: &CancelToken) {
+    // A take already abandoned before the write starts pays no write; the
+    // check after it is for one cancelled while the files are landing.
+    if cancel.is_cancelled() {
+        return;
+    }
     // The store is lazily made: a first take is what brings it into being.
     if let Err(error) = std::fs::create_dir_all(dir) {
         tracing::warn!(
@@ -149,6 +161,33 @@ pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
             return;
         }
     };
+    let wrote = write_take(&take_dir, take);
+    if cancel.is_cancelled() {
+        if let Err(error) = std::fs::remove_dir_all(&take_dir) {
+            tracing::warn!(
+                event_name = "diagnostics_cancelled_take_not_removed",
+                %error,
+                dir = %take_dir.display(),
+                "diagnostics: cancelled take's directory could not be removed"
+            );
+        }
+        return;
+    }
+    // Pruned only after a complete write, as before the write was split out:
+    // a partial directory has not earned a retention pass.
+    if wrote {
+        prune(dir);
+    }
+}
+
+/// One claimed take's files, `meta.json` last, answering whether the take
+/// was written whole.
+///
+/// A failure stops this take's write and leaves a partial directory, which
+/// never reads as a complete take; [`capture_take`] then skips the prune.
+/// An abandoned take is taken back by [`capture_take`] when its token is
+/// set by the time this returns.
+fn write_take(take_dir: &Path, take: &TakeRecord<'_>) -> bool {
     // meta.json is written LAST, which is what makes a take directory
     // without it incomplete: an early return above leaves a partial
     // directory that still counts for retention, but never reads as a
@@ -160,7 +199,7 @@ pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
             dir = %take_dir.display(),
             "diagnostics: store directory not writable"
         );
-        return;
+        return false;
     }
 
     if let Err(error) = write_wav(&take_dir.join("output.wav"), take.audio) {
@@ -170,7 +209,7 @@ pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
             dir = %take_dir.display(),
             "diagnostics: capture not written"
         );
-        return;
+        return false;
     }
     for (k, window) in take.windows.iter().enumerate() {
         if let Err(error) = std::fs::write(take_dir.join(format!("raw/{k}.txt")), &window.raw) {
@@ -181,7 +220,7 @@ pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
                 window = k,
                 "diagnostics: window transcript not written"
             );
-            return;
+            return false;
         }
     }
     if let Err(error) = std::fs::write(take_dir.join("joined.txt"), take.joined) {
@@ -191,7 +230,7 @@ pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
             dir = %take_dir.display(),
             "diagnostics: joined transcript not written"
         );
-        return;
+        return false;
     }
     if let Err(error) = std::fs::write(take_dir.join("text.txt"), take.text) {
         tracing::warn!(
@@ -200,7 +239,7 @@ pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
             dir = %take_dir.display(),
             "diagnostics: normalized transcript not written"
         );
-        return;
+        return false;
     }
 
     let ms = |d: std::time::Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
@@ -249,7 +288,7 @@ pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
                     dir = %take_dir.display(),
                     "diagnostics: metadata not written"
                 );
-                return;
+                return false;
             }
         }
         Err(error) => {
@@ -259,11 +298,10 @@ pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>) {
                 dir = %take_dir.display(),
                 "diagnostics: metadata not serializable"
             );
-            return;
+            return false;
         }
     }
-
-    prune(dir);
+    true
 }
 
 /// One role's resolved spec as `meta.json` names it: the file, the digest
@@ -395,6 +433,32 @@ mod tests {
         }
     }
 
+    /// A take cancelled before its write starts still leaves no directory
+    /// behind: the token can be set between the branch's decision and the
+    /// writer's first step, and the writer takes back what it claimed
+    /// rather than leave it to count toward retention.
+    #[test]
+    fn a_take_cancelled_before_its_write_leaves_no_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let audio = vec![0.5; 16];
+        let stages = Stages::default();
+        let models = stub_models(None, None);
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        capture_take(
+            dir.path(),
+            41,
+            &take_record(&models, &audio, &[], "early", "early", &stages),
+            &cancel,
+        );
+        let entries: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().collect();
+        assert!(
+            entries.is_empty(),
+            "a cancelled take persists nothing, found {} entries",
+            entries.len()
+        );
+    }
+
     /// The store mirrors the granular layout: capture, per-window raw
     /// transcripts, the exact normalizer input, the final text, and the
     /// metadata that ties them together.
@@ -419,6 +483,7 @@ mod tests {
                 "First take, second take.",
                 &stages,
             ),
+            &CancelToken::new(),
         );
 
         let take = dir.path().join("take-0000000000042");
@@ -483,7 +548,7 @@ mod tests {
         let mut record = take_record(&models, &audio, &windows, "first", "", &stages);
         record.outcome = "recognition_error";
         record.recognition_error = Some((1, "decode failed: bad input".into()));
-        capture_take(dir.path(), 7, &record);
+        capture_take(dir.path(), 7, &record, &CancelToken::new());
 
         let meta: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("take-0000000000007/meta.json")).unwrap(),
@@ -513,7 +578,7 @@ mod tests {
         let windows = vec![];
         let models = stub_models(Some(stub_normalizer()), Some("en"));
         let record = take_record(&models, &audio, &windows, "", "first take", &stages);
-        capture_take(dir.path(), 9, &record);
+        capture_take(dir.path(), 9, &record, &CancelToken::new());
 
         let meta: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("take-0000000000009/meta.json")).unwrap(),
@@ -552,7 +617,7 @@ mod tests {
         let windows = vec![];
         let models = stub_models(None, None);
         let record = take_record(&models, &audio, &windows, "", "first take", &stages);
-        capture_take(dir.path(), 8, &record);
+        capture_take(dir.path(), 8, &record, &CancelToken::new());
 
         let meta: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("take-0000000000008/meta.json")).unwrap(),
@@ -581,7 +646,12 @@ mod tests {
         let windows = vec![];
         let models = stub_models(None, None);
         for id in 1..=RETAINED_TAKES as u128 + 1 {
-            capture_take(dir.path(), id, &take_record(&models, &audio, &windows, "", "", &stages));
+            capture_take(
+                dir.path(),
+                id,
+                &take_record(&models, &audio, &windows, "", "", &stages),
+                &CancelToken::new(),
+            );
         }
         assert!(foreign.is_dir(), "a user directory sharing the take- prefix must survive pruning");
         let takes: Vec<_> = std::fs::read_dir(dir.path())
@@ -610,7 +680,12 @@ mod tests {
         let models = stub_models(None, None);
         let newest = RETAINED_TAKES as u128 + 2;
         for id in 1..=newest {
-            capture_take(dir.path(), id, &take_record(&models, &audio, &windows, "", "", &stages));
+            capture_take(
+                dir.path(),
+                id,
+                &take_record(&models, &audio, &windows, "", "", &stages),
+                &CancelToken::new(),
+            );
         }
         let takes: Vec<_> = std::fs::read_dir(dir.path())
             .unwrap()
@@ -647,6 +722,7 @@ mod tests {
             &blocker.join("under"),
             1,
             &take_record(&models, &audio, &windows, "", "", &stages),
+            &CancelToken::new(),
         );
         assert!(!blocker.is_dir(), "the unwritable location must not have been turned into one");
     }

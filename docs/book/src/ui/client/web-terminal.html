@@ -108,6 +108,7 @@
         <span class="back">back to chat</span>
         <span class="title">terminal 1 · zsh · /Users/vedhavyas/Projects/forge</span>
         <span class="state held">waiting for you</span>
+        <span class="act">take control</span>
         <span class="act">Done</span>
         <span class="act">Not now</span>
       </div>
@@ -172,9 +173,10 @@
     </div></div>
     <div class="tnote">a take or release is drawn while the server answers - <b>taking control...</b>,
       <b>releasing...</b> - and a refusal replaces the state line in the server's own words, until the
-      ask ends, the control push lands or a fresh repaint arrives; the bar carries the parked ask's
-      <b>Done</b> and <b>Not now</b> while it waits. A client that lost the keyboard to another
-      client's take reads <span class="mono">another client has the keyboard</span>; a client that
+      terminal hand-off ask ends, the control push lands or a fresh repaint arrives; the bar carries the
+      parked ask's <b>Done</b> and <b>Not now</b> while that terminal hand-off is the front ask. A client
+      that lost the keyboard to another client's take reads
+      <span class="mono">another client has the keyboard</span>; a client that
       lost it to an agent's call reads <span class="mono">the agent took the keyboard</span>.</div>
   </div>
 

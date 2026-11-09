@@ -137,8 +137,9 @@ impl Tool for Create {
          human summary of what the job does and why - which the UI shows as the schedule's \
          headline. If that session isn't open at fire time, forge spawns it first, unless it can \
          no longer be started (a worker whose directory is gone); pass `wake: false` for a \
-         standing sweep, where a tick that finds the session asleep is skipped and the entry \
-         stays due for the next session start. Returns the cron's id (use it \
+         job that must not wake a sleeping owner, where a tick that finds the \
+         session asleep is skipped and the entry stays due for the next session start. \
+         Returns the cron's id (use it \
          with cron__delete). Recurring crons repeat; run-once crons delete themselves after \
          firing. A run-once cron is a poor fit for retrying a transient failure - a rate limit \
          or a blip clears in seconds, so the retry fires later as a user turn into a session \
@@ -175,9 +176,10 @@ impl Tool for Create {
                 "wake": {
                     "type": "boolean",
                     "description": "Whether a fire may wake a sleeping session (default true). \
-                                    Set false for a standing sweep: a tick that finds the \
-                                    session asleep is skipped and the entry stays due, so the \
-                                    next session start (or a tick while it is awake) runs it.",
+                                    Set false for a job that must not wake a sleeping \
+                                    owner: a tick that finds the session asleep is skipped and \
+                                    the entry stays due, so the next session start (or a tick \
+                                    while it is awake) runs it.",
                 },
             },
             "required": ["prompt"],
@@ -385,8 +387,6 @@ mod tests {
         assert!(calls[0].4, "an unstated `wake` reaches the facade as the waking default");
     }
 
-    /// A standing sweep passes `wake: false`, and the tool threads it: the
-    /// scheduler then skips a sleeping owner instead of spawning it.
     /// The output states `wake: false` whether or not the entry carries a
     /// description: a caller reading a no-wake cron back must see it, and the
     /// two fields are independent.
@@ -399,15 +399,18 @@ mod tests {
         assert_eq!(json["wake"], serde_json::Value::Bool(false), "the no-wake flag is stated");
     }
 
+    /// A job that must not wake a sleeping owner passes `wake: false`, and
+    /// the tool threads it: the scheduler then skips a sleeping owner
+    /// instead of spawning it.
     #[tokio::test]
-    async fn create_threads_wake_false_for_a_standing_sweep() {
+    async fn create_threads_wake_false_for_a_no_wake_job() {
         let mock = Arc::new(MockCronFacade::new());
         let tool = Create { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool
             .call(input(serde_json::json!({
-                "schedule": "*/30 * * * *",
-                "prompt": "sweep the board",
+                "schedule": "0 6 * * 1",
+                "prompt": "refresh the index",
                 "wake": false
             })))
             .await;
@@ -684,6 +687,36 @@ mod tests {
         assert!(
             desc.contains("unless it can no longer be started"),
             "the spawn promise must carry the case where the owner cannot be started: {desc}",
+        );
+    }
+
+    /// The `wake: false` example is what a fresh lead meets when it reaches
+    /// for the tool, so it names the flag's own meaning rather than the
+    /// standing sweep the charter forbids. Both places that describe the
+    /// parameter are pinned together.
+    #[test]
+    fn cron_create_description_keeps_the_no_wake_example_generic() {
+        let create = Create { facade: MockCronFacade::new().into_arc(), slot: caller_slot() };
+        let desc = create.description();
+        assert!(
+            desc.contains("a job that must not wake a sleeping owner"),
+            "the no-wake example names the flag's meaning: {desc}",
+        );
+        assert!(
+            !desc.contains("standing sweep"),
+            "the no-wake example must not sell a standing sweep: {desc}",
+        );
+        let schema = create.input_schema();
+        let wake = schema["properties"]["wake"]["description"]
+            .as_str()
+            .expect("the wake parameter carries a description");
+        assert!(
+            wake.contains("a job that must not wake a sleeping owner"),
+            "the wake parameter names the flag's meaning: {wake}",
+        );
+        assert!(
+            !wake.contains("standing sweep"),
+            "the wake parameter must not sell a standing sweep: {wake}",
         );
     }
 

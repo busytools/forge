@@ -604,7 +604,7 @@ pub(crate) fn deliver_cron_prompt(
         }
     }
     // No live slot and no wake: skip the tick and leave the entry due, so
-    // the next session start runs it. A standing sweep asked for this.
+    // the next session start runs it. A `wake: false` cron asks for this.
     if !cron.wake {
         return CronFireOutcome::SkippedAsleep;
     }
@@ -10944,28 +10944,50 @@ mod lead_charter_tests {
         }
     }
 
-    /// The board bullets above say how a row is worked, but never that a
-    /// sweep is a standing duty. What no bullet or `tasks__*` description
-    /// supplies is the cadence, the schedule, `wake: false`, the prompt
-    /// carrying the sweep's steps, and the one-line report - pinned here
-    /// so a rewrite cannot drop them.
+    /// The board bullets above say how a row is worked; the sweep has its
+    /// own paragraph below them. That paragraph is pinned byte for byte, so
+    /// nothing can be added, removed or qualified inside it. The rest of the
+    /// board section is then scanned as a net for a cron call, a cron
+    /// parameter or a cron expression: candidate windows are parsed with
+    /// forge's own validator, so the net accepts exactly what a session
+    /// could schedule - names, ranges and aliases included. It is a net,
+    /// not a closure: prose naming no tool, parameter or expression cannot
+    /// be told apart from advice. The charter's one-shot `cron__create`
+    /// advice sits above that section, so the scan leaves it alone.
     #[test]
     fn the_charter_carries_the_board_sweep() {
+        const SWEEP: &str = "**Sweep the board at the start of every session, and on demand.** \
+             First `cron__list` and delete any sweep cron an older version of this charter had \
+             you create (`cron__delete`) - it keeps firing its sweep prompt into this session \
+             until it is removed. Never create a standing sweep cron.";
+        const CLEANUP: &str = "First `cron__list` and delete any sweep cron an older version of \
+             this charter had you create (`cron__delete`)";
+        const REASON: &str =
+            "it keeps firing its sweep prompt into this session until it is removed";
+
+        let section = board_section();
+        assert!(
+            section.contains("**Sweep the board"),
+            "the sweep paragraph belongs in the board section, not elsewhere",
+        );
+        assert_eq!(
+            DEFAULT_LEAD_CHARTER.matches("**Sweep the board").count(),
+            1,
+            "the charter carries exactly one sweep paragraph",
+        );
+        let sweep_at = section
+            .find("**Sweep the board")
+            .expect("the sweep paragraph belongs in the board section");
+        let tail = &section[sweep_at..];
+        let sweep_paragraph = &tail[..tail.find("\n\n").unwrap_or(tail.len())];
+        assert_eq!(
+            sweep_paragraph, SWEEP,
+            "the sweep paragraph is pinned byte for byte: nothing added, removed or qualified",
+        );
+
         for (clause, why) in [
-            (
-                "Sweep the board at the start of every session, and on a standing sweep you \
-                 create yourself",
-                "the cadence and its two triggers",
-            ),
-            (
-                "`cron__list` first, then a `cron__create` with `*/30 * * * *` and `wake: false` \
-                 only when no sweep entry exists",
-                "one standing entry, never a new one each session",
-            ),
-            (
-                "the sweep runs only on an awake session, never waking a sleeping one",
-                "the rule, stated rather than left to the parameter's default",
-            ),
+            (CLEANUP, "the old standing entry is removed, not only forbidden"),
+            (REASON, "the reason the cleanup is owed"),
             (
                 "settle every row waiting on the user through one door",
                 "the sweep's scope: a dependency or resource wait has no door here",
@@ -10995,6 +11017,148 @@ mod lead_charter_tests {
                 "the lead charter does not carry the board sweep ({why}): {clause}",
             );
         }
+
+        // The two pinned sentences carry the cron tool names by necessity,
+        // so they are cut out before the net runs over what is left.
+        let cleanup_sentence = format!("{CLEANUP} - {REASON}.");
+        let without_cleanup = section.replacen(&cleanup_sentence, "", 1);
+        assert_ne!(
+            without_cleanup, section,
+            "the pinned cleanup sentence is one sentence: {cleanup_sentence}",
+        );
+        let prohibition = "Never create a standing sweep cron.";
+        let rest = without_cleanup.replacen(prohibition, "", 1);
+        assert_ne!(rest, without_cleanup, "the pinned prohibition is one sentence: {prohibition}");
+        if let Some((marker, at)) = cron_marker(&rest) {
+            let near = context_around(&rest, at);
+            panic!("the board section carries {marker:?} near: {near}");
+        }
+
+        let creations: Vec<usize> =
+            DEFAULT_LEAD_CHARTER.match_indices("cron__create").map(|(at, _)| at).collect();
+        let sites = if creations.is_empty() {
+            "none".to_owned()
+        } else {
+            creations
+                .iter()
+                .map(|&at| context_around(DEFAULT_LEAD_CHARTER, at))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        };
+        assert_eq!(
+            creations.len(),
+            1,
+            "the charter's only cron creation is the report-only one-shot sentence; found {} at: \
+             {sites}",
+            creations.len(),
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("schedule a report-only `cron__create` one-shot (`run_once_at`)"),
+            "the single cron creation is the one-shot advice",
+        );
+    }
+
+    /// The net's own machinery, proved away from the charter: the charter
+    /// carries none of these markers today, so a detector that stopped
+    /// matching, or a scan that stopped lowercasing, would leave every
+    /// assertion above green. The expressions are the forms forge's own
+    /// validator accepts - wildcards, names, ranges and aliases.
+    #[test]
+    fn the_board_section_net_catches_cron_markers() {
+        for (text, why) in [
+            ("`*/30 * * * *`.", "a backtick-wrapped expression ending in a period"),
+            ("0 6 * * 1", "five plain fields"),
+            ("(0 9 * * 1)", "a parenthesised expression"),
+            ("0 9 * * MON", "a day name"),
+            ("0 9 * * MON-FRI", "a day range"),
+            ("@daily", "an alias"),
+        ] {
+            assert!(cron_expression(text).is_some(), "{text} is a cron expression ({why})");
+        }
+        assert!(
+            cron_marker("Create a CRON job each morning").is_some(),
+            "the scan lowercases, so a capitalised CRON is caught",
+        );
+        assert_eq!(trim_cron_token("`0`."), "0", "backticks and a period are trimmed");
+        assert_eq!(trim_cron_token("`1`,"), "1", "backticks and a comma are trimmed");
+        assert_eq!(trim_cron_token("(2);"), "2", "parentheses and a semicolon are trimmed");
+        assert_eq!(cron_expression("word"), None, "prose is not a cron expression");
+    }
+
+    /// The board section, from its heading to the next top-level heading.
+    fn board_section() -> &'static str {
+        let start = DEFAULT_LEAD_CHARTER
+            .find("## Keep the task board")
+            .expect("the board section heading `## Keep the task board` is present");
+        let tail = &DEFAULT_LEAD_CHARTER[start..];
+        let end = tail.find("\n## ").unwrap_or(tail.len());
+        &tail[..end]
+    }
+
+    /// The first cron marker the board-section net recognises in `text`: a
+    /// cron word, a `wake:` parameter or a cron expression. The haystack is
+    /// lowercased with the ASCII-only form on purpose - it preserves byte
+    /// offsets, so the failure context can be sliced out of the original
+    /// text.
+    fn cron_marker(text: &str) -> Option<(String, usize)> {
+        let haystack = text.to_ascii_lowercase();
+        for token in ["cron", "wake:"] {
+            if let Some(at) = haystack.find(token) {
+                return Some((token.to_owned(), at));
+            }
+        }
+        cron_expression(&haystack).map(|at| ("cron expression".to_owned(), at))
+    }
+
+    /// A whitespace-separated token with the punctuation prose wraps a
+    /// schedule in: code-span ticks, a trailing period or comma, parentheses,
+    /// semicolons and quotes.
+    fn trim_cron_token(word: &str) -> &str {
+        word.trim_matches(['`', '.', ',', '(', ')', ';', '"', '\''])
+    }
+
+    /// The byte offset of the first cron expression the board-section net
+    /// recognises in `text`: every window of five whitespace-separated
+    /// tokens, and every `@`-prefixed token, is stripped of its wrapping
+    /// punctuation and handed to forge's own validator, so the net accepts
+    /// exactly what `cron__create` would - names, ranges, aliases and all -
+    /// and nothing else by construction. A numeric run such as `2 3 4 5 6`
+    /// parses too; that is the trade for using the real validator, it fails
+    /// loudly, and the board section carries no such run.
+    fn cron_expression(text: &str) -> Option<usize> {
+        let mut tokens: Vec<(usize, &str)> = Vec::new();
+        let mut cursor = 0;
+        for word in text.split_whitespace() {
+            let at = cursor + text[cursor..].find(word)?;
+            cursor = at + word.len();
+            let trimmed = trim_cron_token(word);
+            if !trimmed.is_empty() {
+                tokens.push((at, trimmed));
+            }
+        }
+        for (at, token) in &tokens {
+            if token.starts_with('@')
+                && crate::mcp::cron::schedule::validate_cron_expr(token).is_ok()
+            {
+                return Some(*at);
+            }
+        }
+        for window in tokens.windows(5) {
+            let expr = window.iter().map(|(_, word)| *word).collect::<Vec<_>>().join(" ");
+            if crate::mcp::cron::schedule::validate_cron_expr(&expr).is_ok() {
+                return Some(window[0].0);
+            }
+        }
+        None
+    }
+
+    /// A window of `text` around `at`, so a failure names the lineage
+    /// without dumping the whole charter.
+    fn context_around(text: &str, at: usize) -> &str {
+        let start = text[..at].char_indices().rev().nth(60).map_or(0, |(i, _)| i);
+        let end = text[at..].char_indices().nth(120).map_or(text.len(), |(i, _)| at + i);
+        &text[start..end]
     }
 
     /// #1494: the parallelism rule reads the project's own `max_workers`
