@@ -1,7 +1,7 @@
 //! Biometric enrolments on the redb `biometric_enrolments` table.
 //!
 //! One row per device, keyed by the enrolment id its client minted. The whole
-//! [`Enrolment`] is serde-json, blobs included: the bytes are the client's
+//! `Enrolment` is serde-json, blobs included: the bytes are the client's
 //! wrapped secrets, stored and returned unchanged and never decoded here.
 
 use anyhow::Context;
