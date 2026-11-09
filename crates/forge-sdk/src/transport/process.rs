@@ -174,6 +174,27 @@ fn flag_names(
     (names.join(" "), dropped)
 }
 
+/// How long one write to the CLI's stdin, and its ack, may take before the
+/// write fails.
+///
+/// **A write had no bound.** A child that stopped reading its stdin - a
+/// wedged CLI, a busy one, a full pipe - left the writer task parked in
+/// `write_all` and every caller waiting on its ack for ever. The hook
+/// callback that writes a control response is one of those callers, so a
+/// backed-up child hung the server silently: no error, no panic, no reap.
+/// Thirty seconds is longer than a pipe write to a reading child ever takes
+/// and far shorter than the 26.7 minutes the 2026-11-09 freeze went
+/// unnoticed.
+pub(crate) const STDIN_WRITE_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A stdin write, or its ack, that outlived [`STDIN_WRITE_BOUND`].
+fn write_stalled(bound: std::time::Duration, what: &str) -> Error {
+    Error::Io(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        format!("the CLI stopped reading stdin: {what} did not complete within {bound:?}"),
+    ))
+}
+
 /// Outcome of one writer-task operation. Sent back over a oneshot the
 /// caller provides.
 type IoAck = Result<(), Error>;
@@ -198,6 +219,10 @@ pub struct Subprocess {
     /// [`clone_writer`](Self::clone_writer) so external
     /// dispatchers can write without contending on `&mut self`.
     writer_tx: mpsc::UnboundedSender<WriterCmd>,
+    /// How long one write to stdin, and its ack, may take. The shipping
+    /// bound is [`STDIN_WRITE_BOUND`]; a test injects a shorter one so it
+    /// can watch the bound fire without waiting thirty seconds out.
+    write_bound: std::time::Duration,
     /// Inbound channel from the reader task. Single-consumer.
     reader_rx: mpsc::UnboundedReceiver<Result<Option<String>, Error>>,
     /// Writer task handle. [`close`](Self::close) aborts this so the
@@ -342,10 +367,12 @@ impl Subprocess {
         spawn_reader_task(stdout, options.tee_inbound.clone(), reader_tx);
 
         let (writer_tx, writer_rx) = mpsc::unbounded_channel();
-        let writer_task = spawn_writer_task(stdin, options.tee_outbound.clone(), writer_rx);
+        let writer_task =
+            spawn_writer_task(stdin, options.tee_outbound.clone(), writer_rx, STDIN_WRITE_BOUND);
 
         Ok(Self {
             writer_tx,
+            write_bound: STDIN_WRITE_BOUND,
             reader_rx,
             writer_task: Some(writer_task),
             stderr_task: Some(stderr_task),
@@ -402,12 +429,14 @@ impl Subprocess {
                 "Subprocess writer task gone",
             ))
         })?;
-        ack_rx.await.map_err(|_| {
-            Error::Io(std::io::Error::new(
+        match tokio::time::timeout(self.write_bound, ack_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
                 "Subprocess writer task dropped ack",
-            ))
-        })?
+            ))),
+            Err(_) => Err(write_stalled(self.write_bound, "a stdin write's ack")),
+        }
     }
 
     /// Close the subprocess's stdin. Safe to call multiple times.
@@ -424,10 +453,14 @@ impl Subprocess {
         if self.writer_tx.send(WriterCmd::EndInput(ack_tx)).is_err() {
             return Ok(());
         }
-        ack_rx.await.unwrap_or_else(|_| {
-            warn!("Subprocess::end_input: ack channel dropped");
-            Ok(())
-        })
+        match tokio::time::timeout(self.write_bound, ack_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => {
+                warn!("Subprocess::end_input: ack channel dropped");
+                Ok(())
+            }
+            Err(_) => Err(write_stalled(self.write_bound, "the end-input ack")),
+        }
     }
 
     /// Hand out a clonable [`SharedWriter`] backed by the same writer
@@ -436,7 +469,7 @@ impl Subprocess {
     /// detached control-request dispatch so a slow callback can't
     /// block the reader / command loop.
     pub(crate) fn clone_writer(&self) -> Arc<SharedWriter> {
-        Arc::new(SharedWriter { writer_tx: self.writer_tx.clone() })
+        Arc::new(SharedWriter { writer_tx: self.writer_tx.clone(), bound: self.write_bound })
     }
 
     /// Graceful shutdown: close stdin, wait for the subprocess to
@@ -559,6 +592,9 @@ impl Subprocess {
 #[derive(Debug, Clone)]
 pub(crate) struct SharedWriter {
     writer_tx: mpsc::UnboundedSender<WriterCmd>,
+    /// How long one write may take, its ack included. See
+    /// [`STDIN_WRITE_BOUND`].
+    bound: std::time::Duration,
 }
 
 #[cfg(test)]
@@ -581,7 +617,7 @@ impl SharedWriter {
                 }
             }
         });
-        (Self { writer_tx }, line_rx)
+        (Self { writer_tx, bound: STDIN_WRITE_BOUND }, line_rx)
     }
 }
 
@@ -598,12 +634,18 @@ impl SharedWriter {
         self.writer_tx.send(WriterCmd::Write(line.to_owned(), ack_tx)).map_err(|_| {
             Error::Io(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "SharedWriter task gone"))
         })?;
-        ack_rx.await.map_err(|_| {
-            Error::Io(std::io::Error::new(
+        // **The ack can be as slow as the write ahead of it**, and a writer
+        // parked on a full pipe never sends one: an unbounded wait here hangs
+        // the caller with the task still alive, which is the shape that went
+        // unnoticed for 26.7 minutes.
+        match tokio::time::timeout(self.bound, ack_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
                 "SharedWriter task dropped ack",
-            ))
-        })?
+            ))),
+            Err(_) => Err(write_stalled(self.bound, "a stdin write's ack")),
+        }
     }
 
     /// Close the write half so the remote sees EOF on stdin. Idempotent.
@@ -618,10 +660,16 @@ impl SharedWriter {
         if self.writer_tx.send(WriterCmd::EndInput(ack_tx)).is_err() {
             return Ok(());
         }
-        ack_rx.await.unwrap_or_else(|_| {
-            warn!("SharedWriter::end_input: ack channel dropped");
-            Ok(())
-        })
+        // The same bound as a write: a command queued behind a stalled write
+        // is an ack that never comes.
+        match tokio::time::timeout(self.bound, ack_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => {
+                warn!("SharedWriter::end_input: ack channel dropped");
+                Ok(())
+            }
+            Err(_) => Err(write_stalled(self.bound, "the end-input ack")),
+        }
     }
 }
 
@@ -673,10 +721,17 @@ fn spawn_reader_task(
     );
 }
 
+/// Write one line and flush it, as the writer task's unit of work.
+async fn write_one(stdin: &mut ChildStdin, line: &[u8]) -> std::io::Result<()> {
+    stdin.write_all(line).await?;
+    stdin.flush().await
+}
+
 fn spawn_writer_task(
     stdin: ChildStdin,
     tee: Option<WireTee>,
     mut rx: mpsc::UnboundedReceiver<WriterCmd>,
+    write_bound: std::time::Duration,
 ) -> JoinHandle<()> {
     use tracing::Instrument;
     let span = tracing::info_span!("forge_sdk::stdin_writer");
@@ -689,10 +744,17 @@ fn spawn_writer_task(
                         if let Some(cb) = tee.as_ref() {
                             cb(line.trim_end_matches('\n'));
                         }
+                        let mut stalled = false;
                         let result = if let Some(s) = stdin.as_mut() {
-                            match s.write_all(line.as_bytes()).await {
-                                Ok(()) => s.flush().await.map_err(Error::Io),
-                                Err(e) => Err(Error::Io(e)),
+                            match tokio::time::timeout(write_bound, write_one(s, line.as_bytes()))
+                                .await
+                            {
+                                Ok(Ok(())) => Ok(()),
+                                Ok(Err(e)) => Err(Error::Io(e)),
+                                Err(_) => {
+                                    stalled = true;
+                                    Err(write_stalled(write_bound, "a stdin write"))
+                                }
                             }
                         } else {
                             Err(Error::Io(std::io::Error::new(
@@ -700,6 +762,13 @@ fn spawn_writer_task(
                                 "stdin already closed (end_input)",
                             )))
                         };
+                        if stalled {
+                            // A partial line may be on the wire, so this stream
+                            // cannot carry another one: dropping stdin fails
+                            // every later write fast and lets the child see EOF
+                            // instead of waiting for bytes that will not come.
+                            stdin = None;
+                        }
                         let _ = ack.send(result);
                     }
                     WriterCmd::EndInput(ack) => {
@@ -1042,12 +1111,20 @@ mod tests {
     }
 
     fn spawn_sleep_subprocess(secs: u64) -> Subprocess {
-        let mut cmd = Command::new("/bin/sleep");
-        cmd.arg(secs.to_string());
-        spawn_test_subprocess(cmd)
+        spawn_sleep_subprocess_with_bound(secs, STDIN_WRITE_BOUND)
     }
 
-    fn spawn_test_subprocess(mut cmd: Command) -> Subprocess {
+    fn spawn_sleep_subprocess_with_bound(secs: u64, write_bound: Duration) -> Subprocess {
+        let mut cmd = Command::new("/bin/sleep");
+        cmd.arg(secs.to_string());
+        spawn_test_subprocess_with_bound(cmd, write_bound)
+    }
+
+    fn spawn_test_subprocess(cmd: Command) -> Subprocess {
+        spawn_test_subprocess_with_bound(cmd, STDIN_WRITE_BOUND)
+    }
+
+    fn spawn_test_subprocess_with_bound(mut cmd: Command, write_bound: Duration) -> Subprocess {
         cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         cmd.kill_on_drop(true);
         let mut child = cmd.spawn().expect("spawn test child");
@@ -1059,10 +1136,11 @@ mod tests {
         let (reader_tx, reader_rx) = mpsc::unbounded_channel();
         spawn_reader_task(stdout, None, reader_tx);
         let (writer_tx, writer_rx) = mpsc::unbounded_channel();
-        let writer_task = spawn_writer_task(stdin, None, writer_rx);
+        let writer_task = spawn_writer_task(stdin, None, writer_rx, write_bound);
 
         Subprocess {
             writer_tx,
+            write_bound,
             reader_rx,
             writer_task: Some(writer_task),
             stderr_task: Some(stderr_task),
@@ -1101,6 +1179,64 @@ mod tests {
             }
             other => panic!("expected Process error from kill, got {other:?}"),
         }
+    }
+
+    /// **A child that stops reading stdin must fail the write, not hang it.**
+    /// The writer task parked in `write_all` on a full pipe, so no ack ever
+    /// came and every caller behind it waited for ever. The hook callback
+    /// that writes a control response is one of those callers: the server
+    /// went silent for 26.7 minutes on 2026-11-09 with no error and no reap.
+    #[tokio::test]
+    async fn a_child_that_stops_reading_stdin_fails_the_write_within_the_bound() {
+        // `sleep` inherits the pipe and never reads it, so the buffer fills
+        // and the next write has nowhere to go.
+        let sub = spawn_sleep_subprocess_with_bound(30, Duration::from_millis(300));
+        let writer = sub.clone_writer();
+        // Past any pipe buffer, so `write_all` cannot finish in one go.
+        let line = format!("{}\n", "x".repeat(1 << 20));
+
+        let started = std::time::Instant::now();
+        let outcome = tokio::time::timeout(Duration::from_secs(5), writer.write_line(&line))
+            .await
+            .expect("the write did not fail within its bound: the ack wait is unbounded again");
+        let waited = started.elapsed();
+        let err = outcome.expect_err("a child that stopped reading stdin must fail the write");
+        let Error::Io(io) = err else { panic!("expected an I/O error, got {err:?}") };
+        assert_eq!(io.kind(), std::io::ErrorKind::TimedOut, "the bound is what failed it: {io}");
+        assert!(
+            waited >= Duration::from_millis(250),
+            "the write failed before its bound: {waited:?}"
+        );
+
+        // **The writer task itself gave up, not only the caller.** A partial
+        // line may be on the wire, so it dropped stdin: the next write
+        // answers at once with a broken pipe rather than queueing for ever
+        // behind the write that never finished.
+        let again = tokio::time::timeout(Duration::from_secs(5), writer.write_line("more\n"))
+            .await
+            .expect("a write after a stalled one must answer, not hang");
+        let err = again.expect_err("a stalled stream must not accept another line");
+        let Error::Io(io) = err else { panic!("expected an I/O error, got {err:?}") };
+        assert_eq!(io.kind(), std::io::ErrorKind::BrokenPipe, "the task did not drop stdin: {io}");
+    }
+
+    /// The other half of the same hole: the writer task is alive, but the
+    /// command sits behind a write that never finishes, so its ack never
+    /// arrives. Waiting on that ack is what hangs the caller.
+    #[tokio::test]
+    async fn a_writer_that_never_acks_fails_the_write_within_the_bound() {
+        // A writer queue nothing drains: the command is accepted, and the ack
+        // it would answer with never comes.
+        let (writer_tx, queue) = mpsc::unbounded_channel();
+        let writer = SharedWriter { writer_tx, bound: Duration::from_millis(100) };
+
+        let outcome = tokio::time::timeout(Duration::from_secs(5), writer.write_line("line\n"))
+            .await
+            .expect("the ack wait did not fail within its bound: it is unbounded again");
+        let err = outcome.expect_err("an ack that never arrives must fail the write");
+        let Error::Io(io) = err else { panic!("expected an I/O error, got {err:?}") };
+        assert_eq!(io.kind(), std::io::ErrorKind::TimedOut, "the bound is what failed it: {io}");
+        drop(queue);
     }
 
     /// An empty group answers `ESRCH`, and that is not forge's problem:
