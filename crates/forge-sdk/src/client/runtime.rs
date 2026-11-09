@@ -353,6 +353,11 @@ async fn drain_pending(pending_controls: &PendingControls) {
 pub(crate) type SharedSessionId = Arc<RwLock<String>>;
 
 /// Build a fresh empty session-id holder.
+///
+/// Test-only since the transport owns the one a [`Client`](crate::Client)
+/// runs against: sharing the container is what lets a stall name the current
+/// occupant after a `/new`.
+#[cfg(test)]
 pub(crate) fn new_shared_session_id() -> SharedSessionId {
     Arc::new(RwLock::new(String::new()))
 }

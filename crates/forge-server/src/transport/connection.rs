@@ -208,13 +208,30 @@ impl std::fmt::Display for WedgeStalled {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "the connection made no progress for {:?}, past its {:?} bound",
+            "no write completed on the connection for {:?}, past its {:?} bound",
             self.silent, self.bound
         )
     }
 }
 
 impl std::error::Error for WedgeStalled {}
+
+/// The peer stopped answering the keepalive's ping, so the connection was
+/// ended from inside its own loop.
+///
+/// Its own marker because [`ending`] is what tells a teardown record which
+/// way the connection went: a reap is not a clean close, and reporting it as
+/// one hid every vanished peer behind `closed`.
+#[derive(Debug)]
+struct PeerVanished;
+
+impl std::fmt::Display for PeerVanished {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the peer never answered the keepalive's ping")
+    }
+}
+
+impl std::error::Error for PeerVanished {}
 
 /// One connection's keepalive: the ping it has out, if any.
 ///
@@ -916,15 +933,15 @@ where
                     // **A wedge is forge's own problem, so it is a warning**
                     // and it names the connection and the seat on screen: a
                     // reader can act on which page stopped, not on a number.
-                    let slot = progress
-                        .showing_seat()
-                        .map_or_else(String::new, |seat| seat.display().clone());
+                    // `None` when the client had shown nothing, which reads
+                    // as no seat rather than as an empty one.
+                    let slot = progress.showing_seat();
                     tracing::warn!(
                         target: "forge_server::transport",
                         event_name = "connection_wedged",
                         client = me,
                         peer = %peer,
-                        slot = %slot,
+                        slot = ?slot,
                         silent_ms = silent.as_secs_f64() * 1000.0,
                         bound_seconds = state.heartbeat.wedge.as_secs(),
                         "no write completed on this connection past its bound, so it is ended: \
@@ -962,6 +979,7 @@ fn ending(outcome: &anyhow::Result<()>) -> &'static str {
     match outcome {
         Ok(()) => "closed",
         Err(error) if error.downcast_ref::<WedgeStalled>().is_some() => "wedged",
+        Err(error) if error.downcast_ref::<PeerVanished>().is_some() => "vanished",
         Err(_) => "error",
     }
 }
@@ -1121,11 +1139,15 @@ async fn finish(
     if let Some(host) = state.browser_host.as_ref()
         && tokio::time::timeout(WRITE_BOUND, host.detach(me)).await.is_err()
     {
+        // The seat is what a person would name: a stale viewer keeps a
+        // profile warm, and the profile is the shown seat's.
+        let slot = watching.showing.as_ref().map_or(String::new(), |seat| seat.display().clone());
         tracing::warn!(
             target: "forge_server::transport",
             event_name = "browser_detach_stalled",
             client = me,
             ending = ended,
+            slot = %slot,
             bound_seconds = WRITE_BOUND.as_secs(),
             "the host did not take the viewer's detach within the bound, so the profile keeps a \
              viewer that is gone",
@@ -1392,6 +1414,9 @@ where
     beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     beat.tick().await;
     let keepalive = Keepalive::default();
+    // Set when the keepalive reaped the peer, so the ending says so rather
+    // than reading as a clean close.
+    let mut vanished = false;
     loop {
         let due = held.due();
         tokio::select! {
@@ -1821,6 +1846,10 @@ where
                             waited_ms = waited.as_secs_f64() * 1000.0,
                             "the peer never answered the keepalive's ping, so its connection is ended",
                         );
+                        // **A reap is its own ending**, not a clean close:
+                        // every teardown record would otherwise say the peer
+                        // left on purpose.
+                        vanished = true;
                         break;
                     }
                 }
@@ -1833,6 +1862,9 @@ where
                 batch::flush(socket, held.take()).await?;
             }
         }
+    }
+    if vanished {
+        return Err(anyhow::Error::new(PeerVanished));
     }
     Ok(())
 }
@@ -7760,6 +7792,9 @@ mod tests {
         to_server: mpsc::UnboundedSender<Message>,
         written: Arc<Mutex<Vec<ServerMessage>>>,
         driven: tokio::task::JoinHandle<anyhow::Result<()>>,
+        /// The watchdog's clock this connection runs against, so a test can
+        /// read what a wedge would report without capturing the log.
+        progress: Arc<Progress>,
     }
 
     fn connection(state: &Arc<TransportState>) -> Driven {
@@ -7779,15 +7814,18 @@ mod tests {
         });
         let state = Arc::clone(state);
         let settings = crate::transport::settings_channel();
+        // **The clock is made here, not in the task**, so a test can read what
+        // a wedge would report without capturing the log.
+        let progress = Arc::new(Progress::new());
+        let watched_progress = Arc::clone(&progress);
         // The production path rather than `drive` alone: the teardown these
         // tests assert on runs in `finish`, which a bare `drive` never calls.
         let driven = tokio::spawn(async move {
             let receiver = settings.subscribe();
-            let progress = Arc::new(Progress::new());
-            let mut peer = peer.watched(Arc::clone(&progress));
-            supervise(&mut peer, &state, attached_from(), receiver, None, &progress).await
+            let mut peer = peer.watched(Arc::clone(&watched_progress));
+            supervise(&mut peer, &state, attached_from(), receiver, None, &watched_progress).await
         });
-        Driven { to_server, written, driven }
+        Driven { to_server, written, driven, progress }
     }
 
     /// Wait until `condition` holds, or fail the test with `why`.
@@ -7960,7 +7998,7 @@ mod tests {
         let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         fleet.hold_conversation(&state, "TestOrg", "proj", "lead").expect("the held conversation");
         let slot = lead();
-        let Driven { to_server, written, driven } = connection(&state);
+        let Driven { to_server, written, driven, .. } = connection(&state);
 
         subscribed(&to_server, &slot);
         until(
@@ -8060,7 +8098,7 @@ mod tests {
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let slot = lead();
-        let Driven { to_server, written, driven } = connection(&state);
+        let Driven { to_server, written, driven, .. } = connection(&state);
 
         subscribed(&to_server, &slot);
         until(
@@ -8098,7 +8136,7 @@ mod tests {
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let slot = lead();
-        let Driven { to_server, written, driven } = connection(&state);
+        let Driven { to_server, written, driven, .. } = connection(&state);
         subscribed_home(&to_server, &written).await;
         subscribed(&to_server, &slot);
         until(|| seat_read(&written), "the seat's snapshot").await;
@@ -8153,7 +8191,7 @@ mod tests {
         // lists a project's agents, and a seat nothing has started is not
         // among them - its diamond would have nowhere to appear.
         fleet.install_agent("TestOrg", "proj", "lead");
-        let Driven { to_server, written, driven } = connection(&state);
+        let Driven { to_server, written, driven, .. } = connection(&state);
         subscribed_home(&to_server, &written).await;
         arm_diamond(&state, &slot);
 
@@ -8197,7 +8235,7 @@ mod tests {
         let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let slot = lead();
 
-        let Driven { to_server: first, written: first_written, driven: first_driven } =
+        let Driven { to_server: first, written: first_written, driven: first_driven, .. } =
             connection(&state);
         // A page subscribes the seat it draws and says it is showing it: the
         // pair is what spends, and only the connection holding both attaches.
@@ -8220,7 +8258,7 @@ mod tests {
         )
         .await;
 
-        let Driven { to_server: second, written: second_written, driven: second_driven } =
+        let Driven { to_server: second, written: second_written, driven: second_driven, .. } =
             connection(&state);
         subscribed(&second, &slot);
         until(
@@ -8269,8 +8307,8 @@ mod tests {
         fleet.install_agent("TestOrg", "proj", "w1");
         let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
 
-        let Driven { to_server, written, driven } = connection(&state);
-        let Driven { to_server: other, written: other_written, driven: other_driven } =
+        let Driven { to_server, written, driven, .. } = connection(&state);
+        let Driven { to_server: other, written: other_written, driven: other_driven, .. } =
             connection(&state);
         // Each page watches the seat it draws; the showing is the other half.
         subscribed(&to_server, &first);
@@ -8322,10 +8360,14 @@ mod tests {
         let _ = other_driven.await;
     }
 
-    /// A fleet whose detach never answers: the teardown's own hang.
+    /// A fleet that never answers: an attach parks (the wedge) and a detach
+    /// parks (the teardown's own hang).
     #[derive(Default)]
     struct StalledDetach {
         detaches: std::sync::atomic::AtomicUsize,
+        /// Set once an attach has parked, so the test knows the connection is
+        /// wedged in it.
+        attach_entered: std::sync::atomic::AtomicBool,
     }
 
     #[async_trait::async_trait]
@@ -8345,7 +8387,8 @@ mod tests {
             _seat: &SessionSlot,
             _tab: Option<u16>,
         ) -> Result<BrowserAttachment, String> {
-            Err("no fleet here".to_owned())
+            self.attach_entered.store(true, Ordering::Relaxed);
+            std::future::pending::<Result<BrowserAttachment, String>>().await
         }
 
         async fn detach(&self, _viewer: u64) {
@@ -8454,33 +8497,137 @@ mod tests {
         }
     }
 
-    /// **A stalled browser detach cannot hold a connection open.** The detach
-    /// runs in `finish`, after the connection future is gone; unbounded, a
-    /// host that never answers keeps the task alive for ever - the same silent
-    /// hang on the teardown path the watchdog exists to end. It is bounded at
-    /// `WRITE_BOUND`, so the whole connection task ends inside two of them.
+    /// **An ending names how the connection went**, so a teardown record can
+    /// say whether it ran for a wedge, a vanished peer or a clean close. A
+    /// reap reported as `closed` hid every vanished peer behind an ordinary
+    /// goodbye.
+    #[test]
+    fn an_ending_names_how_the_connection_went() {
+        assert_eq!(ending(&Ok(())), "closed");
+        assert_eq!(ending(&Err(anyhow::Error::new(PeerVanished))), "vanished");
+        assert_eq!(
+            ending(&Err(anyhow::Error::new(WedgeStalled {
+                bound: WRITE_BOUND,
+                silent: WRITE_BOUND,
+            }))),
+            "wedged",
+        );
+        assert_eq!(ending(&Err(anyhow::anyhow!("a socket error"))), "error");
+    }
+
+    /// **A wedge cannot be undone by its own teardown.** The host that wedges
+    /// the connection is the one whose detach can stall, and the detach runs
+    /// in `finish` after the future is gone: unbounded, the task would
+    /// outlive the reap and hold every mark the teardown releases. This is
+    /// that intersection - a wedge whose detach also stalls - and the
+    /// connection task must still end inside two write bounds: one for the
+    /// wedge, one for the detach.
     #[tokio::test(start_paused = true)]
-    async fn a_stalled_browser_detach_ends_the_connection_within_its_bound() {
+    async fn a_wedged_connection_whose_detach_stalls_still_ends() {
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         let host = Arc::new(StalledDetach::default());
         fleet.workspace().install_browser_host(
             Arc::clone(&host) as Arc<dyn forge_workspace::browser::BrowserHost>
         );
-        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()).with_heartbeat(
+            crate::transport::Heartbeat {
+                every: Duration::from_millis(20),
+                dead: Duration::from_secs(30),
+                wedge: Duration::from_millis(200),
+            },
+        ));
         let Driven { to_server, driven, .. } = connection(&state);
 
-        // The client goes, so the connection's own teardown runs.
+        // A browser attach that parks: the connection wedges inside the call.
+        to_server
+            .send(Message::Text(
+                serde_json::to_string(&ClientMessage::BrowserView {
+                    seat: lead(),
+                    tab: None,
+                    reply_to: None,
+                })
+                .expect("the attach encodes")
+                .into(),
+            ))
+            .expect("the message goes");
+        let mut turns = 0;
+        while !host.attach_entered.load(Ordering::Relaxed) {
+            assert!(turns < 100_000, "the attach never parked");
+            turns += 1;
+            tokio::task::yield_now().await;
+        }
         drop(to_server);
+
         let ended = tokio::time::timeout(WRITE_BOUND * 2, driven)
             .await
-            .expect("a stalled detach held the connection open past its bound")
+            .expect("a stalled detach held a wedged connection open past its bound")
             .expect("the connection task joins");
-        assert!(ended.is_ok(), "the connection ended without an error: {ended:?}");
+        let error = ended.expect_err("a wedged connection did not end cleanly");
         assert!(
-            host.detaches.load(Ordering::Relaxed) >= 1,
+            error.downcast_ref::<WedgeStalled>().is_some(),
+            "the connection ended for another reason: {error:?}",
+        );
+        assert_eq!(
+            host.detaches.load(Ordering::Relaxed),
+            1,
             "the teardown never attempted the detach",
         );
+    }
+
+    /// **Only a completed flush is progress.** A flush still pending is not,
+    /// and a loop turn is not either: the bound would otherwise claim bytes
+    /// that never landed, and a slow but healthy connection would be reaped
+    /// mid-write - the false positive the watchdog exists to prevent.
+    #[tokio::test(start_paused = true)]
+    async fn only_a_completed_flush_moves_the_watchdog_clock() {
+        let progress = Arc::new(Progress::new());
+        let socket =
+            ClientSocket::new(YieldsOnce { yielded: false }, false).watched(Arc::clone(&progress));
+        let mut socket = std::pin::pin!(socket);
+        let waker = futures_util::task::noop_waker();
+        let mut cx = std::task::Context::from_waker(&waker);
+
+        tokio::time::advance(Duration::from_secs(10)).await;
+        let parked = progress.silent_for(tokio::time::Instant::now());
+        assert_eq!(parked, Duration::from_secs(10), "nothing has flushed yet");
+
+        assert!(
+            futures_util::Sink::poll_flush(socket.as_mut(), &mut cx).is_pending(),
+            "the sink was expected to yield once",
+        );
+        assert_eq!(
+            progress.silent_for(tokio::time::Instant::now()),
+            parked,
+            "a flush that has not completed is not progress",
+        );
+
+        assert!(futures_util::Sink::poll_flush(socket.as_mut(), &mut cx).is_ready());
+        assert_eq!(
+            progress.silent_for(tokio::time::Instant::now()),
+            Duration::ZERO,
+            "a completed flush is progress",
+        );
+    }
+
+    /// **The seat on screen reaches the wedge record.** A connection can watch
+    /// several seats; without this stamp a wedge names a connection and
+    /// nothing a person can act on, and an empty slot would go unnoticed.
+    #[tokio::test]
+    async fn showing_a_seat_reaches_the_wedge_record() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+        let slot = lead();
+        let Driven { to_server, progress, .. } = connection(&state);
+
+        subscribed(&to_server, &slot);
+        showing(&to_server, Some(slot.clone()));
+        until(
+            || progress.showing_seat().as_ref() == Some(&slot),
+            "the showing reached the wedge record",
+        )
+        .await;
     }
 
     /// The home a connection holds is re-encoded when a showing spends a mark
@@ -8491,7 +8638,7 @@ mod tests {
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let slot = lead();
-        let Driven { to_server, written, driven } = connection(&state);
+        let Driven { to_server, written, driven, .. } = connection(&state);
 
         to_server
             .send(Message::Text(

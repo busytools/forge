@@ -11050,21 +11050,16 @@ async fn a_refused_attach_answers_its_reply() {
     assert!(why.contains("tab 9") && why.contains("not open"), "{why}");
 }
 
-/// **A connection wedged in a host call is reaped from outside.**
-///
-/// The keepalive is a branch in the connection's OWN `select!`, so a task
-/// parked in an await never reaches it: no ping goes out, no reap happens,
-/// and the socket stays open while the server says nothing. That is the
-/// 2026-11-09 freeze - 26.7 minutes of silence with the process alive and
-/// no error anywhere. The watchdog samples the loop's progress from outside
-/// the task, so the wedge ends the connection, and the teardown still runs:
-/// a reap that left the browser viewer attached would trade a silent hang
-/// for a silent leak.
 /// **A healthy connection is never reaped.** The watchdog's bound means "no
 /// write completed", not "the loop did not turn": this client is idle, and the
 /// only thing that keeps the connection's clock moving is the keepalive's own
 /// ping, which is a write. Empty `Progress::stamp` and this test reaps a live
 /// client, which is the false positive the watchdog exists to prevent.
+///
+/// **Two rounds, because one proves a stamp, not a clock.** A stamp that
+/// fires only on the first write (a guard that returns early once it is set)
+/// passes a single round and then reaps every connection four minutes after
+/// its first write, which is the redial loop the bound exists to avoid.
 #[tokio::test(start_paused = true)]
 async fn a_healthy_idle_connection_is_not_reaped() {
     let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
@@ -11076,16 +11071,18 @@ async fn a_healthy_idle_connection_is_not_reaped() {
     let (url, _state) = serve_fleet(&fleet, heartbeat).await;
     let mut socket = connect(&url).await;
 
-    // Well past the wedge bound, with the connection doing nothing but its
-    // own pings.
-    tokio::time::advance(Duration::from_secs(1)).await;
+    for round in 0..2 {
+        // Well past the wedge bound each time, with the connection doing
+        // nothing but its own pings.
+        tokio::time::advance(Duration::from_secs(1)).await;
 
-    send(&mut socket, ClientMessage::Ping).await;
-    let answered = next_server_within(&mut socket, 2_000).await;
-    assert!(
-        matches!(answered, Some(ServerMessage::Pong)),
-        "a healthy idle connection was reaped instead of answering: {answered:?}",
-    );
+        send(&mut socket, ClientMessage::Ping).await;
+        let answered = next_server_within(&mut socket, 2_000).await;
+        assert!(
+            matches!(answered, Some(ServerMessage::Pong)),
+            "a healthy idle connection was reaped before round {round}: {answered:?}",
+        );
+    }
 }
 
 /// **A connection wedged in a host call is reaped from outside.**
@@ -11130,6 +11127,14 @@ async fn a_wedged_connection_is_reaped_from_outside() {
         turns += 1;
         tokio::task::yield_now().await;
     }
+    // **The viewer is really held before the wedge**, or the release below is
+    // vacuous: a stub that never registered one would release nothing and
+    // still show an empty set.
+    assert_eq!(
+        stub.viewers.lock().expect("the stub's viewers").len(),
+        1,
+        "the attach registered no viewer, so nothing below proves a release",
+    );
 
     // Past the wedge bound: the watchdog has to end the connection.
     tokio::time::advance(Duration::from_millis(250)).await;

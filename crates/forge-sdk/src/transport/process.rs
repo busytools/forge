@@ -250,15 +250,18 @@ pub struct Subprocess {
     /// [`clone_writer`](Self::clone_writer) so external
     /// dispatchers can write without contending on `&mut self`.
     writer_tx: mpsc::UnboundedSender<WriterCmd>,
-    /// How long one write to stdio may take. The shipping bound is
+    /// How long one write to stdin may take. The shipping bound is
     /// [`STDIN_WRITE_BOUND`]; a test injects a shorter one so it can watch
     /// the bound fire without waiting thirty seconds out.
+    ///
+    /// **A caller waits twice this** ([`Subprocess::ack_wait`]), because the
+    /// task's verdict is the authoritative one for a line it dequeued: a
+    /// writer that started a line and timed out reports it before the caller
+    /// gives up, so no line is written after its caller was told it failed.
+    /// A line still queued behind two slow *successful* writes can outlast
+    /// even that wait; its caller is told the wait's own bound, not the
+    /// writer's.
     write_bound: std::time::Duration,
-    /// How long a caller waits for that write's ack. **The task's verdict is
-    /// the authoritative one**: this is twice the writer's bound, so a writer
-    /// that dequeued a line and timed out reports it before the caller gives
-    /// up, and no line is written after its caller was told the write failed.
-    ack_wait: std::time::Duration,
     /// Inbound channel from the reader task. Single-consumer.
     reader_rx: mpsc::UnboundedReceiver<Result<Option<String>, Error>>,
     /// Writer task handle. [`close`](Self::close) aborts this so the
@@ -278,9 +281,12 @@ pub struct Subprocess {
     /// its own. `None` means no group was claimed and teardown must not
     /// signal one.
     pgid: Option<u32>,
-    /// The claude session this child carries, for a problem record that
-    /// has to name it: this layer knows no slot.
-    session: Option<String>,
+    /// The claude session this child carries, as the container the reader
+    /// and the dispatcher fill. **Shared, not copied**: `/new` swaps the
+    /// occupant without swapping the process, so a label read at spawn names
+    /// a session the record is not about - and the long-lived session is
+    /// exactly where a stall happens.
+    session: Arc<parking_lot::RwLock<String>>,
     /// Idempotency guard for [`close`](Self::close).
     closed: bool,
 }
@@ -323,7 +329,11 @@ impl Subprocess {
             check_cli_version(&reported, min)?;
         }
         let args = build_args(options)?;
-        let session = options.session_id.clone().or_else(|| options.resume.clone());
+        // Seeded with what the caller knows now; the reader and the
+        // dispatcher keep writing it as the occupant changes.
+        let session = Arc::new(parking_lot::RwLock::new(
+            options.session_id.clone().or_else(|| options.resume.clone()).unwrap_or_default(),
+        ));
         let mut cmd = Command::new(&options.binary);
         cmd.args(&args);
         if let Some(cwd) = &options.cwd {
@@ -414,7 +424,6 @@ impl Subprocess {
         Ok(Self {
             writer_tx,
             write_bound: STDIN_WRITE_BOUND,
-            ack_wait: STDIN_WRITE_BOUND * 2,
             reader_rx,
             writer_task: Some(writer_task),
             stderr_task: Some(stderr_task),
@@ -442,6 +451,14 @@ impl Subprocess {
         self.child.as_ref().and_then(tokio::process::Child::id)
     }
 
+    /// The session this child carries, as the container the reader and the
+    /// dispatcher fill: a consumer that records a problem about this child
+    /// reads it at the failure rather than at the spawn, because `/new` swaps
+    /// the occupant.
+    pub(crate) fn session_id(&self) -> Arc<parking_lot::RwLock<String>> {
+        Arc::clone(&self.session)
+    }
+
     /// Returns `Ok(None)` at end-of-stream. Cancel-safe.
     ///
     /// # Errors
@@ -451,6 +468,13 @@ impl Subprocess {
         // Reader task signals EOF by either sending `Ok(None)` or by
         // closing the channel - both collapse to `Ok(None)` here.
         self.reader_rx.recv().await.unwrap_or(Ok(None))
+    }
+
+    /// How long a caller waits for a write's ack: **twice the writer's own
+    /// bound**, so the task's verdict lands first for a line it dequeued and
+    /// no line is written after its caller was told it failed.
+    fn ack_wait(&self) -> std::time::Duration {
+        self.write_bound * 2
     }
 
     /// Write one line of stream-json to the subprocess stdin.
@@ -471,13 +495,15 @@ impl Subprocess {
                 "Subprocess writer task gone",
             ))
         })?;
-        match tokio::time::timeout(self.ack_wait, ack_rx).await {
+        match tokio::time::timeout(self.ack_wait(), ack_rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
                 "Subprocess writer task dropped ack",
             ))),
-            Err(_) => Err(write_stalled(self.write_bound, "a stdin write's ack")),
+            Err(_) => {
+                Err(write_stalled(self.ack_wait(), "the caller's wait for a stdin write's ack"))
+            }
         }
     }
 
@@ -495,13 +521,15 @@ impl Subprocess {
         if self.writer_tx.send(WriterCmd::EndInput(ack_tx)).is_err() {
             return Ok(());
         }
-        match tokio::time::timeout(self.ack_wait, ack_rx).await {
+        match tokio::time::timeout(self.ack_wait(), ack_rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => {
                 warn!("Subprocess::end_input: ack channel dropped");
                 Ok(())
             }
-            Err(_) => Err(write_stalled(self.write_bound, "the end-input ack")),
+            Err(_) => {
+                Err(write_stalled(self.ack_wait(), "the caller's wait for the end-input ack"))
+            }
         }
     }
 
@@ -511,11 +539,7 @@ impl Subprocess {
     /// detached control-request dispatch so a slow callback can't
     /// block the reader / command loop.
     pub(crate) fn clone_writer(&self) -> Arc<SharedWriter> {
-        Arc::new(SharedWriter {
-            writer_tx: self.writer_tx.clone(),
-            bound: self.write_bound,
-            ack_wait: self.ack_wait,
-        })
+        Arc::new(SharedWriter { writer_tx: self.writer_tx.clone(), bound: self.write_bound })
     }
 
     /// Graceful shutdown: close stdin, wait for the subprocess to
@@ -576,7 +600,7 @@ impl Subprocess {
                 warn!(
                     target: "forge_sdk",
                     event_name = "subprocess_group_signal_failed",
-                    session = self.session.as_deref().unwrap_or(""),
+                    session = %self.session.read().as_str(),
                     pgid,
                     error = %error,
                     "the session child's process group could not be signalled; \
@@ -638,12 +662,18 @@ impl Subprocess {
 #[derive(Debug, Clone)]
 pub(crate) struct SharedWriter {
     writer_tx: mpsc::UnboundedSender<WriterCmd>,
-    /// How long the writer task may take on one write. See
-    /// [`STDIN_WRITE_BOUND`].
+    /// The writer task's own bound, so this side can derive the wait that
+    /// outlasts it (see [`SharedWriter::ack_wait`]).
     bound: std::time::Duration,
-    /// How long a caller waits for that write's ack: twice [`Self::bound`], so
-    /// the task's own verdict always lands before the caller gives up.
-    ack_wait: std::time::Duration,
+}
+
+impl SharedWriter {
+    /// How long a caller waits for a write's ack: **twice the writer's own
+    /// bound**, so the task's verdict lands first for a line it dequeued and
+    /// no line is written after its caller was told it failed.
+    fn ack_wait(&self) -> std::time::Duration {
+        self.bound * 2
+    }
 }
 
 #[cfg(test)]
@@ -666,7 +696,7 @@ impl SharedWriter {
                 }
             }
         });
-        (Self { writer_tx, bound: STDIN_WRITE_BOUND, ack_wait: STDIN_WRITE_BOUND * 2 }, line_rx)
+        (Self { writer_tx, bound: STDIN_WRITE_BOUND }, line_rx)
     }
 }
 
@@ -687,13 +717,15 @@ impl SharedWriter {
         // parked on a full pipe never sends one: an unbounded wait here hangs
         // the caller with the task still alive, which is the shape that went
         // unnoticed for 26.7 minutes.
-        match tokio::time::timeout(self.ack_wait, ack_rx).await {
+        match tokio::time::timeout(self.ack_wait(), ack_rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
                 "SharedWriter task dropped ack",
             ))),
-            Err(_) => Err(write_stalled(self.bound, "a stdin write's ack")),
+            Err(_) => {
+                Err(write_stalled(self.ack_wait(), "the caller's wait for a stdin write's ack"))
+            }
         }
     }
 
@@ -711,13 +743,15 @@ impl SharedWriter {
         }
         // The same bound as a write: a command queued behind a stalled write
         // is an ack that never comes.
-        match tokio::time::timeout(self.ack_wait, ack_rx).await {
+        match tokio::time::timeout(self.ack_wait(), ack_rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => {
                 warn!("SharedWriter::end_input: ack channel dropped");
                 Ok(())
             }
-            Err(_) => Err(write_stalled(self.bound, "the end-input ack")),
+            Err(_) => {
+                Err(write_stalled(self.ack_wait(), "the caller's wait for the end-input ack"))
+            }
         }
     }
 }
@@ -781,7 +815,7 @@ fn spawn_writer_task(
     tee: Option<WireTee>,
     mut rx: mpsc::UnboundedReceiver<WriterCmd>,
     write_bound: std::time::Duration,
-    session: Option<String>,
+    session: Arc<parking_lot::RwLock<String>>,
 ) -> JoinHandle<()> {
     use tracing::Instrument;
     let span = tracing::info_span!("forge_sdk::stdin_writer");
@@ -815,8 +849,8 @@ fn spawn_writer_task(
                                     tracing::warn!(
                                         target: "forge_sdk",
                                         event_name = "stdin_write_stalled",
-                                        session = session.as_deref().unwrap_or(""),
-                                        bound_seconds = write_bound.as_secs(),
+                                        session = %session.read().as_str(),
+                                        bound_ms = write_bound.as_millis(),
                                         "the CLI stopped reading stdin: a write did not complete \
                                          within the bound, so the stream is closed",
                                     );
@@ -839,7 +873,12 @@ fn spawn_writer_task(
                         let _ = ack.send(result);
                     }
                     WriterCmd::EndInput(ack) => {
-                        closed = Some(Closed::EndInput);
+                        // **A stall keeps its reason**: an end-input after a
+                        // stalled write must not relabel the stream as a
+                        // deliberate close.
+                        if closed.is_none() {
+                            closed = Some(Closed::EndInput);
+                        }
                         drop(stdin.take());
                         let _ = ack.send(Ok(()));
                     }
@@ -1204,18 +1243,19 @@ mod tests {
         let (reader_tx, reader_rx) = mpsc::unbounded_channel();
         spawn_reader_task(stdout, None, reader_tx);
         let (writer_tx, writer_rx) = mpsc::unbounded_channel();
-        let writer_task = spawn_writer_task(stdin, None, writer_rx, write_bound, None);
+        let session = Arc::new(parking_lot::RwLock::new(String::new()));
+        let writer_task =
+            spawn_writer_task(stdin, None, writer_rx, write_bound, Arc::clone(&session));
 
         Subprocess {
             writer_tx,
             write_bound,
-            ack_wait: write_bound * 2,
             reader_rx,
             writer_task: Some(writer_task),
             stderr_task: Some(stderr_task),
             child: Some(child),
             pgid: None,
-            session: None,
+            session,
             closed: false,
         }
     }
@@ -1280,6 +1320,13 @@ mod tests {
             waited >= Duration::from_millis(300),
             "the writer's own bound is what fired: {waited:?}"
         );
+        // **The writer's verdict, not the caller's.** With the write's bound
+        // widened, the caller's ack wait is what answers, and its message
+        // names the wait instead: this assertion is what tells them apart.
+        assert!(
+            io.to_string().contains("a stdin write did not complete"),
+            "the writer's own failure must be the answer, not the caller's wait: {io}"
+        );
 
         // **The writer task itself gave up, not only the caller.** A partial
         // line may be on the wire, so it dropped stdin: the next write
@@ -1300,22 +1347,28 @@ mod tests {
     /// The other half of the same hole: the writer task is alive (or gone),
     /// but the command sits behind a write that never finishes, so its ack
     /// never arrives. **All four ack waits are bounded**, and each used to
-    /// wait for ever: the two writes and the two end-inputs.
-    #[tokio::test]
+    /// wait for ever: the two writes and the two end-inputs. The paused clock
+    /// makes the caller's deadline measurable rather than raced.
+    #[tokio::test(start_paused = true)]
     async fn every_wait_on_a_writer_that_never_acks_fails_within_its_bound() {
-        async fn fails_within<F>(what: &str, fut: F)
+        /// Answers how long the wait took and what it said, so the caller's
+        /// deadline can be measured rather than assumed.
+        async fn fails_within<F>(what: &str, fut: F) -> (Duration, String)
         where
             F: std::future::Future<Output = Result<(), Error>>,
         {
+            let started = tokio::time::Instant::now();
             let outcome = tokio::time::timeout(Duration::from_secs(5), fut).await;
             let outcome =
                 outcome.unwrap_or_else(|_| panic!("{what} did not fail within its bound"));
+            let waited = started.elapsed();
             let err = match outcome {
                 Ok(()) => panic!("{what} answered Ok from a writer that never acks"),
                 Err(err) => err,
             };
             let Error::Io(io) = err else { panic!("{what}: expected an I/O error, got {err:?}") };
             assert_eq!(io.kind(), std::io::ErrorKind::TimedOut, "{what}: {io}");
+            (waited, io.to_string())
         }
 
         // A writer queue nothing drains: the command is accepted, and the ack
@@ -1326,22 +1379,97 @@ mod tests {
         let mut subprocess = Subprocess {
             writer_tx: writer_tx.clone(),
             write_bound: bound,
-            ack_wait: bound * 2,
             reader_rx,
             writer_task: None,
             stderr_task: None,
             child: None,
             pgid: None,
-            session: None,
+            session: Arc::new(parking_lot::RwLock::new(String::new())),
             closed: false,
         };
-        let shared = SharedWriter { writer_tx, bound, ack_wait: bound * 2 };
+        let shared = SharedWriter { writer_tx, bound };
 
-        fails_within("Subprocess::write_line", subprocess.write_line("line\n")).await;
+        // **The caller waits twice the writer's bound**, measured: at the
+        // writer's own bound it would have given up first, losing the task's
+        // verdict - and the record would name a wait it did not take.
+        let (waited, why) =
+            fails_within("Subprocess::write_line", subprocess.write_line("line\n")).await;
+        assert!(waited >= bound * 2, "a caller waits twice the writer's bound: {waited:?}");
+        assert!(
+            why.contains(&format!("{:?}", bound * 2)),
+            "the record names the wait it fired at: {why}"
+        );
+
         fails_within("Subprocess::end_input", subprocess.end_input()).await;
         fails_within("SharedWriter::write_line", shared.write_line("line\n")).await;
         fails_within("SharedWriter::end_input", shared.end_input()).await;
         drop(queue);
+    }
+
+    /// **Each close reason names itself**, and none reads as a deliberate
+    /// close: a later write must never blame a call that did not run. A typo
+    /// in either string would otherwise ship with every other test green.
+    #[test]
+    fn a_closed_stream_names_why_it_closed() {
+        for (reason, needle) in [
+            (Closed::EndInput, "end_input"),
+            (Closed::Stalled, "outlived its bound"),
+            (Closed::Failed, "a write failed"),
+        ] {
+            let Error::Io(io) = closed_stdin(Some(reason)) else {
+                panic!("expected an I/O error for {reason:?}")
+            };
+            assert_eq!(io.kind(), std::io::ErrorKind::BrokenPipe, "{reason:?}: {io}");
+            assert!(io.to_string().contains(needle), "{reason:?}: {io}");
+        }
+        let Error::Io(io) = closed_stdin(None) else { panic!("expected an I/O error") };
+        assert!(io.to_string().contains("already closed"), "{io}");
+    }
+
+    /// **A stall names the session the process carries now**, not the one it
+    /// was spawned with: `/new` swaps the occupant under a long-lived child,
+    /// and that is exactly the session a freeze happens in. The record also
+    /// carries the bound it fired at.
+    ///
+    /// Synchronous like the spawn-record test: it builds its own runtime, so
+    /// the capture subscriber is the thread's default for the whole run.
+    #[test]
+    fn a_stdin_stall_records_the_current_session_and_its_bound() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let capture = FieldCapture::default();
+        let subscriber = tracing_subscriber::registry()
+            .with(capture.clone())
+            .with(tracing_subscriber::filter::LevelFilter::TRACE);
+        tracing::subscriber::with_default(subscriber, || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(async {
+                    let sub = spawn_sleep_subprocess_with_bound(30, Duration::from_millis(100));
+                    // The session this child carries *after* a `/new`.
+                    *sub.session_id().write() = "session-after-new".to_owned();
+                    let writer = sub.clone_writer();
+                    let line = format!("{}\n", "x".repeat(1 << 20));
+                    let _ = tokio::time::timeout(Duration::from_secs(5), writer.write_line(&line))
+                        .await;
+                });
+        });
+
+        let logged = capture.text();
+        assert!(
+            logged.contains("stdin_write_stalled"),
+            "the stall's record never fired, so nothing was proved: {logged:?}",
+        );
+        assert!(
+            logged.contains("session-after-new"),
+            "the record must name the session the process carries now: {logged:?}",
+        );
+        assert!(
+            logged.contains("bound_ms=100"),
+            "the record must carry the bound it fired at: {logged:?}"
+        );
     }
 
     /// An empty group answers `ESRCH`, and that is not forge's problem:
