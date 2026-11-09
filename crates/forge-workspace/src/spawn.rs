@@ -10944,23 +10944,33 @@ mod lead_charter_tests {
         }
     }
 
-    /// The board bullets above say how a row is worked, but never that a
-    /// sweep is a standing duty. The cadence, the prohibition on a standing
-    /// cron, the awake-only rule and the one-line report are pinned here so
-    /// a rewrite cannot drop them - and the negatives below hold the line
-    /// the old text crossed: every project's lead created its own periodic
-    /// sweep cron and the ticks spammed each session.
+    /// The board bullets above say how a row is worked; the sweep has its
+    /// own paragraph below them. The cadence, the cleanup of the standing
+    /// cron the old version required, and the reason for that cleanup are
+    /// pinned here, and the whole board section is then swept for any way
+    /// back to a cron: no `cron` word, no `wake:` parameter and no
+    /// cron-expression shape beyond the two pinned sentences, which are cut
+    /// out first because the cleanup must name `cron__list` and
+    /// `cron__delete`. The charter's one-shot `cron__create` advice sits
+    /// above that section, so the ban is scoped to the section and the
+    /// one-shot sentence stays.
     #[test]
     fn the_charter_carries_the_board_sweep() {
+        const CLEANUP: &str = "First `cron__list` and delete any sweep cron an older version of \
+             this charter had you create (`cron__delete`)";
+        const REASON: &str =
+            "it keeps firing its sweep prompt into this session until it is removed";
+
         for (clause, why) in [
             (
-                "Sweep the board at the start of every session, and on demand",
-                "the cadence and its two triggers",
+                "Sweep the board at the start of every session, and on demand.",
+                "the cadence and its two triggers, ended at its period",
             ),
-            ("Never create a standing sweep cron", "the prohibition: no session sets one up"),
+            (CLEANUP, "the old standing entry is removed, not only forbidden"),
+            (REASON, "the reason the cleanup is owed"),
             (
-                "The sweep runs only on an awake session, never waking a sleeping one",
-                "the rule, stated rather than left to a cron parameter's default",
+                "Never create a standing sweep cron.",
+                "the prohibition, ended at its period so a qualifier cannot ride along",
             ),
             (
                 "settle every row waiting on the user through one door",
@@ -10992,19 +11002,52 @@ mod lead_charter_tests {
             );
         }
 
-        assert!(
-            !DEFAULT_LEAD_CHARTER.contains("*/30"),
-            "the bundled charter must not prescribe a periodic sweep: \
-             {DEFAULT_LEAD_CHARTER}",
+        // The board section is where a sweep could grow a cron again. The
+        // two pinned sentences are cut out because they must name the cron
+        // tools and the word itself; everything left must be cron-free.
+        let cleanup_sentence = format!("{CLEANUP} - {REASON}.");
+        let without_cleanup = board_section().replacen(&cleanup_sentence, "", 1);
+        let rest = without_cleanup.replacen("Never create a standing sweep cron.", "", 1);
+        for (token, why) in [
+            ("cron", "no cron call or instruction beyond the pinned cleanup"),
+            ("wake:", "no cron parameter"),
+            ("* * * *", "no cron-expression shape"),
+        ] {
+            if let Some(at) = rest.find(token) {
+                panic!(
+                    "the board section carries {token:?} ({why}) near: {}",
+                    context_around(&rest, at),
+                );
+            }
+        }
+
+        assert_eq!(
+            DEFAULT_LEAD_CHARTER.matches("cron__create").count(),
+            1,
+            "the charter's only cron creation is the report-only one-shot sentence",
         );
-        let sweep_at =
-            DEFAULT_LEAD_CHARTER.find("**Sweep the board").expect("the sweep bullet is present");
-        let tail = &DEFAULT_LEAD_CHARTER[sweep_at..];
-        let bullet = &tail[..tail.find("\n\n").expect("the sweep bullet ends at a blank line")];
         assert!(
-            !bullet.contains("cron__create"),
-            "the sweep bullet must not send a lead to create a cron: {bullet}",
+            DEFAULT_LEAD_CHARTER
+                .contains("schedule a report-only `cron__create` one-shot (`run_once_at`)"),
+            "the single cron creation is the one-shot advice",
         );
+    }
+
+    /// The board section, from its heading to the next top-level heading.
+    fn board_section() -> &'static str {
+        let start =
+            DEFAULT_LEAD_CHARTER.find("## Keep the task board").expect("the board section heading");
+        let tail = &DEFAULT_LEAD_CHARTER[start..];
+        let end = tail.find("\n## ").unwrap_or(tail.len());
+        &tail[..end]
+    }
+
+    /// A window of `text` around `at`, so a failure names the lineage
+    /// without dumping the whole charter.
+    fn context_around(text: &str, at: usize) -> &str {
+        let start = text[..at].char_indices().rev().nth(60).map_or(0, |(i, _)| i);
+        let end = text[at..].char_indices().nth(120).map_or(text.len(), |(i, _)| at + i);
+        &text[start..end]
     }
 
     /// #1494: the parallelism rule reads the project's own `max_workers`

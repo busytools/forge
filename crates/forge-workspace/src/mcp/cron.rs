@@ -137,8 +137,9 @@ impl Tool for Create {
          human summary of what the job does and why - which the UI shows as the schedule's \
          headline. If that session isn't open at fire time, forge spawns it first, unless it can \
          no longer be started (a worker whose directory is gone); pass `wake: false` for a \
-         standing sweep, where a tick that finds the session asleep is skipped and the entry \
-         stays due for the next session start. Returns the cron's id (use it \
+         recurring job that must not wake a sleeping owner, where a tick that finds the \
+         session asleep is skipped and the entry stays due for the next session start. \
+         Returns the cron's id (use it \
          with cron__delete). Recurring crons repeat; run-once crons delete themselves after \
          firing. A run-once cron is a poor fit for retrying a transient failure - a rate limit \
          or a blip clears in seconds, so the retry fires later as a user turn into a session \
@@ -175,9 +176,10 @@ impl Tool for Create {
                 "wake": {
                     "type": "boolean",
                     "description": "Whether a fire may wake a sleeping session (default true). \
-                                    Set false for a standing sweep: a tick that finds the \
-                                    session asleep is skipped and the entry stays due, so the \
-                                    next session start (or a tick while it is awake) runs it.",
+                                    Set false for a recurring job that must not wake a sleeping \
+                                    owner: a tick that finds the session asleep is skipped and \
+                                    the entry stays due, so the next session start (or a tick \
+                                    while it is awake) runs it.",
                 },
             },
             "required": ["prompt"],
