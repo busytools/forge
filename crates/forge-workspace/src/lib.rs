@@ -71,6 +71,7 @@ mod gotify;
 mod handoff;
 mod healing;
 pub mod hub;
+pub mod idle_sweep;
 pub mod install;
 pub mod launch_settings;
 pub(crate) mod mcp;

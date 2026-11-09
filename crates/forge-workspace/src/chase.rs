@@ -613,8 +613,8 @@ impl Workspace {
 /// rather than left to `delivery_turn`, which has no arm for it. The seat
 /// is already known live by the ladder, so a failed dispatch here is a
 /// race, not a reason to spawn.
-struct PromptDeliver {
-    workspace: Arc<Workspace>,
+pub(crate) struct PromptDeliver {
+    pub(crate) workspace: Arc<Workspace>,
 }
 
 impl Deliver for PromptDeliver {

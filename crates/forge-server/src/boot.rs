@@ -674,6 +674,12 @@ fn start_subsystems(workspace: &Arc<Workspace>) {
     // drive instead of report.
     workspace.start_chase_sweep();
 
+    // Start the idle sweep: every ~60s a lead with nothing in flight is
+    // handed the board sweep, once per two hours, with a six-hour
+    // fallback for a lead that never goes idle. Delivery never wakes a
+    // sleeping session.
+    workspace.start_idle_sweep();
+
     // Start the Gotify subsystem when configured with at least one
     // durable subscription loaded at boot; no-op otherwise.
     workspace.start_gotify_subsystem();
