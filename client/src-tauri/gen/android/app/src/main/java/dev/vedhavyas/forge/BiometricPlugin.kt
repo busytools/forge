@@ -5,6 +5,7 @@ import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
+import android.security.keystore.UserNotAuthenticatedException
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
@@ -75,12 +76,23 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
         // A key the OS invalidated after a fingerprint change is not one this
         // device can release with, which is what the caller is asking.
         false
+      } catch (unrecoverable: UnrecoverableKeyException) {
+        false
       }
       invoke.resolve(JSObject().put("enrolled", hasRecord && hasKey))
     }
   }
 
-  /** Register one purpose's blob, replacing any blob already there. */
+  /**
+   * Register one purpose's blob, replacing any blob already there.
+   *
+   * **The encrypt asks for the gesture too**: the key is auth-bound for every
+   * use, so `init` calls `UserNotAuthenticatedException` until the person
+   * answers a prompt, and the prompt carries the cipher as its `CryptoObject`
+   * so the `doFinal` that writes the record is the authorised one. The
+   * consequence is that a device enrols with a prompt right after the
+   * password unlock that asked for it.
+   */
   @Command
   fun store(invoke: Invoke) {
     val args = invoke.parseArgs(StoreArgs::class.java)
@@ -88,12 +100,46 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
       val key = keyFor(args.purpose, create = true)
         ?: throw IllegalStateException("the keystore refused to make a key")
       val cipher = Cipher.getInstance(TRANSFORMATION)
-      cipher.init(Cipher.ENCRYPT_MODE, key)
-      val ciphertext = cipher.doFinal(Base64.getDecoder().decode(args.blob))
-      preferences().edit()
-        .putString(args.purpose, BiometricRecords.encode(cipher.iv, ciphertext))
-        .commit()
-      invoke.resolve()
+      try {
+        cipher.init(Cipher.ENCRYPT_MODE, key)
+      } catch (unauthenticated: UserNotAuthenticatedException) {
+        // The key's auth bound is the intended state: the prompt below is
+        // what authorises this cipher.
+      }
+      val host = activity as? androidx.fragment.app.FragmentActivity
+      if (host == null) {
+        invoke.resolve(refused("this window cannot show the fingerprint prompt"))
+        return@background
+      }
+      val prompt = BiometricPrompt(
+        host,
+        ContextCompat.getMainExecutor(activity),
+        object : BiometricPrompt.AuthenticationCallback() {
+          override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+            try {
+              val ready = result.cryptoObject?.cipher ?: cipher
+              val ciphertext = ready.doFinal(Base64.getDecoder().decode(args.blob))
+              preferences().edit()
+                .putString(args.purpose, BiometricRecords.encode(ready.iv, ciphertext))
+                .commit()
+              invoke.resolve()
+            } catch (err: Exception) {
+              invoke.reject(err.message ?: err.toString())
+            }
+          }
+
+          override fun onAuthenticationError(code: Int, message: CharSequence) {
+            invoke.resolve(refused(BiometricRecords.promptError(code, message)))
+          }
+        }
+      )
+      activity.runOnUiThread {
+        try {
+          prompt.authenticate(promptInfo(), BiometricPrompt.CryptoObject(cipher))
+        } catch (err: Exception) {
+          invoke.resolve(refused(err.message ?: err.toString()))
+        }
+      }
     }
   }
 
@@ -124,6 +170,11 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
         "the device's fingerprints changed, so the stored unlock was invalidated; use the password and enrol again"
       ))
       return
+    } catch (unrecoverable: UnrecoverableKeyException) {
+      invoke.resolve(refused(
+        "the stored unlock cannot be used on this device; use the password and enrol again"
+      ))
+      return
     } ?: run {
       invoke.resolve(notEnrolled())
       return
@@ -138,7 +189,9 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
       ))
       return
     } catch (unusable: UnrecoverableKeyException) {
-      invoke.resolve(notEnrolled())
+      invoke.resolve(refused(
+        "the stored unlock cannot be used on this device; use the password and enrol again"
+      ))
       return
     }
 
@@ -172,18 +225,26 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
         }
       }
     )
-    val info = BiometricPrompt.PromptInfo.Builder()
-      .setTitle("unlock your vault")
-      .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
-      .build()
     activity.runOnUiThread {
       try {
-        prompt.authenticate(info, BiometricPrompt.CryptoObject(cipher))
+        prompt.authenticate(promptInfo(), BiometricPrompt.CryptoObject(cipher))
       } catch (err: Exception) {
         invoke.resolve(refused(err.message ?: err.toString()))
       }
     }
   }
+
+  /**
+   * The prompt both commands show. **The negative button is required**: with
+   * `BIOMETRIC_STRONG` and no device credential allowed, `build()` throws
+   * before `authenticate` is ever reached when it is absent.
+   */
+  private fun promptInfo(): BiometricPrompt.PromptInfo =
+    BiometricPrompt.PromptInfo.Builder()
+      .setTitle("unlock your vault")
+      .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+      .setNegativeButtonText("cancel")
+      .build()
 
   /** Drop one purpose's blob and its key. A second purpose is untouched. */
   @Command
@@ -210,8 +271,22 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
   private fun keyFor(purpose: String, create: Boolean): SecretKey? {
     val alias = BiometricRecords.alias(purpose)
     val store = keystore()
-    (store.getKey(alias, null) as? SecretKey)?.let { return it }
+    val existing = try {
+      store.getKey(alias, null) as? SecretKey
+    } catch (invalidated: UnrecoverableKeyException) {
+      // **A fingerprint change invalidates the key and `getKey` reports it
+      // this way.** A release cannot use it; a fresh enrolment replaces it
+      // rather than failing, which is what makes "enrol again" true.
+      if (!create) throw invalidated
+      null
+    }
+    existing?.let { return it }
     if (!create) return null
+    try {
+      store.deleteEntry(alias)
+    } catch (_: java.security.KeyStoreException) {
+      // A key already gone is the state a fresh enrolment wants.
+    }
     val builder = KeyGenParameterSpec.Builder(
       alias,
       KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
