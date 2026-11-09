@@ -27,6 +27,9 @@ use crate::workspace::Workspace;
 /// token and a user key, a few hundred bytes; the cap exists because the write
 /// is a client command and nothing else bounds it.
 const MAX_BLOB_BYTES: usize = 64 * 1024;
+/// The most base64 a wrapped blob may be before its decode is refused: the
+/// byte cap in base64, rounded up for the final group's padding.
+const MAX_ENCODED_BYTES: usize = MAX_BLOB_BYTES / 3 * 4 + 4;
 
 /// One device's enrolment as the store holds it: the facts a view draws plus
 /// each purpose's wrapped blob.
@@ -35,7 +38,6 @@ pub(crate) struct Enrolment {
     pub id: Uuid,
     pub device: String,
     pub created_at: SystemTime,
-    pub last_used_at: Option<SystemTime>,
     pub purposes: Vec<StoredPurpose>,
 }
 
@@ -103,6 +105,12 @@ impl Workspace {
         if purpose.is_empty() {
             return Err("an enrolment names no purpose".to_owned());
         }
+        // **The cap is on the wrapped bytes, and the decode allocates.** A
+        // caller can send far more base64 than the cap allows, so the encoded
+        // length is refused before the decode rather than after it.
+        if blob.len() > MAX_ENCODED_BYTES {
+            return Err(format!("the wrapped blob is longer than the {MAX_BLOB_BYTES} byte cap"));
+        }
         let blob = BiometricBlob { blob: blob.to_owned() }.decode()?;
         if blob.is_empty() {
             return Err("the wrapped blob is empty".to_owned());
@@ -125,7 +133,6 @@ impl Workspace {
                     id,
                     device: device.to_owned(),
                     created_at: now,
-                    last_used_at: None,
                     purposes: Vec::new(),
                 });
             device.clone_into(&mut enrolment.device);
@@ -173,7 +180,6 @@ impl Workspace {
                 return Ok(None);
             };
             enrolment.purposes[index].last_used_at = Some(now);
-            enrolment.last_used_at = Some(now);
             let answer = BiometricBlob::encode(&enrolment.purposes[index].blob);
             crate::store::biometric::put(db, &enrolment).map_err(|error| error.to_string())?;
             answer
@@ -353,6 +359,49 @@ mod tests {
             workspace.release_biometric(id, "vault").expect("release").unwrap().decode(),
             Ok(b"{\"refresh\":\"r\"}".to_vec()),
             "the first consumer's blob survives the second's revocation",
+        );
+    }
+
+    /// **The revoke is a command the page sends**, so its dispatch arm is
+    /// pinned: a revoke through `dispatch` drops that purpose's row.
+    #[test]
+    fn the_revoke_command_drops_the_purpose() {
+        let (workspace, _dir) = workspace();
+        let id = Uuid::new_v4();
+        workspace.enrol_biometric(id, "phone", "vault", &blob(b"wrapped")).expect("enrol");
+
+        workspace
+            .dispatch(crate::protocol::Command::BiometricRevoke {
+                enrolment: id,
+                purpose: Some("vault".to_owned()),
+            })
+            .expect("the revoke routes");
+
+        assert!(workspace.biometric_enrolments().expect("read").is_empty(), "the row is gone");
+    }
+
+    /// **A re-enrol replaces rather than appends.** A rotation rewrite sends
+    /// the same purpose with fresh bytes; a duplicate would leave the stale
+    /// blob first and a release would hand back a token the account has
+    /// already spent.
+    #[test]
+    fn a_re_enrol_replaces_the_purpose_rather_than_appending() {
+        let (workspace, _dir) = workspace();
+        let id = Uuid::new_v4();
+        workspace.enrol_biometric(id, "phone", "vault", &blob(b"stale")).expect("first");
+        workspace.enrol_biometric(id, "phone", "vault", &blob(b"fresh")).expect("re-enrol");
+
+        let enrolments = workspace.biometric_enrolments().expect("read");
+        assert_eq!(enrolments.len(), 1);
+        assert_eq!(
+            enrolment_purposes(&enrolments[0]),
+            vec!["vault".to_owned()],
+            "one purpose, not two",
+        );
+        assert_eq!(
+            workspace.release_biometric(id, "vault").expect("release").expect("enrolled").decode(),
+            Ok(b"fresh".to_vec()),
+            "the fresh bytes are what a release hands back",
         );
     }
 

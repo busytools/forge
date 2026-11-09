@@ -705,6 +705,34 @@ mod tests {
         assert!(unlock_with_user_key(&token, "not a key", &Profile::default()).is_err());
     }
 
+    /// **A well-formed key that is not the account's is refused.** With the
+    /// account's private key present, a valid user key from elsewhere cannot
+    /// decrypt it, so the release path does not accept a key on shape alone.
+    #[test]
+    fn a_mismatched_but_valid_user_key_is_refused() {
+        let pre =
+            Prelogin { kdf: 0, kdf_iterations: 100_000, kdf_memory: None, kdf_parallelism: None };
+        let account = derive_master_key("asdfasdf", "test@bitwarden.com", &pre).unwrap();
+        let (user_key, wrapped_user_key) = account.make_user_key().unwrap();
+        let rsa_key = rsa::RsaPrivateKey::new(&mut bitwarden_random::rng(), 1024).unwrap();
+        let der = rsa_key.to_pkcs8_der().unwrap();
+        let der_bytes = BitwardenLegacyKeyBytes::from(der.as_bytes().to_vec());
+        let wrapped_private_key = (&der_bytes).encrypt_with_key(&user_key.0).unwrap().to_string();
+        let token = TokenResponse {
+            access_token: "token".to_owned(),
+            refresh_token: None,
+            key: Some(wrapped_user_key.to_string()),
+            private_key: Some(wrapped_private_key),
+        };
+
+        let elsewhere = derive_master_key("another password", "other@example.com", &pre).unwrap();
+        let (wrong, _) = elsewhere.make_user_key().unwrap();
+        let refused =
+            unlock_with_user_key(&token, &wrong.0.to_base64().to_string(), &Profile::default());
+
+        assert!(refused.is_err(), "a valid key from another account is refused");
+    }
+
     /// An empty `PrivateKey` on the token is a client's unset value, not a
     /// wrapped key; it must not hide the profile's real one.
     #[test]

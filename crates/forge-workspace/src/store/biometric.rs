@@ -98,7 +98,6 @@ mod tests {
             id,
             device: "Ved's MacBook Pro".to_owned(),
             created_at: at,
-            last_used_at: None,
             purposes: purposes
                 .iter()
                 .map(|(purpose, blob)| StoredPurpose {

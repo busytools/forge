@@ -428,9 +428,10 @@ pub enum Command {
         purpose: String,
         /// The wrapped secret, base64.
         blob: String,
-        /// Answers `true` when the blob was stored, `false` when it was not.
-        /// **The rotation rewrite reads it**: decision 15 says a rewrite that
-        /// cannot land locks the vault, and this is the write's own answer.
+        /// Answers `true` when the blob was stored. **A store failure is a
+        /// dispatch refusal, never `false`**, so the two cannot be mistaken
+        /// for each other. The rotation rewrite reads the answer to decide
+        /// whether the vault must lock (decision 15).
         #[serde(skip)]
         respond: Option<oneshot::Sender<bool>>,
     },

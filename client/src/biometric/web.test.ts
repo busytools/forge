@@ -30,6 +30,20 @@ function aCredential(prf: Uint8Array | null, rawId = new Uint8Array([1, 2, 3, 4]
 let created: Record<string, unknown>[] = [];
 let asserted: Record<string, unknown>[] = [];
 
+/** The PRF salt one create or get sent, as its bytes. */
+function saltOf(options: Record<string, unknown> | undefined): number[] {
+  const extensions = (options?.['publicKey'] as Record<string, unknown> | undefined)?.[
+    'extensions'
+  ] as { prf?: { eval?: { first?: Uint8Array } } } | undefined;
+  const salt = extensions?.prf?.eval?.first;
+  return salt === undefined ? [] : [...salt];
+}
+
+/** The salt a purpose must use, byte for byte. */
+function pinned(purpose: string): number[] {
+  return [...new TextEncoder().encode(`forge.biometric.prf.${purpose}`)];
+}
+
 beforeEach(() => {
   vi.stubGlobal('crypto', webcrypto);
   vi.stubGlobal('PublicKeyCredential', {
@@ -64,10 +78,27 @@ describe('the web gate', () => {
       userVerification: 'required',
     });
     expect(create?.['extensions']).toHaveProperty('prf');
+    // **The salt is the purpose, pinned byte for byte**: create and get must
+    // derive the same wrapping key, so a change on either side is a blob no
+    // release can open.
+    expect(saltOf(created[0]), 'the creation salt is the purpose').toEqual(pinned('vault'));
 
     const released = await gate.release('vault');
 
     expect(released).toEqual({ outcome: 'released', blob: 'the-purpose-key' });
+    expect(saltOf(asserted[0]), 'the assertion uses the same salt').toEqual(pinned('vault'));
+  });
+
+  it('salts each purpose with its own name', async () => {
+    await gate.store('vault', 'vault-key');
+    await gate.store('sso', 'sso-key');
+
+    const vault = saltOf(created[0]);
+    const sso = saltOf(created[1]);
+    expect(vault, 'the first purpose keeps its own salt').toEqual(pinned('vault'));
+    expect(sso, 'a second consumer gets its own').toEqual(pinned('sso'));
+    expect(vault).not.toEqual(sso);
+    expect(gate.enrolled('vault') && gate.enrolled('sso')).toBe(true);
   });
 
   it('refuses when the assertion carries a different PRF', async () => {
