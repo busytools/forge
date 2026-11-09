@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte';
 
+  import { observeAttention, pageWatched } from '../attention';
   import Sprite from '../components/Sprite.svelte';
   import { DEFAULT_ADDRESS, displayAddress, type Attempt } from '../connect/attempt';
   import { boot } from '../connect/boot';
@@ -242,32 +243,17 @@
    *
    * **The rule turns on this**, and nothing in the roster moves when they
    * look away - so it is tracked, and the effect below re-runs on it rather
-   * than waiting for the next read a parked page never makes.
+   * than waiting for the next read a parked page never makes. The rule is
+   * `attention.ts`'s, shared with the frame probe so the two cannot drift.
    */
-  let looking = $state(typeof document === 'undefined' ? true : document.hasFocus());
+  let looking = $state(pageWatched());
 
   $effect(() => {
-    // **The event is the signal, not a read after it**: a blur is exactly the
-    // moment the person stopped looking, and re-reading `hasFocus()` there
-    // trusts a value that has not settled on every engine.
-    const lost = (): void => {
-      looking = false;
-    };
-    const gained = (): void => {
-      looking = document.visibilityState !== 'hidden';
-    };
-    const visibility = (): void => {
-      looking = document.visibilityState !== 'hidden' && document.hasFocus();
-    };
-    looking = document.visibilityState !== 'hidden' && document.hasFocus();
-    window.addEventListener('blur', lost);
-    window.addEventListener('focus', gained);
-    document.addEventListener('visibilitychange', visibility);
-    return () => {
-      window.removeEventListener('blur', lost);
-      window.removeEventListener('focus', gained);
-      document.removeEventListener('visibilitychange', visibility);
-    };
+    looking = pageWatched();
+    const stop = observeAttention((watching) => {
+      looking = watching;
+    });
+    return () => stop?.();
   });
 
   /**

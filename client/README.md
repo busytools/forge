@@ -130,12 +130,24 @@ machine-local forge `logs/` directory), with one rolled copy - a batch posted
 while the socket is down is dropped rather than queued, because a log is a
 diagnostic and an outage backlog is not the frame cost. Either file holds one
 JSON line per record: `run_started` when a page attaches, `summary` every
-ten seconds (frames, how many were slow, the worst gap), and a `frame` line
+ten seconds (frames, how many were slow, the worst gap, and `hidden` when
+its window crossed a period the page was not watched), and a `frame` line
 for each frame at or over 50 ms with the surface and seat it happened
-on, plus `longtask` lines naming the work that blocked. A `tick` line
+on, plus `longtask` lines naming the work that blocked. **The frame loop
+runs only while the page is being watched** - visible and with focus, its
+boot reading included: a hidden window, or a window without focus,
+schedules no next frame, so a client nobody can see stops waking the
+display 60 times a second. Losing focus to another app or the menu bar
+stops it too, on purpose: the cadence is measured for what the person is
+looking at. A phone's resume arms it from the shell's
+`client://foreground`, because Android reports neither focus nor reliably
+a visibility change on return. The first frame after the page returns
+carries the whole away period, and its `hidden` names it a gate rather
+than a freeze, the same way a hidden window's gap is named. A `tick` line
 records a session page's 30 s clock write when the span to the next frame
 is 50 ms or more, with the seat, the surface, that span and `hidden`,
-saying whether the span crossed a hidden window; the span is an upper
+saying whether the span crossed a period the page could not be watched or
+a period the window was not focused; the span is an upper
 bound, because the wait for the frame is on it and so is anything else
 that wrote in the window. Only a tick that follows an alive frame (within
 250 ms) is written, since a write inside a dead frame period is not its
@@ -207,8 +219,9 @@ with the seat that opened; an open the seat answers `empty` drops it too,
 so the first message that arrives minutes later is not stamped with the
 whole wait. `ms` covers the open as a whole, including any period the
 window was hidden or occluded: the mark waits for a measured row, and
-unlike `frame` this record carries no hidden flag. The drawn, painted and
-quiet records carry the time since the switch. Slow frames are what the file is for; a
+neither this record nor `drawn` carries a hidden flag. The drawn, painted
+and quiet records carry the time since the switch, and `quiet` carries
+`hidden` when its span crossed a period the page was not watched. Slow frames are what the file is for; a
 quiet log is a client that is keeping up.
 
 **A switch's client-side gap has marks of its own (#2513).** `click` is
