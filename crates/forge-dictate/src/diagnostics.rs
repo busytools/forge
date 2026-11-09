@@ -131,7 +131,8 @@ pub(crate) fn claim_take_dir(dir: &Path, stamp: u128) -> std::io::Result<(String
 /// `cancel` is this take's token. Its answer is sent before the write
 /// starts, so a cancel that lands while the write runs is seen here and
 /// nowhere else: the directory this call claimed is removed rather than
-/// left to persist and count toward retention.
+/// left to persist and count toward retention. When the removal itself
+/// fails, the directory is left in place and the failure is logged.
 pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>, cancel: &CancelToken) {
     // The store is lazily made: a first take is what brings it into being.
     if let Err(error) = std::fs::create_dir_all(dir) {
@@ -418,12 +419,12 @@ mod tests {
         }
     }
 
-    /// A take cancelled while its write runs leaves no directory behind.
-    /// The answer has already gone out when this runs, so nothing else
-    /// would take the directory back, and it would count toward retention
-    /// and could prune a real take.
+    /// A take cancelled before its write starts still leaves no directory
+    /// behind: the token can be set between the branch's decision and the
+    /// writer's first step, and the writer takes back what it claimed
+    /// rather than leave it to count toward retention.
     #[test]
-    fn a_take_cancelled_during_its_write_leaves_no_directory() {
+    fn a_take_cancelled_before_its_write_leaves_no_directory() {
         let dir = tempfile::tempdir().unwrap();
         let audio = vec![0.5; 16];
         let stages = Stages::default();

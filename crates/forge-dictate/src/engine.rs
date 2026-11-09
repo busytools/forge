@@ -1060,9 +1060,13 @@ fn finish_job(
 /// The answer a finished join amounts to.
 ///
 /// Separated from [`finish_job`] because the join's normalize pass is the
-/// one stretch no early read covers: a test enters here with a cancelled
-/// token to model a cancel that landed inside it, and the read below is
-/// what turns that into `Cancelled` rather than the words the pass rewrote.
+/// one stretch no early read covers: the read below is what turns a cancel
+/// that landed inside it into `Cancelled` rather than the words the pass
+/// rewrote. The routing from [`finish_job`] into here is pinned by
+/// inspection, not by a test: reaching this read past a live first read
+/// needs a cancel inside the normalizer call, and
+/// [`crate::normalize::Normalizer`] is a loaded GGUF behind a `LlamaModel`
+/// with no weightless double.
 fn finish_after_join(
     job: &Job,
     asr: String,
@@ -1078,6 +1082,16 @@ fn finish_after_join(
     };
     let diag = kept_diagnostics(&job.cancel, &answer);
     JobOutcome { answer, stages, diag }
+}
+
+/// Keep one direct job's diagnostics record.
+///
+/// The token is the job's own, read here rather than passed in, so the
+/// write cannot be wired to a different take's cancel. The caller has
+/// already decided the job earns a record: it is a direct job, the engine
+/// is not stopping, and its answer classified as one worth keeping.
+fn keep_job_record(job: &Job, dir: &Path, record: &diagnostics::TakeRecord<'_>) {
+    diagnostics::capture_take(dir, diagnostics::take_stamp(), record, &job.cancel);
 }
 
 /// The take's accumulated state across its windows.
@@ -1308,7 +1322,7 @@ fn worker(
                 outcome,
                 recognition_error,
             };
-            diagnostics::capture_take(dir, diagnostics::take_stamp(), &record, &job.cancel);
+            keep_job_record(&job, dir, &record);
         }
     }
 }
@@ -1704,8 +1718,9 @@ impl TakeSegmenter {
                 }
             }
         };
-        // Read at the write, not only before the join: a cancel that lands
-        // during the normalize pass is seen by no earlier check.
+        // Read at the write, not only before the join: the token can be set
+        // between that read and this one, and an abandoned take keeps no
+        // record.
         let diag = kept_diagnostics(&self.take.cancel, &answer);
         let diag_stages = match &answer {
             Ok(Outcome::Transcript(transcript)) => transcript.stages.clone(),
@@ -2151,8 +2166,8 @@ mod tests_engine {
     }
 
     /// Whether the store holds no take. An absent store and a bare root
-    /// both hold none: a take directory is what persistence means, and
-    /// the retention scan only counts names that start with `take-`.
+    /// both hold none: only an entry named `take-*` is a take, which is
+    /// the same shape the retention scan counts.
     fn no_take_was_stored(store: &Path) -> bool {
         match std::fs::read_dir(store) {
             Ok(entries) => entries
@@ -2181,22 +2196,17 @@ mod tests_engine {
         }
     }
 
-    /// Drive one live take's finish over a fake worker that runs the same
-    /// per-job seam the real worker does: one prejoined job, finished by
-    /// [`finish_job`] with no normalizer, so the answer is the join it was
-    /// handed. `cancel_on_job` fires the take's token as the worker takes
-    /// the join, standing in for a cancel that lands after the last window
-    /// has settled. It gives up when the take's segmenter drops its sender.
-    fn finish_live_take(
-        parts: Vec<Part>,
-        cuts: Vec<(usize, usize)>,
-        cancel: CancelToken,
+    /// The fake worker behind every live-take finish test: it runs the same
+    /// per-job seam the real worker does, so a prejoined job's answer is the
+    /// join it was handed. `cancel_on_job` fires the take's token as the
+    /// worker takes the job, standing in for a cancel that lands after the
+    /// last window has settled. It gives up when the segmenter drops its
+    /// sender.
+    fn spawn_fake_worker(
+        answers: Receiver<Job>,
+        worker_cancel: CancelToken,
         cancel_on_job: bool,
-        finish: FinishTake,
-        diagnostics_dir: Option<PathBuf>,
-    ) -> Receiver<Result<Outcome, Error>> {
-        let (jobs, answers) = channel::<Job>();
-        let worker_cancel = cancel.clone();
+    ) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || {
             while let Ok(job) = answers.recv() {
                 if cancel_on_job {
@@ -2210,7 +2220,20 @@ mod tests_engine {
                 let out = finish_job(&job, &parts, None, false, Stages::default(), None);
                 let _ = job.reply.send(out.answer);
             }
-        });
+        })
+    }
+
+    /// Drive one live take's finish over [`spawn_fake_worker`].
+    fn finish_live_take(
+        parts: Vec<Part>,
+        cuts: Vec<(usize, usize)>,
+        cancel: CancelToken,
+        cancel_on_job: bool,
+        finish: FinishTake,
+        diagnostics_dir: Option<PathBuf>,
+    ) -> Receiver<Result<Outcome, Error>> {
+        let (jobs, answers) = channel::<Job>();
+        spawn_fake_worker(answers, cancel.clone(), cancel_on_job);
         let (answer_tx, answer_rx) = channel();
         let (progress_tx, _progress_rx) = channel();
         let dir = tempfile::tempdir().unwrap();
@@ -2286,8 +2309,8 @@ mod tests_engine {
     }
 
     /// The diagnostics record's own truncated flag on a failed segment:
-    /// `failed_before_join` is one of that field's three inputs, and no
-    /// other test asserts the stored value.
+    /// `failed_before_join` is one of that field's three inputs, and the
+    /// existing store test only asserts a false value.
     #[test]
     fn a_failed_segment_records_a_truncated_take() {
         let dir = tempfile::tempdir().unwrap();
@@ -2458,6 +2481,86 @@ mod tests_engine {
         assert!(no_take_was_stored(&store), "an abandoned take persists nothing");
     }
 
+    /// A cancel that lands while the take's files are being written. The
+    /// token is live at entry, so neither the segmenter's branch read nor
+    /// the writer's entry sees it; the writer claims its directory first,
+    /// and the cancel lands while the files are still going out. The writer
+    /// must take the directory back - a check at its top could not.
+    ///
+    /// Driven through [`TakeSegmenter::finish`] rather than the helper so
+    /// the segmenter's own token is the one the writer sees.
+    #[test]
+    fn a_cancel_during_the_write_takes_the_directory_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store");
+        let cancel = CancelToken::new();
+        let (jobs, answers) = channel::<Job>();
+        let worker = spawn_fake_worker(answers, CancelToken::new(), false);
+
+        // Five minutes of capture and a file per window: long enough that
+        // the claimed directory is visible while the write is still running.
+        let recorded = 5 * 60 * SAMPLE_RATE as usize;
+        let recording = crate::capture::Recording::new(recorded);
+        recording.push(&vec![0.5; recorded], recorded);
+        let window_count = 5_000;
+        let parts: Vec<Part> = (0..window_count)
+            .map(|i| Part::Transcript {
+                raw: format!("window {i}"),
+                stages: Stages::default(),
+                truncated: false,
+            })
+            .collect();
+        let cuts: Vec<(usize, usize)> =
+            (0..window_count).map(|i| (i * 100, (i + 1) * 100)).collect();
+        let (answer_tx, answer_rx) = channel();
+        let (progress_tx, _progress_rx) = channel();
+        let cfg = ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build();
+        let segmenter = TakeSegmenter {
+            recording: Arc::new(recording),
+            jobs,
+            silence_floor: -50.0,
+            diagnostics_dir: Some(store.clone()),
+            models: Arc::new(diagnostics::TakeModels::from_config(&cfg)),
+            take: TakeShared { cancel: cancel.clone(), answer: answer_tx, progress: progress_tx },
+            last_cut: recorded,
+            cuts,
+            parts,
+            pending: Vec::new(),
+            settled: window_count,
+            first_queued_at: None,
+            first_settled_at: None,
+            failed: None,
+        };
+        let finishing = std::thread::spawn(move || {
+            segmenter.finish(FinishTake { options: NormalizeOptions::default(), truncated: false });
+        });
+
+        // The writer claims its directory before it writes anything: the
+        // moment it is there, fire the token while the files are landing.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let claimed = std::fs::read_dir(&store).is_ok_and(|entries| {
+                entries
+                    .flatten()
+                    .any(|entry| entry.file_name().to_string_lossy().starts_with("take-"))
+            });
+            if claimed {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the writer never claimed a take directory");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        cancel.cancel();
+
+        finishing.join().expect("the finishing thread must not panic");
+        assert!(
+            matches!(answer_rx.recv().expect("the take must answer"), Ok(Outcome::Transcript(_))),
+            "the answer was built while the token was still live"
+        );
+        assert!(no_take_was_stored(&store), "a take cancelled inside its write persists nothing");
+        worker.join().expect("the fake worker must not panic");
+    }
+
     /// The read after the join's normalize pass: a cancel that lands inside
     /// it is invisible to the boundary read, and this phase is entered with
     /// the token already set. It must answer cancelled, not the words the
@@ -2531,6 +2634,50 @@ mod tests_engine {
             Some("transcript"),
             "a live take keeps its record"
         );
+    }
+
+    /// The direct path's write, with the job's own cancelled token:
+    /// [`keep_job_record`] derives the token from the job it is given, so a
+    /// fresh-token re-wiring cannot pass this.
+    #[test]
+    fn a_cancelled_direct_job_writes_no_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store");
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let (reply, _answer) = channel();
+        let job = Job {
+            pcm: Vec::new(),
+            resample: Duration::ZERO,
+            audio: Duration::ZERO,
+            truncated: false,
+            normalize: Some(NormalizeOptions::default()),
+            prejoined: None,
+            diagnose: true,
+            cancel,
+            reply,
+            queued_at: Instant::now(),
+        };
+        let audio = vec![0.5; 16];
+        let windows = Vec::new();
+        let stages = Stages::default();
+        let cfg = ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build();
+        let models = diagnostics::TakeModels::from_config(&cfg);
+        let record = diagnostics::TakeRecord {
+            audio: &audio,
+            windows: &windows,
+            joined: "early",
+            text: "early",
+            stages: &stages,
+            models: &models,
+            start_lag_ms: 0,
+            processing_ms: 0,
+            truncated: false,
+            outcome: "transcript",
+            recognition_error: None,
+        };
+        keep_job_record(&job, &store, &record);
+        assert!(no_take_was_stored(&store), "an abandoned direct take writes no record");
     }
 
     /// The worker's own half of the boundary, driven over a prejoined job
