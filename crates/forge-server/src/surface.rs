@@ -8,6 +8,7 @@
 
 pub mod accounts;
 pub mod agents;
+pub mod biometric;
 pub mod board;
 pub mod composer;
 pub mod connectors;

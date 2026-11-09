@@ -280,10 +280,19 @@ pub mod wire;
 /// could approve blind. `baselines/socket/29/` is the record a v29 server
 /// emitted.
 ///
+/// **v30 adds the biometric proxy's server surface.** Three app-level
+/// commands (`biometric_enrol`, `biometric_release`, `biometric_revoke`), the
+/// session-keyed `vault_lock` command, and the slot-less
+/// `biometric_enrolments_changed` update. A v29 server cannot decode the
+/// commands at all, and a v29 client has no vocabulary for the update: a
+/// settings page beside a v29 server would draw no enrolment list and would
+/// never learn one changed. `baselines/socket/30/` is the record a v30 server
+/// emitted.
+///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 29;
+pub const PROTOCOL_VERSION: u32 = 30;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, and how long it may stay silent before it is reaped.

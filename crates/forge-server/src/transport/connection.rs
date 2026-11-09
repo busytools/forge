@@ -2421,8 +2421,8 @@ where
             };
             // Where a command's answer goes, decided before anything acts.
             //
-            // Eight commands report through the reply and have no update behind
-            // them, so omitting `reply_to` on one of those is not a client
+            // A command that reports through the reply has no update behind
+            // it, so omitting `reply_to` on one of those is not a client
             // declining a reply - it is a client declining to learn whether
             // the work happened. Every other command is fire-and-forget: its
             // outcome rides the subscription, so it has no reply to set - and a
@@ -4385,13 +4385,13 @@ fn dispatch_answering(
     // A view acts through the same facade it reads through, and a refusal is
     // the core's own sentence rather than this layer's opinion of it.
     //
-    // The five reply-carrying commands take a sender the wire deliberately
-    // does not carry, and each carries its OWN reply type - a spawned worker
-    // answers with a `WorkerSpawnReply`, a despawn with a `DespawnResult`,
-    // and the review writes with a `bool` and a `ReviewSet`. So the channel
-    // is built per arm and handed to the shared helper with its own receiver:
-    // one channel cannot carry five different answers. **A variant missing
-    // here hangs its caller**:
+    // A reply-carrying command takes a sender the wire deliberately does not
+    // carry, and each carries its OWN reply type - a spawned worker answers
+    // with a `WorkerSpawnReply`, a despawn with a `DespawnResult`, the review
+    // writes with a `bool` and a `ReviewSet`, and a biometric release with the
+    // blob. So the channel is built per arm and handed to the shared helper
+    // with its own receiver: one channel cannot carry several answers. **A
+    // variant missing here hangs its caller**:
     // it falls to the fire-and-forget arm below with no sender, the
     // workspace answers nobody, and the client waits for ever (measured live
     // on the delete, 2026-10-17).
@@ -4462,14 +4462,19 @@ fn dispatch_answering(
             };
             answered(state, command, to, rx, reply_tx);
         }
+        Command::BiometricRelease { enrolment, purpose, .. } => {
+            let (tx, rx) = oneshot::channel();
+            let command = Command::BiometricRelease { enrolment, purpose, respond: Some(tx) };
+            answered(state, command, to, rx, reply_tx);
+        }
         // Every other command is fire-and-forget: success sends nothing
         // extra, because the update arrives through the subscription the
         // client already has.
         other => {
-            // A sixth reply-carrying variant added without an arm lands
-            // here: a refusal is answered below, a success is not, so its
-            // caller hangs (a despawn-shaped one has no client bound at all).
-            // Caught in debug rather than allowed to pass.
+            // A reply-carrying variant added without an arm lands here: a
+            // refusal is answered below, a success is not, so its caller
+            // hangs (a despawn-shaped one has no client bound at all). Caught
+            // in debug rather than allowed to pass.
             debug_assert!(
                 !answers_through_a_reply(&other),
                 "a reply-carrying command reached the fire-and-forget arm",
@@ -4652,9 +4657,10 @@ fn dispatched(me: u64, command: &Command) {
 /// Whether a command reports its outcome through the reply rather than
 /// through an update on the subscription.
 ///
-/// These five are the ones with nothing behind them on the wire: a client
-/// that omits `reply_to` for one of them has no second way to learn what
-/// happened.
+/// These are the ones with nothing behind them on the wire: a client that
+/// omits `reply_to` for one of them has no second way to learn what happened.
+/// A biometric release's reply is the blob itself, so it is one of them by
+/// construction.
 fn answers_through_a_reply(command: &Command) -> bool {
     matches!(
         command,
@@ -4663,6 +4669,7 @@ fn answers_through_a_reply(command: &Command) -> bool {
             | Command::UpsertReviewThread { .. }
             | Command::DeleteReviewThread { .. }
             | Command::SubmitReview { .. }
+            | Command::BiometricRelease { .. }
     )
 }
 
@@ -4723,7 +4730,7 @@ async fn call_output(
     }
 }
 
-/// Dispatch one of those five, and answer the client that asked.
+/// Dispatch one of those, and answer the client that asked.
 ///
 /// A client that asked for an answer always hears one - INCLUDING a refusal,
 /// so it is never left watching a channel that stays empty. The wait and the

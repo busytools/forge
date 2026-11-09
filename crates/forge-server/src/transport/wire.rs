@@ -133,6 +133,10 @@ pub struct HomeWire {
     /// The last fatal error, held by the core: an App-level event with no
     /// state behind it reaches only whoever was subscribed when it fired.
     pub fatal_error: Option<Value>,
+    /// The device enrolments the settings page lists and the unlock card
+    /// reads. **No wrapped blob is here**: the list is read by every client,
+    /// and the bytes stay behind a release.
+    pub biometric: ReadWire<Vec<forge_primitives::biometric::BiometricEnrolment>>,
 }
 
 /// The Extensions page's read: the plugin inventory, the PATH checks the
@@ -2125,6 +2129,7 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
         fatal_error: encode(
             surface.fatal_error().map(|error| Value::String(error.user_message().to_owned())),
         ),
+        biometric: surface.biometric_enrolments().into(),
         agents: agent_rows,
         unseen: agents
             .all()

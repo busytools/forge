@@ -48,12 +48,15 @@
 //!   areas, every key's value, and when an edit to it takes effect.
 //! - [`wire`] - the socket's binary frame tags shared by the server and the
 //!   shell.
+//! - [`biometric`] - one device's enrolment as a view draws it, its purposes,
+//!   and the opaque blob a release hands back.
 //!
 //! Add a type here when 2+ forge crates need it. Never reach for
 //! cross-crate `pub use` chains as a substitute.
 
 pub mod account;
 pub mod background;
+pub mod biometric;
 pub mod browser;
 pub mod call_output;
 pub mod client;

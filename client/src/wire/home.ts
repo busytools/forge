@@ -564,6 +564,25 @@ export interface VoiceWire {
   models_dir: string | null;
 }
 
+/**
+ * One purpose's enrolment as the home lists it: the consumer's own name and
+ * when it was enrolled and last released. **No wrapped blob is here** - the
+ * list is read by every client, and the bytes stay behind a release.
+ */
+export interface BiometricPurpose {
+  purpose: string;
+  created_at: WireTime;
+  last_used_at?: WireTime | null;
+}
+
+/** One device's enrolment: the id its client minted, its name, its purposes. */
+export interface BiometricEnrolment {
+  id: string;
+  device: string;
+  created_at: WireTime;
+  purposes: BiometricPurpose[];
+}
+
 export interface HomeWire {
   projects: ProjectWire[];
   agents: AgentRow[];
@@ -599,6 +618,13 @@ export interface HomeWire {
   service_status: ServiceReport | null;
   /** The words of the core's last fatal, which the view this client replaced printed on exit. */
   fatal_error: string | null;
+  /**
+   * The device enrolments the settings page lists and the unlock card reads.
+   * The two halves fail apart on the server, so a page can tell "no device is
+   * enrolled" from "the list could not be read".
+   */
+  biometric:
+    { outcome: 'read'; value: BiometricEnrolment[] } | { outcome: 'failed'; value: string };
 }
 
 /** The lifecycles the core names. A value outside these is one this client is older than. */
@@ -913,5 +939,33 @@ export function homeFrom(data: HomeWire): HomeWire {
         })),
       },
     },
+    biometric: biometricFrom(data.biometric),
   };
+}
+
+/**
+ * The enrolment list, narrowed where it enters.
+ *
+ * A server older than the field states none, which reads as no device
+ * enrolled - nothing could have enrolled there. A read whose value is not a
+ * list is the failed half rather than an empty one: "no device is enrolled"
+ * and "the list could not be read" are different sentences on the settings
+ * page.
+ */
+function biometricFrom(value: unknown): HomeWire['biometric'] {
+  const held =
+    value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+  if (held === null) return { outcome: 'read', value: [] };
+  if (held['outcome'] === 'failed') {
+    return { outcome: 'failed', value: typeof held['value'] === 'string' ? held['value'] : '' };
+  }
+  if (held['outcome'] !== 'read' || !Array.isArray(held['value'])) {
+    return {
+      outcome: 'failed',
+      value: 'the enrolment list arrived in a shape this build cannot read',
+    };
+  }
+  // The elements are the server's own records; their fields are read by the
+  // settings page, which is where a malformed row is worth failing over.
+  return { outcome: 'read', value: held['value'] as BiometricEnrolment[] };
 }

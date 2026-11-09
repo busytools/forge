@@ -6796,6 +6796,13 @@ impl Workspace {
                     });
                     return Ok(());
                 }
+                // The shared vault's lock is workspace state, never agent
+                // traffic; the press is answered by the re-stamped cards and
+                // the vault rows' next read.
+                Command::VaultLock { key } => {
+                    self.lock_vault(&key);
+                    return Ok(());
+                }
                 _ => {}
             }
             let key = key.clone();
@@ -7804,6 +7811,26 @@ impl Workspace {
                         updated_at: now,
                     };
                     self.push_task(task);
+                }
+                Command::BiometricEnrol { enrolment, device, purpose, blob } => {
+                    self.enrol_biometric(enrolment, &device, &purpose, &blob)
+                        .map_err(|reason| DispatchError::BiometricRefused { reason })?;
+                }
+                Command::BiometricRelease { enrolment, purpose, respond } => {
+                    // The wait the transport answered: a store failure is a
+                    // dispatch refusal, so it surfaces as a refusal rather
+                    // than as `null` - the answer that means "not enrolled"
+                    // and sends the client to its password.
+                    let answer = self
+                        .release_biometric(enrolment, &purpose)
+                        .map_err(|reason| DispatchError::BiometricRefused { reason })?;
+                    if let Some(respond) = respond {
+                        let _ = respond.send(answer);
+                    }
+                }
+                Command::BiometricRevoke { enrolment, purpose } => {
+                    self.revoke_biometric(enrolment, purpose.as_deref())
+                        .map_err(|reason| DispatchError::BiometricRefused { reason })?;
                 }
                 other => {
                     tracing::warn!(

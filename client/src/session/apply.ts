@@ -553,6 +553,9 @@ export const IGNORED: readonly string[] = [
   'cron_schedules_changed',
   'connector_subscriptions_changed',
   'worker_status_changed',
+  // The device enrolment set is the settings page's and the home read's; this
+  // record has no field for it.
+  'biometric_enrolments_changed',
 ];
 
 /** Fold one update into the record. A variant it has nothing to do with leaves it alone. */

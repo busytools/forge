@@ -3074,7 +3074,11 @@ pub(crate) fn execute_command_via_handle(
         | Command::MarketplaceRepair { .. }
         | Command::RespondSettingsWrite { .. }
         | Command::VoiceMode { .. }
-        | Command::VoicePreview { .. }) => {
+        | Command::VoicePreview { .. }
+        | Command::BiometricEnrol { .. }
+        | Command::BiometricRelease { .. }
+        | Command::BiometricRevoke { .. }
+        | Command::VaultLock { .. }) => {
             tracing::warn!(
                 target: "forge_workspace::session_task",
                 slot = %key.display(),

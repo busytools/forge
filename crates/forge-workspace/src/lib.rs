@@ -54,6 +54,7 @@
 mod account_cache;
 mod account_loader;
 pub mod bench;
+mod biometric;
 pub mod board;
 pub mod browser;
 pub mod catalogue;

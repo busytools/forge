@@ -246,7 +246,7 @@ Work top-down; first match wins.
 **The view surface is built, reads and writes.** A view reads the core
 through named verbs by subject - `roster`, `session`, `agents`,
 `accounts`, `plugins`, `extensions`, `reviews`, `workers`, `connectors`,
-`dictate`,
+`dictate`, `biometric_enrolments`,
 `dictate_models`, `voices`, `cli_version`, `conversation`, `slash_commands`,
 `forge_commands`, `subagents`, `subagent_cards`,
 `file_index`, `resumable_sessions`, `walk_file_index`, `respect_gitignore`,
