@@ -65,8 +65,13 @@ pub(crate) struct VaultSession {
     updates: UpdateFanout,
     /// The configured idle bound in minutes, or `None` for no idle lock.
     idle_minutes: Option<u64>,
-    /// When the session was last used, for the idle clock.
-    last_used: parking_lot::Mutex<Option<std::time::Instant>>,
+    /// When the session was last used, for the idle clock. **Wall clock, not
+    /// `Instant`**: a monotonic clock stops while the machine sleeps, so an
+    /// overnight lid-close would never reach the bound.
+    last_used: parking_lot::Mutex<Option<std::time::SystemTime>>,
+    /// Bumped by every lock, so an unlock whose network work was overtaken by
+    /// a lock does not install its keys under it.
+    lock_generation: std::sync::atomic::AtomicU64,
     audit: Option<VaultAudit>,
 }
 
@@ -104,6 +109,7 @@ impl VaultSession {
             updates,
             idle_minutes: config.idle_minutes,
             last_used: parking_lot::Mutex::new(None),
+            lock_generation: std::sync::atomic::AtomicU64::new(0),
             audit,
         })
     }
@@ -130,7 +136,14 @@ impl VaultSession {
         if self.state.read().keys.is_none() {
             return;
         }
-        let Some(elapsed) = self.last_used.lock().as_ref().map(std::time::Instant::elapsed) else {
+        // A clock that moved backwards (an NTP step, a manual change) reads as
+        // no time passed rather than as an instant lock.
+        let Some(elapsed) = self
+            .last_used
+            .lock()
+            .as_ref()
+            .and_then(|stamp| std::time::SystemTime::now().duration_since(*stamp).ok())
+        else {
             return;
         };
         if elapsed >= std::time::Duration::from_secs(minutes.saturating_mul(60)) {
@@ -145,7 +158,7 @@ impl VaultSession {
 
     /// Stamp a use of the session, for the idle clock.
     fn touch(&self) {
-        *self.last_used.lock() = Some(std::time::Instant::now());
+        *self.last_used.lock() = Some(std::time::SystemTime::now());
     }
 
     /// The unlocked keys. A caller that needs crypto reads these; a locked
@@ -162,14 +175,24 @@ impl VaultSession {
     /// holds no tokens or keys, and when it holds no refresh token, because a
     /// blob built on material that cannot refresh is a shortcut to nothing.
     pub(crate) fn enrolment_material(&self) -> Option<VaultReleased> {
+        // A hand-out is a read like any other: it must not revive a session
+        // past its idle bound, and it stamps the clock when it answers.
+        self.lock_if_idle();
         let state = self.state.read();
         let keys = state.keys.as_ref()?;
         let tokens = state.tokens.as_ref()?;
         let refresh = tokens.refresh.as_deref().filter(|token| !token.is_empty())?;
-        Some(VaultReleased {
+        let material = VaultReleased {
             refresh_token: refresh.to_owned(),
             user_key: keys.user_key.to_base64().to_string(),
-        })
+        };
+        drop(state);
+        self.touch();
+        tracing::info!(
+            event_name = "vault_enrolment_material_released",
+            "a client took the session's enrolment material"
+        );
+        Some(material)
     }
 
     /// Tell every view the refresh token rotated. The token is a secret: it
@@ -191,6 +214,7 @@ impl VaultSession {
         if !self.is_locked() {
             return Ok(());
         }
+        let generation = self.lock_generation.load(std::sync::atomic::Ordering::SeqCst);
 
         let prelogin: Prelogin = self.client.prelogin(&self.email).await?;
         // `bitwarden-crypto`'s `MasterKey` has no public zeroize; it is
@@ -219,6 +243,12 @@ impl VaultSession {
         }
 
         let mut state = self.state.write();
+        if self.lock_generation.load(std::sync::atomic::Ordering::SeqCst) != generation {
+            // **A lock overtook this unlock**: the person pressed lock, or the
+            // idle bound fired, while the network work was out. Installing
+            // the keys now would undo that lock.
+            return Err(VaultError::Locked);
+        }
         state.tokens = Some(Tokens {
             access: std::mem::take(&mut token.access_token),
             refresh: token.refresh_token.take(),
@@ -249,6 +279,7 @@ impl VaultSession {
         if !self.is_locked() {
             return Ok(());
         }
+        let generation = self.lock_generation.load(std::sync::atomic::Ordering::SeqCst);
 
         // The token is spent once and the endpoint rotates it; the response's
         // next refresh token is what this session keeps for its own refreshes.
@@ -265,6 +296,9 @@ impl VaultSession {
         }
 
         let mut state = self.state.write();
+        if self.lock_generation.load(std::sync::atomic::Ordering::SeqCst) != generation {
+            return Err(VaultError::Locked);
+        }
         // The redemption spent the token the client released, so the lineage
         // rotated: the client rewrites its blob with the one this session
         // now holds.
@@ -326,10 +360,14 @@ impl VaultSession {
         match self.client.refresh(&refresh).await {
             Ok(mut token) => {
                 let access = Zeroizing::new(token.access_token.clone());
+                let previous = refresh.clone();
                 let next_refresh =
                     token.refresh_token.take().or_else(|| Some(std::mem::take(&mut refresh)));
                 refresh.zeroize();
-                let rotated = next_refresh.clone();
+                // **A rotation is news only when the token moved.** An
+                // endpoint that answers the same refresh token again would
+                // otherwise make every client rewrite a blob nothing changed.
+                let rotated = next_refresh.clone().filter(|next| next != &previous);
                 if let Some(tokens) = self.state.write().tokens.as_mut() {
                     tokens.access.zeroize();
                     if let Some(mut old) = tokens.refresh.take() {
@@ -355,6 +393,10 @@ impl VaultSession {
     /// A lock that found a session open announces it, so every view's vault
     /// card redraws - the settings page's own among them.
     pub(crate) fn lock(&self) {
+        // **Bumped before the state write**: an unlock that already read the
+        // generation will find it changed and refuse to install its keys, so
+        // this lock cannot be undone by network work that was already out.
+        self.lock_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let was_unlocked = {
             let mut state = self.state.write();
             let was_unlocked = state.keys.is_some();
@@ -923,6 +965,112 @@ mod tests {
         }
     }
 
+    /// **A lock that lands while an unlock is out wins.** The generation bump
+    /// is what stops network work from installing keys under a lock the
+    /// person pressed (or the idle clock fired) while the request was away.
+    #[tokio::test]
+    async fn a_lock_during_an_unlock_is_not_undone_by_it() {
+        use tokio::io::AsyncWriteExt;
+
+        let pre =
+            Prelogin { kdf: 0, kdf_iterations: 100_000, kdf_memory: None, kdf_parallelism: None };
+        let master_key = crypto::derive_master_key("open sesame", "hi@vedhavyas.dev", &pre)
+            .expect("the master key");
+        let (_user_key, wrapped_user_key) = master_key.make_user_key().expect("the user key");
+        let prelogin = serde_json::json!({ "kdf": 0, "kdfIterations": 100_000 }).to_string();
+        let token = serde_json::json!({
+            "access_token": "access",
+            "refresh_token": "refresh",
+            "Key": wrapped_user_key.to_string(),
+        })
+        .to_string();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let (sync_seen, sync_seen_rx) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let answers = [prelogin, token];
+            let mut sync_seen = Some(sync_seen);
+            let mut released = Some(released);
+            for index in 0..3 {
+                let (mut socket, _) = listener.accept().await.expect("accept");
+                let _ = read_request(&mut socket).await;
+                if index == 2 {
+                    // The sync is the last answer the unlock needs: hold it
+                    // until the test's lock has landed.
+                    if let Some(signal) = sync_seen.take() {
+                        let _ = signal.send(());
+                    }
+                    if let Some(held) = released.take() {
+                        let _ = held.await;
+                    }
+                    let body = r#"{"profile":{},"folders":[],"ciphers":[]}"#;
+                    let _ = socket.write_all(response("200 OK", body).as_bytes()).await;
+                } else if let Some(answer) = answers.get(index) {
+                    let _ = socket.write_all(response("200 OK", answer).as_bytes()).await;
+                }
+            }
+        });
+
+        let session = std::sync::Arc::new(
+            test_session(
+                &VaultConfig {
+                    url: format!("http://{address}"),
+                    email: "hi@vedhavyas.dev".to_owned(),
+                    idle_minutes: None,
+                },
+                None,
+                Path::new("/tmp"),
+            )
+            .expect("a session"),
+        );
+        let held = std::sync::Arc::clone(&session);
+        let unlocking = tokio::spawn(async move { held.unlock("open sesame", None).await });
+        sync_seen_rx.await.expect("the sync request is out");
+
+        session.lock();
+        let _ = release.send(());
+        let refused = unlocking.await.expect("the unlock finishes");
+
+        assert!(matches!(refused, Err(VaultError::Locked)), "the lock wins: {refused:?}");
+        assert!(session.is_locked(), "the session stays locked");
+    }
+
+    /// **The settings card's lock press is a command**, so its dispatch arm is
+    /// pinned: `VaultLock` locks the shared session and announces the change
+    /// every view redraws on.
+    #[test]
+    fn the_lock_command_locks_the_shared_session() {
+        use crate::update_fanout::SubscriberRole;
+
+        let updates = UpdateFanout::default();
+        let mut announced = updates.subscribe(SubscriberRole::Answering);
+        let session =
+            test_session_with_updates(&config(), None, Path::new("/tmp"), updates.clone())
+                .expect("a session");
+        test_install_unlocked(
+            &session,
+            Unlocked {
+                user_key: crypto::make_symmetric_key(),
+                private_key: None,
+                org_keys: std::collections::HashMap::new(),
+                failed_orgs: Vec::new(),
+                user_key_fingerprint: String::new(),
+            },
+        );
+        let (workspace, _rx) = crate::workspace::Workspace::testing_stub();
+        *workspace.vault.write() = Some(std::sync::Arc::new(session));
+
+        assert!(!workspace.vault_state().expect("a vault").locked, "the session starts open");
+        workspace.dispatch(crate::protocol::Command::VaultLock).expect("the lock routes");
+        assert!(workspace.vault_state().expect("a vault").locked, "the shared session locked");
+        match &*announced.try_recv().expect("the lock is announced").update {
+            SessionUpdate::VaultLockChanged { locked } => assert!(locked),
+            other => panic!("the lock announced something else: {other:?}"),
+        }
+    }
+
     #[test]
     fn a_new_session_is_locked() {
         let session = test_session(&config(), None, Path::new("/tmp")).expect("a session");
@@ -983,8 +1131,10 @@ mod tests {
     }
 
     fn response(status: &str, body: &str) -> String {
+        // **One request per connection**: the server closes after answering,
+        // so the client must be told not to reuse it.
         format!(
-            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         )
     }
@@ -1040,11 +1190,11 @@ mod tests {
     /// leaves an unconfigured session alone.
     #[test]
     fn the_idle_bound_locks_the_session_on_its_next_read() {
-        /// A monotonic instant `seconds` in the past.
-        fn ago(seconds: u64) -> std::time::Instant {
-            std::time::Instant::now()
+        /// A wall-clock instant `seconds` in the past.
+        fn ago(seconds: u64) -> std::time::SystemTime {
+            std::time::SystemTime::now()
                 .checked_sub(std::time::Duration::from_secs(seconds))
-                .expect("the monotonic clock is older than the test's span")
+                .expect("the wall clock is older than the test's span")
         }
 
         use crate::update_fanout::SubscriberRole;
