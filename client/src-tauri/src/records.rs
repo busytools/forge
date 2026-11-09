@@ -34,6 +34,7 @@
 
 use std::collections::HashMap;
 
+use forge_primitives::SessionSlot;
 use serde_json::{Map, Value, json};
 
 use crate::socket::Socket;
@@ -209,7 +210,12 @@ pub fn subject_key(subject: &Value) -> String {
     ) else {
         return String::new();
     };
-    format!("session:{org}\u{0}{project}\u{0}{label}")
+    slot_key(&SessionSlot::new(org, project, label))
+}
+
+/// A slot as the key this half and the page hold its record under.
+pub(crate) fn slot_key(slot: &SessionSlot) -> String {
+    format!("session:{}\u{0}{}\u{0}{}", slot.org(), slot.project(), slot.label())
 }
 
 /// Fold one seat update into the record. `true` when the record really moved -
