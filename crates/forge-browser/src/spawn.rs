@@ -30,6 +30,29 @@ pub fn launch_bound(failed: bool, base: Duration) -> Duration {
     if failed { base * 2 } else { base }
 }
 
+/// The base bound a launch starts under. A test overrides it so the doubled
+/// bound after a failure can be driven through the real launch path in
+/// milliseconds rather than 15 seconds.
+#[cfg(test)]
+static TEST_LAUNCH_BASE: std::sync::Mutex<Option<Duration>> = std::sync::Mutex::new(None);
+
+/// Start launches from `base` for this test process.
+#[cfg(test)]
+pub(crate) fn set_launch_base_for_test(base: Duration) {
+    *TEST_LAUNCH_BASE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(base);
+}
+
+/// The base bound one launch attempt gets: [`LAUNCH_TIMEOUT`], or the range
+/// a test narrowed it to.
+pub fn launch_base() -> Duration {
+    #[cfg(test)]
+    if let Some(base) = *TEST_LAUNCH_BASE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    {
+        return base;
+    }
+    LAUNCH_TIMEOUT
+}
+
 /// How long a show cue waits for the host to apply it. The host's loop runs
 /// about every millisecond, so this is a stall bound, not a budget: past it
 /// the call goes ahead rather than stall on a wedged pump.
@@ -217,10 +240,30 @@ fn reserved() -> std::sync::MutexGuard<'static, std::collections::HashSet<u16>> 
     reserved_ports().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// The port range one launch selects from. A test overrides it so two tests
+/// that nextest runs as separate processes - each with its own reservation
+/// set - do not both select the service's first port and collide on it and on
+/// its ring.
+#[cfg(test)]
+static TEST_PORT_RANGE: std::sync::Mutex<Option<std::ops::Range<u16>>> =
+    std::sync::Mutex::new(None);
+
+/// Select from `range` for this test process's launches.
+#[cfg(test)]
+pub(crate) fn set_port_range_for_test(range: std::ops::Range<u16>) {
+    *TEST_PORT_RANGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(range);
+}
+
 /// The first port nothing holds and nothing this process has reserved, from
 /// a small private range. The port stays reserved for the caller's launch
 /// until [`release_port`] is called.
 pub fn free_port() -> Option<u16> {
+    #[cfg(test)]
+    if let Some(range) =
+        TEST_PORT_RANGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    {
+        return free_port_in(range);
+    }
     free_port_in(9411..9431)
 }
 
@@ -1898,6 +1941,63 @@ mod tests {
             .expect_err("a live ring with no endpoint fails");
         let _ = child.kill().await;
         let _ = child.wait().await;
+        Ring::unlink(&ring);
+        assert!(
+            err.contains("went live but its endpoint never answered"),
+            "the endpoint phase is named: {err}"
+        );
+    }
+
+    /// **A ring that stops being live is not admitted by a cached answer.**
+    /// The first poll sees the host live and is already probing when the host
+    /// reports failure; a cached "it went live once" would keep probing a
+    /// port another process's host now answers on and adopt it, where
+    /// per-poll ownership ends the wait with the endpoint phase.
+    #[tokio::test]
+    async fn a_ring_that_stops_being_live_is_not_admitted_by_a_cached_answer() {
+        let mut child = tokio::process::Command::new("sleep").arg("10").spawn().expect("a child");
+        let pid = child.id().expect("a pid");
+        let ring = format!("/forge-test-own-flip-{pid}");
+        let mapped = Ring::create(&ring, 4, 4).expect("a test ring");
+        mapped.set_pid(pid);
+        mapped.set_state(crate::osr::STATE_LIVE);
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a listener");
+        let port = listener.local_addr().expect("the listener's address").port();
+        let name = ring.clone();
+        // **The flip precedes the close**, so the probe the live ring admitted
+        // is still in flight when the ring goes dead, and every later probe
+        // answers.
+        let server = std::thread::spawn(move || {
+            let Ok((first, _)) = listener.accept() else { return };
+            if let Ok(opened) = Ring::open(&name) {
+                opened.set_state(crate::osr::STATE_FAILED);
+            }
+            drop(first);
+            let deadline = std::time::Instant::now() + Duration::from_secs(1);
+            let _ = listener.set_nonblocking(true);
+            while std::time::Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let body = r#"{"Browser":"stub"}"#;
+                        let _ = std::io::Write::write_all(
+                            &mut stream,
+                            format!(
+                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            )
+                            .as_bytes(),
+                        );
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(5)),
+                }
+            }
+        });
+        let err = wait_ready_for_bound(pid, port, &ring, Duration::from_millis(300))
+            .await
+            .expect_err("a ring that is no longer live ends the wait");
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        let _ = server.join();
         Ring::unlink(&ring);
         assert!(
             err.contains("went live but its endpoint never answered"),
