@@ -10948,10 +10948,12 @@ mod lead_charter_tests {
     /// own paragraph below them. That paragraph is pinned byte for byte, so
     /// nothing can be added, removed or qualified inside it. The rest of the
     /// board section is then scanned as a net for a cron call, a cron
-    /// parameter or a five-field cron expression - a net, not a closure,
-    /// because prose naming no tool, parameter or expression cannot be told
-    /// apart from advice. The charter's one-shot `cron__create` advice sits
-    /// above that section, so the scan leaves it alone.
+    /// parameter or a cron expression: candidate windows are parsed with
+    /// forge's own validator, so the net accepts exactly what a session
+    /// could schedule - names, ranges and aliases included. It is a net,
+    /// not a closure: prose naming no tool, parameter or expression cannot
+    /// be told apart from advice. The charter's one-shot `cron__create`
+    /// advice sits above that section, so the scan leaves it alone.
     #[test]
     fn the_charter_carries_the_board_sweep() {
         const SWEEP: &str = "**Sweep the board at the start of every session, and on demand.** \
@@ -10967,6 +10969,11 @@ mod lead_charter_tests {
         assert!(
             section.contains("**Sweep the board"),
             "the sweep paragraph belongs in the board section, not elsewhere",
+        );
+        assert_eq!(
+            DEFAULT_LEAD_CHARTER.matches("**Sweep the board").count(),
+            1,
+            "the charter carries exactly one sweep paragraph",
         );
         let sweep_at = section
             .find("**Sweep the board")
@@ -11022,42 +11029,61 @@ mod lead_charter_tests {
         let prohibition = "Never create a standing sweep cron.";
         let rest = without_cleanup.replacen(prohibition, "", 1);
         assert_ne!(rest, without_cleanup, "the pinned prohibition is one sentence: {prohibition}");
-        let haystack = rest.to_ascii_lowercase();
-        for (token, why) in
-            [("cron", "no cron call or instruction"), ("wake:", "no cron parameter")]
-        {
-            if let Some(at) = haystack.find(token) {
-                panic!(
-                    "the board section carries {token:?} ({why}) near: {}",
-                    context_around(&rest, at),
-                );
-            }
-        }
-        if let Some(at) = five_field_cron(&haystack) {
-            panic!(
-                "the board section carries a five-field cron expression near: {}",
-                context_around(&rest, at),
-            );
+        if let Some((marker, at)) = cron_marker(&rest) {
+            let near = context_around(&rest, at);
+            panic!("the board section carries {marker:?} near: {near}");
         }
 
         let creations: Vec<usize> =
             DEFAULT_LEAD_CHARTER.match_indices("cron__create").map(|(at, _)| at).collect();
-        assert_eq!(
-            creations.len(),
-            1,
-            "the charter's only cron creation is the report-only one-shot sentence; found {} at: {}",
-            creations.len(),
+        let sites = if creations.is_empty() {
+            "none".to_owned()
+        } else {
             creations
                 .iter()
                 .map(|&at| context_around(DEFAULT_LEAD_CHARTER, at))
                 .collect::<Vec<_>>()
-                .join(" | "),
+                .join(" | ")
+        };
+        assert_eq!(
+            creations.len(),
+            1,
+            "the charter's only cron creation is the report-only one-shot sentence; found {} at: \
+             {sites}",
+            creations.len(),
         );
         assert!(
             DEFAULT_LEAD_CHARTER
                 .contains("schedule a report-only `cron__create` one-shot (`run_once_at`)"),
             "the single cron creation is the one-shot advice",
         );
+    }
+
+    /// The net's own machinery, proved away from the charter: the charter
+    /// carries none of these markers today, so a detector that stopped
+    /// matching, or a scan that stopped lowercasing, would leave every
+    /// assertion above green. The expressions are the forms forge's own
+    /// validator accepts - wildcards, names, ranges and aliases.
+    #[test]
+    fn the_board_section_net_catches_cron_markers() {
+        for (text, why) in [
+            ("`*/30 * * * *`.", "a backtick-wrapped expression ending in a period"),
+            ("0 6 * * 1", "five plain fields"),
+            ("(0 9 * * 1)", "a parenthesised expression"),
+            ("0 9 * * MON", "a day name"),
+            ("0 9 * * MON-FRI", "a day range"),
+            ("@daily", "an alias"),
+        ] {
+            assert!(cron_expression(text).is_some(), "{text} is a cron expression ({why})");
+        }
+        assert!(
+            cron_marker("Create a CRON job each morning").is_some(),
+            "the scan lowercases, so a capitalised CRON is caught",
+        );
+        assert_eq!(trim_cron_token("`0`."), "0", "backticks and a period are trimmed");
+        assert_eq!(trim_cron_token("`1`,"), "1", "backticks and a comma are trimmed");
+        assert_eq!(trim_cron_token("(2);"), "2", "parentheses and a semicolon are trimmed");
+        assert_eq!(cron_expression("word"), None, "prose is not a cron expression");
     }
 
     /// The board section, from its heading to the next top-level heading.
@@ -11070,41 +11096,58 @@ mod lead_charter_tests {
         &tail[..end]
     }
 
-    /// One whitespace-separated word as a cron field, when it can be one:
-    /// markdown code-span ticks and a sentence-ending period are trimmed
-    /// first, because prose wraps an expression in backticks.
-    fn cron_field(word: &str) -> Option<&str> {
-        let trimmed = word.trim_matches('`').trim_end_matches(['.', ',']).trim_matches('`');
-        (!trimmed.is_empty()
-            && trimmed
-                .chars()
-                .all(|c| c.is_ascii_digit() || matches!(c, '*' | '/' | ',' | '?' | '-')))
-        .then_some(trimmed)
+    /// The first cron marker the board-section net recognises in `text`: a
+    /// cron word, a `wake:` parameter or a cron expression. The haystack is
+    /// lowercased with the ASCII-only form on purpose - it preserves byte
+    /// offsets, so the failure context can be sliced out of the original
+    /// text.
+    fn cron_marker(text: &str) -> Option<(String, usize)> {
+        let haystack = text.to_ascii_lowercase();
+        for token in ["cron", "wake:"] {
+            if let Some(at) = haystack.find(token) {
+                return Some((token.to_owned(), at));
+            }
+        }
+        cron_expression(&haystack).map(|at| ("cron expression".to_owned(), at))
     }
 
-    /// The byte offset of a five-field cron expression, where every field is
-    /// drawn from `0-9 * / , ? -` and at least one carries a digit or `*`.
-    fn five_field_cron(text: &str) -> Option<usize> {
-        let mut window: Vec<(usize, &str)> = Vec::new();
+    /// A whitespace-separated token with the punctuation prose wraps a
+    /// schedule in: code-span ticks, a trailing period or comma, parentheses,
+    /// semicolons and quotes.
+    fn trim_cron_token(word: &str) -> &str {
+        word.trim_matches(['`', '.', ',', '(', ')', ';', '"', '\''])
+    }
+
+    /// The byte offset of the first cron expression the board-section net
+    /// recognises in `text`: every window of five whitespace-separated
+    /// tokens, and every `@`-prefixed token, is stripped of its wrapping
+    /// punctuation and handed to forge's own validator, so the net accepts
+    /// exactly what `cron__create` would - names, ranges, aliases and all -
+    /// and nothing else by construction. A numeric run such as `2 3 4 5 6`
+    /// parses too; that is the trade for using the real validator, it fails
+    /// loudly, and the board section carries no such run.
+    fn cron_expression(text: &str) -> Option<usize> {
+        let mut tokens: Vec<(usize, &str)> = Vec::new();
         let mut cursor = 0;
         for word in text.split_whitespace() {
             let at = cursor + text[cursor..].find(word)?;
             cursor = at + word.len();
-            if let Some(trimmed) = cron_field(word) {
-                window.push((at, trimmed));
-                if window.len() > 5 {
-                    window.remove(0);
-                }
-                if window.len() == 5 {
-                    let carries_signal = window
-                        .iter()
-                        .any(|(_, w)| w.contains('*') || w.chars().any(|c| c.is_ascii_digit()));
-                    if carries_signal {
-                        return Some(window[0].0);
-                    }
-                }
-            } else {
-                window.clear();
+            let trimmed = trim_cron_token(word);
+            if !trimmed.is_empty() {
+                tokens.push((at, trimmed));
+            }
+        }
+        for (at, token) in &tokens {
+            if token.starts_with('@')
+                && crate::mcp::cron::schedule::validate_cron_expr(token).is_ok()
+            {
+                return Some(*at);
+            }
+        }
+        for window in tokens.windows(5) {
+            let expr = window.iter().map(|(_, word)| *word).collect::<Vec<_>>().join(" ");
+            if crate::mcp::cron::schedule::validate_cron_expr(&expr).is_ok() {
+                return Some(window[0].0);
             }
         }
         None

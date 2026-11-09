@@ -137,7 +137,7 @@ impl Tool for Create {
          human summary of what the job does and why - which the UI shows as the schedule's \
          headline. If that session isn't open at fire time, forge spawns it first, unless it can \
          no longer be started (a worker whose directory is gone); pass `wake: false` for a \
-         recurring job that must not wake a sleeping owner, where a tick that finds the \
+         job that must not wake a sleeping owner, where a tick that finds the \
          session asleep is skipped and the entry stays due for the next session start. \
          Returns the cron's id (use it \
          with cron__delete). Recurring crons repeat; run-once crons delete themselves after \
@@ -176,7 +176,7 @@ impl Tool for Create {
                 "wake": {
                     "type": "boolean",
                     "description": "Whether a fire may wake a sleeping session (default true). \
-                                    Set false for a recurring job that must not wake a sleeping \
+                                    Set false for a job that must not wake a sleeping \
                                     owner: a tick that finds the session asleep is skipped and \
                                     the entry stays due, so the next session start (or a tick \
                                     while it is awake) runs it.",
@@ -699,7 +699,7 @@ mod tests {
         let create = Create { facade: MockCronFacade::new().into_arc(), slot: caller_slot() };
         let desc = create.description();
         assert!(
-            desc.contains("recurring job that must not wake a sleeping owner"),
+            desc.contains("a job that must not wake a sleeping owner"),
             "the no-wake example names the flag's meaning: {desc}",
         );
         assert!(
@@ -711,7 +711,7 @@ mod tests {
             .as_str()
             .expect("the wake parameter carries a description");
         assert!(
-            wake.contains("recurring job that must not wake a sleeping owner"),
+            wake.contains("a job that must not wake a sleeping owner"),
             "the wake parameter names the flag's meaning: {wake}",
         );
         assert!(
