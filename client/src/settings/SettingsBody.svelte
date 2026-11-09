@@ -3,6 +3,8 @@
 
   import Brand from '../components/Brand.svelte';
   import ClassMark from '../components/ClassMark.svelte';
+  import BiometricCard from './BiometricCard.svelte';
+  import type { BiometricEnrolment } from '../wire/home';
   import { PROTOCOL_VERSION } from '../protocol';
   import type { SettingsDocument, SettingsEditSpec, SettingsKey } from '../wire/settings';
   import InstanceCard from './InstanceCard.svelte';
@@ -56,6 +58,8 @@
     onSpeakingVoice = () => {},
     onSpeakingStopPreview = () => {},
     onSpeakingPreview = () => {},
+    biometric = null,
+    onRevokeBiometric = () => {},
   }: {
     document: SettingsDocument;
     mark: string | null;
@@ -109,6 +113,12 @@
     onSpeakingVoice?: (voice: string) => void;
     onSpeakingPreview?: (voice: string) => void;
     onSpeakingStopPreview?: () => void;
+    /** The device enrolments the home read carries; `null` before a home. */
+    biometric?:
+      | { outcome: 'read'; value: BiometricEnrolment[] }
+      | { outcome: 'failed'; value: string }
+      | null;
+    onRevokeBiometric?: (enrolment: string, purpose: string) => void;
   } = $props();
 
   const shown = $derived(selectedArea(document, selected));
@@ -270,6 +280,15 @@
       {:else if area.keys.length === 0 && added.length === 0}
         <p class="settings-empty">This area has no keys.</p>
       {:else}
+        {#if area.id === 'vault'}
+          <BiometricCard
+            read={biometric ?? {
+              outcome: 'failed',
+              value: 'this server does not report biometric enrolments',
+            }}
+            onrevoke={(enrolment: string, purpose: string) => onRevokeBiometric(enrolment, purpose)}
+          />
+        {/if}
         {#if area.id === 'voice'}
           <SpeakingCard
             {speaking}

@@ -5193,6 +5193,11 @@ details[open] > summary .arw { opacity: 1; }
 
 .settings-page .settings-value { white-space: pre-wrap; }
 .settings-page .settings-dim { color: var(--dim); }
+/* One purpose inside a device's row: its name, its last release and its own
+   revoke, laid on the row's value side. */
+.settings-page .settings-setting-value .biometric-purpose { display: inline-flex;
+  align-items: center; gap: 8px; margin-left: 12px; }
+.settings-page .biometric-purpose .settings-btn { padding: 1px 8px; }
 .settings-page .settings-chips { display: inline-flex; flex-wrap: wrap; gap: 5px;
   vertical-align: middle; justify-content: flex-end; }
 .settings-page .settings-chips code { font-family: var(--mono); font-size: 11.5px; color: var(--text);

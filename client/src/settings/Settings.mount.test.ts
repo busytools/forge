@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import SettingsBody from './SettingsBody.svelte';
 import { settingsWire } from '../dev/settings.fixture';
 import { emptyDraft } from './editor';
+import type { SettingsDocument } from '../wire/settings';
 
 /**
  * The page's controls: the sub-nav switches the pane, each instance is a
@@ -272,5 +273,65 @@ describe('the settings page', () => {
       document.body.textContent,
       'the unset font names the bundled face, not a settable name',
     ).toContain('not set · the bundled face');
+  });
+
+  it('draws the device enrolments inside the vault area', () => {
+    const vault: SettingsDocument = {
+      ...settingsWire,
+      areas: [
+        {
+          id: 'vault',
+          name: 'vault',
+          note: 'the Vaultwarden account',
+          keys: [
+            {
+              path: 'vault.url',
+              leaf: 'url',
+              group: ['vault'],
+              pattern: 'vault.url',
+              class: 'live',
+              classLabel: 'live',
+              value: { kind: 'string', text: 'https://vault.test' },
+              edit: { kind: 'string', allowed: [], required: true, group: null },
+            },
+          ],
+        },
+      ],
+      totals: { keys: 1, areas: 1 },
+    };
+    const at = { secs_since_epoch: 1_790_000_000, nanos_since_epoch: 0 };
+    app = mount(SettingsBody, {
+      target: document.body,
+      props: {
+        document: vault,
+        mark: null,
+        cliVersion: null,
+        selected: 'vault',
+        onSelect: () => {},
+        draft: emptyDraft(),
+        onToggleEditing: () => {},
+        onValue: () => {},
+        onEntryValue: () => {},
+        onAdd: () => {},
+        onRemoveRequest: () => {},
+        onCancelAdd: () => {},
+        onUndoRemove: () => {},
+        biometric: {
+          outcome: 'read',
+          value: [
+            {
+              id: 'device-1',
+              device: "Ved's MacBook Pro",
+              created_at: at,
+              purposes: [{ purpose: 'vault', created_at: at, last_used_at: null }],
+            },
+          ],
+        },
+      },
+    });
+    flushSync();
+
+    expect(document.body.textContent).toContain("Ved's MacBook Pro");
+    expect(document.body.textContent, 'the revoke is drawn with its purpose').toContain('revoke');
   });
 });

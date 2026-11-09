@@ -667,6 +667,10 @@
       onSpeakingDeactivate={() => speakingAct({ dictate_deactivate: { role: 'speaking' } })}
       onSpeakingVoice={chooseVoice}
       onSpeakingPreview={startPreview}
+      biometric={home.wire === null ? null : home.wire.biometric}
+      onRevokeBiometric={(enrolment: string, purpose: string) => {
+        void connection.dispatch({ biometric_revoke: { enrolment, purpose } });
+      }}
     />
 
     {#if editing && (dirty > 0 || saving || refusal !== null || saved || conflict !== null || restart.length > 0)}
