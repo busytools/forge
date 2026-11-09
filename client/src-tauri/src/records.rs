@@ -194,7 +194,7 @@ fn seat_key_of(update: &Value) -> Option<String> {
     ) else {
         return None;
     };
-    Some(format!("session:{org}\u{0}{project}\u{0}{label}"))
+    Some(slot_key(&SessionSlot::new(org, project, label)))
 }
 
 /// A subject as the TS side keys it, mirroring `protocol.ts`'s `subjectKey`.
