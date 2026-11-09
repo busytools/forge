@@ -10945,26 +10945,22 @@ mod lead_charter_tests {
     }
 
     /// The board bullets above say how a row is worked, but never that a
-    /// sweep is a standing duty. What no bullet or `tasks__*` description
-    /// supplies is the cadence, the schedule, `wake: false`, the prompt
-    /// carrying the sweep's steps, and the one-line report - pinned here
-    /// so a rewrite cannot drop them.
+    /// sweep is a standing duty. The cadence, the prohibition on a standing
+    /// cron, the awake-only rule and the one-line report are pinned here so
+    /// a rewrite cannot drop them - and the negatives below hold the line
+    /// the old text crossed: every project's lead created its own periodic
+    /// sweep cron and the ticks spammed each session.
     #[test]
     fn the_charter_carries_the_board_sweep() {
         for (clause, why) in [
             (
-                "Sweep the board at the start of every session, and on a standing sweep you \
-                 create yourself",
+                "Sweep the board at the start of every session, and on demand",
                 "the cadence and its two triggers",
             ),
+            ("Never create a standing sweep cron", "the prohibition: no session sets one up"),
             (
-                "`cron__list` first, then a `cron__create` with `*/30 * * * *` and `wake: false` \
-                 only when no sweep entry exists",
-                "one standing entry, never a new one each session",
-            ),
-            (
-                "the sweep runs only on an awake session, never waking a sleeping one",
-                "the rule, stated rather than left to the parameter's default",
+                "The sweep runs only on an awake session, never waking a sleeping one",
+                "the rule, stated rather than left to a cron parameter's default",
             ),
             (
                 "settle every row waiting on the user through one door",
@@ -10995,6 +10991,20 @@ mod lead_charter_tests {
                 "the lead charter does not carry the board sweep ({why}): {clause}",
             );
         }
+
+        assert!(
+            !DEFAULT_LEAD_CHARTER.contains("*/30"),
+            "the bundled charter must not prescribe a periodic sweep: \
+             {DEFAULT_LEAD_CHARTER}",
+        );
+        let sweep_at =
+            DEFAULT_LEAD_CHARTER.find("**Sweep the board").expect("the sweep bullet is present");
+        let tail = &DEFAULT_LEAD_CHARTER[sweep_at..];
+        let bullet = &tail[..tail.find("\n\n").expect("the sweep bullet ends at a blank line")];
+        assert!(
+            !bullet.contains("cron__create"),
+            "the sweep bullet must not send a lead to create a cron: {bullet}",
+        );
     }
 
     /// #1494: the parallelism rule reads the project's own `max_workers`
