@@ -850,12 +850,6 @@ impl PopupGate {
             }
             *held += 1;
         }
-        // **A popup admitted resolves the refusals a page hit opening one**,
-        // so its next one writes a line. The cap is not one of them: a freed
-        // place ends that episode, not the admission that refills it.
-        for kind in ADMISSION_REFUSALS {
-            self.clear_refusal(opener, kind);
-        }
         let place = Arc::new(Place { opener, released: AtomicBool::new(false) });
         // **A host whose numbers are spent refuses the popup**, and the place
         // it took goes back with it: a place that is never released is a slot
@@ -867,6 +861,13 @@ impl PopupGate {
             }
             return None;
         };
+        // **A popup admitted resolves the refusals a page hit opening one**,
+        // so its next one writes a line. The cap is not one of them: a freed
+        // place ends that episode, not the admission that refills it. Only an
+        // admitted popup reaches this: a refused one resolved nothing.
+        for kind in ADMISSION_REFUSALS {
+            self.clear_refusal(opener, kind);
+        }
         // **A replaced place is released before its key is taken.** The ids
         // CEF hands out are unique today, and a repeat would otherwise leak
         // the replaced reservation for the host's whole life.
@@ -1169,10 +1170,12 @@ impl PopupGate {
         ))
     }
 
-    /// The line for a host whose tab numbers are spent, when this is the
-    /// episode's first. **A spent counter never recovers**: no number is handed
-    /// out again for the host's whole life, so one line per opener is the whole
-    /// record rather than a per-attempt note.
+    /// The line for a host whose tab numbers are spent, once per opener
+    /// document. **A page can keep calling `window.open`**, so the line is
+    /// keyed rather than written per attempt; the opener's navigation or end
+    /// re-arms it, which is the grain of the document that saw the refusal.
+    /// A failed create at the ceiling can still hand its number back through
+    /// `unreserve`, so the refusal is not necessarily the host's last.
     fn exhausted_line(&self, opener: Option<u16>, url: &str) -> Option<String> {
         if !self.first_refusal(opener.unwrap_or(NO_OPENER), "exhausted") {
             return None;
@@ -2896,6 +2899,45 @@ mod tests {
         crate::osr::Ring::unlink(&name);
     }
 
+    /// **A spent counter refuses the popup and gives its place back.** The
+    /// admission takes the opener's count and its place before the number; a
+    /// refusal that left either behind would shrink the opener's cap for the
+    /// host's whole life. The line is the opener document's first, and it
+    /// names the event.
+    #[test]
+    fn a_spent_counter_refuses_the_popup_and_returns_its_place() {
+        let name = format!("/forge-cef-test-spent-{}", std::process::id());
+        let ring = std::sync::Arc::new(crate::osr::Ring::create(&name, 4, 4).expect("a test ring"));
+        let popups = gate(&ring);
+        popups.tabs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).next = u16::MAX;
+        assert!(popups.admit(1, 0, "about:blank").is_none(), "a spent counter refuses the popup");
+        assert!(
+            popups.live.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty(),
+            "the refused popup's place is returned"
+        );
+        assert!(
+            popups.places.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_empty(),
+            "a refused popup takes no place key"
+        );
+        assert!(
+            popups.exhausted_line(Some(1), "about:blank").is_none(),
+            "the admission already wrote the opener's line"
+        );
+        let line = popups
+            .exhausted_line(Some(2), "https://a.test/")
+            .expect("the opener's first refusal is logged");
+        assert!(
+            line.contains("event_name cef_tab_numbers_exhausted,"),
+            "the line names its event: {line}"
+        );
+        assert!(line.contains("opener 2"), "the line names the opener: {line}");
+        assert!(
+            popups.exhausted_line(Some(2), "https://a.test/").is_none(),
+            "a second attempt in the same document writes nothing"
+        );
+        crate::osr::Ring::unlink(&name);
+    }
+
     /// **A create fault's line names its event and its opener.** A requested
     /// tab has none to name and a popup names its opener.
     #[test]
@@ -3351,17 +3393,17 @@ mod tests {
         assert_eq!(tabs.reserve(), Some(refused), "the refused number is handed out again");
     }
 
-    /// **A counter at its ceiling refuses rather than replacing a live tab.**
-    /// The number's width is the wire's, so it cannot widen and must not wrap
-    /// onto a tab still open. The saturating counter used to hand out
-    /// `u16::MAX` for every reservation after the ceiling, and the insert that
-    /// followed replaced the tab that still held it.
+    /// **The counter refuses at its ceiling rather than repeating a number.**
+    /// The number's width is the wire's, so it cannot widen and must not wrap.
+    /// The saturating counter used to hand out `u16::MAX` for every
+    /// reservation after the ceiling, and a caller that inserted the number
+    /// again would replace the tab that still held it.
     #[test]
-    fn an_exhausted_counter_never_hands_out_a_live_number_again() {
+    fn a_spent_counter_hands_out_no_number_at_all() {
         use super::Tabs;
         let mut tabs = Tabs { next: u16::MAX - 1, ..Tabs::default() };
-        let last = tabs.reserve().expect("the ceiling itself is a real number");
-        assert_eq!(last, u16::MAX);
+        let last = tabs.reserve().expect("the ceiling is a number the counter hands out");
+        assert_eq!(last, u16::MAX, "the last number the counter can hand out is the ceiling");
         assert_eq!(tabs.reserve(), None, "a spent counter hands out no number at all");
         assert_eq!(tabs.reserve(), None, "and stays spent rather than repeating the last one");
     }
