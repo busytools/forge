@@ -11059,7 +11059,7 @@ async fn a_refused_attach_answers_its_reply() {
 /// healthy. Stepping the clock with the socket polled between steps is what
 /// real time with a real client does, while keeping the clock deterministic.
 async fn advance_polling(socket: &mut Client, duration: Duration) {
-    let step = Duration::from_millis(10);
+    let step = Duration::from_millis(5);
     let mut left = duration;
     while left > Duration::ZERO {
         let now = left.min(step);
@@ -11085,10 +11085,15 @@ async fn advance_polling(socket: &mut Client, duration: Duration) {
 #[tokio::test(start_paused = true)]
 async fn a_healthy_idle_connection_is_not_reaped() {
     let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    // **The wedge is a second, not the shipping pair's ratio**, because the
+    // clock is paused and the IO is real: a ping's answer costs a real round
+    // trip, and a bound too small would count the test's own advance as
+    // silence. A second is still far past every beat the connection owes, so
+    // a clock that stops stamping is reaped well inside the advance.
     let heartbeat = Heartbeat {
         every: Duration::from_millis(20),
         dead: Duration::from_secs(30),
-        wedge: Duration::from_millis(200),
+        wedge: Duration::from_secs(1),
     };
     let (url, _state) = serve_fleet(&fleet, heartbeat).await;
     let mut socket = connect(&url).await;
@@ -11096,7 +11101,7 @@ async fn a_healthy_idle_connection_is_not_reaped() {
     for round in 0..2 {
         // Well past the wedge bound each time, with the connection doing
         // nothing but its own pings.
-        advance_polling(&mut socket, Duration::from_secs(1)).await;
+        advance_polling(&mut socket, Duration::from_secs(2)).await;
 
         send(&mut socket, ClientMessage::Ping).await;
         let answered = next_server_within(&mut socket, 2_000).await;
