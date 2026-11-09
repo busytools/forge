@@ -127,10 +127,14 @@ pub(crate) const HEARTBEAT_DEAD: Duration = Duration::from_secs(60);
 ///
 /// The longest legitimate stall in the loop is one bounded socket write
 /// ([`WRITE_BOUND`]), and a healthy idle loop still wakes on its own beat
-/// ([`HEARTBEAT_EVERY`]), so two write bounds leaves a full bound of margin
-/// over both. **Chosen, not measured**: the number it changes for a person is
-/// how fast a connection wedged behind a stalled subsystem is let go.
-pub(crate) const WEDGE_DEAD: Duration = Duration::from_secs(120);
+/// ([`HEARTBEAT_EVERY`]). Between them sits the snapshot encode, which this
+/// server does on the loop and has no bound of its own, so the wedge bound is
+/// four write bounds: far above the slowest write measured (31.6 s) and above
+/// anything a giant seat's encode has been seen to take, because a healthy
+/// connection reaped mid-record would redial into the same record for ever.
+/// **Chosen, not measured**: the number it changes for a person is how fast a
+/// connection wedged behind a stalled subsystem is let go.
+pub(crate) const WEDGE_DEAD: Duration = Duration::from_secs(240);
 
 /// The connection loop's own clock, stamped once per pass and read from
 /// outside the task.
