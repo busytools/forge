@@ -246,12 +246,19 @@ mod tests {
         SessionSlot::lead("TestOrg", PROJECT)
     }
 
-    /// A lead seat behind a live session. The receiver must be held for
-    /// the stub to stay.
+    /// `project`'s lead seat behind a live session. The receiver must be
+    /// held for the stub to stay.
+    fn live_lead_for(
+        ws: &Workspace,
+        project: &str,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand> {
+        ws.install_testing_stub(&SessionSlot::lead("TestOrg", project))
+    }
+
     fn live_lead(
         ws: &Workspace,
     ) -> tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand> {
-        ws.install_testing_stub(&lead())
+        live_lead_for(ws, PROJECT)
     }
 
     /// Drop the seat's session, leaving the slot as a sleeping one.
@@ -343,6 +350,66 @@ mod tests {
 
     fn sweep(ws: &Arc<Workspace>, deliver: &dyn Deliver, at: u64) -> usize {
         ws.idle_sweep(deliver, epoch(at))
+    }
+
+    /// One captured tracing record: its level, its target and its fields.
+    #[derive(Clone, Default)]
+    struct Caught(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String, String)>>>);
+
+    #[derive(Default)]
+    struct CaughtFields(String);
+
+    impl tracing::field::Visit for CaughtFields {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if !self.0.is_empty() {
+                self.0.push(' ');
+            }
+            let _ = std::fmt::write(&mut self.0, format_args!("{}={value:?}", field.name()));
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Caught {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = CaughtFields::default();
+            event.record(&mut fields);
+            self.0.lock().expect("capture").push((
+                *event.metadata().level(),
+                event.metadata().target().to_owned(),
+                fields.0,
+            ));
+        }
+    }
+
+    fn warnings(caught: &Caught) -> Vec<(tracing::Level, String, String)> {
+        caught
+            .0
+            .lock()
+            .expect("capture")
+            .iter()
+            .filter(|(level, target, _)| {
+                *level == tracing::Level::WARN && target == "forge_workspace::idle_sweep"
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn recoveries(caught: &Caught) -> Vec<(tracing::Level, String, String)> {
+        caught
+            .0
+            .lock()
+            .expect("capture")
+            .iter()
+            .filter(|(level, target, fields)| {
+                *level == tracing::Level::INFO
+                    && target == "forge_workspace::idle_sweep"
+                    && fields.contains("idle_sweep_recovered")
+            })
+            .cloned()
+            .collect()
     }
 
     #[test]
@@ -597,6 +664,149 @@ mod tests {
         assert_eq!(*deliver.seen.lock(), 3);
     }
 
+    /// The shipped clocks, pinned where the charter's words live: a
+    /// changed interval or gap would silently falsify the paragraph.
+    #[test]
+    fn the_product_clocks_are_the_shipped_ones() {
+        assert_eq!(IDLE_SWEEP_INTERVAL_SECS, 60, "the lead is swept within a minute");
+        assert_eq!(IDLE_SWEEP_MIN_GAP_SECS, 2 * 60 * 60, "the idle gap is two hours");
+        assert_eq!(IDLE_SWEEP_FALLBACK_SECS, 6 * 60 * 60, "the fallback is six hours");
+    }
+
+    #[test]
+    fn each_project_keeps_its_own_clock_and_a_removed_project_is_pruned() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _proj_rx = live_lead(&ws);
+        let deliver = Recording::default();
+        assert_eq!(sweep(&ws, &deliver, 1_000), 1);
+
+        ws.seed_test_project("other", "/tmp/tp-idle-sweep-other");
+        let other_lead = SessionSlot::lead("TestOrg", "other");
+        let _other_rx = live_lead_for(&ws, "other");
+        assert_eq!(
+            sweep(&ws, &deliver, 1_060),
+            1,
+            "the new project's lead sweeps on its own clock",
+        );
+        {
+            let seen = deliver.seen.lock();
+            assert_eq!(seen.len(), 2);
+            assert_eq!(seen[1].0, other_lead, "the second prompt goes to the other lead");
+        }
+
+        ws.remove_test_project("other");
+        assert_eq!(sweep(&ws, &deliver, 1_120), 0);
+        let clocks = ws.idle_sweeps.lock();
+        assert_eq!(
+            clocks.len(),
+            1,
+            "a removed project's clock is pruned: {:?}",
+            clocks.keys().collect::<Vec<_>>(),
+        );
+        assert!(clocks.contains_key(&lead()));
+    }
+
+    #[test]
+    fn a_wake_re_arms_the_fallback_from_the_wake() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _rx = live_lead(&ws);
+        let domain = ws.domain_session_for(&lead()).expect("domain");
+        domain.lock().commit_turn();
+        let deliver = Recording::default();
+
+        assert_eq!(sweep(&ws, &deliver, 1_000), 0, "a busy lead is not idle");
+        sleep(&ws);
+        assert_eq!(sweep(&ws, &deliver, 30_000), 0, "asleep, nothing is delivered");
+
+        let _rx = live_lead(&ws);
+        let domain = ws.domain_session_for(&lead()).expect("domain");
+        domain.lock().commit_turn();
+        assert_eq!(
+            sweep(&ws, &deliver, 30_060),
+            0,
+            "the fallback re-arms from the wake, not from before the sleep",
+        );
+        assert_eq!(
+            sweep(&ws, &deliver, 30_000 + IDLE_SWEEP_FALLBACK_SECS),
+            1,
+            "a full fallback after the wake delivers",
+        );
+    }
+
+    /// A failure episode is one warning, its recovery one record, and the
+    /// next episode after a delivered sweep warns again.
+    #[test]
+    fn a_failure_episode_warns_once_and_its_recovery_is_recorded() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _rx = live_lead(&ws);
+        let deliver = Flaky::default();
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::Registry::default().with(caught.clone());
+        let _default = tracing::subscriber::set_default(subscriber);
+
+        assert_eq!(sweep(&ws, &deliver, 1_000), 0);
+        assert_eq!(sweep(&ws, &deliver, 1_060), 0);
+        let warns = warnings(&caught);
+        assert_eq!(warns.len(), 1, "two failed ticks are one episode: {warns:?}");
+        assert!(warns[0].2.contains("idle_sweep_not_delivered"));
+        assert!(warns[0].2.contains("TestOrg/proj/lead"), "the warning names the lead");
+        assert!(
+            warns[0].2.contains("the seat's channel closed"),
+            "the warning carries the dispatch's reason: {}",
+            warns[0].2,
+        );
+
+        deliver.open.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(sweep(&ws, &deliver, 1_120), 1);
+        assert_eq!(recoveries(&caught).len(), 1, "the recovery is its own record");
+        assert_eq!(warnings(&caught).len(), 1, "a delivery does not add a warning");
+
+        deliver.open.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            sweep(&ws, &deliver, 1_120 + IDLE_SWEEP_MIN_GAP_SECS),
+            0,
+            "the next due attempt fails",
+        );
+        assert_eq!(
+            warnings(&caught).len(),
+            2,
+            "a failure after a delivered sweep is a new episode",
+        );
+        assert_eq!(recoveries(&caught).len(), 1);
+    }
+
+    /// A sleep between two failures does not end the episode: the seat
+    /// was down, not recovered.
+    #[test]
+    fn a_sleep_does_not_split_a_failure_episode() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _rx = live_lead(&ws);
+        let deliver = Flaky::default();
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::Registry::default().with(caught.clone());
+        let _default = tracing::subscriber::set_default(subscriber);
+
+        assert_eq!(sweep(&ws, &deliver, 1_000), 0);
+        assert_eq!(warnings(&caught).len(), 1);
+        sleep(&ws);
+        assert_eq!(sweep(&ws, &deliver, 1_060), 0);
+        let _rx = live_lead(&ws);
+        assert_eq!(sweep(&ws, &deliver, 1_120), 0);
+        assert_eq!(
+            warnings(&caught).len(),
+            1,
+            "a sleep is not a recovery, so the episode keeps its one warning",
+        );
+    }
+
     /// The acceptance end to end: the boot member ticks and the prompt
     /// reaches the lead's dispatch path.
     #[tokio::test(start_paused = true)]
@@ -614,27 +824,38 @@ mod tests {
             "the sweep is a supervised member: {names:?}"
         );
 
-        // The member's interval is built on its first poll, which may land
-        // after the first advance; two periods leave the first tick due
-        // whichever instant the interval was armed at.
+        // Let the supervisor's driver poll the member, so its interval is
+        // armed at the frozen instant zero before time moves.
         for _ in 0..10 {
             tokio::task::yield_now().await;
         }
-        tokio::time::advance(Duration::from_secs(IDLE_SWEEP_INTERVAL_SECS + 1)).await;
+        tokio::time::advance(Duration::from_secs(IDLE_SWEEP_INTERVAL_SECS - 1)).await;
         for _ in 0..10 {
             tokio::task::yield_now().await;
         }
-        tokio::time::advance(Duration::from_secs(IDLE_SWEEP_INTERVAL_SECS + 1)).await;
-        for _ in 0..10 {
-            tokio::task::yield_now().await;
-        }
-        let wired = ws.drain_test_dispatch_buffer();
         assert!(
-            wired.iter().any(|command| matches!(
-                command,
-                crate::protocol::Command::PromptUnder { text, .. } if text == IDLE_SWEEP_PROMPT
-            )),
-            "the tick injects the sweep: {wired:?}",
+            ws.drain_test_dispatch_buffer().is_empty(),
+            "no eager pass lands before the interval",
+        );
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        let prompts: Vec<(SessionSlot, String)> = ws
+            .drain_test_dispatch_buffer()
+            .iter()
+            .filter_map(|command| match command {
+                crate::protocol::Command::PromptUnder { key, text, .. } => {
+                    Some((key.clone(), text.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            prompts,
+            vec![(lead(), IDLE_SWEEP_PROMPT.to_owned())],
+            "one sweep, addressed to the project's lead, on the interval",
         );
     }
 }

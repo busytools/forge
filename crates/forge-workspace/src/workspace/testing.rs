@@ -726,6 +726,12 @@ impl Workspace {
         self.seed_test_project_inner(name, path, None, None);
     }
 
+    /// Drop a project seeded by [`Self::seed_test_project`], so a test can
+    /// exercise the paths that react to a project leaving the config.
+    pub fn remove_test_project(&self, name: &str) {
+        self.test_extra_projects.lock().retain(|project| project.name != name);
+    }
+
     /// [`Workspace::seed_test_project`] with a Slack binding, so a facade
     /// test can drive the slot-to-workspace resolution. Test-only.
     pub fn seed_test_project_with_slack_workspace(&self, name: &str, path: &str, workspace: &str) {

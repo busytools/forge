@@ -1582,6 +1582,24 @@ port = 49201
         );
     }
 
+    /// **The wave starts the idle sweep**: without the call the feature is
+    /// dark in every real boot while every unit test stays green.
+    #[tokio::test]
+    async fn the_boot_wave_starts_the_idle_sweep() {
+        let (workspace, _dir) = boot_fixture();
+        assert!(
+            !workspace.supervisor().snapshot().iter().any(|member| member.name == "idle_sweep"),
+            "the fixture starts with the idle sweep unstarted, or this test proves nothing",
+        );
+
+        start_subsystems(&workspace);
+
+        assert!(
+            workspace.supervisor().snapshot().iter().any(|member| member.name == "idle_sweep"),
+            "the boot wave starts the idle sweep",
+        );
+    }
+
     /// The wave starts the dictate prewarm, which is what keeps a take from
     /// paying the model load: started at boot rather than at the first press,
     /// on a task of its own so the fetch, the verify and the load are not on
