@@ -261,9 +261,11 @@ export interface PerfRecord {
   /** A `subscribe`: ms since the click that preceded it; absent when no
    *  click did, so a reconnect never invents one. */
   since_click_ms?: number;
-  /** A `frame` or a `tick`: whether the span it measures overlapped a hidden
-   *  window, measured when it is timed - a visibility gate rather than a
-   *  blocked thread (#2569). */
+  /** A `frame` or a `tick`: whether the span it measures overlapped a period
+   *  the page could not be watched - a hidden window, or a lost focus (which
+   *  is how the desktop reports a locked screen and is also why the frame
+   *  loop was stopped) - measured when it is timed, so it names a gate
+   *  rather than a blocked thread (#2569). */
   hidden?: boolean;
   /**
    * A `snapshot`'s JSON length in string units (UTF-16 code units), which is
@@ -372,6 +374,10 @@ interface ProbeOptions {
    *  or null where there is no document - which keeps the flag a fact rather
    *  than a claim (#2569). */
   observeVisibility?: (cb: (hidden: boolean) => void) => (() => void) | null;
+  /** Reports whether the page is being watched - visible and focused - as it
+   *  changes; returns its own disconnect, or null where there is no page.
+   *  This is the frame loop's own gate, not the gap's diagnosis. */
+  observeAttention?: (cb: (watching: boolean) => void) => (() => void) | null;
   /** Where finished records go; the shell write by default. */
   sink?: (records: PerfRecord[]) => void;
   version?: string;
@@ -405,6 +411,32 @@ function observeVisibility(cb: (hidden: boolean) => void): (() => void) | null {
   const report = (): void => cb(cannotPaint());
   document.addEventListener('visibilitychange', report);
   return () => document.removeEventListener('visibilitychange', report);
+}
+
+/**
+ * Reports whether the page is being watched - visible and with focus - as
+ * that changes; returns its own disconnect, or null where there is no page.
+ *
+ * **Two signals, because a locked screen is a lost focus and not a hidden
+ * document**: the desktop window loses key status when the screen locks and
+ * the page hears it as `blur`, while a background tab or a minimized window
+ * reports `visibilitychange`. **A blur is reported as itself** rather than
+ * re-read, because `hasFocus()` has not settled when its handler runs, the
+ * same rule the shell's notification state follows.
+ */
+function observeAttention(cb: (watching: boolean) => void): (() => void) | null {
+  if (typeof document === 'undefined') return null;
+  const lost = (): void => cb(false);
+  const gained = (): void => cb(!cannotPaint());
+  const visibility = (): void => cb(!cannotPaint() && document.hasFocus());
+  document.addEventListener('visibilitychange', visibility);
+  window.addEventListener('focus', gained);
+  window.addEventListener('blur', lost);
+  return () => {
+    document.removeEventListener('visibilitychange', visibility);
+    window.removeEventListener('focus', gained);
+    window.removeEventListener('blur', lost);
+  };
 }
 
 function observeLongTasks(cb: (ms: number, name: string) => void): () => void {
@@ -587,6 +619,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
   const schedule = options.schedule ?? nextFrame;
   const observe = options.observeLongTasks ?? observeLongTasks;
   const heartbeat = options.observeHeartbeat ?? observeHeartbeat;
+  const attention = options.observeAttention ?? observeAttention;
   const defer =
     options.defer ??
     ((cb: () => void): void => {
@@ -656,6 +689,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     session: string | null;
   } | null = null;
   let cancelVisibility: (() => void) | null = null;
+  let cancelAttention: (() => void) | null = null;
   /**
    * Whether the page is hidden now, and when it last stopped being hidden.
    *
@@ -671,9 +705,41 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     hiddenNow = hidden;
     if (!hidden) hiddenEndedAt = now();
   };
-  /** Whether the gap that opened at `from` overlapped a hidden period. */
+  /**
+   * Whether the page is being watched: visible and with focus. **The frame
+   * loop runs only while it is** - a locked screen or a hidden window gets
+   * no next frame, so an idle client stops waking the display 60 times a
+   * second for nobody. Boot's reading is the document's visibility; a window
+   * that starts unfocused is the first focus event's to report, and a page
+   * with no document is a test's, which drives its frames by hand.
+   */
+  let watching = !cannotPaint();
+  /** When the page was watched again, which is what names an away gap. */
+  let awayEndedAt: number | null = null;
+  const noteAttention = (next: boolean): void => {
+    if (next === watching) return;
+    watching = next;
+    if (!next) {
+      // Take back the frame already queued: cancelling it is what stops the
+      // loop, since a page that is merely unfocused keeps firing rAF.
+      cancelFrame?.();
+      cancelFrame = null;
+      return;
+    }
+    awayEndedAt = now();
+    if (cancelFrame === null) cancelFrame = schedule(tick);
+  };
+  /**
+   * Whether the gap that opened at `from` overlapped a period nothing could
+   * be watched: a hidden window, or a lost focus - which is how the desktop
+   * reports a locked screen.
+   */
   function gapHidden(from: number): boolean {
-    return hiddenNow || (hiddenEndedAt !== null && hiddenEndedAt >= from);
+    return (
+      hiddenNow ||
+      (hiddenEndedAt !== null && hiddenEndedAt >= from) ||
+      (awayEndedAt !== null && awayEndedAt >= from)
+    );
   }
   let postBeats = 0;
   let postLate = 0;
@@ -949,7 +1015,9 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     last = at;
     if (at - connStart >= CONNECTION_WINDOW_MS) flushConnection(at);
     if (at - windowStart >= summaryIntervalMs) flushWindow(at);
-    cancelFrame = schedule(tick);
+    // A page nobody is watching gets the next frame from `noteAttention` on
+    // its return, not from here.
+    cancelFrame = watching ? schedule(tick) : null;
   }
 
   return {
@@ -1005,6 +1073,9 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       hiddenNow = typeof document !== 'undefined' && document.hidden;
       hiddenEndedAt = null;
       cancelVisibility = (options.observeVisibility ?? observeVisibility)?.(noteVisibility) ?? null;
+      watching = !cannotPaint();
+      awayEndedAt = null;
+      cancelAttention = attention(noteAttention);
       cancelHeartbeat = heartbeat(
         (lateMs) => {
           beats += 1;
@@ -1051,7 +1122,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
         surface,
         session,
       });
-      cancelFrame = schedule(tick);
+      cancelFrame = watching ? schedule(tick) : null;
     },
     stop(): void {
       // The waiting slow frame's record still lands: a partial window is
@@ -1063,10 +1134,12 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       cancelObserver?.();
       cancelHeartbeat?.();
       cancelVisibility?.();
+      cancelAttention?.();
       cancelFrame = null;
       cancelObserver = null;
       cancelHeartbeat = null;
       cancelVisibility = null;
+      cancelAttention = null;
     },
     setSurface(next: string | null, seat: string | null): void {
       surface = next;

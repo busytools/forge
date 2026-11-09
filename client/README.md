@@ -132,10 +132,17 @@ diagnostic and an outage backlog is not the frame cost. Either file holds one
 JSON line per record: `run_started` when a page attaches, `summary` every
 ten seconds (frames, how many were slow, the worst gap), and a `frame` line
 for each frame at or over 50 ms with the surface and seat it happened
-on, plus `longtask` lines naming the work that blocked. A `tick` line
+on, plus `longtask` lines naming the work that blocked. **The frame loop
+runs only while the page is being watched** - visible and with focus: a
+hidden window, or the focus loss a locked screen produces on the desktop,
+schedules no next frame, so a client nobody can see stops waking the
+display 60 times a second. The first frame after the page returns carries
+the whole away period, and its `hidden` names it a gate rather than a
+freeze, the same way a hidden window's gap is named. A `tick` line
 records a session page's 30 s clock write when the span to the next frame
 is 50 ms or more, with the seat, the surface, that span and `hidden`,
-saying whether the span crossed a hidden window; the span is an upper
+saying whether the span crossed a period the page could not be watched (a
+hidden window, or a lost focus); the span is an upper
 bound, because the wait for the frame is on it and so is anything else
 that wrote in the window. Only a tick that follows an alive frame (within
 250 ms) is written, since a write inside a dead frame period is not its

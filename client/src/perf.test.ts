@@ -19,19 +19,22 @@ import {
 function harness(options: { summaryIntervalMs?: number } = {}) {
   const records: PerfRecord[][] = [];
   let clock = 1_000;
-  const callbacks: (() => void)[] = [];
+  const callbacks: { run: () => void; live: boolean }[] = [];
   let longTask: ((ms: number, name: string) => void) | null = null;
   let heartbeat: ((lateMs: number) => void) | null = null;
   let heartbeatFailed: ((why: string) => void) | null = null;
   let visibility: ((hidden: boolean) => void) | null = null;
+  let attention: ((watching: boolean) => void) | null = null;
   const deferred: (() => void)[] = [];
   let stopped = false;
 
   const probe = perfProbe({
     now: () => clock,
     schedule: (cb) => {
-      callbacks.push(cb);
+      const entry = { run: cb, live: true };
+      callbacks.push(entry);
       return () => {
+        entry.live = false;
         stopped = true;
       };
     },
@@ -55,6 +58,12 @@ function harness(options: { summaryIntervalMs?: number } = {}) {
         visibility = null;
       };
     },
+    observeAttention: (cb) => {
+      attention = cb;
+      return () => {
+        attention = null;
+      };
+    },
     // The record for a slow frame is written one macrotask after it, so a
     // test owns that turn: `settle()` runs every deferred callback.
     defer: (cb) => {
@@ -74,9 +83,10 @@ function harness(options: { summaryIntervalMs?: number } = {}) {
   /** One frame's arrival, `ms` after the previous one. */
   const frame = (ms: number) => {
     clock += ms;
-    const cb = callbacks.shift();
-    if (cb === undefined) throw new Error('no frame is scheduled');
-    cb();
+    const entry = callbacks.find((candidate) => candidate.live);
+    if (entry === undefined) throw new Error('no frame is scheduled');
+    entry.live = false;
+    entry.run();
   };
 
   /** Move the test's clock without a frame: a mark's own timestamp. */
@@ -94,6 +104,12 @@ function harness(options: { summaryIntervalMs?: number } = {}) {
     failHeartbeat: (why = '') => heartbeatFailed?.(why),
     /** The page's visibility changing, as the browser reports it. */
     hidden: (hidden: boolean) => visibility?.(hidden),
+    /** Whether the page is being watched: visible, and with focus. */
+    watching: (watching: boolean) => attention?.(watching),
+    /** Whether a frame callback is waiting to run. */
+    get scheduled() {
+      return callbacks.some((entry) => entry.live);
+    },
     /** The macrotask turn the slow frame's record is written on. */
     settle: () => {
       for (let cb = deferred.shift(); cb !== undefined; cb = deferred.shift()) cb();
@@ -478,6 +494,49 @@ describe('the frame probe', () => {
     h.settle();
     const shown = h.records.flat().filter((record) => record.kind === 'frame')[1];
     expect(shown?.hidden, 'and a gap on a painting window says it was not hidden').toBe(false);
+  });
+
+  /**
+   * **The frame loop is the page's one continuous rAF, and it stops when
+   * nobody is watching.** Left running behind a locked screen or a hidden
+   * window it schedules a frame every refresh for a page no one can see -
+   * measured 2026-11-09: 603 frames in a 10 s window with the screen locked.
+   * The attention port is visibility plus focus: a hidden window or tab, and
+   * the focus loss the desktop window reports when the screen locks.
+   */
+  it('schedules no frame while the page is not being watched', () => {
+    const h = harness();
+    h.frame(16);
+    expect(h.scheduled, 'the loop runs while the page is watched').toBe(true);
+
+    h.watching(false);
+    expect(h.scheduled, 'no frame waits behind a locked screen or a hidden window').toBe(false);
+  });
+
+  /**
+   * **The first frame back measures the away period, and names it a gate.**
+   * A gap read as a freeze is the thing the hidden flag exists to prevent,
+   * and this one was produced on purpose: the frame loop stopped rather than
+   * the thread blocking, so the resume frame carries the whole span with
+   * `hidden`, the same way a hidden window's gap does.
+   */
+  it('resumes when the page is watched again, naming the away gap as gated', () => {
+    const h = harness();
+    h.frame(16);
+    h.watching(false);
+    h.advance(5_000);
+    h.watching(true);
+    expect(h.scheduled, 'the loop is back').toBe(true);
+
+    h.frame(16);
+    h.settle();
+    const framed = h.records.flat().filter((record) => record.kind === 'frame');
+    expect(framed, 'the away period is one slow record, not a burst').toHaveLength(1);
+    expect(framed[0]?.ms, 'the whole away period is the first frame back').toBe(5_016);
+    expect(framed[0]?.hidden, 'and it is a gate, not a blocked thread').toBe(true);
+
+    h.frame(16);
+    expect(h.scheduled, 'the loop keeps running afterwards').toBe(true);
   });
 
   /**
