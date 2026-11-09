@@ -35,6 +35,11 @@ use serde_json::{Value, json};
 const BOUND: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(50);
 
+/// The page's popup cap, mirrored from the host's private `MAX_POPUP_TABS`.
+/// **A test that outgrows it fails at the missing refusal**, which is the
+/// signal to move this number, not a silent pass.
+const POPUP_CAP: usize = 16;
+
 /// The opener's page: a button that opens a popup **straight at an address**,
 /// the shape a sign-in flow arrives in, and keeps the handle `window.open`
 /// answered.
@@ -845,6 +850,177 @@ async fn a_cross_origin_iframe_cannot_reach_the_bridge_or_open_a_popup() {
     Ring::unlink(&ring_name);
 }
 
+/// **A handle the bridge refuses writes one line, not one per attempt.** The
+/// page supplies the handle, so it can repeat it in a loop; the host's stderr
+/// is an append-only file nobody rotates.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_repeated_unbound_handle_logs_one_line() {
+    let scratch = tempfile::tempdir().expect("a temp dir");
+    let exe = support::host_executable(scratch.path());
+    let profile = scratch.path().join("profile");
+    std::fs::create_dir_all(&profile).expect("the profile dir");
+    let port = support::free_port();
+    let ring_name = format!("/forge-ob-unbound-{}", std::process::id());
+    let log = scratch.path().join("host.log");
+    let (page_port, _page) =
+        serve_on("127.0.0.1", "<!doctype html><meta charset=utf-8><title>ready</title>");
+
+    let mut host =
+        support::Host::start_with_events(&exe, &profile, port, &ring_name, "800x600", &[], &log);
+    let opener = support::wait_for_page(port, &log, BOUND);
+    let (mut cdp, _events) = connect(port, &format!("/devtools/page/{opener}"))
+        .await
+        .expect("the page's devtools endpoint accepts");
+    cdp.call("Page.navigate", json!({ "url": format!("http://127.0.0.1:{page_port}/") }), None)
+        .await
+        .expect("the page navigates");
+    wait_for_title(&mut cdp, &["ready"], BOUND).await;
+
+    // **A handle over the bridge's 64-byte bound** is refused before the
+    // channel binds, and the page names it every time. **`noopener` is `0`**:
+    // a noopener popup carries no bridge, so it never reaches the handle check.
+    let hammer = "(function () { for (var i = 0; i < 20; i++) { \
+                  window.__forgeBridgeNative.open('x'.repeat(65), 'https://other.test/', '', 0); } \
+                  return 'sent'; })()";
+    assert_eq!(
+        evaluate(&mut cdp, hammer).await,
+        json!("sent"),
+        "the page reaches the native bridge",
+    );
+    one_refusal_line(&host, "cef_opener_bridge_unbound").await;
+
+    assert!(host.terminate(Duration::from_secs(10)).success(), "the host ends on SIGTERM");
+    Ring::unlink(&ring_name);
+}
+
+/// **A page's popup cap writes its line once, and both admission paths write
+/// it.** Sixteen same-origin popups fill the cap through CEF's own popup path,
+/// then one cross-site `window.__forgeBridgeNative.open` is refused by the
+/// bridged path: the single `cef_popup_refused` line is that path's, so
+/// dropping its print leaves the log empty.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_page_at_its_popup_cap_logs_one_refusal() {
+    let scratch = tempfile::tempdir().expect("a temp dir");
+    let exe = support::host_executable(scratch.path());
+    let profile = scratch.path().join("profile");
+    std::fs::create_dir_all(&profile).expect("the profile dir");
+    let port = support::free_port();
+    let ring_name = format!("/forge-ob-cap-{}", std::process::id());
+    let log = scratch.path().join("host.log");
+    let (page_port, _page) =
+        serve_on("127.0.0.1", "<!doctype html><meta charset=utf-8><title>ready</title>");
+    let (provider_port, _provider) =
+        serve_on("::1", "<!doctype html><meta charset=utf-8><title>provider</title>");
+    let provider_url = format!("http://[::1]:{provider_port}/");
+
+    let mut host =
+        support::Host::start_with_events(&exe, &profile, port, &ring_name, "800x600", &[], &log);
+    let opener = support::wait_for_page(port, &log, BOUND);
+    let (mut cdp, _events) = connect(port, &format!("/devtools/page/{opener}"))
+        .await
+        .expect("the page's devtools endpoint accepts");
+    cdp.call("Page.navigate", json!({ "url": format!("http://127.0.0.1:{page_port}/") }), None)
+        .await
+        .expect("the page navigates");
+    wait_for_title(&mut cdp, &["ready"], BOUND).await;
+
+    // **Each open carries a user gesture**, or the engine's popup blocker
+    // answers null before the host is asked. A distinct window name opens a
+    // window each time rather than reusing one.
+    for at in 0..POPUP_CAP {
+        cdp.call(
+            "Runtime.evaluate",
+            json!({
+                "expression": format!("window.open('about:blank', 'cap-{at}')"),
+                "userGesture": true,
+            }),
+            None,
+        )
+        .await
+        .expect("the page opens a popup");
+    }
+    // **The bridged path's own cap refusal**, which is the line asserted
+    // below: the CEF path only filled the cap and refused nothing.
+    let bridged = format!(
+        "(function () {{ window.__forgeBridgeNative.open('cap-token', '{provider_url}', '', 0); \
+         return 'sent'; }})()"
+    );
+    assert_eq!(evaluate(&mut cdp, &bridged).await, json!("sent"), "the page reaches the bridge");
+    one_refusal_line(&host, "cef_popup_refused").await;
+
+    assert!(host.terminate(Duration::from_secs(10)).success(), "the host ends on SIGTERM");
+    Ring::unlink(&ring_name);
+}
+
+/// **A bridged refusal writes its line again after a popup is admitted.** A
+/// page's bad handle is one episode of both its lines; a bridged popup that
+/// is admitted resolves them, so the next bad handle writes the pair again.
+/// One bridged refusal is two separately gated lines, the specific one and
+/// `bridge_open`'s summary, and each writes once per episode.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_bridged_refusal_writes_again_after_a_popup_is_admitted() {
+    let scratch = tempfile::tempdir().expect("a temp dir");
+    let exe = support::host_executable(scratch.path());
+    let profile = scratch.path().join("profile");
+    std::fs::create_dir_all(&profile).expect("the profile dir");
+    let port = support::free_port();
+    let ring_name = format!("/forge-ob-rearm-{}", std::process::id());
+    let log = scratch.path().join("host.log");
+    let (provider_port, _provider) = serve_on(
+        "::1",
+        "<!doctype html><meta charset=utf-8><title>provider</title><h1>provider</h1>",
+    );
+    let provider_url = format!("http://[::1]:{provider_port}/");
+    let (page_port, _page) = serve_on("127.0.0.1", &opener_page(&provider_url));
+
+    let mut host =
+        support::Host::start_with_events(&exe, &profile, port, &ring_name, "800x600", &[], &log);
+    let opener = support::wait_for_page(port, &log, BOUND);
+    let (mut cdp, _events) = connect(port, &format!("/devtools/page/{opener}"))
+        .await
+        .expect("the page's devtools endpoint accepts");
+    cdp.call("Page.navigate", json!({ "url": format!("http://127.0.0.1:{page_port}/") }), None)
+        .await
+        .expect("the page navigates");
+    wait_for_title(&mut cdp, &["ready"], BOUND).await;
+
+    // **A handle over the bridge's 64-byte bound**, twice around a good open.
+    let bad = format!(
+        "(function () {{ window.__forgeBridgeNative.open('x'.repeat(65), '{provider_url}', '', 0); \
+         return 'sent'; }})()"
+    );
+    assert_eq!(evaluate(&mut cdp, &bad).await, json!("sent"), "the page reaches the bridge");
+    // **A real gesture opens the bridged popup**, which resolves the page's
+    // refusals on the host side.
+    let _tab = click_until_popup(&mut host, BOUND).await;
+    assert_eq!(evaluate(&mut cdp, &bad).await, json!("sent"), "the page reaches the bridge again");
+
+    assert_eq!(
+        refusal_lines(&host, "cef_opener_bridge_unbound").await,
+        2,
+        "the admitted popup re-armed the specific line (log: {})",
+        host.log(),
+    );
+    assert_eq!(
+        refusal_lines(&host, "cef_opener_bridge_refused").await,
+        2,
+        "the admitted popup re-armed the summary line (log: {})",
+        host.log(),
+    );
+    // **The specific line names the page** as well as the reserved tab, so a
+    // reader can match it to a row.
+    assert!(
+        host.log()
+            .lines()
+            .any(|line| line.contains("cef_opener_bridge_unbound,") && line.contains("opener 1")),
+        "the unbound line names its opener: {}",
+        host.log(),
+    );
+
+    assert!(host.terminate(Duration::from_secs(10)).success(), "the host ends on SIGTERM");
+    Ring::unlink(&ring_name);
+}
+
 /// **A `noopener` popup whose renderer dies is reaped.** It has no channel,
 /// so the tab itself is the record that the host made it; a dead renderer
 /// must not leave a row pointing at nothing.
@@ -1353,6 +1529,44 @@ fn created_tab(host: &support::Host, opener: u16) -> Option<u16> {
         Some(HostEvent::TabCreated { tab, opener: Some(open), .. }) if open == opener => Some(tab),
         _ => None,
     })
+}
+
+/// **One event's line count, read once the writer has gone quiet.** Waits for
+/// the first line, then reads the count after a chosen 500 ms with the log
+/// unchanged: a liveness window, not a proof of silence.
+async fn refusal_lines(host: &support::Host, event: &str) -> usize {
+    let lines =
+        |host: &support::Host| host.log().lines().filter(|line| line.contains(event)).count();
+    let deadline = Instant::now() + BOUND;
+    while lines(host) == 0 {
+        assert!(Instant::now() < deadline, "no {event} line came (log: {})", host.log());
+        tokio::time::sleep(POLL).await;
+    }
+    let settle_deadline = Instant::now() + BOUND;
+    let mut seen = host.log().len();
+    let mut quiet_since = Instant::now();
+    loop {
+        tokio::time::sleep(POLL).await;
+        let len = host.log().len();
+        if len != seen {
+            seen = len;
+            quiet_since = Instant::now();
+        } else if quiet_since.elapsed() >= Duration::from_millis(500) {
+            break;
+        }
+        assert!(Instant::now() < settle_deadline, "the host log never stopped growing");
+    }
+    lines(host)
+}
+
+/// **The one line a repeated refusal is allowed.**
+async fn one_refusal_line(host: &support::Host, event: &str) {
+    assert_eq!(
+        refusal_lines(host, event).await,
+        1,
+        "a repeated refusal wrote a line per attempt (event {event}, log: {})",
+        host.log(),
+    );
 }
 
 /// The page's title, once it is one of `want`.
