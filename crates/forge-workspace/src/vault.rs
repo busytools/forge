@@ -16,12 +16,14 @@ use std::path::{Path, PathBuf};
 use forge_connectors::vault::crypto::{self, Unlocked};
 use forge_connectors::vault::models::{Prelogin, SyncData, TokenResponse, TwoFactorCode};
 use forge_connectors::vault::{VaultClient, VaultError};
-use forge_primitives::vault::VaultTool;
+use forge_primitives::vault::{VaultReleased, VaultTool};
 use serde_json::Value;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::SessionSlot;
 use crate::config::VaultConfig;
+use crate::protocol::SessionUpdate;
+use crate::update_fanout::UpdateFanout;
 
 /// The access and refresh tokens one unlock produced.
 struct Tokens {
@@ -57,6 +59,9 @@ pub(crate) struct VaultSession {
     /// concurrent 401s must not both redeem it; the second reads the token
     /// the first stored.
     refresh_gate: tokio::sync::Mutex<()>,
+    /// Where a rotation is announced: the enrolment blobs hold the old token
+    /// and the client that owns one rewrites it from this.
+    updates: UpdateFanout,
     audit: Option<VaultAudit>,
 }
 
@@ -69,6 +74,7 @@ impl VaultSession {
         app_support: Option<&Path>,
         config_dir: &Path,
         client: VaultClient,
+        updates: UpdateFanout,
     ) -> Result<Self, VaultError> {
         let audit = app_support.and_then(|base| {
             match VaultAudit::new(base, &forge_sdk::config_dir_store_key(config_dir)) {
@@ -90,6 +96,7 @@ impl VaultSession {
             state: parking_lot::RwLock::new(SessionState::default()),
             unlock_gate: tokio::sync::Mutex::new(()),
             refresh_gate: tokio::sync::Mutex::new(()),
+            updates,
             audit,
         })
     }
@@ -104,6 +111,28 @@ impl VaultSession {
     /// session returns its own error rather than an option a caller forgets.
     pub(crate) fn keys(&self) -> Result<std::sync::Arc<Unlocked>, VaultError> {
         self.state.read().keys.clone().ok_or(VaultError::Locked)
+    }
+
+    /// The material a client wraps to enrol this device: the current refresh
+    /// token and the account's user key, base64 - or `None` when the session
+    /// holds no tokens or keys, and when it holds no refresh token, because a
+    /// blob built on material that cannot refresh is a shortcut to nothing.
+    pub(crate) fn enrolment_material(&self) -> Option<VaultReleased> {
+        let state = self.state.read();
+        let keys = state.keys.as_ref()?;
+        let tokens = state.tokens.as_ref()?;
+        let refresh = tokens.refresh.as_deref().filter(|token| !token.is_empty())?;
+        Some(VaultReleased {
+            refresh_token: refresh.to_owned(),
+            user_key: keys.user_key.to_base64().to_string(),
+        })
+    }
+
+    /// Tell every view the refresh token rotated. The token is a secret: it
+    /// rides the live socket for the client that owns an enrolment to rewrite
+    /// its blob, and no store keeps it.
+    fn announce_rotation(&self, refresh_token: String) {
+        let _ = self.updates.send(SessionUpdate::VaultRotated { refresh_token });
     }
 
     /// Derive the master key and unlock the account, storing the tokens and
@@ -189,11 +218,19 @@ impl VaultSession {
         }
 
         let mut state = self.state.write();
+        // The redemption spent the token the client released, so the lineage
+        // rotated: the client rewrites its blob with the one this session
+        // now holds.
+        let rotated = token.refresh_token.clone();
         state.tokens = Some(Tokens {
             access: std::mem::take(&mut token.access_token),
             refresh: token.refresh_token.take(),
         });
         state.keys = Some(std::sync::Arc::new(unlocked));
+        drop(state);
+        if let Some(refresh_token) = rotated {
+            self.announce_rotation(refresh_token);
+        }
         Ok(())
     }
 
@@ -239,6 +276,7 @@ impl VaultSession {
                 let next_refresh =
                     token.refresh_token.take().or_else(|| Some(std::mem::take(&mut refresh)));
                 refresh.zeroize();
+                let rotated = next_refresh.clone();
                 if let Some(tokens) = self.state.write().tokens.as_mut() {
                     tokens.access.zeroize();
                     if let Some(mut old) = tokens.refresh.take() {
@@ -246,6 +284,9 @@ impl VaultSession {
                     }
                     tokens.access = std::mem::take(&mut token.access_token);
                     tokens.refresh = next_refresh;
+                }
+                if let Some(refresh_token) = rotated {
+                    self.announce_rotation(refresh_token);
                 }
                 Ok(access)
             }
@@ -643,11 +684,20 @@ impl VaultSession {
     }
 }
 
+impl crate::workspace::Workspace {
+    /// The material a client wraps to enrol this device, from the shared
+    /// session - or `None` when it is locked or no `[vault]` is configured.
+    pub(crate) fn vault_enrolment_material(&self) -> Option<VaultReleased> {
+        self.vault.read().as_ref()?.enrolment_material()
+    }
+}
+
 /// Install an unlocked state on a test session without the login round-trip.
 #[cfg(test)]
 pub(crate) fn test_install_unlocked(session: &VaultSession, unlocked: Unlocked) {
     let mut state = session.state.write();
-    state.tokens = Some(Tokens { access: "test-access".to_owned(), refresh: None });
+    state.tokens =
+        Some(Tokens { access: "test-access".to_owned(), refresh: Some("test-refresh".to_owned()) });
     state.keys = Some(std::sync::Arc::new(unlocked));
 }
 
@@ -659,8 +709,20 @@ pub(crate) fn test_session(
     app_support: Option<&Path>,
     config_dir: &Path,
 ) -> Result<VaultSession, VaultError> {
+    test_session_with_updates(config, app_support, config_dir, UpdateFanout::default())
+}
+
+/// [`test_session`] over a fan-out the test holds, so it can read what the
+/// session announces.
+#[cfg(test)]
+pub(crate) fn test_session_with_updates(
+    config: &VaultConfig,
+    app_support: Option<&Path>,
+    config_dir: &Path,
+    updates: UpdateFanout,
+) -> Result<VaultSession, VaultError> {
     let client = VaultClient::new(&config.url)?;
-    VaultSession::with_client(config, app_support, config_dir, client)
+    VaultSession::with_client(config, app_support, config_dir, client, updates)
 }
 
 /// The production vault clients: the machine's extra TLS roots, `https_only`,
@@ -852,6 +914,76 @@ mod tests {
         session.state.write().tokens =
             Some(Tokens { access: "stale".to_owned(), refresh: Some("good".to_owned()) });
         session
+    }
+
+    /// The material a device enrols with is the session's current refresh
+    /// token and the account's user key, and nothing when either is missing.
+    #[test]
+    fn the_enrolment_material_is_the_refresh_token_and_user_key() {
+        let session = test_session(&config(), None, Path::new("/tmp")).expect("a session");
+        assert!(session.enrolment_material().is_none(), "a locked session enrols nothing");
+
+        let key = crypto::make_symmetric_key();
+        test_install_unlocked(
+            &session,
+            Unlocked {
+                user_key: key.clone(),
+                private_key: None,
+                org_keys: std::collections::HashMap::new(),
+                failed_orgs: Vec::new(),
+                user_key_fingerprint: String::new(),
+            },
+        );
+        let material = session.enrolment_material().expect("the unlocked material");
+        assert_eq!(material.refresh_token, "test-refresh");
+        assert_eq!(
+            material.user_key,
+            key.to_base64().to_string(),
+            "the user key is the one the unlock holds",
+        );
+
+        if let Some(tokens) = session.state.write().tokens.as_mut() {
+            tokens.refresh = None;
+        }
+        assert!(
+            session.enrolment_material().is_none(),
+            "a session with no refresh token enrols nothing: the blob could never refresh",
+        );
+    }
+
+    /// A rotation is announced with the new token, and the frame's Debug never
+    /// prints it.
+    #[tokio::test]
+    async fn a_rotation_announces_the_new_token_and_redacts_it() {
+        use crate::update_fanout::SubscriberRole;
+
+        let (address, server) = serve(vec![
+            response("401 Unauthorized", ""),
+            response("200 OK", r#"{"access_token":"fresh","refresh_token":"next"}"#),
+            response("200 OK", r#"{"profile":{},"folders":[],"ciphers":[]}"#),
+        ])
+        .await;
+        let updates = UpdateFanout::default();
+        let mut announced = updates.subscribe(SubscriberRole::Answering);
+        let config =
+            VaultConfig { url: format!("http://{address}"), email: "hi@vedhavyas.dev".to_owned() };
+        let session = test_session_with_updates(&config, None, Path::new("/tmp"), updates.clone())
+            .expect("a session");
+        session.state.write().tokens =
+            Some(Tokens { access: "stale".to_owned(), refresh: Some("good".to_owned()) });
+
+        session.sync().await.expect("the refresh recovers the call");
+
+        let frame = announced.try_recv().expect("the rotation is announced");
+        match &*frame.update {
+            SessionUpdate::VaultRotated { refresh_token } => assert_eq!(refresh_token, "next"),
+            other => panic!("the rotation announced something else: {other:?}"),
+        }
+        assert!(
+            !format!("{:?}", *frame.update).contains("next"),
+            "the rotated token is a secret and the Debug line redacts it",
+        );
+        server.await.expect("server");
     }
 
     /// A 401 tries the refresh token, and the retry uses the refreshed token.

@@ -312,6 +312,16 @@ over, and the password's privacy is the socket's - `[server] bind` is the
 boundary, so a vault answer is only meaningful over loopback or the private
 network the config names.
 
+**A device enrols on the same session, with material the core hands out.**
+`vault_enrolment_material` answers through `reply_to` with the session's
+current refresh token and the account's user key, or `null` while it is
+locked; the client wraps them under its platform authenticator and registers
+the blob with `biometric_enrol`. When the session's refresh token rotates -
+the release redemption or the session's own refresh - it pushes the
+slot-less `vault_rotated` with the new token, and the client holding the
+enrolment rewrites its blob; a client that cannot falls back to the
+password.
+
 ## Subjects
 
 Everything a client reads is addressed by a subject, and there are six:
@@ -343,16 +353,16 @@ variant's own name rather than on `kind`:
 }
 ```
 
-A command's variant is its name around its field bag - `Command` has 68
-variants, 62 of them struct variants; the six unit variants,
+A command's variant is its name around its field bag - `Command` has 69
+variants, 62 of them struct variants; the seven unit variants,
 `dictate_catalogue_check`, `dictate_bench_stop`, `voice_bench_start`,
-`voice_bench_stop`, `plugin_update_all` and `plugin_check_updates`, cross as
-the name alone. An update is the same
+`voice_bench_stop`, `plugin_update_all`, `plugin_check_updates` and
+`vault_lock`, cross as the name alone. An update is the same
 shape one level in,
 `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 77 of `SessionUpdate`'s 80 variants are struct variants too. The other
-three are why the payload is not one shape: they are unit variants and cross
-as the name alone - `"catalog_loaded"`, `"cli_version_changed"` and
+and 78 of `SessionUpdate`'s 81 variants are struct variants too. The other
+three are why the update payload is not one shape: they are unit variants and
+cross as the name alone - `"catalog_loaded"`, `"cli_version_changed"` and
 `"dictate_availability"`.
 
 ## What a client sends

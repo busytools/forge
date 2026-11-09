@@ -249,6 +249,10 @@ export const HOME_IGNORES: ReadonlyMap<string, string> = new Map([
   ],
   ['cron_schedules_changed', 'the schedules left the home for the board (#2517)'],
   ['connector_subscriptions_changed', 'the subscriptions left the home for the board (#2517)'],
+  [
+    'vault_rotated',
+    'the vault consumer listens for it on its own; no HomeWire field carries a token',
+  ],
 ]);
 
 /**

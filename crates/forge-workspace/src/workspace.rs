@@ -2445,6 +2445,10 @@ impl Workspace {
             &crate::config::forge_data_dir(&config_dir).join("forge.toml"),
         )?
         .map(Arc::new);
+        // Built above the struct rather than with it: the vault session
+        // announces a rotation through this fan-out, and the session is made
+        // before the struct's own field exists.
+        let update_tx = UpdateFanout::default();
         let vault = match config.vault.as_ref() {
             Some(vault_config) => Some(Arc::new(
                 crate::vault::VaultSession::with_client(
@@ -2457,6 +2461,7 @@ impl Workspace {
                             message: format!("[vault] {error}"),
                         }
                     })?,
+                    update_tx.clone(),
                 )
                 .map_err(|error| WorkspaceError::ConfigInvalid {
                     path: crate::config::forge_data_dir(&config_dir).join("forge.toml"),
@@ -2512,7 +2517,6 @@ impl Workspace {
         accounts.seed_from_cache(&state.account_usage);
 
         let gateway_port = config.gateway_port;
-        let update_tx = UpdateFanout::default();
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
         let config_dictate = config.dictate.clone();
         let db = Arc::new(Mutex::new(db));
@@ -2748,6 +2752,7 @@ impl Workspace {
                             message: format!("[vault] {error}"),
                         }
                     })?,
+                    self.update_tx.clone(),
                 )
                 .map_err(|error| WorkspaceError::ConfigInvalid {
                     path: forge_toml.clone(),
@@ -6796,13 +6801,6 @@ impl Workspace {
                     });
                     return Ok(());
                 }
-                // The shared vault's lock is workspace state, never agent
-                // traffic; the press is answered by the re-stamped cards and
-                // the vault rows' next read.
-                Command::VaultLock { key } => {
-                    self.lock_vault(&key);
-                    return Ok(());
-                }
                 _ => {}
             }
             let key = key.clone();
@@ -7831,6 +7829,21 @@ impl Workspace {
                 Command::BiometricRevoke { enrolment, purpose } => {
                     self.revoke_biometric(enrolment, purpose.as_deref())
                         .map_err(|reason| DispatchError::BiometricRefused { reason })?;
+                }
+                // The shared vault's lock is workspace state, never agent
+                // traffic; the press is answered by the re-stamped cards and
+                // the settings card's next read.
+                Command::VaultLock => {
+                    self.lock_vault();
+                }
+                Command::VaultEnrolmentMaterial { respond } => {
+                    // The material rides the reply alone: a locked session
+                    // answers `null`, which is the state a device cannot
+                    // enrol from.
+                    let material = self.vault_enrolment_material();
+                    if let Some(respond) = respond {
+                        let _ = respond.send(material);
+                    }
                 }
                 other => {
                     tracing::warn!(

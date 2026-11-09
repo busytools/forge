@@ -250,6 +250,9 @@ const NOT_NEWS: readonly string[] = [
   // no fleet row draws a device. The home still re-reads for it, because its
   // snapshot carries the list (`HOME_WAKES`).
   'biometric_enrolments_changed',
+  // The rotated vault token is the vault consumer's own signal; no fleet row
+  // and no home field carries it.
+  'vault_rotated',
 ];
 
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
@@ -538,11 +541,11 @@ describe('the variant census', () => {
     ).toBe(true);
     expect(
       names.length,
-      'this count and the enum disagree, and `SessionUpdate` held 80 variants when it was last ' +
+      'this count and the enum disagree, and `SessionUpdate` held 81 variants when it was last ' +
         'set. Raise or lower it in the same edit that adds or removes one - the census below names ' +
         'the bucket an added variant belongs in - and if you moved no variant, the parse read a ' +
         'different set of names than the enum holds',
-    ).toBe(80);
+    ).toBe(81);
     expect(news.size, 'the `fleet_news` arms were not read out of live.rs at all').toBeGreaterThan(
       5,
     );
@@ -711,6 +714,7 @@ describe('the home variant census', () => {
       'plugins_rollback_succeeded',
       'plugins_update_run_finished',
       'plugins_update_run_progress',
+      'vault_rotated',
     ]);
   });
 

@@ -20,7 +20,6 @@ use uuid::Uuid;
 
 use forge_primitives::biometric::{BiometricBlob, BiometricEnrolment, BiometricPurpose};
 
-use crate::SessionSlot;
 use crate::protocol::SessionUpdate;
 use crate::workspace::Workspace;
 
@@ -224,23 +223,18 @@ impl Workspace {
     ///
     /// `false` when no vault is configured, which is the only state a view
     /// would not have drawn the action in.
-    pub(crate) fn lock_vault(&self, caller: &SessionSlot) -> bool {
+    pub(crate) fn lock_vault(&self) -> bool {
         let session = self.vault.read().clone();
         let Some(session) = session else {
             tracing::debug!(
                 event_name = "vault_lock_without_session",
-                caller = %caller.display(),
                 "a lock arrived with no [vault] configured",
             );
             return false;
         };
         session.lock();
         self.rebase_vault_asks(true);
-        tracing::info!(
-            event_name = "vault_locked",
-            caller = %caller.display(),
-            "the vault was locked at the reader's press",
-        );
+        tracing::info!(event_name = "vault_locked", "the vault was locked at the reader's press");
         true
     }
 
@@ -267,6 +261,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::SessionSlot;
     use crate::store::Db;
 
     /// A workspace with a real machine-local store under a temp dir, the way a
@@ -473,6 +468,47 @@ mod tests {
         assert_eq!(revoked, vec![Vec::new()], "the revoke announced the empty set");
     }
 
+    /// The enrolment material answered through the command is the session's,
+    /// and a locked or absent session answers `null`.
+    #[test]
+    fn the_enrolment_material_command_answers_the_session_or_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _updates) =
+            Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+
+        let (sender, mut receiver) = tokio::sync::oneshot::channel();
+        workspace
+            .dispatch(crate::protocol::Command::VaultEnrolmentMaterial { respond: Some(sender) })
+            .expect("the command routes");
+        assert!(receiver.try_recv().expect("answered").is_none(), "no [vault] means no material");
+
+        let config = crate::config::VaultConfig {
+            url: "http://127.0.0.1:1".to_owned(),
+            email: "a@b.c".to_owned(),
+        };
+        let session =
+            Arc::new(crate::vault::test_session(&config, None, dir.path()).expect("a session"));
+        crate::vault::test_install_unlocked(
+            &session,
+            forge_connectors::vault::crypto::Unlocked {
+                user_key: forge_connectors::vault::crypto::make_symmetric_key(),
+                private_key: None,
+                org_keys: std::collections::HashMap::new(),
+                failed_orgs: Vec::new(),
+                user_key_fingerprint: String::new(),
+            },
+        );
+        *workspace.vault.write() = Some(session);
+
+        let (sender, mut receiver) = tokio::sync::oneshot::channel();
+        workspace
+            .dispatch(crate::protocol::Command::VaultEnrolmentMaterial { respond: Some(sender) })
+            .expect("the command routes");
+        let material = receiver.try_recv().expect("answered").expect("the material");
+        assert_eq!(material.refresh_token, "test-refresh");
+        assert!(!material.user_key.is_empty(), "the user key rides with it");
+    }
+
     /// A blob that is not base64, an empty one, an oversized one and a
     /// nameless purpose are all refused before anything is stored.
     #[test]
@@ -527,7 +563,7 @@ mod tests {
         workspace.register_vault_ask(&caller, draft, false);
         assert!(!session.is_locked());
 
-        assert!(workspace.lock_vault(&caller));
+        assert!(workspace.lock_vault());
 
         assert!(session.is_locked(), "the lock drops the keys");
         let asks = workspace.vault_asks(&caller, true);
@@ -545,7 +581,7 @@ mod tests {
     #[test]
     fn a_lock_with_no_vault_answers_false() {
         let (workspace, _dir) = workspace();
-        assert!(!workspace.lock_vault(&SessionSlot::lead("Default", "forge")));
+        assert!(!workspace.lock_vault());
     }
 
     fn enrolment_purposes(enrolment: &BiometricEnrolment) -> Vec<String> {

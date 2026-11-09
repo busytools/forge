@@ -314,6 +314,10 @@ const ANSWERS_THROUGH_A_REPLY = new Set([
   'upsert_review_thread',
   'delete_review_thread',
   'submit_review',
+  // The vault's enrolment material rides the reply; so does a biometric
+  // release's blob, which the web gate fetches before it wraps or unwraps.
+  'biometric_release',
+  'vault_enrolment_material',
 ]);
 
 /**

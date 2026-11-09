@@ -448,12 +448,25 @@ pub enum Command {
         purpose: Option<String>,
     },
     /// The reader locked the shared vault now, rather than waiting for the
-    /// idle clock. The process holds one vault session, so any seat's lock is
-    /// every seat's. Workspace state rather than agent traffic, and the parked
-    /// cards are re-stamped so a dock that already drew one asks for the
-    /// password again.
-    VaultLock {
-        key: SessionSlot,
+    /// idle clock. **App-level**: the process holds one vault session, so the
+    /// settings page's vault card is where the press comes from and no seat
+    /// has a better claim to it than another. Workspace state rather than
+    /// agent traffic, and the parked cards are re-stamped so a dock that
+    /// already drew one asks for the password again.
+    VaultLock,
+    /// The material a client wraps to enrol this device: the shared session's
+    /// current refresh token and the account's user key, base64. Answers
+    /// through `reply_to` with [`forge_primitives::vault::VaultReleased`],
+    /// and `null` while the session is locked - the state a device cannot
+    /// enrol from.
+    ///
+    /// **It is the vault's material, not the biometric gate's.** The gate
+    /// stores and releases whatever blob a consumer wraps; only the vault
+    /// knows what its own material is, so the command lives on the vault's
+    /// surface.
+    VaultEnrolmentMaterial {
+        #[serde(skip)]
+        respond: Option<oneshot::Sender<Option<forge_primitives::vault::VaultReleased>>>,
     },
     RespondQuestion {
         key: SessionSlot,
@@ -970,8 +983,7 @@ impl Command {
             | Self::SetDictateOverride { key, .. }
             | Self::ResetDictateOverrides { key }
             | Self::VoiceMode { key, .. }
-            | Self::VoicePreview { key, .. }
-            | Self::VaultLock { key } => Some(key),
+            | Self::VoicePreview { key, .. } => Some(key),
             Self::SpawnProject { .. }
             | Self::DictateStream { .. }
             | Self::DictateStop { .. }
@@ -1022,7 +1034,9 @@ impl Command {
             | Self::MarketplaceRepair { .. }
             | Self::BiometricEnrol { .. }
             | Self::BiometricRelease { .. }
-            | Self::BiometricRevoke { .. } => None,
+            | Self::BiometricRevoke { .. }
+            | Self::VaultLock
+            | Self::VaultEnrolmentMaterial { .. } => None,
         }
     }
 
@@ -1140,7 +1154,8 @@ impl std::fmt::Debug for Command {
                 .field("enrolment", enrolment)
                 .field("purpose", purpose)
                 .finish(),
-            Self::VaultLock { key } => f.debug_struct("VaultLock").field("key", key).finish(),
+            Self::VaultLock => f.write_str("VaultLock"),
+            Self::VaultEnrolmentMaterial { .. } => f.write_str("VaultEnrolmentMaterial"),
             Self::AnswerDocumentHandOff { key, id, answer } => f
                 .debug_struct("AnswerDocumentHandOff")
                 .field("key", key)
@@ -2316,6 +2331,18 @@ pub enum SessionUpdate {
     BiometricEnrolmentsChanged {
         enrolments: Vec<forge_primitives::biometric::BiometricEnrolment>,
     },
+    /// The shared vault session rotated its refresh token, so the copy an
+    /// enrolment blob holds is spent. A client that holds the material from
+    /// its last release rewrites its blob with this one (decision 15); one
+    /// that cannot falls back to the password on its next start.
+    ///
+    /// **Slot-less**: the session is process-wide, and only the client that
+    /// owns the enrolment acts on it. The token is a secret on the socket -
+    /// it never reaches a transcript or the live fold, and the manual `Debug`
+    /// redacts it.
+    VaultRotated {
+        refresh_token: String,
+    },
     /// One rendered clip of the seat's speech, mono 16-bit samples at
     /// `sample_rate`. Chunks arrive in `seq` order and every client with
     /// voice on for the seat plays them; a client with voice off receives
@@ -2420,7 +2447,8 @@ impl SessionUpdate {
             | Self::DictateAvailability { .. }
             | Self::FatalError { .. }
             | Self::DictateModelsChanged { .. }
-            | Self::BiometricEnrolmentsChanged { .. } => None,
+            | Self::BiometricEnrolmentsChanged { .. }
+            | Self::VaultRotated { .. } => None,
         }
     }
 }
@@ -2764,6 +2792,8 @@ impl std::fmt::Debug for SessionUpdate {
                 .debug_struct("BiometricEnrolmentsChanged")
                 .field("enrolments", &enrolments.len())
                 .finish(),
+            // The token is redacted: a Debug line must never carry it.
+            Self::VaultRotated { .. } => f.write_str("VaultRotated"),
             Self::CatalogLoaded => f.write_str("CatalogLoaded"),
             Self::CliVersionChanged => f.write_str("CliVersionChanged"),
             Self::AccountsChanged { accounts } => f

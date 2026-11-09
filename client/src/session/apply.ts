@@ -556,6 +556,9 @@ export const IGNORED: readonly string[] = [
   // The device enrolment set is the settings page's and the home read's; this
   // record has no field for it.
   'biometric_enrolments_changed',
+  // The vault's rotated token is the vault consumer's, which listens on its
+  // own; a seat record keeps no vault state.
+  'vault_rotated',
 ];
 
 /** Fold one update into the record. A variant it has nothing to do with leaves it alone. */

@@ -4467,6 +4467,11 @@ fn dispatch_answering(
             let command = Command::BiometricRelease { enrolment, purpose, respond: Some(tx) };
             answered(state, command, to, rx, reply_tx);
         }
+        Command::VaultEnrolmentMaterial { .. } => {
+            let (tx, rx) = oneshot::channel();
+            let command = Command::VaultEnrolmentMaterial { respond: Some(tx) };
+            answered(state, command, to, rx, reply_tx);
+        }
         // Every other command is fire-and-forget: success sends nothing
         // extra, because the update arrives through the subscription the
         // client already has.
@@ -4670,6 +4675,7 @@ fn answers_through_a_reply(command: &Command) -> bool {
             | Command::DeleteReviewThread { .. }
             | Command::SubmitReview { .. }
             | Command::BiometricRelease { .. }
+            | Command::VaultEnrolmentMaterial { .. }
     )
 }
 
