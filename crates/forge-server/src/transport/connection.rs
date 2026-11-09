@@ -116,8 +116,8 @@ pub(crate) const HEARTBEAT_EVERY: Duration = Duration::from_secs(15);
 /// how fast a call on a paused host fails (a tool call's own bound is longer).
 pub(crate) const HEARTBEAT_DEAD: Duration = Duration::from_secs(60);
 
-/// How long a connection task may make no progress before a watchdog outside
-/// it ends the connection.
+/// How long a connection may write nothing before a watchdog outside its
+/// future ends it.
 ///
 /// **The keepalive cannot watch its own task.** Its beat is a branch in the
 /// connection's own `select!`, so a task parked in an await never reaches it:
@@ -125,47 +125,71 @@ pub(crate) const HEARTBEAT_DEAD: Duration = Duration::from_secs(60);
 /// server says nothing. That is the 2026-11-09 freeze, 26.7 minutes of
 /// silence with the process alive and the log's last line a hook response.
 ///
-/// The longest legitimate stall in the loop is one bounded socket write
-/// ([`WRITE_BOUND`]), and a healthy idle loop still wakes on its own beat
-/// ([`HEARTBEAT_EVERY`]). Between them sits the snapshot encode, which this
-/// server does on the loop and has no bound of its own, so the wedge bound is
-/// four write bounds: far above the slowest write measured (31.6 s) and above
+/// **The bound is on completed writes, not loop turns.** The longest gap a
+/// healthy connection can leave between two of them is one write waiting out
+/// its whole bound ([`WRITE_BOUND`]) plus the snapshot encode this server does
+/// on the loop, which has no bound of its own; an idle connection still writes
+/// its keepalive ping every [`HEARTBEAT_EVERY`]. So the wedge bound is four
+/// write bounds: far above the slowest write measured (31.6 s) and above
 /// anything a giant seat's encode has been seen to take, because a healthy
 /// connection reaped mid-record would redial into the same record for ever.
 /// **Chosen, not measured**: the number it changes for a person is how fast a
 /// connection wedged behind a stalled subsystem is let go.
 pub(crate) const WEDGE_DEAD: Duration = Duration::from_secs(240);
 
-/// The connection loop's own clock, stamped once per pass and read from
-/// outside the task.
+/// The connection's own clock: one stamp per **completed socket write**, and
+/// the seat it last said it was showing.
 ///
 /// **A task cannot watch itself.** The keepalive answers a peer that went
 /// away while the loop still runs; it cannot see the loop itself parked in an
 /// await, because a `select!` branch never fires while another branch is being
-/// driven. This stamp is what [`supervise`] samples instead.
+/// driven. **A loop turn is not progress either**: one pass can issue several
+/// bounded writes (`batch::flush` feeds one or two frames, then a snapshot,
+/// then an optional home snapshot), so a turn-based stamp would claim progress
+/// the connection did not make. The stamp sits where every frame crosses -
+/// [`ClientSocket`]'s flush - so the watchdog's bound means "no write
+/// completed in the bound", which is what it claims.
 #[derive(Debug)]
 struct Progress {
     /// `tokio`'s clock rather than the standard one, so a test that pauses
     /// time pauses the watchdog with it.
     base: tokio::time::Instant,
     at: std::sync::atomic::AtomicU64,
+    /// The seat this connection last showed, for a wedge's own record: a
+    /// connection can watch several seats, and the one on screen is what a
+    /// person would name.
+    showing: std::sync::Mutex<Option<SessionSlot>>,
 }
 
 impl Progress {
     fn new() -> Self {
-        Self { base: tokio::time::Instant::now(), at: std::sync::atomic::AtomicU64::new(0) }
+        Self {
+            base: tokio::time::Instant::now(),
+            at: std::sync::atomic::AtomicU64::new(0),
+            showing: std::sync::Mutex::new(None),
+        }
     }
 
-    /// One pass of the loop is behind this connection.
+    /// One write completed and its bytes were flushed.
     fn stamp(&self) {
         let millis = u64::try_from(self.base.elapsed().as_millis()).unwrap_or(u64::MAX);
         self.at.store(millis, Ordering::Relaxed);
     }
 
-    /// How long the loop has been parked since its last pass.
+    /// How long the connection has been parked since its last write.
     fn silent_for(&self, now: tokio::time::Instant) -> Duration {
         let last = Duration::from_millis(self.at.load(Ordering::Relaxed));
         now.saturating_duration_since(self.base + last)
+    }
+
+    /// Record the seat this connection says it is showing.
+    fn note_showing(&self, seat: Option<&SessionSlot>) {
+        *self.showing.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = seat.cloned();
+    }
+
+    /// The seat this connection was showing when it stopped.
+    fn showing_seat(&self) -> Option<SessionSlot> {
+        self.showing.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 }
 
@@ -751,17 +775,6 @@ struct Arrival {
     at: Instant,
 }
 
-/// Who this connection is, and the stamp its loop turns on.
-///
-/// The two travel together because they are the same task's: the caller names
-/// it in what it says, and the progress stamp is the proof it is still saying
-/// anything, read by the watchdog outside it.
-#[derive(Clone, Copy)]
-struct ConnectionIdentity<'a> {
-    caller: Caller,
-    progress: &'a Progress,
-}
-
 /// Greet, then serve the client until it goes.
 ///
 /// The greeting is what tells a client it is speaking to a forge rather
@@ -805,7 +818,14 @@ where
     {
         return;
     }
-    if let Err(error) = supervise(&mut socket, &state, peer, settings, sent_settings).await {
+    // **The watchdog's clock is made here and carried by the socket**, so
+    // every frame this connection writes stamps it, whichever path built the
+    // frame.
+    let progress = Arc::new(Progress::new());
+    let mut socket = socket.watched(Arc::clone(&progress));
+    if let Err(error) =
+        supervise(&mut socket, &state, peer, settings, sent_settings, &progress).await
+    {
         tracing::debug!(
             target: "forge_server::transport",
             event_name = "connection_ended",
@@ -850,16 +870,18 @@ impl ConnectionLife {
 ///
 /// **The keepalive cannot watch its own task**: its beat is a branch in the
 /// connection's own `select!`, so a connection parked in an await never
-/// reaches it. This watchdog sits outside the future, samples the loop's
-/// progress, and ends the connection when it stops - then runs the same
-/// teardown a clean end does, because a reap that leaked the seat, the take
-/// or the browser viewer would trade a silent hang for a silent leak.
+/// reaches it. This watchdog sits outside the future, samples the connection's
+/// completed writes (the stamp every frame flushes through), and ends it when
+/// none lands within the bound - then runs the same teardown a clean end does,
+/// because a reap that leaked the seat, the take or the browser viewer would
+/// trade a silent hang for a silent leak.
 async fn supervise<S>(
     socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     peer: std::net::SocketAddr,
     settings: tokio::sync::watch::Receiver<Option<Arc<str>>>,
     sent_settings: Option<Arc<str>>,
+    progress: &Progress,
 ) -> anyhow::Result<()>
 where
     S: futures_util::Stream<Item = Result<Message, axum::Error>>
@@ -869,12 +891,11 @@ where
 {
     let mut life = ConnectionLife::new();
     let me = life.me;
-    let progress = Progress::new();
     // The future's borrow of `life` ends with this block, whether the
     // connection returned or the watchdog dropped it, which is what lets the
     // teardown below run on either path.
     let outcome = {
-        let connection = drive(socket, state, peer, settings, sent_settings, &mut life, &progress);
+        let connection = drive(socket, state, peer, settings, sent_settings, &mut life);
         tokio::pin!(connection);
         let mut sample = tokio::time::interval(state.heartbeat.every);
         sample.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -893,15 +914,20 @@ where
                         continue;
                     }
                     // **A wedge is forge's own problem, so it is a warning**
-                    // and it names the connection a reader can act on.
+                    // and it names the connection and the seat on screen: a
+                    // reader can act on which page stopped, not on a number.
+                    let slot = progress
+                        .showing_seat()
+                        .map_or_else(String::new, |seat| seat.display().clone());
                     tracing::warn!(
                         target: "forge_server::transport",
                         event_name = "connection_wedged",
                         client = me,
                         peer = %peer,
+                        slot = %slot,
                         silent_ms = silent.as_secs_f64() * 1000.0,
                         bound_seconds = state.heartbeat.wedge.as_secs(),
-                        "the connection made no progress past its bound, so it is ended: \
+                        "no write completed on this connection past its bound, so it is ended: \
                          something it awaited never answered",
                     );
                     break Err(anyhow::Error::new(WedgeStalled {
@@ -925,8 +951,19 @@ where
              reading",
         );
     }
-    finish(state, &mut life).await;
+    finish(state, &mut life, &outcome).await;
     outcome
+}
+
+/// Why a connection ended, for the teardown records that run after it: a
+/// wedge and a clean close leave the same marks to release, and a reader
+/// looking at one of them has to know which it was.
+fn ending(outcome: &anyhow::Result<()>) -> &'static str {
+    match outcome {
+        Ok(()) => "closed",
+        Err(error) if error.downcast_ref::<WedgeStalled>().is_some() => "wedged",
+        Err(_) => "error",
+    }
 }
 
 /// Read what a client sends, and hear what its subscriptions asked for.
@@ -944,7 +981,6 @@ async fn drive<S>(
     settings: tokio::sync::watch::Receiver<Option<Arc<str>>>,
     sent_settings: Option<Arc<str>>,
     life: &mut ConnectionLife,
-    progress: &Progress,
 ) -> anyhow::Result<()>
 where
     S: futures_util::Stream<Item = Result<Message, axum::Error>>
@@ -1000,7 +1036,7 @@ where
         &mut viewers,
         AnswerLanes { reads: &mut reads, answers: &mut answers },
         SettingsPush { receiver: settings, sent: sent_settings },
-        ConnectionIdentity { caller, progress },
+        caller,
     )
     .await
 }
@@ -1011,8 +1047,13 @@ where
 /// **This runs outside the connection future on purpose.** A wedged
 /// connection is dropped rather than returned from, and the straight-line
 /// code after a future's last await is code a drop never reaches.
-async fn finish(state: &Arc<TransportState>, life: &mut ConnectionLife) {
+async fn finish(
+    state: &Arc<TransportState>,
+    life: &mut ConnectionLife,
+    outcome: &anyhow::Result<()>,
+) {
     let me = life.me;
+    let ended = ending(outcome);
     let dictate = &mut life.dictate;
     let watching = &mut life.watching;
     // Every take this connection started ends with it: each is DROPPED
@@ -1025,6 +1066,7 @@ async fn finish(state: &Arc<TransportState>, life: &mut ConnectionLife) {
             tracing::debug!(
                 target: "forge_server::transport",
                 event_name = "dictate_take_dropped",
+                ending = ended,
                 slot = %claim.seat.display(),
                 "the connection that was streaming a take went away; the take was dropped",
             );
@@ -1038,6 +1080,7 @@ async fn finish(state: &Arc<TransportState>, life: &mut ConnectionLife) {
         tracing::debug!(
             target: "forge_server::transport",
             event_name = "voice_listener_released",
+            ending = ended,
             seats = released.len(),
             "the connection that was listening went away; its seats drop it",
         );
@@ -1052,6 +1095,7 @@ async fn finish(state: &Arc<TransportState>, life: &mut ConnectionLife) {
         tracing::debug!(
             target: "forge_server::transport",
             event_name = "read_aloud_recording_dropped",
+            ending = ended,
             stopped = stopped.is_ok(),
             "the connection that was recording the read-aloud set went away",
         );
@@ -1071,16 +1115,20 @@ async fn finish(state: &Arc<TransportState>, life: &mut ConnectionLife) {
     // error and a client closing both leave the profile's viewer set, and a
     // role the gone viewer held is released with it. **Last, and bounded**:
     // the host that wedged the connection is exactly the one that can wedge
-    // its own detach, and it must not hold the seat's release behind it.
+    // its own detach, and it must not hold the seat's release behind it. A
+    // detach that outlives the bound leaves a stale viewer on forge's own
+    // profile, which is forge's problem, so it is a warning.
     if let Some(host) = state.browser_host.as_ref()
         && tokio::time::timeout(WRITE_BOUND, host.detach(me)).await.is_err()
     {
-        tracing::debug!(
+        tracing::warn!(
             target: "forge_server::transport",
             event_name = "browser_detach_stalled",
             client = me,
+            ending = ended,
             bound_seconds = WRITE_BOUND.as_secs(),
-            "the host did not take the viewer's detach within the bound",
+            "the host did not take the viewer's detach within the bound, so the profile keeps a \
+             viewer that is gone",
         );
     }
     // Every hold this connection took goes back by the guard's own drop, one
@@ -1314,7 +1362,7 @@ async fn run_connection<S>(
     viewers: &mut Viewers,
     lanes: AnswerLanes<'_>,
     settings_push: SettingsPush,
-    identity: ConnectionIdentity<'_>,
+    caller: Caller,
 ) -> anyhow::Result<()>
 where
     S: futures_util::Stream<Item = Result<Message, axum::Error>>
@@ -1324,7 +1372,6 @@ where
 {
     let AnswerLanes { reads, answers } = lanes;
     let SettingsPush { receiver: settings, sent: sent_settings } = settings_push;
-    let ConnectionIdentity { caller, progress } = identity;
     let me = caller.id;
     let mut held = Batch::default();
     let mut settings = settings;
@@ -1346,10 +1393,6 @@ where
     beat.tick().await;
     let keepalive = Keepalive::default();
     loop {
-        // **The watchdog's proof of life**, stamped where the loop turns
-        // rather than where it wakes: a branch parked in an await is exactly
-        // the case the beat in this same `select!` cannot see.
-        progress.stamp();
         let due = held.due();
         tokio::select! {
             // **A queued answer is read before the beat decides.** A pong can
@@ -3610,6 +3653,7 @@ where
     }
     let Some(next) = seat else {
         watching.showing = None;
+        socket.note_showing(None);
         return Ok(());
     };
     // **A showing spends nothing until the seat is actually watched.** A
@@ -3622,6 +3666,7 @@ where
         .iter()
         .any(|held| matches!(held, Subject::Session(slot) if slot == &next));
     watching.showing = Some(next.clone());
+    socket.note_showing(Some(&next));
     if watched {
         spend_showing(socket, state, watching, &next).await?;
     }
@@ -4010,11 +4055,30 @@ const COMPRESSED_MIN_BYTES: usize = 64 * 1024;
 struct ClientSocket<S> {
     inner: S,
     deflate: bool,
+    /// The watchdog's clock, stamped whenever a flush completes. **This is
+    /// the one point every frame crosses** - a batched frame, a snapshot, a
+    /// browser frame, a terminal chunk, a ping - so a stamp here means bytes
+    /// moved, not that the loop turned. `None` for a socket with no watchdog.
+    progress: Option<Arc<Progress>>,
 }
 
 impl<S> ClientSocket<S> {
     fn new(inner: S, deflate: bool) -> Self {
-        Self { inner, deflate }
+        Self { inner, deflate, progress: None }
+    }
+
+    /// Attach the watchdog's clock: every completed flush stamps it.
+    fn watched(mut self, progress: Arc<Progress>) -> Self {
+        self.progress = Some(progress);
+        self
+    }
+
+    /// Record the seat this connection says it is showing, for a wedge's own
+    /// record.
+    fn note_showing(&self, seat: Option<&SessionSlot>) {
+        if let Some(progress) = self.progress.as_deref() {
+            progress.note_showing(seat);
+        }
     }
 }
 
@@ -4071,7 +4135,16 @@ where
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), axum::Error>> {
-        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+        let flushed = std::pin::Pin::new(&mut self.inner).poll_flush(cx);
+        // **A completed flush is the connection's proof of progress**, and it
+        // is the only one: the watchdog's bound says "no write completed",
+        // which a loop-turn stamp could not claim.
+        if matches!(flushed, std::task::Poll::Ready(Ok(())))
+            && let Some(progress) = self.progress.as_deref()
+        {
+            progress.stamp();
+        }
+        flushed
     }
 
     fn poll_close(
@@ -5809,7 +5882,6 @@ mod tests {
                     receiver,
                     None,
                     &mut ConnectionLife::new(),
-                    &Progress::new(),
                 )
                 .await
             }
@@ -7693,7 +7765,7 @@ mod tests {
     fn connection(state: &Arc<TransportState>) -> Driven {
         let (to_server, inbound) = mpsc::unbounded_channel();
         let (outbound, mut from_server) = mpsc::unbounded_channel();
-        let mut peer = ClientSocket::new(Peer { inbound, outbound }, false);
+        let peer = ClientSocket::new(Peer { inbound, outbound }, false);
         let written = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&written);
         // The frames are recorded rather than dropped, so a test can wait on
@@ -7711,7 +7783,9 @@ mod tests {
         // tests assert on runs in `finish`, which a bare `drive` never calls.
         let driven = tokio::spawn(async move {
             let receiver = settings.subscribe();
-            supervise(&mut peer, &state, attached_from(), receiver, None).await
+            let progress = Arc::new(Progress::new());
+            let mut peer = peer.watched(Arc::clone(&progress));
+            supervise(&mut peer, &state, attached_from(), receiver, None, &progress).await
         });
         Driven { to_server, written, driven }
     }
@@ -8246,6 +8320,167 @@ mod tests {
 
         drop(other);
         let _ = other_driven.await;
+    }
+
+    /// A fleet whose detach never answers: the teardown's own hang.
+    #[derive(Default)]
+    struct StalledDetach {
+        detaches: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl forge_workspace::browser::BrowserHost for StalledDetach {
+        async fn call(
+            &self,
+            _seat: &SessionSlot,
+            _tool: &str,
+            _args: serde_json::Value,
+        ) -> Result<Vec<forge_primitives::browser::BrowserPart>, String> {
+            Err("no fleet here".to_owned())
+        }
+
+        async fn attach(
+            &self,
+            _viewer: u64,
+            _seat: &SessionSlot,
+            _tab: Option<u16>,
+        ) -> Result<BrowserAttachment, String> {
+            Err("no fleet here".to_owned())
+        }
+
+        async fn detach(&self, _viewer: u64) {
+            self.detaches.fetch_add(1, Ordering::Relaxed);
+            // A host whose driver is gone never answers, and the connection
+            // must not wait on it for ever.
+            std::future::pending::<()>().await;
+        }
+
+        async fn input(
+            &self,
+            _profile: &str,
+            _tab: u16,
+            _viewer: u64,
+            _seq: u64,
+            _event: &forge_primitives::browser::BrowserInputEvent,
+        ) -> Result<(), String> {
+            Err("no fleet here".to_owned())
+        }
+
+        async fn answer_files(
+            &self,
+            _profile: &str,
+            _tab: u16,
+            _id: u64,
+            _files: Vec<forge_primitives::browser::BrowserUpload>,
+        ) -> Result<(), String> {
+            Err("no fleet here".to_owned())
+        }
+
+        async fn take_control(
+            &self,
+            _profile: &str,
+            _tab: u16,
+            _viewer: u64,
+        ) -> Result<(), String> {
+            Err("no fleet here".to_owned())
+        }
+
+        async fn resize(
+            &self,
+            _profile: &str,
+            _tab: u16,
+            _viewer: u64,
+            _width: u32,
+            _height: u32,
+            _scale: f64,
+        ) {
+        }
+
+        async fn release_control(&self, _profile: &str, _tab: u16, _viewer: u64) {}
+
+        async fn nav(
+            &self,
+            _profile: &str,
+            _tab: u16,
+            _viewer: u64,
+            _back: bool,
+        ) -> Result<forge_primitives::browser::BrowserNavState, String> {
+            Err("no fleet here".to_owned())
+        }
+
+        async fn nav_state(
+            &self,
+            _profile: &str,
+            _tab: u16,
+        ) -> Option<forge_primitives::browser::BrowserNavState> {
+            None
+        }
+
+        async fn tabs(
+            &self,
+            _seat: &SessionSlot,
+        ) -> Result<forge_primitives::browser::BrowserTabList, String> {
+            Err("no fleet here".to_owned())
+        }
+
+        async fn tab_stream(
+            &self,
+            _seat: &SessionSlot,
+        ) -> Result<tokio::sync::watch::Receiver<forge_primitives::browser::BrowserTabList>, String>
+        {
+            Err("no fleet here".to_owned())
+        }
+
+        async fn sweep_sessions(&self, _seats: &[SessionSlot], _generation: u64) {}
+
+        async fn replace_seat(&self, _seat: &SessionSlot) {}
+
+        fn session_ended(&self, _seat: &SessionSlot) {}
+
+        async fn hand_off_started(
+            &self,
+            _seat: &SessionSlot,
+            _target: &str,
+        ) -> Result<u16, String> {
+            Err("no fleet here".to_owned())
+        }
+
+        async fn hand_off_finished(&self, _seat: &SessionSlot, _tab: u16) {}
+
+        async fn warm(&self, _seat: &SessionSlot) {}
+
+        async fn stop(&self) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    /// **A stalled browser detach cannot hold a connection open.** The detach
+    /// runs in `finish`, after the connection future is gone; unbounded, a
+    /// host that never answers keeps the task alive for ever - the same silent
+    /// hang on the teardown path the watchdog exists to end. It is bounded at
+    /// `WRITE_BOUND`, so the whole connection task ends inside two of them.
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_browser_detach_ends_the_connection_within_its_bound() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let host = Arc::new(StalledDetach::default());
+        fleet.workspace().install_browser_host(
+            Arc::clone(&host) as Arc<dyn forge_workspace::browser::BrowserHost>
+        );
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+        let Driven { to_server, driven, .. } = connection(&state);
+
+        // The client goes, so the connection's own teardown runs.
+        drop(to_server);
+        let ended = tokio::time::timeout(WRITE_BOUND * 2, driven)
+            .await
+            .expect("a stalled detach held the connection open past its bound")
+            .expect("the connection task joins");
+        assert!(ended.is_ok(), "the connection ended without an error: {ended:?}");
+        assert!(
+            host.detaches.load(Ordering::Relaxed) >= 1,
+            "the teardown never attempted the detach",
+        );
     }
 
     /// The home a connection holds is re-encoded when a showing spends a mark

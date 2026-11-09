@@ -195,6 +195,37 @@ fn write_stalled(bound: std::time::Duration, what: &str) -> Error {
     ))
 }
 
+/// Why the writer task's stdin is gone, kept beside it so a later write names
+/// the cause rather than blaming a call that never ran.
+#[derive(Clone, Copy, Debug)]
+enum Closed {
+    /// `end_input` dropped it on purpose.
+    EndInput,
+    /// A write outlived [`STDIN_WRITE_BOUND`], so a partial line may be on
+    /// the wire.
+    Stalled,
+    /// A write failed at the pipe.
+    Failed,
+}
+
+impl Closed {
+    fn why(self) -> &'static str {
+        match self {
+            Self::EndInput => "stdin already closed (end_input)",
+            Self::Stalled => "stdin was closed because a write outlived its bound",
+            Self::Failed => "stdin was closed because a write failed",
+        }
+    }
+}
+
+/// The error a write gets once the stream is closed, naming why it closed.
+fn closed_stdin(reason: Option<Closed>) -> Error {
+    Error::Io(std::io::Error::new(
+        std::io::ErrorKind::BrokenPipe,
+        reason.map_or("stdin already closed", Closed::why),
+    ))
+}
+
 /// Outcome of one writer-task operation. Sent back over a oneshot the
 /// caller provides.
 type IoAck = Result<(), Error>;
@@ -219,10 +250,15 @@ pub struct Subprocess {
     /// [`clone_writer`](Self::clone_writer) so external
     /// dispatchers can write without contending on `&mut self`.
     writer_tx: mpsc::UnboundedSender<WriterCmd>,
-    /// How long one write to stdin, and its ack, may take. The shipping
-    /// bound is [`STDIN_WRITE_BOUND`]; a test injects a shorter one so it
-    /// can watch the bound fire without waiting thirty seconds out.
+    /// How long one write to stdio may take. The shipping bound is
+    /// [`STDIN_WRITE_BOUND`]; a test injects a shorter one so it can watch
+    /// the bound fire without waiting thirty seconds out.
     write_bound: std::time::Duration,
+    /// How long a caller waits for that write's ack. **The task's verdict is
+    /// the authoritative one**: this is twice the writer's bound, so a writer
+    /// that dequeued a line and timed out reports it before the caller gives
+    /// up, and no line is written after its caller was told the write failed.
+    ack_wait: std::time::Duration,
     /// Inbound channel from the reader task. Single-consumer.
     reader_rx: mpsc::UnboundedReceiver<Result<Option<String>, Error>>,
     /// Writer task handle. [`close`](Self::close) aborts this so the
@@ -367,12 +403,18 @@ impl Subprocess {
         spawn_reader_task(stdout, options.tee_inbound.clone(), reader_tx);
 
         let (writer_tx, writer_rx) = mpsc::unbounded_channel();
-        let writer_task =
-            spawn_writer_task(stdin, options.tee_outbound.clone(), writer_rx, STDIN_WRITE_BOUND);
+        let writer_task = spawn_writer_task(
+            stdin,
+            options.tee_outbound.clone(),
+            writer_rx,
+            STDIN_WRITE_BOUND,
+            session.clone(),
+        );
 
         Ok(Self {
             writer_tx,
             write_bound: STDIN_WRITE_BOUND,
+            ack_wait: STDIN_WRITE_BOUND * 2,
             reader_rx,
             writer_task: Some(writer_task),
             stderr_task: Some(stderr_task),
@@ -429,7 +471,7 @@ impl Subprocess {
                 "Subprocess writer task gone",
             ))
         })?;
-        match tokio::time::timeout(self.write_bound, ack_rx).await {
+        match tokio::time::timeout(self.ack_wait, ack_rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
@@ -453,7 +495,7 @@ impl Subprocess {
         if self.writer_tx.send(WriterCmd::EndInput(ack_tx)).is_err() {
             return Ok(());
         }
-        match tokio::time::timeout(self.write_bound, ack_rx).await {
+        match tokio::time::timeout(self.ack_wait, ack_rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => {
                 warn!("Subprocess::end_input: ack channel dropped");
@@ -469,7 +511,11 @@ impl Subprocess {
     /// detached control-request dispatch so a slow callback can't
     /// block the reader / command loop.
     pub(crate) fn clone_writer(&self) -> Arc<SharedWriter> {
-        Arc::new(SharedWriter { writer_tx: self.writer_tx.clone(), bound: self.write_bound })
+        Arc::new(SharedWriter {
+            writer_tx: self.writer_tx.clone(),
+            bound: self.write_bound,
+            ack_wait: self.ack_wait,
+        })
     }
 
     /// Graceful shutdown: close stdin, wait for the subprocess to
@@ -592,9 +638,12 @@ impl Subprocess {
 #[derive(Debug, Clone)]
 pub(crate) struct SharedWriter {
     writer_tx: mpsc::UnboundedSender<WriterCmd>,
-    /// How long one write may take, its ack included. See
+    /// How long the writer task may take on one write. See
     /// [`STDIN_WRITE_BOUND`].
     bound: std::time::Duration,
+    /// How long a caller waits for that write's ack: twice [`Self::bound`], so
+    /// the task's own verdict always lands before the caller gives up.
+    ack_wait: std::time::Duration,
 }
 
 #[cfg(test)]
@@ -617,7 +666,7 @@ impl SharedWriter {
                 }
             }
         });
-        (Self { writer_tx, bound: STDIN_WRITE_BOUND }, line_rx)
+        (Self { writer_tx, bound: STDIN_WRITE_BOUND, ack_wait: STDIN_WRITE_BOUND * 2 }, line_rx)
     }
 }
 
@@ -638,7 +687,7 @@ impl SharedWriter {
         // parked on a full pipe never sends one: an unbounded wait here hangs
         // the caller with the task still alive, which is the shape that went
         // unnoticed for 26.7 minutes.
-        match tokio::time::timeout(self.bound, ack_rx).await {
+        match tokio::time::timeout(self.ack_wait, ack_rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
@@ -662,7 +711,7 @@ impl SharedWriter {
         }
         // The same bound as a write: a command queued behind a stalled write
         // is an ack that never comes.
-        match tokio::time::timeout(self.bound, ack_rx).await {
+        match tokio::time::timeout(self.ack_wait, ack_rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => {
                 warn!("SharedWriter::end_input: ack channel dropped");
@@ -732,46 +781,65 @@ fn spawn_writer_task(
     tee: Option<WireTee>,
     mut rx: mpsc::UnboundedReceiver<WriterCmd>,
     write_bound: std::time::Duration,
+    session: Option<String>,
 ) -> JoinHandle<()> {
     use tracing::Instrument;
     let span = tracing::info_span!("forge_sdk::stdin_writer");
     tokio::spawn(
         async move {
             let mut stdin = Some(stdin);
+            // Kept beside the handle so a write after the closure names the
+            // cause. Without it every later failure blamed `end_input`, a call
+            // that never ran.
+            let mut closed: Option<Closed> = None;
             while let Some(cmd) = rx.recv().await {
                 match cmd {
                     WriterCmd::Write(line, ack) => {
                         if let Some(cb) = tee.as_ref() {
                             cb(line.trim_end_matches('\n'));
                         }
-                        let mut stalled = false;
                         let result = if let Some(s) = stdin.as_mut() {
                             match tokio::time::timeout(write_bound, write_one(s, line.as_bytes()))
                                 .await
                             {
                                 Ok(Ok(())) => Ok(()),
-                                Ok(Err(e)) => Err(Error::Io(e)),
+                                Ok(Err(e)) => {
+                                    closed = Some(Closed::Failed);
+                                    Err(Error::Io(e))
+                                }
                                 Err(_) => {
-                                    stalled = true;
+                                    // **The one record a stall gets**, and the
+                                    // only one that can name the session: the
+                                    // CLI stopped reading and this task is
+                                    // parked in a write no caller can see.
+                                    tracing::warn!(
+                                        target: "forge_sdk",
+                                        event_name = "stdin_write_stalled",
+                                        session = session.as_deref().unwrap_or(""),
+                                        bound_seconds = write_bound.as_secs(),
+                                        "the CLI stopped reading stdin: a write did not complete \
+                                         within the bound, so the stream is closed",
+                                    );
+                                    closed = Some(Closed::Stalled);
                                     Err(write_stalled(write_bound, "a stdin write"))
                                 }
                             }
                         } else {
-                            Err(Error::Io(std::io::Error::new(
-                                std::io::ErrorKind::BrokenPipe,
-                                "stdin already closed (end_input)",
-                            )))
+                            Err(closed_stdin(closed))
                         };
-                        if stalled {
-                            // A partial line may be on the wire, so this stream
-                            // cannot carry another one: dropping stdin fails
-                            // every later write fast and lets the child see EOF
-                            // instead of waiting for bytes that will not come.
+                        if closed.is_some() {
+                            // **A closed stream stays closed.** A write that
+                            // timed out may have left a partial line on the
+                            // wire, and one that failed left a broken pipe;
+                            // either way another line cannot follow. Dropping
+                            // stdin also lets the child see EOF instead of
+                            // waiting for bytes that will not come.
                             stdin = None;
                         }
                         let _ = ack.send(result);
                     }
                     WriterCmd::EndInput(ack) => {
+                        closed = Some(Closed::EndInput);
                         drop(stdin.take());
                         let _ = ack.send(Ok(()));
                     }
@@ -1136,11 +1204,12 @@ mod tests {
         let (reader_tx, reader_rx) = mpsc::unbounded_channel();
         spawn_reader_task(stdout, None, reader_tx);
         let (writer_tx, writer_rx) = mpsc::unbounded_channel();
-        let writer_task = spawn_writer_task(stdin, None, writer_rx, write_bound);
+        let writer_task = spawn_writer_task(stdin, None, writer_rx, write_bound, None);
 
         Subprocess {
             writer_tx,
             write_bound,
+            ack_wait: write_bound * 2,
             reader_rx,
             writer_task: Some(writer_task),
             stderr_task: Some(stderr_task),
@@ -1186,7 +1255,11 @@ mod tests {
     /// came and every caller behind it waited for ever. The hook callback
     /// that writes a control response is one of those callers: the server
     /// went silent for 26.7 minutes on 2026-11-09 with no error and no reap.
-    #[tokio::test]
+    ///
+    /// The clock is paused so the wait is measured, not raced: the writer's
+    /// own bound is the only timer that can fire, so the verdict is the
+    /// writer's and the elapsed time is exact.
+    #[tokio::test(start_paused = true)]
     async fn a_child_that_stops_reading_stdin_fails_the_write_within_the_bound() {
         // `sleep` inherits the pipe and never reads it, so the buffer fills
         // and the next write has nowhere to go.
@@ -1195,17 +1268,17 @@ mod tests {
         // Past any pipe buffer, so `write_all` cannot finish in one go.
         let line = format!("{}\n", "x".repeat(1 << 20));
 
-        let started = std::time::Instant::now();
+        let started = tokio::time::Instant::now();
         let outcome = tokio::time::timeout(Duration::from_secs(5), writer.write_line(&line))
             .await
-            .expect("the write did not fail within its bound: the ack wait is unbounded again");
+            .expect("the write did not fail within its bound");
         let waited = started.elapsed();
         let err = outcome.expect_err("a child that stopped reading stdin must fail the write");
         let Error::Io(io) = err else { panic!("expected an I/O error, got {err:?}") };
         assert_eq!(io.kind(), std::io::ErrorKind::TimedOut, "the bound is what failed it: {io}");
         assert!(
-            waited >= Duration::from_millis(250),
-            "the write failed before its bound: {waited:?}"
+            waited >= Duration::from_millis(300),
+            "the writer's own bound is what fired: {waited:?}"
         );
 
         // **The writer task itself gave up, not only the caller.** A partial
@@ -1218,24 +1291,56 @@ mod tests {
         let err = again.expect_err("a stalled stream must not accept another line");
         let Error::Io(io) = err else { panic!("expected an I/O error, got {err:?}") };
         assert_eq!(io.kind(), std::io::ErrorKind::BrokenPipe, "the task did not drop stdin: {io}");
+        assert!(
+            io.to_string().contains("outlived its bound"),
+            "a later write must name the stall, not a call that never ran: {io}"
+        );
     }
 
-    /// The other half of the same hole: the writer task is alive, but the
-    /// command sits behind a write that never finishes, so its ack never
-    /// arrives. Waiting on that ack is what hangs the caller.
+    /// The other half of the same hole: the writer task is alive (or gone),
+    /// but the command sits behind a write that never finishes, so its ack
+    /// never arrives. **All four ack waits are bounded**, and each used to
+    /// wait for ever: the two writes and the two end-inputs.
     #[tokio::test]
-    async fn a_writer_that_never_acks_fails_the_write_within_the_bound() {
+    async fn every_wait_on_a_writer_that_never_acks_fails_within_its_bound() {
+        async fn fails_within<F>(what: &str, fut: F)
+        where
+            F: std::future::Future<Output = Result<(), Error>>,
+        {
+            let outcome = tokio::time::timeout(Duration::from_secs(5), fut).await;
+            let outcome =
+                outcome.unwrap_or_else(|_| panic!("{what} did not fail within its bound"));
+            let err = match outcome {
+                Ok(()) => panic!("{what} answered Ok from a writer that never acks"),
+                Err(err) => err,
+            };
+            let Error::Io(io) = err else { panic!("{what}: expected an I/O error, got {err:?}") };
+            assert_eq!(io.kind(), std::io::ErrorKind::TimedOut, "{what}: {io}");
+        }
+
         // A writer queue nothing drains: the command is accepted, and the ack
         // it would answer with never comes.
         let (writer_tx, queue) = mpsc::unbounded_channel();
-        let writer = SharedWriter { writer_tx, bound: Duration::from_millis(100) };
+        let bound = Duration::from_millis(100);
+        let (_reader_tx, reader_rx) = mpsc::unbounded_channel();
+        let mut subprocess = Subprocess {
+            writer_tx: writer_tx.clone(),
+            write_bound: bound,
+            ack_wait: bound * 2,
+            reader_rx,
+            writer_task: None,
+            stderr_task: None,
+            child: None,
+            pgid: None,
+            session: None,
+            closed: false,
+        };
+        let shared = SharedWriter { writer_tx, bound, ack_wait: bound * 2 };
 
-        let outcome = tokio::time::timeout(Duration::from_secs(5), writer.write_line("line\n"))
-            .await
-            .expect("the ack wait did not fail within its bound: it is unbounded again");
-        let err = outcome.expect_err("an ack that never arrives must fail the write");
-        let Error::Io(io) = err else { panic!("expected an I/O error, got {err:?}") };
-        assert_eq!(io.kind(), std::io::ErrorKind::TimedOut, "the bound is what failed it: {io}");
+        fails_within("Subprocess::write_line", subprocess.write_line("line\n")).await;
+        fails_within("Subprocess::end_input", subprocess.end_input()).await;
+        fails_within("SharedWriter::write_line", shared.write_line("line\n")).await;
+        fails_within("SharedWriter::end_input", shared.end_input()).await;
         drop(queue);
     }
 

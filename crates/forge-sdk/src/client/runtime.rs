@@ -226,15 +226,11 @@ async fn handle_line(
             let (gate_tx, gate_rx) = oneshot::channel::<()>();
             let handle = tokio::spawn(async move {
                 let _ = gate_rx.await;
-                let result = dispatch_clone.dispatch(req).await;
+                // The dispatch logs a failure with the session and request it
+                // belongs to, which this task cannot name; the result is
+                // dropped here rather than logged twice without them.
+                let _ = dispatch_clone.dispatch(req).await;
                 inflight_clone.lock().await.remove(&request_id_for_task);
-                if let Err(e) = result {
-                    tracing::error!(
-                        target: crate::logging::targets::SDK_READER,
-                        error = %e,
-                        "control_dispatch failed",
-                    );
-                }
             });
             inflight.lock().await.insert(request_id, handle);
             // Release the gate after the registration is visible.

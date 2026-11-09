@@ -83,12 +83,14 @@ client, 31.6 s - and matches the ping's dead bound.
 in the connection's loop, so it cannot see that loop parked in an await: a
 subsystem that never answers leaves the socket open with no ping, no reap and
 no error, which is how one freeze went unnoticed for 26.7 minutes. A watchdog
-outside the connection samples the loop's progress and ends the connection
-after four write bounds without any, then runs the same teardown a clean
-close does. That is four times the slowest write measured, and above the
-unbounded snapshot encode the loop also performs, so a legitimate long
-operation cannot trip it and a healthy connection is never reaped into a
-redial loop.
+outside the connection's future, in the same task, samples its progress and
+ends the connection after four write bounds without one, then runs the same
+teardown a clean close does. **Progress is a completed write**, stamped where
+every frame is flushed rather than once per loop turn, because one turn can
+issue several bounded writes. That is four times the slowest write measured,
+and above the unbounded snapshot encode the loop also performs, so a
+legitimate long operation cannot trip it and a healthy connection is never
+reaped into a redial loop.
 
 ## The greeting
 

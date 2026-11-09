@@ -73,6 +73,17 @@ impl std::fmt::Debug for ControlDispatchHandle {
     }
 }
 
+/// The subtype a request crossed as, for a failure record that has to say
+/// which kind of control request went unanswered.
+fn control_subtype(kind: &ControlRequestKind) -> &'static str {
+    match kind {
+        ControlRequestKind::CanUseTool { .. } => "can_use_tool",
+        ControlRequestKind::McpMessage { .. } => "mcp_message",
+        ControlRequestKind::HookCallback { .. } => "hook_callback",
+        ControlRequestKind::Unknown { .. } => "unknown",
+    }
+}
+
 impl ControlDispatchHandle {
     pub(crate) fn new(
         writer: Arc<SharedWriter>,
@@ -117,8 +128,23 @@ impl ControlDispatchHandle {
     /// and write failures from the underlying writer.
     pub(crate) async fn dispatch(&self, req: ControlRequest) -> Result<(), Error> {
         let request_id = req.request_id.clone();
+        let subtype = control_subtype(&req.request);
         let result = self.dispatch_inner(req).await;
         if let Err(err) = &result {
+            // **The record this failure gets, and the only one that can name
+            // the session.** A control request that cannot be answered leaves
+            // the CLI waiting on it, so a stalled stdin surfaces here as a
+            // hung turn with no identity anywhere else: the reader task's own
+            // record carried the error alone.
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                event_name = "control_dispatch_failed",
+                session_id = %self.session_id.read(),
+                %request_id,
+                subtype,
+                error = %err,
+                "a control request could not be answered; the CLI is waiting on it",
+            );
             self.write_error_response(&request_id, &err.to_string()).await;
         }
         result
