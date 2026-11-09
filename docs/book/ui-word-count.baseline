@@ -1,6 +1,6 @@
 src/ui/client/board.md 2403
 src/ui/client/browser.md 5140
-src/ui/client/composer.md 4048
+src/ui/client/composer.md 4088
 src/ui/client/connect.md 1773
 src/ui/client/document.md 3493
 src/ui/client/extensions.md 1780
@@ -11,5 +11,5 @@ src/ui/client/models.md 4497
 src/ui/client/queue.md 813
 src/ui/client/review.md 5423
 src/ui/client/session.md 6411
-src/ui/client/settings.md 3154
+src/ui/client/settings.md 3162
 src/ui/client/terminal.md 1653
