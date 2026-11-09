@@ -332,8 +332,9 @@ impl Workspace {
 
     /// Fire every cron due at `now`: deliver each prompt into its project
     /// session (spawning it if asleep, unless the entry carries
-    /// `wake: false` - a standing sweep - in which case a sleeping owner
-    /// leaves the fire due and unadvanced) and advance/remove the entry.
+    /// `wake: false` for a recurring job that must not wake a sleeping
+    /// owner, in which case a sleeping owner leaves the fire due and
+    /// unadvanced) and advance/remove the entry.
     /// Delivery routes through the Command bus (a session action); the
     /// advance is a direct state write - kept separate per the cron
     /// state-vs-delivery split. `now` is injected so tests are

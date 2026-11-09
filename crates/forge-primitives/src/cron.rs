@@ -96,11 +96,11 @@ pub struct CronEntry {
     /// its lead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team_role: Option<String>,
-    /// Whether a fire may wake a sleeping owner. False is for a standing
-    /// sweep: a tick that finds the owner asleep is skipped and the entry
-    /// stays due, so the next session start (or a tick while it is awake)
-    /// delivers it. `default` reads a legacy entry as waking, which is
-    /// what it did before the field existed.
+    /// Whether a fire may wake a sleeping owner. False is for a recurring
+    /// job that must not wake a sleeping owner: a tick that finds the owner
+    /// asleep is skipped and the entry stays due, so the next session start
+    /// (or a tick while it is awake) delivers it. `default` reads a legacy
+    /// entry as waking, which is what it did before the field existed.
     #[serde(default = "wake_default")]
     pub wake: bool,
 }

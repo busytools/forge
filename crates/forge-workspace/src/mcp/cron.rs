@@ -387,8 +387,6 @@ mod tests {
         assert!(calls[0].4, "an unstated `wake` reaches the facade as the waking default");
     }
 
-    /// A standing sweep passes `wake: false`, and the tool threads it: the
-    /// scheduler then skips a sleeping owner instead of spawning it.
     /// The output states `wake: false` whether or not the entry carries a
     /// description: a caller reading a no-wake cron back must see it, and the
     /// two fields are independent.
@@ -401,15 +399,18 @@ mod tests {
         assert_eq!(json["wake"], serde_json::Value::Bool(false), "the no-wake flag is stated");
     }
 
+    /// A job that must not wake a sleeping owner passes `wake: false`, and
+    /// the tool threads it: the scheduler then skips a sleeping owner
+    /// instead of spawning it.
     #[tokio::test]
-    async fn create_threads_wake_false_for_a_standing_sweep() {
+    async fn create_threads_wake_false_for_a_no_wake_job() {
         let mock = Arc::new(MockCronFacade::new());
         let tool = Create { facade: mock.clone(), slot: caller_slot() };
 
         let out = tool
             .call(input(serde_json::json!({
-                "schedule": "*/30 * * * *",
-                "prompt": "sweep the board",
+                "schedule": "0 6 * * 1",
+                "prompt": "refresh the index",
                 "wake": false
             })))
             .await;
@@ -686,6 +687,36 @@ mod tests {
         assert!(
             desc.contains("unless it can no longer be started"),
             "the spawn promise must carry the case where the owner cannot be started: {desc}",
+        );
+    }
+
+    /// The `wake: false` example is what a fresh lead meets when it reaches
+    /// for the tool, so it names the flag's own meaning rather than the
+    /// standing sweep the charter forbids. Both places that describe the
+    /// parameter are pinned together.
+    #[test]
+    fn cron_create_description_keeps_the_no_wake_example_generic() {
+        let create = Create { facade: MockCronFacade::new().into_arc(), slot: caller_slot() };
+        let desc = create.description();
+        assert!(
+            desc.contains("recurring job that must not wake a sleeping owner"),
+            "the no-wake example names the flag's meaning: {desc}",
+        );
+        assert!(
+            !desc.contains("standing sweep"),
+            "the no-wake example must not sell a standing sweep: {desc}",
+        );
+        let schema = create.input_schema();
+        let wake = schema["properties"]["wake"]["description"]
+            .as_str()
+            .expect("the wake parameter carries a description");
+        assert!(
+            wake.contains("recurring job that must not wake a sleeping owner"),
+            "the wake parameter names the flag's meaning: {wake}",
+        );
+        assert!(
+            !wake.contains("standing sweep"),
+            "the wake parameter must not sell a standing sweep: {wake}",
         );
     }
 

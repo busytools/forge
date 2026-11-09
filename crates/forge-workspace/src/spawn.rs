@@ -604,7 +604,7 @@ pub(crate) fn deliver_cron_prompt(
         }
     }
     // No live slot and no wake: skip the tick and leave the entry due, so
-    // the next session start runs it. A standing sweep asked for this.
+    // the next session start runs it. A `wake: false` cron asks for this.
     if !cron.wake {
         return CronFireOutcome::SkippedAsleep;
     }
@@ -10945,33 +10945,42 @@ mod lead_charter_tests {
     }
 
     /// The board bullets above say how a row is worked; the sweep has its
-    /// own paragraph below them. The cadence, the cleanup of the standing
-    /// cron the old version required, and the reason for that cleanup are
-    /// pinned here, and the whole board section is then swept for any way
-    /// back to a cron: no `cron` word, no `wake:` parameter and no
-    /// cron-expression shape beyond the two pinned sentences, which are cut
-    /// out first because the cleanup must name `cron__list` and
-    /// `cron__delete`. The charter's one-shot `cron__create` advice sits
-    /// above that section, so the ban is scoped to the section and the
-    /// one-shot sentence stays.
+    /// own paragraph below them. That paragraph is pinned byte for byte, so
+    /// nothing can be added, removed or qualified inside it. The rest of the
+    /// board section is then scanned as a net for a cron call, a cron
+    /// parameter or a five-field cron expression - a net, not a closure,
+    /// because prose naming no tool, parameter or expression cannot be told
+    /// apart from advice. The charter's one-shot `cron__create` advice sits
+    /// above that section, so the scan leaves it alone.
     #[test]
     fn the_charter_carries_the_board_sweep() {
+        const SWEEP: &str = "**Sweep the board at the start of every session, and on demand.** \
+             First `cron__list` and delete any sweep cron an older version of this charter had \
+             you create (`cron__delete`) - it keeps firing its sweep prompt into this session \
+             until it is removed. Never create a standing sweep cron.";
         const CLEANUP: &str = "First `cron__list` and delete any sweep cron an older version of \
              this charter had you create (`cron__delete`)";
         const REASON: &str =
             "it keeps firing its sweep prompt into this session until it is removed";
 
+        let section = board_section();
+        assert!(
+            section.contains("**Sweep the board"),
+            "the sweep paragraph belongs in the board section, not elsewhere",
+        );
+        let sweep_at = section
+            .find("**Sweep the board")
+            .expect("the sweep paragraph belongs in the board section");
+        let tail = &section[sweep_at..];
+        let sweep_paragraph = &tail[..tail.find("\n\n").unwrap_or(tail.len())];
+        assert_eq!(
+            sweep_paragraph, SWEEP,
+            "the sweep paragraph is pinned byte for byte: nothing added, removed or qualified",
+        );
+
         for (clause, why) in [
-            (
-                "Sweep the board at the start of every session, and on demand.",
-                "the cadence and its two triggers, ended at its period",
-            ),
             (CLEANUP, "the old standing entry is removed, not only forbidden"),
             (REASON, "the reason the cleanup is owed"),
-            (
-                "Never create a standing sweep cron.",
-                "the prohibition, ended at its period so a qualifier cannot ride along",
-            ),
             (
                 "settle every row waiting on the user through one door",
                 "the sweep's scope: a dependency or resource wait has no door here",
@@ -11002,29 +11011,47 @@ mod lead_charter_tests {
             );
         }
 
-        // The board section is where a sweep could grow a cron again. The
-        // two pinned sentences are cut out because they must name the cron
-        // tools and the word itself; everything left must be cron-free.
+        // The two pinned sentences carry the cron tool names by necessity,
+        // so they are cut out before the net runs over what is left.
         let cleanup_sentence = format!("{CLEANUP} - {REASON}.");
-        let without_cleanup = board_section().replacen(&cleanup_sentence, "", 1);
-        let rest = without_cleanup.replacen("Never create a standing sweep cron.", "", 1);
-        for (token, why) in [
-            ("cron", "no cron call or instruction beyond the pinned cleanup"),
-            ("wake:", "no cron parameter"),
-            ("* * * *", "no cron-expression shape"),
-        ] {
-            if let Some(at) = rest.find(token) {
+        let without_cleanup = section.replacen(&cleanup_sentence, "", 1);
+        assert_ne!(
+            without_cleanup, section,
+            "the pinned cleanup sentence is one sentence: {cleanup_sentence}",
+        );
+        let prohibition = "Never create a standing sweep cron.";
+        let rest = without_cleanup.replacen(prohibition, "", 1);
+        assert_ne!(rest, without_cleanup, "the pinned prohibition is one sentence: {prohibition}");
+        let haystack = rest.to_ascii_lowercase();
+        for (token, why) in
+            [("cron", "no cron call or instruction"), ("wake:", "no cron parameter")]
+        {
+            if let Some(at) = haystack.find(token) {
                 panic!(
                     "the board section carries {token:?} ({why}) near: {}",
                     context_around(&rest, at),
                 );
             }
         }
+        if let Some(at) = five_field_cron(&haystack) {
+            panic!(
+                "the board section carries a five-field cron expression near: {}",
+                context_around(&rest, at),
+            );
+        }
 
+        let creations: Vec<usize> =
+            DEFAULT_LEAD_CHARTER.match_indices("cron__create").map(|(at, _)| at).collect();
         assert_eq!(
-            DEFAULT_LEAD_CHARTER.matches("cron__create").count(),
+            creations.len(),
             1,
-            "the charter's only cron creation is the report-only one-shot sentence",
+            "the charter's only cron creation is the report-only one-shot sentence; found {} at: {}",
+            creations.len(),
+            creations
+                .iter()
+                .map(|&at| context_around(DEFAULT_LEAD_CHARTER, at))
+                .collect::<Vec<_>>()
+                .join(" | "),
         );
         assert!(
             DEFAULT_LEAD_CHARTER
@@ -11035,11 +11062,52 @@ mod lead_charter_tests {
 
     /// The board section, from its heading to the next top-level heading.
     fn board_section() -> &'static str {
-        let start =
-            DEFAULT_LEAD_CHARTER.find("## Keep the task board").expect("the board section heading");
+        let start = DEFAULT_LEAD_CHARTER
+            .find("## Keep the task board")
+            .expect("the board section heading `## Keep the task board` is present");
         let tail = &DEFAULT_LEAD_CHARTER[start..];
         let end = tail.find("\n## ").unwrap_or(tail.len());
         &tail[..end]
+    }
+
+    /// One whitespace-separated word as a cron field, when it can be one:
+    /// markdown code-span ticks and a sentence-ending period are trimmed
+    /// first, because prose wraps an expression in backticks.
+    fn cron_field(word: &str) -> Option<&str> {
+        let trimmed = word.trim_matches('`').trim_end_matches(['.', ',']).trim_matches('`');
+        (!trimmed.is_empty()
+            && trimmed
+                .chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, '*' | '/' | ',' | '?' | '-')))
+        .then_some(trimmed)
+    }
+
+    /// The byte offset of a five-field cron expression, where every field is
+    /// drawn from `0-9 * / , ? -` and at least one carries a digit or `*`.
+    fn five_field_cron(text: &str) -> Option<usize> {
+        let mut window: Vec<(usize, &str)> = Vec::new();
+        let mut cursor = 0;
+        for word in text.split_whitespace() {
+            let at = cursor + text[cursor..].find(word)?;
+            cursor = at + word.len();
+            if let Some(trimmed) = cron_field(word) {
+                window.push((at, trimmed));
+                if window.len() > 5 {
+                    window.remove(0);
+                }
+                if window.len() == 5 {
+                    let carries_signal = window
+                        .iter()
+                        .any(|(_, w)| w.contains('*') || w.chars().any(|c| c.is_ascii_digit()));
+                    if carries_signal {
+                        return Some(window[0].0);
+                    }
+                }
+            } else {
+                window.clear();
+            }
+        }
+        None
     }
 
     /// A window of `text` around `at`, so a failure names the lineage
