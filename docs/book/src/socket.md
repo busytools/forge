@@ -297,8 +297,9 @@ a view that did not answer it can close the dock.
 tool, the item, the field or masked diff, an attachment's name and size,
 and whether the shared session is locked. The blocked tool call waits for
 `respond_vault_ask { key, id, answer }`; the answer is `approve`,
-`send_back` with a note, or `decline`, plus the master password and 2FA
-code when the card asked for them. An approval unlocks the one shared
+`send_back` with a note, or `decline`, plus the unlock material when the card
+asked for it: the master password and 2FA code, or the refresh token and user
+key a platform authenticator released. An approval unlocks the one shared
 session and runs the call; `needs_unlock` is stamped from the live session
 on every read, so the other parked cards re-base to ordinary approve cards.
 The unlock pushes a restamped `vault_ask_pending` for each card still

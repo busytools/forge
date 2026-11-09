@@ -181,18 +181,52 @@ pub fn unlock(
     master_key: &MasterKey,
     profile: &Profile,
 ) -> Result<Unlocked> {
-    // An empty string is a field a client left unset, not a wrapped key; it
-    // must not shadow the profile's real one.
-    let user_key_enc: String = token
+    let wrapped_user_key = wrapped_user_key(token, profile)?;
+    let user_key: EncString =
+        wrapped_user_key.parse().map_err(|e| anyhow!("wrapped user key did not parse: {e}"))?;
+    let user_key = master_key.decrypt_user_key(user_key)?;
+    with_user_key(token, user_key, profile, &wrapped_user_key)
+}
+
+/// Unlock from a user key a client released through its platform
+/// authenticator, rather than one derived from the master password.
+///
+/// The key arrives base64, as the client's enrolment wrapped it. Everything
+/// after it is the same journey [`unlock`] makes: the account private key and
+/// the organization keys unwrap from the same sync profile, and the
+/// fingerprint is the wrapped user key's, which is what proves the account's
+/// keys did not rotate while the session was open.
+pub fn unlock_with_user_key(
+    token: &TokenResponse,
+    user_key: &str,
+    profile: &Profile,
+) -> Result<Unlocked> {
+    let user_key = SymmetricCryptoKey::try_from(user_key.to_owned())
+        .map_err(|e| anyhow!("released user key did not parse: {e}"))?;
+    let wrapped_user_key = wrapped_user_key(token, profile)?;
+    with_user_key(token, user_key, profile, &wrapped_user_key)
+}
+
+/// The wrapped user key this unlock will report the fingerprint of. An empty
+/// string is a field a client left unset, not a wrapped key; it must not
+/// shadow the profile's real one.
+fn wrapped_user_key(token: &TokenResponse, profile: &Profile) -> Result<String> {
+    token
         .key
         .clone()
         .filter(|key| !key.is_empty())
         .or_else(|| profile.key.clone().filter(|key| !key.is_empty()))
-        .context("token response and sync profile both lack the wrapped user key")?;
-    let user_key_fingerprint = sha256_hex(user_key_enc.as_bytes());
-    let user_key_enc: EncString =
-        user_key_enc.parse().map_err(|e| anyhow!("wrapped user key did not parse: {e}"))?;
-    let user_key = master_key.decrypt_user_key(user_key_enc)?;
+        .context("token response and sync profile both lack the wrapped user key")
+}
+
+/// The half of an unlock that starts from a known user key.
+fn with_user_key(
+    token: &TokenResponse,
+    user_key: SymmetricCryptoKey,
+    profile: &Profile,
+    wrapped_user_key: &str,
+) -> Result<Unlocked> {
+    let user_key_fingerprint = sha256_hex(wrapped_user_key.as_bytes());
 
     // An empty `PrivateKey` is a client's unset value, not a wrapped key; it
     // must not shadow the profile's real one either.
@@ -619,6 +653,56 @@ mod tests {
         };
         let unlocked = unlock(&token, &master_key, &Profile::default()).unwrap();
         assert!(unlocked.private_key.is_some());
+    }
+
+    /// The release path: a user key a client holds unlocks the same keys the
+    /// password does, with the same fingerprint. This is what lets a start
+    /// stop crossing the master password.
+    #[test]
+    fn unlock_with_a_released_user_key_matches_the_password_unlock() {
+        let pre =
+            Prelogin { kdf: 0, kdf_iterations: 100_000, kdf_memory: None, kdf_parallelism: None };
+        let master_key = derive_master_key("asdfasdf", "test@bitwarden.com", &pre).unwrap();
+        let (user_key, wrapped_user_key) = master_key.make_user_key().unwrap();
+        let user_key = user_key.0;
+
+        let rsa_key = rsa::RsaPrivateKey::new(&mut bitwarden_random::rng(), 1024).unwrap();
+        let der = rsa_key.to_pkcs8_der().unwrap();
+        let der_bytes = BitwardenLegacyKeyBytes::from(der.as_bytes().to_vec());
+        let wrapped_private_key = (&der_bytes).encrypt_with_key(&user_key).unwrap().to_string();
+        let token = TokenResponse {
+            access_token: "token".to_owned(),
+            refresh_token: None,
+            key: Some(wrapped_user_key.to_string()),
+            private_key: Some(wrapped_private_key),
+        };
+
+        let from_password =
+            unlock(&token, &master_key, &Profile::default()).expect("the password unlock");
+        let released = user_key.to_base64().to_string();
+        let from_release = unlock_with_user_key(&token, &released, &Profile::default())
+            .expect("the release unlock");
+
+        assert_eq!(from_release.user_key, from_password.user_key, "the same user key");
+        assert_eq!(
+            from_release.user_key_fingerprint, from_password.user_key_fingerprint,
+            "the same wrapped-key fingerprint, which the rotation check reads",
+        );
+        assert!(from_release.private_key.is_some(), "the private key unwraps from the release");
+        assert_eq!(from_release.failed_orgs, from_password.failed_orgs);
+    }
+
+    /// A released user key that is not a symmetric key is refused rather than
+    /// guessed at.
+    #[test]
+    fn a_released_user_key_that_is_not_a_key_is_refused() {
+        let token = TokenResponse {
+            access_token: "t".to_owned(),
+            refresh_token: None,
+            key: Some("2.x|y|z".to_owned()),
+            private_key: None,
+        };
+        assert!(unlock_with_user_key(&token, "not a key", &Profile::default()).is_err());
     }
 
     /// An empty `PrivateKey` on the token is a client's unset value, not a

@@ -334,6 +334,7 @@ mod tests {
             decision: VaultAskDecision::Approve,
             master_password: None,
             two_factor: None,
+            released: None,
         };
         assert!(ws.resolve_vault_ask(id, &caller(), answer.clone()));
         assert_eq!(held.try_recv(), Ok(answer), "the approval reaches the blocked caller");
@@ -345,6 +346,7 @@ mod tests {
                     decision: VaultAskDecision::Decline,
                     master_password: None,
                     two_factor: None,
+                    released: None,
                 }
             ),
             "one answer only",
@@ -367,6 +369,7 @@ mod tests {
                 decision: VaultAskDecision::Approve,
                 master_password: None,
                 two_factor: None,
+                released: None,
             }
         ));
         assert!(ws.vault_ask_waiting(id, &caller()), "the call is still the asker's");
@@ -394,6 +397,7 @@ mod tests {
             decision: VaultAskDecision::Approve,
             master_password: None,
             two_factor: None,
+            released: None,
         };
 
         ws.dispatch(Command::RespondVaultAsk { key: caller(), id, answer: answer.clone() })
@@ -414,6 +418,7 @@ mod tests {
                 decision: VaultAskDecision::Approve,
                 master_password: None,
                 two_factor: None,
+                released: None,
             }
         ));
 
@@ -424,6 +429,7 @@ mod tests {
                 decision: VaultAskDecision::Approve,
                 master_password: None,
                 two_factor: None,
+                released: None,
             },
         });
 

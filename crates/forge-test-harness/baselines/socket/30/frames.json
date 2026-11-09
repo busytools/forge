@@ -1623,7 +1623,12 @@
       "/respond_vault_ask/answer": [
         "decision",
         "master_password",
+        "released",
         "two_factor"
+      ],
+      "/respond_vault_ask/answer/released": [
+        "refresh_token",
+        "user_key"
       ],
       "/respond_vault_ask/key": [
         "label",

@@ -187,6 +187,36 @@ pub enum VaultAskDecision {
     Decline,
 }
 
+/// The material a client released through its platform authenticator, which
+/// is what a start sends instead of the master password: the refresh token
+/// the enrolment wrapped and the user key itself.
+///
+/// **It is a secret and rides the same local channel the password does.** The
+/// manual `Debug` redacts both fields, and `Drop` wipes them.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultReleased {
+    /// The refresh token, which the core redeems for an access token.
+    pub refresh_token: String,
+    /// The account's user key, base64.
+    pub user_key: String,
+}
+
+impl Drop for VaultReleased {
+    fn drop(&mut self) {
+        self.refresh_token.zeroize();
+        self.user_key.zeroize();
+    }
+}
+
+impl std::fmt::Debug for VaultReleased {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VaultReleased")
+            .field("refresh_token", &"[redacted]")
+            .field("user_key", &"[redacted]")
+            .finish()
+    }
+}
+
 /// The reader's answer to a held vault call, including the unlock material
 /// when the card asked for it.
 ///
@@ -212,6 +242,11 @@ pub struct VaultAskAnswer {
     /// The 2FA code, when the account asks for one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub two_factor: Option<String>,
+    /// The material a platform authenticator released, when the card asked
+    /// for the gesture instead of the password. The two are alternatives; a
+    /// card carries one or the other, and a present release is the one tried.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released: Option<VaultReleased>,
 }
 
 impl Drop for VaultAskAnswer {
@@ -231,6 +266,7 @@ impl std::fmt::Debug for VaultAskAnswer {
             .field("decision", &self.decision)
             .field("master_password", &self.master_password.as_ref().map(|_| "[redacted]"))
             .field("two_factor", &self.two_factor.as_ref().map(|_| "[redacted]"))
+            .field("released", &self.released)
             .finish()
     }
 }
@@ -328,12 +364,17 @@ mod tests {
             decision: VaultAskDecision::SendBack { note: "trim the summary".to_owned() },
             master_password: Some("never printed".to_owned()),
             two_factor: Some("123456".to_owned()),
+            released: Some(VaultReleased {
+                refresh_token: "never printed either".to_owned(),
+                user_key: "nor this".to_owned(),
+            }),
         };
         let json = serde_json::to_string(&answer).expect("serialise");
         let back: VaultAskAnswer = serde_json::from_str(&json).expect("deserialise");
         assert_eq!(answer, back);
         assert!(!format!("{answer:?}").contains("never printed"));
         assert!(!format!("{answer:?}").contains("123456"));
+        assert!(!format!("{answer:?}").contains("nor this"), "the released user key is redacted");
     }
 
     /// The lock state is stamped per read, so a draft parked while locked

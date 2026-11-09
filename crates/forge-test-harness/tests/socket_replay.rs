@@ -2008,6 +2008,10 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
                 decision: forge_primitives::vault::VaultAskDecision::Approve,
                 master_password: Some("sample".to_owned()),
                 two_factor: Some("123456".to_owned()),
+                released: Some(forge_primitives::vault::VaultReleased {
+                    refresh_token: "sample-refresh".to_owned(),
+                    user_key: "sample-user-key".to_owned(),
+                }),
             },
         }),
     );

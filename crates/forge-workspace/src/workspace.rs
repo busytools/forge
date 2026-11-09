@@ -19322,6 +19322,7 @@ mod worker_activity_tests {
                 decision: forge_primitives::vault::VaultAskDecision::Decline,
                 master_password: None,
                 two_factor: None,
+                released: None,
             },
         ));
         assert!(ws.settle_vault_ask(id, &seat, forge_primitives::vault::VaultAskEnding::Declined,));

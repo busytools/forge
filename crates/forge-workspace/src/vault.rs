@@ -154,6 +154,49 @@ impl VaultSession {
         Ok(())
     }
 
+    /// Unlock from material a client released through its platform
+    /// authenticator: the enrolment's refresh token and the account's user
+    /// key.
+    ///
+    /// The destination is the password unlock's - a token, a sync and the
+    /// held keys - without the master password crossing on this start. The
+    /// server cannot prove the released user key (client-side enforcement is
+    /// the design); a wrong one fails when the private key will not unwrap.
+    /// Idempotent like [`Self::unlock`]: a session another card unlocked is
+    /// left alone.
+    pub(crate) async fn unlock_released(
+        &self,
+        refresh_token: &str,
+        user_key: &str,
+    ) -> Result<(), VaultError> {
+        let _gate = self.unlock_gate.lock().await;
+        if !self.is_locked() {
+            return Ok(());
+        }
+
+        // The token is spent once and the endpoint rotates it; the response's
+        // next refresh token is what this session keeps for its own refreshes.
+        let mut token: TokenResponse = self.client.refresh(refresh_token).await?;
+        let sync = self.client.sync(&token.access_token).await?;
+        let unlocked = crypto::unlock_with_user_key(&token, user_key, &sync.profile)
+            .map_err(VaultError::Crypto)?;
+        if !unlocked.failed_orgs.is_empty() {
+            tracing::warn!(
+                event_name = "vault_org_keys_unavailable",
+                orgs = ?unlocked.failed_orgs,
+                "organization keys were not unlocked; their items are refused until the next unlock"
+            );
+        }
+
+        let mut state = self.state.write();
+        state.tokens = Some(Tokens {
+            access: std::mem::take(&mut token.access_token),
+            refresh: token.refresh_token.take(),
+        });
+        state.keys = Some(std::sync::Arc::new(unlocked));
+        Ok(())
+    }
+
     /// The current access token, or `Locked` when there is none. The clone is
     /// zeroized when the caller drops it.
     fn access_token(&self) -> Result<Zeroizing<String>, VaultError> {
