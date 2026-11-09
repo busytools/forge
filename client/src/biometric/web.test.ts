@@ -56,7 +56,7 @@ beforeEach(() => {
 describe('the web gate', () => {
   it('seals the purpose key under the passkey PRF and opens it on a fresh assertion', async () => {
     await gate.store('vault', 'the-purpose-key');
-    expect(gate.enrolled('vault'), 'the record is this purpose’s own').toBe(true);
+    expect(gate.enrolled('vault'), "the record is this purpose's own").toBe(true);
     expect(gate.enrolled('sso')).toBe(false);
     const create = created[0]?.['publicKey'] as Record<string, unknown> | undefined;
     expect(create?.['authenticatorSelection']).toMatchObject({
