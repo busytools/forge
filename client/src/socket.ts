@@ -307,8 +307,13 @@ export interface Connection {
  * commands the server dispatches itself, like a hand-off's answer. These are
  * the page commands with nothing behind them on the wire: a client that omits
  * `reply_to` for one of them has no second way to learn what happened.
+ *
+ * **One list for every transport.** The desktop half has its own dispatch
+ * path (`connect/rust.ts`) and imports this set rather than keeping a copy:
+ * the second copy drifted once already and left the vault's three commands
+ * reply-less on every native client.
  */
-const ANSWERS_THROUGH_A_REPLY = new Set([
+export const ANSWERS_THROUGH_A_REPLY: ReadonlySet<string> = new Set([
   'spawn_worker',
   'despawn_worker',
   'upsert_review_thread',
