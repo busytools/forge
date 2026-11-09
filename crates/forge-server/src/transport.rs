@@ -286,22 +286,35 @@ pub mod wire;
 pub const PROTOCOL_VERSION: u32 = 29;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
-/// still there, and how long it may stay silent before it is reaped.
+/// still there, how long it may stay silent before it is reaped, and how long
+/// it may go without a completed write before a watchdog outside its future
+/// ends it.
 ///
 /// **The socket carried none**, so a peer that vanished without closing - a
 /// slept machine, a wedged process, a network that went away - left its
 /// viewer attached and any companion waiting, with neither side told the
-/// other was gone. A test shortens the pair rather than waiting the shipping
+/// other was gone. A test shortens the set rather than waiting the shipping
 /// one out.
+///
+/// **The wedge bound is the task's, not the peer's.** A beat in the
+/// connection's own `select!` cannot fire while the connection is parked in
+/// an await, so `dead` covers a silent peer only while the loop still runs;
+/// `wedge` covers a loop that stopped running, and it counts completed writes
+/// rather than loop turns because one turn can issue several writes.
 #[derive(Clone, Copy, Debug)]
 pub struct Heartbeat {
     pub every: Duration,
     pub dead: Duration,
+    pub wedge: Duration,
 }
 
 impl Default for Heartbeat {
     fn default() -> Self {
-        Self { every: connection::HEARTBEAT_EVERY, dead: connection::HEARTBEAT_DEAD }
+        Self {
+            every: connection::HEARTBEAT_EVERY,
+            dead: connection::HEARTBEAT_DEAD,
+            wedge: connection::WEDGE_DEAD,
+        }
     }
 }
 
@@ -705,6 +718,20 @@ mod tests {
         let heartbeat = Heartbeat::default();
         assert_eq!(heartbeat.every, Duration::from_secs(15), "a ping every 15 s");
         assert_eq!(heartbeat.dead, Duration::from_secs(60), "and 60 s without an answer");
+        // The book states this bound as four write bounds, and a healthy
+        // connection must never be reaped into a redial loop, so the
+        // relationship is pinned rather than left to drift with the prose.
+        assert_eq!(
+            heartbeat.wedge,
+            Duration::from_secs(240),
+            "and four write bounds before a wedge"
+        );
+        assert!(
+            heartbeat.wedge >= WRITE_BOUND * 4,
+            "the wedge bound must clear the longest bounded operation: {:?} against {:?}",
+            heartbeat.wedge,
+            WRITE_BOUND,
+        );
     }
 
     /// **The shipping write bound is the value the book states.** It is what

@@ -73,6 +73,21 @@ impl std::fmt::Debug for ControlDispatchHandle {
     }
 }
 
+/// The subtype a request crossed as, for a failure record that has to say
+/// which kind of control request went unanswered.
+///
+/// **An unknown subtype keeps its own string**: that is the one case the
+/// record is most useful for, and folding it to a literal "unknown" would
+/// discard the only name the CLI gave it.
+fn control_subtype(kind: &ControlRequestKind) -> std::borrow::Cow<'_, str> {
+    match kind {
+        ControlRequestKind::CanUseTool { .. } => std::borrow::Cow::Borrowed("can_use_tool"),
+        ControlRequestKind::McpMessage { .. } => std::borrow::Cow::Borrowed("mcp_message"),
+        ControlRequestKind::HookCallback { .. } => std::borrow::Cow::Borrowed("hook_callback"),
+        ControlRequestKind::Unknown { subtype, .. } => std::borrow::Cow::Borrowed(subtype.as_str()),
+    }
+}
+
 impl ControlDispatchHandle {
     pub(crate) fn new(
         writer: Arc<SharedWriter>,
@@ -117,8 +132,24 @@ impl ControlDispatchHandle {
     /// and write failures from the underlying writer.
     pub(crate) async fn dispatch(&self, req: ControlRequest) -> Result<(), Error> {
         let request_id = req.request_id.clone();
+        // Owned before the request moves into the handler: an unknown
+        // subtype's own string is the record's only name for it.
+        let subtype = control_subtype(&req.request).into_owned();
         let result = self.dispatch_inner(req).await;
         if let Err(err) = &result {
+            // **The record this failure gets, and the only one that can name
+            // the session.** A stalled stdin surfaces here as a hung turn,
+            // and the error response written next is the CLI's only answer -
+            // unless that write fails too, which its own record carries.
+            tracing::warn!(
+                target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                event_name = "control_dispatch_failed",
+                session_id = %self.session_id.read(),
+                %request_id,
+                subtype = %subtype,
+                error = %err,
+                "a control request failed; the error response is the CLI's only answer",
+            );
             self.write_error_response(&request_id, &err.to_string()).await;
         }
         result
@@ -139,9 +170,17 @@ impl ControlDispatchHandle {
             Ok(mut line) => {
                 line.push('\n');
                 if let Err(write_err) = self.writer.write_line(&line).await {
-                    // The CLI stays blocked on this request; that is
-                    // not a debug-level loss.
-                    tracing::warn!(%write_err, "error control_response write failed");
+                    // **The CLI stays blocked on this request**, so the
+                    // record names the session and the request it is blocked
+                    // on: without them a hung turn has no owner.
+                    tracing::warn!(
+                        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+                        event_name = "control_error_response_failed",
+                        session_id = %self.session_id.read(),
+                        %request_id,
+                        error = %write_err,
+                        "the error control_response could not be written; the CLI is waiting on it",
+                    );
                 }
             }
             Err(e) => {

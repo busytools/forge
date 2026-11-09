@@ -34,9 +34,7 @@ use tokio::task::JoinHandle;
 use tracing::debug;
 
 use crate::Error;
-use crate::client::runtime::{
-    PendingControls, SharedSessionId, excerpt, new_shared_session_id, spawn_reader_task,
-};
+use crate::client::runtime::{PendingControls, SharedSessionId, excerpt, spawn_reader_task};
 use crate::mcp::orchestration::McpHosts;
 use crate::options::Options;
 use crate::transport::codec::{DecodedLine, decode_dispatch};
@@ -183,7 +181,10 @@ impl Client {
         // doesn't change for the subprocess's lifetime so caching
         // once is correct.
         let claude_pid = sub.child_pid();
-        let session_id = new_shared_session_id();
+        // **The transport's own container, not a second one**: the writer
+        // task names the session in a stall's record, and `/new` swaps the
+        // occupant of this same handle, so both sides read the current id.
+        let session_id = sub.session_id();
         let mcp_hosts =
             McpHosts::new(options.mcp_servers.clone(), options.external_mcp_servers.clone());
         let hook_registry = options.hooks.mint_registry();

@@ -10751,6 +10751,20 @@ struct StubBrowser {
     /// `BrowserHost::attach` states: a same-tab attach keeps the controller,
     /// a move releases it.
     viewing: Mutex<std::collections::HashMap<u64, u16>>,
+    /// A gate the next `attach` parks on and nothing opens, the way a host
+    /// whose driver is gone parks: the wedge the connection's watchdog exists
+    /// to reap. **The attach registers its viewer first**, so the reap has a
+    /// held viewer to release. `None` is a host that answers.
+    attach_gate: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    /// Signalled by a detach, so a test on the paused clock can wait for the
+    /// teardown instead of polling for it.
+    viewer_gone: tokio::sync::Notify,
+    /// Set once an `attach` has registered its viewer and is about to park,
+    /// so a test can wait for the wedge rather than guess at it. A flag, not
+    /// a notify: the wait yields rather than sleeps, because on a paused
+    /// clock a sleep would advance time past the wedge before the attach is
+    /// even read.
+    attach_entered: std::sync::atomic::AtomicBool,
 }
 
 impl StubBrowser {
@@ -10783,7 +10797,17 @@ impl StubBrowser {
             detached: Mutex::new(Vec::new()),
             refuse_take: Mutex::new(false),
             viewing: Mutex::new(std::collections::HashMap::new()),
+            attach_gate: Mutex::new(None),
+            viewer_gone: tokio::sync::Notify::new(),
+            attach_entered: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// Make the next and every later `attach` park for ever. Nothing opens the
+    /// gate: the connection is meant to be reaped around it.
+    fn stall_attach(&self) {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        *self.attach_gate.lock().expect("the stub's gate") = Some(gate);
     }
 
     fn publish(&self) {
@@ -10815,6 +10839,11 @@ impl forge_workspace::browser::BrowserHost for StubBrowser {
         _seat: &SessionSlot,
         tab: Option<u16>,
     ) -> Result<forge_workspace::browser::BrowserAttachment, String> {
+        // **A stalled host answers nothing**, so the connection that asked
+        // waits on this call for ever: the shape the watchdog exists to reap.
+        // The gate is checked after the viewer is registered below, so the
+        // reap has a held viewer to release and a wrong detach cannot pass.
+        let gate = self.attach_gate.lock().expect("the stub's gate").clone();
         // One number is the refusal's own: a tab the server cannot attach.
         if tab == Some(9) {
             return Err("tab 9 is not open".to_owned());
@@ -10839,6 +10868,10 @@ impl forge_workspace::browser::BrowserHost for StubBrowser {
             }
         }
         self.publish();
+        self.attach_entered.store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(gate) = gate {
+            gate.notified().await;
+        }
         Ok(forge_workspace::browser::BrowserAttachment {
             // **The stub resolves an omitted tab the way the service does**:
             // to a tab the profile has open.
@@ -10876,6 +10909,7 @@ impl forge_workspace::browser::BrowserHost for StubBrowser {
         }
         drop(controller);
         self.publish();
+        self.viewer_gone.notify_one();
     }
 
     async fn input(
@@ -11014,6 +11048,142 @@ async fn a_refused_attach_answers_its_reply() {
     assert_eq!(body["ok"], false, "and it says the attach did not happen");
     let why = body["why"].as_str().expect("the server's own words");
     assert!(why.contains("tab 9") && why.contains("not open"), "{why}");
+}
+
+/// Advance the paused clock in steps, polling the client as real time would.
+///
+/// **A single jump is not time passing, and an unpolled client is not a
+/// client.** The server's keepalive writes one ping and then waits for the
+/// answer: a client nobody polls answers nothing, so the server writes
+/// nothing more and the watchdog reaps a connection that is perfectly
+/// healthy. Stepping the clock with the socket polled between steps is what
+/// real time with a real client does, while keeping the clock deterministic.
+async fn advance_polling(socket: &mut Client, duration: Duration) {
+    let step = Duration::from_millis(5);
+    let mut left = duration;
+    while left > Duration::ZERO {
+        let now = left.min(step);
+        tokio::select! {
+            () = tokio::time::advance(now) => {}
+            // A control frame, and tungstenite queues the answer itself.
+            _ = socket.next() => {}
+        }
+        left -= now;
+    }
+}
+
+/// **A healthy connection is never reaped.** The watchdog's bound means "no
+/// write completed", not "the loop did not turn": this client is idle, and the
+/// only thing that keeps the connection's clock moving is the keepalive's own
+/// ping, which is a write. Empty `Progress::stamp` and this test reaps a live
+/// client, which is the false positive the watchdog exists to prevent.
+///
+/// **Two rounds, because one proves a stamp, not a clock.** A stamp that
+/// fires only on the first write (a guard that returns early once it is set)
+/// passes a single round and then reaps every connection four minutes after
+/// its first write, which is the redial loop the bound exists to avoid.
+#[tokio::test(start_paused = true)]
+async fn a_healthy_idle_connection_is_not_reaped() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    // **The wedge is a second, not the shipping pair's ratio**, because the
+    // clock is paused and the IO is real: a ping's answer costs a real round
+    // trip, and a bound too small would count the test's own advance as
+    // silence. A second is still far past every beat the connection owes, so
+    // a clock that stops stamping is reaped well inside the advance.
+    let heartbeat = Heartbeat {
+        every: Duration::from_millis(20),
+        dead: Duration::from_secs(30),
+        wedge: Duration::from_secs(1),
+    };
+    let (url, _state) = serve_fleet(&fleet, heartbeat).await;
+    let mut socket = connect(&url).await;
+
+    for round in 0..2 {
+        // Well past the wedge bound each time, with the connection doing
+        // nothing but its own pings.
+        advance_polling(&mut socket, Duration::from_secs(2)).await;
+
+        send(&mut socket, ClientMessage::Ping).await;
+        let answered = next_server_within(&mut socket, 2_000).await;
+        assert!(
+            matches!(answered, Some(ServerMessage::Pong)),
+            "a healthy idle connection was reaped before round {round}: {answered:?}",
+        );
+    }
+}
+
+/// **A connection wedged in a host call is reaped from outside.**
+///
+/// The keepalive is a branch in the connection's OWN `select!`, so a task
+/// parked in an await never reaches it: no ping goes out, no reap happens,
+/// and the socket stays open while the server says nothing. That is the
+/// 2026-11-09 freeze - 26.7 minutes of silence with the process alive and
+/// no error anywhere. The watchdog samples the loop's progress from outside
+/// the task, so the wedge ends the connection, and the teardown still runs:
+/// a reap that left the browser viewer attached would trade a silent hang
+/// for a silent leak.
+#[tokio::test(start_paused = true)]
+async fn a_wedged_connection_is_reaped_from_outside() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    stub.stall_attach();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    // **The peer's own dead bound is long**, so the reap cannot be the
+    // ping's: the loop never reaches its beat at all.
+    let heartbeat = Heartbeat {
+        every: Duration::from_millis(20),
+        dead: Duration::from_secs(30),
+        wedge: Duration::from_millis(200),
+    };
+    let (url, _state) = serve_fleet(&fleet, heartbeat).await;
+    let mut socket = connect(&url).await;
+
+    // The attach registers its viewer and then parks, so the connection is
+    // inside the call with a held viewer rather than before one exists.
+    send(&mut socket, ClientMessage::BrowserView { seat: lead_seat(), tab: None, reply_to: None })
+        .await;
+    // **Wait without advancing the clock**: on a paused clock a sleep would
+    // race the wedge, and the connection could be reaped before its attach
+    // was even read. Yielding gives the server its turn with time standing
+    // still.
+    let mut turns = 0;
+    while !stub.attach_entered.load(std::sync::atomic::Ordering::Relaxed) {
+        assert!(turns < 100_000, "the attach never reached the host");
+        turns += 1;
+        tokio::task::yield_now().await;
+    }
+    // **The viewer is really held before the wedge**, or the release below is
+    // vacuous: a stub that never registered one would release nothing and
+    // still show an empty set.
+    assert_eq!(
+        stub.viewers.lock().expect("the stub's viewers").len(),
+        1,
+        "the attach registered no viewer, so nothing below proves a release",
+    );
+
+    // Past the wedge bound: the watchdog has to end the connection.
+    tokio::time::advance(Duration::from_millis(250)).await;
+
+    let ended = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(message) = socket.next().await {
+            if message.is_err() {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "the wedged connection was never reaped");
+    // The reap runs the teardown: the viewer the attach registered is
+    // released, not merely "a detach was called".
+    tokio::time::timeout(Duration::from_secs(5), stub.viewer_gone.notified())
+        .await
+        .expect("the reap did not release the viewer it held");
+    assert!(
+        stub.viewers.lock().expect("the stub's viewers").is_empty(),
+        "a viewer is still counted after the reap",
+    );
 }
 
 /// **Lowering the takeover detaches the viewer, and its role with it.** An
@@ -12175,8 +12345,13 @@ async fn a_ping_is_answered_with_a_pong() {
 #[tokio::test(start_paused = true)]
 async fn an_incoming_ping_clears_the_servers_outstanding_keepalive() {
     let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-    let heartbeat =
-        Heartbeat { every: Duration::from_millis(1_000), dead: Duration::from_millis(300) };
+    let heartbeat = Heartbeat {
+        every: Duration::from_millis(1_000),
+        dead: Duration::from_millis(300),
+        // This test is about the peer's answer, so the watchdog keeps its
+        // shipping bound: nothing here wedges the connection.
+        wedge: Heartbeat::default().wedge,
+    };
     let (url, _state) = serve_fleet(&fleet, heartbeat).await;
     let mut socket = connect(&url).await;
 
