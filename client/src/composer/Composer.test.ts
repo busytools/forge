@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hideBrowser, onModifier, onModifierChord, showBrowser } from '../browser/link';
 import { openSurface, selectTab, surface } from '../browser/surface.svelte';
 import { repoPath } from '../repo';
+import { surface as terminalSurface } from '../terminal/surface.svelte';
 // One frame shared with forge-server's decode test, so the dock's literal and
 // the Rust decoder cannot drift into different nesting.
 import vaultAnswerFrames from './vault-answer-frames.json';
@@ -133,6 +134,7 @@ import {
   SLOT,
   slackDraftAsk,
   take,
+  terminalHandOffAsk,
   vaultAsk,
   wire,
   type Wire,
@@ -296,6 +298,9 @@ afterEach(() => {
   // would write into a spy the case before still owns.
   vi.unstubAllGlobals();
   delete (navigator as unknown as { clipboard?: unknown }).clipboard;
+  // The terminal surface's refusal outlives a mount too, and a case that
+  // leaves one behind would decide the next case's bar.
+  terminalSurface.control_reason = null;
 });
 
 /** The send a seat is waiting on, which the conversation draws and the box does not. */
@@ -8942,6 +8947,44 @@ describe('the dock', () => {
     flushSync();
 
     expect(drawn(), "the reader's own click is not another view's").not.toContain('another view');
+  });
+
+  /** **A take's refusal is cleared when the terminal hand-off ends.** The ask
+   *  can leave the record without this client pressing anything - another view
+   *  answers it, or the core ends it - and a bar left carrying a refusal would
+   *  name a state that is gone until a repaint happens to clear it. The
+   *  sentence here is the server's one `terminal_control` refusal; a parked
+   *  hand-off allows a take, so the clear is not tied to that wording. */
+  it('clears a take refusal when the terminal hand-off ends', () => {
+    const harness = open({ record: record({ pending_asks: [terminalHandOffAsk()] }) });
+    // The refusal the bar would be drawing beside a live take control.
+    terminalSurface.control_reason = 'this connection is not viewing that terminal';
+    flushSync();
+    expect(terminalSurface.control_reason, 'precondition: the refusal is drawn').not.toBeNull();
+
+    // The ask leaves the record, as an answer from another view leaves it.
+    harness.page.record = record();
+    flushSync();
+
+    expect(terminalSurface.control_reason, 'the sentence goes with the hand-off ending').toBeNull();
+  });
+
+  /** **Only a terminal hand-off this page drew unlocks the clear.** A refusal
+   *  raised while another ask was front is not that hand-off's, and an
+   *  unrelated ask leaving must not wipe the sentence mid-draw. */
+  it('leaves a take refusal alone when no terminal hand-off was drawn', () => {
+    const harness = open({ record: record({ pending_asks: [questionAsk()] }) });
+    terminalSurface.control_reason = 'this connection is not viewing that terminal';
+    flushSync();
+    expect(terminalSurface.control_reason, 'precondition: the refusal is drawn').not.toBeNull();
+
+    harness.page.record = record();
+    flushSync();
+
+    expect(
+      terminalSurface.control_reason,
+      'an unrelated ask leaving does not clear a refusal it never drew',
+    ).toBe('this connection is not viewing that terminal');
   });
 
   /** **The window, not an overlay** (Ved, 2026-10-07): Open raises the

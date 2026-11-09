@@ -231,6 +231,20 @@ export function browserHandOffAsk(over: Record<string, unknown> = {}): unknown {
   };
 }
 
+/** A terminal hand-off as the core offers one, with whatever the test overrides. */
+export function terminalHandOffAsk(over: Record<string, unknown> = {}): unknown {
+  return {
+    kind: 'terminal_hand_off',
+    request: {
+      id: '0192e1c0-0000-7000-8000-0000000000ee',
+      reason: 'sudo needs the account password before the reinstall can run.',
+      terminal: 1,
+      secret: true,
+      ...over,
+    },
+  };
+}
+
 /** A document hand-off as the core offers one, with whatever the test overrides. */
 export function documentHandOffAsk(over: Record<string, unknown> = {}): unknown {
   return {
