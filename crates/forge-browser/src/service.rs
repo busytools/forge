@@ -244,10 +244,11 @@ pub struct BrowserService {
     where_viewing: Mutex<HashMap<u64, (String, u16)>>,
     /// The `[browser]` encoding pair: frames per second and lossy quality.
     encoding: Mutex<(u16, u8)>,
-    /// **One launch at a time**: the free-port probe cannot see a launch in
-    /// flight, so two concurrently starting hosts would otherwise pick the
-    /// same port and one would drive the other's page. Every profile holds
-    /// this same lock.
+    /// **One launch at a time.** The port is reserved in `free_port`, so a
+    /// second launch cannot pick it; this lock keeps the rest of a launch
+    /// (the frame socket, the record, the veto) serial. **It is held across
+    /// the whole bound**, so a profile retrying after a failure (30 s) holds
+    /// it that long and every other profile's launch waits.
     launch: Arc<AsyncMutex<()>>,
     /// **A stop is final.** `stop_all` drains the map, and an attach that
     /// already held a profile could otherwise start a host after the stop;
@@ -698,6 +699,7 @@ impl BrowserService {
             host_suspect: Mutex::new(None),
             launching: AtomicBool::new(false),
             last_launch_failure: Mutex::new(None),
+            launch_mark: AtomicU64::new(0),
             #[cfg(test)]
             successor: Mutex::new(None),
             rows: self.rows_sender(key.as_str()),
@@ -2849,6 +2851,15 @@ impl BrowserService {
     /// profile goes with the host.
     pub async fn end_host(&self, seat: &SessionSlot) -> Result<Vec<BrowserPart>, String> {
         let key = self.target(seat)?;
+        // **A launch in flight is answered before the gate.** `open` holds the
+        // gate across `start_host`, so taking the gate first would block the
+        // door for the whole bound; the flag is read without the gate because
+        // the answer touches no profile state.
+        if let Some(profile) = self.profiles.lock().await.get(key.as_str()).cloned()
+            && profile.launching.load(Ordering::Acquire)
+        {
+            return Ok(vec![BrowserPart::Text { text: launch_in_progress_sentence(&key) }]);
+        }
         let gate = self.gate(key.as_str());
         let _held = gate.lock().await;
         let profile = self.profiles.lock().await.get(key.as_str()).cloned();
@@ -2865,13 +2876,7 @@ impl BrowserService {
         // progress" instead of "no host is recorded", which reads as "nothing
         // to do". The state lock would otherwise wait for the launch to end.
         if profile.launching.load(Ordering::Acquire) {
-            return Ok(vec![BrowserPart::Text {
-                text: format!(
-                    "a browser launch is in progress for profile '{}'; the host is not up yet. \
-                     The launch is already running; the next call waits for it.",
-                    key.as_str()
-                ),
-            }]);
+            return Ok(vec![BrowserPart::Text { text: launch_in_progress_sentence(&key) }]);
         }
         let mut state = profile.state.lock().await;
         let Some(host) = state.host.as_ref() else {
@@ -3946,6 +3951,11 @@ pub struct Profile {
     /// The last launch's failure, when one is recorded: the end-host door
     /// answers it rather than "no host is recorded".
     last_launch_failure: Mutex<Option<LaunchFailure>>,
+    /// **Where the live host's own log tail starts.** The log is append-only
+    /// and shared across the profile's hosts, so a deliberate end must not
+    /// quote the previous host's words. Set at the spawn and read by
+    /// `teardown`.
+    launch_mark: AtomicU64,
     /// The driver a replacement installs under test, so a test can tell a
     /// replacement from a retry of the same fake. One-shot.
     #[cfg(test)]
@@ -3979,6 +3989,20 @@ impl<'a> Launching<'a> {
 impl Drop for Launching<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
+    }
+}
+
+/// A selected port's reservation, released when the launch ends for any
+/// reason, including a cancellation that drops the future. **A cancelled
+/// launch is exactly the leak a manual release cannot cover**: only the
+/// guard's `Drop` runs on an aborted task. Release-on-drop is safe because
+/// the bind test still keeps a host that truly owns the port off another
+/// profile.
+struct PortLease(u16);
+
+impl Drop for PortLease {
+    fn drop(&mut self) {
+        spawn::release_port(self.0);
     }
 }
 
@@ -4307,20 +4331,10 @@ enum TeardownOutcome {
     Refused,
 }
 
-/// The host's own last words, read off the async worker: the log is
-/// append-only and an end holds a profile lock. `teardown` calls this with
-/// the state lock held and `start_host` with the launch lock; the read is
-/// bounded and does not block the worker.
-async fn host_tail(profile: &Profile) -> String {
-    let dir = profile.dir.clone();
-    tokio::task::spawn_blocking(move || spawn::log_tail(&spawn::host_log_path(&dir)))
-        .await
-        .unwrap_or_default()
-}
-
 /// The host's own last words since its launch mark. **The log is append-only
 /// and shared across the profile's hosts**, so a launch that wrote nothing
-/// must not be reported with the previous host's dying words.
+/// must not be reported with the previous host's dying words. The read is
+/// bounded and does not block the worker.
 async fn host_tail_since(profile: &Profile, from: u64) -> String {
     let dir = profile.dir.clone();
     tokio::task::spawn_blocking(move || spawn::log_tail_since(&spawn::host_log_path(&dir), from))
@@ -5048,15 +5062,10 @@ impl Profile {
         // "a launch is in progress" rather than "no host is recorded"; the
         // guard clears it on every exit, a panic included.
         let _launching = Launching::new(&self.launching);
-        // **A launch that already failed once gets a longer bound**: a cold
-        // start under load is not cut at the same 15 s that just failed.
-        // A success resets the record, so the next cold start starts at 15 s.
-        let bound =
-            if self.last_launch_failure.lock().unwrap_or_else(PoisonError::into_inner).is_some() {
-                spawn::LAUNCH_TIMEOUT * 2
-            } else {
-                spawn::LAUNCH_TIMEOUT
-            };
+        let bound = spawn::launch_bound(
+            self.last_launch_failure.lock().unwrap_or_else(PoisonError::into_inner).is_some(),
+            spawn::LAUNCH_TIMEOUT,
+        );
         // **The tail starts at the spawn.** The log is append-only and shared
         // across the profile's hosts, so a mark taken before the spawn keeps
         // a launch that wrote nothing from quoting the previous host.
@@ -5068,6 +5077,8 @@ impl Profile {
         let profile = Arc::downgrade(self);
         let audio = self.audio.clone();
         let reader = channel::serve(&socket, move |message| match message {
+            // A frame socket that cannot be served is a launch failure, and
+            // the door owes its reason rather than "no host is recorded".
             channel::ChannelMessage::Frame(frame) => {
                 // **The newest frame wins per tab, and it is KEPT even with
                 // no viewer attached.** `send` drops a value nobody is
@@ -5099,14 +5110,23 @@ impl Profile {
                     samples: packet.samples,
                 });
             }
-        })?;
+        })
+        .inspect_err(|why| self.record_launch_failure(why))?;
         let port = spawn::free_port().ok_or_else(|| {
             tracing::warn!(
                 "no browser port was free (event_name browser_port_exhausted, profile {})",
                 self.key
             );
-            "no free browser port".to_owned()
+            let why = "no free browser port".to_owned();
+            self.record_launch_failure(&why);
+            why
         })?;
+        // **The reservation is a lease, released on every exit.** A launch a
+        // stop or disconnect aborts drops this future, and a manual release
+        // would never run; twenty leaked ports fail every launch for the
+        // process's life. Release-on-drop is safe: the bind test still keeps
+        // a host that truly owns the port off another profile.
+        let _port = PortLease(port);
         let ring_name = spawn::ring_name(port);
         let (pid, input, mut events) = match spawn::spawn(
             &self.dir,
@@ -5125,7 +5145,6 @@ impl Profile {
                      profile {}, port {port}): {why}",
                     self.key,
                 );
-                spawn::release_port(port);
                 self.record_launch_failure(&why);
                 reader.stop();
                 return Err(why);
@@ -5134,7 +5153,6 @@ impl Profile {
         if let Err(why) = spawn::wait_ready_for_bound(pid, port, &ring_name, bound).await {
             let tail = host_tail_since(self, mark).await;
             let ended = spawn::end_verified(pid, port, &self.dir).await;
-            spawn::release_port(port);
             self.record_launch_failure(&why);
             reader.stop();
             let outcome = if ended { "ended" } else { "refused" };
@@ -5146,7 +5164,6 @@ impl Profile {
             Err(why) => {
                 let tail = host_tail_since(self, mark).await;
                 let ended = spawn::end_verified(pid, port, &self.dir).await;
-                spawn::release_port(port);
                 self.record_launch_failure(&why);
                 reader.stop();
                 let outcome = if ended { "ended" } else { "refused" };
@@ -5154,12 +5171,12 @@ impl Profile {
                 return Err(launch_error(&why, &tail));
             }
         };
-        // **The host owns the port now**, so the selection no longer needs to
-        // keep another profile off it.
-        spawn::release_port(port);
         // **A launch that came up clears the failure**, so the next cold start
         // gets the short bound and the door no longer reports a failed launch.
         *self.last_launch_failure.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        // **The mark belongs to the host that came up**, so a deliberate end
+        // tails from this host's spawn, not a failed attempt's.
+        self.launch_mark.store(mark, Ordering::Release);
         // **The record is written once the host is READY**: it is what a
         // later boot reaps an unclean exit by, so it must never name a pid
         // that had not come up yet.
@@ -5520,7 +5537,10 @@ impl Profile {
             // a refused end cannot be logged as an end and answered as one.
             let alive = spawn::alive(host.pid);
             if let Some(end) = end {
-                let tail = host_tail(self).await;
+                // **The deliberate end quotes only the live host's own words**:
+                // the mark taken at its spawn keeps the previous host's log out
+                // of this one's record.
+                let tail = host_tail_since(self, self.launch_mark.load(Ordering::Acquire)).await;
                 let outcome = if alive { "refused" } else { "ended" };
                 log_host_ended(self, host.pid, host.port, end, outcome, why, &tail);
             }
@@ -6118,6 +6138,17 @@ fn dead_host_answer(profile: &Profile, host: DeadHost, why: &str) -> String {
 /// rather than promising it will start.
 fn no_host_sentence(key: &ProfileKey) -> String {
     format!("no browser host is recorded for profile '{}'; the next call tries one", key.as_str())
+}
+
+/// **A launch in flight is not a host to clear and not a missing record.**
+/// The door says so rather than "no host is recorded", which reads as
+/// "nothing to do".
+fn launch_in_progress_sentence(key: &ProfileKey) -> String {
+    format!(
+        "a browser launch is in progress for profile '{}'; the host is not up yet. \
+         The launch is already running; the next call waits for it.",
+        key.as_str()
+    )
 }
 
 /// **A shared host a failing call left running**, as the record a host that
@@ -12339,7 +12370,7 @@ mod server_guards {
     };
     use super::{
         BrowserService, Call, DeferredTabEvent, Driven, LaunchFailure, Profile, ReconcilePass,
-        pair_tab_events,
+        launch_error, pair_tab_events,
     };
     use crate::control::HostEvent;
     use crate::driver::TabDriver;
@@ -14275,13 +14306,20 @@ mod server_guards {
         let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
         let profile = profile_for_test(&service).await;
         std::fs::create_dir_all(&profile.dir).expect("the profile dir");
+        // **The log is shared across the profile's hosts.** Seed it with a
+        // previous host's dying words; the failed launch must not quote them.
+        std::fs::write(crate::spawn::host_log_path(&profile.dir), "a previous host: gone\n")
+            .expect("the previous host's log");
         let stub = dir.path().join("never-ready.sh");
         write_exec(&stub, "#!/bin/sh\necho 'the stub last words' >&2\nexit 1\n");
+        let port = Arc::new(Mutex::new(None));
+        let port_for_stub = Arc::clone(&port);
 
         let caught = Caught::default();
         let subscriber = tracing_subscriber::registry().with(caught.clone());
         let guard = tracing::subscriber::set_default(subscriber);
         crate::spawn::set_test_spawn(Box::new(move |args| {
+            *port_for_stub.lock().unwrap_or_else(PoisonError::into_inner) = Some(args.port);
             crate::spawn::spawn_with(
                 &stub,
                 &args.profile,
@@ -14302,6 +14340,35 @@ mod server_guards {
             refused.contains("the stub last words"),
             "the launch error keeps the host's own last words: {refused}"
         );
+        assert!(
+            !refused.contains("a previous host: gone"),
+            "the launch error does not quote the previous host's log: {refused}"
+        );
+        // **A failed launch releases its port.** The selection is a lease, so
+        // the next launch can pick it again.
+        let port = port.lock().unwrap_or_else(PoisonError::into_inner).expect("a launch port");
+        assert_eq!(
+            crate::spawn::free_port_in(port..port + 1),
+            Some(port),
+            "a failed launch releases its port"
+        );
+        crate::spawn::release_port(port);
+        // **The failure is recorded**, and the door reports its reason
+        // rather than "no host is recorded".
+        assert!(
+            profile.last_launch_failure.lock().unwrap_or_else(PoisonError::into_inner).is_some(),
+            "the failed launch is recorded on the profile"
+        );
+        let lead = SessionSlot::lead("O", "p");
+        let parts =
+            service.call(&lead, "browser_end_host", json!({})).await.expect("the door answers");
+        let answer = text_of(&parts);
+        assert!(answer.contains("the last browser launch"), "{answer}");
+        assert!(
+            answer.contains("the browser host exited before its endpoint answered"),
+            "{answer}"
+        );
+        assert!(answer.contains("profile 'O/default'"), "{answer}");
         let caught_records = records(&caught);
         let started = caught_records
             .iter()
@@ -14318,6 +14385,163 @@ mod server_guards {
         );
         assert!(fields.contains("log_tail=the stub last words"), "{fields}");
         assert!(fields.contains("profile=O/default"), "{fields}");
+    }
+
+    /// **A launch that wrote nothing to its log says so**, rather than
+    /// carrying an empty tail or the previous host's words.
+    #[test]
+    fn a_launch_that_wrote_nothing_says_so() {
+        assert_eq!(
+            launch_error("the host exited", ""),
+            "the host exited (the host wrote nothing to its log)"
+        );
+        assert_eq!(launch_error("the host exited", "last words"), "the host exited: last words");
+    }
+
+    /// **The launch flag is set for the whole launch and cleared on every
+    /// exit.** A slow stand-in launch is observed through the flag, and the
+    /// failure's own branch clears it.
+    #[tokio::test]
+    async fn a_launch_sets_its_flag_and_clears_it() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        std::fs::create_dir_all(&profile.dir).expect("the profile dir");
+        let stub = dir.path().join("slow.sh");
+        write_exec(&stub, "#!/bin/sh\nsleep 2\nexit 1\n");
+        crate::spawn::set_test_spawn(Box::new(move |args| {
+            crate::spawn::spawn_with(
+                &stub,
+                &args.profile,
+                args.port,
+                &args.ring,
+                args.width,
+                args.height,
+                args.profile_id,
+                args.encoding,
+                &args.frames,
+            )
+        }));
+        let launch = {
+            let profile = Arc::clone(&profile);
+            tokio::spawn(async move { profile.start_host().await })
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !profile.launching.load(Ordering::Acquire) {
+            assert!(tokio::time::Instant::now() < deadline, "the launch never set its flag");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let _ = launch.await.expect("the launch task ends");
+        assert!(!profile.launching.load(Ordering::Acquire), "the launch cleared its flag");
+    }
+
+    /// **The door answers while a real `open` launch holds the gate.** `open`
+    /// holds the profile gate across `start_host`, so a door that took the
+    /// gate first would block for the whole bound; the flag is read first.
+    #[tokio::test]
+    async fn the_end_host_door_answers_while_a_real_open_launch_is_in_flight() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let lead = SessionSlot::lead("O", "p");
+        // A profile with no fake driver: `open` falls through to a real
+        // `start_host`.
+        let profile = service.entry(&lead).await.expect("the profile");
+        std::fs::create_dir_all(&profile.dir).expect("the profile dir");
+        let stub = dir.path().join("slow-open.sh");
+        write_exec(&stub, "#!/bin/sh\nsleep 2\nexit 1\n");
+        crate::spawn::set_test_spawn(Box::new(move |args| {
+            crate::spawn::spawn_with(
+                &stub,
+                &args.profile,
+                args.port,
+                &args.ring,
+                args.width,
+                args.height,
+                args.profile_id,
+                args.encoding,
+                &args.frames,
+            )
+        }));
+        let open = {
+            let service = Arc::clone(&service);
+            let seat = lead.clone();
+            tokio::spawn(async move { service.open(&seat).await })
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !profile.launching.load(Ordering::Acquire) {
+            assert!(tokio::time::Instant::now() < deadline, "the launch never set its flag");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // The door answers without waiting for the gate `open` holds.
+        let parts = tokio::time::timeout(
+            Duration::from_secs(2),
+            service.call(&lead, "browser_end_host", json!({})),
+        )
+        .await
+        .expect("the door answers without waiting for the gate")
+        .expect("the door answers");
+        let answer = text_of(&parts);
+        assert!(answer.contains("a browser launch is in progress"), "{answer}");
+        assert!(answer.contains("profile 'O/default'"), "{answer}");
+        let _ = open.await.expect("the launch task ends");
+        assert!(!profile.launching.load(Ordering::Acquire), "the launch cleared its flag");
+    }
+
+    /// **A successful launch clears the failure.** A launch that comes up puts
+    /// the next cold start back on the short bound, and the door no longer
+    /// reports a failure.
+    #[tokio::test]
+    async fn a_successful_launch_clears_the_failure() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let service = BrowserService::at(dir.path().to_path_buf(), dir.path().join("stack"));
+        let profile = profile_for_test(&service).await;
+        std::fs::create_dir_all(&profile.dir).expect("the profile dir");
+        *profile.last_launch_failure.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(LaunchFailure { why: "the last one failed".to_owned(), at: Instant::now() });
+        let stub = dir.path().join("up.sh");
+        write_exec(
+            &stub,
+            "#!/bin/sh\nprintf '{\"kind\":\"tab_created\",\"tab\":1,\"opener\":null,\"url\":\"about:blank\"}\\n'\nsleep 2\n",
+        );
+        crate::spawn::set_test_spawn(Box::new(move |args| {
+            let (pid, input, events) = crate::spawn::spawn_with(
+                &stub,
+                &args.profile,
+                args.port,
+                &args.ring,
+                args.width,
+                args.height,
+                args.profile_id,
+                args.encoding,
+                &args.frames,
+            )?;
+            let ring = crate::osr::Ring::create(&args.ring, 4, 4)
+                .map_err(|why| format!("the stand-in ring: {why}"))?;
+            ring.set_pid(pid);
+            ring.set_state(crate::osr::STATE_LIVE);
+            let listener = std::net::TcpListener::bind(("127.0.0.1", args.port))
+                .map_err(|why| format!("the stand-in endpoint: {why}"))?;
+            std::thread::spawn(move || {
+                let Ok((mut stream, _)) = listener.accept() else { return };
+                let body = r#"{"Browser":"stub"}"#;
+                let _ = std::io::Write::write_all(
+                    &mut stream,
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            });
+            Ok((pid, input, events))
+        }));
+        let host = profile.start_host().await.expect("the launch comes up");
+        assert!(
+            profile.last_launch_failure.lock().unwrap_or_else(PoisonError::into_inner).is_none(),
+            "a successful launch clears the failure"
+        );
+        let _ = crate::spawn::end_verified(host.pid, host.port, &profile.dir).await;
+        crate::osr::Ring::unlink(&crate::spawn::ring_name(host.port));
     }
 
     /// **A launch whose ring vanished is recorded at its call site.** The

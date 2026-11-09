@@ -16,8 +16,19 @@ use std::time::Duration;
 use crate::engine::endpoint;
 use crate::osr::Ring;
 
-/// The longest a host is given from spawn to answering `/json/version`.
+/// The bound a first launch attempt gets from spawn to answering
+/// `/json/version`. **A profile that just failed a launch gets twice this**
+/// ([`launch_bound`]): a cold start under load is not cut at the same bound
+/// that just failed, and a success puts the next launch back on this one.
 pub const LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The bound one launch attempt gets. **A profile that just failed a launch
+/// is retried under a longer bound**, so a cold start under load is not cut
+/// at the same 15 s that already failed once; a success clears the failure,
+/// so the next cold start goes back to the short bound.
+pub fn launch_bound(failed: bool, base: Duration) -> Duration {
+    if failed { base * 2 } else { base }
+}
 
 /// How long a show cue waits for the host to apply it. The host's loop runs
 /// about every millisecond, so this is a stall bound, not a budget: past it
@@ -215,7 +226,7 @@ pub fn free_port() -> Option<u16> {
 
 /// [`free_port`] over an explicit range. A test uses its own so its
 /// reservation cannot collide with another test's.
-pub fn free_port_in(range: std::ops::Range<u16>) -> Option<u16> {
+pub(crate) fn free_port_in(range: std::ops::Range<u16>) -> Option<u16> {
     let mut reserved = reserved();
     let port = range.into_iter().find(|port| {
         !reserved.contains(port) && std::net::TcpListener::bind(("127.0.0.1", *port)).is_ok()
@@ -501,33 +512,48 @@ pub async fn wait_ready_for_bound(
     bound: Duration,
 ) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + bound;
-    let mut ring_live = false;
+    // **The ring is re-checked every poll, and it gates the probe.** Caching
+    // "it went live once" would let a host that died after going live hand
+    // its port and ring to another forge process's host, and the next probe
+    // would adopt that host. `ring_ever_live` is sticky for the expiry
+    // message only; `owns` is what admits a probe.
+    let mut ring_ever_live = false;
     loop {
-        if !ring_live {
-            ring_live = owns(ring, pid);
-        }
-        if ring_live && probe(port).await {
-            return Ok(());
+        if owns(ring, pid) {
+            ring_ever_live = true;
+            if probe(port).await {
+                return Ok(());
+            }
         }
         if !alive(pid) {
             return Err("the browser host exited before its endpoint answered".to_owned());
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err(if ring_live {
+            return Err(if ring_ever_live {
                 format!(
                     "the browser host on port {port} went live but its endpoint never answered \
-                     within {} s",
-                    bound.as_secs()
+                     within {}",
+                    bound_words(bound)
                 )
             } else {
                 format!(
                     "the browser host on port {port} was still alive but its ring never became \
-                     live within {} s",
-                    bound.as_secs()
+                     live within {}",
+                    bound_words(bound)
                 )
             });
         }
         tokio::time::sleep(PROBE_EVERY).await;
+    }
+}
+
+/// A bound as a sentence names it. A sub-second test bound must not render
+/// as "0 s".
+fn bound_words(bound: Duration) -> String {
+    if bound < Duration::from_secs(1) {
+        format!("{:.1} s", bound.as_secs_f64())
+    } else {
+        format!("{} s", bound.as_secs())
     }
 }
 
@@ -1811,11 +1837,11 @@ mod tests {
         static PORT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = PORT_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        let first = free_port_in(12000..12010).expect("a port");
-        let second = free_port_in(12000..12010).expect("a second port");
+        let first = free_port_in(12000..12100).expect("a port");
+        let second = free_port_in(12000..12100).expect("a second port");
         assert_ne!(first, second, "a selected port is not handed out again");
         release_port(first);
-        let third = free_port_in(12000..12010).expect("a third port");
+        let third = free_port_in(12000..12100).expect("a third port");
         assert_eq!(third, first, "a released port is available again");
         release_port(second);
         release_port(third);
@@ -1828,12 +1854,28 @@ mod tests {
         let mut child = tokio::process::Command::new("sleep").arg("10").spawn().expect("a child");
         let pid = child.id().expect("a pid");
         let ring = format!("/forge-test-phase-{pid}");
-        let err = wait_ready_for_bound(pid, 9, &ring, Duration::from_millis(200))
+        // A port with no listener: bind one and drop it, so the test does not
+        // depend on a fixed number being free on the machine.
+        let port = {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a listener");
+            listener.local_addr().expect("the listener's address").port()
+        };
+        let err = wait_ready_for_bound(pid, port, &ring, Duration::from_millis(200))
             .await
             .expect_err("a child that never reports its ring fails");
         let _ = child.kill().await;
         let _ = child.wait().await;
         assert!(err.contains("its ring never became live"), "the phase is named: {err}");
+        assert!(err.contains("0.2 s"), "a sub-second bound is not rendered as 0 s: {err}");
+    }
+
+    /// **A failed launch gets the longer bound; a success gets the base.**
+    /// The choice lives in one pure function so a test pins it without a
+    /// real host.
+    #[test]
+    fn a_failed_launch_gets_the_longer_bound() {
+        assert_eq!(launch_bound(false, Duration::from_secs(15)), Duration::from_secs(15));
+        assert_eq!(launch_bound(true, Duration::from_secs(15)), Duration::from_secs(30));
     }
 
     /// **A launch whose ring went live but whose endpoint never answered is
@@ -1847,7 +1889,11 @@ mod tests {
         let mapped = Ring::create(&ring, 4, 4).expect("a test ring");
         mapped.set_pid(pid);
         mapped.set_state(crate::osr::STATE_LIVE);
-        let err = wait_ready_for_bound(pid, 9, &ring, Duration::from_millis(200))
+        let port = {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a listener");
+            listener.local_addr().expect("the listener's address").port()
+        };
+        let err = wait_ready_for_bound(pid, port, &ring, Duration::from_millis(200))
             .await
             .expect_err("a live ring with no endpoint fails");
         let _ = child.kill().await;
