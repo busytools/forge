@@ -79,7 +79,19 @@ pub struct KeychainGate;
 
 impl Gate for KeychainGate {
     fn availability(&self) -> impl std::future::Future<Output = Availability> + Send {
-        std::future::ready(Self::availability_now())
+        // **The probe is a synchronous keychain add and delete**, so it runs
+        // on the blocking pool with the rest of the gate's work rather than
+        // on an async worker.
+        async move {
+            match tokio::task::spawn_blocking(Self::availability_now).await {
+                Ok(availability) => availability,
+                Err(_) => Availability {
+                    available: false,
+                    biometric: false,
+                    reason: Some("the keychain check did not run".to_owned()),
+                },
+            }
+        }
     }
 
     async fn enrolled(&self, purpose: &str) -> bool {
@@ -132,6 +144,9 @@ impl KeychainGate {
             std::process::id(),
             PROBE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
+        // A process that died between the add and its delete leaves an item
+        // behind; the probe clears it before it writes its own.
+        let _ = Self::remove_now(&purpose);
         let refusal = match Self::add_now(&purpose, b"x") {
             Ok(SEC_SUCCESS) => None,
             Ok(other) => Some(message(other)),
