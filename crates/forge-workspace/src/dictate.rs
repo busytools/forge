@@ -1246,6 +1246,11 @@ enum TakeResolution<T> {
 /// channel answers immediately and forever, and a loop that keeps
 /// polling it busy-spins a core until the inference runs out on its
 /// own.
+///
+/// The select is biased to the stop arm: when the answer lands in the
+/// same poll as a queued stop, Esc wins and the answer is dropped
+/// unread. An unbiased select picks a random ready arm, which landed
+/// a cancelled take about half the time.
 async fn wait_for_take<T>(
     answer: &mut tokio::task::JoinHandle<T>,
     stop: &mut tokio::sync::mpsc::Receiver<bool>,
@@ -1253,13 +1258,14 @@ async fn wait_for_take<T>(
 ) -> TakeResolution<T> {
     loop {
         tokio::select! {
-            resolved = &mut *answer => break TakeResolution::Answered(resolved),
+            biased;
             decide = stop.recv() => {
                 if decide != Some(true) {
                     cancel.cancel();
                     break TakeResolution::Abandoned;
                 }
             }
+            resolved = &mut *answer => break TakeResolution::Answered(resolved),
         }
     }
 }
@@ -2833,6 +2839,35 @@ mod dictate_lifecycle_tests {
             TakeResolution::Abandoned => {
                 panic!("a submit decision during a transcription must keep waiting")
             }
+        }
+    }
+
+    /// When the answer lands in the same poll as a queued stop, the
+    /// stop wins: Esc must cancel the take rather than land words the
+    /// user already abandoned. An unbiased select picks a random ready
+    /// arm, so this resolved as the answer about half the time.
+    #[tokio::test]
+    async fn a_queued_stop_beats_an_answer_that_is_already_ready() {
+        // A single round is a coin flip against an unbiased select, so
+        // one round would pass half the time on the bug. Fresh state per
+        // round keeps each pick independent; 64 of them make a false
+        // pass vanishingly unlikely.
+        for round in 0..64u32 {
+            let mut answer = tokio::spawn(async move { round });
+            while !answer.is_finished() {
+                tokio::task::yield_now().await;
+            }
+            let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
+            stop_tx.send(false).await.expect("the channel is open");
+            let cancel = forge_dictate::CancelToken::new();
+
+            let resolution = wait_for_take(&mut answer, &mut stop_rx, &cancel).await;
+
+            assert!(
+                matches!(resolution, TakeResolution::Abandoned),
+                "round {round}: the take answered although the user's stop was queued"
+            );
+            assert!(cancel.is_cancelled(), "round {round}: the abandon fires this take's token");
         }
     }
 
