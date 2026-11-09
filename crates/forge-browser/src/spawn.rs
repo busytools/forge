@@ -16,8 +16,42 @@ use std::time::Duration;
 use crate::engine::endpoint;
 use crate::osr::Ring;
 
-/// The longest a host is given from spawn to answering `/json/version`.
+/// The bound a first launch attempt gets from spawn to answering
+/// `/json/version`. **A profile that just failed a launch gets twice this**
+/// ([`launch_bound`]): a cold start under load is not cut at the same bound
+/// that just failed, and a success puts the next launch back on this one.
 pub const LAUNCH_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The bound one launch attempt gets. **A profile that just failed a launch
+/// is retried under a longer bound**, so a cold start under load is not cut
+/// at the same 15 s that already failed once; a success clears the failure,
+/// so the next cold start goes back to the short bound.
+pub fn launch_bound(failed: bool, base: Duration) -> Duration {
+    if failed { base * 2 } else { base }
+}
+
+/// The base bound a launch starts under. A test overrides it so the doubled
+/// bound after a failure can be driven through the real launch path in
+/// milliseconds rather than 15 seconds.
+#[cfg(test)]
+static TEST_LAUNCH_BASE: std::sync::Mutex<Option<Duration>> = std::sync::Mutex::new(None);
+
+/// Start launches from `base` for this test process.
+#[cfg(test)]
+pub(crate) fn set_launch_base_for_test(base: Duration) {
+    *TEST_LAUNCH_BASE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(base);
+}
+
+/// The base bound one launch attempt gets: [`LAUNCH_TIMEOUT`], or the range
+/// a test narrowed it to.
+pub fn launch_base() -> Duration {
+    #[cfg(test)]
+    if let Some(base) = *TEST_LAUNCH_BASE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    {
+        return base;
+    }
+    LAUNCH_TIMEOUT
+}
 
 /// How long a show cue waits for the host to apply it. The host's loop runs
 /// about every millisecond, so this is a stall bound, not a budget: past it
@@ -192,9 +226,62 @@ pub fn remove_record(profile: &Path) {
     let _ = std::fs::remove_file(record_path(profile));
 }
 
-/// The first port nothing holds, from a small private range.
+/// The ports this process has selected and not yet handed to a host that is
+/// ready. **A port is a bind-test-then-drop**: between the test and the
+/// child's bind, another profile can select the same port, so the selection
+/// is held here until the host owns it or the launch fails.
+fn reserved_ports() -> &'static std::sync::Mutex<std::collections::HashSet<u16>> {
+    static PORTS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<u16>>> =
+        std::sync::OnceLock::new();
+    PORTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+fn reserved() -> std::sync::MutexGuard<'static, std::collections::HashSet<u16>> {
+    reserved_ports().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The port range one launch selects from. A test overrides it so two tests
+/// that nextest runs as separate processes - each with its own reservation
+/// set - do not both select the service's first port and collide on it and on
+/// its ring.
+#[cfg(test)]
+static TEST_PORT_RANGE: std::sync::Mutex<Option<std::ops::Range<u16>>> =
+    std::sync::Mutex::new(None);
+
+/// Select from `range` for this test process's launches.
+#[cfg(test)]
+pub(crate) fn set_port_range_for_test(range: std::ops::Range<u16>) {
+    *TEST_PORT_RANGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(range);
+}
+
+/// The first port nothing holds and nothing this process has reserved, from
+/// a small private range. The port stays reserved for the caller's launch
+/// until [`release_port`] is called.
 pub fn free_port() -> Option<u16> {
-    (9411..9431_u16).find(|port| std::net::TcpListener::bind(("127.0.0.1", *port)).is_ok())
+    #[cfg(test)]
+    if let Some(range) =
+        TEST_PORT_RANGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    {
+        return free_port_in(range);
+    }
+    free_port_in(9411..9431)
+}
+
+/// [`free_port`] over an explicit range. A test uses its own so its
+/// reservation cannot collide with another test's.
+pub(crate) fn free_port_in(range: std::ops::Range<u16>) -> Option<u16> {
+    let mut reserved = reserved();
+    let port = range.into_iter().find(|port| {
+        !reserved.contains(port) && std::net::TcpListener::bind(("127.0.0.1", *port)).is_ok()
+    })?;
+    reserved.insert(port);
+    Some(port)
+}
+
+/// Hand a port back once its host owns it or its launch failed. A port still
+/// bound by a live host stays unavailable through the bind test itself.
+pub fn release_port(port: u16) {
+    reserved().remove(&port);
 }
 
 /// One host's input pipe: a line per pointer gesture, in the order the
@@ -453,22 +540,63 @@ pub fn spawn_with(
 /// so the probe is trusted only once the ring says so. A child that cannot
 /// own the port never reads live, and the launch fails instead of crossing.
 pub async fn wait_ready_for(pid: u32, port: u16, ring: &str) -> Result<(), String> {
-    let deadline = tokio::time::Instant::now() + LAUNCH_TIMEOUT;
+    wait_ready_for_bound(pid, port, ring, LAUNCH_TIMEOUT).await
+}
+
+/// [`wait_ready_for`] under a caller's bound. **A profile that just failed a
+/// launch is retried under a longer bound**, so a cold start under load is
+/// not cut at the same 15 s that already failed once. The expiry message
+/// names what it was waiting on: the ring never went live, or the ring did
+/// and the endpoint never answered.
+pub async fn wait_ready_for_bound(
+    pid: u32,
+    port: u16,
+    ring: &str,
+    bound: Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + bound;
+    // **The ring is re-checked every poll, and it gates the probe.** Caching
+    // "it went live once" would let a host that died after going live hand
+    // its port and ring to another forge process's host, and the next probe
+    // would adopt that host. `ring_ever_live` is sticky for the expiry
+    // message only; `owns` is what admits a probe.
+    let mut ring_ever_live = false;
     loop {
-        let live = owns(ring, pid);
-        if live && probe(port).await {
-            return Ok(());
+        if owns(ring, pid) {
+            ring_ever_live = true;
+            if probe(port).await {
+                return Ok(());
+            }
         }
         if !alive(pid) {
             return Err("the browser host exited before its endpoint answered".to_owned());
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err(format!(
-                "the browser host on port {port} did not answer within {} s",
-                LAUNCH_TIMEOUT.as_secs()
-            ));
+            return Err(if ring_ever_live {
+                format!(
+                    "the browser host on port {port} went live but its endpoint never answered \
+                     within {}",
+                    bound_words(bound)
+                )
+            } else {
+                format!(
+                    "the browser host on port {port} was still alive but its ring never became \
+                     live within {}",
+                    bound_words(bound)
+                )
+            });
         }
         tokio::time::sleep(PROBE_EVERY).await;
+    }
+}
+
+/// A bound as a sentence names it. A sub-second test bound must not render
+/// as "0 s".
+fn bound_words(bound: Duration) -> String {
+    if bound < Duration::from_secs(1) {
+        format!("{:.1} s", bound.as_secs_f64())
+    } else {
+        format!("{} s", bound.as_secs())
     }
 }
 
@@ -498,14 +626,35 @@ pub fn host_log_path(profile: &Path) -> PathBuf {
 /// **Public because the live test support reads a failed test's host log the
 /// same way**, and a second reader would drift from this one's bounds.
 pub fn log_tail(log: &Path) -> String {
+    log_tail_since(log, 0)
+}
+
+/// The host log's byte length, the mark a launch's own tail starts at.
+///
+/// **The log is append-only and shared across the profile's hosts.** A host
+/// that wrote nothing since its spawn must not be reported with the previous
+/// host's last words; the length at the spawn is where its own tail begins.
+pub fn host_log_mark(profile: &Path) -> u64 {
+    std::fs::metadata(host_log_path(profile)).map_or(0, |meta| meta.len())
+}
+
+/// The host log's last few lines written at or after `from`, read from the
+/// file's own end. A launch's mark is [`host_log_mark`] taken before its
+/// spawn; a host that wrote nothing answers an empty tail rather than the
+/// previous host's words.
+pub fn log_tail_since(log: &Path, from: u64) -> String {
     use std::io::{Read as _, Seek as _};
     let Ok(mut file) = std::fs::File::open(log) else {
         return String::new();
     };
     let len = file.metadata().map_or(0, |meta| meta.len());
-    if len > TAIL_BYTES {
-        let _ = file.seek(std::io::SeekFrom::Start(len - TAIL_BYTES));
+    // A log shorter than the mark was truncated: there is nothing of this
+    // launch's to read.
+    if len <= from {
+        return String::new();
     }
+    let start = from.max(len.saturating_sub(TAIL_BYTES));
+    let _ = file.seek(std::io::SeekFrom::Start(start));
     let mut buf = Vec::with_capacity(usize::try_from(TAIL_BYTES).unwrap_or(usize::MAX));
     // A seek can land inside a multibyte character, so the tail is read
     // lossily rather than refused.
@@ -1684,5 +1833,175 @@ mod tests {
         std::fs::write(dir.path().join("cef-host.log"), wide).expect("the host log");
         let tail = log_tail(&dir.path().join("cef-host.log"));
         assert!(!tail.contains("MARKER"), "a whole read keeps the marker: {tail}");
+    }
+
+    /// **A host's tail starts at its own spawn.** The log is append-only and
+    /// shared across the profile's hosts, so a launch that wrote nothing must
+    /// not report the previous host's dying words.
+    #[test]
+    fn a_launch_tail_reads_only_its_own_bytes() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let log = dir.path().join("cef-host.log");
+        std::fs::write(&log, "previous host: XPC 4099\nprevious host: goodbye\n")
+            .expect("the host log");
+        let mark = host_log_mark(dir.path());
+        assert_eq!(log_tail_since(&log, mark), "", "a launch that wrote nothing has no tail");
+
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log)
+            .expect("the host log opens")
+            .write_all(b"new host: booting\n")
+            .expect("the new host writes");
+        assert_eq!(
+            log_tail_since(&log, mark),
+            "new host: booting",
+            "only the new host's own line is the tail"
+        );
+    }
+
+    /// **A log shorter than the mark reads as empty.** A log rotated under a
+    /// launch leaves nothing of that launch's to quote.
+    #[test]
+    fn a_tail_before_the_mark_reads_nothing() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let log = dir.path().join("cef-host.log");
+        std::fs::write(&log, "one\ntwo\n").expect("the host log");
+        assert_eq!(log_tail_since(&log, 9), "", "a mark past the file's end has no tail");
+    }
+
+    /// **A selected port is not handed out again until its launch releases
+    /// it.** The bind test drops its listener, so the selection is what keeps
+    /// two profiles off one port.
+    #[test]
+    fn a_port_is_reserved_until_its_launch_releases_it() {
+        static PORT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = PORT_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let first = free_port_in(12000..12100).expect("a port");
+        let second = free_port_in(12000..12100).expect("a second port");
+        assert_ne!(first, second, "a selected port is not handed out again");
+        release_port(first);
+        let third = free_port_in(12000..12100).expect("a third port");
+        assert_eq!(third, first, "a released port is available again");
+        release_port(second);
+        release_port(third);
+    }
+
+    /// **A launch that stays alive but never reports its ring is named by what
+    /// it was waiting on.** The bound's expiry is not a bare "did not answer".
+    #[tokio::test]
+    async fn a_launch_that_never_reports_its_ring_names_its_phase() {
+        let mut child = tokio::process::Command::new("sleep").arg("10").spawn().expect("a child");
+        let pid = child.id().expect("a pid");
+        let ring = format!("/forge-test-phase-{pid}");
+        // A port with no listener: bind one and drop it, so the test does not
+        // depend on a fixed number being free on the machine.
+        let port = {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a listener");
+            listener.local_addr().expect("the listener's address").port()
+        };
+        let err = wait_ready_for_bound(pid, port, &ring, Duration::from_millis(200))
+            .await
+            .expect_err("a child that never reports its ring fails");
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        assert!(err.contains("its ring never became live"), "the phase is named: {err}");
+        assert!(err.contains("0.2 s"), "a sub-second bound is not rendered as 0 s: {err}");
+    }
+
+    /// **A failed launch gets the longer bound; a success gets the base.**
+    /// The choice lives in one pure function so a test pins it without a
+    /// real host.
+    #[test]
+    fn a_failed_launch_gets_the_longer_bound() {
+        assert_eq!(launch_bound(false, Duration::from_secs(15)), Duration::from_secs(15));
+        assert_eq!(launch_bound(true, Duration::from_secs(15)), Duration::from_secs(30));
+    }
+
+    /// **A launch whose ring went live but whose endpoint never answered is
+    /// named by that phase.** The ring is this test's, owned by the live
+    /// child; the port has no endpoint.
+    #[tokio::test]
+    async fn a_launch_whose_ring_went_live_names_the_endpoint_phase() {
+        let mut child = tokio::process::Command::new("sleep").arg("10").spawn().expect("a child");
+        let pid = child.id().expect("a pid");
+        let ring = format!("/forge-test-phase-live-{pid}");
+        let mapped = Ring::create(&ring, 4, 4).expect("a test ring");
+        mapped.set_pid(pid);
+        mapped.set_state(crate::osr::STATE_LIVE);
+        let port = {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a listener");
+            listener.local_addr().expect("the listener's address").port()
+        };
+        let err = wait_ready_for_bound(pid, port, &ring, Duration::from_millis(200))
+            .await
+            .expect_err("a live ring with no endpoint fails");
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        Ring::unlink(&ring);
+        assert!(
+            err.contains("went live but its endpoint never answered"),
+            "the endpoint phase is named: {err}"
+        );
+    }
+
+    /// **A ring that stops being live is not admitted by a cached answer.**
+    /// The first poll sees the host live and is already probing when the host
+    /// reports failure; a cached "it went live once" would keep probing a
+    /// port another process's host now answers on and adopt it, where
+    /// per-poll ownership ends the wait with the endpoint phase.
+    #[tokio::test]
+    async fn a_ring_that_stops_being_live_is_not_admitted_by_a_cached_answer() {
+        let mut child = tokio::process::Command::new("sleep").arg("10").spawn().expect("a child");
+        let pid = child.id().expect("a pid");
+        let ring = format!("/forge-test-own-flip-{pid}");
+        let mapped = Ring::create(&ring, 4, 4).expect("a test ring");
+        mapped.set_pid(pid);
+        mapped.set_state(crate::osr::STATE_LIVE);
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("a listener");
+        let port = listener.local_addr().expect("the listener's address").port();
+        let name = ring.clone();
+        // **The flip precedes the close**, so the probe the live ring admitted
+        // is still in flight when the ring goes dead, and every later probe
+        // answers.
+        let server = std::thread::spawn(move || {
+            let Ok((first, _)) = listener.accept() else { return };
+            if let Ok(opened) = Ring::open(&name) {
+                opened.set_state(crate::osr::STATE_FAILED);
+            }
+            drop(first);
+            let deadline = std::time::Instant::now() + Duration::from_secs(1);
+            let _ = listener.set_nonblocking(true);
+            while std::time::Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let body = r#"{"Browser":"stub"}"#;
+                        let _ = std::io::Write::write_all(
+                            &mut stream,
+                            format!(
+                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            )
+                            .as_bytes(),
+                        );
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(5)),
+                }
+            }
+        });
+        let err = wait_ready_for_bound(pid, port, &ring, Duration::from_millis(300))
+            .await
+            .expect_err("a ring that is no longer live ends the wait");
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        let _ = server.join();
+        Ring::unlink(&ring);
+        assert!(
+            err.contains("went live but its endpoint never answered"),
+            "the endpoint phase is named: {err}"
+        );
     }
 }
