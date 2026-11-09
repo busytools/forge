@@ -1,15 +1,17 @@
 /**
- * The platform authenticator, as the page uses it: a purpose's wrapped blob
+ * The platform authenticator, as the page uses it: a purpose's wrapped key
  * stored, released or dropped, and whether this device can answer.
  *
  * **The gate is one door with a purpose key**, which is what makes a second
  * consumer a new purpose and its own blob shape rather than a new ceremony.
- * On the desktop and the phone the shell's gate answers through `invoke`; in a
- * browser the WebAuthn path answers behind these same functions. A build with
- * neither says so, and the caller keeps the password in front of the person.
+ * On the desktop and the phone the shell's gate answers through `invoke`; in
+ * a browser `web.ts` answers behind these same functions, its passkey record
+ * taking the place of the OS item.
  */
 
 import { invoke, isTauri } from '@tauri-apps/api/core';
+
+import * as web from './web';
 
 /** Whether this device can answer, and with which gesture. */
 export interface Availability {
@@ -27,12 +29,9 @@ export type Release =
   | { outcome: 'refused'; reason: string }
   | { outcome: 'not_enrolled' };
 
-/** The reason a browser without the WebAuthn path gives. */
-const NO_GATE = 'this browser has no biometric gate yet';
-
 /** Whether this device can release a purpose's blob at all. */
 export async function availability(): Promise<Availability> {
-  if (!isTauri()) return { available: false, biometric: false, reason: NO_GATE };
+  if (!isTauri()) return web.availability();
   try {
     return await invoke<Availability>('biometric_availability');
   } catch (why) {
@@ -42,7 +41,7 @@ export async function availability(): Promise<Availability> {
 
 /** Whether this device holds a blob for `purpose`. */
 export async function enrolled(purpose: string): Promise<boolean> {
-  if (!isTauri()) return false;
+  if (!isTauri()) return web.enrolled(purpose);
   try {
     return await invoke<boolean>('biometric_enrolled', { purpose });
   } catch {
@@ -54,23 +53,28 @@ export async function enrolled(purpose: string): Promise<boolean> {
 
 /** Store `purpose`'s wrapped blob, replacing any blob already there. */
 export async function store(purpose: string, blob: string): Promise<void> {
-  if (!isTauri()) throw new Error(NO_GATE);
+  if (!isTauri()) return web.store(purpose, blob);
   await invoke<void>('biometric_store', { purpose, blob });
 }
 
 /** Release `purpose`'s blob, asking the platform authenticator first. */
 export async function release(purpose: string): Promise<Release> {
-  if (!isTauri()) return { outcome: 'refused', reason: NO_GATE };
   try {
+    if (!isTauri()) return await web.release(purpose);
     return await invoke<Release>('biometric_release', { purpose });
   } catch (why) {
+    // A cancelled passkey prompt or a refused one reaches here as its own
+    // error; the card draws the platform's words and keeps the password.
     return { outcome: 'refused', reason: reasonOf(why) };
   }
 }
 
 /** Drop `purpose`'s blob. */
 export async function remove(purpose: string): Promise<void> {
-  if (!isTauri()) throw new Error(NO_GATE);
+  if (!isTauri()) {
+    web.remove(purpose);
+    return;
+  }
   await invoke<void>('biometric_remove', { purpose });
 }
 
