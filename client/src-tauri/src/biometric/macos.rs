@@ -78,19 +78,17 @@ macro_rules! constant {
 pub struct KeychainGate;
 
 impl Gate for KeychainGate {
-    fn availability(&self) -> impl std::future::Future<Output = Availability> + Send {
+    async fn availability(&self) -> Availability {
         // **The probe is a synchronous keychain add and delete**, so it runs
         // on the blocking pool with the rest of the gate's work rather than
         // on an async worker.
-        async move {
-            match tokio::task::spawn_blocking(Self::availability_now).await {
-                Ok(availability) => availability,
-                Err(_) => Availability {
-                    available: false,
-                    biometric: false,
-                    reason: Some("the keychain check did not run".to_owned()),
-                },
-            }
+        match tokio::task::spawn_blocking(Self::availability_now).await {
+            Ok(availability) => availability,
+            Err(_) => Availability {
+                available: false,
+                biometric: false,
+                reason: Some("the keychain check did not run".to_owned()),
+            },
         }
     }
 
