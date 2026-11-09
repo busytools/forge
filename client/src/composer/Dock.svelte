@@ -1,9 +1,8 @@
 <script lang="ts">
-  import { untrack } from 'svelte';
   import Prose from '../chat/Prose.svelte';
-  import { availability, enrolled, type Availability } from '../biometric';
+  import { availability, enrolled, reasonOf, type Availability } from '../biometric';
   import { VAULT_PURPOSE } from '../biometric/vault';
-  import { releaseVaultMaterial } from '../biometric/vault-enrolment';
+  import { releaseVaultMaterial, type VaultRelease } from '../biometric/vault-enrolment';
   import Icon from '../components/Icon.svelte';
   import { closeSurface, openSurface, surface } from '../browser/surface.svelte';
   import {
@@ -68,7 +67,9 @@
      */
     ownKey?: string | null;
     slot: SessionSlot;
-    connection: Pick<Connection, 'dispatch'>;
+    /** `onMessage` carries the live lock frame: a vault card follows the
+     *  session's lock state, not only the stamp it parked with. */
+    connection: Pick<Connection, 'dispatch' | 'onMessage'>;
     /** How many prompts wait behind this one, which the queue line states. */
     depth?: number;
     /** Why the core refused an answer to this prompt, when it did. */
@@ -648,11 +649,13 @@
    * reported, and the dock the reader has already answered keeps its
    * stand-down.
    */
-  function answer(command: Command): void {
+  function answer(command: Command): boolean {
     try {
       void connection.dispatch(command, slot);
+      return true;
     } catch (error) {
       report('the answer was not sent', error);
+      return false;
     }
   }
 
@@ -928,24 +931,47 @@
   let vaultBiometricButton = $state<HTMLButtonElement | null>(null);
   let vaultPasswordEl = $state<HTMLElement | null>(null);
 
-  const vaultNeedsUnlock = $derived(ask.kind === 'vault' && ask.request.needsUnlock);
+  /**
+   * **The live lock state, not only the card's stamp.** The idle clock can
+   * lock the session while the card stands, and the card's `needsUnlock` was
+   * stamped when it parked; the lock frame is the news, so the card asks for
+   * the password instead of letting an approve die with "Locked".
+   */
+  let vaultLocked = $state(false);
+  $effect(() => {
+    return connection.onMessage((message) => {
+      if (message.kind !== 'update') return;
+      const update = message.update;
+      if (typeof update === 'string') return;
+      const changed = update['vault_lock_changed'];
+      if (changed === null || typeof changed !== 'object') return;
+      const locked = (changed as { locked?: unknown }).locked;
+      if (typeof locked === 'boolean') vaultLocked = locked;
+    });
+  });
+
+  const vaultNeedsUnlock = $derived(
+    ask.kind === 'vault' && (ask.request.needsUnlock || vaultLocked),
+  );
   /** Whether the card's primary action is the platform gesture. */
   const vaultBiometric = $derived(
     vaultNeedsUnlock && !wantPassword && gate?.available === true && vaultEnrolled,
   );
 
-  // The gate is asked per card, keyed on the prompt's own identity: the record
-  // is replaced on every frame, and a re-ask would reset the card under a
-  // running gesture. A new card starts from the password until the gate has
-  // answered.
+  // The gate is asked per card, keyed on the prompt's own identity and on the
+  // card becoming a lock card: the record is replaced on every frame, and a
+  // re-ask would reset the card under a running gesture. A new card starts
+  // from the password until the gate has answered.
   $effect(() => {
     void ownKey;
-    if (!untrack(() => vaultNeedsUnlock)) return;
+    if (!vaultNeedsUnlock) return;
     wantPassword = false;
     vaultRefusal = null;
     releasing = false;
     gate = null;
     vaultEnrolled = false;
+    masterPassword = '';
+    twoFactor = '';
     let live = true;
     void (async () => {
       const [held, isEnrolled] = await Promise.all([availability(), enrolled(VAULT_PURPOSE)]);
@@ -964,6 +990,8 @@
   // late lands there too.
   $effect(() => {
     if (collapsed || !vaultBiometric) return;
+    // A reader typing in the words row keeps the caret.
+    if (inFieldNow()) return;
     vaultBiometricButton?.focus({ preventScroll: true });
   });
   // And "use the password" lands in the field it just uncovered.
@@ -1041,7 +1069,7 @@
     if (answered || ask.kind !== 'vault') return;
     if (
       decision === 'approve' &&
-      ask.request.needsUnlock &&
+      vaultNeedsUnlock &&
       released === undefined &&
       masterPassword === ''
     ) {
@@ -1051,16 +1079,27 @@
     const id = ask.request.id;
     const code = twoFactor.trim();
     let unlock = {};
-    if (decision === 'approve' && ask.request.needsUnlock) {
+    if (decision === 'approve' && vaultNeedsUnlock) {
       unlock =
         released === undefined
           ? { master_password: masterPassword, ...(code === '' ? {} : { two_factor: code }) }
           : { released };
     }
     const outcome = decision === 'send_back' ? { decision, note: vaultNote } : { decision };
+    // **Marked answered only when the command crossed.** A closed socket is
+    // reported by `answer`, and a card marked answered with nothing sent
+    // would leave the person no way to try again.
+    if (!answer({ respond_vault_ask: { key: slot, id, answer: { ...outcome, ...unlock } } })) {
+      vaultRefusal = 'the answer was not sent; try again';
+      return;
+    }
     onanswer(id);
     if (decision === 'send_back') onsending();
-    answer({ respond_vault_ask: { key: slot, id, answer: { ...outcome, ...unlock } } });
+    // **The password is not kept once it has crossed.** A value left in the
+    // card can satisfy the next card's approve guard without the person
+    // typing anything.
+    masterPassword = '';
+    twoFactor = '';
   }
 
   /**
@@ -1082,8 +1121,17 @@
     vaultRefusal = null;
     // The gate releases the wrapping key, the core its sealed material, and
     // the vault consumer joins them; every ending here is the card's to draw.
-    const released = await releaseVaultMaterial(connection);
-    releasing = false;
+    // **The working state always ends**: a read that throws on a closed
+    // socket must not leave the button saying it is waiting for ever.
+    let released: VaultRelease;
+    try {
+      released = await releaseVaultMaterial(connection);
+    } catch (why) {
+      vaultRefusal = reasonOf(why);
+      return;
+    } finally {
+      releasing = false;
+    }
     if (ask.kind !== 'vault' || answered) return;
     if (released.outcome === 'released') {
       answerVault('approve', released.material);
@@ -1821,7 +1869,7 @@
             : ''}
         </div>
       {/if}
-      {#if ask.request.needsUnlock}
+      {#if vaultNeedsUnlock}
         {#if vaultBiometric}
           <!-- The gesture leads and the password is one click beneath it: a
                broken sensor is a working path away, never a dead end. A
@@ -1837,9 +1885,9 @@
               }}
             >
               {#if releasing}
-                waiting for {gate?.biometric ? 'Touch ID' : 'your device password'}…
+                waiting for {gate?.biometric ? 'this device' : 'the device password'}…
               {:else}
-                Unlock with {gate?.biometric ? 'Touch ID' : 'your device password'}
+                Unlock with {gate?.biometric ? 'this device' : 'the device password'}
               {/if}
             </button>
             <button class="btn link" onclick={useVaultPassword}>
@@ -1850,10 +1898,10 @@
             {/if}
           </div>
         {:else}
-          {#if vaultRefusal !== null}
-            <p class="desc why" role="alert">{vaultRefusal}</p>
-          {/if}
           <div class="unlock">
+            {#if vaultRefusal !== null}
+              <p class="desc why" role="alert">{vaultRefusal}</p>
+            {/if}
             <Field
               editor="dock"
               class="fld"
@@ -2111,7 +2159,7 @@
         {#if !vaultBiometric}
           <button
             class="btn p"
-            disabled={ask.request.needsUnlock && masterPassword === ''}
+            disabled={vaultNeedsUnlock && masterPassword === ''}
             onclick={() => answerVault('approve')}>Approve</button
           >
         {/if}
@@ -2168,8 +2216,8 @@
           {#if vaultBiometric}
             <span
               ><kbd>Enter</kbd> unlocks with {gate?.biometric
-                ? 'Touch ID'
-                : 'your device password'}</span
+                ? 'this device'
+                : 'the device password'}</span
             >
             <span><kbd>Tab</kbd> to the password, the send-back or the decline</span>
           {:else}

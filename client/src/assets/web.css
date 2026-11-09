@@ -3621,8 +3621,11 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   .sendb { min-height: 44px; min-width: 44px; }
   /* The send-back field is a finger target like every other control. */
   .dock .sendback .notes { min-height: 44px; }
-  /* The vault card's unlock boxes too. */
+  /* The vault card's unlock boxes too. **The gesture's own rule below sets
+     40px and outranks the generic `.dock .btn` floor**, so it is stated here
+     at the same specificity. */
   .dock .unlock .fld { min-height: 44px; }
+  .dock .unlock .bio { min-height: 44px; }
 }
 /* The phase or the batch, for a screen reader only: the marks say nothing. */
 .dock .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
