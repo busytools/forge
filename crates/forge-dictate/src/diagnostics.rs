@@ -134,6 +134,11 @@ pub(crate) fn claim_take_dir(dir: &Path, stamp: u128) -> std::io::Result<(String
 /// left to persist and count toward retention. When the removal itself
 /// fails, the directory is left in place and the failure is logged.
 pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>, cancel: &CancelToken) {
+    // A take already abandoned before the write starts pays no write; the
+    // check after it is for one cancelled while the files are landing.
+    if cancel.is_cancelled() {
+        return;
+    }
     // The store is lazily made: a first take is what brings it into being.
     if let Err(error) = std::fs::create_dir_all(dir) {
         tracing::warn!(
@@ -156,7 +161,7 @@ pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>, can
             return;
         }
     };
-    write_take(&take_dir, take);
+    let wrote = write_take(&take_dir, take);
     if cancel.is_cancelled() {
         if let Err(error) = std::fs::remove_dir_all(&take_dir) {
             tracing::warn!(
@@ -168,15 +173,21 @@ pub(crate) fn capture_take(dir: &Path, take_id: u128, take: &TakeRecord<'_>, can
         }
         return;
     }
-    prune(dir);
+    // Pruned only after a complete write, as before the write was split out:
+    // a partial directory has not earned a retention pass.
+    if wrote {
+        prune(dir);
+    }
 }
 
-/// One claimed take's files, `meta.json` last.
+/// One claimed take's files, `meta.json` last, answering whether the take
+/// was written whole.
 ///
 /// A failure stops this take's write and leaves a partial directory, which
-/// never reads as a complete take. An abandoned take is taken back by
-/// [`capture_take`] when its token is set by the time this returns.
-fn write_take(take_dir: &Path, take: &TakeRecord<'_>) {
+/// never reads as a complete take; [`capture_take`] then skips the prune.
+/// An abandoned take is taken back by [`capture_take`] when its token is
+/// set by the time this returns.
+fn write_take(take_dir: &Path, take: &TakeRecord<'_>) -> bool {
     // meta.json is written LAST, which is what makes a take directory
     // without it incomplete: an early return above leaves a partial
     // directory that still counts for retention, but never reads as a
@@ -188,7 +199,7 @@ fn write_take(take_dir: &Path, take: &TakeRecord<'_>) {
             dir = %take_dir.display(),
             "diagnostics: store directory not writable"
         );
-        return;
+        return false;
     }
 
     if let Err(error) = write_wav(&take_dir.join("output.wav"), take.audio) {
@@ -198,7 +209,7 @@ fn write_take(take_dir: &Path, take: &TakeRecord<'_>) {
             dir = %take_dir.display(),
             "diagnostics: capture not written"
         );
-        return;
+        return false;
     }
     for (k, window) in take.windows.iter().enumerate() {
         if let Err(error) = std::fs::write(take_dir.join(format!("raw/{k}.txt")), &window.raw) {
@@ -209,7 +220,7 @@ fn write_take(take_dir: &Path, take: &TakeRecord<'_>) {
                 window = k,
                 "diagnostics: window transcript not written"
             );
-            return;
+            return false;
         }
     }
     if let Err(error) = std::fs::write(take_dir.join("joined.txt"), take.joined) {
@@ -219,7 +230,7 @@ fn write_take(take_dir: &Path, take: &TakeRecord<'_>) {
             dir = %take_dir.display(),
             "diagnostics: joined transcript not written"
         );
-        return;
+        return false;
     }
     if let Err(error) = std::fs::write(take_dir.join("text.txt"), take.text) {
         tracing::warn!(
@@ -228,7 +239,7 @@ fn write_take(take_dir: &Path, take: &TakeRecord<'_>) {
             dir = %take_dir.display(),
             "diagnostics: normalized transcript not written"
         );
-        return;
+        return false;
     }
 
     let ms = |d: std::time::Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
@@ -277,6 +288,7 @@ fn write_take(take_dir: &Path, take: &TakeRecord<'_>) {
                     dir = %take_dir.display(),
                     "diagnostics: metadata not written"
                 );
+                return false;
             }
         }
         Err(error) => {
@@ -286,8 +298,10 @@ fn write_take(take_dir: &Path, take: &TakeRecord<'_>) {
                 dir = %take_dir.display(),
                 "diagnostics: metadata not serializable"
             );
+            return false;
         }
     }
+    true
 }
 
 /// One role's resolved spec as `meta.json` names it: the file, the digest

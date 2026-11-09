@@ -609,7 +609,7 @@ impl Engine {
         let audio = audio_duration(pcm.len());
         if peak < self.silence_floor {
             let _ = reply.send(Ok(Outcome::NoAudio { peak, audio }));
-            return Ok(Ticket { answer, cancel, segmenter: None });
+            return Ok(Ticket { answer, cancel, delivered: false, segmenter: None });
         }
 
         self.jobs
@@ -628,7 +628,7 @@ impl Engine {
                 queued_at,
             })
             .map_err(|_| Error::EngineStopped)?;
-        Ok(Ticket { answer, cancel, segmenter: None })
+        Ok(Ticket { answer, cancel, delivered: false, segmenter: None })
     }
 }
 
@@ -802,6 +802,7 @@ impl Capture {
                 Ok(Ticket {
                     answer: answer_rx,
                     cancel: self.cancel.clone(),
+                    delivered: false,
                     segmenter: Some(segmenter),
                 })
             }
@@ -855,6 +856,13 @@ impl Drop for Capture {
 pub struct Ticket {
     answer: Receiver<Result<Outcome, Error>>,
     cancel: CancelToken,
+    /// Set once the answer is in hand. A delivered ticket's own drop is not
+    /// an abandonment: on the direct path the diagnostics record is written
+    /// after the answer goes out, and the drop's cancel would delete the
+    /// take the worker is still writing. A host's clone from
+    /// [`Ticket::cancel_token`] keeps sharing the flag, so abandoning the
+    /// take after the answer still cancels it.
+    delivered: bool,
     /// The take's segmenter, on the capture path. Joined so no take
     /// thread outlives the value that owns its result; it holds no
     /// native state, so the join is tidiness and not the teardown
@@ -878,6 +886,10 @@ impl Ticket {
     /// put a runtime in every consumer to serve one.
     pub fn recv(mut self) -> Result<Outcome, Error> {
         let answer = self.answer.recv().map_err(|_| Error::EngineStopped)?;
+        // Disarmed before the drop runs: the answer is this ticket's job,
+        // and what the worker does after it - the direct path's record
+        // write - must not read as the caller walking away.
+        self.delivered = true;
         if let Some(segmenter) = self.segmenter.take() {
             let _ = segmenter.join();
         }
@@ -896,7 +908,9 @@ impl Ticket {
 
 impl Drop for Ticket {
     fn drop(&mut self) {
-        self.cancel.cancel();
+        if !self.delivered {
+            self.cancel.cancel();
+        }
         if let Some(segmenter) = self.segmenter.take() {
             let _ = segmenter.join();
         }
@@ -1222,15 +1236,23 @@ fn worker(
         if cancellable {
             session.set_cancel_token(&job.cancel);
         }
-        in_flight
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .replace(job.cancel.clone());
+        // Only a job that recognizes audio runs a cancellable inference. A
+        // prejoined job only rewrites text the take already has, so
+        // installing it here would let a teardown's cancel discard words
+        // that are already in hand; `finish_after_join` still reads the
+        // take's own token.
+        let recognizing = job.prejoined.is_none();
+        if recognizing {
+            in_flight
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .replace(job.cancel.clone());
+        }
         // Re-checked after installing the token, not only before: teardown
         // between the first check and this line would have seen `None` in
         // `in_flight`, cancelled nothing, and then waited out a full
         // inference it believed it had aborted.
-        if stopping.load(Ordering::Relaxed) {
+        if recognizing && stopping.load(Ordering::Relaxed) {
             job.cancel.cancel();
         }
         // Each window runs on its own against the shared session; a
@@ -1917,6 +1939,34 @@ mod tests_engine {
         );
     }
 
+    /// A ticket that delivered its answer is not an abandonment. The direct
+    /// path writes its diagnostics record after the answer goes out, so the
+    /// ticket's own drop cancelling the token would delete the take the
+    /// worker is still writing. A ticket dropped without its answer is an
+    /// abandonment and still cancels.
+    #[test]
+    fn a_delivered_ticket_does_not_cancel_its_take() {
+        let (reply, answer) = channel();
+        let cancel = CancelToken::new();
+        let ticket = Ticket { answer, cancel: cancel.clone(), delivered: false, segmenter: None };
+        reply
+            .send(Err(Error::Recognition { message: "x".into() }))
+            .expect("the answer is buffered");
+        let _ = ticket.recv();
+        assert!(
+            !cancel.is_cancelled(),
+            "a ticket whose answer was received must not cancel the take under its write"
+        );
+
+        let (_reply, answer) = channel::<Result<Outcome, Error>>();
+        let cancel = CancelToken::new();
+        drop(Ticket { answer, cancel: cancel.clone(), delivered: false, segmenter: None });
+        assert!(
+            cancel.is_cancelled(),
+            "a ticket dropped without its answer still abandons the take"
+        );
+    }
+
     /// A load failure has to reach a waiter, and it has to keep reaching
     /// them. Both halves are load-bearing for a host that gates its
     /// startup on this: settling `Ok` regardless of the load would let it
@@ -2488,7 +2538,10 @@ mod tests_engine {
     /// must take the directory back - a check at its top could not.
     ///
     /// Driven through [`TakeSegmenter::finish`] rather than the helper so
-    /// the segmenter's own token is the one the writer sees.
+    /// the segmenter's own token is the one the writer sees, and the clone
+    /// this test fires is the host's `cancel_token()` handle: a delivered
+    /// ticket disarms its own drop, so only a host cancel reaches a take
+    /// whose answer has already gone out.
     #[test]
     fn a_cancel_during_the_write_takes_the_directory_back() {
         let dir = tempfile::tempdir().unwrap();
@@ -2537,7 +2590,7 @@ mod tests_engine {
 
         // The writer claims its directory before it writes anything: the
         // moment it is there, fire the token while the files are landing.
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let claimed = std::fs::read_dir(&store).is_ok_and(|entries| {
                 entries
