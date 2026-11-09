@@ -2,6 +2,7 @@
   import InstanceCard from './InstanceCard.svelte';
   import { ago } from '../components/age';
   import type { DeviceGate } from '../biometric/device';
+  import { enrolmentIdIfMinted } from '../biometric/vault-enrolment';
   import type { BiometricEnrolment } from '../wire/home';
 
   /**
@@ -43,13 +44,25 @@
     return `last used ${ago(at.secs_since_epoch, nowSeconds)} ago`;
   }
 
+  /** This device's row in the core's list, when the id was ever minted. */
+  const mine = $derived(devices.find((held) => held.id === enrolmentIdIfMinted()) ?? null);
+  /** Whether the core still holds this device's vault purpose. */
+  const serverHasVault = $derived(
+    mine?.purposes.some((purpose) => purpose.purpose === 'vault') ?? false,
+  );
+
   /** This device's own state, in one line. */
   const deviceLine = $derived.by(() => {
     switch (device.outcome) {
       case 'reading':
         return 'checking this device';
       case 'enrolled':
-        return 'enrolled - the gesture unlocks the vault here';
+        // **Enrolled here is not enrolled on the server**: a rotation missed
+        // while the page was away leaves the local item and no row, and the
+        // route back is this press rather than a revoke first.
+        return serverHasVault
+          ? 'enrolled - the gesture unlocks the vault here'
+          : 'enrolled here, but the server has no row - enrol again';
       case 'ready':
         return 'not enrolled - enrol while the vault is unlocked';
       case 'needs_unlock':
@@ -60,8 +73,13 @@
         return `the enrolment did not land: ${device.reason}`;
     }
   });
+  // The press is offered unless the gate cannot hold a key at all, or the
+  // local item and the server row already agree. **A replacing re-enrol is
+  // always allowed**: it is the documented route back from a missed rotation.
   const canEnrol = $derived(
-    device.outcome === 'ready' || device.outcome === 'needs_unlock' || device.outcome === 'failed',
+    device.outcome !== 'reading' &&
+      device.outcome !== 'unavailable' &&
+      !(device.outcome === 'enrolled' && serverHasVault),
   );
 </script>
 

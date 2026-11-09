@@ -7,6 +7,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import BiometricCard from './BiometricCard.svelte';
+import type { DeviceGate } from '../biometric/device';
 import type { BiometricEnrolment } from '../wire/home';
 
 let app: Record<string, unknown> | null = null;
@@ -45,9 +46,22 @@ function devices(): BiometricEnrolment[] {
 function draw(
   read: { outcome: 'read'; value: BiometricEnrolment[] } | { outcome: 'failed'; value: string },
   onrevoke: (enrolment: string, purpose: string) => void = () => {},
+  device?: DeviceGate,
+  onenrol: () => void = () => {},
 ): void {
-  app = mount(BiometricCard, { target: document.body, props: { read, onrevoke } });
+  app = mount(BiometricCard, {
+    target: document.body,
+    props: { read, onrevoke, ...(device === undefined ? {} : { device }), onenrol },
+  });
   flushSync();
+}
+
+function enrolButton(): HTMLButtonElement | null {
+  return (
+    [...document.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent?.trim() === 'enrol',
+    ) ?? null
+  );
 }
 
 function revokeButtons(): HTMLButtonElement[] {
@@ -90,5 +104,36 @@ describe('the device enrolments card', () => {
     expect(document.body.textContent).toContain('could not be read');
     expect(document.body.textContent).toContain('the machine-local store is not open');
     expect(document.body.textContent).not.toContain('No device has enrolled');
+  });
+
+  it('claims no count when the list could not be read', () => {
+    draw({ outcome: 'failed', value: 'the machine-local store is not open' });
+
+    expect(
+      document.querySelector('.settings-card-count'),
+      'a failed read is not zero devices',
+    ).toBeNull();
+  });
+
+  it('draws an unavailable gate and offers no press that cannot land', () => {
+    draw({ outcome: 'read', value: [] }, () => {}, {
+      outcome: 'unavailable',
+      reason: 'the app is not signed for the keychain',
+    });
+
+    expect(document.body.textContent).toContain(
+      'cannot unlock here: the app is not signed for the keychain',
+    );
+    expect(enrolButton(), 'an unavailable gate offers no door').toBeNull();
+  });
+
+  /// **The replacing re-enrol is the route back from a missed rotation**: the
+  /// local item survives and the server row does not, so the card must keep
+  /// the press even though the gate says it is enrolled.
+  it('offers a replenishing enrol when the server holds no row for this device', () => {
+    draw({ outcome: 'read', value: [] }, () => {}, { outcome: 'enrolled' });
+
+    expect(document.body.textContent).toContain('enrolled here, but the server has no row');
+    expect(enrolButton(), 'the press is the route back').not.toBeNull();
   });
 });

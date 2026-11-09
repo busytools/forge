@@ -377,16 +377,21 @@
           </InstanceCard>
           {#if area.id === 'connectors' && group.label === 'vault'}
             <VaultLockCard state={vault} onlock={onLockVault} />
-            <BiometricCard
-              read={biometric ?? {
-                outcome: 'failed',
-                value: 'this server does not report biometric enrolments',
-              }}
-              onrevoke={(enrolment: string, purpose: string) =>
-                onRevokeBiometric(enrolment, purpose)}
-              {device}
-              onenrol={onEnrolDevice}
-            />
+            <!-- **No enrol door without a vault**: the catalogue always emits
+                 this group, so the card is what must not draw an enrol press
+                 that can never succeed. `undefined` is a home not read yet. -->
+            {#if vault !== null && vault !== undefined}
+              <BiometricCard
+                read={biometric ?? {
+                  outcome: 'failed',
+                  value: 'this server does not report biometric enrolments',
+                }}
+                onrevoke={(enrolment: string, purpose: string) =>
+                  onRevokeBiometric(enrolment, purpose)}
+                {device}
+                onenrol={onEnrolDevice}
+              />
+            {/if}
           {/if}
         {/each}
         {#each added as entry (entry.path)}
