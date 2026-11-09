@@ -41,6 +41,7 @@ mod tests {
                 device: "Ved's MacBook Pro".to_owned(),
                 purpose: "vault".to_owned(),
                 blob: blob.blob.clone(),
+                respond: None,
             })
             .expect("the enrol routes");
 

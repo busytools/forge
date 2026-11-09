@@ -7810,9 +7810,16 @@ impl Workspace {
                     };
                     self.push_task(task);
                 }
-                Command::BiometricEnrol { enrolment, device, purpose, blob } => {
+                Command::BiometricEnrol { enrolment, device, purpose, blob, respond } => {
+                    // The write's own answer rides the reply: `false` is what
+                    // a rotation rewrite turns into a lock (decision 15), and
+                    // a refusal is a dispatch error so the two cannot be
+                    // mistaken for each other.
                     self.enrol_biometric(enrolment, &device, &purpose, &blob)
                         .map_err(|reason| DispatchError::BiometricRefused { reason })?;
+                    if let Some(respond) = respond {
+                        let _ = respond.send(true);
+                    }
                 }
                 Command::BiometricRelease { enrolment, purpose, respond } => {
                     // The wait the transport answered: a store failure is a

@@ -11,6 +11,7 @@
     serverParameter,
   } from '../connect/remembered';
   import { watchHome, type HomeRead } from '../home/live';
+  import { watchVaultEnrolment } from '../biometric/vault-enrolment';
   import {
     askState,
     deliverAsk,
@@ -227,10 +228,14 @@
     const stopGreetings = open.onMessage((message) => {
       if (message.kind === 'greeting') skew = open.skew();
     });
+    // The vault's own lifecycle: an unlock enrols this device, and a rotated
+    // refresh token rewrites the sealed bytes (or locks the session).
+    const stopVault = watchVaultEnrolment(open);
     return () => {
       stopHome();
       stopStatus();
       stopGreetings();
+      stopVault();
     };
   });
 

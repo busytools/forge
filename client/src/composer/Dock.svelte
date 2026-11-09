@@ -1,8 +1,9 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import Prose from '../chat/Prose.svelte';
-  import { availability, enrolled, release, type Availability } from '../biometric';
-  import { decodeVaultMaterial, VAULT_PURPOSE } from '../biometric/vault';
+  import { availability, enrolled, type Availability } from '../biometric';
+  import { VAULT_PURPOSE } from '../biometric/vault';
+  import { releaseVaultMaterial } from '../biometric/vault-enrolment';
   import Icon from '../components/Icon.svelte';
   import { closeSurface, openSurface, surface } from '../browser/surface.svelte';
   import {
@@ -1079,17 +1080,13 @@
     if (releasing) return;
     releasing = true;
     vaultRefusal = null;
-    const released = await release(VAULT_PURPOSE);
+    // The gate releases the wrapping key, the core its sealed material, and
+    // the vault consumer joins them; every ending here is the card's to draw.
+    const released = await releaseVaultMaterial(connection);
     releasing = false;
     if (ask.kind !== 'vault' || answered) return;
     if (released.outcome === 'released') {
-      const material = decodeVaultMaterial(released.blob);
-      if (material === null) {
-        vaultRefusal = 'the stored unlock material could not be read; use the password';
-        wantPassword = true;
-        return;
-      }
-      answerVault('approve', material);
+      answerVault('approve', released.material);
       return;
     }
     if (released.outcome === 'not_enrolled') {

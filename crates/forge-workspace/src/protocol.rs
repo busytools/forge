@@ -428,6 +428,11 @@ pub enum Command {
         purpose: String,
         /// The wrapped secret, base64.
         blob: String,
+        /// Answers `true` when the blob was stored, `false` when it was not.
+        /// **The rotation rewrite reads it**: decision 15 says a rewrite that
+        /// cannot land locks the vault, and this is the write's own answer.
+        #[serde(skip)]
+        respond: Option<oneshot::Sender<bool>>,
     },
     /// A client asks for the blob it enrolled for one purpose, so its gate can
     /// unwrap it. Answers through `reply_to` with the blob, or `null` when that

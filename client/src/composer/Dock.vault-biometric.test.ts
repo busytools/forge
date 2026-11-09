@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /**
- * The locked vault card's states, driven through the shell's gate mock.
+ * The locked vault card's states, driven through the vault consumer's release
+ * mock.
  *
  * **What the card draws at each step is the claim**: the gesture where the
  * device offers one, the password one click beneath it, the working state
@@ -26,6 +27,15 @@ vi.mock('@tauri-apps/api/core', () => ({
     if (answer === undefined) return Promise.reject(new Error(`no answer for ${command}`));
     return Promise.resolve(answer(args));
   },
+}));
+
+/** The vault consumer's release, which the card calls as its primary action. */
+const consumer = vi.hoisted(() => ({
+  releaseVaultMaterial: vi.fn(),
+}));
+
+vi.mock('../biometric/vault-enrolment', () => ({
+  releaseVaultMaterial: consumer.releaseVaultMaterial,
 }));
 
 import Dock from './Dock.svelte';
@@ -71,9 +81,8 @@ function mountDock(ask: Ask): void {
 }
 
 /**
- * Let the gate's promises settle and redraw. The dynamic `invoke` import
- * resolves on a macrotask, so microtasks alone leave the card in its first
- * paint and every assertion reads a gate that has not answered yet.
+ * Let the gate's promises settle and redraw. The shell's `invoke` resolves on
+ * a macrotask, so microtasks alone leave the card in its first paint.
  */
 async function settled(): Promise<void> {
   for (let turn = 0; turn < 6; turn += 1) await Promise.resolve();
@@ -96,6 +105,7 @@ beforeEach(() => {
   shell.answers.clear();
   shell.answers.set('biometric_availability', () => ({ available: true, biometric: true }));
   shell.answers.set('biometric_enrolled', () => true);
+  consumer.releaseVaultMaterial.mockReset();
 });
 
 afterEach(() => {
@@ -122,10 +132,10 @@ describe('the locked vault card with an enrolment', () => {
   });
 
   it('runs the gesture on Enter and sends the released material with the answer', async () => {
-    shell.answers.set('biometric_release', () => ({
+    consumer.releaseVaultMaterial.mockResolvedValue({
       outcome: 'released',
-      blob: JSON.stringify({ refresh_token: 'refresh-1', user_key: 'user-key-1' }),
-    }));
+      material: { refresh_token: 'refresh-1', user_key: 'user-key-1' },
+    });
     mountDock(aVaultAsk());
     await settled();
 
@@ -138,12 +148,9 @@ describe('the locked vault card with an enrolment', () => {
     await settled();
 
     expect(
-      shell.calls.some((call) => call.command === 'biometric_release'),
-      'the gate was asked for the purpose',
-    ).toBe(true);
-    expect(shell.calls.find((call) => call.command === 'biometric_release')?.args).toEqual({
-      purpose: 'vault',
-    });
+      consumer.releaseVaultMaterial,
+      'the consumer was asked to release',
+    ).toHaveBeenCalledOnce();
     expect(dispatched).toHaveLength(1);
     expect(dispatched[0]?.[0]).toEqual({
       respond_vault_ask: {
@@ -157,14 +164,12 @@ describe('the locked vault card with an enrolment', () => {
     });
   });
 
-  it('draws the working state while the OS prompt is up', async () => {
+  it('draws the working state while the prompt is up', async () => {
     const pending: { resolve: ((answer: unknown) => void) | null } = { resolve: null };
-    shell.answers.set(
-      'biometric_release',
-      () =>
-        new Promise((resolve) => {
-          pending.resolve = resolve;
-        }),
+    consumer.releaseVaultMaterial.mockReturnValue(
+      new Promise((resolve) => {
+        pending.resolve = resolve;
+      }),
     );
     mountDock(aVaultAsk());
     await settled();
@@ -182,10 +187,10 @@ describe('the locked vault card with an enrolment', () => {
   });
 
   it('keeps the card standing on a refusal, says why, and offers the password', async () => {
-    shell.answers.set('biometric_release', () => ({
+    consumer.releaseVaultMaterial.mockResolvedValue({
       outcome: 'refused',
       reason: 'the authenticator refused the gesture',
-    }));
+    });
     mountDock(aVaultAsk());
     await settled();
 
@@ -209,15 +214,15 @@ describe('the locked vault card with an enrolment', () => {
     ).toBe(true);
   });
 
-  it('falls back to the password when the released blob is not readable', async () => {
-    shell.answers.set('biometric_release', () => ({ outcome: 'released', blob: 'not json' }));
+  it('falls back to the password when the device has nothing enrolled', async () => {
+    consumer.releaseVaultMaterial.mockResolvedValue({ outcome: 'not_enrolled' });
     mountDock(aVaultAsk());
     await settled();
 
     button('Unlock with Touch ID')?.click();
     await settled();
 
-    expect(document.body.textContent).toContain('could not be read; use the password');
+    expect(document.body.textContent).toContain('this device has nothing enrolled');
     expect(dispatched).toHaveLength(0);
     expect(document.querySelector('input[type="password"]')).not.toBeNull();
   });

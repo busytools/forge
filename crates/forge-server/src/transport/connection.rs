@@ -4467,6 +4467,17 @@ fn dispatch_answering(
             let command = Command::BiometricRelease { enrolment, purpose, respond: Some(tx) };
             answered(state, command, to, rx, reply_tx);
         }
+        Command::BiometricEnrol { enrolment, device, purpose, blob, .. } => {
+            let (tx, rx) = oneshot::channel();
+            let command = Command::BiometricEnrol {
+                enrolment,
+                device,
+                purpose,
+                blob,
+                respond: Some(tx),
+            };
+            answered(state, command, to, rx, reply_tx);
+        }
         Command::VaultEnrolmentMaterial { .. } => {
             let (tx, rx) = oneshot::channel();
             let command = Command::VaultEnrolmentMaterial { respond: Some(tx) };
@@ -4675,6 +4686,7 @@ fn answers_through_a_reply(command: &Command) -> bool {
             | Command::DeleteReviewThread { .. }
             | Command::SubmitReview { .. }
             | Command::BiometricRelease { .. }
+            | Command::BiometricEnrol { .. }
             | Command::VaultEnrolmentMaterial { .. }
     )
 }
