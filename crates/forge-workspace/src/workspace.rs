@@ -845,6 +845,12 @@ pub struct Workspace {
     /// forge UI level; their JSONLs persist on disk). Mutated via
     /// `insert_live_worker` / `remove_latest_worker` / `drain_live_workers`.
     live_workers: Mutex<HashMap<ProjectKey, Vec<crate::mcp::workers::types::WorkerEntry>>>,
+    /// The per-lead clock of the injected board sweep, keyed by the
+    /// lead's slot. In memory only, so a restart re-arms every lead:
+    /// the sweep is a moment, not a schedule the store should own.
+    /// `pub(crate)` so the impl block in [`crate::idle_sweep`] can
+    /// reach it.
+    pub(crate) idle_sweeps: Mutex<HashMap<SessionSlot, crate::idle_sweep::SweepClock>>,
     /// One claim per composed worker-worktree path, held while a spawn's
     /// ensure/insert or a despawn's removal is in flight. The live
     /// registry is per project; this is the repository-wide one, so two
@@ -2614,6 +2620,7 @@ impl Workspace {
             command_senders: Mutex::new(HashMap::new()),
             session_teardowns: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
+            idle_sweeps: Mutex::new(HashMap::new()),
             worktree_claims: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             despawn_cleanups: Mutex::new(HashSet::new()),
             spawn_failures: Mutex::new(HashMap::new()),
