@@ -14,7 +14,6 @@ use forge_primitives::tasks::TaskStatus;
 use tracing::Instrument;
 
 use crate::SessionSlot;
-use crate::board::DEFAULT_STALE_SECS;
 use crate::chase::{Deliver, Delivery, PromptDeliver};
 use crate::mcp::workers::types::WorkerEntry;
 use crate::workspace::Workspace;
@@ -30,19 +29,37 @@ pub const IDLE_SWEEP_MIN_GAP_SECS: u64 = 2 * 60 * 60;
 /// interruption.
 pub const IDLE_SWEEP_FALLBACK_SECS: u64 = 6 * 60 * 60;
 
-/// The one prompt an injected sweep delivers.
+/// The idle path's prompt.
 pub const IDLE_SWEEP_PROMPT: &str = "Nothing is in flight on this board. Sweep it now, and end \
      with the next three picks from the backlog.";
+
+/// The fallback's own lead-in. The fallback fires precisely when the lead
+/// is NOT idle, so it must not claim the board is quiet.
+pub const IDLE_SWEEP_FALLBACK_PROMPT: &str = "Six hours have passed since the last sweep. Sweep \
+     the board when you can, and end with the next three picks from the backlog.";
 
 /// One lead's injected-sweep clock, held in memory so a restart re-arms
 /// every lead.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SweepClock {
-    /// When this workspace first saw the lead live, the baseline the
-    /// fallback measures from before any sweep has landed.
+    /// When this workspace first saw the lead live, re-seeded on every
+    /// tick that finds the seat asleep. The fallback measures from here
+    /// only until a sweep has landed this process.
     pub(crate) first_seen: SystemTime,
-    /// When the last injected sweep was delivered.
+    /// When the last injected sweep was delivered. Kept across a session
+    /// restart: the two-hour gap belongs to the lead, and only a process
+    /// restart re-arms it.
     pub(crate) last_delivered: Option<SystemTime>,
+    /// Whether the last delivery attempt failed, so a failure episode is
+    /// logged once rather than on every retry tick.
+    pub(crate) failing: bool,
+}
+
+/// How long `now` is after `since`, and zero when the clock went
+/// backwards. An age that cannot be measured is unknown, never
+/// infinitely old: one NTP step must not sweep every lead.
+fn age_secs(since: SystemTime, now: SystemTime) -> u64 {
+    now.duration_since(since).map_or(0, |d| d.as_secs())
 }
 
 impl Workspace {
@@ -50,23 +67,36 @@ impl Workspace {
     /// lead that is idle, or overdue for one. Returns how many prompts
     /// reached a session.
     pub fn idle_sweep(&self, deliver: &dyn Deliver, now: SystemTime) -> usize {
+        let views = self.list_projects();
+        // A project removed from the config takes its lead's clock with
+        // it.
+        self.idle_sweeps.lock().retain(|slot, _| {
+            views.iter().any(|view| view.org == slot.org() && view.name == slot.project())
+        });
         let mut delivered = 0;
-        for view in self.list_projects() {
+        for view in views {
             let lead = SessionSlot::lead(&view.org, &view.name);
             // Never wake a sleeping session: its next start sweeps, as
-            // the charter says.
+            // the charter says. Its clock keeps `last_delivered` - a
+            // session restart is not a process restart - while
+            // `first_seen` re-arms from the wake.
             if !self.seat_is_live(&lead) {
-                self.idle_sweeps.lock().remove(&lead);
+                if let Some(clock) = self.idle_sweeps.lock().get_mut(&lead) {
+                    clock.first_seen = now;
+                }
                 continue;
             }
-            let idle = lead_is_idle(self, &lead, now);
+            let idle = lead_is_idle(self, &lead);
             let due = {
                 let mut clocks = self.idle_sweeps.lock();
-                let clock = clocks
-                    .entry(lead.clone())
-                    .or_insert(SweepClock { first_seen: now, last_delivered: None });
-                let baseline = clock.last_delivered.unwrap_or(clock.first_seen);
-                let age = now.duration_since(baseline).map_or(u64::MAX, |d| d.as_secs());
+                let clock = clocks.entry(lead.clone()).or_insert(SweepClock {
+                    first_seen: now,
+                    last_delivered: None,
+                    failing: false,
+                });
+                let age = clock
+                    .last_delivered
+                    .map_or(age_secs(clock.first_seen, now), |last| age_secs(last, now));
                 match clock.last_delivered {
                     None => idle || age >= IDLE_SWEEP_FALLBACK_SECS,
                     Some(_) => {
@@ -77,12 +107,51 @@ impl Workspace {
             if !due {
                 continue;
             }
-            if deliver.to_seat(&lead, IDLE_SWEEP_PROMPT) == Delivery::Delivered {
-                let mut clocks = self.idle_sweeps.lock();
-                if let Some(clock) = clocks.get_mut(&lead) {
-                    clock.last_delivered = Some(now);
+            let text = if idle { IDLE_SWEEP_PROMPT } else { IDLE_SWEEP_FALLBACK_PROMPT };
+            match deliver.to_seat(&lead, text) {
+                Delivery::Delivered => {
+                    let recovered = {
+                        let mut clocks = self.idle_sweeps.lock();
+                        clocks.get_mut(&lead).is_some_and(|clock| {
+                            clock.last_delivered = Some(now);
+                            std::mem::replace(&mut clock.failing, false)
+                        })
+                    };
+                    delivered += 1;
+                    tracing::debug!(
+                        target: "forge_workspace::idle_sweep",
+                        event_name = "idle_sweep_injected",
+                        slot = %lead.display(),
+                        fallback = !idle,
+                        "injected the board sweep",
+                    );
+                    if recovered {
+                        tracing::info!(
+                            target: "forge_workspace::idle_sweep",
+                            event_name = "idle_sweep_recovered",
+                            slot = %lead.display(),
+                            "the board sweep reached the lead again",
+                        );
+                    }
                 }
-                delivered += 1;
+                Delivery::NoSession(reason) => {
+                    let first_failure = {
+                        let mut clocks = self.idle_sweeps.lock();
+                        match clocks.get_mut(&lead) {
+                            Some(clock) => !std::mem::replace(&mut clock.failing, true),
+                            None => true,
+                        }
+                    };
+                    if first_failure {
+                        tracing::warn!(
+                            target: "forge_workspace::idle_sweep",
+                            event_name = "idle_sweep_not_delivered",
+                            slot = %lead.display(),
+                            reason = %reason,
+                            "the board sweep could not be delivered; retrying each tick",
+                        );
+                    }
+                }
             }
         }
         delivered
@@ -109,18 +178,10 @@ impl Workspace {
                     let Some(workspace) = weak.upgrade() else {
                         return;
                     };
-                    let delivered = workspace.idle_sweep(
+                    workspace.idle_sweep(
                         &PromptDeliver { workspace: Arc::clone(&workspace) },
                         SystemTime::now(),
                     );
-                    if delivered > 0 {
-                        tracing::debug!(
-                            target: "forge_workspace::idle_sweep",
-                            event_name = "idle_sweep_injected",
-                            delivered,
-                            "injected the board sweep into idle leads",
-                        );
-                    }
                 }
             }
             .instrument(span)
@@ -131,22 +192,26 @@ impl Workspace {
 /// Whether `lead` is idle: it is the project's own agent, its session is
 /// live, no turn is running, it owns no row in progress, and the project
 /// has no live worker.
-fn lead_is_idle(ws: &Workspace, lead: &SessionSlot, now: SystemTime) -> bool {
+fn lead_is_idle(ws: &Workspace, lead: &SessionSlot) -> bool {
     if !lead.is_lead() || !ws.seat_is_live(lead) {
         return false;
     }
     if ws.domain_session_for(lead).is_some_and(|domain| domain.lock().turn_in_flight()) {
         return false;
     }
-    let busy_row = ws.board_rows(lead.project(), now, DEFAULT_STALE_SECS).iter().any(|row| {
-        row.task.status == TaskStatus::InProgress && row.task.owner.as_ref() == Some(lead)
-    });
+    let busy_row = ws
+        .tasks_for_project(lead.project())
+        .iter()
+        .any(|task| task.status == TaskStatus::InProgress && task.owner.as_ref() == Some(lead));
     if busy_row {
         return false;
     }
     let Some(view) = ws.list_projects().into_iter().find(|view| view.name == lead.project()) else {
         return false;
     };
+    // `is_live` is "in flight": a `Restarting` worker is not running and
+    // holds no work for the lead to wait on, though it still spends a cap
+    // slot (`holds_slot`). The sweep may inject beside one.
     !ws.list_live_workers(&view.key).iter().any(WorkerEntry::is_live)
 }
 
@@ -187,6 +252,11 @@ mod tests {
         ws: &Workspace,
     ) -> tokio::sync::mpsc::UnboundedReceiver<forge_primitives::AgentCommand> {
         ws.install_testing_stub(&lead())
+    }
+
+    /// Drop the seat's session, leaving the slot as a sleeping one.
+    fn sleep(ws: &Workspace) {
+        ws.domain_handles.lock().remove(&lead());
     }
 
     fn task(id: &str, status: TaskStatus, owner: Option<SessionSlot>) -> Task {
@@ -252,6 +322,25 @@ mod tests {
         }
     }
 
+    /// A delivery that fails until `open` is set, so a retry can be
+    /// watched without a live dispatch.
+    #[derive(Default)]
+    struct Flaky {
+        open: std::sync::atomic::AtomicBool,
+        seen: Mutex<usize>,
+    }
+
+    impl Deliver for Flaky {
+        fn to_seat(&self, _slot: &SessionSlot, _text: &str) -> Delivery {
+            *self.seen.lock() += 1;
+            if self.open.load(std::sync::atomic::Ordering::SeqCst) {
+                Delivery::Delivered
+            } else {
+                Delivery::NoSession("the seat's channel closed".to_owned())
+            }
+        }
+    }
+
     fn sweep(ws: &Arc<Workspace>, deliver: &dyn Deliver, at: u64) -> usize {
         ws.idle_sweep(deliver, epoch(at))
     }
@@ -262,7 +351,7 @@ mod tests {
         let ws = fixture(dir.path());
         let _rx = live_lead(&ws);
 
-        assert!(lead_is_idle(&ws, &lead(), epoch(1_000)));
+        assert!(lead_is_idle(&ws, &lead()));
     }
 
     #[test]
@@ -273,10 +362,7 @@ mod tests {
         let domain = ws.domain_session_for(&lead()).expect("domain");
         domain.lock().commit_turn();
 
-        assert!(
-            !lead_is_idle(&ws, &lead(), epoch(1_000)),
-            "a lead with a turn running has something in flight",
-        );
+        assert!(!lead_is_idle(&ws, &lead()), "a lead with a turn running has something in flight");
     }
 
     #[test]
@@ -287,9 +373,23 @@ mod tests {
         ws.seed_test_task(task("t-1", TaskStatus::InProgress, Some(lead())));
 
         assert!(
-            !lead_is_idle(&ws, &lead(), epoch(1_000)),
+            !lead_is_idle(&ws, &lead()),
             "a lead holding an in-progress row has work in flight",
         );
+    }
+
+    #[test]
+    fn a_row_in_progress_under_a_worker_leaves_the_lead_idle() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _rx = live_lead(&ws);
+        ws.seed_test_task(task(
+            "t-1",
+            TaskStatus::InProgress,
+            Some(SessionSlot::worker("TestOrg", PROJECT, "w-1")),
+        ));
+
+        assert!(lead_is_idle(&ws, &lead()), "a worker's row is the worker's work, not the lead's");
     }
 
     #[test]
@@ -299,10 +399,7 @@ mod tests {
         let _rx = live_lead(&ws);
         live_worker(&ws, "w-1");
 
-        assert!(
-            !lead_is_idle(&ws, &lead(), epoch(1_000)),
-            "a project with a live worker has work in flight",
-        );
+        assert!(!lead_is_idle(&ws, &lead()), "a project with a live worker has work in flight");
     }
 
     #[test]
@@ -313,7 +410,7 @@ mod tests {
         let _rx = ws.install_testing_stub(&worker);
 
         assert!(
-            !lead_is_idle(&ws, &worker, epoch(1_000)),
+            !lead_is_idle(&ws, &worker),
             "the sweep is for the project's own agent, never a worker",
         );
     }
@@ -329,6 +426,23 @@ mod tests {
     }
 
     #[test]
+    fn a_lead_that_was_swept_and_then_slept_is_not_woken() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _rx = live_lead(&ws);
+        let deliver = Recording::default();
+        assert_eq!(sweep(&ws, &deliver, 1_000), 1, "the first sweep lands");
+
+        sleep(&ws);
+        assert_eq!(
+            sweep(&ws, &deliver, 1_000 + IDLE_SWEEP_FALLBACK_SECS + 60),
+            0,
+            "a sleeping lead is skipped even when its fallback is long overdue",
+        );
+        assert_eq!(deliver.seen.lock().len(), 1);
+    }
+
+    #[test]
     fn a_live_idle_lead_is_swept_once() {
         let dir = tempdir().expect("tempdir");
         let ws = fixture(dir.path());
@@ -339,11 +453,11 @@ mod tests {
         let seen = deliver.seen.lock();
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].0, lead(), "the prompt goes to the project's lead");
-        assert!(seen[0].1.contains("Sweep it now"), "the text names the sweep: {}", seen[0].1);
-        assert!(
-            seen[0].1.contains("next three picks from the backlog"),
-            "the text names the next-pick rule: {}",
+        assert_eq!(
             seen[0].1,
+            "Nothing is in flight on this board. Sweep it now, and end with the next three picks \
+             from the backlog.",
+            "the idle path carries the plan's prompt verbatim",
         );
     }
 
@@ -357,7 +471,37 @@ mod tests {
         assert_eq!(sweep(&ws, &deliver, 1_000), 1);
         assert_eq!(sweep(&ws, &deliver, 1_060), 0, "inside the two-hour gap");
         assert_eq!(sweep(&ws, &deliver, 1_000 + IDLE_SWEEP_MIN_GAP_SECS), 1, "the gap is spent");
+        assert_eq!(
+            sweep(&ws, &deliver, 1_000 + IDLE_SWEEP_MIN_GAP_SECS + 60),
+            0,
+            "a delivery re-arms the gap from the delivery, not from the first sighting",
+        );
         assert_eq!(deliver.seen.lock().len(), 2);
+    }
+
+    #[test]
+    fn a_lead_that_slept_keeps_its_gap_across_the_restart() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let lead_rx = live_lead(&ws);
+        let deliver = Recording::default();
+        assert_eq!(sweep(&ws, &deliver, 1_000), 1);
+
+        drop(lead_rx);
+        sleep(&ws);
+        assert_eq!(sweep(&ws, &deliver, 1_100), 0, "asleep, nothing is delivered");
+
+        let _rx = live_lead(&ws);
+        assert_eq!(
+            sweep(&ws, &deliver, 1_200),
+            0,
+            "the wake does not reset the lead's two-hour gap",
+        );
+        assert_eq!(
+            sweep(&ws, &deliver, 1_000 + IDLE_SWEEP_MIN_GAP_SECS),
+            1,
+            "the gap still runs from the delivery before the sleep",
+        );
     }
 
     #[test]
@@ -380,10 +524,117 @@ mod tests {
             1,
             "the fallback lands even mid-turn",
         );
+        {
+            let seen = deliver.seen.lock();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(
+                seen[0].1,
+                "Six hours have passed since the last sweep. Sweep the board when you can, and \
+                 end with the next three picks from the backlog.",
+                "the fallback does not claim the board is quiet",
+            );
+        }
         assert_eq!(
             sweep(&ws, &deliver, 1_000 + IDLE_SWEEP_FALLBACK_SECS + 60),
             0,
             "one fallback, not a loop",
+        );
+        assert_eq!(
+            sweep(&ws, &deliver, 1_000 + 2 * IDLE_SWEEP_FALLBACK_SECS),
+            1,
+            "the next six-hour boundary delivers again",
+        );
+    }
+
+    #[test]
+    fn a_lead_busy_on_its_own_row_is_swept_after_six_hours() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _rx = live_lead(&ws);
+        ws.seed_test_task(task("t-1", TaskStatus::InProgress, Some(lead())));
+        let deliver = Recording::default();
+
+        assert_eq!(sweep(&ws, &deliver, 1_000), 0, "a lead on its own row is not idle");
+        assert_eq!(
+            sweep(&ws, &deliver, 1_000 + IDLE_SWEEP_FALLBACK_SECS),
+            1,
+            "the fallback covers a busy row as well as a busy turn",
+        );
+    }
+
+    #[test]
+    fn a_backwards_clock_does_not_sweep() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _rx = live_lead(&ws);
+        let deliver = Recording::default();
+
+        assert_eq!(sweep(&ws, &deliver, 2_000), 1);
+        assert_eq!(
+            sweep(&ws, &deliver, 1_900),
+            0,
+            "a clock that went backwards is unknown, not infinitely old",
+        );
+        assert_eq!(deliver.seen.lock().len(), 1);
+    }
+
+    #[test]
+    fn a_failed_delivery_is_retried_on_the_next_tick() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _rx = live_lead(&ws);
+        let deliver = Flaky::default();
+
+        assert_eq!(sweep(&ws, &deliver, 1_000), 0, "the failed attempt delivers nothing");
+        assert_eq!(*deliver.seen.lock(), 1);
+        assert_eq!(
+            sweep(&ws, &deliver, 1_060),
+            0,
+            "the failing seat is retried, not stamped as swept",
+        );
+        deliver.open.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(sweep(&ws, &deliver, 1_120), 1, "the retry succeeds");
+        assert_eq!(*deliver.seen.lock(), 3);
+    }
+
+    /// The acceptance end to end: the boot member ticks and the prompt
+    /// reaches the lead's dispatch path.
+    #[tokio::test(start_paused = true)]
+    async fn the_boot_member_injects_the_sweep_on_its_tick() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _rx = live_lead(&ws);
+        ws.enable_test_dispatch_intercept();
+        ws.start_idle_sweep();
+
+        let names: Vec<String> =
+            ws.supervisor().snapshot().into_iter().map(|member| member.name).collect();
+        assert!(
+            names.contains(&"idle_sweep".to_owned()),
+            "the sweep is a supervised member: {names:?}"
+        );
+
+        // The member's interval is built on its first poll, which may land
+        // after the first advance; two periods leave the first tick due
+        // whichever instant the interval was armed at.
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::advance(Duration::from_secs(IDLE_SWEEP_INTERVAL_SECS + 1)).await;
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::advance(Duration::from_secs(IDLE_SWEEP_INTERVAL_SECS + 1)).await;
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        let wired = ws.drain_test_dispatch_buffer();
+        assert!(
+            wired.iter().any(|command| matches!(
+                command,
+                crate::protocol::Command::PromptUnder { text, .. } if text == IDLE_SWEEP_PROMPT
+            )),
+            "the tick injects the sweep: {wired:?}",
         );
     }
 }

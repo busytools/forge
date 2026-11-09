@@ -50,10 +50,12 @@ const CADENCE_BURNING_SECS: u64 = 5 * 60;
 const CADENCE_STUCK_SECS: u64 = 30 * 60;
 
 /// What a delivery attempt found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Delivery {
     Delivered,
-    NoSession,
+    /// The dispatch failed, carrying the error it returned: a caller that
+    /// names why a delivery did not land reads it from here.
+    NoSession(String),
 }
 
 /// Where a chase message goes. A trait so tests can watch the ladder
@@ -622,7 +624,7 @@ impl Deliver for PromptDeliver {
         let uuid = forge_sdk::request_id::next_forged_prompt_id();
         match self.workspace.dispatch_forged_prompt_under(slot, text.to_owned(), uuid) {
             Ok(()) => Delivery::Delivered,
-            Err(_) => Delivery::NoSession,
+            Err(error) => Delivery::NoSession(error.to_string()),
         }
     }
 }

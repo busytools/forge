@@ -117,6 +117,11 @@ impl LoggingRuntime {
 /// rather than forge's health, so the repeated numbers are `debug`; the
 /// dedicated target keeps the module's per-sweep chatter out of the default
 /// filter while these stay readable.
+///
+/// `forge_workspace::idle_sweep` carries the injected sweep's delivery
+/// record, which is a `debug` and would otherwise land nowhere: without
+/// the directive the subsystem reports nothing at all between a failure
+/// and its recovery.
 pub const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     app.input=debug,\
     app.lifecycle=debug,\
@@ -127,6 +132,7 @@ pub const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     agent.catalog_scan=debug,\
     forge_agent::userdata::catalog::scan=debug,\
     forge_workspace::output_tail=debug,\
+    forge_workspace::idle_sweep=debug,\
     forge_workspace::work=debug,\
     forge_workspace::browser=debug,\
     forge_browser=debug,\
@@ -474,6 +480,17 @@ mod tests {
         assert!(
             DEFAULT_LOG_DIRECTIVES.split(',').any(|directive| directive.trim() == supervise_target),
             "the supervisor's start and stop records keep their directive ({supervise_target}): \
+             {DEFAULT_LOG_DIRECTIVES}",
+        );
+        // `forge_workspace::idle_sweep` carries the injected sweep's
+        // delivery record, which is a `debug` and lands nowhere without
+        // this directive.
+        let idle_sweep_target = "forge_workspace::idle_sweep=debug";
+        assert!(
+            DEFAULT_LOG_DIRECTIVES
+                .split(',')
+                .any(|directive| directive.trim() == idle_sweep_target),
+            "the idle sweep's delivery records keep their directive ({idle_sweep_target}): \
              {DEFAULT_LOG_DIRECTIVES}",
         );
         // `forge_agent::userdata::catalog::scan` carries the scan's
