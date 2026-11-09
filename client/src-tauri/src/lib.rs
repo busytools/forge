@@ -719,6 +719,7 @@ pub fn run() -> u8 {
         .plugin(android::init())
         .plugin(android::init_file_names())
         .plugin(micstate::init())
+        .plugin(biometric::android::init())
         .plugin(launch::init())
         .invoke_handler(tauri::generate_handler![
             browser::viewer::browser_surface_rect,

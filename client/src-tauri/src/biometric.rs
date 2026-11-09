@@ -4,12 +4,13 @@
 //! **A consumer stores a purpose's wrapped blob, releases it through the
 //! platform authenticator, or drops it.** The gate never learns what a purpose
 //! means, so adding a consumer is a new purpose and its own blob shape - not a
-//! new gate, a new authenticator call or a new command. `macos` is the first
-//! implementation; Android and the web page's WebAuthn path sit beside it.
+//! new gate, a new authenticator call or a new command. `macos` and `android`
+//! are the implementations; the web page's WebAuthn path sits beside them.
 //!
-//! The page reaches this through the commands at the bottom of the file. A
-//! release blocks while the OS shows its prompt, so the commands that can
-//! prompt run on the async runtime rather than the window's main thread.
+//! The page reaches this through the commands at the bottom of the file. The
+//! gate is async because the phone's Keystore and prompt answer through
+//! tauri's plugin bridge; the desktop's Keychain call blocks on the system
+//! dialog, so its implementation moves that work to a blocking thread.
 
 #![allow(
     clippy::needless_pass_by_value,
@@ -17,15 +18,15 @@
               CommandArg"
 )]
 
+#[cfg(target_os = "android")]
+pub mod android;
 #[cfg(target_os = "macos")]
 pub mod macos;
-
-use std::sync::Arc;
 
 use base64::Engine as _;
 
 /// Whether this platform can answer at all, and with which gesture.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Availability {
     /// True when the platform authenticator can answer for this device.
     pub available: bool,
@@ -33,12 +34,12 @@ pub struct Availability {
     /// the device's own password (user presence).
     pub biometric: bool,
     /// Why it cannot answer, when it cannot. The card quotes it.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
 /// What one release ended as, as the card draws it.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum Release {
     /// The platform released the blob, base64 on this boundary.
@@ -53,63 +54,94 @@ pub enum Release {
 }
 
 /// One platform's authenticator, addressed by purpose.
-pub trait Gate: Send + Sync {
+///
+/// Crate-private rather than public: the page reaches the gate through the
+/// commands below, and the trait exists so every platform answers the same
+/// five questions.
+pub(crate) trait Gate: Send + Sync {
     /// Whether this platform can release at all, and with what gesture.
-    fn availability(&self) -> Availability;
+    fn availability(&self) -> impl std::future::Future<Output = Availability> + Send;
     /// Whether a blob is stored for `purpose`. Asked without releasing: a
-    /// checkout of an item's attributes, never its data, so no gesture is
-    /// required to answer it.
-    fn enrolled(&self, purpose: &str) -> bool;
+    /// checkout of an item's attributes or record, never a decrypt, so no
+    /// gesture is required to answer it.
+    fn enrolled(&self, purpose: &str) -> impl std::future::Future<Output = bool> + Send;
     /// Store `blob` under `purpose`, replacing any blob already there. The
     /// blob is wrapped by the consumer; this half never reads inside it.
-    fn store(&self, purpose: &str, blob: &[u8]) -> Result<(), String>;
+    fn store(
+        &self,
+        purpose: &str,
+        blob: &[u8],
+    ) -> impl std::future::Future<Output = Result<(), String>> + Send;
     /// Ask the platform authenticator for the blob behind `purpose`.
-    fn release(&self, purpose: &str) -> Release;
+    fn release(&self, purpose: &str) -> impl std::future::Future<Output = Release> + Send;
     /// Drop the blob behind `purpose`.
-    fn remove(&self, purpose: &str) -> Result<(), String>;
+    fn remove(&self, purpose: &str)
+    -> impl std::future::Future<Output = Result<(), String>> + Send;
 }
 
 /// The gate this build ships.
-pub fn platform() -> Arc<dyn Gate> {
+#[cfg(target_os = "macos")]
+pub(crate) type PlatformGate = macos::KeychainGate;
+#[cfg(target_os = "android")]
+pub(crate) type PlatformGate = android::AndroidGate;
+#[cfg(not(any(target_os = "macos", target_os = "android")))]
+pub(crate) type PlatformGate = Unsupported;
+
+/// The gate this build ships, built: a unit on the desktop, the phone's
+/// registered bridge handle on Android.
+pub(crate) fn platform() -> PlatformGate {
     #[cfg(target_os = "macos")]
     {
-        Arc::new(macos::KeychainGate)
+        macos::KeychainGate
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "android")]
     {
-        Arc::new(Unsupported)
+        android::AndroidGate
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "android")))]
+    {
+        Unsupported
     }
 }
 
 /// A build with no platform authenticator: every call refuses with the reason,
 /// which is what a desktop forge does not ship for yet.
-#[cfg(not(target_os = "macos"))]
-struct Unsupported;
+#[cfg(not(any(target_os = "macos", target_os = "android")))]
+pub(crate) struct Unsupported;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "android")))]
 impl Gate for Unsupported {
-    fn availability(&self) -> Availability {
-        Availability {
+    fn availability(&self) -> impl std::future::Future<Output = Availability> + Send {
+        std::future::ready(Availability {
             available: false,
             biometric: false,
             reason: Some("this platform has no biometric gate yet".to_owned()),
-        }
+        })
     }
 
-    fn enrolled(&self, _purpose: &str) -> bool {
-        false
+    fn enrolled(&self, _purpose: &str) -> impl std::future::Future<Output = bool> + Send {
+        std::future::ready(false)
     }
 
-    fn store(&self, _purpose: &str, _blob: &[u8]) -> Result<(), String> {
-        Err("this platform has no biometric gate yet".to_owned())
+    fn store(
+        &self,
+        _purpose: &str,
+        _blob: &[u8],
+    ) -> impl std::future::Future<Output = Result<(), String>> + Send {
+        std::future::ready(Err("this platform has no biometric gate yet".to_owned()))
     }
 
-    fn release(&self, _purpose: &str) -> Release {
-        Release::Refused { reason: "this platform has no biometric gate yet".to_owned() }
+    fn release(&self, _purpose: &str) -> impl std::future::Future<Output = Release> + Send {
+        std::future::ready(Release::Refused {
+            reason: "this platform has no biometric gate yet".to_owned(),
+        })
     }
 
-    fn remove(&self, _purpose: &str) -> Result<(), String> {
-        Err("this platform has no biometric gate yet".to_owned())
+    fn remove(
+        &self,
+        _purpose: &str,
+    ) -> impl std::future::Future<Output = Result<(), String>> + Send {
+        std::future::ready(Err("this platform has no biometric gate yet".to_owned()))
     }
 }
 
@@ -123,34 +155,34 @@ fn decode(blob: &str) -> Result<Vec<u8>, String> {
 
 /// The page's door to the gate: what this device can do, and with what.
 #[tauri::command]
-pub fn biometric_availability() -> Availability {
-    platform().availability()
+pub async fn biometric_availability() -> Availability {
+    platform().availability().await
 }
 
 /// Whether this device holds a blob for `purpose`.
 #[tauri::command]
-pub fn biometric_enrolled(purpose: String) -> bool {
-    platform().enrolled(&purpose)
+pub async fn biometric_enrolled(purpose: String) -> bool {
+    platform().enrolled(&purpose).await
 }
 
 /// Register one purpose's wrapped blob. **Async**, because the store may ask
 /// the platform authenticator behind the scene on some platforms, and the
 /// window must not wait on it.
-#[tauri::command(async)]
-pub fn biometric_store(purpose: String, blob: String) -> Result<(), String> {
+#[tauri::command]
+pub async fn biometric_store(purpose: String, blob: String) -> Result<(), String> {
     let blob = decode(&blob)?;
-    platform().store(&purpose, &blob)
+    platform().store(&purpose, &blob).await
 }
 
 /// Release one purpose's blob, asking the platform authenticator first.
 /// **Async**, because the OS prompt blocks this call until the person answers.
-#[tauri::command(async)]
-pub fn biometric_release(purpose: String) -> Release {
-    platform().release(&purpose)
+#[tauri::command]
+pub async fn biometric_release(purpose: String) -> Release {
+    platform().release(&purpose).await
 }
 
 /// Drop one purpose's blob.
-#[tauri::command(async)]
-pub fn biometric_remove(purpose: String) -> Result<(), String> {
-    platform().remove(&purpose)
+#[tauri::command]
+pub async fn biometric_remove(purpose: String) -> Result<(), String> {
+    platform().remove(&purpose).await
 }

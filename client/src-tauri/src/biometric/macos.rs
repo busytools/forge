@@ -78,14 +78,56 @@ macro_rules! constant {
 pub struct KeychainGate;
 
 impl Gate for KeychainGate {
-    fn availability(&self) -> Availability {
+    fn availability(&self) -> impl std::future::Future<Output = Availability> + Send {
+        std::future::ready(Self::availability_now())
+    }
+
+    async fn enrolled(&self, purpose: &str) -> bool {
+        let purpose = purpose.to_owned();
+        // A Keychain query is a synchronous call into securityd; off the
+        // async workers, so a slow one cannot stall the page's other work.
+        tokio::task::spawn_blocking(move || Self::enrolled_now(&purpose)).await.unwrap_or(false)
+    }
+
+    async fn store(&self, purpose: &str, blob: &[u8]) -> Result<(), String> {
+        let purpose = purpose.to_owned();
+        let blob = blob.to_vec();
+        match tokio::task::spawn_blocking(move || Self::store_now(&purpose, &blob)).await {
+            Ok(result) => result,
+            Err(error) => Err(format!("the keychain task did not run: {error}")),
+        }
+    }
+
+    async fn release(&self, purpose: &str) -> Release {
+        let purpose = purpose.to_owned();
+        // The prompt blocks this thread until the person answers, which is
+        // exactly why it runs on the blocking pool.
+        match tokio::task::spawn_blocking(move || Self::read(&purpose, false)).await {
+            Ok(release) => release,
+            Err(error) => {
+                Release::Refused { reason: format!("the keychain task did not run: {error}") }
+            }
+        }
+    }
+
+    async fn remove(&self, purpose: &str) -> Result<(), String> {
+        let purpose = purpose.to_owned();
+        match tokio::task::spawn_blocking(move || Self::remove_now(&purpose)).await {
+            Ok(result) => result,
+            Err(error) => Err(format!("the keychain task did not run: {error}")),
+        }
+    }
+}
+
+impl KeychainGate {
+    fn availability_now() -> Availability {
         // Biometry usable now: enrolled, unlocked, not locked out. A Mac with
         // no Touch ID still answers, through the device password, which the
         // card draws as the non-biometric fallback.
         Availability { available: true, biometric: biometric_available(), reason: None }
     }
 
-    fn enrolled(&self, purpose: &str) -> bool {
+    fn enrolled_now(purpose: &str) -> bool {
         let query = base_query(purpose);
         let mut out: CFTypeRef = ptr::null();
         // SAFETY: `query` is a live dictionary of the framework's own key
@@ -100,8 +142,8 @@ impl Gate for KeychainGate {
         status == errSecSuccess
     }
 
-    fn store(&self, purpose: &str, blob: &[u8]) -> Result<(), String> {
-        let flags = if self.availability().biometric {
+    fn store_now(purpose: &str, blob: &[u8]) -> Result<(), String> {
+        let flags = if Self::availability_now().biometric {
             kSecAccessControlBiometryCurrentSet
         } else {
             // No biometric on this Mac: the device password is the gesture,
@@ -117,7 +159,7 @@ impl Gate for KeychainGate {
         // **Delete before add.** The policy is fixed when the item is created,
         // so replacing a blob is a new item; a duplicate would keep the old
         // bytes and the old policy.
-        self.remove(purpose)?;
+        Self::remove_now(purpose)?;
 
         let mut attributes = base_attributes(purpose);
         attributes.add(&constant!(kSecValueData), &CFData::from_buffer(blob).as_CFType());
@@ -131,11 +173,7 @@ impl Gate for KeychainGate {
         }
     }
 
-    fn release(&self, purpose: &str) -> Release {
-        Self::read(purpose, false)
-    }
-
-    fn remove(&self, purpose: &str) -> Result<(), String> {
+    fn remove_now(purpose: &str) -> Result<(), String> {
         let query = base_query(purpose);
         // SAFETY: `query` is a live dictionary of the framework's own key
         // types for the duration of the call.
@@ -145,9 +183,7 @@ impl Gate for KeychainGate {
             other => Err(message(other)),
         }
     }
-}
 
-impl KeychainGate {
     /// The release query, with `skip` making the read refuse rather than
     /// prompt. The skipping form is the test's: it proves the item's policy
     /// wants a gesture on a machine where the test cannot answer one.
@@ -262,8 +298,8 @@ mod tests {
     /// launchd domain cannot open the login keychain at all, so the failure
     /// would be the session's and not the gate's. Any other status is the
     /// gate's and fails below.
-    #[test]
-    fn the_item_is_stored_under_a_policy_that_wants_a_gesture() {
+    #[tokio::test]
+    async fn the_item_is_stored_under_a_policy_that_wants_a_gesture() {
         if let Some(reason) = keychain_unreachable() {
             eprintln!("skipped: {reason}");
             return;
@@ -272,9 +308,9 @@ mod tests {
         let purpose = format!("test-{}", std::process::id());
         let blob = b"wrapped secret for the gate test";
 
-        gate.store(&purpose, blob).expect("the item is stored");
+        gate.store(&purpose, blob).await.expect("the item is stored");
 
-        assert!(gate.enrolled(&purpose), "the item is found by its attributes");
+        assert!(gate.enrolled(&purpose).await, "the item is found by its attributes");
         assert_eq!(
             KeychainGate::read(&purpose, true),
             Release::NotEnrolled,
@@ -282,18 +318,18 @@ mod tests {
         );
 
         // A second store replaces the bytes rather than duplicating the item.
-        gate.store(&purpose, b"second").expect("the item is replaced");
-        assert!(gate.enrolled(&purpose), "the replacement is still one item");
+        gate.store(&purpose, b"second").await.expect("the item is replaced");
+        assert!(gate.enrolled(&purpose).await, "the replacement is still one item");
 
-        gate.remove(&purpose).expect("the item is removed");
-        assert!(!gate.enrolled(&purpose), "nothing is left behind");
+        gate.remove(&purpose).await.expect("the item is removed");
+        assert!(!gate.enrolled(&purpose).await, "nothing is left behind");
     }
 
     /// A second consumer is a second purpose on the same gate: no new item
     /// class, no code path, and dropping one leaves the other's item alone.
     /// This is the brief's acceptance criterion on the client half.
-    #[test]
-    fn a_second_consumer_is_only_a_purpose() {
+    #[tokio::test]
+    async fn a_second_consumer_is_only_a_purpose() {
         if let Some(reason) = keychain_unreachable() {
             eprintln!("skipped: {reason}");
             return;
@@ -302,15 +338,18 @@ mod tests {
         let first = format!("test-first-{}", std::process::id());
         let second = format!("test-second-{}", std::process::id());
 
-        gate.store(&first, b"first consumer's shape").expect("the first is stored");
-        gate.store(&second, b"second").expect("the second is stored");
-        assert!(gate.enrolled(&first) && gate.enrolled(&second), "both purposes are enrolled");
+        gate.store(&first, b"first consumer's shape").await.expect("the first is stored");
+        gate.store(&second, b"second").await.expect("the second is stored");
+        assert!(
+            gate.enrolled(&first).await && gate.enrolled(&second).await,
+            "both purposes are enrolled"
+        );
 
-        gate.remove(&first).expect("the first is removed");
-        assert!(!gate.enrolled(&first), "the first is gone");
-        assert!(gate.enrolled(&second), "the second consumer's item is untouched");
+        gate.remove(&first).await.expect("the first is removed");
+        assert!(!gate.enrolled(&first).await, "the first is gone");
+        assert!(gate.enrolled(&second).await, "the second consumer's item is untouched");
 
-        gate.remove(&second).expect("the second is removed");
+        gate.remove(&second).await.expect("the second is removed");
     }
 
     /// Whether this process's session can reach a keychain at all, and why not
@@ -353,9 +392,9 @@ mod tests {
 
     /// Availability answers what the platform can do now: an LAContext is
     /// constructible and its policy evaluates one way or the other.
-    #[test]
-    fn availability_answers_without_prompting() {
-        let availability = KeychainGate.availability();
+    #[tokio::test]
+    async fn availability_answers_without_prompting() {
+        let availability = KeychainGate.availability().await;
         assert!(availability.available, "the gate is usable on macOS");
         assert!(availability.reason.is_none());
     }
