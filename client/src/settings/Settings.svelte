@@ -3,7 +3,11 @@
   import { remove } from '../biometric';
   import { readDeviceGate, type DeviceGate } from '../biometric/device';
   import { VAULT_PURPOSE } from '../biometric/vault';
-  import { enrolVault, enrolmentId } from '../biometric/vault-enrolment';
+  import {
+    enrolVault,
+    enrolmentIdIfMinted,
+    forgetVaultMaterial,
+  } from '../biometric/vault-enrolment';
   import { watchModels } from '../models/live';
   import { boxKey } from '../composer/box.svelte';
   import type { Command } from '../protocol';
@@ -701,8 +705,10 @@
       onRevokeBiometric={(enrolment: string, purpose: string) => {
         void connection.dispatch({ biometric_revoke: { enrolment, purpose } });
         // **This device's own item goes with its server row**: a revoked
-        // registration must not leave a gesture that can never succeed.
-        if (purpose === VAULT_PURPOSE && enrolment === enrolmentId()) {
+        // registration must not leave a gesture that can never succeed, or
+        // material a later rotation would rewrite the deleted row with.
+        if (purpose === VAULT_PURPOSE && enrolment === enrolmentIdIfMinted()) {
+          forgetVaultMaterial();
           void remove(VAULT_PURPOSE).then(() => {
             refreshDevice();
           });

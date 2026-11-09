@@ -91,7 +91,6 @@ export async function enrolVault(connection: VaultConnection): Promise<VaultEnro
   } catch (why) {
     return { outcome: 'unavailable', reason: reasonOf(why) };
   }
-  held = { material, key };
   let written: boolean;
   try {
     written = await writeEnrolment(connection, sealed);
@@ -99,6 +98,10 @@ export async function enrolVault(connection: VaultConnection): Promise<VaultEnro
     return { outcome: 'failed', reason: reasonOf(why) };
   }
   if (!written) return { outcome: 'failed', reason: 'the core did not store the enrolment' };
+  // **Held only once the write landed.** Material kept past a refused write
+  // would let a later rotation complete an enrolment the card reported
+  // failed.
+  held = { material, key };
   return { outcome: 'enrolled' };
 }
 
@@ -116,8 +119,11 @@ export async function releaseVaultMaterial(connection: VaultConnection): Promise
   if (sealed === null) {
     // **The core holds nothing for this device.** The item the gate just
     // opened is a registration the person already revoked, so it goes too
-    // rather than leaving a gesture that can never succeed.
+    // rather than leaving a gesture that can never succeed, and so does the
+    // material this run held - a later rotation must not rewrite a row the
+    // person deleted.
     void remove(VAULT_PURPOSE);
+    forgetVaultMaterial();
     return { outcome: 'not_enrolled' };
   }
   const material = await openVaultMaterial(sealed, released.blob);
@@ -155,12 +161,33 @@ export function watchVaultEnrolment(connection: VaultWatch): () => void {
       }
       return;
     }
+    const changed = update['biometric_enrolments_changed'];
+    if (changed !== null && typeof changed === 'object') {
+      // **A row this device no longer owns is a revocation.** Dropping the
+      // material here is what stops the next rotation from rewriting the row
+      // the person just deleted; the rewrite itself is update-only, so a
+      // disconnected device still cannot re-create one.
+      if (!stillEnrolled((changed as { enrolments?: unknown }).enrolments)) {
+        forgetVaultMaterial();
+      }
+      return;
+    }
     const lockChanged = update['vault_lock_changed'];
     if (lockChanged !== null && typeof lockChanged === 'object') {
       if ((lockChanged as { locked?: unknown }).locked === true) forgetVaultMaterial();
       return;
     }
   });
+}
+
+/** Whether the announced list still carries this device's enrolment id. */
+function stillEnrolled(enrolments: unknown): boolean {
+  const mine = enrolmentIdIfMinted();
+  if (mine === null || !Array.isArray(enrolments)) return false;
+  return enrolments.some(
+    (entry) =>
+      entry !== null && typeof entry === 'object' && (entry as { id?: unknown }).id === mine,
+  );
 }
 
 /** The core's current material, or null while the session is locked. */
@@ -196,16 +223,17 @@ async function rewrite(connection: VaultConnection, refreshToken: string): Promi
   let written = false;
   try {
     const sealed = await sealVaultMaterial(material, current.key);
-    if (sealed !== null) {
-      held = { material, key: current.key };
-      written = await writeEnrolment(connection, sealed);
-    }
+    if (sealed !== null) written = await writeRewrite(connection, sealed);
   } catch {
     written = false;
   }
+  if (written) {
+    held = { material, key: current.key };
+    return;
+  }
   // A rewrite that could not land leaves the blob stale; the session locks
   // rather than let the next start discover it (decision 15).
-  if (!written) await connection.dispatch('vault_lock');
+  await connection.dispatch('vault_lock');
 }
 
 /** Register the sealed bytes on the core; `false` when the write did not land. */
@@ -224,18 +252,48 @@ async function writeEnrolment(connection: VaultConnection, blob: string): Promis
 }
 
 /**
+ * Replace the sealed bytes of an enrolment the core already holds.
+ *
+ * **This cannot create**: the server answers `false` when the id or the
+ * purpose is gone, which is exactly the revoked device's case, and the caller
+ * locks instead of re-registering.
+ */
+async function writeRewrite(connection: VaultConnection, blob: string): Promise<boolean> {
+  const enrolment = enrolmentIdIfMinted();
+  if (enrolment === null) return false;
+  const answer = await connection.dispatch({
+    biometric_rewrite: { enrolment, purpose: VAULT_PURPOSE, blob },
+  });
+  return answer === true;
+}
+
+/**
  * The enrolment id this client minted, or null when this page cannot keep
  * one - storage that is refused loses the id across a restart, so the release
  * path falls back to the password rather than naming a device it cannot.
  */
 export function enrolmentId(): string | null {
   try {
-    const stored = globalThis.localStorage.getItem(ENROLMENT_STORAGE);
-    if (stored !== null && stored !== '') return stored;
+    const stored = enrolmentIdIfMinted();
+    if (stored !== null) return stored;
     const minted = mintedId();
     if (minted === null) return null;
     globalThis.localStorage.setItem(ENROLMENT_STORAGE, minted);
     return minted;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The id this client already minted, or null - **a read, not a mint**. A
+ * comparison against the server's list must not create an id as a side
+ * effect; only enrolling does that.
+ */
+export function enrolmentIdIfMinted(): string | null {
+  try {
+    const stored = globalThis.localStorage.getItem(ENROLMENT_STORAGE);
+    return stored !== null && stored !== '' ? stored : null;
   } catch {
     return null;
   }

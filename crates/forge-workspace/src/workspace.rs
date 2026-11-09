@@ -7821,6 +7821,17 @@ impl Workspace {
                         let _ = respond.send(true);
                     }
                 }
+                Command::BiometricRewrite { enrolment, purpose, blob, respond } => {
+                    // **Update-only**: an unknown id or purpose answers
+                    // `false`, which the rotation turns into a lock rather
+                    // than letting a revoked device re-register itself.
+                    let replaced = self
+                        .rewrite_biometric(enrolment, &purpose, &blob)
+                        .map_err(|reason| DispatchError::BiometricRefused { reason })?;
+                    if let Some(respond) = respond {
+                        let _ = respond.send(replaced);
+                    }
+                }
                 Command::BiometricRelease { enrolment, purpose, respond } => {
                     // The wait the transport answered: a store failure is a
                     // dispatch refusal, so it surfaces as a refusal rather

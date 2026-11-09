@@ -319,8 +319,9 @@ locked; the client wraps them under its platform authenticator and registers
 the blob with `biometric_enrol`. When the session's refresh token rotates -
 the release redemption or the session's own refresh - it pushes the
 slot-less `vault_rotated` with the new token, and the client holding the
-enrolment rewrites its blob; a client that cannot falls back to the
-password. **The frame is live-socket-only**: a device that was disconnected
+enrolment rewrites its blob through the update-only `biometric_rewrite` (a
+row the person created, never a new one); a client that cannot falls back to
+the password. **The frame is live-socket-only**: a device that was disconnected
 when the token rotated keeps the spent token, and its next gesture start
 falls back to the password once - enrolling that device again is the
 settings card's `enrol`, which needs the vault open.

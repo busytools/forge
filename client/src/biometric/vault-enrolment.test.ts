@@ -7,9 +7,10 @@ import { webcrypto } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ServerMessage } from '../protocol';
-import { release, store } from './index';
+import { release, remove, store } from './index';
 import { openVaultMaterial, type VaultMaterial } from './vault';
 import {
+  deviceName,
   enrolVault,
   forgetVaultMaterial,
   releaseVaultMaterial,
@@ -23,10 +24,12 @@ vi.mock('./index', () => ({
     typeof why === 'string' ? why : 'the platform authenticator did not answer',
   release: vi.fn(),
   store: vi.fn(),
+  remove: vi.fn(),
 }));
 
 const gateRelease = vi.mocked(release);
 const gateStore = vi.mocked(store);
+const gateRemove = vi.mocked(remove);
 
 /**
  * jsdom has no WebCrypto subtle; the platform's own is what a webview has, so
@@ -36,6 +39,7 @@ beforeEach(() => {
   vi.stubGlobal('crypto', webcrypto);
   gateRelease.mockReset();
   gateStore.mockReset();
+  gateRemove.mockReset();
   gateStore.mockResolvedValue(undefined);
   globalThis.localStorage.clear();
   forgetVaultMaterial();
@@ -117,6 +121,13 @@ describe('enrolling this device', () => {
       await openVaultMaterial(enrol?.biometric_enrol.blob ?? '', key as string),
       'the bytes open under the key the gate holds',
     ).toEqual(MATERIAL);
+  });
+
+  /// **The serial is what tells two devices of one platform apart.** The page
+  /// has no hostname on any client, so the id this client minted is the one
+  /// distinctive part of the name the list draws.
+  it('names the device by its platform and its own serial', () => {
+    expect(deviceName('abcdef12-3456-7890-abcd-ef1234567890')).toMatch(/ \(abcdef12\)$/);
   });
 
   it('enrols nothing while the session is locked', async () => {
@@ -208,19 +219,24 @@ describe('a rotation', () => {
       update: { vault_rotated: { refresh_token: 'refresh-2' } },
     });
     await until(
-      () => live.calls.slice(before).some((command) => commandName(command) === 'biometric_enrol'),
-      'the blob to be registered again',
+      () =>
+        live.calls.slice(before).some((command) => commandName(command) === 'biometric_rewrite'),
+      'the blob to be rewritten',
     );
 
+    // **The rewrite, not the enrol**: the rotation may only update a row the
+    // person created, so it can never re-register a revoked device.
     const rewritten = live.calls
       .slice(before)
-      .find((command) => commandName(command) === 'biometric_enrol') as
-      { biometric_enrol: { blob: string } } | undefined;
-    expect(rewritten, 'the blob is registered again').toBeDefined();
-    expect(await openVaultMaterial(rewritten?.biometric_enrol.blob ?? '', key as string)).toEqual({
-      refresh_token: 'refresh-2',
-      user_key: 'user-key-1',
-    });
+      .find((command) => commandName(command) === 'biometric_rewrite') as
+      { biometric_rewrite: { blob: string } } | undefined;
+    expect(rewritten, 'the blob is rewritten').toBeDefined();
+    expect(await openVaultMaterial(rewritten?.biometric_rewrite.blob ?? '', key as string)).toEqual(
+      {
+        refresh_token: 'refresh-2',
+        user_key: 'user-key-1',
+      },
+    );
     stop();
   });
 
@@ -238,7 +254,7 @@ describe('a rotation', () => {
       if (commandName(command) === 'biometric_release') {
         return { blob: enrolled.biometric_enrol.blob };
       }
-      if (commandName(command) === 'biometric_enrol') return false;
+      if (commandName(command) === 'biometric_rewrite') return false;
       return true;
     });
     await releaseVaultMaterial(live);
@@ -265,6 +281,68 @@ describe('a rotation', () => {
     await settled();
 
     expect(connection.calls).toHaveLength(0);
+  });
+
+  /**
+   * **A revoked device is dropped from the rewrite path.** The enrolments
+   * frame names the set the core holds; when this device's id is gone, the
+   * material goes, so a rotation that follows has nothing to rewrite.
+   */
+  it('drops the material when the enrolments frame no longer names this device', async () => {
+    const connection = aConnection((command) =>
+      commandName(command) === 'vault_enrolment_material' ? MATERIAL : true,
+    );
+    await enrolVault(connection);
+    const [, key] = gateStore.mock.calls[0] ?? [];
+    const enrolled = connection.calls.find(
+      (command) => commandName(command) === 'biometric_enrol',
+    ) as { biometric_enrol: { blob: string } };
+    gateRelease.mockResolvedValue({ outcome: 'released', blob: key as string });
+    const live = aConnection((command) => {
+      if (commandName(command) === 'biometric_release') {
+        return { blob: enrolled.biometric_enrol.blob };
+      }
+      return true;
+    });
+    await releaseVaultMaterial(live);
+    watchVaultEnrolment(live);
+
+    live.listeners[0]?.({
+      kind: 'update',
+      update: { biometric_enrolments_changed: { enrolments: [] } },
+    });
+    const before = live.calls.length;
+    live.listeners[0]?.({
+      kind: 'update',
+      update: { vault_rotated: { refresh_token: 'refresh-2' } },
+    });
+    await settled();
+
+    expect(live.calls.slice(before), 'a rotation has nothing to rewrite').toHaveLength(0);
+  });
+
+  /// The released path's "the core holds no enrolment" answer is the same
+  /// revocation: the local item goes and the material goes with it.
+  it('forgets the material when the core holds no enrolment', async () => {
+    const connection = aConnection((command) =>
+      commandName(command) === 'vault_enrolment_material' ? MATERIAL : true,
+    );
+    await enrolVault(connection);
+    gateRelease.mockResolvedValue({ outcome: 'released', blob: 'a2V5' });
+
+    const live = aConnection(() => null);
+    const answer = await releaseVaultMaterial(live);
+
+    expect(answer.outcome).toBe('not_enrolled');
+    expect(gateRemove, 'the local item goes with the revoked row').toHaveBeenCalledWith('vault');
+    watchVaultEnrolment(live);
+    const before = live.calls.length;
+    live.listeners[0]?.({
+      kind: 'update',
+      update: { vault_rotated: { refresh_token: 'refresh-2' } },
+    });
+    await settled();
+    expect(live.calls.slice(before), 'and a rotation has nothing to rewrite').toHaveLength(0);
   });
 });
 

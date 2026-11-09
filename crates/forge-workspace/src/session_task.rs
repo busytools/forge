@@ -3076,6 +3076,7 @@ pub(crate) fn execute_command_via_handle(
         | Command::VoiceMode { .. }
         | Command::VoicePreview { .. }
         | Command::BiometricEnrol { .. }
+        | Command::BiometricRewrite { .. }
         | Command::BiometricRelease { .. }
         | Command::BiometricRevoke { .. }
         | Command::VaultLock

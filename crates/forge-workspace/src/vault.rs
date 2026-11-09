@@ -965,6 +965,169 @@ mod tests {
         }
     }
 
+    /// A wall-clock instant the given seconds in the past.
+    fn seconds_ago(seconds: u64) -> std::time::SystemTime {
+        std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(seconds))
+            .expect("the clock is older than the test's span")
+    }
+
+    /// **A refresh that answers the same token is not a rotation.** Announcing
+    /// it would make every client rewrite a blob nothing changed.
+    #[tokio::test]
+    async fn an_unchanged_refresh_token_is_not_announced() {
+        assert!(!rotation_announcement("same").await, "the same token is not news");
+    }
+
+    /// A refresh that answers a new token is announced, and its value is what
+    /// the client rewrites with.
+    #[tokio::test]
+    async fn a_changed_refresh_token_is_announced() {
+        assert!(rotation_announcement("next").await, "a moved token is news");
+    }
+
+    /// Whether a refresh answering `next` produced a `VaultRotated`.
+    async fn rotation_announcement(next: &str) -> bool {
+        use crate::update_fanout::SubscriberRole;
+
+        let body =
+            serde_json::json!({ "access_token": "fresh", "refresh_token": next }).to_string();
+        let (address, _server) = serve(vec![response("200 OK", &body)]).await;
+        let updates = UpdateFanout::default();
+        let mut announced = updates.subscribe(SubscriberRole::Answering);
+        let config = VaultConfig {
+            url: format!("http://{address}"),
+            email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
+        };
+        let session = test_session_with_updates(&config, None, Path::new("/tmp"), updates)
+            .expect("a session");
+        session.state.write().tokens =
+            Some(Tokens { access: "stale".to_owned(), refresh: Some("same".to_owned()) });
+
+        session.refresh("stale").await.expect("the refresh");
+
+        let mut rotated = false;
+        while let Ok(frame) = announced.try_recv() {
+            if matches!(&*frame.update, SessionUpdate::VaultRotated { .. }) {
+                rotated = true;
+            }
+        }
+        rotated
+    }
+
+    /// **The enrolment hand-out is a read like any other.** A session past its
+    /// bound answers no material and announces the lock, so a device cannot
+    /// enrol against a session the idle clock has already closed.
+    #[test]
+    fn the_enrolment_material_is_not_handed_out_past_the_idle_bound() {
+        use crate::update_fanout::SubscriberRole;
+
+        let updates = UpdateFanout::default();
+        let mut announced = updates.subscribe(SubscriberRole::Answering);
+        let bound = VaultConfig {
+            url: "http://127.0.0.1:1".to_owned(),
+            email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: Some(30),
+        };
+        let session = test_session_with_updates(&bound, None, Path::new("/tmp"), updates.clone())
+            .expect("a session");
+        test_install_unlocked(
+            &session,
+            Unlocked {
+                user_key: crypto::make_symmetric_key(),
+                private_key: None,
+                org_keys: std::collections::HashMap::new(),
+                failed_orgs: Vec::new(),
+                user_key_fingerprint: String::new(),
+            },
+        );
+        session.state.write().tokens =
+            Some(Tokens { access: "access".to_owned(), refresh: Some("refresh".to_owned()) });
+
+        assert!(session.enrolment_material().is_some(), "a fresh session hands the material out");
+        *session.last_used.lock() = Some(seconds_ago(31 * 60));
+
+        assert!(
+            session.enrolment_material().is_none(),
+            "a session past its bound hands nothing out",
+        );
+        assert!(session.is_locked(), "and the hand-out locked it");
+        match &*announced.try_recv().expect("the lock is announced").update {
+            SessionUpdate::VaultLockChanged { locked } => assert!(locked),
+            other => panic!("the hand-out announced something else: {other:?}"),
+        }
+    }
+
+    /// **A lock that lands while a released-material unlock is out wins**,
+    /// exactly as it does for the password path.
+    #[tokio::test]
+    async fn a_lock_during_a_released_unlock_is_not_undone_by_it() {
+        use tokio::io::AsyncWriteExt;
+
+        let pre =
+            Prelogin { kdf: 0, kdf_iterations: 100_000, kdf_memory: None, kdf_parallelism: None };
+        let master_key = crypto::derive_master_key("open sesame", "hi@vedhavyas.dev", &pre)
+            .expect("the master key");
+        let (user_key, wrapped_user_key) = master_key.make_user_key().expect("the user key");
+        let token = serde_json::json!({
+            "access_token": "access",
+            "refresh_token": "refresh",
+            "Key": wrapped_user_key.to_string(),
+        })
+        .to_string();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let (sync_seen, sync_seen_rx) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let mut sync_seen = Some(sync_seen);
+            let mut released = Some(released);
+            for index in 0..2 {
+                let (mut socket, _) = listener.accept().await.expect("accept");
+                let _ = read_request(&mut socket).await;
+                if index == 0 {
+                    let _ = socket.write_all(response("200 OK", &token).as_bytes()).await;
+                } else {
+                    if let Some(signal) = sync_seen.take() {
+                        let _ = signal.send(());
+                    }
+                    if let Some(held) = released.take() {
+                        let _ = held.await;
+                    }
+                    let body = r#"{"profile":{},"folders":[],"ciphers":[]}"#;
+                    let _ = socket.write_all(response("200 OK", body).as_bytes()).await;
+                }
+            }
+        });
+
+        let session = std::sync::Arc::new(
+            test_session(
+                &VaultConfig {
+                    url: format!("http://{address}"),
+                    email: "hi@vedhavyas.dev".to_owned(),
+                    idle_minutes: None,
+                },
+                None,
+                Path::new("/tmp"),
+            )
+            .expect("a session"),
+        );
+        let held = std::sync::Arc::clone(&session);
+        let released_key = user_key.0.to_base64().to_string();
+        let unlocking =
+            tokio::spawn(async move { held.unlock_released("refresh", &released_key).await });
+        sync_seen_rx.await.expect("the sync request is out");
+
+        session.lock();
+        let _ = release.send(());
+        let refused = unlocking.await.expect("the unlock finishes");
+
+        assert!(matches!(refused, Err(VaultError::Locked)), "the lock wins: {refused:?}");
+        assert!(session.is_locked(), "the session stays locked");
+    }
+
     /// **A lock that lands while an unlock is out wins.** The generation bump
     /// is what stops network work from installing keys under a lock the
     /// person pressed (or the idle clock fired) while the request was away.

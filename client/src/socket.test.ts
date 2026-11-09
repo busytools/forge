@@ -741,11 +741,12 @@ describe('the connection', () => {
    * Which of the two envelope shapes it takes is the client's to decide, not
    * the caller's, because the server refuses both mismatches - and it refuses
    * them before dispatching, so getting this wrong is a command that silently
-   * never runs rather than one that reports an error. All five of the names
-   * are dispatched, because a name that fell out of the set would show up as
-   * a command sent with no reply channel at all.
+   * never runs rather than one that reports an error. **Every name is
+   * dispatched by hand rather than read from the set**: a name that fell out
+   * of the set would otherwise keep this test green while the command crossed
+   * with no reply channel at all.
    */
-  it('sets reply_to from the command, and only for the five that answer', async () => {
+  it('sets reply_to from the command, and only for the names that answer', async () => {
     const { server, conn } = await connected();
 
     const plain = [
@@ -758,8 +759,23 @@ describe('the connection', () => {
       conn.dispatch({ upsert_review_thread: { project: 'proj', branch: 'main' } }),
       conn.dispatch({ delete_review_thread: { project: 'proj', branch: 'main', thread_id: 't1' } }),
       conn.dispatch({ submit_review: { project: 'proj', branch: 'main' } }),
+      // The vault's four, which the page writes by hand and the server
+      // refuses reply-less.
+      conn.dispatch({ biometric_release: { enrolment: 'device-1', purpose: 'vault' } }),
+      conn.dispatch({
+        biometric_enrol: {
+          enrolment: 'device-1',
+          device: 'macOS (3f2a9c1b)',
+          purpose: 'vault',
+          blob: 'c2VhbGVk',
+        },
+      }),
+      conn.dispatch({
+        biometric_rewrite: { enrolment: 'device-1', purpose: 'vault', blob: 'c2VhbGVk' },
+      }),
+      conn.dispatch({ vault_enrolment_material: {} }),
     ];
-    await until(() => commands(server.received).length === 7, 'all seven commands');
+    await until(() => commands(server.received).length === 11, 'all eleven commands');
 
     const sent = commands(server.received);
     // **The same answer the desktop gives**: a no-reply command promises the
@@ -773,8 +789,8 @@ describe('the connection', () => {
 
     const ids = sent.slice(2).map((command) => command.reply_to);
     for (const id of ids) expect(typeof id).toBe('number');
-    // Five asks, five channels: a shared id hands a caller another's answer.
-    expect(new Set(ids).size).toBe(5);
+    // Nine asks, nine channels: a shared id hands a caller another's answer.
+    expect(new Set(ids).size).toBe(9);
 
     // Nothing here answers them, so they are settled rather than left to
     // reject unhandled when the connection closes.

@@ -324,6 +324,9 @@ export const ANSWERS_THROUGH_A_REPLY: ReadonlySet<string> = new Set([
   // and the enrol write's own `true`/`false`, which a rotation rewrite reads.
   'biometric_release',
   'biometric_enrol',
+  // The rotation's update-only rewrite, whose `true`/`false` decides whether
+  // the vault locks.
+  'biometric_rewrite',
   'vault_enrolment_material',
 ]);
 

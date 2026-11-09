@@ -351,7 +351,8 @@ census!(Command,
         AnswerDocumentHandOff struct,
         RespondSettingsWrite struct,
         RespondVaultAsk struct,
-        BiometricEnrol struct, BiometricRelease struct, BiometricRevoke struct,
+        BiometricEnrol struct, BiometricRewrite struct, BiometricRelease struct,
+        BiometricRevoke struct,
         VaultLock unit, VaultEnrolmentMaterial struct,
         RespondQuestion struct, SetDictateOverride struct, ResetDictateOverrides struct,
         DictateCatalogueCheck struct, DictateInstall struct,
@@ -1182,7 +1183,11 @@ fn frames_record() -> Value {
                 purposes: vec![forge_primitives::biometric::BiometricPurpose {
                     purpose: "vault".to_owned(),
                     created_at: std::time::SystemTime::UNIX_EPOCH,
-                    last_used_at: None,
+                    // Sampled as a set stamp: the card draws it, and a rename
+                    // here would draw `never used` for ever.
+                    last_used_at: Some(
+                        std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(60),
+                    ),
                 }],
             }],
         })),
@@ -2055,6 +2060,15 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
         sample(Command::BiometricEnrol {
             enrolment: uuid::Uuid::new_v4(),
             device: "this device".to_owned(),
+            purpose: "vault".to_owned(),
+            blob: "c2FtcGxl".to_owned(),
+            respond: None,
+        }),
+    );
+    sampled.insert(
+        "BiometricRewrite".to_owned(),
+        sample(Command::BiometricRewrite {
+            enrolment: uuid::Uuid::new_v4(),
             purpose: "vault".to_owned(),
             blob: "c2FtcGxl".to_owned(),
             respond: None,

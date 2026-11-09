@@ -281,8 +281,9 @@ pub mod wire;
 /// emitted.
 ///
 /// **v30 adds the biometric proxy's server surface.** The app-level
-/// `biometric_enrol`, `biometric_release`, `biometric_revoke` and
-/// `vault_enrolment_material` commands, the app-level `vault_lock`, and the
+/// `biometric_enrol`, the update-only `biometric_rewrite`, `biometric_release`,
+/// `biometric_revoke` and `vault_enrolment_material` commands, the app-level
+/// `vault_lock`, and the
 /// slot-less `biometric_enrolments_changed`, `vault_rotated` and
 /// `vault_lock_changed` updates. A v29 server cannot decode the commands at
 /// all, and a v29 client has no vocabulary for the updates: a settings page

@@ -71,6 +71,25 @@ impl Enrolment {
     }
 }
 
+/// The bytes a wrapped blob names, refused before the decode can allocate
+/// past the cap.
+fn validated_blob(blob: &str) -> Result<Vec<u8>, String> {
+    if blob.len() > MAX_ENCODED_BYTES {
+        return Err(format!("the wrapped blob is longer than the {MAX_BLOB_BYTES} byte cap"));
+    }
+    let decoded = BiometricBlob { blob: blob.to_owned() }.decode()?;
+    if decoded.is_empty() {
+        return Err("the wrapped blob is empty".to_owned());
+    }
+    if decoded.len() > MAX_BLOB_BYTES {
+        return Err(format!(
+            "the wrapped blob is {} bytes, past the {MAX_BLOB_BYTES} byte cap",
+            decoded.len(),
+        ));
+    }
+    Ok(decoded)
+}
+
 impl Workspace {
     /// Every device's enrolment, read from the machine-local store.
     ///
@@ -89,7 +108,9 @@ impl Workspace {
 
     /// Register one purpose's wrapped blob under `id`, creating the device's
     /// enrolment when the id is new and replacing that purpose's bytes when it
-    /// is not - which is what a refresh-token rotation's rewrite is.
+    /// is not. **The person's press is this command's only caller**; a
+    /// rotation rewrite goes through [`Self::rewrite_biometric`], which cannot
+    /// create.
     pub(crate) fn enrol_biometric(
         &self,
         id: Uuid,
@@ -105,22 +126,7 @@ impl Workspace {
         if purpose.is_empty() {
             return Err("an enrolment names no purpose".to_owned());
         }
-        // **The cap is on the wrapped bytes, and the decode allocates.** A
-        // caller can send far more base64 than the cap allows, so the encoded
-        // length is refused before the decode rather than after it.
-        if blob.len() > MAX_ENCODED_BYTES {
-            return Err(format!("the wrapped blob is longer than the {MAX_BLOB_BYTES} byte cap"));
-        }
-        let blob = BiometricBlob { blob: blob.to_owned() }.decode()?;
-        if blob.is_empty() {
-            return Err("the wrapped blob is empty".to_owned());
-        }
-        if blob.len() > MAX_BLOB_BYTES {
-            return Err(format!(
-                "the wrapped blob is {} bytes, past the {MAX_BLOB_BYTES} byte cap",
-                blob.len(),
-            ));
-        }
+        let blob = validated_blob(blob)?;
         let now = SystemTime::now();
         {
             let db = self.db.lock();
@@ -151,6 +157,44 @@ impl Workspace {
         }
         self.announce_biometric_enrolments();
         Ok(())
+    }
+
+    /// Replace an existing purpose's blob, refusing to create.
+    ///
+    /// **The person's press is what creates a row**; this is the rotation
+    /// rewrite, which may only update one. A device the person revoked has no
+    /// row, so its rewrite answers `false` and the client locks rather than
+    /// re-registering itself.
+    pub(crate) fn rewrite_biometric(
+        &self,
+        id: Uuid,
+        purpose: &str,
+        blob: &str,
+    ) -> Result<bool, String> {
+        let purpose = purpose.trim();
+        if purpose.is_empty() {
+            return Err("a rewrite names no purpose".to_owned());
+        }
+        let blob = validated_blob(blob)?;
+        {
+            let db = self.db.lock();
+            let Some(db) = db.as_ref() else {
+                return Err("the machine-local store is not open".to_owned());
+            };
+            let Some(mut enrolment) =
+                crate::store::biometric::get(db, id).map_err(|error| error.to_string())?
+            else {
+                return Ok(false);
+            };
+            let Some(held) = enrolment.purposes.iter_mut().find(|held| held.purpose == purpose)
+            else {
+                return Ok(false);
+            };
+            held.blob = blob;
+            crate::store::biometric::put(db, &enrolment).map_err(|error| error.to_string())?;
+        }
+        self.announce_biometric_enrolments();
+        Ok(true)
     }
 
     /// The blob enrolled for `purpose` under `id`, stamped as used.
@@ -378,6 +422,36 @@ mod tests {
             .expect("the revoke routes");
 
         assert!(workspace.biometric_enrolments().expect("read").is_empty(), "the row is gone");
+    }
+
+    /// **A rewrite cannot create.** The rotation path is update-only, so a
+    /// device the person revoked answers `false` and stays gone - the server
+    /// half of the revoke that sticks.
+    #[test]
+    fn a_rewrite_never_creates_a_revoked_enrolment() {
+        let (workspace, _dir) = workspace();
+        let id = Uuid::new_v4();
+        workspace.enrol_biometric(id, "phone", "vault", &blob(b"stale")).expect("enrol");
+        assert!(
+            workspace.rewrite_biometric(id, "vault", &blob(b"fresh")).expect("rewrite"),
+            "an existing purpose is updated",
+        );
+        workspace.revoke_biometric(id, Some("vault")).expect("revoke");
+
+        assert!(
+            !workspace.rewrite_biometric(id, "vault", &blob(b"next")).expect("the rewrite answers"),
+            "a revoked purpose refuses",
+        );
+        assert!(
+            workspace.biometric_enrolments().expect("read").is_empty(),
+            "and nothing is recreated",
+        );
+        assert!(
+            !workspace
+                .rewrite_biometric(Uuid::new_v4(), "vault", &blob(b"x"))
+                .expect("an unknown id answers"),
+            "an unknown id refuses too",
+        );
     }
 
     /// **A re-enrol replaces rather than appends.** A rotation rewrite sends

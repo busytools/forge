@@ -229,8 +229,9 @@
     const stopGreetings = open.onMessage((message) => {
       if (message.kind === 'greeting') skew = open.skew();
     });
-    // The vault's own lifecycle: an unlock enrols this device, and a rotated
-    // refresh token rewrites the sealed bytes (or locks the session).
+    // The vault's own lifecycle: a rotated refresh token rewrites the sealed
+    // bytes (or locks the session), a lock drops the held material, and a
+    // revoked enrolment drops it too.
     const stopVault = watchVaultEnrolment(open);
     return () => {
       stopHome();

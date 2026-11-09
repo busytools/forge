@@ -453,6 +453,17 @@ describe('the commands that answer through a reply', () => {
       if (command === 'client_dispatch') return Promise.resolve('the body');
       return Promise.resolve(undefined);
     });
+    // **The vault's names are asserted literally.** A loop over the very set
+    // it checks cannot notice a name missing from it, which is how the
+    // desktop path lost these in the first place.
+    for (const name of [
+      'biometric_release',
+      'biometric_enrol',
+      'biometric_rewrite',
+      'vault_enrolment_material',
+    ]) {
+      expect(ANSWERS_THROUGH_A_REPLY.has(name), `${name} carries a reply`).toBe(true);
+    }
     for (const name of ANSWERS_THROUGH_A_REPLY) {
       // The name is this test's data and its payload is irrelevant: the
       // transport decides on the variant alone.

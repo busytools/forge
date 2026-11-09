@@ -120,6 +120,7 @@
     "BiometricEnrol": "biometric_enrol",
     "BiometricRelease": "biometric_release",
     "BiometricRevoke": "biometric_revoke",
+    "BiometricRewrite": "biometric_rewrite",
     "Cancel": "cancel",
     "CancelQueuedPrompt": "cancel_queued_prompt",
     "CloseSession": "close_session",
@@ -241,9 +242,14 @@
       ],
       "/update/biometric_enrolments_changed/enrolments[]/purposes[]": [
         "created_at",
+        "last_used_at",
         "purpose"
       ],
       "/update/biometric_enrolments_changed/enrolments[]/purposes[]/created_at": [
+        "nanos_since_epoch",
+        "secs_since_epoch"
+      ],
+      "/update/biometric_enrolments_changed/enrolments[]/purposes[]/last_used_at": [
         "nanos_since_epoch",
         "secs_since_epoch"
       ]
@@ -1605,6 +1611,16 @@
         "biometric_revoke"
       ],
       "/biometric_revoke": [
+        "enrolment",
+        "purpose"
+      ]
+    },
+    "BiometricRewrite": {
+      "": [
+        "biometric_rewrite"
+      ],
+      "/biometric_rewrite": [
+        "blob",
         "enrolment",
         "purpose"
       ]

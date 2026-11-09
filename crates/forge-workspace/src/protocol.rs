@@ -435,6 +435,22 @@ pub enum Command {
         #[serde(skip)]
         respond: Option<oneshot::Sender<bool>>,
     },
+    /// A rotation's rewrite of an **existing** enrolment: the same purpose
+    /// and a fresh blob on an id the core already holds.
+    ///
+    /// **The person's press is what creates a row**; this may only update
+    /// one. A device the person revoked has no row, so its rewrite answers
+    /// `false` - the client then locks rather than re-registering itself.
+    /// Answers `true` when the blob was replaced, `false` when the id or the
+    /// purpose is gone, and a store failure is a dispatch refusal. App-level;
+    /// the outcome rides [`SessionUpdate::BiometricEnrolmentsChanged`].
+    BiometricRewrite {
+        enrolment: uuid::Uuid,
+        purpose: String,
+        blob: String,
+        #[serde(skip)]
+        respond: Option<oneshot::Sender<bool>>,
+    },
     /// A client asks for the blob it enrolled for one purpose, so its gate can
     /// unwrap it. Answers through `reply_to` with the blob, or `null` when that
     /// purpose is not enrolled on this device - the state a client falls back
@@ -1041,6 +1057,7 @@ impl Command {
             | Self::BiometricEnrol { .. }
             | Self::BiometricRelease { .. }
             | Self::BiometricRevoke { .. }
+            | Self::BiometricRewrite { .. }
             | Self::VaultLock
             | Self::VaultEnrolmentMaterial { .. } => None,
         }
@@ -1160,6 +1177,11 @@ impl std::fmt::Debug for Command {
                 .field("enrolment", enrolment)
                 .field("purpose", purpose)
                 .finish(),
+            Self::BiometricRewrite { enrolment, purpose, .. } => f
+                .debug_struct("BiometricRewrite")
+                .field("enrolment", enrolment)
+                .field("purpose", purpose)
+                .finish_non_exhaustive(),
             Self::VaultLock => f.write_str("VaultLock"),
             Self::VaultEnrolmentMaterial { .. } => f.write_str("VaultEnrolmentMaterial"),
             Self::AnswerDocumentHandOff { key, id, answer } => f
