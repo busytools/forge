@@ -138,8 +138,14 @@ impl Drop for StoreCopy {
 
 /// The bench's own host: it is not a session host, and the only seam its
 /// config needs is the app-support base the caller handed it.
+///
+/// Test-gated like its one caller, [`resolved_live_roles`]: the installed
+/// binary builds no live-roles config, and the release lint denies a dead
+/// type.
+#[cfg(any(test, feature = "testing"))]
 struct BenchHost<'a>(&'a Path);
 
+#[cfg(any(test, feature = "testing"))]
 impl crate::dictate::DictateHost for BenchHost<'_> {
     fn session_is_live(&self, _key: &crate::SessionSlot) -> bool {
         false
