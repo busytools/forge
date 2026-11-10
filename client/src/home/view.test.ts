@@ -12,6 +12,7 @@ import type {
   FleetRow,
   HomeWire,
   Lifecycle,
+  PendingKind,
   ProjectWire,
   Task,
   TaskStatus,
@@ -1383,6 +1384,33 @@ describe('what a row says', () => {
    * property off it: an unknown string there is not a card drawn wrongly,
    * it is a page that does not draw.
    */
+  /**
+   * **Every ask kind survives narrowing.** `homeFrom` narrows an unknown
+   * `pending` to `permission`, so a kind missing from `PENDING` would draw
+   * the wrong words rather than fail. The table is every kind the server can
+   * send; `homeFrom` must hand each back unchanged.
+   */
+  it('narrows every ask kind the server can send', () => {
+    const kinds: PendingKind[] = [
+      'question',
+      'permission',
+      'slack_draft',
+      'browser_hand_off',
+      'terminal_hand_off',
+      'document_hand_off',
+      'settings_write',
+      'vault',
+    ];
+    const wire = homeFrom({
+      ...FLEET,
+      agents: kinds.map((pending, index) => ({
+        ...agent('Busytools', 'forge', `w${index}`, 'Attention'),
+        pending,
+      })),
+    });
+    expect(wire.agents.map((row) => row.pending)).toEqual(kinds);
+  });
+
   /**
    * A restarting worker is work in flight: the project groups under working
    * rather than needs-you, and its row says which attempt is coming. Catches

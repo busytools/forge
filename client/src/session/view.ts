@@ -782,7 +782,7 @@ export function failedLine(row: Row): string | null {
 
 /**
  * The reason line: what a person has to do about this project, in the row's
- * own words rather than a second vocabulary for the same two asks.
+ * own words rather than a second vocabulary for the same asks.
  *
  * A project whose worker is held reads as held, whether or not its lead is the
  * one held, so the workers are searched beside the lead. A failure is not

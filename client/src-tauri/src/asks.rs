@@ -329,7 +329,7 @@ fn org_of(data: &Value, project: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AskKind, Asks, WaitNotice};
+    use super::{AskKind, Asks, WaitNotice, asked_of};
     use forge_primitives::SessionSlot;
     use serde_json::json;
 
@@ -427,8 +427,8 @@ mod tests {
     }
 
     /// **A terminal hand-off is news of its own kind**, not an unknown row
-    /// this build skips: the shell raises the notification a page would, and
-    /// the kind is what the words are drawn from (#2954).
+    /// this build skips: the shell raises the notification a page would
+    /// (#2954).
     #[test]
     fn a_terminal_hand_off_is_news_of_its_own_kind() {
         let mut asks = Asks::default();
@@ -437,7 +437,30 @@ mod tests {
             asks.rising(&roster(&[("w1", Some("terminal_hand_off"), 1)]), None, true),
             vec![(worker(), AskKind::TerminalHandOff)],
         );
-        assert_eq!(AskKind::TerminalHandOff.body(), "a terminal hand-off is waiting");
+    }
+
+    /// **Every wire spelling is read as the kind it names.** A typo compiles
+    /// and skips the row as unknown, so that ask would raise nothing on the
+    /// desktop or the phone while the page still announced it.
+    #[test]
+    fn every_wire_spelling_is_read_as_its_kind() {
+        let cases = [
+            ("question", AskKind::Question, "a question is waiting"),
+            ("permission", AskKind::Permission, "a permission prompt is waiting"),
+            ("slack_draft", AskKind::SlackDraft, "a Slack draft is waiting"),
+            ("browser_hand_off", AskKind::BrowserHandOff, "the browser hand-off is waiting"),
+            ("terminal_hand_off", AskKind::TerminalHandOff, "a terminal hand-off is waiting"),
+            ("document_hand_off", AskKind::DocumentHandOff, "a document hand-off is waiting"),
+            ("settings_write", AskKind::SettingsWrite, "a settings write is waiting"),
+            ("vault", AskKind::Vault, "a vault call is waiting"),
+        ];
+        for (spelling, kind, body) in cases {
+            let row = json!({ "slot": seat("w1"), "pending": spelling, "pending_seq": 1 });
+            let read =
+                asked_of(&row).expect("a row naming a known kind reads").expect("and holds an ask");
+            assert_eq!(read.kind, kind, "{spelling}");
+            assert_eq!(kind.body(), body, "{spelling}");
+        }
     }
 
     /// **The shown seat is announced once it is not looked at**, and the

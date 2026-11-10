@@ -349,8 +349,14 @@ describe('the rail', () => {
    *  saying nothing (#2954). */
   it('names each held ask on the row in its own words', () => {
     const cases: [PendingKind, string][] = [
-      ['document_hand_off', 'a document hand-off is waiting'],
+      ['question', 'asked you a question'],
+      ['permission', 'a permission prompt is waiting'],
+      ['slack_draft', 'a Slack draft is waiting'],
+      ['browser_hand_off', 'the browser hand-off is waiting'],
       ['terminal_hand_off', 'a terminal hand-off is waiting'],
+      ['document_hand_off', 'a document hand-off is waiting'],
+      ['settings_write', 'a settings write is waiting'],
+      ['vault', 'a vault call is waiting'],
     ];
     for (const [kind, words] of cases) {
       const held: AgentRow = { ...lead(), pending: kind, reason: null };

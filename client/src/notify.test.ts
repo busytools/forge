@@ -13,7 +13,7 @@ import {
   waitWords,
   type AskState,
 } from './notify';
-import type { AgentRow, HomeWire } from './wire/home';
+import type { AgentRow, HomeWire, PendingKind } from './wire/home';
 import type { SessionSlot } from './wire/types';
 
 const LEAD: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
@@ -87,6 +87,18 @@ describe('which asks are news', () => {
       rising(marks, 'run-1', rows, LEAD, false),
       'the window lost focus, so it is news',
     ).toEqual([{ slot: LEAD, kind: 'permission' }]);
+  });
+
+  /// **A second ask of the same kind on one seat is news**, because the
+  /// server numbers each arrival: a second Slack draft is seq 2, never the
+  /// first draft's identity.
+  it('announces a second draft on the same seat when its number moves', () => {
+    const marks = launched();
+    const second = [row(OTHER, { pending: 'slack_draft', pending_depth: 2, pending_seq: 2 })];
+    expect(rising(marks, 'run-1', second, null, true)).toEqual([
+      { slot: OTHER, kind: 'slack_draft' },
+    ]);
+    expect(rising(marks, 'run-1', second, null, true), 'the same read is not news').toEqual([]);
   });
 
   /// **A re-read is not a new ask.** The identity is the ask's sequence.
@@ -532,17 +544,29 @@ describe('delivering an ask', () => {
     expect(shown, 'and the asks held at refusal are dropped').not.toHaveBeenCalled();
   });
 
-  /// **The words name the seat and the ask**, and a lead's title is the
+  /// **The words name the seat and every ask**, and a lead's title is the
   /// project alone - the same seat a page title spells.
   it('names the seat and the ask in the notification', () => {
     expect(askWords({ slot: LEAD, kind: 'question' })).toEqual({
       title: 'forge \u{b7} forge',
       body: 'a question is waiting',
     });
-    expect(askWords({ slot: OTHER, kind: 'document_hand_off' })).toEqual({
-      title: 'forge \u{b7} forge \u{b7} worker',
-      body: 'a document hand-off is waiting',
-    });
+    const cases: [PendingKind, string][] = [
+      ['question', 'a question is waiting'],
+      ['permission', 'a permission prompt is waiting'],
+      ['slack_draft', 'a Slack draft is waiting'],
+      ['browser_hand_off', 'the browser hand-off is waiting'],
+      ['terminal_hand_off', 'a terminal hand-off is waiting'],
+      ['document_hand_off', 'a document hand-off is waiting'],
+      ['settings_write', 'a settings write is waiting'],
+      ['vault', 'a vault call is waiting'],
+    ];
+    for (const [kind, body] of cases) {
+      expect(askWords({ slot: OTHER, kind })).toEqual({
+        title: 'forge \u{b7} forge \u{b7} worker',
+        body,
+      });
+    }
   });
 
   /// **A click opens the seat**, which is the only reason the notification is

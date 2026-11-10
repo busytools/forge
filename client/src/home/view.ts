@@ -439,10 +439,10 @@ export function stateOf(row: AgentRow, unseen: SessionSlot[]): RowState {
   // The failure outranks every other promotion, and the view this client
   // replaced ordered it over the spinner and the diamond both.
   if (row.failed_turn !== null) return { kind: 'failed-turn' };
-  // **A question outranks work.** The seat is waiting on a person, which is
-  // what needs-you means; the rank the rail groups by already reads it this
-  // way, and a mark read from the lifecycle alone drew idle on a seat whose
-  // ask was up (#1885).
+  // **A pending ask outranks work.** The seat is waiting on a person, which
+  // is what needs-you means; the rank the rail groups by already reads it
+  // this way, and a mark read from the lifecycle alone drew idle on a seat
+  // whose ask was up (#1885).
   if (row.pending !== null) return { kind: 'lifecycle', lifecycle: 'Attention' };
   if (row.lifecycle === 'Idle' && row.has_background_work) {
     return { kind: 'lifecycle', lifecycle: 'Running' };
