@@ -284,6 +284,33 @@ describe('a rotation', () => {
   });
 
   /**
+   * **A refused write leaves nothing held.** A rotation after it must not
+   * rewrite a row that was never stored, and must not lock the vault for a
+   * failure it did not cause.
+   */
+  it('holds nothing when the enrol write is refused', async () => {
+    const connection = aConnection((command) => {
+      const name = commandName(command);
+      if (name === 'vault_enrolment_material') return MATERIAL;
+      if (name === 'biometric_enrol') return false;
+      return true;
+    });
+    const answer = await enrolVault(connection);
+    expect(answer.outcome).toBe('failed');
+    expect(answer).toMatchObject({ reason: 'the core did not store the enrolment' });
+
+    const before = connection.calls.length;
+    watchVaultEnrolment(connection);
+    connection.listeners[0]?.({
+      kind: 'update',
+      update: { vault_rotated: { refresh_token: 'refresh-2' } },
+    });
+    await settled();
+
+    expect(connection.calls.slice(before), 'no material is held to rewrite with').toHaveLength(0);
+  });
+
+  /**
    * **A revoked device is dropped from the rewrite path.** The enrolments
    * frame names the set the core holds; when this device's id is gone, the
    * material goes, so a rotation that follows has nothing to rewrite.

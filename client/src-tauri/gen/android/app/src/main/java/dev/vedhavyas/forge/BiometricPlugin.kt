@@ -31,9 +31,10 @@ import javax.crypto.spec.GCMParameterSpec
  * **The purpose is the whole key.** One alias and one record per purpose, so
  * a second consumer is a new purpose string - no new code, no new key type -
  * and revocation drops that purpose's record and key, nothing else. A change
- * to the enrolled fingerprints invalidates the key (the OS deletes it), which
- * is the platform's own invalidation: the record stays and the decrypt is
- * refused, so the client falls back to the password and re-enrols.
+ * to the enrolled fingerprints invalidates the key, which is the platform's
+ * own invalidation: a per-use key is still returned by `getKey` and refuses
+ * at `init`, so a release falls back to the password and a fresh enrolment
+ * replaces the dead key.
  *
  * The Rust side (`client/src-tauri/src/biometric/android.rs`) calls these
  * commands; the page never sees the Keystore.
@@ -145,7 +146,10 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
           }
 
           override fun onAuthenticationError(code: Int, message: CharSequence) {
-            invoke.resolve(refused(BiometricRecords.promptError(code, message)))
+            // **A refused prompt stores nothing, so it is an error.** A
+            // resolved answer here would let the caller record an enrolment
+            // whose key the gate never wrote.
+            invoke.reject(BiometricRecords.promptError(code, message))
           }
         }
       )

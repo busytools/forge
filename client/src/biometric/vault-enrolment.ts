@@ -89,7 +89,9 @@ export async function enrolVault(connection: VaultConnection): Promise<VaultEnro
   try {
     await store(VAULT_PURPOSE, key);
   } catch (why) {
-    return { outcome: 'unavailable', reason: reasonOf(why) };
+    // **A refused prompt is an attempt that failed**, not a gate that cannot
+    // hold a key: the press stays so the person can try again.
+    return { outcome: 'failed', reason: reasonOf(why) };
   }
   let written: boolean;
   try {
