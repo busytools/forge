@@ -297,10 +297,46 @@ pub(crate) fn build(
     (slack, ports)
 }
 
+impl forge_tools::slack::facade::SlackFacadeHost for Workspace {
+    fn slack_workspace(&self, caller: &SessionSlot) -> Option<String> {
+        self.slack_workspace_for_slot(caller)
+    }
+
+    fn caller(&self, caller: &SessionSlot) -> Option<forge_tools::slack::facade::SlackCaller> {
+        let cx = crate::mcp::caller_context::caller_context(self, caller)?;
+        Some(forge_tools::slack::facade::SlackCaller {
+            project_name: cx.project_name,
+            worker_label: cx.worker_label,
+        })
+    }
+
+    fn identity(&self, caller: &SessionSlot) -> Option<(String, Option<String>, bool)> {
+        // The same owner shape gotify records, because a connector
+        // subscription's owner is one concept.
+        crate::mcp::gotify::facade::resolve_identity(self, caller)
+    }
+}
+
 impl Workspace {
     /// Bind the subsystem's host callbacks to this workspace. Idempotent.
     pub(crate) fn bind_slack(self: &Arc<Self>) {
         self.slack_ports.bind(self);
+    }
+
+    /// The Slack family's tool provider for one session: the facade over the
+    /// subsystem handle and this workspace as its host, both weak so the MCP
+    /// server the workspace owns cannot keep it alive.
+    pub(crate) fn slack_tools(
+        self: &Arc<Self>,
+        slot: SessionSlot,
+    ) -> Arc<dyn forge_mcp::ToolProvider> {
+        let host: Arc<dyn forge_tools::slack::facade::SlackFacadeHost> = self.clone();
+        let facade: Arc<dyn forge_tools::slack::facade::SlackFacade> =
+            Arc::new(forge_tools::slack::facade::ProdSlackFacade::new(
+                Arc::downgrade(&self.slack),
+                Arc::downgrade(&host),
+            ));
+        Arc::new(forge_tools::slack::SlackTools::new(facade, slot))
     }
 
     /// Prove each configured `[[slack]]` token once. The host action that

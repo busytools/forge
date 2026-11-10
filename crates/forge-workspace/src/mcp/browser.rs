@@ -540,9 +540,10 @@ mod tests {
         use crate::mcp::gotify::facade::MockGotifyFacade;
         use crate::mcp::peers::facade::MockWorkspaceFacade;
         use crate::mcp::review::facade::MockReviewFacade;
-        use crate::mcp::slack::facade::MockSlackFacade;
         use crate::mcp::tasks::facade::MockTasksFacade;
         use crate::mcp::workers::facade::MockWorkerFacade;
+        use forge_tools::slack::SlackTools;
+        use forge_tools::slack::facade::MockSlackFacade;
         use tokio::sync::mpsc;
 
         let (workspace, _updates) = crate::workspace::Workspace::testing_stub();
@@ -563,7 +564,7 @@ mod tests {
                 review: MockReviewFacade::new().into_arc(),
                 cron: MockCronFacade::new().into_arc(),
                 gotify: MockGotifyFacade::new().into_arc(),
-                slack: MockSlackFacade::new().into_arc(),
+                slack: Some(Arc::new(SlackTools::new(MockSlackFacade::new().into_arc(), seat()))),
                 settings: crate::mcp::settings::facade::ProdSettingsFacade::from_arc(&workspace),
                 vault: None,
                 tasks: MockTasksFacade::new().into_arc(),

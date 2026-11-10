@@ -90,6 +90,13 @@ pub enum ToolOutputBlock {
     Image { mime_type: String, data: Vec<u8> },
 }
 
+/// The envelope a family answers a delete with: the status word a reader
+/// matches and the record that was removed. One shape across families, so a
+/// reader that learned it on one tool reads the next the same way.
+pub fn removed_record(removed: &Value) -> Value {
+    serde_json::json!({ "status": "deleted", "removed": removed })
+}
+
 /// One crate's family of MCP tools.
 ///
 /// [`ToolProvider::call`] answers `None` for a name this family does not

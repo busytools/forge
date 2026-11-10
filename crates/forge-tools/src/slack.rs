@@ -21,7 +21,11 @@ use forge_primitives::slack::{
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
+pub mod facade;
 pub mod subsystem;
+mod tools;
+
+pub use tools::SlackTools;
 
 pub use subsystem::{
     DraftResolution, PumpHttp, Slack, SlackEmit, SlackSeams, SlackStore, SlackSubsystemHost,

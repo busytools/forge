@@ -3734,7 +3734,7 @@ impl Workspace {
             let review_facade = crate::mcp::review::facade::ProdReviewFacade::from_arc(self);
             let cron_facade = crate::mcp::cron::facade::ProdCronFacade::from_arc(self);
             let gotify_facade = crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(self);
-            let slack_facade = crate::mcp::slack::facade::ProdSlackFacade::from_arc(self);
+            let slack_tools = self.slack_tools(session_slot.clone());
             let settings_facade = crate::mcp::settings::facade::ProdSettingsFacade::from_arc(self);
             let tasks_facade = crate::mcp::tasks::facade::ProdTasksFacade::from_arc(self);
             let systemone_facade = self.systemone.read().as_ref().map(|client| {
@@ -3757,7 +3757,7 @@ impl Workspace {
                     review: review_facade,
                     cron: cron_facade,
                     gotify: gotify_facade,
-                    slack: slack_facade,
+                    slack: Some(slack_tools),
                     settings: settings_facade,
                     tasks: tasks_facade,
                     systemone: systemone_facade,
@@ -21000,7 +21000,7 @@ mod worker_respawn_tests {
                 review: crate::mcp::review::facade::ProdReviewFacade::from_arc(workspace),
                 cron: crate::mcp::cron::facade::ProdCronFacade::from_arc(workspace),
                 gotify: crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
-                slack: crate::mcp::slack::facade::ProdSlackFacade::from_arc(workspace),
+                slack: Some(workspace.slack_tools(SessionSlot::from_str_for_test("caller"))),
                 settings: crate::mcp::settings::facade::ProdSettingsFacade::from_arc(workspace),
                 vault: None,
                 tasks: crate::mcp::tasks::facade::ProdTasksFacade::from_arc(workspace),

@@ -9,69 +9,142 @@
 //! per-workspace poll pump sweeps it and delivers matches into the
 //! owning session.
 //!
-//! - [`facade`] - the `SlackFacade` seam (prod over `Weak<Workspace>` +
-//!   a mock for tool tests).
-
-pub(crate) mod facade;
+//! The family is one [`ToolProvider`]: it names the fifteen tools and
+//! answers a call by the name the host advertised. The in-process MCP host
+//! stays in `forge-sdk`, so this crate never depends on the CLI subprocess.
 
 use std::sync::Arc;
 
+use forge_mcp::{ProviderFuture, ToolOutput, ToolProvider, ToolSpec};
+use forge_primitives::SessionSlot;
 use forge_primitives::slack::{
     SlackConversation, SlackSubscription, SlackSubscriptionTarget, SlackWatchMode,
 };
-use forge_sdk::mcp::server::McpServerBuilder;
-use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
-use forge_tools::slack::SlackHistoryMessage;
 use uuid::Uuid;
 
-use crate::SessionSlot;
-use crate::mcp::slack::facade::{
+use crate::slack::SlackHistoryMessage;
+use crate::slack::facade::{
     SlackAttachmentError, SlackChannelWatch, SlackEditError, SlackEditRequest, SlackFacade,
     SlackFetchRequest, SlackPostError, SlackPostRequest, SlackReactError, SlackReactRequest,
     SlackReadError, SlackSubscribeError, SlackSubscribeRequest, SlackUnsubscribeError,
     SlackUploadRequest, format_workspace_error,
 };
 
-/// Attach the Slack tools to an existing [`McpServerBuilder`]. Called for
-/// BOTH lead and worker sessions (any-caller), so `build_forge_server`
-/// invokes this unconditionally. `subscribe` / `unsubscribe` are scoped
-/// to the caller's own records, so they need the caller slot.
-pub(crate) fn add_tools(
-    builder: McpServerBuilder,
-    facade: Arc<dyn SlackFacade>,
-    slot: SessionSlot,
-) -> McpServerBuilder {
-    let list = List { facade: facade.clone(), slot: slot.clone() };
-    let subscribe = Subscribe { facade: facade.clone(), slot: slot.clone() };
-    let unsubscribe = Unsubscribe { facade: facade.clone(), slot: slot.clone() };
-    let post = Post { facade: facade.clone(), slot: slot.clone() };
-    let edit = Edit { facade: facade.clone(), slot: slot.clone() };
-    let react = React { facade: facade.clone(), slot: slot.clone() };
-    let attachment = Attachment { facade: facade.clone(), slot: slot.clone() };
-    let search = Search { facade: facade.clone(), slot: slot.clone() };
-    let history = History { facade: facade.clone(), slot: slot.clone() };
-    let replies = Replies { facade: facade.clone(), slot: slot.clone() };
-    let user = User { facade: facade.clone(), slot: slot.clone() };
-    let users = Users { facade: facade.clone(), slot: slot.clone() };
-    let me = Me { facade: facade.clone(), slot: slot.clone() };
-    let pins = Pins { facade: facade.clone(), slot: slot.clone() };
-    let bookmarks = Bookmarks { facade, slot };
-    builder
-        .tool(list)
-        .tool(subscribe)
-        .tool(unsubscribe)
-        .tool(post)
-        .tool(edit)
-        .tool(react)
-        .tool(attachment)
-        .tool(search)
-        .tool(history)
-        .tool(replies)
-        .tool(user)
-        .tool(users)
-        .tool(me)
-        .tool(pins)
-        .tool(bookmarks)
+/// One tool's own shape, in the family's terms: what it is called, what the
+/// model reads, the arguments it takes, and the call. A family-local trait
+/// rather than a host type, so the bodies below describe the tools and not
+/// a server.
+#[async_trait::async_trait]
+trait Tool {
+    fn name(&self) -> &'static str;
+    fn description(&self) -> &'static str;
+    fn input_schema(&self) -> serde_json::Value;
+    async fn call(&self, input: serde_json::Value) -> ToolOutput;
+}
+
+/// One tool as the host advertises it.
+fn spec(tool: &dyn Tool) -> ToolSpec {
+    ToolSpec {
+        name: tool.name().to_owned(),
+        description: tool.description().to_owned(),
+        schema: tool.input_schema(),
+    }
+}
+
+/// The Slack family's MCP tools, over one caller's facade.
+pub struct SlackTools {
+    list: List,
+    subscribe: Subscribe,
+    unsubscribe: Unsubscribe,
+    post: Post,
+    edit: Edit,
+    react: React,
+    attachment: Attachment,
+    search: Search,
+    history: History,
+    replies: Replies,
+    user: User,
+    users: Users,
+    me: Me,
+    pins: Pins,
+    bookmarks: Bookmarks,
+}
+
+impl SlackTools {
+    /// Called for BOTH lead and worker sessions (any-caller), so the host
+    /// registers this provider whenever the family is selected. `subscribe`
+    /// / `unsubscribe` are scoped to the caller's own records, so they need
+    /// the caller slot.
+    pub fn new(facade: Arc<dyn SlackFacade>, slot: SessionSlot) -> Self {
+        Self {
+            list: List { facade: facade.clone(), slot: slot.clone() },
+            subscribe: Subscribe { facade: facade.clone(), slot: slot.clone() },
+            unsubscribe: Unsubscribe { facade: facade.clone(), slot: slot.clone() },
+            post: Post { facade: facade.clone(), slot: slot.clone() },
+            edit: Edit { facade: facade.clone(), slot: slot.clone() },
+            react: React { facade: facade.clone(), slot: slot.clone() },
+            attachment: Attachment { facade: facade.clone(), slot: slot.clone() },
+            search: Search { facade: facade.clone(), slot: slot.clone() },
+            history: History { facade: facade.clone(), slot: slot.clone() },
+            replies: Replies { facade: facade.clone(), slot: slot.clone() },
+            user: User { facade: facade.clone(), slot: slot.clone() },
+            users: Users { facade: facade.clone(), slot: slot.clone() },
+            me: Me { facade: facade.clone(), slot: slot.clone() },
+            pins: Pins { facade: facade.clone(), slot: slot.clone() },
+            bookmarks: Bookmarks { facade, slot },
+        }
+    }
+}
+
+impl ToolProvider for SlackTools {
+    fn tools(&self) -> Vec<ToolSpec> {
+        vec![
+            spec(&self.list),
+            spec(&self.subscribe),
+            spec(&self.unsubscribe),
+            spec(&self.post),
+            spec(&self.edit),
+            spec(&self.react),
+            spec(&self.attachment),
+            spec(&self.search),
+            spec(&self.history),
+            spec(&self.replies),
+            spec(&self.user),
+            spec(&self.users),
+            spec(&self.me),
+            spec(&self.pins),
+            spec(&self.bookmarks),
+        ]
+    }
+
+    fn call<'a>(
+        &'a self,
+        name: &'a str,
+        input: serde_json::Value,
+    ) -> ProviderFuture<'a, Option<Result<ToolOutput, String>>> {
+        Box::pin(async move {
+            // A name this family does not own is not its call to answer.
+            let tool: &dyn Tool = match name {
+                "slack__list" => &self.list,
+                "slack__subscribe" => &self.subscribe,
+                "slack__unsubscribe" => &self.unsubscribe,
+                "slack__post" => &self.post,
+                "slack__edit" => &self.edit,
+                "slack__react" => &self.react,
+                "slack__attachment" => &self.attachment,
+                "slack__search" => &self.search,
+                "slack__history" => &self.history,
+                "slack__replies" => &self.replies,
+                "slack__user" => &self.user,
+                "slack__users" => &self.users,
+                "slack__me" => &self.me,
+                "slack__pins" => &self.pins,
+                "slack__bookmarks" => &self.bookmarks,
+                _ => return None,
+            };
+            Some(Ok(tool.call(input).await))
+        })
+    }
 }
 
 fn tool_error(text: String) -> ToolOutput {
@@ -247,8 +320,8 @@ impl Tool for List {
         })
     }
 
-    async fn call(&self, input: ToolInput) -> ToolOutput {
-        let args: ListArgs = match serde_json::from_value(input.value) {
+    async fn call(&self, input: serde_json::Value) -> ToolOutput {
+        let args: ListArgs = match serde_json::from_value(input) {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
@@ -435,8 +508,8 @@ impl Tool for Subscribe {
         })
     }
 
-    async fn call(&self, input: ToolInput) -> ToolOutput {
-        let args: SubscribeArgs = match serde_json::from_value(input.value) {
+    async fn call(&self, input: serde_json::Value) -> ToolOutput {
+        let args: SubscribeArgs = match serde_json::from_value(input) {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
@@ -511,8 +584,8 @@ impl Tool for Unsubscribe {
         })
     }
 
-    async fn call(&self, input: ToolInput) -> ToolOutput {
-        let args: UnsubscribeArgs = match serde_json::from_value(input.value) {
+    async fn call(&self, input: serde_json::Value) -> ToolOutput {
+        let args: UnsubscribeArgs = match serde_json::from_value(input) {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
@@ -521,7 +594,7 @@ impl Tool for Unsubscribe {
         };
         match self.facade.unsubscribe(&self.slot, id) {
             Ok(removed) => {
-                let envelope = crate::mcp::deleted::removed_record(&sub_to_row(&removed));
+                let envelope = forge_mcp::removed_record(&sub_to_row(&removed));
                 match serde_json::to_string_pretty(&envelope) {
                     Ok(json) => ToolOutput::text(json),
                     Err(err) => tool_error(format!("response serialization failed: {err}")),
@@ -647,8 +720,8 @@ impl Tool for Post {
         })
     }
 
-    async fn call(&self, input: ToolInput) -> ToolOutput {
-        let args: PostArgs = match serde_json::from_value(input.value) {
+    async fn call(&self, input: serde_json::Value) -> ToolOutput {
+        let args: PostArgs = match serde_json::from_value(input) {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
@@ -726,8 +799,8 @@ impl Tool for Edit {
         })
     }
 
-    async fn call(&self, input: ToolInput) -> ToolOutput {
-        let args: EditArgs = match serde_json::from_value(input.value) {
+    async fn call(&self, input: serde_json::Value) -> ToolOutput {
+        let args: EditArgs = match serde_json::from_value(input) {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
@@ -799,8 +872,8 @@ impl Tool for React {
         })
     }
 
-    async fn call(&self, input: ToolInput) -> ToolOutput {
-        let args: ReactArgs = match serde_json::from_value(input.value) {
+    async fn call(&self, input: serde_json::Value) -> ToolOutput {
+        let args: ReactArgs = match serde_json::from_value(input) {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
@@ -900,8 +973,8 @@ impl Tool for Attachment {
         })
     }
 
-    async fn call(&self, input: ToolInput) -> ToolOutput {
-        let args: AttachmentArgs = match serde_json::from_value(input.value) {
+    async fn call(&self, input: serde_json::Value) -> ToolOutput {
+        let args: AttachmentArgs = match serde_json::from_value(input) {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
@@ -1009,8 +1082,8 @@ impl Tool for Search {
         })
     }
 
-    async fn call(&self, input: ToolInput) -> ToolOutput {
-        let args: SearchArgs = match serde_json::from_value(input.value) {
+    async fn call(&self, input: serde_json::Value) -> ToolOutput {
+        let args: SearchArgs = match serde_json::from_value(input) {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
@@ -1139,8 +1212,8 @@ impl Tool for History {
         })
     }
 
-    async fn call(&self, input: ToolInput) -> ToolOutput {
-        let args: HistoryArgs = match serde_json::from_value(input.value) {
+    async fn call(&self, input: serde_json::Value) -> ToolOutput {
+        let args: HistoryArgs = match serde_json::from_value(input) {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
@@ -1227,8 +1300,8 @@ impl Tool for Replies {
         })
     }
 
-    async fn call(&self, input: ToolInput) -> ToolOutput {
-        let args: RepliesArgs = match serde_json::from_value(input.value) {
+    async fn call(&self, input: serde_json::Value) -> ToolOutput {
+        let args: RepliesArgs = match serde_json::from_value(input) {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
@@ -1288,8 +1361,8 @@ impl Tool for User {
         })
     }
 
-    async fn call(&self, input: ToolInput) -> ToolOutput {
-        let args: UserArgs = match serde_json::from_value(input.value) {
+    async fn call(&self, input: serde_json::Value) -> ToolOutput {
+        let args: UserArgs = match serde_json::from_value(input) {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
@@ -1344,8 +1417,8 @@ impl Tool for Me {
         })
     }
 
-    async fn call(&self, input: ToolInput) -> ToolOutput {
-        let MeArgs {} = match serde_json::from_value(input.value) {
+    async fn call(&self, input: serde_json::Value) -> ToolOutput {
+        let MeArgs {} = match serde_json::from_value(input) {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
@@ -1409,8 +1482,8 @@ impl Tool for Users {
         })
     }
 
-    async fn call(&self, input: ToolInput) -> ToolOutput {
-        let args: UsersArgs = match serde_json::from_value(input.value) {
+    async fn call(&self, input: serde_json::Value) -> ToolOutput {
+        let args: UsersArgs = match serde_json::from_value(input) {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
@@ -1485,8 +1558,8 @@ impl Tool for Pins {
         })
     }
 
-    async fn call(&self, input: ToolInput) -> ToolOutput {
-        let args: PinsArgs = match serde_json::from_value(input.value) {
+    async fn call(&self, input: serde_json::Value) -> ToolOutput {
+        let args: PinsArgs = match serde_json::from_value(input) {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
@@ -1551,8 +1624,8 @@ impl Tool for Bookmarks {
         })
     }
 
-    async fn call(&self, input: ToolInput) -> ToolOutput {
-        let args: BookmarksArgs = match serde_json::from_value(input.value) {
+    async fn call(&self, input: serde_json::Value) -> ToolOutput {
+        let args: BookmarksArgs = match serde_json::from_value(input) {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
@@ -1582,14 +1655,26 @@ impl Tool for Bookmarks {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::slack::facade::{MockSlackFacade, SlackPostOutcome, SlackWorkspaceError};
-    use crate::mcp::test_support::text_of;
+    use crate::slack::AuthTest;
+    use crate::slack::facade::{MockSlackFacade, SlackPostOutcome, SlackWorkspaceError};
     use forge_primitives::slack::{
         SlackBookmark, SlackConversation, SlackConversationText, SlackPin, SlackPinMessage,
         SlackUser, SlackUserProfile,
     };
-    use forge_tools::slack::AuthTest;
     use std::sync::Arc;
+
+    /// The text the output carries, as a tool test reads it.
+    fn text_of(output: &ToolOutput) -> String {
+        output
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                forge_mcp::ToolOutputBlock::Text { text } => Some(text.as_str()),
+                forge_mcp::ToolOutputBlock::Image { .. } => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 
     fn channel(id: &str, name: &str) -> SlackConversation {
         SlackConversation {
@@ -1621,8 +1706,8 @@ mod tests {
         }
     }
 
-    fn input(value: serde_json::Value) -> ToolInput {
-        ToolInput { value }
+    fn input(value: serde_json::Value) -> serde_json::Value {
+        value
     }
 
     fn watching(id: &str) -> SlackSubscriptionTarget {
@@ -1698,7 +1783,7 @@ mod tests {
         assert!(!out.is_error, "a valid subscribe succeeds: {}", text_of(&out));
         assert_eq!(out.blocks.len(), 1, "the rows stay one text block: {out:?}");
         let rows: serde_json::Value =
-            serde_json::from_str(text_of(&out)).expect("the result is one row per record");
+            serde_json::from_str(&text_of(&out)).expect("the result is one row per record");
         assert_eq!(rows[0], sub_to_row(&dm), "the DM class's row, whole");
         assert_eq!(rows[1], sub_to_row(&channel), "the conversation's row, name and mode included");
         assert_eq!(
@@ -1733,7 +1818,7 @@ mod tests {
         assert!(!out.is_error, "a two-kind subscribe succeeds: {}", text_of(&out));
         assert_eq!(mock.subscribe_calls.lock().len(), 2, "both kinds reach the facade");
         let rows: serde_json::Value =
-            serde_json::from_str(text_of(&out)).expect("the result is one row per record");
+            serde_json::from_str(&text_of(&out)).expect("the result is one row per record");
         assert_eq!(rows.as_array().expect("a row list").len(), 2, "and both answers are kept");
     }
 
@@ -1750,7 +1835,7 @@ mod tests {
 
         assert!(!out.is_error, "nothing new to watch is not an error: {}", text_of(&out));
         let rows: serde_json::Value =
-            serde_json::from_str(text_of(&out)).expect("the answer is a row list");
+            serde_json::from_str(&text_of(&out)).expect("the answer is a row list");
         assert_eq!(rows, serde_json::json!([]), "an empty list, not prose");
     }
 
@@ -1775,7 +1860,7 @@ mod tests {
         assert!(!out.is_error, "the post succeeds: {}", text_of(&out));
         assert_eq!(out.blocks.len(), 1, "the record stays one text block: {out:?}");
         let json: serde_json::Value =
-            serde_json::from_str(text_of(&out)).expect("the result is the posted record");
+            serde_json::from_str(&text_of(&out)).expect("the result is the posted record");
         assert_eq!(
             json["ts"],
             serde_json::json!(["1790186552.442169", "1790186552.442170"]),
@@ -1999,14 +2084,15 @@ mod tests {
     #[test]
     fn no_slack_tool_advertises_a_workspace_argument() {
         let facade: Arc<dyn SlackFacade> = Arc::new(MockSlackFacade::new());
-        let server =
-            add_tools(McpServerBuilder::new("forge", "test"), facade, caller_slot()).build();
-        let schemas = server.tool_schemas();
-        assert_eq!(schemas.len(), 15, "every Slack tool is registered: {schemas:?}");
-        for (name, schema) in &schemas {
+        let tools = SlackTools::new(facade, caller_slot());
+        let specs = tools.tools();
+        assert_eq!(specs.len(), 15, "every Slack tool is registered: {specs:?}");
+        for spec in &specs {
             assert!(
-                schema["properties"].get("workspace").is_none(),
-                "{name} still advertises a workspace argument: {schema}",
+                spec.schema["properties"].get("workspace").is_none(),
+                "{} still advertises a workspace argument: {}",
+                spec.name,
+                spec.schema,
             );
         }
     }
@@ -2021,7 +2107,7 @@ mod tests {
         assert!(!out.is_error, "a configured workspace succeeds: {}", text_of(&out));
         assert!(text_of(&out).contains("C1"), "the row reaches the output: {}", text_of(&out));
         let json: serde_json::Value =
-            serde_json::from_str(text_of(&out)).expect("the result is the list object");
+            serde_json::from_str(&text_of(&out)).expect("the result is the list object");
         assert_eq!(json["workspace"], "acme", "the resolved label rides the result");
         assert_eq!(
             mock.conversations_calls.lock().as_slice(),
@@ -2050,7 +2136,7 @@ mod tests {
     }
 
     fn caller_slot() -> SessionSlot {
-        SessionSlot::from_str_for_test("caller")
+        SessionSlot::lead("TestOrg", "forge")
     }
 
     #[tokio::test]
@@ -2166,7 +2252,7 @@ mod tests {
         assert!(!out.is_error, "unsubscribe succeeds: {out:?}");
         assert_eq!(out.blocks.len(), 1, "the envelope stays one text block: {out:?}");
         let json: serde_json::Value =
-            serde_json::from_str(text_of(&out)).expect("the result is the adopted envelope");
+            serde_json::from_str(&text_of(&out)).expect("the result is the adopted envelope");
         assert_eq!(json["status"], "deleted");
         assert_eq!(
             json["removed"],
@@ -2196,7 +2282,7 @@ mod tests {
         let out = tool.call(input(serde_json::json!({}))).await;
         assert!(!out.is_error, "list succeeds: {}", text_of(&out));
         let listed: serde_json::Value =
-            serde_json::from_str(text_of(&out)).expect("the output is JSON");
+            serde_json::from_str(&text_of(&out)).expect("the output is JSON");
         let by_id = |id: &str| {
             listed["conversations"]
                 .as_array()
@@ -2229,7 +2315,7 @@ mod tests {
         let out = tool.call(input(serde_json::json!({ "kind": "im" }))).await;
         assert!(!out.is_error, "a known kind succeeds: {}", text_of(&out));
         let listed: serde_json::Value =
-            serde_json::from_str(text_of(&out)).expect("the output is JSON");
+            serde_json::from_str(&text_of(&out)).expect("the output is JSON");
         let ids: Vec<&str> = listed["conversations"]
             .as_array()
             .expect("an array of rows")
@@ -2287,7 +2373,7 @@ mod tests {
         assert!(!out.is_error, "a search succeeds: {}", text_of(&out));
         assert!(text_of(&out).contains("general"), "got: {}", text_of(&out));
         let json: serde_json::Value =
-            serde_json::from_str(text_of(&out)).expect("the result is the search object");
+            serde_json::from_str(&text_of(&out)).expect("the result is the search object");
         assert_eq!(json["workspace"], "acme", "the resolved label rides the result");
         assert_eq!(json["matches"][0]["text"], "hello", "the hits ride under their own key");
         assert_eq!(
@@ -2332,7 +2418,7 @@ mod tests {
 
         assert!(!out.is_error, "a read succeeds: {}", text_of(&out));
         let json: serde_json::Value =
-            serde_json::from_str(text_of(&out)).expect("the result is the history object");
+            serde_json::from_str(&text_of(&out)).expect("the result is the history object");
         assert_eq!(json["workspace"], "acme", "the resolved label rides the result");
         let rows = &json["messages"];
         assert_eq!(rows[0]["ts"], "100.5", "the ts the caller pages with");
@@ -2377,7 +2463,7 @@ mod tests {
 
         assert!(!out.is_error, "a thread read succeeds: {}", text_of(&out));
         let json: serde_json::Value =
-            serde_json::from_str(text_of(&out)).expect("the result is the replies object");
+            serde_json::from_str(&text_of(&out)).expect("the result is the replies object");
         assert_eq!(json["workspace"], "acme", "the resolved label rides the result");
         let rows = &json["messages"];
         assert_eq!(rows[0]["text"], "parent", "the parent comes first");
@@ -2447,7 +2533,7 @@ mod tests {
         assert!(!out.is_error, "a lookup succeeds: {}", text_of(&out));
         assert!(text_of(&out).contains("Vedhavyas S"), "got: {}", text_of(&out));
         let json: serde_json::Value =
-            serde_json::from_str(text_of(&out)).expect("the result is the user record");
+            serde_json::from_str(&text_of(&out)).expect("the result is the user record");
         assert_eq!(json["workspace"], "acme", "the resolved label rides the result");
         assert_eq!(mock.user_calls.lock().as_slice(), [(caller_slot(), "U1".to_owned())]);
     }
@@ -2480,7 +2566,7 @@ mod tests {
 
         assert!(!out.is_error, "a lookup succeeds: {}", text_of(&out));
         let json: serde_json::Value =
-            serde_json::from_str(text_of(&out)).expect("the result is the users object");
+            serde_json::from_str(&text_of(&out)).expect("the result is the users object");
         assert_eq!(json["workspace"], "acme", "the resolved label rides the result");
         let rows = &json["users"];
         assert_eq!(rows[0]["id"], "U1");
@@ -2525,7 +2611,7 @@ mod tests {
 
         assert!(!out.is_error, "an identity lookup succeeds: {}", text_of(&out));
         let json: serde_json::Value =
-            serde_json::from_str(text_of(&out)).expect("the result is the identity record");
+            serde_json::from_str(&text_of(&out)).expect("the result is the identity record");
         assert_eq!(json["workspace"], "Subspace", "the resolved label is named in the result");
         assert_eq!(json["team"], "Autonomys", "the team the token belongs to");
         assert_eq!(json["user"], "ved");
@@ -2566,7 +2652,7 @@ mod tests {
             text_of(&out),
         );
         let json: serde_json::Value =
-            serde_json::from_str(text_of(&out)).expect("the result is the pins object");
+            serde_json::from_str(&text_of(&out)).expect("the result is the pins object");
         assert_eq!(json["workspace"], "acme", "the resolved label rides the result");
         assert_eq!(
             mock.pins_calls.lock().as_slice(),
@@ -2620,7 +2706,7 @@ mod tests {
         assert!(!out.is_error, "a read succeeds: {}", text_of(&out));
         assert!(text_of(&out).contains("Runbook"), "got: {}", text_of(&out));
         let json: serde_json::Value =
-            serde_json::from_str(text_of(&out)).expect("the result is the bookmarks object");
+            serde_json::from_str(&text_of(&out)).expect("the result is the bookmarks object");
         assert_eq!(json["workspace"], "acme", "the resolved label rides the result");
         assert_eq!(
             mock.bookmarks_calls.lock().as_slice(),

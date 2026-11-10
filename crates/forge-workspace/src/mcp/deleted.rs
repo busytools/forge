@@ -4,9 +4,7 @@
 /// the record as it stood just before removal, so the caller can name what
 /// the call touched. A family with more to say adds its own keys beside
 /// these (`tasks__delete` adds `descendants_removed`).
-pub(crate) fn removed_record(removed: &serde_json::Value) -> serde_json::Value {
-    serde_json::json!({ "status": "deleted", "removed": removed })
-}
+pub(crate) use forge_mcp::removed_record;
 
 #[cfg(test)]
 mod tests {

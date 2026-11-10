@@ -59,7 +59,6 @@ use crate::mcp::gotify::facade::GotifyFacade;
 use crate::mcp::peers::facade::WorkspaceFacade;
 use crate::mcp::review::facade::ReviewFacade;
 use crate::mcp::settings::facade::SettingsFacade;
-use crate::mcp::slack::facade::SlackFacade;
 use crate::mcp::systemone::facade::SystemOneFacade;
 use crate::mcp::tasks::facade::TasksFacade;
 use crate::mcp::workers::facade::WorkerFacade;
@@ -74,7 +73,8 @@ pub mod gotify;
 pub mod peers;
 pub mod review;
 pub mod settings;
-pub mod slack;
+#[cfg(test)]
+mod slack_host_tests;
 pub mod systemone;
 pub mod tasks;
 pub mod terminal;
@@ -299,7 +299,11 @@ pub struct ForgeServerFacades {
     pub review: Arc<dyn ReviewFacade>,
     pub cron: Arc<dyn CronFacade>,
     pub gotify: Arc<dyn GotifyFacade>,
-    pub slack: Arc<dyn SlackFacade>,
+    /// The Slack family's tools. The family owns its provider; the host
+    /// registers it. Present whenever the family is selected: a file with no
+    /// `[[slack]]` entry still advertises the tools, which answer the
+    /// refusal themselves.
+    pub slack: Option<Arc<dyn forge_mcp::ToolProvider>>,
     pub settings: Arc<dyn SettingsFacade>,
     pub tasks: Arc<dyn TasksFacade>,
     pub systemone: Option<Arc<dyn SystemOneFacade>>,
@@ -413,8 +417,11 @@ pub fn build_forge_server(
     {
         builder = systemone::add_tools(builder, systemone);
     }
-    if families.contains(&McpFamily::Slack) {
-        builder = slack::add_tools(builder, slack, slot.clone());
+    // The family owns its provider; the host only registers it.
+    if families.contains(&McpFamily::Slack)
+        && let Some(slack) = slack
+    {
+        builder = builder.provider(slack);
     }
     // Doubly gated like `systemone`: a switched-off `[tts]` leaves no tool a
     // session could try, even when the family is selected.
@@ -478,10 +485,11 @@ mod tests {
     use crate::mcp::peers::facade::MockWorkspaceFacade;
     use crate::mcp::review::facade::MockReviewFacade;
     use crate::mcp::settings::facade::MockSettingsFacade;
-    use crate::mcp::slack::facade::MockSlackFacade;
     use crate::mcp::systemone::facade::MockSystemOneFacade;
     use crate::mcp::tasks::facade::MockTasksFacade;
     use crate::mcp::workers::facade::MockWorkerFacade;
+    use forge_tools::slack::SlackTools;
+    use forge_tools::slack::facade::MockSlackFacade;
 
     fn fake_key(s: &str) -> SessionSlot {
         SessionSlot::from_str_for_test(s)
@@ -684,7 +692,11 @@ mod tests {
                 review: MockReviewFacade::new().into_arc(),
                 cron: MockCronFacade::new().into_arc(),
                 gotify: MockGotifyFacade::new().into_arc(),
-                slack: MockSlackFacade::new().into_arc(),
+                slack: Some(Arc::new(SlackTools::new(
+                    MockSlackFacade::new().into_arc(),
+                    SessionSlot::from_str_for_test("caller"),
+                ))),
+
                 settings: MockSettingsFacade::new().into_arc(),
                 tasks: MockTasksFacade::new().into_arc(),
                 systemone: systemone_facade,
@@ -1005,7 +1017,11 @@ mod tests {
                     review: MockReviewFacade::new().into_arc(),
                     cron: MockCronFacade::new().into_arc(),
                     gotify: MockGotifyFacade::new().into_arc(),
-                    slack: MockSlackFacade::new().into_arc(),
+                    slack: Some(Arc::new(SlackTools::new(
+                        MockSlackFacade::new().into_arc(),
+                        SessionSlot::from_str_for_test("caller"),
+                    ))),
+
                     settings: MockSettingsFacade::new().into_arc(),
                     tasks: MockTasksFacade::new().into_arc(),
                     systemone: None,
