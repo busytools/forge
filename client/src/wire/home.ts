@@ -29,9 +29,19 @@ export type Lifecycle =
   | 'Restarting'
   | 'LoggedOut';
 
-/** `PendingInteractionKind`: the asks a row can name - the two prompts a
- *  session holds, and a document hand-off parked in the workspace. */
-export type PendingKind = 'question' | 'permission' | 'hand_off';
+/** `PendingInteractionKind`: the asks a row can name, one kind per ask
+ *  source - the two prompts a session holds, and the drafts, hand-offs,
+ *  configuration writes and vault calls parked in the workspace's own
+ *  registries. */
+export type PendingKind =
+  | 'question'
+  | 'permission'
+  | 'slack_draft'
+  | 'browser_hand_off'
+  | 'terminal_hand_off'
+  | 'document_hand_off'
+  | 'settings_write'
+  | 'vault';
 
 /** `forge_gateway::LoadingState`, as the account pool reports it. */
 type LoadingState = 'loading' | 'ready' | 'bailed';
@@ -653,7 +663,16 @@ const LIFECYCLES: Lifecycle[] = [
 
 const LINK_KINDS: LinkKind[] = ['spec', 'plan', 'issue', 'pr', 'branch', 'path', 'other'];
 const VERIFY_VALUES: ('user' | 'none')[] = ['user', 'none'];
-const PENDING: PendingKind[] = ['question', 'permission', 'hand_off'];
+const PENDING: PendingKind[] = [
+  'question',
+  'permission',
+  'slack_draft',
+  'browser_hand_off',
+  'terminal_hand_off',
+  'document_hand_off',
+  'settings_write',
+  'vault',
+];
 const LOADING: LoadingState[] = ['loading', 'ready', 'bailed'];
 const GATES: Gate[] = ['in_repo', 'not_a_repository', 'gone', 'scanner_failed'];
 

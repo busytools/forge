@@ -48,6 +48,9 @@ impl Workspace {
             let (_ignored_sender, dead_receiver) = tokio::sync::oneshot::channel();
             return (id, dead_receiver, false);
         }
+        // **A second write is a second ask.** The number is the ask's identity
+        // on the wire, so a write that never moves it is never announced.
+        self.note_ask(caller);
         (id, receiver, true)
     }
 
@@ -125,13 +128,6 @@ impl Workspace {
         for id in ids {
             self.settle_settings_write(id, slot, SettingsWriteEnding::Abandoned);
         }
-    }
-
-    /// Whether `slot` is holding a parked configuration write: its own
-    /// registry rather than the session's pending set, so a held write
-    /// reaches `session_activity` and every needs mark the lifecycle drives.
-    pub(crate) fn has_settings_write(&self, slot: &SessionSlot) -> bool {
-        self.settings_writes.lock().values().any(|(owner, _, _)| owner == slot)
     }
 
     /// Every held write this seat owns, **in the registry's own order** - a

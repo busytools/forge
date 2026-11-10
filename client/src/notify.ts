@@ -177,16 +177,30 @@ export function waitRows(wire: HomeWire): WaitRow[] {
   });
 }
 
+/**
+ * The body an OS notification carries for each ask kind.
+ *
+ * **A record, not a chain of ternaries**: a new wire kind is a compile error
+ * until the notification has words for it, rather than falling through to
+ * whatever the last arm said. Shorter than a row's line because the
+ * notification has no room for a sentence.
+ */
+const ASK_WORDS: Record<PendingKind, string> = {
+  question: 'a question is waiting',
+  permission: 'a permission prompt is waiting',
+  slack_draft: 'a Slack draft is waiting',
+  browser_hand_off: 'the browser hand-off is waiting',
+  terminal_hand_off: 'a terminal hand-off is waiting',
+  document_hand_off: 'a document hand-off is waiting',
+  settings_write: 'a settings write is waiting',
+  vault: 'a vault call is waiting',
+};
+
 /** One ask as the OS shows it. */
 export function askWords(notice: AskNotice): { title: string; body: string } {
   const { project, label } = notice.slot;
   const seat = label === 'lead' ? project : `${project} \u{b7} ${label}`;
-  const body =
-    notice.kind === 'question'
-      ? 'a question is waiting'
-      : notice.kind === 'permission'
-        ? 'a permission prompt is waiting'
-        : 'a hand-off is waiting';
+  const body = ASK_WORDS[notice.kind];
   return { title: `forge \u{b7} ${seat}`, body };
 }
 

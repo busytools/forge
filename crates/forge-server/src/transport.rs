@@ -291,10 +291,23 @@ pub mod wire;
 /// changed, and no client would rewrite its sealed bytes or follow a lock.
 /// `baselines/socket/30/` is the record a v30 server emitted.
 ///
+/// **v31 names every ask kind.** A roster row's `pending` was `question`,
+/// `permission` or `hand_off`; it is now one kind per ask source, so the
+/// needs-you line can say what the seat actually waits on: `slack_draft`,
+/// `browser_hand_off`, `terminal_hand_off`, `document_hand_off`,
+/// `settings_write` and `vault` replace the shared `hand_off`. A v30 page
+/// narrows each new spelling to `permission` and draws the wrong words, and
+/// a v30 shell refuses the row outright and drops that seat's notification;
+/// the old `hand_off` is gone, so the two halves move together.
+/// `baselines/socket/31/` is the record `record_dir()` requires for the
+/// current version - it is byte-identical to 30 because the census holds
+/// enum and field names rather than values, so it does not itself evidence
+/// the widened kind.
+///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 30;
+pub const PROTOCOL_VERSION: u32 = 31;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, how long it may stay silent before it is reaped, and how long
