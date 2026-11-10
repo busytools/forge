@@ -19,7 +19,6 @@ export type DeviceGate =
   | { outcome: 'unavailable'; reason: string }
   | { outcome: 'failed'; reason: string };
 
-
 /** Read whether this device can enrol, and whether it already has. */
 export async function readDeviceGate(): Promise<DeviceGate> {
   const gate = await availability();
