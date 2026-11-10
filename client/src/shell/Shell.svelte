@@ -249,9 +249,12 @@
    *
    * **The first route a connection is seen with is its boot entry**, which
    * the subscription above already reads: only a later move INTO the home
-   * asks again. **The ask goes through `rereadHome`**, never a `refresh`
-   * here - the page's own guards know whether a read is in flight, so this
-   * one cannot queue a second whole encode behind it.
+   * asks again, and only while the socket is open - a read asked on a closed
+   * one sets the page's in-flight flag for a refresh that returns false.
+   * **The ask goes through `rereadHome`**, the same guard the page's own
+   * readers use: it skips a read already in flight and a refused subject.
+   * That is not a promise of one encode - the subscription's initial read is
+   * not marked in flight, so an entry inside that window asks again.
    */
   let entry: { connection: Connection; name: Route['name'] } | null = null;
   $effect(() => {
@@ -267,7 +270,7 @@
     }
     if (entry.name === name) return;
     entry = { connection: open, name };
-    if (name === 'home') rereadHome(open);
+    if (name === 'home' && open.status() === 'open') rereadHome(open);
   });
 
   /** The asks already announced, so a re-read of the roster is not news. */

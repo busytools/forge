@@ -266,6 +266,14 @@ async function stubForge(
         socket.send(JSON.stringify({ kind: 'update', update: { releasing: { key: seat } } }));
       }
     },
+    /**
+     * Kill every live socket without closing the server, as a link that
+     * died mid-stream does. The client's own backoff dials back in and
+     * re-subscribes what it held, which is the reconnect's own home read.
+     */
+    drop() {
+      for (const client of server.clients) client.terminate();
+    },
     /** A document hand-off, as a session's own tool asks it. */
     handOff(seat: SessionSlot, path: string, reviewable: boolean) {
       for (const socket of server.clients) {
@@ -1174,6 +1182,28 @@ describe('entering the home (#2955)', () => {
     await until(() => document.title === title, `the route at ${path} to be drawn`);
   }
 
+  /**
+   * **A deep link is a boot entry too.** The launch keeps the route it was
+   * addressed at and takes the connection beside it, so a session route is
+   * the first thing the connection is seen with; the home entered later is
+   * an ordinary entry and must ask.
+   */
+  it('re-reads entering the home after a deep-link boot on a session', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt(LEAD_PATH, forge.address);
+    await until(() => forge.homeReads() >= 1, 'the launch to take');
+    expect(location.pathname, 'the launch moved off the route it was addressed at').toBe(LEAD_PATH);
+
+    await moveTo('/', 'forge');
+    expect(
+      mockRereadHome,
+      'the entry after a deep-link boot asked for no read',
+    ).toHaveBeenCalledTimes(1);
+    await quiet();
+    expect(mockRereadHome, 'the entry after a deep-link boot asked twice').toHaveBeenCalledTimes(1);
+  });
+
   it('does not re-read at boot, where the subscription is the one read', async () => {
     const forge = await stubForge({ mark: null, theme: null, font: null });
     forges.push(forge);
@@ -1205,6 +1235,30 @@ describe('entering the home (#2955)', () => {
     // stub as a second read - a turn later, which is what the window is for.
     await quiet();
     expect(forge.homeReads(), 'the shell refreshed the home around the guard').toBe(1);
+    expect(mockRereadHome, 'a second ask followed the return').toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * **A reconnect is not a route entry.** The fresh socket re-reads what the
+   * connection held itself, so the entry after it asks once and only once.
+   */
+  it('asks once on a return after a reconnect', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/', forge.address);
+    await until(() => forge.homeReads() >= 1, 'the launch to take');
+    await moveTo(LEAD_PATH, LEAD.project);
+
+    forge.drop();
+    await until(() => forge.homeReads() >= 2, 'the reconnect to re-ask the home');
+    expect(mockRereadHome, 'a reconnect is not a route entry').not.toHaveBeenCalled();
+
+    await moveTo('/', 'forge');
+    expect(mockRereadHome, 'the return after a reconnect asked for no read').toHaveBeenCalledTimes(
+      1,
+    );
+    await quiet();
+    expect(mockRereadHome, 'the return after a reconnect asked twice').toHaveBeenCalledTimes(1);
   });
 
   it('leaves the in-flight guard to the page, so both entries ask', async () => {
