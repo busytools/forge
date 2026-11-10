@@ -11,7 +11,7 @@
     rememberAddress,
     serverParameter,
   } from '../connect/remembered';
-  import { watchHome, type HomeRead } from '../home/live';
+  import { rereadHome, watchHome, type HomeRead } from '../home/live';
   import { watchVaultEnrolment } from '../biometric/vault-enrolment';
   import {
     askState,
@@ -239,6 +239,40 @@
       stopGreetings();
       stopVault();
     };
+  });
+
+  /**
+   * **Entering the home asks for a home read (#2955).** The header's server
+   * build, the counts and the fleet marks are only as current as the last
+   * read, so without this a chat seat shows the facts after a release and the
+   * home beside it shows the ones from before it.
+   *
+   * **The first route a connection is seen with is its boot entry**, which
+   * the subscription above already reads: only a later move INTO the home
+   * asks again, and only while the socket is open - a read asked while the
+   * link is down or reconnecting sets the page's in-flight flag for a
+   * refresh that returns false, and the reconnect's own replay of what the
+   * connection held is the read that covers the skipped ask.
+   * **The ask goes through `rereadHome`**, the same guard the page's own
+   * readers use: it skips a read already in flight and a refused subject.
+   * That is not a promise of one encode - the subscription's initial read is
+   * not marked in flight, so an entry inside that window asks again.
+   */
+  let entry: { connection: Connection; name: Route['name'] } | null = null;
+  $effect(() => {
+    const open = connection;
+    const name = route.name;
+    if (open === null) {
+      entry = null;
+      return;
+    }
+    if (entry === null || entry.connection !== open) {
+      entry = { connection: open, name };
+      return;
+    }
+    if (entry.name === name) return;
+    entry = { connection: open, name };
+    if (name === 'home' && open.status() === 'open') rereadHome(open);
   });
 
   /** The asks already announced, so a re-read of the roster is not news. */
