@@ -11,7 +11,7 @@
     rememberAddress,
     serverParameter,
   } from '../connect/remembered';
-  import { watchHome, type HomeRead } from '../home/live';
+  import { rereadHome, watchHome, type HomeRead } from '../home/live';
   import { watchVaultEnrolment } from '../biometric/vault-enrolment';
   import {
     askState,
@@ -239,6 +239,35 @@
       stopGreetings();
       stopVault();
     };
+  });
+
+  /**
+   * **Entering the home asks for a home read (#2955).** The header's server
+   * build, the counts and the fleet marks are only as current as the last
+   * read, so without this a chat seat shows the facts after a release and the
+   * home beside it shows the ones from before it.
+   *
+   * **The first route a connection is seen with is its boot entry**, which
+   * the subscription above already reads: only a later move INTO the home
+   * asks again. **The ask goes through `rereadHome`**, never a `refresh`
+   * here - the page's own guards know whether a read is in flight, so this
+   * one cannot queue a second whole encode behind it.
+   */
+  let entry: { connection: Connection; name: Route['name'] } | null = null;
+  $effect(() => {
+    const open = connection;
+    const name = route.name;
+    if (open === null) {
+      entry = null;
+      return;
+    }
+    if (entry === null || entry.connection !== open) {
+      entry = { connection: open, name };
+      return;
+    }
+    if (entry.name === name) return;
+    entry = { connection: open, name };
+    if (name === 'home') rereadHome(open);
   });
 
   /** The asks already announced, so a re-read of the roster is not news. */

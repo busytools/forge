@@ -8,6 +8,7 @@ import type { AddressInfo, RawData, WebSocket } from 'ws';
 import { DEFAULT_ADDRESS } from '../connect/attempt';
 import { rememberedAddress, rememberAddress, serverParameter } from '../connect/remembered';
 import { homeWire } from '../dev/fixture.data';
+import { rereadHome } from '../home/live';
 import { noteSeatClick } from '../perf';
 import { PROTOCOL_VERSION, subjectKey, type Subject } from '../protocol';
 import { closeSeat, closingSeat } from '../session/close';
@@ -41,6 +42,18 @@ vi.mock('../perf', async (importOriginal) => {
 });
 
 const mockSeatClick = vi.mocked(noteSeatClick);
+
+/**
+ * The home's entry re-read, wrapped so a test can count it: the module's own
+ * exports stay real, because the shell's subscription is what reads the home
+ * in the first place.
+ */
+vi.mock('../home/live', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../home/live')>();
+  return { ...real, rereadHome: vi.fn() };
+});
+
+const mockRereadHome = vi.mocked(rereadHome);
 
 /**
  * The shell's commands, answered by the test.
@@ -357,6 +370,7 @@ function appliedFont(): string {
 beforeEach(() => {
   Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: Socket });
   mockWatchUpdate.mockClear();
+  mockRereadHome.mockReset();
   invokeMock.mockReset();
   invokeMock.mockResolvedValue(null);
 });
@@ -1135,6 +1149,81 @@ describe('a seat removed under the reader', () => {
     await quiet();
 
     expect(location.pathname, 'a removal elsewhere moved the reader').toBe('/');
+  });
+});
+
+/**
+ * #2955: entering the home asks for one home read, through the page's own
+ * guards. **The subscription's first read is the boot entry**, so a launch
+ * that lands on the home must not ask a second time; a return from another
+ * route must, or the server build and the counts stay at the last read while
+ * the chat beside them is current.
+ */
+describe('entering the home (#2955)', () => {
+  const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
+  const LEAD_PATH = `/session/${LEAD.org}/${LEAD.project}/${LEAD.label}`;
+
+  /**
+   * Move the route the way a Back/forward does, and wait for the router to
+   * draw it: `document.title` is the route's own (`titleFor`), so a title that
+   * landed says the route really moved rather than the URL alone.
+   */
+  async function moveTo(path: string, title: string): Promise<void> {
+    history.replaceState(null, '', path);
+    dispatchEvent(new PopStateEvent('popstate'));
+    await until(() => document.title === title, `the route at ${path} to be drawn`);
+  }
+
+  it('does not re-read at boot, where the subscription is the one read', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/', forge.address);
+    await until(() => forge.homeReads() >= 1, 'the launch to take');
+    // The entry effect runs on the flush, so a second ask would have landed.
+    await quiet();
+
+    expect(
+      mockRereadHome,
+      'the boot entry asked over the subscription read it already has',
+    ).not.toHaveBeenCalled();
+    expect(forge.homeReads(), 'the boot read the home twice').toBe(1);
+  });
+
+  it('re-reads once on the way back from a session, through the page guard', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/', forge.address);
+    await until(() => forge.homeReads() >= 1, 'the launch to take');
+
+    await moveTo(LEAD_PATH, LEAD.project);
+    expect(mockRereadHome, 'leaving the home is not an entry').not.toHaveBeenCalled();
+
+    await moveTo('/', 'forge');
+    expect(mockRereadHome, 'the return asked for no read at all').toHaveBeenCalledTimes(1);
+    // **The ask goes through the page, not around it.** `refresh` re-asks the
+    // subscription itself, so a refresh sent beside the guard lands on the
+    // stub as a second read - a turn later, which is what the window is for.
+    await quiet();
+    expect(forge.homeReads(), 'the shell refreshed the home around the guard').toBe(1);
+  });
+
+  it('leaves the in-flight guard to the page, so both entries ask', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/', forge.address);
+    await until(() => forge.homeReads() >= 1, 'the launch to take');
+
+    await moveTo(LEAD_PATH, LEAD.project);
+    await moveTo('/', 'forge');
+    await moveTo(LEAD_PATH, LEAD.project);
+    await moveTo('/', 'forge');
+
+    // The guard against a second whole encode is the page's, inside the call:
+    // the shell adds none of its own, so both entries reach `rereadHome`.
+    expect(
+      mockRereadHome,
+      'the shell dropped an entry it should have asked for',
+    ).toHaveBeenCalledTimes(2);
   });
 });
 
