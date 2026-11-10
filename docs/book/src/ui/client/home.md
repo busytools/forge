@@ -194,7 +194,8 @@ happening to it, and nothing about it is the reader's to act on.
   the store reports it ready and holds nothing. The page names the reason in
   the fleet's place rather than drawing an empty fleet, which would read as
   a forge with no projects. Nothing periodic retries it: the next update
-  that asks for a read, or a reconnect, reads again.
+  that asks for a read, entering the page again, or a reconnect, reads
+  again.
 - **A connection that dropped**: the page keeps what it last read and says so
   above it, and the notice stays until a fresh read lands rather than clearing
   the moment the socket reopens - the window between those two is the one
