@@ -1,8 +1,9 @@
-//! The Slack Web API client: one uniform POST per method, form params,
-//! Bearer token, and the envelope rules that turn a logical failure into
-//! an error.
+//! The Slack integration: the Web API client, the family's subsystem (its
+//! clients, subscription set, durable records, pumps and held drafts), the
+//! MCP facade and its fifteen tools.
 //!
-//! Slack answers `{"ok": false, "error": "..."}` with HTTP 200 for a
+//! The client is one uniform POST per method, form params and a Bearer
+//! token; Slack answers `{"ok": false, "error": "..."}` with HTTP 200 for a
 //! logical failure, so a 200 is not success. Only a 429 arrives as a
 //! status, and it carries `Retry-After`.
 
@@ -32,15 +33,15 @@ pub use subsystem::{
     SlackUpdate, SlackWorkspaces, validate_configs,
 };
 
-/// What the pump needs from the workspace. The connector holds no state
-/// of its own, so the subscription set, the watermarks and the liveness
-/// flag all live behind this.
+/// What a pump needs from the subsystem that owns its state. The clients,
+/// the subscription set, the watermarks and the liveness flag all live on
+/// [`Slack`], and this is the port its pump drives them through.
 pub trait SlackHost: Send + Sync {
     /// A ready API for this workspace, or an error when the workspace is
-    /// not configured. The host builds it, so the token stays with the
-    /// workspace and the connector never asks for the credential itself.
-    /// The trait object is what the pump drives, so a test host can hand
-    /// back a double instead of a live client.
+    /// not configured. The subsystem builds it from its own config entry,
+    /// so the pump never asks for the credential itself, and the trait
+    /// object is what the pump drives - a test host can hand back a double
+    /// instead of a live client.
     fn client(&self, workspace: &str, timeout: Duration) -> Result<Arc<dyn SlackApi>, String>;
 
     /// The authenticated user's id for a workspace, resolved at boot.

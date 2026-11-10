@@ -82,6 +82,25 @@ impl SlackStore for SlackPorts {
         crate::store::slack::remove(db, id).map_err(|error| error.to_string())
     }
 
+    fn update_subscription(
+        &self,
+        id: Uuid,
+        update: &mut dyn FnMut(&mut SlackSubscription),
+    ) -> Result<bool, String> {
+        // **The guard spans the read and the write**, like `update_thread`:
+        // a heal that read the durable set before an unsubscribe and wrote
+        // after it would recreate the row the removal just took.
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return Ok(false) };
+        let mut stored = crate::store::slack::list(db).map_err(|error| error.to_string())?;
+        let Some(subscription) = stored.iter_mut().find(|sub| sub.id == id) else {
+            return Ok(false);
+        };
+        update(subscription);
+        crate::store::slack::insert(db, subscription).map_err(|error| error.to_string())?;
+        Ok(true)
+    }
+
     fn watermark(&self, workspace: &str, conversation: &str) -> Result<Option<String>, String> {
         let db = self.db.lock();
         let Some(db) = db.as_ref() else { return Ok(None) };
@@ -235,13 +254,29 @@ impl SlackEmit for SlackPorts {
         // `ConnectorSubscriptionsChanged` carries both connectors' sets -
         // the section a client patches is one - so the workspace composes it
         // rather than the subsystem knowing gotify exists.
-        if let Some(workspace) = self.host() {
-            workspace.announce_connector_subscriptions_changed(project);
-        }
+        let Some(workspace) = self.host() else {
+            tracing::debug!(
+                target: "forge_workspace::slack",
+                event_name = "slack_announce_unbound",
+                project,
+                "no workspace is bound yet; a subscription announcement was dropped",
+            );
+            return;
+        };
+        workspace.announce_connector_subscriptions_changed(project);
     }
 
     fn deliver(&self, project: &str, team_role: Option<&str>, messages: &[SlackMessage]) -> bool {
-        let Some(workspace) = self.host() else { return false };
+        let Some(workspace) = self.host() else {
+            tracing::debug!(
+                target: "forge_workspace::slack",
+                event_name = "slack_deliver_unbound",
+                project,
+                messages = messages.len(),
+                "no workspace is bound yet; a delivered batch was refused",
+            );
+            return false;
+        };
         // Direct, not via the command bus: the pump needs the delivery's
         // own outcome, and a bus round-trip reports only that the command
         // was accepted - a mid-delivery failure would read as success and
@@ -479,6 +514,24 @@ mod tests {
             operation: forge_primitives::slack::SlackDraftOperation::Post,
             thread: None,
             tagged: Vec::new(),
+        }
+    }
+
+    /// One delivered message, saying what the test needs it to say.
+    fn message_saying(conversation: &str, ts: &str, text: &str) -> SlackMessage {
+        SlackMessage {
+            workspace: "acme".to_owned(),
+            conversation: conversation.to_owned(),
+            conversation_label: conversation.to_owned(),
+            ts: ts.to_owned(),
+            thread_ts: None,
+            user: Some("U9".to_owned()),
+            author: None,
+            text: text.to_owned(),
+            parent_user_id: None,
+            latest_reply: None,
+            edited: None,
+            files: Vec::new(),
         }
     }
 
@@ -738,6 +791,15 @@ mod tests {
             }
             txn.commit().expect("commit the legacy row");
         }
+        // The row really has no stamp before the read: without this the
+        // assertion below could pass on a row that already carried one.
+        let stored = {
+            let db = ws.db.lock();
+            crate::store::slack::thread(db.as_ref().expect("db installed"), "acme", "C1", "100.0")
+                .expect("read")
+                .expect("the legacy row decodes")
+        };
+        assert_eq!(stored.edit_watermark, None, "an absent key reads as no stamp");
 
         let host = forge_tools::slack::SlackSubsystemHost::new(&ws.slack);
         assert_eq!(
@@ -947,6 +1009,153 @@ mod tests {
             announced.is_err(),
             "a teardown that took nothing announces nothing, and this was: {announced:?}",
         );
+    }
+
+    /// The real port answers the no-store defaults: a run whose database
+    /// could not open reads as holding nothing, not as holding empty-but-live
+    /// state. A wrong default would let a degraded run believe it has
+    /// cursors, which a later store write would then treat as real.
+    #[test]
+    fn the_store_port_answers_the_no_store_defaults() {
+        let ports = SlackPorts::new(
+            Arc::new(Mutex::new(None)),
+            UpdateFanout::default(),
+            Arc::new(Mutex::new(HashMap::new())),
+        );
+        let mut nothing = |_: &mut Option<SlackThreadRecord>| {};
+
+        assert!(!ports.available(), "no database means no store");
+        assert_eq!(ports.watermark("acme", "C1").expect("default"), None);
+        assert!(ports.set_watermark("acme", "C1", "1.0").is_ok());
+        assert!(!ports.remove_watermark("acme", "C1").expect("default"));
+        assert!(ports.watermark_conversations("acme").expect("default").is_empty());
+        assert_eq!(ports.thread("acme", "C1", "100.0").expect("default"), None);
+        let record = SlackThreadRecord {
+            cursor: "1.0".to_owned(),
+            edit_watermark: None,
+            owners: Vec::new(),
+            participating: false,
+        };
+        assert!(ports.set_thread("acme", "C1", "100.0", &record).is_ok());
+        assert_eq!(
+            ports.update_thread("acme", "C1", "100.0", &mut nothing).expect("default"),
+            None
+        );
+        assert!(ports.threads_for("acme", "C1").expect("default").is_empty());
+        assert!(ports.threads_for_workspace("acme").expect("default").is_empty());
+        assert!(!ports.remove_thread("acme", "C1", "100.0").expect("default"));
+        assert!(!ports.own_post("acme", "C1", "1.0").expect("default"));
+        assert!(ports.record_own_post("acme", "C1", "1.0", 42).is_ok());
+        assert!(ports.list_subscriptions().expect("default").is_empty());
+        assert!(!ports.remove_subscription(Uuid::new_v4()).expect("default"));
+        assert!(
+            ports.insert_subscription(&sub_for_conversation("forge", None, "C1")).is_ok(),
+            "a write with no store is a silent success, the port's default",
+        );
+        assert!(
+            !ports
+                .update_subscription(Uuid::new_v4(), &mut |_: &mut SlackSubscription| {})
+                .expect("default"),
+        );
+    }
+
+    /// The reload moves the subsystem's own copy of `[[slack]]`: a dropped
+    /// mirror line would freeze a workspace's idle window and stale age at
+    /// the values it booted with.
+    #[test]
+    fn a_reload_moves_the_slack_config_mirror() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let write = |hours: u64| {
+            std::fs::write(
+                crate::config::forge_data_dir(dir.path()).join("forge.toml"),
+                format!(
+                    r#"
+[[orgs]]
+name = "Default"
+accounts = ["Personal"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+
+[[accounts]]
+display_name = "Personal"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+
+[[slack]]
+workspace = "acme"
+token = "xoxp-test"
+stale_after_hours = {hours}
+"#
+                ),
+            )
+            .expect("write forge.toml");
+        };
+        let _ = crate::config::ensure_forge_data_dir(dir.path());
+        write(6);
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        assert_eq!(
+            ws.slack.slack_stale_after("acme"),
+            Duration::from_secs(6 * 3_600),
+            "the boot value comes from the file",
+        );
+
+        write(12);
+        ws.reload_config().expect("the new file is valid");
+
+        assert_eq!(
+            ws.slack.slack_stale_after("acme"),
+            Duration::from_secs(12 * 3_600),
+            "the reload moves the subsystem's own copy, not only the workspace's",
+        );
+    }
+
+    /// The delivery seam carries the caller's project, owner and messages
+    /// into the session in order - offline, against a running lead, where
+    /// the echoed block is observable without a live Slack workspace.
+    #[test]
+    fn the_delivery_seam_hands_the_batch_to_the_session_in_order() {
+        let (ws, _dir, mut rx) = workspace_with_one_slack_workspace("acme");
+        ws.seed_test_project("glead", "/tmp/slack-delivery-seam");
+        ws.record_connected_session("/tmp/slack-delivery-seam", "lead-uuid", None);
+        let lead_key = SessionSlot::lead("TestOrg", "glead");
+        let (handle, _agent_rx) = Workspace::testing_stub_handle();
+        ws.pool.lock().insert(
+            lead_key.clone(),
+            crate::workspace::PooledAgent {
+                handle: Arc::new(handle),
+                account: forge_gateway::AccountKey("test".to_owned()),
+                permission_mode: None,
+                registration: None,
+                session_id: "pooled-session".to_owned(),
+            },
+        );
+        ws.mark_session_connected_for_test(&lead_key, "lead-uuid");
+        ws.enable_test_dispatch_intercept();
+
+        let messages = vec![
+            message_saying("C1", "100.0", "first"),
+            message_saying("C1", "101.0", "second"),
+            message_saying("C1", "102.0", "third"),
+        ];
+        assert!(ws.slack_ports.deliver("glead", None, &messages), "a running lead takes the batch");
+
+        let mut prose = None;
+        while let Ok(frame) = rx.try_recv() {
+            if let crate::protocol::SessionUpdate::SlackMessageAppended { key, prose: text, .. } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+                && key == lead_key
+            {
+                prose = Some(text);
+            }
+        }
+        let prose = prose.expect("the delivery echoes the block it handed the lead");
+        let first = prose.find("first").expect("the first message is in the block");
+        let second = prose.find("second").expect("the second message is in the block");
+        let third = prose.find("third").expect("the third message is in the block");
+        assert!(first < second && second < third, "the messages keep their order: {prose}");
     }
 
     /// The workspace label the live test configures, and the project whose

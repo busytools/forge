@@ -94,6 +94,25 @@ pub trait SlackStore: Send + Sync {
     fn insert_subscription(&self, subscription: &SlackSubscription) -> Result<(), String>;
     fn list_subscriptions(&self) -> Result<Vec<SlackSubscription>, String>;
     fn remove_subscription(&self, id: Uuid) -> Result<bool, String>;
+
+    /// Read-modify-write one durable subscription inside the host's own
+    /// lock.
+    ///
+    /// `update` runs once with the stored row when `id` is present, and the
+    /// row is written back; when it is absent nothing runs and nothing is
+    /// inserted. `Ok(false)` reports that absence.
+    ///
+    /// **Nothing is inserted for a row that is gone**, which is the same
+    /// guard [`Self::update_thread`] gives a followed thread: a name heal
+    /// that read the durable set before an unsubscribe and wrote after it
+    /// would resurrect the removed record, and for a worker-owned row the
+    /// next boot's delivery would fall through to the lead - exactly what
+    /// the teardown exists to prevent.
+    fn update_subscription(
+        &self,
+        id: Uuid,
+        update: &mut dyn FnMut(&mut SlackSubscription),
+    ) -> Result<bool, String>;
     fn watermark(&self, workspace: &str, conversation: &str) -> Result<Option<String>, String>;
     fn set_watermark(&self, workspace: &str, conversation: &str, ts: &str) -> Result<(), String>;
     fn remove_watermark(&self, workspace: &str, conversation: &str) -> Result<bool, String>;
@@ -662,7 +681,11 @@ impl Slack {
         if let DraftResolution::Answered(answer) = resolution {
             let _ = held.sender.send(answer);
         }
-        let _ = self.emit.emit(SlackUpdate::DraftResolved { key: held.owner, id, ending });
+        let owner = held.owner;
+        let _ = self.emit.emit(SlackUpdate::DraftResolved { key: owner.clone(), id, ending });
+        // The settlement reaches the host's own seam too, so a source cannot
+        // hold an ask the host still counts as live.
+        self.sink.resolve(&owner, id);
         true
     }
 
@@ -851,24 +874,24 @@ impl Slack {
         if !self.store.available() {
             return;
         }
-        // An ephemeral ad-hoc-worker subscription lives in memory only by
-        // design, and inserting it here would promote it to durable.
-        let durable: Vec<Uuid> = match self.store.list_subscriptions() {
-            Ok(stored) => stored.into_iter().map(|sub| sub.id).collect(),
-            Err(error) => {
-                tracing::warn!(
-                    target: "forge_tools::slack",
-                    %error,
-                    "reading Slack subscriptions to heal a name failed",
-                );
-                return;
-            }
-        };
+        // One guarded update per record, keyed by id: the row is re-read
+        // inside the host's lock and written only if it is still there. An
+        // ephemeral ad-hoc-worker subscription has no durable row, so it is
+        // never promoted; and a row an unsubscribe took between the memory
+        // update above and this write is not re-inserted, which for a
+        // worker-owned row would resurrect it at the next boot and let its
+        // delivery fall through to the lead.
         for sub in &updated {
-            if !durable.contains(&sub.id) {
-                continue;
-            }
-            if let Err(error) = self.store.insert_subscription(sub) {
+            let mut update = |stored: &mut SlackSubscription| {
+                if let SlackSubscriptionTarget::Conversation { id, name: stored_name, .. } =
+                    &mut stored.target
+                    && id.as_str() == conversation
+                    && stored_name.is_none()
+                {
+                    *stored_name = Some(name.to_owned());
+                }
+            };
+            if let Err(error) = self.store.update_subscription(sub.id, &mut update) {
                 tracing::warn!(
                     target: "forge_tools::slack",
                     %error,
@@ -2197,6 +2220,10 @@ mod tests {
         SessionSlot::lead("TestOrg", "forge")
     }
 
+    /// One interleaved follow: the thread row it lands on and the owner it
+    /// adds, keyed the way the store keys rows.
+    type RacingFollow = ((String, String, String), SlackThreadOwner);
+
     /// The durable store, in memory: the same shape as the redb one, so the
     /// subsystem's policy is what these tests exercise and a host's own
     /// store keeps the schema.
@@ -2207,6 +2234,16 @@ mod tests {
         /// in, so `concurrent_followers_keep_every_owner` can tell the
         /// guarded read-modify-write from the two-call pair it replaced.
         slow_read: AtomicBool,
+        /// Removes every stored subscription the next time the per-call read
+        /// is used, and records that it did: the old name heal read the
+        /// durable ids there and then wrote back, so an unsubscribe landing
+        /// between the two was invisible to it.
+        remove_on_next_list: AtomicBool,
+        removed_on_list: AtomicBool,
+        /// Adds an owner to one thread after a workspace-wide listing has
+        /// cloned its rows: the follow lands between a prune's listing and
+        /// its per-row work.
+        follow_during_list: Mutex<Option<RacingFollow>>,
     }
 
     #[derive(Default)]
@@ -2264,20 +2301,51 @@ mod tests {
 
         fn insert_subscription(&self, subscription: &SlackSubscription) -> Result<(), String> {
             let mut inner = self.inner.lock();
+            // A run with no store refuses every write, the port's own
+            // default: the fake has to do the same or the no-store test
+            // writes durably while claiming it does not.
+            if !inner.available {
+                return Ok(());
+            }
             inner.subscriptions.retain(|sub| sub.id != subscription.id);
             inner.subscriptions.push(subscription.clone());
             Ok(())
         }
 
         fn list_subscriptions(&self) -> Result<Vec<SlackSubscription>, String> {
-            Ok(self.inner.lock().subscriptions.clone())
+            let mut inner = self.inner.lock();
+            let rows = inner.subscriptions.clone();
+            if self.remove_on_next_list.swap(false, Ordering::SeqCst) {
+                inner.subscriptions.clear();
+                self.removed_on_list.store(true, Ordering::SeqCst);
+            }
+            Ok(rows)
         }
 
         fn remove_subscription(&self, id: Uuid) -> Result<bool, String> {
             let mut inner = self.inner.lock();
+            if !inner.available {
+                return Ok(false);
+            }
             let before = inner.subscriptions.len();
             inner.subscriptions.retain(|sub| sub.id != id);
             Ok(inner.subscriptions.len() != before)
+        }
+
+        fn update_subscription(
+            &self,
+            id: Uuid,
+            update: &mut dyn FnMut(&mut SlackSubscription),
+        ) -> Result<bool, String> {
+            let mut inner = self.inner.lock();
+            if !inner.available {
+                return Ok(false);
+            }
+            let Some(subscription) = inner.subscriptions.iter_mut().find(|sub| sub.id == id) else {
+                return Ok(false);
+            };
+            update(subscription);
+            Ok(true)
         }
 
         fn watermark(&self, workspace: &str, conversation: &str) -> Result<Option<String>, String> {
@@ -2291,6 +2359,9 @@ mod tests {
             ts: &str,
         ) -> Result<(), String> {
             let mut inner = self.inner.lock();
+            if !inner.available {
+                return Ok(());
+            }
             inner.watermarks.retain(|(w, c, _)| !(w == workspace && c == conversation));
             inner.watermarks.insert((workspace.to_owned(), conversation.to_owned(), ts.to_owned()));
             Ok(())
@@ -2298,6 +2369,9 @@ mod tests {
 
         fn remove_watermark(&self, workspace: &str, conversation: &str) -> Result<bool, String> {
             let mut inner = self.inner.lock();
+            if !inner.available {
+                return Ok(false);
+            }
             let before = inner.watermarks.len();
             inner.watermarks.retain(|(w, c, _)| !(w == workspace && c == conversation));
             Ok(inner.watermarks.len() != before)
@@ -2334,7 +2408,11 @@ mod tests {
             parent_ts: &str,
             record: &SlackThreadRecord,
         ) -> Result<(), String> {
-            self.inner.lock().threads.insert(
+            let mut inner = self.inner.lock();
+            if !inner.available {
+                return Ok(());
+            }
+            inner.threads.insert(
                 (workspace.to_owned(), conversation.to_owned(), parent_ts.to_owned()),
                 record.clone(),
             );
@@ -2350,6 +2428,9 @@ mod tests {
         ) -> Result<Option<SlackThreadRecord>, String> {
             let key = (workspace.to_owned(), conversation.to_owned(), parent_ts.to_owned());
             let mut inner = self.inner.lock();
+            if !inner.available {
+                return Ok(None);
+            }
             let mut record = inner.threads.get(&key).cloned();
             update(&mut record);
             if let Some(record) = record {
@@ -2380,16 +2461,28 @@ mod tests {
             &self,
             workspace: &str,
         ) -> Result<Vec<(String, String, SlackThreadRecord)>, String> {
-            Ok(self
-                .inner
-                .lock()
+            let follow = self.follow_during_list.lock().take();
+            let mut inner = self.inner.lock();
+            let rows: Vec<(String, String, SlackThreadRecord)> = inner
                 .threads
                 .iter()
                 .filter(|((w, _, _), _)| w == workspace)
                 .map(|((_, conversation, parent), record)| {
                     (conversation.clone(), parent.clone(), record.clone())
                 })
-                .collect())
+                .collect();
+            // The follow lands after the listing was cloned: the store gains
+            // an owner the caller's copy does not carry, which is the
+            // interleaving a per-row re-read survives and a stale write back
+            // does not.
+            if let Some(((w, conversation, parent), owner)) = follow
+                && w == workspace
+                && let Some(record) = inner.threads.get_mut(&(w, conversation, parent))
+                && !record.owners.contains(&owner)
+            {
+                record.owners.push(owner);
+            }
+            Ok(rows)
         }
 
         fn remove_thread(
@@ -2398,9 +2491,11 @@ mod tests {
             conversation: &str,
             parent_ts: &str,
         ) -> Result<bool, String> {
-            Ok(self
-                .inner
-                .lock()
+            let mut inner = self.inner.lock();
+            if !inner.available {
+                return Ok(false);
+            }
+            Ok(inner
                 .threads
                 .remove(&(workspace.to_owned(), conversation.to_owned(), parent_ts.to_owned()))
                 .is_some())
@@ -2421,11 +2516,11 @@ mod tests {
             ts: &str,
             _now: u64,
         ) -> Result<(), String> {
-            self.inner.lock().own_posts.insert((
-                workspace.to_owned(),
-                conversation.to_owned(),
-                ts.to_owned(),
-            ));
+            let mut inner = self.inner.lock();
+            if !inner.available {
+                return Ok(());
+            }
+            inner.own_posts.insert((workspace.to_owned(), conversation.to_owned(), ts.to_owned()));
             Ok(())
         }
     }
@@ -2490,6 +2585,7 @@ mod tests {
     #[derive(Default)]
     struct TestSink {
         noted: Mutex<Vec<(SessionSlot, PendingInteractionKind)>>,
+        resolved: Mutex<Vec<(SessionSlot, Uuid)>>,
     }
 
     impl AskSink for TestSink {
@@ -2497,7 +2593,9 @@ mod tests {
             self.noted.lock().push((seat.clone(), kind));
         }
 
-        fn resolve(&self, _seat: &SessionSlot, _id: Uuid) {}
+        fn resolve(&self, seat: &SessionSlot, id: Uuid) {
+            self.resolved.lock().push((seat.clone(), id));
+        }
     }
 
     struct Harness {
@@ -2654,6 +2752,11 @@ mod tests {
             }
             other => panic!("expected one stand-down, got {other:?}", other = other.len()),
         }
+        assert_eq!(
+            h.sink.resolved.lock().as_slice(),
+            [(caller(), id)],
+            "an approval settles the ask through the host's seam",
+        );
     }
 
     /// A send-back is an answer the waiting call has to read: the note is
@@ -2684,6 +2787,11 @@ mod tests {
             }
             other => panic!("expected one stand-down, got {}", other.len()),
         }
+        assert_eq!(
+            h.sink.resolved.lock().as_slice(),
+            [(caller(), id)],
+            "a send-back settles the ask through the host's seam too",
+        );
     }
 
     /// An answer is only applied by the session the draft was addressed
@@ -2731,20 +2839,6 @@ mod tests {
         );
         assert!(AskSource::asks(h.slack.as_ref(), &caller()).is_empty());
         assert_eq!(AskSource::kinds(h.slack.as_ref()), &[PendingInteractionKind::SlackDraft],);
-    }
-
-    /// A seeded draft is what a host's guard parks: drawn, counted, and
-    /// answerable by the test rather than by a client.
-    #[test]
-    fn a_seeded_draft_is_counted_and_drawn() {
-        let h = harness();
-        let seat = SessionSlot::worker("TestOrg", "forge", "worker");
-        h.slack.seed_draft(&seat, draft("acme", "C1"));
-        assert_eq!(
-            AskSource::held(h.slack.as_ref(), &seat),
-            vec![(PendingInteractionKind::SlackDraft, 1)],
-        );
-        assert_eq!(AskSource::asks(h.slack.as_ref(), &seat).len(), 1);
     }
 
     /// The auto-subscription lands on whoever asked to be told about
@@ -3128,6 +3222,78 @@ mod tests {
 
         let row = h.store.thread("acme", "C1", &parent).expect("the row was written");
         assert_eq!(row.owners.len(), 32, "every follower's owner survives the read-modify-write");
+    }
+
+    /// **A prune's per-row work re-reads the row.** The listing is only the
+    /// set of keys: a follow landing between the listing and the per-row
+    /// update must keep its owner. The fake adds an owner to the store right
+    /// after a workspace-wide listing is cloned, which is exactly that
+    /// window; the two-call shape (list, filter the copy, write the copy
+    /// back) loses it.
+    ///
+    /// Mutant: write the listing's copy back in `prune_slack_threads` and
+    /// this reddens.
+    #[test]
+    fn a_prune_racing_a_follow_keeps_the_owner_it_added() {
+        let h = harness();
+        h.slack.add_slack_subscription(sub_for_conversation("forge", Some("a"), "C1"), true);
+        h.slack.add_slack_subscription(sub_for_conversation("forge", Some("b"), "C1"), true);
+        let parent = recent_ts();
+        h.slack.follow_slack_thread("acme", "C1", &parent, &owner("forge", Some("a")), &parent);
+        // c is followed but subscribes to nothing, so the prune has a reason
+        // to write the row; b's follow lands after the listing is taken.
+        h.slack.follow_slack_thread("acme", "C1", &parent, &owner("forge", Some("c")), &parent);
+        *h.store.follow_during_list.lock() =
+            Some((("acme".to_owned(), "C1".to_owned(), parent.clone()), owner("forge", Some("b"))));
+
+        h.slack.prune_slack_threads("acme");
+
+        let row = h.store.thread("acme", "C1", &parent).expect("the row survives");
+        assert!(
+            row.owners.contains(&owner("forge", Some("b"))),
+            "the prune must not write back a listing taken before the follow: {:?}",
+            row.owners,
+        );
+        assert!(
+            !row.owners.contains(&owner("forge", Some("c"))),
+            "and it still prunes the owner with no subscription",
+        );
+    }
+
+    /// **A name heal re-reads the row it writes.** The fake removes the
+    /// stored row the next time a per-call listing is taken, standing in for
+    /// an unsubscribe landing between the old heal's read of the durable set
+    /// and its write. The guarded update never takes that read, so it cannot
+    /// resurrect the row; the two-call heal could, and a worker-owned row
+    /// resurrected at the next boot is a delivery that falls through to the
+    /// lead.
+    ///
+    /// Mutant: restore `list_subscriptions` + `insert_subscription` in
+    /// `name_slack_conversation` and this reddens.
+    #[test]
+    fn a_name_heal_racing_an_unsubscribe_does_not_resurrect_the_row() {
+        let h = harness();
+        h.slack.add_slack_subscription(sub_for_conversation("forge", None, "C1"), true);
+        h.store.remove_on_next_list.store(true, Ordering::SeqCst);
+
+        h.slack.name_slack_conversation("acme", "C1", "general");
+
+        if h.store.removed_on_list.load(Ordering::SeqCst) {
+            assert!(
+                h.store.subscriptions().is_empty(),
+                "the heal must not re-insert a row the unsubscribe took",
+            );
+        } else {
+            let stored = h.store.subscriptions();
+            assert_eq!(stored.len(), 1, "the guarded heal updated the row in place");
+            let name = stored.iter().find_map(|sub| match &sub.target {
+                SlackSubscriptionTarget::Conversation { id, name, .. } if id == "C1" => {
+                    name.clone()
+                }
+                _ => None,
+            });
+            assert_eq!(name.as_deref(), Some("general"), "and it is the name the heal wrote");
+        }
     }
 
     /// The pinned split: two owners on one thread, one subscription
@@ -3719,11 +3885,15 @@ mod tests {
             vec![cfg("acme", "xoxp-test")],
             Vec::new(),
             false,
-            SlackSeams { store, emit, sink, http },
+            SlackSeams { store: Arc::clone(&store) as Arc<dyn SlackStore>, emit, sink, http },
         ));
 
         slack.add_slack_subscription(sub_for_conversation("forge", None, "C1"), true);
 
+        assert!(
+            store.subscriptions().is_empty(),
+            "a run with no store refuses every durable write, not only reads",
+        );
         assert_eq!(
             slack.slack_subscriptions_for_project("forge").len(),
             1,

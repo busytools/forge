@@ -2,12 +2,12 @@
 //! lives here.
 //!
 //! The host keeps **one registered list** of ask sources: these adapters
-//! plus whatever a moved subsystem registers (the vault family's registry).
-//! `pending_asks`, `pending_interaction` and `pending_interaction_depth` all
-//! walk that list, so a source cannot be counted without being drawn or
-//! drawn without being counted - and the guard test parks one of each kind
-//! its sources name, so a new kind cannot be added without a source that
-//! raises it and a park that proves it.
+//! plus whatever a moved subsystem registers (the vault family's and the
+//! Slack subsystem's registries). `pending_asks`, `pending_interaction` and
+//! `pending_interaction_depth` all walk that list, so a source cannot be
+//! counted without being drawn or drawn without being counted - and the
+//! guard test parks one of each kind its sources name, so a new kind cannot
+//! be added without a source that raises it and a park that proves it.
 //!
 //! The session's own pending set (a question and a permission prompt) is not
 //! a registry and is not here: it lives on the seat's `DomainSession`, and
