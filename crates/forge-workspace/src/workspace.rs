@@ -18707,6 +18707,27 @@ mod worker_activity_tests {
         );
     }
 
+    /// The row's summary is the same two answers the separate reads give,
+    /// from one ledger walk: the strongest ask and the count behind it.
+    #[test]
+    fn the_summary_matches_the_two_separate_reads() {
+        let (ws, _rx) = Workspace::testing_stub();
+        let seat = SessionSlot::lead("TestOrg", "forge");
+        ws.seed_test_pending_interaction(&seat, PendingInteractionKind::SlackDraft);
+        ws.seed_test_pending_interaction(&seat, PendingInteractionKind::Question);
+
+        assert_eq!(
+            ws.pending_interaction_summary(&seat),
+            (ws.pending_interaction(&seat), ws.pending_interaction_depth(&seat)),
+            "one walk answers what the two reads answer",
+        );
+        assert_eq!(
+            ws.pending_interaction_summary(&seat),
+            (Some(PendingInteractionKind::Question), 2),
+            "the question outranks the draft, and both are counted",
+        );
+    }
+
     /// What a session is waiting on a person for, which is what a
     /// needs-you row has to name. A question outranks a permission prompt,
     /// so a slot holding both reads as the question.
