@@ -20,7 +20,9 @@ use forge_server::transport::wire::{self, OpenTimings};
 use forge_server::transport::{Heartbeat, TransportState};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
+use tokio_tungstenite::tungstenite::Error as WsError;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::error::ProtocolError;
 
 /// The client end of a socket, named so the helpers below read as one.
 type Client =
@@ -11050,7 +11052,55 @@ async fn a_refused_attach_answers_its_reply() {
     assert!(why.contains("tab 9") && why.contains("not open"), "{why}");
 }
 
-/// Advance the paused clock in steps, polling the client as real time would.
+/// Is this frame the server's keepalive ping, so the connection proved a
+/// write?
+///
+/// **A ping is the connection's own evidence of a completed write.** The
+/// watchdog's bound is on completed writes and the stamp sits on the socket
+/// flush, so a ping the client has seen means the task the watchdog samples
+/// actually ran. **A socket that ended here is the reap this test exists to
+/// catch**, reported where it happened rather than as an `AlreadyClosed` on
+/// a send after the fact. The transport never sends a `Close`, so a reap
+/// reaches the client as a reset without a closing handshake rather than as
+/// `None`; both arms name the reap. The ping's answer is queued by
+/// tungstenite and written by the next poll of the socket, which every loop
+/// below takes.
+fn saw_keepalive(frame: Option<Result<Message, WsError>>) -> bool {
+    match frame {
+        Some(Ok(Message::Ping(_))) => true,
+        Some(Ok(_)) => false,
+        Some(Err(WsError::Protocol(ProtocolError::ResetWithoutClosingHandshake))) => panic!(
+            "a healthy idle connection was reaped while idle: the socket reset without a closing \
+             handshake"
+        ),
+        Some(Err(error)) => panic!("the connection failed while idle: {error}"),
+        None => panic!("a healthy idle connection was reaped while idle"),
+    }
+}
+
+/// Wait for the server's keepalive ping with the test no longer driving the
+/// clock.
+///
+/// **This is the gate, not a wait for convenience.** The caller only gets
+/// here once a full heartbeat window has passed since the last ping, so the
+/// beat that owes this one is due or a hair short of it: parking the read is
+/// what gives the connection's task the runtime, and a paused runtime's own
+/// idle advance reaches the beat when it is the nearest timer. **Park, never
+/// spin**: a yield does not promise the connection's task the turn (the
+/// yielder can resume first), and a spin keeps the runtime from ever going
+/// idle. **Bounded like every other wait here**: a healthy beat is at most
+/// one heartbeat away, so five seconds of a paused clock means the
+/// connection is not writing at all.
+async fn answer_keepalive(socket: &mut Client) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !saw_keepalive(socket.next().await) {}
+    })
+    .await
+    .expect("the server owed a keepalive ping and never wrote one");
+}
+
+/// Advance the paused clock in steps, and only while the server is proving it
+/// writes.
 ///
 /// **A single jump is not time passing, and an unpolled client is not a
 /// client.** The server's keepalive writes one ping and then waits for the
@@ -11058,17 +11108,48 @@ async fn a_refused_attach_answers_its_reply() {
 /// nothing more and the watchdog reaps a connection that is perfectly
 /// healthy. Stepping the clock with the socket polled between steps is what
 /// real time with a real client does, while keeping the clock deterministic.
-async fn advance_polling(socket: &mut Client, duration: Duration) {
+///
+/// **Synthetic time may not outrun the connection's progress.** Pausing the
+/// clock stops the watchdog only if the connection's task also gets its
+/// turn: `advance` moves time whether or not that task is scheduled, and a
+/// yield does not promise it the runtime first, so under load the test can
+/// step the clock far past the connection's real writes. The supervisor then
+/// samples `silent >= wedge` and reaps a healthy client. So no more than one
+/// heartbeat window (`every`) of synthetic time is advanced without a server
+/// ping, and a window that passes without one stops driving the clock and
+/// waits for the ping that beat owes.
+async fn advance_polling(socket: &mut Client, duration: Duration, every: Duration) {
     let step = Duration::from_millis(5);
     let mut left = duration;
+    // Time advanced since the last observed ping: the synthetic clock's lead
+    // over the connection, held to at most the one beat it owes a write in.
+    let mut since_ping = Duration::ZERO;
     while left > Duration::ZERO {
+        if since_ping >= every {
+            answer_keepalive(socket).await;
+            since_ping = Duration::ZERO;
+            continue;
+        }
         let now = left.min(step);
+        // **Count the clock's own movement, not which arm won.** `advance`
+        // moves the clock synchronously and only then awaits its yield, so a
+        // socket arm that wins after the advance was polled still spent the
+        // step. The measured delta is what the gate below and the remaining
+        // window are both spent from; counting a ping's own step again errs
+        // tight, never loose.
+        let before = tokio::time::Instant::now();
         tokio::select! {
             () = tokio::time::advance(now) => {}
-            // A control frame, and tungstenite queues the answer itself.
-            _ = socket.next() => {}
+            message = socket.next() => {
+                // A control frame, and tungstenite queues the answer itself.
+                if saw_keepalive(message) {
+                    since_ping = Duration::ZERO;
+                }
+            }
         }
-        left -= now;
+        let moved = tokio::time::Instant::now().saturating_duration_since(before);
+        left = left.saturating_sub(moved);
+        since_ping += moved;
     }
 }
 
@@ -11078,18 +11159,20 @@ async fn advance_polling(socket: &mut Client, duration: Duration) {
 /// ping, which is a write. Empty `Progress::stamp` and this test reaps a live
 /// client, which is the false positive the watchdog exists to prevent.
 ///
-/// **Two rounds, because one proves a stamp, not a clock.** A stamp that
-/// fires only on the first write (a guard that returns early once it is set)
-/// passes a single round and then reaps every connection four minutes after
-/// its first write, which is the redial loop the bound exists to avoid.
+/// **Two rounds, because one round cannot cover its own tail.** Each round
+/// advances two seconds against the one-second wedge, so a clock that stops
+/// stamping is reaped a second after it stops: inside round 0 when it stops
+/// in that round's first second, and in round 1 when it stops in the last
+/// one. The second round is what covers the first round's tail.
 #[tokio::test(start_paused = true)]
 async fn a_healthy_idle_connection_is_not_reaped() {
     let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
     // **The wedge is a second, not the shipping pair's ratio**, because the
     // clock is paused and the IO is real: a ping's answer costs a real round
-    // trip, and a bound too small would count the test's own advance as
-    // silence. A second is still far past every beat the connection owes, so
-    // a clock that stops stamping is reaped well inside the advance.
+    // trip. The advance is held to one beat past the last ping the connection
+    // wrote, so a second is far past every silence the test can manufacture
+    // by advancing, while still being well inside a two-second round: a clock
+    // that stops stamping is reaped inside the round that advances.
     let heartbeat = Heartbeat {
         every: Duration::from_millis(20),
         dead: Duration::from_secs(30),
@@ -11101,7 +11184,7 @@ async fn a_healthy_idle_connection_is_not_reaped() {
     for round in 0..2 {
         // Well past the wedge bound each time, with the connection doing
         // nothing but its own pings.
-        advance_polling(&mut socket, Duration::from_secs(2)).await;
+        advance_polling(&mut socket, Duration::from_secs(2), heartbeat.every).await;
 
         send(&mut socket, ClientMessage::Ping).await;
         let answered = next_server_within(&mut socket, 2_000).await;
