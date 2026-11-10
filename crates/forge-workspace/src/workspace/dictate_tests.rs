@@ -12,7 +12,7 @@ use super::*;
 
 use crate::dictate::{
     DictateAxes, DictateOutcome, DictateOverrideUpdate, DictateOverrides, FinishingTake,
-    LiveRecording, handle_dictate_stop, move_to_finishing, preflight_config,
+    LiveRecording, handle_dictate_stop,
 };
 use crate::{Command, SessionSlot, SessionUpdate};
 use forge_dictate::{ConfigBuilder, Engine};
@@ -53,35 +53,49 @@ fn live_take(ws: &crate::Workspace, owner: &SessionSlot) -> tokio::sync::mpsc::R
     stop_rx
 }
 
-/// The preflight config always points the diagnostics store at forge's
-/// app-support dir. A refactor dropping that assignment would leave the
-/// feature shipped-dead with CI green, which is why the assembly is its
-/// own function and this pins it.
+/// The host's app-support surface is the workspace's own field, and the
+/// preflight reads the host rather than taking a path of its own. A move
+/// that passed a different path - or `None` - leaves every other test here
+/// green, so this pins the seam itself.
 #[test]
-fn preflight_config_points_diagnostics_at_app_support() {
-    let settings: crate::dictate::DictateSettings =
-        toml::from_str("enabled = true\n").expect("parse");
-    let app_support = forge_sdk::app_support_dir().ok();
-    let cfg = preflight_config(&settings, &settings.pin_active(), app_support.as_deref());
+fn the_host_reports_the_workspaces_app_support_dir() {
+    let (ws, _updates) = crate::Workspace::testing_stub();
+    let field = ws.app_support.clone().expect("the stub sets an app-support base");
     assert_eq!(
-        cfg.diagnostics_dir.as_deref(),
-        app_support.as_ref().map(|dir| dir.join("dictate-diagnostics")).as_deref(),
-        "the diagnostics store must sit beside forge's other machine-local state"
+        crate::dictate::DictateHost::app_support_dir(ws.as_ref()),
+        Ok(field),
+        "the host's app-support answer is the workspace's own base, not a second resolution",
     );
-    assert!(
-        cfg.diagnostics_dir.is_some(),
-        "on this machine an app-support dir resolves, so the store must be armed"
+}
+
+/// The progress leg of the host mapping: a take's window crosses to the
+/// wire with its done/total and the initiator that ordered it.
+#[test]
+fn a_progress_update_crosses_to_the_wire_with_its_window() {
+    let (ws, mut updates) = crate::Workspace::testing_stub();
+    let seat = key("progress");
+    let emitted = crate::dictate::DictateHost::emit(
+        ws.as_ref(),
+        crate::dictate::DictateUpdate::Progress {
+            key: seat.clone(),
+            generation: 3,
+            done: 2,
+            total: Some(5),
+            initiator: Some(9),
+        },
     );
-    assert_eq!(
-        cfg.digest_cache_dir.as_deref(),
-        app_support.as_ref().map(|dir| dir.join("dictate-digests")).as_deref(),
-        "the verified-digest record must sit beside forge's other machine-local state, or \
-         every boot re-hashes 3.07 GB"
-    );
-    assert!(
-        cfg.digest_cache_dir.is_some(),
-        "the record is what keeps a warm boot off the disk; nothing else arms it"
-    );
+    assert!(emitted, "the stub holds an answering subscriber");
+    let frame = updates.try_recv().expect("the progress frame reaches the stream");
+    match &*frame.update {
+        SessionUpdate::DictateProgress { key, generation, done, total, initiator } => {
+            assert_eq!(key, &seat);
+            assert_eq!(*generation, 3);
+            assert_eq!(*done, 2);
+            assert_eq!(*total, Some(5));
+            assert_eq!(*initiator, Some(9));
+        }
+        other => panic!("the progress update crossed as something else: {other:?}"),
+    }
 }
 
 #[test]
@@ -933,68 +947,6 @@ async fn closing_a_finishing_take_abandons_its_transcript() {
     );
 }
 
-/// Stop routing reaches the recording that owns the key, and an
-/// unknown key routes nowhere rather than to some other take.
-#[tokio::test]
-async fn a_stop_routes_to_the_take_that_started_on_the_key() {
-    let (ws, _updates) = crate::Workspace::testing_stub();
-    let owner = key("owner");
-    let mut stop_rx = live_take(&ws, &owner);
-
-    handle_dictate_stop(&ws.dictate, &key("owner"), true, None).await;
-    assert!(matches!(stop_rx.try_recv(), Ok(true)), "submit must reach the owning take's channel");
-
-    handle_dictate_stop(&ws.dictate, &key("stranger"), false, None).await;
-    assert!(
-        matches!(stop_rx.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)),
-        "a stop from a session with no take must not reach someone else's"
-    );
-}
-
-/// The stop channel follows the take from recording into finishing,
-/// so Esc can still abandon a submitted take whose transcript is in
-/// flight.
-#[tokio::test]
-async fn a_submitted_take_keeps_its_stop_channel_reachable() {
-    let (ws, _updates) = crate::Workspace::testing_stub();
-    let take = key("take");
-    let mut stop_rx = live_take(&ws, &take);
-
-    move_to_finishing(&ws.dictate, &take);
-    {
-        let runtime = ws.dictate.runtime.lock();
-        assert!(runtime.recordings.is_empty(), "a submitted take no longer holds a live entry");
-        assert_eq!(runtime.finishing.len(), 1, "the take is awaiting its transcript");
-    }
-    handle_dictate_stop(&ws.dictate, &take, false, None).await;
-    assert!(
-        matches!(stop_rx.try_recv(), Ok(false)),
-        "abandon must still reach the take after it finished recording"
-    );
-}
-
-/// A stop the scheduler ordered before its start registered is
-/// parked, not dropped: dropping it orphans the take until the
-/// capture cap releases the microphone.
-#[tokio::test]
-async fn a_stop_before_its_start_is_parked_for_the_registration() {
-    let (ws, _updates) = crate::Workspace::testing_stub();
-    let owner = key("owner");
-
-    handle_dictate_stop(&ws.dictate, &owner, true, None).await;
-    assert!(
-        matches!(&ws.dictate.runtime.lock().stop_pending, Some((parked, _, _)) if *parked == owner),
-        "a stop with nothing to route parks itself for the start"
-    );
-
-    // A stop that DOES find a take neither parks nor leaves a stale
-    // park behind.
-    let mut stop_rx = live_take(&ws, &owner);
-    handle_dictate_stop(&ws.dictate, &owner, true, None).await;
-    assert_eq!(stop_rx.recv().await, Some(true));
-    assert_eq!(ws.dictate.runtime.lock().stop_pending, None);
-}
-
 /// Teardown drops a session's park: an inert entry for a closed
 /// session would otherwise sit in the Option forever.
 #[tokio::test]
@@ -1073,7 +1025,9 @@ async fn closing_the_session_releases_its_live_take() {
 /// dispatched through the bus reaches the subsystem and comes back as the
 /// frame a client reads. A move that leaves the subsystem unregistered,
 /// or wires a command to a handle nothing renders, leaves every other
-/// test in this file green and this one red.
+/// test in this file green and this one red. This pins the dispatch leg;
+/// the emit return leg is pinned by
+/// `a_progress_update_crosses_to_the_wire_with_its_window`.
 #[tokio::test]
 async fn the_subsystem_registers_from_config_and_a_command_round_trips() {
     let (ws, mut updates) = crate::Workspace::testing_stub_with_dictate_enabled();
@@ -1095,7 +1049,10 @@ async fn the_subsystem_registers_from_config_and_a_command_round_trips() {
     })
     .expect("dispatch");
 
-    let echo = updates.recv().await.expect("the start reaches the update stream");
+    let echo = tokio::time::timeout(std::time::Duration::from_secs(30), updates.recv())
+        .await
+        .expect("the start reaches the update stream")
+        .expect("the seat stream stays open");
     assert!(
         matches!(
             std::sync::Arc::unwrap_or_clone(echo.update),

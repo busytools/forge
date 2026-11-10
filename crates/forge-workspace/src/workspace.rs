@@ -708,6 +708,11 @@ pub struct Workspace {
     /// resolution failed (already warned there); hard rule #14 forbids a
     /// cwd fallback.
     pub(crate) app_support: Option<PathBuf>,
+    /// Why [`Self::app_support`] is `None`, when it is: the boot failure
+    /// this workspace already logged. The dictation preflight reports it
+    /// through the host seam, so that record carries the cause rather than
+    /// a bare absence.
+    app_support_error: Option<String>,
     /// Live Agents keyed by the session slot. `parking_lot::Mutex` so the
     /// public methods can take `&self`. `pub(crate)` so sibling
     /// modules (`spawn::handle_deliver_worker_prompt_to_lead`,
@@ -2199,17 +2204,17 @@ impl Workspace {
         // `Some` comes from the test constructor, which points the whole
         // base at a tempdir. `None` degrades to no lock and no durable
         // store rather than falling back to cwd (hard rule #14).
-        let app_support = match app_support {
-            Some(dir) => Some(dir),
+        let (app_support, app_support_error) = match app_support {
+            Some(dir) => (Some(dir), None),
             None => match forge_sdk::app_support_dir() {
-                Ok(dir) => Some(dir),
+                Ok(dir) => (Some(dir), None),
                 Err(error) => {
                     tracing::warn!(
                         target: "forge_workspace::workspace",
                         %error,
                         "app-support dir unresolved; the single-instance guard is skipped and durable state will not persist",
                     );
-                    None
+                    (None, Some(error.to_string()))
                 }
             },
         };
@@ -2601,6 +2606,7 @@ impl Workspace {
             voice_preview_error: std::sync::Mutex::new(None),
             catalog,
             app_support,
+            app_support_error,
             pool: Mutex::new(HashMap::new()),
             pricing_fetcher: pricing_fetcher.unwrap_or_else(default_pricing_fetcher),
             #[cfg(any(test, feature = "testing"))]
@@ -4403,11 +4409,7 @@ impl Workspace {
                 let models = this.dictate_models();
                 let _ = updates.send(SessionUpdate::DictateModelsChanged { models });
 
-                let cfg = crate::dictate::preflight_config(
-                    &settings,
-                    &resolved,
-                    this.app_support.as_deref(),
-                );
+                let cfg = crate::dictate::preflight_config(&settings, &resolved, this.as_ref());
                 crate::dictate::run_dictate_preflight(cfg, Arc::clone(&state)).await;
                 // `run_dictate_preflight` parks the engine in the state
                 // only on success, and every failure path ends the run,
@@ -28348,11 +28350,15 @@ accounts = ["main"]
 /// already reads.
 impl crate::dictate::DictateHost for Workspace {
     fn session_is_live(&self, key: &SessionSlot) -> bool {
-        self.command_senders.lock().contains_key(key)
+        Workspace::session_is_live(self, key)
     }
 
-    fn app_support_dir(&self) -> Option<std::path::PathBuf> {
-        self.app_support.clone()
+    fn app_support_dir(&self) -> Result<std::path::PathBuf, String> {
+        self.app_support.clone().ok_or_else(|| {
+            self.app_support_error
+                .clone()
+                .unwrap_or_else(|| "the workspace holds no app-support directory".to_owned())
+        })
     }
 
     fn emit(&self, update: crate::dictate::DictateUpdate) -> bool {

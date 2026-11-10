@@ -6,7 +6,7 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "Dictation primitive: sound in, text out. Local speech-to-text with verified model fetch. Depends on no other forge crate."
+description = "Dictation primitive: sound in, text out. Local speech-to-text with verified model fetch. Its forge-* dependencies are the capture leaf and primitives, and no workspace or server coupling."
 publish = false
 
 [lints]

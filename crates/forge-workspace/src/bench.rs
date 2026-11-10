@@ -136,6 +136,24 @@ impl Drop for StoreCopy {
     }
 }
 
+/// The bench's own host: it is not a session host, and the only seam its
+/// config needs is the app-support base the caller handed it.
+struct BenchHost<'a>(&'a Path);
+
+impl crate::dictate::DictateHost for BenchHost<'_> {
+    fn session_is_live(&self, _key: &crate::SessionSlot) -> bool {
+        false
+    }
+
+    fn app_support_dir(&self) -> Result<std::path::PathBuf, String> {
+        Ok(self.0.to_path_buf())
+    }
+
+    fn emit(&self, _update: crate::dictate::DictateUpdate) -> bool {
+        false
+    }
+}
+
 /// The models the live roles resolve to, read by a process that is not
 /// forge.
 ///
@@ -207,7 +225,7 @@ pub fn resolved_live_roles(config_dir: &Path, app_support: &Path) -> Result<Live
         }
     }
 
-    let config = crate::dictate::preflight_config(settings, &models, Some(app_support));
+    let config = crate::dictate::preflight_config(settings, &models, &BenchHost(app_support));
     Ok(LiveRoles { models, config, models_dir })
 }
 
@@ -669,7 +687,7 @@ impl Workspace {
     async fn run_speaking_bench(self: Arc<Self>) {
         let settings = self.config_arc().dictate.clone();
         let active = self.active_models();
-        let cfg = crate::dictate::preflight_config(&settings, &active, self.app_support.as_deref());
+        let cfg = crate::dictate::preflight_config(&settings, &active, self.as_ref());
         let Some(models_dir) = settings.models_dir() else {
             return self.settle_speaking_bench(Err("no models directory is configured".to_owned()));
         };
@@ -820,7 +838,7 @@ impl Workspace {
     async fn run_bench(self: Arc<Self>, target: BenchTarget, tier: forge_dictate::bench::Tier) {
         let settings = self.config_arc().dictate.clone();
         let active = self.active_models();
-        let cfg = crate::dictate::preflight_config(&settings, &active, self.app_support.as_deref());
+        let cfg = crate::dictate::preflight_config(&settings, &active, self.as_ref());
         let Some(models_dir) = settings.models_dir() else {
             return self.fail_bench(target, "no models directory is configured".to_owned());
         };

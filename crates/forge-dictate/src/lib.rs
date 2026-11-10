@@ -23,16 +23,23 @@
 //! new Nyquist back into the speech band and yields confident wrong
 //! words instead of obvious noise.
 //!
-//! # Every entry point here blocks
+//! # The model and engine API blocks
 //!
-//! This crate is runtime-agnostic on purpose, so nothing in it is
-//! async and nothing in it may be called from a runtime thread. An
-//! async caller wraps each entry point in `tokio::task::spawn_blocking`
-//! or its equivalent. Calling one directly from an async context
-//! panics in a debug build ("Cannot drop a runtime in a context where
-//! blocking is not allowed") and, worse, succeeds in a release build
-//! having held a runtime worker for the entire operation - so a release
-//! smoke test passes while dev crashes.
+//! The model and engine entry points are runtime-agnostic on purpose:
+//! they block, and they must not be called from a runtime thread. An
+//! async caller wraps each in `tokio::task::spawn_blocking` or its
+//! equivalent. Calling one directly from an async context panics in a
+//! debug build ("Cannot drop a runtime in a context where blocking is
+//! not allowed") and, worse, succeeds in a release build having held a
+//! runtime worker for the entire operation - so a release smoke test
+//! passes while dev crashes.
+//!
+//! # The host-facing lifecycle is async
+//!
+//! [`host`] is the other surface: the take lifecycle and the preflight
+//! are `async fn`s a host drives from its own runtime, and they run the
+//! blocking engine work under `spawn_blocking` themselves. A host never
+//! decides when to block; that split is inside this crate.
 
 mod audio;
 pub mod bench;

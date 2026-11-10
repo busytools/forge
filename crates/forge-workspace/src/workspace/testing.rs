@@ -461,6 +461,7 @@ impl Workspace {
             voice_preview_error: std::sync::Mutex::new(None),
             catalog: Arc::new(Mutex::new(HashMap::new())),
             app_support,
+            app_support_error: None,
             pool: Mutex::new(HashMap::new()),
             // A stub reaches no network either: the refill has nothing to
             // fetch.

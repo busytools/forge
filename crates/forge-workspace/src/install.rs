@@ -1122,11 +1122,7 @@ impl Workspace {
             })
             .collect();
 
-        let cfg = crate::dictate::preflight_config(
-            &self.config_arc().dictate,
-            &next,
-            self.app_support.as_deref(),
-        );
+        let cfg = crate::dictate::preflight_config(&self.config_arc().dictate, &next, self);
         let engine = build_engine(cfg).await?;
         let previous = self.dictate.state.engine.lock().replace(engine);
         drop(previous);

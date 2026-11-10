@@ -21,7 +21,7 @@
 //! keeps this crate a leaf while the state and the policy move here.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -62,11 +62,18 @@ pub enum DictateOutcome {
     Cancelled,
 }
 
+/// Read a no-signal peak - a level's, or the one a `no_audio` outcome
+/// carries - taking `null` as no signal rather than as a decode failure.
+///
 /// The counterpart of serde writing a non-finite float as `null`: a
 /// window that heard nothing peaks at exactly zero, whose dBFS is
 /// negative infinity. Without this, a Rust reader cannot decode the
 /// message at all, and the failure names the type rather than the case.
-fn no_signal_reads_as_negative_infinity<'de, D>(deserializer: D) -> Result<f32, D::Error>
+///
+/// Public because the wire's own `DictateLevel` carries the same field:
+/// the workspace points its `deserialize_with` here rather than keeping a
+/// second copy that can drift from this crate's.
+pub fn no_signal_reads_as_negative_infinity<'de, D>(deserializer: D) -> Result<f32, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -106,9 +113,10 @@ pub trait DictateHost: Send + Sync {
     fn session_is_live(&self, key: &SessionSlot) -> bool;
 
     /// Forge's machine-local support directory, where the preflight's
-    /// diagnostics and digest caches live. `None` when it cannot resolve;
-    /// diagnostics are then off rather than fatal.
-    fn app_support_dir(&self) -> Option<PathBuf>;
+    /// diagnostics and digest caches live. A host that cannot resolve one
+    /// answers the cause, so the preflight's record carries what acting on
+    /// it needs rather than a bare absence.
+    fn app_support_dir(&self) -> Result<PathBuf, String>;
 
     /// Emit one update. `false` means no subscriber would take it, which
     /// ends a progress forwarder rather than looping forever.
@@ -143,9 +151,11 @@ pub enum ActiveFrom {
     Pin,
 }
 
-/// `~/` against the user's home directory. The workspace's config uses the
-/// same expansion; it stays here because the settings are the module's.
-pub fn expand_home(path: &str) -> PathBuf {
+/// `~/` against the user's home directory. The workspace's config has a
+/// byte-identical copy for its own settings; this one stays here because
+/// the `[dictate]` settings are the module's, and a leaf cannot reach the
+/// workspace's.
+pub(crate) fn expand_home(path: &str) -> PathBuf {
     if let Some(stripped) = path.strip_prefix("~/")
         && let Some(home) = dirs::home_dir()
     {
@@ -689,17 +699,19 @@ impl DictateState {
 pub fn preflight_config(
     settings: &DictateSettings,
     active: &[(DictateRole, ActiveModel)],
-    app_support: Option<&Path>,
+    host: &dyn DictateHost,
 ) -> crate::Config {
     let mut cfg = settings.to_config();
-    if let Some(dir) = app_support {
-        cfg.diagnostics_dir = Some(dir.join("dictate-diagnostics"));
-        cfg.digest_cache_dir = Some(dir.join("dictate-digests"));
-    } else {
-        tracing::warn!(
+    match host.app_support_dir() {
+        Ok(dir) => {
+            cfg.diagnostics_dir = Some(dir.join("dictate-diagnostics"));
+            cfg.digest_cache_dir = Some(dir.join("dictate-digests"));
+        }
+        Err(error) => tracing::warn!(
             event_name = "dictate_state_dir_unresolved",
+            %error,
             "no app-support dir: dictate per-take diagnostics and the model-digest record are off"
-        );
+        ),
     }
     // The resolution replaces the pins the builder put in, per role.
     if let Some((_, model)) = active.iter().find(|(role, _)| *role == DictateRole::Transcribing) {
@@ -1830,8 +1842,8 @@ mod dictate_lifecycle_tests {
             true
         }
 
-        fn app_support_dir(&self) -> Option<PathBuf> {
-            None
+        fn app_support_dir(&self) -> Result<PathBuf, String> {
+            Err("the test host has no app-support directory".to_owned())
         }
 
         fn emit(&self, _update: DictateUpdate) -> bool {
@@ -2089,5 +2101,130 @@ mod dictate_lifecycle_tests {
             "another connection's park is not this start's to honour"
         );
         assert!(runtime.stop_pending.is_some(), "and it survives for its own start");
+    }
+
+    /// A test host that reports one app-support directory, so the
+    /// preflight's assembly can be pinned without a workspace.
+    struct DirHost(PathBuf);
+
+    impl DictateHost for DirHost {
+        fn session_is_live(&self, _key: &SessionSlot) -> bool {
+            true
+        }
+
+        fn app_support_dir(&self) -> Result<PathBuf, String> {
+            Ok(self.0.clone())
+        }
+
+        fn emit(&self, _update: DictateUpdate) -> bool {
+            true
+        }
+    }
+
+    /// The preflight config always points the diagnostics store at the
+    /// host's app-support dir. A refactor dropping that assignment leaves
+    /// the feature shipped-dead with CI green, which is why the assembly is
+    /// its own function and this pins it.
+    #[test]
+    fn preflight_config_points_diagnostics_at_app_support() {
+        let settings: DictateSettings = toml::from_str("enabled = true\n").expect("parse");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let host = DirHost(dir.path().to_path_buf());
+        let cfg = preflight_config(&settings, &settings.pin_active(), &host);
+        assert_eq!(
+            cfg.diagnostics_dir,
+            Some(dir.path().join("dictate-diagnostics")),
+            "the per-take diagnostics live under the host's app-support base",
+        );
+        assert_eq!(
+            cfg.digest_cache_dir,
+            Some(dir.path().join("dictate-digests")),
+            "the verified-take cache is what keeps a warm boot off the disk; nothing else arms it",
+        );
+    }
+
+    /// Put a live take on the runtime the way a registration does, and hand
+    /// back its answer channel so a test can read what the caller gets.
+    fn staged_session() -> SessionSlot {
+        SessionSlot::new("Test", "proj", "vault-free")
+    }
+
+    fn live_take(dictate: &Dictate, owner: &SessionSlot) -> tokio::sync::mpsc::Receiver<bool> {
+        let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(1);
+        dictate
+            .runtime
+            .lock()
+            .recordings
+            .insert(owner.clone(), LiveRecording { stop: stop_tx, sink: None, initiator: None });
+        stop_rx
+    }
+
+    /// Stop routing reaches the recording that owns the key, and an
+    /// unknown key routes nowhere rather than to some other take.
+    #[tokio::test]
+    async fn a_stop_routes_to_the_take_that_started_on_the_key() {
+        let settings: DictateSettings = toml::from_str("enabled = true\n").expect("parse");
+        let dictate = Dictate::new(&settings);
+        let owner = staged_session();
+        let mut stop_rx = live_take(&dictate, &owner);
+
+        handle_dictate_stop(&dictate, &owner, true, None).await;
+        assert!(
+            matches!(stop_rx.try_recv(), Ok(true)),
+            "submit must reach the owning take's channel"
+        );
+
+        handle_dictate_stop(&dictate, &SessionSlot::new("Test", "proj", "stranger"), false, None)
+            .await;
+        assert!(
+            matches!(stop_rx.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)),
+            "a stop from a session with no take must not reach someone else's"
+        );
+    }
+
+    /// The stop channel follows the take from recording into finishing,
+    /// so Esc can still abandon a submitted take whose transcript is in
+    /// flight.
+    #[tokio::test]
+    async fn a_submitted_take_keeps_its_stop_channel_reachable() {
+        let settings: DictateSettings = toml::from_str("enabled = true\n").expect("parse");
+        let dictate = Dictate::new(&settings);
+        let take = staged_session();
+        let mut stop_rx = live_take(&dictate, &take);
+
+        move_to_finishing(&dictate, &take);
+        {
+            let runtime = dictate.runtime.lock();
+            assert!(runtime.recordings.is_empty(), "a submitted take no longer holds a live entry");
+            assert_eq!(runtime.finishing.len(), 1, "the take is awaiting its transcript");
+        }
+        handle_dictate_stop(&dictate, &take, false, None).await;
+        assert!(
+            matches!(stop_rx.try_recv(), Ok(false)),
+            "abandon must still reach the take after it finished recording"
+        );
+    }
+
+    /// A stop the scheduler ordered before its start registered is
+    /// parked, not dropped: dropping it orphans the take until the
+    /// capture cap releases the microphone.
+    #[tokio::test]
+    async fn a_stop_before_its_start_is_parked_for_the_registration() {
+        let settings: DictateSettings = toml::from_str("enabled = true\n").expect("parse");
+        let dictate = Dictate::new(&settings);
+        let owner = staged_session();
+
+        handle_dictate_stop(&dictate, &owner, true, None).await;
+        assert!(
+            matches!(&dictate.runtime.lock().stop_pending, Some((parked, _, _)) if *parked == owner),
+            "a stop with nothing to route parks itself for the start"
+        );
+
+        // A stop that DOES find a take neither parks nor leaves a stale
+        // park behind.
+        let mut stop_rx = live_take(&dictate, &owner);
+        handle_dictate_stop(&dictate, &owner, true, None).await;
+        assert_eq!(stop_rx.recv().await, Some(true));
+        assert_eq!(dictate.runtime.lock().stop_pending, None);
     }
 }

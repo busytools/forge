@@ -1351,20 +1351,6 @@ impl std::fmt::Debug for Command {
     }
 }
 
-/// Read a no-signal peak - a level's, or the one a `no_audio` outcome
-/// carries - taking `null` as no signal rather than as a decode failure.
-///
-/// The counterpart of serde writing a non-finite float as `null`: a
-/// window that heard nothing peaks at exactly zero, whose dBFS is
-/// negative infinity. Without this, a Rust reader cannot decode the
-/// message at all, and the failure names the type rather than the case.
-fn no_signal_reads_as_negative_infinity<'de, D>(deserializer: D) -> Result<f32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Option::<f32>::deserialize(deserializer)?.unwrap_or(f32::NEG_INFINITY))
-}
-
 /// What one finished dictation take produced. Plain data rather than
 /// [`forge_dictate::Outcome`]: a view words the notices, so it gets
 /// the observations and keeps the crate's error shapes.
@@ -2164,7 +2150,10 @@ pub enum SessionUpdate {
     /// Rust reader do the same.
     DictateLevel {
         key: SessionSlot,
-        #[serde(default, deserialize_with = "no_signal_reads_as_negative_infinity")]
+        #[serde(
+            default,
+            deserialize_with = "forge_dictate::host::no_signal_reads_as_negative_infinity"
+        )]
         peak_db: f32,
         /// The take's own, as [`SessionUpdate::DictateStarted`] announced it:
         /// a reading that arrives after a newer take started is the older

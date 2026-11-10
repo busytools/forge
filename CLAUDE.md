@@ -35,10 +35,12 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   audio as mono frames a host pushes in. Its forge-* dependencies are the
   capture leaf, for the sample rate, and `forge-primitives`: the leaf
   rule's intent is that a leaf grows no workspace or server coupling, not
-  that it takes no forge-* crate at all, and the types its host trait
-  crosses on are primitives. It knows nothing about a host, so it must not
-  grow one, and a doc comment mentioning a keypress, a composer or a
-  session is a bug.
+  that it takes no primitives, and the types its host trait crosses on are
+  primitives. It knows nothing about the program embedding it, so it must
+  not grow one: the only session surface it may name is
+  `forge_primitives::SessionSlot` and the `DictateHost` trait it defines,
+  and a doc comment about a keypress, a composer or a workspace session
+  type is a bug.
 - **`forge-tts`** - the speech primitive: text in, audio chunks out. Owns
   the Kokoro-82M engine (ONNX Runtime in process, with Misaki and its
   bundled espeak-ng for G2P), the model files a speaking model is made of,
@@ -316,11 +318,12 @@ one, bias toward the deeper crate.
   subscribes to.
 - **Cross-crate type duplication.** Same-shaped `Foo` in two crates
   means one is wrong; lift to primitives or import the re-export. The
-  exceptions are the leaf crates that may not depend on any forge-*
-  crate, `forge-capture`, `forge-tts`, `forge-system-one` and
-  `forge-dictate` (which leans on the capture leaf and on primitives,
-  and on nothing else of the workspace): their types stay in them and
-  consumers import them from there.
+  exceptions are the crates at the edge of the graph - `forge-capture`,
+  `forge-tts`, `forge-system-one`, `forge-mcp` (whose description and
+  output types every tool family speaks), and `forge-dictate` (which
+  leans on the capture leaf and on primitives, and on nothing else of the
+  workspace): their types stay in them and consumers import them from
+  there.
 - **Provider dispatch outside `forge-gateway`.** A match on
   `Provider` in workspace or a view is the thing this crate exists to
   delete; route through `forge_gateway::backend(token)` instead.
