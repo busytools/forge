@@ -111,7 +111,7 @@ as well as a colour, so the row reads without colour:
 | Restarting | `restarting` | the subprocess died while it was up, and forge is between restarts |
 | Idle | `idle` | alive, nothing in flight |
 | Finished | `unseen` | a turn completed on a seat no client was showing |
-| Needs you | `needs` | a question, a permission prompt, a hand-off, a held configuration write or a held vault call is waiting |
+| Needs you | `needs` | a question, a permission prompt, a Slack draft, a browser, terminal or document hand-off, a held configuration write or a held vault call is waiting |
 | Sign-in needed | `auth` | the bridge is waiting on `/login` |
 | Failed | `failed` | the session is not running: its spawn never came up, or it died and nothing brought it back |
 | Session ended | `failed` | a session on the seat ended, and the seat has not been opened since |
