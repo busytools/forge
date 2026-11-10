@@ -4475,6 +4475,11 @@ fn dispatch_answering(
                 Command::BiometricEnrol { enrolment, device, purpose, blob, respond: Some(tx) };
             answered(state, command, to, rx, reply_tx);
         }
+        Command::BiometricRewrite { enrolment, purpose, blob, .. } => {
+            let (tx, rx) = oneshot::channel();
+            let command = Command::BiometricRewrite { enrolment, purpose, blob, respond: Some(tx) };
+            answered(state, command, to, rx, reply_tx);
+        }
         Command::VaultEnrolmentMaterial { .. } => {
             let (tx, rx) = oneshot::channel();
             let command = Command::VaultEnrolmentMaterial { respond: Some(tx) };
@@ -4684,6 +4689,7 @@ fn answers_through_a_reply(command: &Command) -> bool {
             | Command::SubmitReview { .. }
             | Command::BiometricRelease { .. }
             | Command::BiometricEnrol { .. }
+            | Command::BiometricRewrite { .. }
             | Command::VaultEnrolmentMaterial { .. }
     )
 }
@@ -4948,6 +4954,81 @@ mod tests {
             still_landed(&transport, &seat),
             "a store that refused the write did not take the words",
         );
+    }
+
+    /// **The rewrite answers through the reply route.** Missing from
+    /// `dispatch_answering` it fell to the fire-and-forget arm; missing from
+    /// `answers_through_a_reply`, the transport refused it before dispatch.
+    /// Either way a rotation's rewrite hung to its reply bound and the vault
+    /// locked itself, with the spent token still in the blob.
+    #[tokio::test]
+    async fn a_biometric_rewrite_answers_through_its_reply() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fleet = crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        let transport = a_transport(fleet.workspace());
+        let enrolment = uuid::Uuid::new_v4();
+        let blob = base64::engine::general_purpose::STANDARD.encode(b"sealed");
+        transport
+            .surface
+            .dispatch(Command::BiometricEnrol {
+                enrolment,
+                device: "this device".to_owned(),
+                purpose: "vault".to_owned(),
+                blob: blob.clone(),
+                respond: None,
+            })
+            .expect("the enrolment lands");
+        assert!(
+            answers_through_a_reply(&Command::BiometricRewrite {
+                enrolment,
+                purpose: "vault".to_owned(),
+                blob: blob.clone(),
+                respond: None,
+            }),
+            "the rewrite reports through its reply",
+        );
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        dispatch_answering(
+            &transport,
+            Command::BiometricRewrite {
+                enrolment,
+                purpose: "vault".to_owned(),
+                blob: blob.clone(),
+                respond: None,
+            },
+            7,
+            &tx,
+        );
+        let Some(Answer::Reply(message)) = rx.try_recv().ok() else {
+            panic!("the rewrite's answer is written inside its dispatch");
+        };
+        let ServerMessage::Reply { reply_to, body } = *message else {
+            panic!("the rewrite's answer is not a reply");
+        };
+        assert_eq!(reply_to, 7);
+        assert_eq!(body, serde_json::json!(true), "an existing enrolment is replaced");
+
+        dispatch_answering(
+            &transport,
+            Command::BiometricRewrite {
+                enrolment: uuid::Uuid::new_v4(),
+                purpose: "vault".to_owned(),
+                blob,
+                respond: None,
+            },
+            8,
+            &tx,
+        );
+        let Some(Answer::Reply(unknown)) = rx.try_recv().ok() else {
+            panic!("an unknown id still answers");
+        };
+        let ServerMessage::Reply { reply_to, body } = *unknown else {
+            panic!("an unknown id's answer is not a reply");
+        };
+        assert_eq!(reply_to, 8);
+        assert_eq!(body, serde_json::json!(false), "an unknown id cannot be created");
     }
 
     /// **A submitted review carries its summary into the same spend**, and
