@@ -295,10 +295,14 @@ pub mod wire;
 /// `permission` or `hand_off`; it is now one kind per ask source, so the
 /// needs-you line can say what the seat actually waits on: `slack_draft`,
 /// `browser_hand_off`, `terminal_hand_off`, `document_hand_off`,
-/// `settings_write` and `vault` replace the shared `hand_off`. A v30 client
-/// reads each new spelling as an unknown and draws its `permission` words
-/// for it, and the old `hand_off` is gone, so the two halves move together.
-/// `baselines/socket/31/` is the record a v31 server emitted.
+/// `settings_write` and `vault` replace the shared `hand_off`. A v30 page
+/// narrows each new spelling to `permission` and draws the wrong words, and
+/// a v30 shell refuses the row outright and drops that seat's notification;
+/// the old `hand_off` is gone, so the two halves move together.
+/// `baselines/socket/31/` is the record `record_dir()` requires for the
+/// current version - it is byte-identical to 30 because the census holds
+/// enum and field names rather than values, so it does not itself evidence
+/// the widened kind.
 ///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it

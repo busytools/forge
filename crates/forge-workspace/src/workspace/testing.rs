@@ -981,9 +981,10 @@ impl Workspace {
         domain.available_agents = agents;
     }
 
-    /// Park a pending interaction on `slot`, registering its domain if it
-    /// has none, so a test can read the state a held turn produces without
-    /// driving the wire. Test-only.
+    /// Park one ask of `kind` on `slot`, so a test can read the state a held
+    /// turn produces without driving the wire. A prompt's domain is
+    /// registered when it has none; a registry ask parks in its own registry
+    /// and needs no domain. Test-only.
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_pending_interaction(&self, slot: &SessionSlot, kind: PendingInteractionKind) {
         self.seed_test_asks(slot, kind, 1);
@@ -1008,7 +1009,7 @@ impl Workspace {
         domain.lock().awaiting_login = true;
     }
 
-    /// Park `count` unanswered prompts on `slot` under distinct tool ids,
+    /// Park `count` unanswered asks of `kind` on `slot` under distinct ids,
     /// the way a session holding a queue of them reads. Test-only.
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_prompt_queue(
@@ -1023,9 +1024,10 @@ impl Workspace {
     /// Park `count` asks of `kind` in the place that kind really lives - the
     /// session's pending set for a prompt, its own registry for everything
     /// else - so the fixture is the state, not a stand-in. A registry ask is
-    /// inserted directly, with a sender whose receiver nobody kept: it is
-    /// the parking that makes the seat need a person, and no test answers a
-    /// seeded ask through its own oneshot.
+    /// inserted directly: the hand-offs and the draft carry a sender whose
+    /// receiver nobody kept, and the settings and vault asks, whose sender is
+    /// optional, carry `None`. It is the parking that makes the seat need a
+    /// person, and no test answers a seeded ask through its own oneshot.
     #[cfg(any(test, feature = "testing"))]
     fn seed_test_asks(&self, slot: &SessionSlot, kind: PendingInteractionKind, count: usize) {
         use forge_primitives::browser::HandOffEnding;

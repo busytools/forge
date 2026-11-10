@@ -244,6 +244,9 @@ impl Workspace {
             let (_ignored_sender, dead_receiver) = tokio::sync::oneshot::channel();
             return (id, dead_receiver);
         }
+        // **A second draft is a second ask.** The number is the ask's identity
+        // on the wire, so a draft that never moves it is never announced.
+        self.note_ask(caller);
         (id, receiver)
     }
 
