@@ -142,8 +142,9 @@ impl KeychainGate {
             std::process::id(),
             PROBE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
-        // A process that died between the add and its delete leaves an item
-        // behind; the probe clears it before it writes its own.
+        // **A crashed probe's item can collide after a restart**: the purpose
+        // carries the pid and a counter, and both can repeat, so the probe
+        // clears the purpose before it writes its own.
         let _ = Self::remove_now(&purpose);
         let refusal = match Self::add_now(&purpose, b"x") {
             Ok(SEC_SUCCESS) => None,
