@@ -1026,7 +1026,9 @@ impl Workspace {
     /// else - so the fixture is the state, not a stand-in. A registry ask is
     /// inserted directly: the hand-offs and the draft carry a sender whose
     /// receiver nobody kept, and the settings and vault asks, whose sender is
-    /// optional, carry `None`. It is the parking that makes the seat need a
+    /// optional, carry `None`. Each parked ask then takes its number, the way
+    /// every production registration does, so a seeded ask reads the identity
+    /// the app would give it. It is the parking that makes the seat need a
     /// person, and no test answers a seeded ask through its own oneshot.
     #[cfg(any(test, feature = "testing"))]
     fn seed_test_asks(&self, slot: &SessionSlot, kind: PendingInteractionKind, count: usize) {
@@ -1036,14 +1038,22 @@ impl Workspace {
                 let domain = self
                     .domain_session_for(slot)
                     .unwrap_or_else(|| self.register_domain_session(slot.clone(), None));
-                let mut domain = domain.lock();
-                for index in 0..count {
-                    if let Some(prompt) = test_prompt(kind) {
-                        domain.pending_interactions.insert(format!("test-tool-{index}"), prompt);
+                {
+                    let mut domain = domain.lock();
+                    for index in 0..count {
+                        if let Some(prompt) = test_prompt(kind) {
+                            domain
+                                .pending_interactions
+                                .insert(format!("test-tool-{index}"), prompt);
+                        }
                     }
+                }
+                for _ in 0..count {
+                    self.note_ask(slot);
                 }
             }
             PendingInteractionKind::DocumentHandOff => {
+                // The registration parks the ask and takes its number.
                 self.note_client_attached();
                 for _ in 0..count {
                     let _ = self.register_document_hand_off(slot, TEST_DOCUMENT_PATH, true);
@@ -1064,6 +1074,7 @@ impl Workspace {
                         tagged: Vec::new(),
                     };
                     self.slack_drafts.lock().insert(draft.id, (slot.clone(), draft, sender));
+                    self.note_ask(slot);
                 }
             }
             PendingInteractionKind::BrowserHandOff => {
@@ -1078,6 +1089,7 @@ impl Workspace {
                     self.browser_handoffs
                         .lock()
                         .insert(handoff.id, (slot.clone(), handoff, sender));
+                    self.note_ask(slot);
                 }
             }
             PendingInteractionKind::TerminalHandOff => {
@@ -1092,15 +1104,22 @@ impl Workspace {
                     self.terminal_handoffs
                         .lock()
                         .insert(handoff.id, (slot.clone(), handoff, sender));
+                    self.note_ask(slot);
                 }
             }
             PendingInteractionKind::SettingsWrite => {
                 for _ in 0..count {
                     let ask = forge_primitives::settings::SettingsWriteAsk {
                         id: uuid::Uuid::new_v4(),
-                        edits: Vec::new(),
+                        edits: vec![forge_primitives::settings::SettingsWriteChange {
+                            key: "sessions.heal_attempts".to_owned(),
+                            current: serde_json::json!(2),
+                            proposed: serde_json::json!(4),
+                            unset: false,
+                        }],
                     };
                     self.settings_writes.lock().insert(ask.id, (slot.clone(), ask, None));
+                    self.note_ask(slot);
                 }
             }
             PendingInteractionKind::Vault => {
@@ -1110,6 +1129,7 @@ impl Workspace {
                         "test",
                     );
                     self.parked_vault_asks.lock().insert(draft.id, (slot.clone(), draft, None));
+                    self.note_ask(slot);
                 }
             }
         }

@@ -228,8 +228,9 @@ mod tests {
     use crate::surface::agents::{PendingKind, short_path};
 
     /// **Every kind's wire spelling is pinned.** A typo in a serde rename
-    /// compiles and ships a value no client narrows, so the roster row's
-    /// `pending` would silently read as nothing.
+    /// compiles and ships a value no client narrows: the page falls back to
+    /// `permission` words and the shell drops that seat's row, so the roster
+    /// row's `pending` is drawn wrongly or not at all.
     #[test]
     fn every_pending_kind_serializes_to_its_wire_spelling() {
         for (kind, spelling) in [

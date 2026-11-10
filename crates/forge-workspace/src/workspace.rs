@@ -18858,8 +18858,11 @@ mod worker_activity_tests {
         Vault => Vault,
     }
 
-    /// Park one ask of `kind` on a seat of its own, through the same
-    /// registration the app uses, and answer the seat.
+    /// Park one ask of `kind` on a seat of its own and answer the seat.
+    ///
+    /// A prompt is inserted into the session's pending set the way
+    /// `session_task` parks one, taking the ask's number; every registry kind
+    /// goes through its own registration. Both are the app's path.
     ///
     /// The terminal takes the seeded project's lead slot because its PTY
     /// resolves a cwd; every other kind gets a fresh seat, so nothing parked
@@ -18963,8 +18966,9 @@ mod worker_activity_tests {
     /// **Every ask kind is a needs-you kind.** Each kind the census names is
     /// parked on a seat of its own and must read the kind back, say
     /// `Attention`, count exactly one, and carry its own number - the last
-    /// what proves a registry registration announced its ask. The terminal
-    /// is here because it drew in the dock and marked nothing (#2954).
+    /// what proves a registry registration announced its ask, and for a
+    /// prompt what proves its arrival was numbered. The terminal is here
+    /// because it drew in the dock and marked nothing (#2954).
     #[tokio::test]
     async fn every_ask_kind_marks_its_seat() {
         let (ws, _rx) = Workspace::testing_stub();
@@ -19028,9 +19032,11 @@ mod worker_activity_tests {
     }
 
     /// **The row names the strongest ask; the dock fronts its own queue.**
-    /// A terminal hand-off outranks the question beside it, and a document
-    /// hand-off outranks a Slack draft - while `pending_asks` still leads
-    /// with the draft, because a card is what a person reads first.
+    /// The adjacencies pinned here are hand-off over question, hand-off over
+    /// draft, and draft over settings write - one per run of the fixed order
+    /// in [`Workspace::pending_interaction`]; the ends of each run stand for
+    /// the rest. `pending_asks` still leads with the draft, because a card
+    /// is what a person reads first.
     #[tokio::test]
     async fn the_row_names_the_strongest_ask_and_the_dock_fronts_the_draft() {
         let (ws, _rx) = Workspace::testing_stub();
@@ -19068,6 +19074,15 @@ mod worker_activity_tests {
             "the dock still fronts the draft",
         );
 
+        let third = SessionSlot::from_str_for_test("precedence-third");
+        ws.seed_test_pending_interaction(&third, PendingInteractionKind::SettingsWrite);
+        ws.seed_test_pending_interaction(&third, PendingInteractionKind::SlackDraft);
+        assert_eq!(
+            ws.pending_interaction(&third),
+            Some(PendingInteractionKind::SlackDraft),
+            "the Slack draft outranks the settings write beside it",
+        );
+
         ws.close_terminal(&seat);
     }
 
@@ -19093,6 +19108,13 @@ mod worker_activity_tests {
 
         let (_id, _decision) = ws.register_slack_draft(&seat, draft("first"));
         assert_eq!(ws.pending_request_seq(&seat), 1, "the first draft is an ask");
+        // A seat with no domain still holds a registry ask, and the kind
+        // answers through the ledger's no-domain arm.
+        assert_eq!(
+            ws.pending_interaction(&seat),
+            Some(PendingInteractionKind::SlackDraft),
+            "the draft is the seat's needs-you kind with no domain at all",
+        );
         let (_id, _decision) = ws.register_slack_draft(&seat, draft("second"));
         assert_eq!(ws.pending_request_seq(&seat), 2, "a second draft is a second ask");
 
@@ -19118,6 +19140,11 @@ mod worker_activity_tests {
             false,
         );
         assert_eq!(ws.pending_request_seq(&seat), 4, "a vault call is an ask");
+        assert_eq!(
+            ws.pending_interaction_depth(&seat),
+            4,
+            "and the depth sums all four rather than any one of them",
+        );
     }
 
     /// **The sequence is the ask's identity, and a read never moves it.**
