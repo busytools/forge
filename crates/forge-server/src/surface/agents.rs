@@ -227,6 +227,30 @@ mod tests {
     use crate::surface::ViewSurface;
     use crate::surface::agents::{PendingKind, short_path};
 
+    /// **Every kind's wire spelling is pinned.** A typo in a serde rename
+    /// compiles and ships a value no client narrows: the page falls back to
+    /// `permission` words and the shell drops that seat's row, so the roster
+    /// row's `pending` is drawn wrongly or not at all.
+    #[test]
+    fn every_pending_kind_serializes_to_its_wire_spelling() {
+        for (kind, spelling) in [
+            (PendingKind::Question, "question"),
+            (PendingKind::Permission, "permission"),
+            (PendingKind::SlackDraft, "slack_draft"),
+            (PendingKind::BrowserHandOff, "browser_hand_off"),
+            (PendingKind::TerminalHandOff, "terminal_hand_off"),
+            (PendingKind::DocumentHandOff, "document_hand_off"),
+            (PendingKind::SettingsWrite, "settings_write"),
+            (PendingKind::Vault, "vault"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(kind).expect("a kind serializes"),
+                serde_json::Value::String(spelling.to_owned()),
+                "{kind:?}",
+            );
+        }
+    }
+
     /// The row set the home draws: a project's lead first, then its
     /// workers in the persisted-label order. Catches a collect that heads
     /// the list with the workers, that reads labels from the live registry

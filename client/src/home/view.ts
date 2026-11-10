@@ -29,6 +29,7 @@ import type {
   HomeWire,
   Lifecycle,
   MissRow,
+  PendingKind,
   ProjectWire,
   Task,
   TaskStatus,
@@ -103,7 +104,7 @@ export interface Row {
    */
   gate: string | null;
   task: TaskCell | null;
-  pending: 'question' | 'permission' | 'hand_off' | null;
+  pending: PendingKind | null;
   /** The decision waits this seat holds: the mark, and the list behind it. */
   waits: AttentionRow[];
   reason: string | null;
@@ -198,7 +199,7 @@ export interface FleetViewRow {
   seats: {
     label: string;
     state: RowState;
-    pending: 'question' | 'permission' | 'hand_off' | null;
+    pending: PendingKind | null;
     waits: AttentionRow[];
     href: string;
   }[];
@@ -438,10 +439,10 @@ export function stateOf(row: AgentRow, unseen: SessionSlot[]): RowState {
   // The failure outranks every other promotion, and the view this client
   // replaced ordered it over the spinner and the diamond both.
   if (row.failed_turn !== null) return { kind: 'failed-turn' };
-  // **A question outranks work.** The seat is waiting on a person, which is
-  // what needs-you means; the rank the rail groups by already reads it this
-  // way, and a mark read from the lifecycle alone drew idle on a seat whose
-  // ask was up (#1885).
+  // **A pending ask outranks work.** The seat is waiting on a person, which
+  // is what needs-you means; the rank the rail groups by already reads it
+  // this way, and a mark read from the lifecycle alone drew idle on a seat
+  // whose ask was up (#1885).
   if (row.pending !== null) return { kind: 'lifecycle', lifecycle: 'Attention' };
   if (row.lifecycle === 'Idle' && row.has_background_work) {
     return { kind: 'lifecycle', lifecycle: 'Running' };
@@ -524,6 +525,25 @@ export function markOf(state: RowState): { class: string; dot: string } {
 }
 
 /**
+ * What a needs-you row says the seat is waiting on.
+ *
+ * **A record, not a chain of ternaries**: a new wire kind is a compile error
+ * until it has words of its own, the same guard the server's `PendingAsk`
+ * match is. The fallback a chain ends with is exactly how a terminal
+ * hand-off came to read as a permission prompt.
+ */
+export const PENDING_WORDS: Record<PendingKind, string> = {
+  question: 'asked you a question',
+  permission: 'a permission prompt is waiting',
+  slack_draft: 'a Slack draft is waiting',
+  browser_hand_off: 'the browser hand-off is waiting',
+  terminal_hand_off: 'a terminal hand-off is waiting',
+  document_hand_off: 'a document hand-off is waiting',
+  settings_write: 'a settings write is waiting',
+  vault: 'a vault call is waiting',
+};
+
+/**
  * Where a row sits in the rail or the home's fleet. The three groups are also
  * the order they read in, so the rank is the order and the array index both.
  *
@@ -531,16 +551,13 @@ export function markOf(state: RowState): { class: string; dot: string } {
  * headings and the rail's sections are the same three states, and a rank
  * computed twice would drift the first time one of them grew a state.
  *
- * **Needs-you is the states that need a person NOW**: a pending ask (a
- * question, a permission, a hand-off), a failed turn or a death the reader has
- * not been shown, and the lifecycles Attention, Failed and AuthRequired. A
- * decision wait is not one of them - it is a mark on the row, and a task wait
- * is often future work whose seat can be asleep.
+ * **Needs-you is the states that need a person NOW**: a pending ask, a failed
+ * turn or a death the reader has not been shown, and the lifecycles
+ * Attention, Failed and AuthRequired. A decision wait is not one of them - it
+ * is a mark on the row, and a task wait is often future work whose seat can
+ * be asleep.
  */
-export function rankOf(
-  state: RowState,
-  pending: 'question' | 'permission' | 'hand_off' | null,
-): number {
+export function rankOf(state: RowState, pending: PendingKind | null): number {
   // An ask outranks the lifecycle: a session holds a prompt while the core
   // still calls it idle, and what it is waiting on is a person.
   if (pending !== null) return 0;

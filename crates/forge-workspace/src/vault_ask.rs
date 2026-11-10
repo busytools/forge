@@ -49,6 +49,9 @@ impl Workspace {
             let (_ignored_sender, dead_receiver) = tokio::sync::oneshot::channel();
             return (id, dead_receiver, false);
         }
+        // **A second call is a second ask.** The number is the ask's identity
+        // on the wire, so a call that never moves it is never announced.
+        self.note_ask(caller);
         (id, receiver, true)
     }
 
@@ -115,13 +118,6 @@ impl Workspace {
         for id in ids {
             self.settle_vault_ask(id, slot, VaultAskEnding::Abandoned);
         }
-    }
-
-    /// Whether `slot` is holding a parked vault call: its own registry rather
-    /// than the session's pending set, so a held call reaches
-    /// `session_activity` and every needs mark the lifecycle drives.
-    pub(crate) fn has_vault_ask(&self, slot: &SessionSlot) -> bool {
-        self.parked_vault_asks.lock().values().any(|(owner, _, _)| owner == slot)
     }
 
     /// Re-stamp every call still parked after the shared session's lock state

@@ -174,8 +174,8 @@ the page draws.
 - **The ask waiting**: the dock's card, ahead of the other prompts the way
   the seat's own read orders them; a resolution from another view clears it.
   The seat's own mark is the ask's too - the rail reads it as needs-you
-  ("a hand-off is waiting"), and the seat's activity mark is Attention
-  while it waits, exactly like a permission or a question.
+  ("a document hand-off is waiting"), and the seat's activity mark is
+  Attention while it waits, exactly like a permission or a question.
 - **Markdown**: rendered with the chat's renderer - raw HTML never reaches
   the page - as its rendered targets, on the sheet below.
 - **The sheet**: the document rests on the app like a page on a desk - one
