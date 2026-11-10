@@ -91,9 +91,12 @@ describe('which asks are news', () => {
 
   /// **A second ask of the same kind on one seat is news**, because the
   /// server numbers each arrival: a second Slack draft is seq 2, never the
-  /// first draft's identity.
+  /// first draft's identity. The first read carries the first draft, so a
+  /// rule that ignored the number would call the second read the same ask.
   it('announces a second draft on the same seat when its number moves', () => {
-    const marks = launched();
+    const marks = askState();
+    const first = [row(OTHER, { pending: 'slack_draft', pending_depth: 1, pending_seq: 1 })];
+    expect(rising(marks, 'run-1', first, null, true), 'the launch seeds it').toEqual([]);
     const second = [row(OTHER, { pending: 'slack_draft', pending_depth: 2, pending_seq: 2 })];
     expect(rising(marks, 'run-1', second, null, true)).toEqual([
       { slot: OTHER, kind: 'slack_draft' },
