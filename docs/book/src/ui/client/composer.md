@@ -100,11 +100,12 @@ gesture, the way Enter submits the other cards. The gesture is the approve: the 
 material it releases rides only an approval, and a send-back or a decline runs nothing. **A
 refused gesture never settles the call**: the card stands, says the platform's own reason
 under the button, and the password it offers is still one click away. **A lock frame turns an
-open card back into this one**, so a session that has locked while the card stood asks for the
-password rather than letting an approve die. The frame is the only announcement the idle lock
-makes: a quiet session with no read in between has no frame yet, so its first approve can
-still answer Locked, and the next attempt draws the password card. Without an enrolment, or
-where the platform has no gate,
+open card back into the unlock card**: where the device holds an enrolment it offers the
+gesture again with the Vaultwarden password one link beneath, and otherwise it asks for the
+password. The frame is the only announcement the idle lock makes: a quiet session with no
+read in between has no frame yet, so its first approve can still answer Locked, and the call
+returns on its next attempt as the unlock card. Without an enrolment, or where the platform
+has no gate,
 the card is the password one: a masked master-password field and an optional 2FA code, with
 `Approve` unavailable until the password is entered, because the approval is what performs the
 unlock. Its verbs are `Approve`, `Send back with a note` and `Decline` - the gesture taking the
