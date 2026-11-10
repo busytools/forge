@@ -111,9 +111,10 @@ pub(crate) fn test_question(
 
 /// [`test_permission`] or [`test_question`] with a receiver nobody keeps.
 ///
-/// `None` for a hand-off: it parks in the workspace's own registry rather
-/// than in the session's pending set, and the seeders below register it
-/// there instead - so a test that wants the HELD state gets the real one.
+/// `None` for every other kind: each parks in a registry of the workspace's
+/// own rather than in the session's pending set, and the seeders below
+/// register it there instead - so a test that wants the HELD state gets the
+/// real one.
 #[cfg(any(test, feature = "testing"))]
 fn test_prompt(kind: PendingInteractionKind) -> Option<crate::protocol::PendingInteractionSlot> {
     match kind {
@@ -125,7 +126,12 @@ fn test_prompt(kind: PendingInteractionKind) -> Option<crate::protocol::PendingI
             let (tx, _rx) = tokio::sync::oneshot::channel();
             Some(test_question(tx))
         }
-        PendingInteractionKind::HandOff => None,
+        PendingInteractionKind::SlackDraft
+        | PendingInteractionKind::BrowserHandOff
+        | PendingInteractionKind::TerminalHandOff
+        | PendingInteractionKind::DocumentHandOff
+        | PendingInteractionKind::SettingsWrite
+        | PendingInteractionKind::Vault => None,
     }
 }
 
@@ -980,18 +986,7 @@ impl Workspace {
     /// driving the wire. Test-only.
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_pending_interaction(&self, slot: &SessionSlot, kind: PendingInteractionKind) {
-        // A hand-off's held state is a parked registration, not a domain
-        // slot: the seeder produces the state the kind names, wherever that
-        // state really lives.
-        let Some(prompt) = test_prompt(kind) else {
-            self.note_client_attached();
-            let _ = self.register_document_hand_off(slot, TEST_DOCUMENT_PATH, true);
-            return;
-        };
-        let domain = self
-            .domain_session_for(slot)
-            .unwrap_or_else(|| self.register_domain_session(slot.clone(), None));
-        domain.lock().pending_interactions.insert(TEST_TOOL_ID.to_owned(), prompt);
+        self.seed_test_asks(slot, kind, 1);
     }
 
     /// Let go of everything parked on `slot`, which is half of what
@@ -1022,20 +1017,98 @@ impl Workspace {
         kind: PendingInteractionKind,
         count: usize,
     ) {
-        if test_prompt(kind).is_none() {
-            self.note_client_attached();
-            for _ in 0..count {
-                let _ = self.register_document_hand_off(slot, TEST_DOCUMENT_PATH, true);
+        self.seed_test_asks(slot, kind, count);
+    }
+
+    /// Park `count` asks of `kind` in the place that kind really lives - the
+    /// session's pending set for a prompt, its own registry for everything
+    /// else - so the fixture is the state, not a stand-in. A registry ask is
+    /// inserted directly, with a sender whose receiver nobody kept: it is
+    /// the parking that makes the seat need a person, and no test answers a
+    /// seeded ask through its own oneshot.
+    #[cfg(any(test, feature = "testing"))]
+    fn seed_test_asks(&self, slot: &SessionSlot, kind: PendingInteractionKind, count: usize) {
+        use forge_primitives::browser::HandOffEnding;
+        match kind {
+            PendingInteractionKind::Question | PendingInteractionKind::Permission => {
+                let domain = self
+                    .domain_session_for(slot)
+                    .unwrap_or_else(|| self.register_domain_session(slot.clone(), None));
+                let mut domain = domain.lock();
+                for index in 0..count {
+                    if let Some(prompt) = test_prompt(kind) {
+                        domain.pending_interactions.insert(format!("test-tool-{index}"), prompt);
+                    }
+                }
             }
-            return;
-        }
-        let domain = self
-            .domain_session_for(slot)
-            .unwrap_or_else(|| self.register_domain_session(slot.clone(), None));
-        let mut domain = domain.lock();
-        for index in 0..count {
-            if let Some(prompt) = test_prompt(kind) {
-                domain.pending_interactions.insert(format!("test-tool-{index}"), prompt);
+            PendingInteractionKind::DocumentHandOff => {
+                self.note_client_attached();
+                for _ in 0..count {
+                    let _ = self.register_document_hand_off(slot, TEST_DOCUMENT_PATH, true);
+                }
+            }
+            PendingInteractionKind::SlackDraft => {
+                for _ in 0..count {
+                    let (sender, _receiver) = tokio::sync::oneshot::channel();
+                    let draft = forge_primitives::slack::SlackDraft {
+                        id: uuid::Uuid::new_v4(),
+                        workspace: "test".to_owned(),
+                        conversation: "C-test".to_owned(),
+                        conversation_label: "test".to_owned(),
+                        thread_ts: None,
+                        text: "test".to_owned(),
+                        operation: forge_primitives::slack::SlackDraftOperation::Post,
+                        thread: None,
+                        tagged: Vec::new(),
+                    };
+                    self.slack_drafts.lock().insert(draft.id, (slot.clone(), draft, sender));
+                }
+            }
+            PendingInteractionKind::BrowserHandOff => {
+                for _ in 0..count {
+                    let (sender, _receiver) = tokio::sync::oneshot::channel::<HandOffEnding>();
+                    let handoff = forge_primitives::browser::HandOff {
+                        id: uuid::Uuid::new_v4(),
+                        reason: "test".to_owned(),
+                        tab: 1,
+                        target: "test-target".to_owned(),
+                    };
+                    self.browser_handoffs
+                        .lock()
+                        .insert(handoff.id, (slot.clone(), handoff, sender));
+                }
+            }
+            PendingInteractionKind::TerminalHandOff => {
+                for _ in 0..count {
+                    let (sender, _receiver) = tokio::sync::oneshot::channel::<HandOffEnding>();
+                    let handoff = forge_primitives::terminal::TerminalHandOff {
+                        id: uuid::Uuid::new_v4(),
+                        reason: "test".to_owned(),
+                        terminal: 1,
+                        secret: false,
+                    };
+                    self.terminal_handoffs
+                        .lock()
+                        .insert(handoff.id, (slot.clone(), handoff, sender));
+                }
+            }
+            PendingInteractionKind::SettingsWrite => {
+                for _ in 0..count {
+                    let ask = forge_primitives::settings::SettingsWriteAsk {
+                        id: uuid::Uuid::new_v4(),
+                        edits: Vec::new(),
+                    };
+                    self.settings_writes.lock().insert(ask.id, (slot.clone(), ask, None));
+                }
+            }
+            PendingInteractionKind::Vault => {
+                for _ in 0..count {
+                    let draft = forge_primitives::vault::VaultDraft::new(
+                        forge_primitives::vault::VaultTool::Search,
+                        "test",
+                    );
+                    self.parked_vault_asks.lock().insert(draft.id, (slot.clone(), draft, None));
+                }
             }
         }
     }

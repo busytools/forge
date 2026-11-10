@@ -508,16 +508,27 @@ pub enum SessionChipState {
 
 /// What a session is waiting on a person for. The kind a needs-you row
 /// names, since "asked you a question" and "a permission prompt is
-/// waiting" are different asks with the same mark - and a hand-off (a
-/// document's or the browser's) is the third, parked in the workspace's
-/// own registries rather than in the session's pending set (Ved, the look:
-/// the hand-off must ride the same needs-you machinery as every ask).
+/// waiting" are different asks with the same mark.
+///
+/// **One variant per ask source, and every source is here.** A question and
+/// a permission park in the session's pending set; a Slack draft, the
+/// browser, terminal and document hand-offs, a settings write and a vault
+/// call each park in a registry of the workspace's own. The split between
+/// those places is what let a terminal hand-off draw in the dock and mark
+/// nothing (#2954), the third time a kind was missed;
+/// [`Workspace::pending_interaction`] reads every source through one order,
+/// and a new ask kind fails the build until it is added there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PendingInteractionKind {
     Question,
     Permission,
-    HandOff,
+    SlackDraft,
+    BrowserHandOff,
+    TerminalHandOff,
+    DocumentHandOff,
+    SettingsWrite,
+    Vault,
 }
 
 /// The dedupe key for a delivered Slack message: one destination is
@@ -8765,41 +8776,79 @@ impl Workspace {
 
     /// What the session at `slot` is waiting on a person for, or `None`
     /// when it can advance on its own.
+    ///
+    /// **The one predicate every needs-you surface reads.** A session
+    /// activity, a roster row, a rail mark and a notification all ask this
+    /// rather than each keeping a list of sources: the lists drifted, and a
+    /// terminal hand-off drew in the dock while its seat read as running
+    /// (#2954).
+    ///
+    /// The order is fixed. The hand-offs lead because each parks in a
+    /// registry of the workspace's own rather than in the session's pending
+    /// set, so a seat with no domain can still be holding one; then the
+    /// question outranks the permission prompt beside it, because both hold
+    /// a turn and the question is the one a person has to read; then the
+    /// remaining registries, the Slack draft first.
+    ///
+    /// **Lock order:** each registry read takes and releases its own lock,
+    /// and the domain guard is dropped before the later registry reads, so
+    /// no path here holds a registry lock and the domain lock together.
     pub fn pending_interaction(&self, slot: &SessionSlot) -> Option<PendingInteractionKind> {
-        // The hand-offs first: one parks in the workspace's own registries
-        // rather than in the session's set, so a seat with no domain can
-        // still be holding one - and both are prompts a person must act on
-        // exactly like the other two.
-        if self.has_document_handoff(slot) || self.has_browser_hand_off(slot) {
-            return Some(PendingInteractionKind::HandOff);
+        if self.has_document_handoff(slot) {
+            return Some(PendingInteractionKind::DocumentHandOff);
         }
-        let domain = self.domain_session_for(slot)?;
-        let guard = domain.lock();
-        // A question outranks a permission prompt: both hold a turn, and
-        // the question is the one a person has to read before answering.
-        // A slot holding both therefore answers as the question.
-        if guard.pending_interactions.values().any(|pending| {
-            matches!(pending, crate::protocol::PendingInteractionSlot::Question { .. })
-        }) {
-            return Some(PendingInteractionKind::Question);
+        if self.has_browser_hand_off(slot) {
+            return Some(PendingInteractionKind::BrowserHandOff);
         }
-        if guard.pending_interactions.values().any(|pending| {
-            matches!(pending, crate::protocol::PendingInteractionSlot::Permission { .. })
-        }) {
-            return Some(PendingInteractionKind::Permission);
+        if self.terminal_held(slot) {
+            return Some(PendingInteractionKind::TerminalHandOff);
+        }
+        if let Some(domain) = self.domain_session_for(slot) {
+            let guard = domain.lock();
+            if guard.pending_interactions.values().any(|pending| {
+                matches!(pending, crate::protocol::PendingInteractionSlot::Question { .. })
+            }) {
+                return Some(PendingInteractionKind::Question);
+            }
+            if guard.pending_interactions.values().any(|pending| {
+                matches!(pending, crate::protocol::PendingInteractionSlot::Permission { .. })
+            }) {
+                return Some(PendingInteractionKind::Permission);
+            }
+        }
+        if self.has_slack_draft(slot) {
+            return Some(PendingInteractionKind::SlackDraft);
+        }
+        if self.has_settings_write(slot) {
+            return Some(PendingInteractionKind::SettingsWrite);
+        }
+        if self.has_vault_ask(slot) {
+            return Some(PendingInteractionKind::Vault);
         }
         None
     }
 
-    /// How many prompts the session at `slot` is holding, zero when none.
-    /// The same set [`Self::pending_interaction`] answers the kind of, so a
-    /// view showing one of them can say how many wait behind it.
+    /// How many asks the session at `slot` is holding, zero when none.
+    /// **The same set [`Self::pending_interaction`] answers the kind of**,
+    /// so a view showing one of them can say how many wait behind it.
     pub fn pending_interaction_depth(&self, slot: &SessionSlot) -> usize {
-        let parked = self.document_handoffs.lock().values().filter(|h| &h.seat == slot).count();
-        let handed =
+        let documents = self.document_handoffs.lock().values().filter(|h| &h.seat == slot).count();
+        let browsers =
             self.browser_handoffs.lock().values().filter(|(owner, _, _)| owner == slot).count();
-        parked
-            + handed
+        let terminals =
+            self.terminal_handoffs.lock().values().filter(|(owner, _, _)| owner == slot).count();
+        let drafts =
+            self.slack_drafts.lock().values().filter(|(owner, _, _)| owner == slot).count();
+        let writes =
+            self.settings_writes.lock().values().filter(|(owner, _, _)| owner == slot).count();
+        let vaults =
+            self.parked_vault_asks.lock().values().filter(|(owner, _, _)| owner == slot).count();
+        documents
+            + browsers
+            + terminals
+            + drafts
+            + writes
+            + vaults
             + self
                 .domain_session_for(slot)
                 .map_or(0, |domain| domain.lock().pending_interactions.len())
@@ -9136,46 +9185,37 @@ impl Workspace {
         if domain.lock().awaiting_login {
             return L::AuthRequired;
         }
-        let blocked = {
+        let requires_action = {
             let guard = domain.lock();
             // A held interaction only matters while a turn can advance on
-            // it, and this gate is what decides that for drafts too: one
-            // parked on a slot with no turn (busytools/forge#672 - a slot
+            // it, and this gate is what decides that for every ask kind too:
+            // one parked on a slot with no turn (busytools/forge#672 - a slot
             // outliving its turn is incoherent state) reads `Idle` here
             // rather than as a person's to answer.
             if !guard.turn_in_flight() {
                 return L::Idle;
             }
-            // `RequiresAction` is the CLI naming its own block; a held slot
-            // is forge naming it. Either way a human has to move first, and
-            // calling that `Running` is what makes a blocked worker
-            // invisible. This arm is reachable only because
-            // `turn_in_flight()` counts `RequiresAction` as in-flight:
-            // drop it from that OR and a `RequiresAction` session falls
-            // through the gate above to `Idle` instead.
+            // `RequiresAction` is the CLI naming its own block; a held ask
+            // is forge naming it, through the predicate below. Either way a
+            // human has to move first, and calling that `Running` is what
+            // makes a blocked worker invisible. This arm is reachable only
+            // because `turn_in_flight()` counts `RequiresAction` as
+            // in-flight: drop it from that OR and a `RequiresAction` session
+            // falls through the gate above to `Idle` instead.
             matches!(
                 guard.runtime_state,
                 Some(forge_primitives::RuntimeSessionState::RequiresAction)
-            ) || !guard.pending_interactions.is_empty()
+            )
         };
-        // **A parked draft is a person's to answer too, and it lives
-        // outside the set the arm above reads**: the draft registry is the
-        // workspace's own (a seat with no domain can hold one, though the
-        // gate above answers such a seat `Sleeping` before either arm
-        // reaches here). Read after the guard comes off, un-nested, the way
-        // `pending_asks` reads it - and without this a held draft leaves
-        // the seat `Running`, which is what kept the client's
-        // lifecycle-driven needs mark quiet while the dock sat unanswered
-        // (#1758). **The browser hand-off is the same shape** - its own
-        // registry, its own read - and the same silence without it (Ved,
-        // 2026-10-07).
-        if blocked
-            || self.has_slack_draft(slot)
-            || self.has_browser_hand_off(slot)
-            || self.has_document_handoff(slot)
-            || self.has_settings_write(slot)
-            || self.has_vault_ask(slot)
-        {
+        // **Every ask kind reads through the one predicate**, after the
+        // domain guard comes off: each parks in its own registry, and
+        // `pending_interaction` keeps the registry locks and the domain lock
+        // from being held together. Knowing only some sources is what kept
+        // the lifecycle quiet while the dock sat unanswered - the Slack
+        // draft (#1758), the browser hand-off, the document hand-off, the
+        // settings write and the vault call, and the terminal hand-off last
+        // (#2954).
+        if requires_action || self.pending_interaction(slot).is_some() {
             L::Attention
         } else {
             L::Running
@@ -18783,6 +18823,164 @@ mod worker_activity_tests {
         );
     }
 
+    /// The kind a needs-you row draws for an ask.
+    ///
+    /// **An exhaustive match on `PendingAsk` is the guard**: a new ask kind
+    /// cannot be added without naming the kind here, and the test below then
+    /// fails until the needs-you path answers it.
+    fn needs_you_kind(ask: &crate::protocol::PendingAsk) -> PendingInteractionKind {
+        use crate::protocol::PendingAsk;
+        match ask {
+            PendingAsk::Question(_) => PendingInteractionKind::Question,
+            PendingAsk::Permission(_) => PendingInteractionKind::Permission,
+            PendingAsk::SlackDraft(_) => PendingInteractionKind::SlackDraft,
+            PendingAsk::BrowserHandOff(_) => PendingInteractionKind::BrowserHandOff,
+            PendingAsk::TerminalHandOff(_) => PendingInteractionKind::TerminalHandOff,
+            PendingAsk::DocumentHandOff(_) => PendingInteractionKind::DocumentHandOff,
+            PendingAsk::SettingsWrite(_) => PendingInteractionKind::SettingsWrite,
+            PendingAsk::Vault(_) => PendingInteractionKind::Vault,
+        }
+    }
+
+    /// **Every ask kind is a needs-you kind.** A seat holding any of them -
+    /// whether it parks in the session's pending set or in a registry of the
+    /// workspace's own - reads the kind back, says `Attention`, and counts
+    /// one. The terminal kind is here because it was the one that drew in
+    /// the dock and marked nothing (#2954); the Slack draft, settings write
+    /// and vault call were absent from the same path before it.
+    #[tokio::test]
+    async fn every_ask_kind_marks_its_seat() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("guard", "/tmp");
+
+        // Every seat is mid-turn, so `session_activity` is not answering the
+        // no-turn `Idle` gate instead of the ask.
+        let mid_turn = |name: &str| {
+            let seat = SessionSlot::from_str_for_test(name);
+            let domain = ws.register_domain_session(seat.clone(), None);
+            domain.lock().turn_pending = true;
+            seat
+        };
+        let held = |name: &str, slot: PendingInteractionSlot| {
+            let seat = mid_turn(name);
+            let domain = ws.domain_session_for(&seat).expect("the seat's own domain");
+            domain.lock().pending_interactions.insert(format!("{name}-0"), slot);
+            seat
+        };
+        let (question_tx, _question_rx) = tokio::sync::oneshot::channel();
+        let (permission_tx, _permission_rx) = tokio::sync::oneshot::channel();
+
+        let slack = mid_turn("ask-slack");
+        let (_id, _decision) = ws.register_slack_draft(
+            &slack,
+            forge_primitives::slack::SlackDraft {
+                id: uuid::Uuid::new_v4(),
+                workspace: "acme".to_owned(),
+                conversation: "C1".to_owned(),
+                conversation_label: "acme".to_owned(),
+                thread_ts: None,
+                text: "hello".to_owned(),
+                operation: forge_primitives::slack::SlackDraftOperation::Post,
+                thread: None,
+                tagged: Vec::new(),
+            },
+        );
+
+        let browser = mid_turn("ask-browser");
+        let (calls, _heard) = tokio::sync::mpsc::unbounded_channel();
+        ws.install_browser_host(std::sync::Arc::new(crate::browser::testing::StubHost { calls }));
+        let (_id, _answer) = ws
+            .register_browser_hand_off(&browser, "solve the CAPTCHA", "T2")
+            .await
+            .expect("the browser hand-off parks");
+
+        let terminal = SessionSlot::lead("TestOrg", "guard");
+        let domain = ws.register_domain_session(terminal.clone(), None);
+        domain.lock().turn_pending = true;
+        let entry = ws.terminal_for(&terminal).expect("a terminal");
+        let (_id, _answer) = ws
+            .register_terminal_hand_off(&terminal, entry.id, "the sudo password")
+            .expect("the terminal hand-off parks");
+
+        let document = mid_turn("ask-document");
+        ws.note_client_attached();
+        let (_id, _ending) = ws
+            .register_document_hand_off(&document, "/proj/docs/plan.md", true)
+            .expect("the document hand-off parks");
+
+        let settings = mid_turn("ask-settings");
+        let (_id, _answer, _) = ws.register_settings_write(
+            &settings,
+            forge_primitives::settings::SettingsWriteAsk {
+                id: uuid::Uuid::new_v4(),
+                edits: Vec::new(),
+            },
+        );
+
+        let vault = mid_turn("ask-vault");
+        let (_id, _answer, _) = ws.register_vault_ask(
+            &vault,
+            forge_primitives::vault::VaultDraft::new(
+                forge_primitives::vault::VaultTool::Search,
+                "search for 'bank'",
+            ),
+            false,
+        );
+
+        let cases = vec![
+            (
+                held("ask-question", testing::test_question(question_tx)),
+                PendingInteractionKind::Question,
+            ),
+            (
+                held("ask-permission", testing::test_permission(permission_tx)),
+                PendingInteractionKind::Permission,
+            ),
+            (terminal.clone(), PendingInteractionKind::TerminalHandOff),
+            (slack, PendingInteractionKind::SlackDraft),
+            (browser, PendingInteractionKind::BrowserHandOff),
+            (document, PendingInteractionKind::DocumentHandOff),
+            (settings, PendingInteractionKind::SettingsWrite),
+            (vault, PendingInteractionKind::Vault),
+        ];
+        for (seat, expected) in cases {
+            let asks = ws.pending_asks(&seat);
+            assert_eq!(asks.len(), 1, "one ask parked on {}", seat.display());
+            assert_eq!(
+                needs_you_kind(&asks[0]),
+                expected,
+                "the parked ask names the kind {} draws for it",
+                seat.display(),
+            );
+            assert_eq!(
+                ws.pending_interaction(&seat),
+                Some(expected),
+                "the needs-you kind for {}",
+                seat.display(),
+            );
+            assert_eq!(
+                ws.session_activity(&seat),
+                L::Attention,
+                "the lifecycle for {} is what every needs mark draws",
+                seat.display(),
+            );
+            assert!(
+                ws.pending_interaction_depth(&seat) >= 1,
+                "the depth counts the ask on {}",
+                seat.display(),
+            );
+        }
+
+        // A seat holding nothing is the control: the assertions above would
+        // pass on a predicate that answered every seat the same way.
+        let quiet = mid_turn("ask-quiet");
+        assert_eq!(ws.pending_interaction(&quiet), None);
+        assert_eq!(ws.pending_interaction_depth(&quiet), 0);
+        assert_ne!(ws.session_activity(&quiet), L::Attention);
+
+        ws.close_terminal(&terminal);
+    }
+
     /// **The sequence is the ask's identity, and a read never moves it.**
     /// Two asks on one seat are two numbers; reading the roster is not an
     /// ask, so a client can tell the first from the second without seeing
@@ -19292,7 +19490,7 @@ mod worker_activity_tests {
         );
         assert_eq!(
             ws.pending_interaction(&seat),
-            Some(crate::workspace::PendingInteractionKind::HandOff),
+            Some(crate::workspace::PendingInteractionKind::BrowserHandOff),
             "and the roster says what the seat is waiting on",
         );
         assert_eq!(ws.pending_interaction_depth(&seat), 1, "with the ask it holds");
@@ -19333,7 +19531,7 @@ mod worker_activity_tests {
         );
         assert_eq!(
             ws.pending_interaction(&seat),
-            Some(crate::PendingInteractionKind::HandOff),
+            Some(crate::PendingInteractionKind::DocumentHandOff),
             "and the row's needs-you names the kind",
         );
         assert_eq!(ws.pending_interaction_depth(&seat), 1, "the depth counts it");
