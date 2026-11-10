@@ -9,7 +9,15 @@ import { PROTOCOL_VERSION } from '../protocol';
 import { rankOf } from '../home/view';
 import { repoPath } from '../repo';
 import type { BoardWire, ProjectBoardWire } from '../wire/board';
-import type { AgentRow, ChipState, CronEntry, HomeWire, ProjectWire, Task } from '../wire/home';
+import type {
+  AgentRow,
+  ChipState,
+  CronEntry,
+  HomeWire,
+  PendingKind,
+  ProjectWire,
+  Task,
+} from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import { applyUpdate } from './apply';
 import {
@@ -336,13 +344,20 @@ describe('the rail', () => {
     expect(asleep?.holds, 'the fold stayed shut over the only signal').toBe(true);
   });
 
-  /** **A parked hand-off is a third ask, and the row names it as itself**
-   *  rather than borrowing the permission line. */
-  it('names a held hand-off on the row', () => {
-    const held: AgentRow = { ...lead(), pending: 'hand_off', reason: null };
-    const groups = railGroups(withHome({ agents: [held] }), LEAD);
-    const needs = groups.find((group) => group.heading === 'needs you');
-    expect(needs?.projects[0]?.why?.line).toBe('a hand-off is waiting');
+  /** **Every held ask is named as itself on the row**, the terminal hand-off
+   *  included - it is the one that drew in the dock and left the row still
+   *  saying nothing (#2954). */
+  it('names each held ask on the row in its own words', () => {
+    const cases: [PendingKind, string][] = [
+      ['document_hand_off', 'a document hand-off is waiting'],
+      ['terminal_hand_off', 'a terminal hand-off is waiting'],
+    ];
+    for (const [kind, words] of cases) {
+      const held: AgentRow = { ...lead(), pending: kind, reason: null };
+      const groups = railGroups(withHome({ agents: [held] }), LEAD);
+      const needs = groups.find((group) => group.heading === 'needs you');
+      expect(needs?.projects[0]?.why?.line).toBe(words);
+    }
   });
 
   /**

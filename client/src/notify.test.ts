@@ -539,9 +539,9 @@ describe('delivering an ask', () => {
       title: 'forge \u{b7} forge',
       body: 'a question is waiting',
     });
-    expect(askWords({ slot: OTHER, kind: 'hand_off' })).toEqual({
+    expect(askWords({ slot: OTHER, kind: 'document_hand_off' })).toEqual({
       title: 'forge \u{b7} forge \u{b7} worker',
-      body: 'a hand-off is waiting',
+      body: 'a document hand-off is waiting',
     });
   });
 

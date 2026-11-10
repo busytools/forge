@@ -25,6 +25,7 @@ import {
   gateLine,
   GROUP_HEADINGS,
   groupClassOf,
+  PENDING_WORDS,
   placeOf,
   projectRows,
   rankOf,
@@ -791,15 +792,7 @@ export function failedLine(row: Row): string | null {
 function whyOf(lead: Row, workers: Row[]): { line: string; bad: boolean } | null {
   for (const row of [lead, ...workers]) {
     if (row.pending !== null) {
-      return {
-        line:
-          row.pending === 'question'
-            ? 'asked you a question'
-            : row.pending === 'hand_off'
-              ? 'a hand-off is waiting'
-              : 'a permission prompt is waiting',
-        bad: false,
-      };
+      return { line: PENDING_WORDS[row.pending], bad: false };
     }
   }
   // **A heal in progress is not a failure.** The lead's line says what forge

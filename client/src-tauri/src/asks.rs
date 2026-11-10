@@ -43,11 +43,20 @@ pub(crate) fn foreground() -> bool {
 }
 
 /// The kind of ask a roster row reports, on the wire's own names.
+///
+/// **One variant per wire kind**: a kind this build cannot name is a row it
+/// cannot announce, so the set has to move with the server's
+/// `PendingInteractionKind`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AskKind {
     Question,
     Permission,
-    HandOff,
+    SlackDraft,
+    BrowserHandOff,
+    TerminalHandOff,
+    DocumentHandOff,
+    SettingsWrite,
+    Vault,
 }
 
 impl AskKind {
@@ -56,7 +65,12 @@ impl AskKind {
         match self {
             Self::Question => "a question is waiting",
             Self::Permission => "a permission prompt is waiting",
-            Self::HandOff => "a hand-off is waiting",
+            Self::SlackDraft => "a Slack draft is waiting",
+            Self::BrowserHandOff => "the browser hand-off is waiting",
+            Self::TerminalHandOff => "a terminal hand-off is waiting",
+            Self::DocumentHandOff => "a document hand-off is waiting",
+            Self::SettingsWrite => "a settings write is waiting",
+            Self::Vault => "a vault call is waiting",
         }
     }
 }
@@ -85,7 +99,12 @@ fn asked_of(row: &Value) -> Result<Option<Asked>, String> {
         Some(held) => match held.as_str() {
             Some("question") => AskKind::Question,
             Some("permission") => AskKind::Permission,
-            Some("hand_off") => AskKind::HandOff,
+            Some("slack_draft") => AskKind::SlackDraft,
+            Some("browser_hand_off") => AskKind::BrowserHandOff,
+            Some("terminal_hand_off") => AskKind::TerminalHandOff,
+            Some("document_hand_off") => AskKind::DocumentHandOff,
+            Some("settings_write") => AskKind::SettingsWrite,
+            Some("vault") => AskKind::Vault,
             other => {
                 return Err(format!(
                     "{} names a pending kind this build does not know: {other:?}",
@@ -405,6 +424,20 @@ mod tests {
             asks.rising(&roster(&[("w1", Some("question"), 2)]), Some(&lead()), true),
             vec![(worker(), AskKind::Question)],
         );
+    }
+
+    /// **A terminal hand-off is news of its own kind**, not an unknown row
+    /// this build skips: the shell raises the notification a page would, and
+    /// the kind is what the words are drawn from (#2954).
+    #[test]
+    fn a_terminal_hand_off_is_news_of_its_own_kind() {
+        let mut asks = Asks::default();
+        asks.rising(&roster(&[]), None, true);
+        assert_eq!(
+            asks.rising(&roster(&[("w1", Some("terminal_hand_off"), 1)]), None, true),
+            vec![(worker(), AskKind::TerminalHandOff)],
+        );
+        assert_eq!(AskKind::TerminalHandOff.body(), "a terminal hand-off is waiting");
     }
 
     /// **The shown seat is announced once it is not looked at**, and the

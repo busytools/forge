@@ -571,7 +571,7 @@ mod tests {
         let fake =
             Rc::new(Fake::new(PermissionState::Denied, vec![Ok(PermissionState::Granted)], false));
         let mut worker = worker(&fake);
-        worker.run(Job::Raise(lead(), Notice::Ask(AskKind::HandOff)));
+        worker.run(Job::Raise(lead(), Notice::Ask(AskKind::DocumentHandOff)));
         assert_eq!(fake.requests.get(), 0, "no prompt behind another app");
         assert!(fake.shown.borrow().is_empty(), "and nothing shown yet");
 
@@ -580,7 +580,7 @@ mod tests {
         assert_eq!(fake.requests.get(), 1, "the person is back, so the ask is put to them");
         let shown = fake.shown.borrow();
         assert_eq!(shown.len(), 1, "the held ask is shown once");
-        assert_eq!(shown[0], (lead(), Notice::Ask(AskKind::HandOff)));
+        assert_eq!(shown[0], (lead(), Notice::Ask(AskKind::DocumentHandOff)));
     }
 
     /// A granted permission shows the ask at once, with no request.
