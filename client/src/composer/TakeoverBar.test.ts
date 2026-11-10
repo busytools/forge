@@ -318,7 +318,12 @@ describe("the takeover bar's note controls", () => {
   /// empty-row defect one phase later. Each selector is pinned by membership
   /// so a rewrap or a reorder does not read as a lost property.
   it('gives the take card and its graph the line the note field gives up', () => {
-    for (const selector of ['.takeline .tc', '.dock .qrow .tc', '.tb-feedback .tc']) {
+    for (const selector of [
+      '.takeline .tc',
+      '.dock .qrow .tc',
+      '.tb-feedback .tc',
+      '.dock .sendback .tc',
+    ]) {
       const rule = ruleWith(selector);
       expect(rule, `${selector} is in no rule, so the card sizes to its content`).not.toBeNull();
       expect(rule?.body, `${selector} is not what makes the card grow`).toMatch(/flex: 1 1 auto/);
@@ -331,6 +336,7 @@ describe("the takeover bar's note controls", () => {
       '.takeline .tc .bar',
       '.dock .qrow .tc .bar',
       '.tb-feedback .tc .bar',
+      '.dock .sendback .tc .bar',
     ]) {
       const rule = ruleWith(selector);
       expect(rule, `${selector} is in no rule, so the progress bar stays a bead`).not.toBeNull();
@@ -345,6 +351,7 @@ describe("the takeover bar's note controls", () => {
       '.takeline .tc .ticks',
       '.dock .qrow .tc .ticks',
       '.tb-feedback .tc .ticks',
+      '.dock .sendback .tc .ticks',
     ]) {
       const rule = ruleWith(selector);
       expect(
@@ -387,6 +394,7 @@ describe("the takeover bar's note controls", () => {
       '.takeline .tc .x::after',
       '.dock .qrow .tc .x::after',
       '.tb-feedback .tc .x::after',
+      '.dock .sendback .tc .x::after',
     ]) {
       const rule = ruleWith(selector);
       expect(rule, `${selector} is in no rule, so its halo is still centred`).not.toBeNull();

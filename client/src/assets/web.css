@@ -3079,11 +3079,13 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 .tc .x:hover { color: var(--text); }
 /* **The take takes the line, and the graph takes the line's room** (Ved,
    2026-10-11): the draft's own line in the composer, the question's words row
-   in the dock and the takeover bar's feedback line all hand the card
-   everything the controls leave, and the card wears none of the pill's chrome
-   - the surface's ring carries the state, and the row is the one the words
-   land in rather than something above it. */
-.takeline .tc, .dock .qrow .tc, .tb-feedback .tc { align-self: center; margin: 0; border: 0; background: none;
+   in the dock, the takeover bar's feedback line and a held card's send-back
+   box all hand the card everything the controls leave, and the card wears
+   none of the pill's chrome - the surface's ring carries the state, and the
+   row is the one the words land in rather than something above it. **A row
+   that hosts a take card and is not in this list has no width to give it**:
+   the card shrinks to its dot and its own `x` lands on the control beside it. */
+.takeline .tc, .dock .qrow .tc, .tb-feedback .tc, .dock .sendback .tc { align-self: center; margin: 0; border: 0; background: none;
   box-shadow: none; padding: 0; flex: 1 1 auto; min-width: 0; }
 /* The graph inside the card takes whatever the readings leave: pinned at the
    pill's 116px it read as a bead between the counts rather than as the meter of
@@ -3095,8 +3097,8 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
    ladder hides the wave, in every phase. The takeline card reserves the
    field's own line box (measured offscreen in WebKit, 2026-10-15). */
 .takeline .tc { min-height: calc(1.5 * var(--fs-base)); }
-.takeline .tc .bar, .dock .qrow .tc .bar, .tb-feedback .tc .bar { flex: 1 1 auto; width: auto; min-width: 0; }
-.takeline .tc .ticks, .dock .qrow .tc .ticks, .tb-feedback .tc .ticks { flex: 1 1 auto; justify-content: space-between; }
+.takeline .tc .bar, .dock .qrow .tc .bar, .tb-feedback .tc .bar, .dock .sendback .tc .bar { flex: 1 1 auto; width: auto; min-width: 0; }
+.takeline .tc .ticks, .dock .qrow .tc .ticks, .tb-feedback .tc .ticks, .dock .sendback .tc .ticks { flex: 1 1 auto; justify-content: space-between; }
 /* **One smooth envelope, a deeper track for it** (Ved, 2026-10-11, on the
    stretched take): the pill's per-cell bars read as chunks once the graph has
    the row's width, and their 16px track made the readings look flat - the
@@ -3193,7 +3195,8 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
      hit-tested above that button: a tap on the mic's left edge could throw the
      take away instead of stopping it. Anchored right, the target stays 44px
      and stops at the card's edge. */
-  .takeline .tc .x::after, .dock .qrow .tc .x::after, .tb-feedback .tc .x::after {
+  .takeline .tc .x::after, .dock .qrow .tc .x::after, .tb-feedback .tc .x::after,
+  .dock .sendback .tc .x::after {
     left: auto; right: 0; transform: translate(0, -50%); }
 }
 
