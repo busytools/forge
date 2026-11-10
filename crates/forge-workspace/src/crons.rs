@@ -207,6 +207,10 @@ impl Workspace {
         self: &Arc<Self>,
         slot: SessionSlot,
     ) -> Arc<dyn forge_mcp::ToolProvider> {
+        // A provider is the only way a tool call reaches the facade, so
+        // binding here is what keeps a create's schedule announcement from
+        // reaching an unbound host.
+        self.bind_cron();
         let host: Arc<dyn forge_tools::cron::facade::CronFacadeHost> = self.clone();
         let facade: Arc<dyn forge_tools::cron::facade::CronFacade> =
             Arc::new(forge_tools::cron::facade::ProdCronFacade::new(

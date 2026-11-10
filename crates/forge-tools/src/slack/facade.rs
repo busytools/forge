@@ -41,6 +41,12 @@ pub struct SlackCaller {
 /// bindings, the project catalogue, the worker registry and the durable/
 /// ephemeral split of a subscription's owner. The Slack subsystem holds the
 /// records themselves.
+///
+/// **The host must be bound before any tool call.** `subscribe` and
+/// `unsubscribe` start and stop pumps directly, and a pump's announcements
+/// and deliveries are host actions that a bound workspace answers; the
+/// workspace binds in the same call that composes a family's provider, so a
+/// `ToolProvider` it hands out is never unbound.
 pub trait SlackFacadeHost: Send + Sync {
     /// The `[[slack]]` label this caller's project acts in: the project's
     /// binding, else its org's.

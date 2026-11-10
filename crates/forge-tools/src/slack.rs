@@ -34,8 +34,9 @@ pub use subsystem::{
 };
 
 /// What a pump needs from the subsystem that owns its state. The clients,
-/// the subscription set, the watermarks and the liveness flag all live on
-/// [`Slack`], and this is the port its pump drives them through.
+/// the subscription set and the liveness flag live on [`Slack`], and the
+/// durable watermarks and followed threads live in the store behind it.
+/// This is the port the pump drives them through.
 pub trait SlackHost: Send + Sync {
     /// A ready API for this workspace, or an error when the workspace is
     /// not configured. The subsystem builds it from its own config entry,

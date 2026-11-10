@@ -14,8 +14,9 @@ workspace = true
 
 [features]
 # Lets another crate's log-filter test drive the Slack pump's throttle
-# reporter through its real site, and exposes the vault family's
-# test-only session constructors to a host crate's tests.
+# reporter through its real site, exposes the Slack subsystem's test-only
+# draft and pump accessors and the vault family's test-only session
+# constructors to a host crate's tests.
 testing = []
 
 [dependencies]

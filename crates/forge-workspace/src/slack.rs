@@ -294,7 +294,7 @@ impl AskSink for SlackPorts {
 
     fn resolve(&self, _seat: &SessionSlot, _id: Uuid) {
         // **The source's own read clears the mark.** A settled draft leaves
-        // the registry, and `AskSource::asks` is what the needs-you read
+        // the registry, and `AskSource::held` is what the needs-you read
         // walks, so there is no per-ask state here to clear.
     }
 }
@@ -365,6 +365,10 @@ impl Workspace {
         self: &Arc<Self>,
         slot: SessionSlot,
     ) -> Arc<dyn forge_mcp::ToolProvider> {
+        // A provider is the only way a tool call reaches the facade, so
+        // binding here is what keeps a subscribe's pump start from
+        // announcing into an unbound host.
+        self.bind_slack();
         let host: Arc<dyn forge_tools::slack::facade::SlackFacadeHost> = self.clone();
         let facade: Arc<dyn forge_tools::slack::facade::SlackFacade> =
             Arc::new(forge_tools::slack::facade::ProdSlackFacade::new(
@@ -738,6 +742,61 @@ mod tests {
             named,
             Some(Some("ved-test".to_owned())),
             "the backfilled name is persisted, not only held in memory",
+        );
+    }
+
+    /// **The port's guard spans the read and the write.** The subsystem's
+    /// race witnesses run against a fake whose own mutex supplies the
+    /// atomicity, so they cannot see `SlackPorts`. This drives the real port
+    /// over a real store: one update's closure holds the guard while an
+    /// unsubscribe reaches for the same row. A shape that takes the set
+    /// under one lock and writes the row back under another lets the
+    /// unsubscribe land between them, and the write-back resurrects the row
+    /// the teardown just removed.
+    ///
+    /// Mutant: split the body into `self.list_subscriptions()` followed by
+    /// `self.insert_subscription(...)` and the removal is undone.
+    #[test]
+    fn the_store_port_holds_its_lock_across_a_subscription_update() {
+        let (ws, dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        ws.slack.add_slack_subscription(sub_for_conversation("forge", None, "C1"), true);
+        let id = ws.slack.slack_subscriptions_for_project("forge")[0].id;
+        let ports = Arc::clone(&ws.slack_ports);
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (attempt_tx, attempt_rx) = std::sync::mpsc::channel();
+        let updater = {
+            let ports = Arc::clone(&ports);
+            std::thread::spawn(move || {
+                ports.update_subscription(id, &mut |_sub| {
+                    entered_tx.send(()).expect("the test is listening");
+                    // The remover has reached its own lock attempt; hold the
+                    // guard a while so the mutant's window is real.
+                    let _ = attempt_rx.recv_timeout(std::time::Duration::from_secs(5));
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                })
+            })
+        };
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the update entered its closure");
+        let remover = {
+            let ports = Arc::clone(&ports);
+            std::thread::spawn(move || {
+                attempt_tx.send(()).expect("the test is listening");
+                ports.remove_subscription(id)
+            })
+        };
+        assert_eq!(updater.join().expect("the updater finishes"), Ok(true));
+        assert_eq!(remover.join().expect("the remover finishes"), Ok(true));
+
+        let stored = ports.list_subscriptions().expect("list");
+        assert!(
+            stored.iter().all(|sub| sub.id != id),
+            "the unsubscribe must not be undone by an update that read before it",
         );
     }
 

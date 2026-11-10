@@ -40,8 +40,8 @@ use crate::ModelSpec;
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DictateOutcome {
-    /// Words to insert at the composer's caret. `truncated` means the
-    /// take hit the capture cap or the decode budget and is partial.
+    /// Words to insert at the caret. `truncated` means the take hit the
+    /// capture cap or the decode budget and is partial.
     Landed { text: String, truncated: bool },
     /// The audio normalised to nothing - a valid answer, not a failure.
     Empty,

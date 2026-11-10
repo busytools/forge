@@ -438,9 +438,19 @@ mod tests {
             "the row names the question its session is held on",
         );
         assert_eq!(
+            row_of(&asked).pending_depth,
+            1,
+            "and counts what the session is held on, not only names it",
+        );
+        assert_eq!(
             row_of(&quiet).pending,
             None,
             "a session holding nothing says so rather than borrowing its neighbour's ask",
+        );
+        assert_eq!(
+            row_of(&quiet).pending_depth,
+            0,
+            "and a quiet session's depth is zero rather than another session's count",
         );
     }
 

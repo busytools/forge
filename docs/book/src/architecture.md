@@ -82,8 +82,10 @@ Work top-down; the first match wins.
    client, REST lookups, subscription matching, a provider's client and
    crypto) goes in `forge-tools`, one module per integration. The
    integration owns its own state, its MCP tools and its held asks; what
-   it needs from the workspace arrives through a host port (Gotify's
-   `GotifyHost`, the vault family's `VaultHost` and `VaultEmit`). Its
+   it needs from the workspace arrives through host ports (Gotify's
+   `GotifyHost`, the vault family's `VaultHost` and `VaultEmit`, the Slack
+   family's `SlackStore`, `SlackEmit` and `SlackFacadeHost`, the cron
+   family's `CronStore`, `CronEmit`, `CronHost` and `CronFacadeHost`). Its
    tools are described through `forge-mcp`'s `ToolProvider`, so the
    family never depends on forge-sdk.
 7. **Anything that speaks stream-json to the subprocess** (a decoder, a

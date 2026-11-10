@@ -2097,6 +2097,27 @@ mod tests {
         }
     }
 
+    /// Every name the family advertises is one its dispatcher answers, and a
+    /// name it does not own is not its call to answer. The specs and the
+    /// `call` match are two hand-maintained lists, so a renamed arm must
+    /// redden here rather than leave a tool advertised but undispatchable.
+    #[tokio::test]
+    async fn every_advertised_slack_tool_is_dispatchable() {
+        let facade: Arc<dyn SlackFacade> = Arc::new(MockSlackFacade::new());
+        let tools = SlackTools::new(facade, caller_slot());
+        for spec in tools.tools() {
+            assert!(
+                tools.call(&spec.name, serde_json::json!({})).await.is_some(),
+                "{} is advertised but no call arm answers it",
+                spec.name,
+            );
+        }
+        assert!(
+            tools.call("slack__not_a_tool", serde_json::json!({})).await.is_none(),
+            "a name this family does not own is not its call to answer",
+        );
+    }
+
     #[tokio::test]
     async fn slack_list_returns_rows_and_asks_for_the_callers_slot() {
         let mock = Arc::new(MockSlackFacade::new());

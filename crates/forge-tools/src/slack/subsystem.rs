@@ -6,7 +6,7 @@
 //! # The host seams
 //!
 //! The workspace holds registration and routing; this module owns the state
-//! machine. What it needs from its host arrives through three seams:
+//! machine. What it needs from its host arrives through three ports:
 //!
 //! - [`SlackStore`] is every read and write that must survive a restart
 //!   (subscriptions, cursors, threads, the own-post ledger). A run with no
@@ -20,9 +20,10 @@
 //!   this module implements it, so a held draft cannot be drawn without
 //!   being counted.
 //!
-//! The pump's HTTP client is a host-supplied factory ([`PumpHttp`]) because
-//! the trusted roots are the agent layer's, which this crate may not depend
-//! on - the same seam [`crate::gotify::GotifyHost::http_client`] is.
+//! Beyond the ports, the pump's HTTP client is a host-supplied factory
+//! ([`PumpHttp`]) because the trusted roots are the agent layer's, which
+//! this crate may not depend on - the same host-supplied shape
+//! [`crate::gotify::GotifyHost::http_client`] is.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -92,6 +93,11 @@ pub trait SlackEmit: Send + Sync {
 pub trait SlackStore: Send + Sync {
     fn available(&self) -> bool;
     fn insert_subscription(&self, subscription: &SlackSubscription) -> Result<(), String>;
+    /// The durable set. Retained as the read the mutation witness expresses
+    /// the old name heal with (`a_name_heal_racing_an_unsubscribe_does_not_resurrect_the_row`);
+    /// the subsystem itself never lists the set to write it back, because a
+    /// read and a write in separate critical sections is the shape
+    /// [`Self::update_subscription`] exists to replace.
     fn list_subscriptions(&self) -> Result<Vec<SlackSubscription>, String>;
     fn remove_subscription(&self, id: Uuid) -> Result<bool, String>;
 
@@ -108,6 +114,13 @@ pub trait SlackStore: Send + Sync {
     /// would resurrect the removed record, and for a worker-owned row the
     /// next boot's delivery would fall through to the lead - exactly what
     /// the teardown exists to prevent.
+    ///
+    /// The host runs `update` under its database mutex, so `update` must
+    /// not call back into this trait (the mutex is not reentrant), must not
+    /// take the subsystem's subscription lock (the reverse order of
+    /// `watch_slack_conversation` and `clear_slack_cursors_after_removal`),
+    /// and must not change `stored.id` - the host writes the row under the
+    /// new id and leaves the old one orphaned.
     fn update_subscription(
         &self,
         id: Uuid,
@@ -144,6 +157,11 @@ pub trait SlackStore: Send + Sync {
     /// and erase the owner that delivery just added. The workspace held one
     /// database guard across both before this state moved; this is that
     /// guard, through the port.
+    ///
+    /// The host runs `update` under its database mutex, so `update` must
+    /// not call back into this trait (the mutex is not reentrant) and must
+    /// not take the subsystem's subscription lock (the reverse order of
+    /// `watch_slack_conversation` and `clear_slack_cursors_after_removal`).
     fn update_thread(
         &self,
         workspace: &str,
@@ -1188,45 +1206,47 @@ impl Slack {
         if !self.store.available() {
             return None;
         }
-        let mut record = match self.store.thread(workspace, conversation, parent_ts) {
-            Ok(Some(record)) => record,
-            Ok(None) => return None,
-            Err(error) => {
-                tracing::warn!(
-                    target: "forge_tools::slack",
-                    event_name = "slack_thread_edit_stamp_read_failed",
-                    workspace,
-                    conversation,
-                    parent = %parent_ts,
-                    %error,
-                    "reading a Slack thread failed; its edits are judged from the beginning",
-                );
-                return None;
-            }
+        // The seed is a read-modify-write like any other: a row written
+        // before the stamp existed gains one inside the same guard, so a
+        // follow that lands in between cannot have its owner overwritten by
+        // a stale copy, and a row a prune took is not written back into
+        // existence.
+        let mut mark: Option<String> = None;
+        let mut update = |record: &mut Option<SlackThreadRecord>| {
+            let Some(record) = record.as_mut() else {
+                return;
+            };
+            // A row written before the stamp was stored has none. Its cursor
+            // approximates it, and both costs are bounded to the upgrade: an
+            // edit that landed before it and sits below the cursor but was
+            // never judged is dropped, and an already-handed correction above
+            // the cursor is re-offered once.
+            let seed = if let Some(existing) = record.edit_watermark.clone() {
+                existing
+            } else {
+                let seed = record.cursor.clone();
+                record.edit_watermark = Some(seed.clone());
+                seed
+            };
+            mark = Some(seed);
         };
-        // A row written before the stamp was stored has none. Its cursor
-        // approximates it, and both costs are bounded to the upgrade: an
-        // edit that landed before it and sits below the cursor but was never
-        // judged is dropped, and an already-handed correction above the
-        // cursor is re-offered once.
-        let mark = if let Some(mark) = record.edit_watermark.clone() {
-            mark
-        } else {
-            let seed = record.cursor.clone();
-            record.edit_watermark = Some(seed.clone());
-            if let Err(error) = self.store.set_thread(workspace, conversation, parent_ts, &record) {
-                tracing::warn!(
-                    target: "forge_tools::slack",
-                    event_name = "slack_thread_edit_stamp_seed_failed",
-                    workspace,
-                    conversation,
-                    parent = %parent_ts,
-                    %error,
-                    "writing a legacy Slack thread's edit stamp failed",
-                );
-            }
-            seed
-        };
+        if let Err(error) =
+            self.store.update_thread(workspace, conversation, parent_ts, &mut update)
+        {
+            tracing::warn!(
+                target: "forge_tools::slack",
+                event_name = "slack_thread_edit_stamp_read_failed",
+                workspace,
+                conversation,
+                parent = %parent_ts,
+                %error,
+                "reading or writing a Slack thread failed; its edits are judged from the beginning",
+            );
+            return None;
+        }
+        // No row: nothing durable to stamp, and a row created later seeds
+        // its own, so nothing is cached against its key.
+        let mark = mark?;
         self.slack_thread_edit_watermarks.lock().insert(key, mark.clone());
         Some(mark)
     }
@@ -2116,7 +2136,7 @@ impl SlackHost for SlackSubsystemHost {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use forge_primitives::slack::{
         DEFAULT_STALE_AFTER_HOURS, DEFAULT_THREAD_IDLE_DAYS, SlackDraftOperation,
@@ -2240,10 +2260,18 @@ mod tests {
         /// between the two was invisible to it.
         remove_on_next_list: AtomicBool,
         removed_on_list: AtomicBool,
+        /// How many times the durable listing was taken, so a witness can
+        /// pin that the guarded shape never takes it.
+        list_calls: AtomicUsize,
         /// Adds an owner to one thread after a workspace-wide listing has
         /// cloned its rows: the follow lands between a prune's listing and
         /// its per-row work.
         follow_during_list: Mutex<Option<RacingFollow>>,
+        /// Adds an owner to one thread inside a per-row read or guarded
+        /// update: the follow lands between a legacy edit-stamp seed's read
+        /// and its write, which a guarded update keeps and a stale write
+        /// back loses.
+        follow_during_thread: Mutex<Option<RacingFollow>>,
     }
 
     #[derive(Default)]
@@ -2292,6 +2320,23 @@ mod tests {
                 .get(&(workspace.to_owned(), conversation.to_owned(), parent_ts.to_owned()))
                 .cloned()
         }
+
+        /// Apply the pending interleaved follow, if it names this workspace:
+        /// the store gains an owner the caller's copy does not carry.
+        fn inject_follow(&self, inner: &mut TestStoreInner, workspace: &str) {
+            let Some(((w, conversation, parent), owner)) = self.follow_during_thread.lock().take()
+            else {
+                return;
+            };
+            if w != workspace {
+                return;
+            }
+            if let Some(record) = inner.threads.get_mut(&(w, conversation, parent))
+                && !record.owners.contains(&owner)
+            {
+                record.owners.push(owner);
+            }
+        }
     }
 
     impl SlackStore for TestStore {
@@ -2313,6 +2358,7 @@ mod tests {
         }
 
         fn list_subscriptions(&self) -> Result<Vec<SlackSubscription>, String> {
+            self.list_calls.fetch_add(1, Ordering::SeqCst);
             let mut inner = self.inner.lock();
             let rows = inner.subscriptions.clone();
             if self.remove_on_next_list.swap(false, Ordering::SeqCst) {
@@ -2395,6 +2441,9 @@ mod tests {
             parent_ts: &str,
         ) -> Result<Option<SlackThreadRecord>, String> {
             let row = self.thread(workspace, conversation, parent_ts);
+            // The follow lands after the read cloned its row: the stale copy
+            // a two-call shape writes back does not carry it.
+            self.inject_follow(&mut self.inner.lock(), workspace);
             if self.slow_read.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -2431,6 +2480,9 @@ mod tests {
             if !inner.available {
                 return Ok(None);
             }
+            // A guarded update that landed just before this one, which the
+            // closure below must see.
+            self.inject_follow(&mut inner, workspace);
             let mut record = inner.threads.get(&key).cloned();
             update(&mut record);
             if let Some(record) = record {
@@ -2807,6 +2859,10 @@ mod tests {
         assert!(
             !h.slack.resolve_slack_draft(id, &other, answered(true)),
             "an answer from another session must be refused",
+        );
+        assert!(
+            h.sink.resolved.lock().is_empty(),
+            "a refused answer settles nothing, so the ask stays on the ledger",
         );
         assert!(
             h.slack.resolve_slack_draft(id, &asker, answered(true)),
@@ -3268,6 +3324,11 @@ mod tests {
     /// resurrected at the next boot is a delivery that falls through to the
     /// lead.
     ///
+    /// The listing count pins the shape: the guarded heal takes the durable
+    /// read zero times. The resurrection branch below is the two-call
+    /// mutant's outcome and says nothing about a heal that wrote no name;
+    /// the successful-heal tests pin that write.
+    ///
     /// Mutant: restore `list_subscriptions` + `insert_subscription` in
     /// `name_slack_conversation` and this reddens.
     #[test]
@@ -3278,6 +3339,11 @@ mod tests {
 
         h.slack.name_slack_conversation("acme", "C1", "general");
 
+        assert_eq!(
+            h.store.list_calls.load(Ordering::SeqCst),
+            0,
+            "the guarded heal writes the row through update_subscription, never a listing",
+        );
         if h.store.removed_on_list.load(Ordering::SeqCst) {
             assert!(
                 h.store.subscriptions().is_empty(),
@@ -3294,6 +3360,51 @@ mod tests {
             });
             assert_eq!(name.as_deref(), Some("general"), "and it is the name the heal wrote");
         }
+    }
+
+    /// **A legacy row's edit-stamp seed is a read-modify-write too.** The
+    /// seed only writes when the row has no stamp, which is the one thread
+    /// write still done as a per-call read followed by a whole-record write.
+    /// The fake adds an owner from a guarded follow right after the read,
+    /// standing in for a delivery landing in that window; the two-call shape
+    /// writes the stale record back and erases the owner, the guarded one
+    /// keeps it.
+    ///
+    /// Mutant: restore `thread` + `set_thread` in
+    /// `slack_thread_edit_watermark` and this reddens.
+    #[test]
+    fn a_legacy_thread_seeding_its_edit_stamp_keeps_a_concurrent_owner() {
+        let h = harness();
+        let parent = recent_ts();
+        h.store.inner.lock().threads.insert(
+            ("acme".to_owned(), "C1".to_owned(), parent.clone()),
+            SlackThreadRecord {
+                cursor: parent.clone(),
+                edit_watermark: None,
+                owners: vec![owner("forge", Some("a"))],
+                participating: false,
+            },
+        );
+        *h.store.follow_during_thread.lock() =
+            Some((("acme".to_owned(), "C1".to_owned(), parent.clone()), owner("forge", Some("b"))));
+
+        assert_eq!(
+            h.slack.slack_thread_edit_watermark("acme", "C1", &parent).as_deref(),
+            Some(parent.as_str()),
+            "a legacy row reads its cursor as its stamp",
+        );
+
+        let row = h.store.thread("acme", "C1", &parent).expect("the row survives");
+        assert!(
+            row.owners.contains(&owner("forge", Some("b"))),
+            "the follow that landed inside the seed must survive: {:?}",
+            row.owners,
+        );
+        assert_eq!(
+            row.edit_watermark.as_deref(),
+            Some(parent.as_str()),
+            "and the seed is written on the same row",
+        );
     }
 
     /// The pinned split: two owners on one thread, one subscription
@@ -3907,6 +4018,20 @@ mod tests {
             None,
             "the no-store run judges every edit from the beginning",
         );
+
+        // Every write, not only the subscription insert: the fake's store
+        // refuses each one the way the port's no-store defaults do, so the
+        // no-store paths cannot write durably while claiming not to.
+        slack.follow_slack_thread("acme", "C1", "100.0", &owner("forge", Some("a")), "100.0");
+        slack.set_slack_thread_watermark("acme", "C1", "100.0", "101.0");
+        slack.set_slack_thread_edit_watermark("acme", "C1", "100.0", "101.0");
+        slack.mark_slack_thread_participating("acme", "C1", "100.0");
+        slack.name_slack_conversation("acme", "C1", "general");
+        slack.record_slack_own_post("acme", "C1", "100.0");
+
+        assert!(store.thread("acme", "C1", "100.0").is_none(), "a thread write is refused");
+        assert_eq!(store.watermark("acme", "C1"), None, "and a cursor write");
+        assert!(!slack.slack_own_post("acme", "C1", "100.0"), "and the own-post ledger");
     }
 
     /// The pump's delivery goes through the emit seam with the
