@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import BiometricCard from './BiometricCard.svelte';
 import type { DeviceGate } from '../biometric/device';
+import { enrolmentId } from '../biometric/vault-enrolment';
 import type { BiometricEnrolment } from '../wire/home';
 
 let app: Record<string, unknown> | null = null;
@@ -127,13 +128,56 @@ describe('the device enrolments card', () => {
     expect(enrolButton(), 'an unavailable gate offers no door').toBeNull();
   });
 
-  /// **The replacing re-enrol is the route back from a missed rotation**: the
-  /// local item survives and the server row does not, so the card must keep
-  /// the press even though the gate says it is enrolled.
-  it('offers a replenishing enrol when the server holds no row for this device', () => {
+  /// **The replacing re-enrol is the route back from a lost row**: the local
+  /// item survives and the server row does not, so the card must keep the
+  /// press even though the gate says it is enrolled.
+  it('offers a replacing enrol when the server holds no row for this device', () => {
     draw({ outcome: 'read', value: [] }, () => {}, { outcome: 'enrolled' });
 
     expect(document.body.textContent).toContain('enrolled here, but the server has no row');
     expect(enrolButton(), 'the press is the route back').not.toBeNull();
+  });
+
+  /// **The press is a replacing re-enrol even when both sides agree**, which
+  /// is the route back from a stale blob: the local item cannot tell a stale
+  /// blob from a current one, so hiding the press would hide that route too.
+  it('keeps the press when the local item and the server row agree', () => {
+    const mine = enrolmentId();
+    if (mine === null) throw new Error('the test has no storage');
+    draw(
+      {
+        outcome: 'read',
+        value: [
+          {
+            id: mine,
+            device: 'this device',
+            created_at: AT,
+            purposes: [{ purpose: 'vault', created_at: AT, last_used_at: null }],
+          },
+        ],
+      },
+      () => {},
+      { outcome: 'enrolled' },
+    );
+
+    expect(document.body.textContent).toContain('enrolled - the gesture unlocks the vault here');
+    expect(enrolButton(), 'a replacing re-enrol is still offered').not.toBeNull();
+  });
+
+  /// **A failed read is not "the server has no row".** The claim waits for a
+  /// list that was read; the press is still offered, because it replaces.
+  it('makes no row claim when the list could not be read', () => {
+    draw({ outcome: 'failed', value: 'the store is closed' }, () => {}, { outcome: 'enrolled' });
+
+    expect(document.body.textContent).not.toContain('the server has no row');
+    expect(document.body.textContent).toContain('enrolled - the gesture unlocks the vault here');
+    expect(enrolButton(), 'the replacing press is still the route back').not.toBeNull();
+  });
+
+  it('draws the press as running, with no door to press again', () => {
+    draw({ outcome: 'read', value: [] }, () => {}, { outcome: 'enrolling' });
+
+    expect(document.body.textContent).toContain('enrolling this device');
+    expect(enrolButton(), 'one press at a time').toBeNull();
   });
 });

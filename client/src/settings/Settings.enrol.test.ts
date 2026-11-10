@@ -162,6 +162,30 @@ describe('the enrol press', () => {
     expect(enrolButton(), 'and offers no door that can never succeed').toBeNull();
   });
 
+  /// **One press at a time.** A second press interleaved with the first can
+  /// store a gate key and then lose the write, leaving a key that opens
+  /// nothing; the running state takes the door away until the first answers.
+  it('draws the press as running and offers no second one', async () => {
+    let finish: (answer: unknown) => void = () => {};
+    enrol.enrolVault.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    draw({ locked: false, idle_minutes: 15 });
+    await settled();
+
+    enrolButton()?.click();
+    await settled();
+
+    expect(document.body.textContent).toContain('enrolling this device');
+    expect(enrolButton(), 'no second press while the first runs').toBeNull();
+
+    finish({ outcome: 'enrolled' });
+    await settled();
+    expect(document.body.textContent).toContain('enrolled here');
+  });
+
   it('draws an unread home as unread, not as a vault that is absent', () => {
     settingsFrame.set({ status: 'ready', document: documentWithVault() });
     app = mount(Settings, {

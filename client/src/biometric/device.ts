@@ -14,9 +14,11 @@ export type DeviceGate =
   | { outcome: 'reading' }
   | { outcome: 'enrolled' }
   | { outcome: 'ready' }
+  | { outcome: 'enrolling' }
   | { outcome: 'needs_unlock' }
   | { outcome: 'unavailable'; reason: string }
   | { outcome: 'failed'; reason: string };
+
 
 /** Read whether this device can enrol, and whether it already has. */
 export async function readDeviceGate(): Promise<DeviceGate> {

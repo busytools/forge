@@ -82,10 +82,15 @@
    * every connected client and would let a revoked device re-register.
    */
   async function enrolDevice(): Promise<void> {
+    // **One press at a time**: a second press interleaved with the first
+    // could store a gate key and then lose the write, leaving a key that
+    // opens nothing.
+    if (device.outcome === 'enrolling') return;
     if (home.wire?.vault?.locked !== false) {
       device = { outcome: 'needs_unlock' };
       return;
     }
+    device = { outcome: 'enrolling' };
     const result = await enrolVault(connection);
     if (result.outcome === 'enrolled') device = { outcome: 'enrolled' };
     else if (result.outcome === 'needs_unlock') device = { outcome: 'needs_unlock' };

@@ -57,12 +57,14 @@
       case 'reading':
         return 'checking this device';
       case 'enrolled':
-        // **Enrolled here is not enrolled on the server**: a rotation missed
-        // while the page was away leaves the local item and no row, and the
-        // route back is this press rather than a revoke first.
+        // **Enrolled here is not enrolled on the server**, but only a list
+        // that was read can say so: a failed read is not "no row".
+        if (read.outcome !== 'read') return 'enrolled - the gesture unlocks the vault here';
         return serverHasVault
           ? 'enrolled - the gesture unlocks the vault here'
           : 'enrolled here, but the server has no row - enrol again';
+      case 'enrolling':
+        return 'enrolling this device';
       case 'ready':
         return 'not enrolled - enrol while the vault is unlocked';
       case 'needs_unlock':
@@ -73,13 +75,14 @@
         return `the enrolment did not land: ${device.reason}`;
     }
   });
-  // The press is offered unless the gate cannot hold a key at all, or the
-  // local item and the server row already agree. **A replacing re-enrol is
-  // always allowed**: it is the documented route back from a missed rotation.
+  // The press is offered unless the gate cannot hold a key at all, or a press
+  // is already running. **It is a replacing re-enrol**, so it is the route
+  // back from a lost server row and from a stale blob alike - the local item
+  // cannot tell the two apart, and hiding the press for one hid it for both.
   const canEnrol = $derived(
     device.outcome !== 'reading' &&
       device.outcome !== 'unavailable' &&
-      !(device.outcome === 'enrolled' && serverHasVault),
+      device.outcome !== 'enrolling',
   );
 </script>
 
