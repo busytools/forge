@@ -21,6 +21,14 @@ use forge_primitives::slack::{
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
+pub mod subsystem;
+
+pub use subsystem::{
+    DraftResolution, PumpHttp, Slack, SlackDeliveryKey, SlackEmit, SlackPostInFlight,
+    SlackPostStamp, SlackSeams, SlackStore, SlackSubsystemHost, SlackUpdate, SlackWorkspaces,
+    validate_configs,
+};
+
 /// What the pump needs from the workspace. The connector holds no state
 /// of its own, so the subscription set, the watermarks and the liveness
 /// flag all live behind this.

@@ -1004,7 +1004,7 @@ pub(crate) fn deliver_slack_message(
     let workspace_label = head.workspace.clone();
     let pending: Vec<SlackMessage> = messages
         .into_iter()
-        .filter(|message| !workspace.slack_delivery_seen(project, team_role, message))
+        .filter(|message| !workspace.slack.slack_delivery_seen(project, team_role, message))
         .collect();
     if pending.is_empty() {
         tracing::debug!(
@@ -1017,7 +1017,7 @@ pub(crate) fn deliver_slack_message(
     }
     let prose = slack_bundle_to_prose(
         &pending,
-        workspace.slack_stale_after(&workspace_label),
+        workspace.slack.slack_stale_after(&workspace_label),
         SystemTime::now(),
     );
 
@@ -1049,14 +1049,14 @@ pub(crate) fn deliver_slack_message(
             // the sweep re-runs the batch, and an echo pushed before it would
             // paint the block twice for a turn the LLM sees once.
             push_slack_message_into_chat(workspace, &worker_key, &prose, &uuid);
-            workspace.slack_delivery_commit(project, team_role, &pending);
+            workspace.slack.slack_delivery_commit(project, team_role, &pending);
         } else {
             // Still spawning: commit the dedupe (the sweep must not
             // re-run it) and park it for the worker's slot, drained by
             // its own first `Connected`. The slot carries the worker's
             // own org and project, so a project dropped from forge.toml
             // since its spawn still keys correctly.
-            workspace.slack_delivery_commit(project, team_role, &pending);
+            workspace.slack.slack_delivery_commit(project, team_role, &pending);
             workspace.park_slack(&worker_key, pending);
         }
         return true;
@@ -1088,7 +1088,7 @@ pub(crate) fn deliver_slack_message(
         // Echo after the dispatch lands, so the sweep's re-run of a failed
         // delivery does not paint a second block for the same batch.
         push_slack_message_into_chat(workspace, &target_key, &prose, &uuid);
-        workspace.slack_delivery_commit(project, team_role, &pending);
+        workspace.slack.slack_delivery_commit(project, team_role, &pending);
         return true;
     }
 
@@ -1106,7 +1106,7 @@ pub(crate) fn deliver_slack_message(
         return false;
     };
 
-    workspace.slack_delivery_commit(project, team_role, &pending);
+    workspace.slack.slack_delivery_commit(project, team_role, &pending);
     workspace.park_slack(&crate::SessionSlot::lead(&view.org, &view.name), pending);
 
     if let Err(err) = workspace.dispatch(Command::SpawnProject {

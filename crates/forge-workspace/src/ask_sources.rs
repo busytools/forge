@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use crate::documents::ParkedDocument;
 use crate::settings_ask::ParkedSettingsWrite;
-use crate::workspace::{ParkedBrowserHandOff, ParkedSlackDraft, ParkedTerminalHandOff};
+use crate::workspace::{ParkedBrowserHandOff, ParkedTerminalHandOff};
 
 /// The core's one registered ask-source list, in the order a dock draws
 /// them.
@@ -31,7 +31,7 @@ use crate::workspace::{ParkedBrowserHandOff, ParkedSlackDraft, ParkedTerminalHan
 /// a source added to one and not the other keeps the guard green while the
 /// production read never counts it - #2954's failure through another door.
 pub(crate) fn registered(
-    slack_drafts: &Arc<Mutex<HashMap<Uuid, ParkedSlackDraft>>>,
+    slack: &Arc<forge_tools::slack::Slack>,
     browser_handoffs: &Arc<Mutex<HashMap<Uuid, ParkedBrowserHandOff>>>,
     terminal_handoffs: &Arc<Mutex<HashMap<Uuid, ParkedTerminalHandOff>>>,
     document_handoffs: &Arc<Mutex<HashMap<Uuid, ParkedDocument>>>,
@@ -39,41 +39,13 @@ pub(crate) fn registered(
     settings_writes: &Arc<Mutex<HashMap<Uuid, ParkedSettingsWrite>>>,
 ) -> Vec<Arc<dyn AskSource>> {
     vec![
-        Arc::new(SlackDrafts(Arc::clone(slack_drafts))),
+        slack.clone(),
         Arc::new(BrowserHandOffs(Arc::clone(browser_handoffs))),
         Arc::new(TerminalHandOffs(Arc::clone(terminal_handoffs))),
         Arc::new(DocumentHandOffs(Arc::clone(document_handoffs))),
         vault_asks.clone(),
         Arc::new(SettingsWrites(Arc::clone(settings_writes))),
     ]
-}
-
-/// Composed Slack messages held for a decision.
-pub(crate) struct SlackDrafts(pub Arc<Mutex<HashMap<Uuid, ParkedSlackDraft>>>);
-
-impl AskSource for SlackDrafts {
-    fn asks(&self, seat: &SessionSlot) -> Vec<Ask> {
-        self.0
-            .lock()
-            .values()
-            .filter(|(owner, _, _)| owner == seat)
-            .map(|(_, draft, _)| Ask {
-                id: draft.id,
-                kind: PendingInteractionKind::SlackDraft,
-                payload: PendingAsk::SlackDraft(Box::new(draft.clone())),
-            })
-            .collect()
-    }
-
-    fn held(&self, seat: &SessionSlot) -> Vec<(PendingInteractionKind, usize)> {
-        let count = self.0.lock().values().filter(|(owner, _, _)| owner == seat).count();
-        vec![(PendingInteractionKind::SlackDraft, count)]
-    }
-
-    fn kinds(&self) -> &'static [PendingInteractionKind] {
-        const KINDS: &[PendingInteractionKind] = &[PendingInteractionKind::SlackDraft];
-        KINDS
-    }
 }
 
 /// Browser hand-offs parked for the person at a client.

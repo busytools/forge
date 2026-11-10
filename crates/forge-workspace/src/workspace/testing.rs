@@ -210,7 +210,7 @@ impl Workspace {
         key: &SessionSlot,
         draft: forge_primitives::slack::SlackDraft,
     ) {
-        let _ = self.register_slack_draft(key, draft);
+        let _ = self.slack.register_slack_draft(key, draft);
     }
 
     /// [`Self::emit_for_test`], reporting whether a subscriber was there to
@@ -353,7 +353,7 @@ impl Workspace {
         Self::testing_stub_with_slack(
             config_dir,
             LoadedConfig::empty_for_test(),
-            Arc::new(crate::slack::SlackWorkspaces::default()),
+            Arc::new(forge_tools::slack::SlackWorkspaces::default()),
             None,
         )
     }
@@ -382,8 +382,10 @@ impl Workspace {
         config_dir: PathBuf,
         config: LoadedConfig,
     ) -> Result<(Arc<Self>, mpsc::UnboundedReceiver<SeatUpdate>), String> {
-        let slack =
-            crate::slack::SlackWorkspaces::from_config(&config.slack, &reqwest::Client::new())?;
+        let slack = forge_tools::slack::SlackWorkspaces::from_config(
+            &config.slack,
+            &reqwest::Client::new(),
+        )?;
         let systemone = crate::systemone::client_for(
             config.systemone.as_ref(),
             &crate::config::forge_data_dir(&config_dir).join("forge.toml"),
@@ -400,7 +402,7 @@ impl Workspace {
     pub(crate) fn testing_stub_with_slack(
         config_dir: PathBuf,
         config: LoadedConfig,
-        slack: Arc<crate::slack::SlackWorkspaces>,
+        slack: Arc<forge_tools::slack::SlackWorkspaces>,
         systemone: Option<Arc<forge_system_one::SystemOneClient>>,
     ) -> (Arc<Self>, mpsc::UnboundedReceiver<SeatUpdate>) {
         // Mirror the boot-time `ensure_forge_data_dir`: stub-based tests
@@ -434,13 +436,22 @@ impl Workspace {
         let emit: Arc<dyn forge_tools::vault::VaultEmit> = vault_ports.clone();
         let vault_asks =
             Arc::new(forge_tools::vault::VaultAsks::new(Arc::clone(&vault), emit, sink));
-        let slack_drafts = Arc::new(Mutex::new(HashMap::new()));
         let browser_handoffs = Arc::new(Mutex::new(HashMap::new()));
         let terminal_handoffs = Arc::new(Mutex::new(HashMap::new()));
         let document_handoffs = Arc::new(parking_lot::Mutex::new(HashMap::new()));
         let settings_writes = Arc::new(Mutex::new(HashMap::new()));
+        let db: Arc<Mutex<Option<crate::store::Db>>> = Arc::new(Mutex::new(None));
+        let (slack, slack_ports) = crate::slack::build(
+            slack,
+            config.slack.clone(),
+            Vec::new(),
+            false,
+            Arc::clone(&db),
+            update_tx.clone(),
+            Arc::clone(&pending_seq),
+        );
         let ask_sources: Vec<Arc<dyn forge_primitives::AskSource>> = crate::ask_sources::registered(
-            &slack_drafts,
+            &slack,
             &browser_handoffs,
             &terminal_handoffs,
             &document_handoffs,
@@ -540,7 +551,7 @@ impl Workspace {
             swap_epochs: std::sync::atomic::AtomicU64::new(0),
             held_prompts: Mutex::new(HashMap::new()),
             gotify_subs: Mutex::new(Vec::new()),
-            db: Arc::new(Mutex::new(None)),
+            db,
             catalog_loaded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             catalog_scan_started: std::sync::atomic::AtomicBool::new(false),
             cli_version: Arc::new(Mutex::new(None)),
@@ -551,20 +562,7 @@ impl Workspace {
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),
             slack,
-            slack_subs: Mutex::new(Vec::new()),
-            slack_subsystem: Mutex::new(std::collections::BTreeMap::new()),
-            slack_connected: Mutex::new(std::collections::BTreeMap::new()),
-            slack_inflight: Mutex::new(std::collections::HashMap::new()),
-            slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
-            slack_user_names: Mutex::new(std::collections::BTreeMap::new()),
-            slack_author_failures: Mutex::new(std::collections::HashSet::new()),
-            slack_draft_user_failures: Mutex::new(std::collections::HashSet::new()),
-            slack_thread_failures: Mutex::new(std::collections::HashSet::new()),
-            slack_thread_full_reads: Mutex::new(std::collections::HashMap::new()),
-            slack_thread_first_walks: Mutex::new(std::collections::HashSet::new()),
-            slack_thread_edit_watermarks: Mutex::new(std::collections::HashMap::new()),
-            slack_ledger_failures: Mutex::new(std::collections::HashSet::new()),
-            slack_drafts,
+            slack_ports,
             browser_handoffs,
             terminals: Mutex::new(HashMap::new()),
             terminal_handoffs,
@@ -575,10 +573,6 @@ impl Workspace {
             vault_ports,
             ask_sources,
             pending_seq,
-            slack_recently_delivered: Mutex::new(HashMap::new()),
-            slack_load_failed: std::sync::atomic::AtomicBool::new(false),
-            slack_user_id_retries: Mutex::new(std::collections::BTreeMap::new()),
-            slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             unwakeable_crons: Mutex::new(std::collections::HashSet::new()),
             cooling_crons: Mutex::new(std::collections::HashMap::new()),
@@ -588,7 +582,9 @@ impl Workspace {
             test_claude_pid: Mutex::new(HashMap::new()),
             test_scan_gate: Mutex::new(None),
         };
-        (Arc::new(workspace), update_rx)
+        let workspace = Arc::new(workspace);
+        workspace.bind_slack();
+        (workspace, update_rx)
     }
 
     /// Hold the CLI's per-user preferences document, so a cross-crate test
@@ -927,7 +923,7 @@ impl Workspace {
         Self::testing_stub_with_slack(
             PathBuf::from("/tmp/forge-testing-stub-dictate"),
             config,
-            Arc::new(crate::slack::SlackWorkspaces::default()),
+            Arc::new(forge_tools::slack::SlackWorkspaces::default()),
             None,
         )
     }
@@ -1088,7 +1084,6 @@ impl Workspace {
             }
             PendingInteractionKind::SlackDraft => {
                 for _ in 0..count {
-                    let (sender, _receiver) = tokio::sync::oneshot::channel();
                     let draft = forge_primitives::slack::SlackDraft {
                         id: uuid::Uuid::new_v4(),
                         workspace: "test".to_owned(),
@@ -1100,7 +1095,7 @@ impl Workspace {
                         thread: None,
                         tagged: Vec::new(),
                     };
-                    self.slack_drafts.lock().insert(draft.id, (slot.clone(), draft, sender));
+                    self.slack.seed_draft(slot, draft);
                     self.note_ask(slot);
                 }
             }

@@ -1392,7 +1392,7 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
     // The boot's SlackWorkspaces build runs these checks; a reload goes
     // through the same loader, so it must refuse the same file a restart
     // would.
-    crate::slack::validate_configs(&parsed.slack).map_err(|message| {
+    forge_tools::slack::validate_configs(&parsed.slack).map_err(|message| {
         WorkspaceError::ConfigInvalid { path: path.clone(), message: format!("slack: {message}") }
     })?;
 

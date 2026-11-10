@@ -182,7 +182,7 @@ impl Workspace {
             return;
         };
         let gotify = self.gotify_subscriptions_for_project(project_name);
-        let slack = self.slack_subscriptions_for_project(project_name);
+        let slack = self.slack.slack_subscriptions_for_project(project_name);
         let _ = self.update_tx.send(SessionUpdate::ConnectorSubscriptionsChanged {
             key,
             gotify,
@@ -1126,7 +1126,7 @@ mod tests {
         // that sent a hardcoded empty beside the moved set cannot pass: the
         // frame carries the pair, and a later "send only what moved" would
         // clear the client's slack rows on every gotify write.
-        ws.add_slack_subscription(
+        ws.slack.add_slack_subscription(
             forge_primitives::slack::SlackSubscription {
                 id: uuid::Uuid::new_v4(),
                 workspace: "acme".to_owned(),

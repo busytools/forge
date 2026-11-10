@@ -513,32 +513,10 @@ pub enum SessionChipState {
 // docs for the one-variant-per-source rule and the guard that enforces it.
 pub use forge_primitives::PendingInteractionKind;
 
-/// The dedupe key for a delivered Slack message: one destination is
-/// (project, owner, conversation, ts, edited), so a lead and a worker in
-/// one project never starve each other as "already delivered". The edit
-/// ts is part of the identity because an edit keeps the message's own
-/// `ts`: without it a correction reads as a re-run of the delivery it
-/// corrects and never reaches the session.
-pub(crate) type SlackDeliveryKey = (String, Option<String>, String, String, Option<String>);
-
-/// Multi-session orchestrator. Owns the project catalog snapshot
-/// loaded from `<config_dir>/forge.toml` and the pool of currently
-/// One composed Slack message held for a decision: the session that asked,
-/// the draft itself, and the sender the blocked Slack handler awaits.
-///
-/// The draft rides beside the sender for the same reason the permission and
-/// question requests do - the stream carries it once, so a view that attached
-/// after it landed has nothing else to draw the dock from.
-pub(crate) type ParkedSlackDraft = (
-    SessionSlot,
-    forge_primitives::slack::SlackDraft,
-    tokio::sync::oneshot::Sender<forge_primitives::slack::SlackDraftAnswer>,
-);
-
 /// One parked browser hand-off: the session that asked, the hand-off itself,
 /// and the sender the blocked `browser_hand_off` handler awaits.
 ///
-/// It rides beside the sender for the same reason the Slack draft does - the
+/// It rides beside the sender for the same reason a Slack draft does - the
 /// update carries it once, so a view that attached after it landed has nothing
 /// else to draw the dock from - and the sender is what makes the wait end: no
 /// clock ends it, only an answer, or the handler's own drop.
@@ -1077,72 +1055,15 @@ pub struct Workspace {
     /// unconfigured. Guards against double-starting.
     /// `pub(crate)` so the impl block in [`crate::gotify`] can reach it.
     pub(crate) gotify_subsystem: Mutex<Option<GotifySubsystem>>,
-    /// One Slack client per `[[slack]]` entry, resolved at boot. Empty
-    /// keeps the Slack connector dormant. `pub(crate)` so the impl
-    /// blocks in [`crate::slack`] and `crate::mcp::slack` can reach it.
-    pub(crate) slack: Arc<crate::slack::SlackWorkspaces>,
-    /// Active Slack subscriptions (`mcp__forge__slack`). The set each
-    /// workspace's pump sweeps. Durable ones are also persisted to `db`
-    /// and reloaded here at boot. `pub(crate)` so the impl block in
-    /// [`crate::slack`] can reach it.
-    pub(crate) slack_subs: Mutex<Vec<forge_primitives::slack::SlackSubscription>>,
-    /// Shutdown handles for the running Slack pumps, one per workspace
-    /// label. Slack has a pump per `[[slack]]` entry where Gotify has a
-    /// single server and a single handle.
-    pub(crate) slack_subsystem:
-        Mutex<std::collections::BTreeMap<String, tokio::sync::oneshot::Sender<()>>>,
-    /// Per-workspace pump liveness for the Inspector's SLACK section.
-    /// Keyed by label for the same reason.
-    pub(crate) slack_connected: Mutex<std::collections::BTreeMap<String, bool>>,
-    /// Conversations forge has a post in flight into, keyed
-    /// `(workspace, the resolved conversation)`, each entry a stamp per
-    /// live call: one post call with its ledger write, or one upload's
-    /// shares read. The sweep skips a conversation while any stamp is
-    /// within budget, because the message can reach history before its ts
-    /// is ledgered; a stamp past the request timeout is expired, never
-    /// obeyed, so a stalled call cannot silence the conversation.
-    pub(crate) slack_inflight:
-        Mutex<std::collections::HashMap<(String, String), Vec<crate::slack::SlackPostStamp>>>,
-    /// The authenticated user's id per workspace, resolved once by the
-    /// boot `auth.test` and needed to recognise `<@U...>` mentions.
-    pub(crate) slack_user_ids: Mutex<std::collections::BTreeMap<String, String>>,
-    /// Display names resolved per `(workspace, user id)`, so a message from
-    /// a known author costs no `users.info` call.
-    pub(crate) slack_user_names: Mutex<std::collections::BTreeMap<(String, String), String>>,
-    /// `(workspace, user id)` pairs whose failed lookup has been reported, so
-    /// a persistent failure says so once rather than on every tick.
-    pub(crate) slack_author_failures: Mutex<std::collections::HashSet<(String, String)>>,
-    /// `(workspace, user id)` pairs whose failed DRAFT tag lookup has been
-    /// reported. Kept apart from the author set so a draft's miss does not
-    /// spend the once-per-author line the sweep relies on.
-    pub(crate) slack_draft_user_failures: Mutex<std::collections::HashSet<(String, String)>>,
-    /// `(workspace, conversation, parent ts)` whose failed thread read has
-    /// been reported, so a persistent failure says so once rather than on
-    /// every park.
-    pub(crate) slack_thread_failures: Mutex<std::collections::HashSet<(String, String, String)>>,
-    /// When each followed thread was last read whole, keyed
-    /// `(workspace, conversation, parent ts)`. In memory: a restart costs one
-    /// extra whole read per thread, which is cheaper than a schema.
-    pub(crate) slack_thread_full_reads:
-        Mutex<std::collections::HashMap<(String, String, String), std::time::Instant>>,
-    /// Followed threads whose next walk is their first since the row was
-    /// created, keyed the same way.
-    pub(crate) slack_thread_first_walks: Mutex<std::collections::HashSet<(String, String, String)>>,
-    /// Cache of each thread row's persisted edit stamp, keyed the same way: an
-    /// edit is measured against this, never against the reply cursor. A miss
-    /// reads the row, because the stamp has to outlive the process.
-    pub(crate) slack_thread_edit_watermarks:
-        Mutex<std::collections::HashMap<(String, String, String), String>>,
-    /// Conversations whose own-post ledger could not be read this run,
-    /// keyed `(workspace, conversation)`. The read is retried on every
-    /// message; this only decides whether the failure is worth a line a
-    /// reader sees, once rather than per message.
-    pub(crate) slack_ledger_failures: Mutex<std::collections::HashSet<(String, String)>>,
-    /// Composed Slack messages held for the user's decision, keyed by
-    /// draft id and carrying the session that asked. The owner is stored
-    /// beside it so an answer is only ever applied by the session it was
-    /// addressed to.
-    pub(crate) slack_drafts: Arc<Mutex<HashMap<uuid::Uuid, ParkedSlackDraft>>>,
+    /// The Slack subsystem's one handle: its clients, the subscription set
+    /// each pump sweeps, the durable cursors and threads, and the held
+    /// drafts. `forge-tools` owns the state; this workspace implements the
+    /// seams beside this field and registers the handle at boot.
+    pub(crate) slack: Arc<forge_tools::slack::Slack>,
+    /// The seams the Slack subsystem reaches this workspace through: the
+    /// redb store, the update fanout, the ask sequence and the two host
+    /// actions that need the workspace itself.
+    pub(crate) slack_ports: Arc<crate::slack::SlackPorts>,
     /// Browser hand-offs parked for the person at a client, keyed by their id
     /// and carrying the session that asked. The owner is stored beside each so
     /// an answer is only ever applied by the session it was addressed to; the
@@ -1174,22 +1095,6 @@ pub struct Workspace {
     /// wire**: one ask replacing another reads as a different ask, and
     /// answering one of several leaves the number where it was.
     pending_seq: Arc<Mutex<HashMap<SessionSlot, u64>>>,
-    /// Slack messages handed to a session recently, keyed by
-    /// `(project, owner, conversation, ts)`. A sweep re-runs a batch
-    /// whenever a 429 lands mid-sweep, a watermark write fails, or the
-    /// process dies between the two - this is what makes that re-run
-    /// idempotent rather than a re-delivery.
-    pub(crate) slack_recently_delivered: Mutex<HashMap<SlackDeliveryKey, std::time::Instant>>,
-    /// Set at boot when the durable Slack subscriptions could not be
-    /// read. The Inspector SLACK section reads it: without it the empty
-    /// subscription set would hide the failure.
-    pub(crate) slack_load_failed: std::sync::atomic::AtomicBool,
-    /// The last time each workspace's user-id retry ran, so a failing
-    /// `auth.test` is retried at most once a minute rather than per sweep.
-    pub(crate) slack_user_id_retries: Mutex<std::collections::BTreeMap<String, SystemTime>>,
-    /// Set the first time [`Workspace::start_slack_verification`] runs.
-    /// Subsequent calls early-return to avoid spawning duplicate probes.
-    pub(crate) slack_verification_started: std::sync::atomic::AtomicBool,
     /// Per-project in-flight guard for the lead Connected
     /// hook's catalog scan. Inserted synchronously when
     /// `respawn_workers_for_lead` starts; removed when
@@ -2468,8 +2373,8 @@ impl Workspace {
                 path: crate::config::forge_data_dir(&config_dir).join("forge.toml"),
                 message: format!("slack http client: {error}"),
             })?;
-        let slack = Arc::new(
-            crate::slack::SlackWorkspaces::from_config(&config.slack, &slack_http).map_err(
+        let slack_clients = Arc::new(
+            forge_tools::slack::SlackWorkspaces::from_config(&config.slack, &slack_http).map_err(
                 |message| WorkspaceError::ConfigInvalid {
                     path: crate::config::forge_data_dir(&config_dir).join("forge.toml"),
                     message,
@@ -2517,24 +2422,10 @@ impl Workspace {
         let emit: Arc<dyn forge_tools::vault::VaultEmit> = vault_ports.clone();
         let vault_asks =
             Arc::new(forge_tools::vault::VaultAsks::new(Arc::clone(&vault), emit, sink));
-        let slack_drafts = Arc::new(Mutex::new(HashMap::new()));
         let browser_handoffs = Arc::new(Mutex::new(HashMap::new()));
         let terminal_handoffs = Arc::new(Mutex::new(HashMap::new()));
         let document_handoffs = Arc::new(parking_lot::Mutex::new(HashMap::new()));
         let settings_writes = Arc::new(Mutex::new(HashMap::new()));
-        // **One registration list**, built by the helper both constructors
-        // call. Every needs-you read walks it, and the guard test's table is
-        // what these sources name, so a new kind cannot be added without a
-        // source that raises it - and the test stub cannot drift from this
-        // list.
-        let ask_sources: Vec<Arc<dyn forge_primitives::AskSource>> = crate::ask_sources::registered(
-            &slack_drafts,
-            &browser_handoffs,
-            &terminal_handoffs,
-            &document_handoffs,
-            &vault_asks,
-            &settings_writes,
-        );
 
         // Catalog scan reads against the workspace's canonical
         // `config_dir` (where forge.toml lives). Each spawn binds to
@@ -2585,6 +2476,28 @@ impl Workspace {
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
         let config_dictate = config.dictate.clone();
         let db = Arc::new(Mutex::new(db));
+        let (slack, slack_ports) = crate::slack::build(
+            slack_clients,
+            config.slack.clone(),
+            slack_subs,
+            slack_load_failed,
+            Arc::clone(&db),
+            update_tx.clone(),
+            Arc::clone(&pending_seq),
+        );
+        // **One registration list**, built by the helper both constructors
+        // call. Every needs-you read walks it, and the guard test's table is
+        // what these sources name, so a new kind cannot be added without a
+        // source that raises it - and the test stub cannot drift from this
+        // list.
+        let ask_sources: Vec<Arc<dyn forge_primitives::AskSource>> = crate::ask_sources::registered(
+            &slack,
+            &browser_handoffs,
+            &terminal_handoffs,
+            &document_handoffs,
+            &vault_asks,
+            &settings_writes,
+        );
         let catalog_loaded = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let catalog_scan_started = std::sync::atomic::AtomicBool::new(false);
         if catalog_scan {
@@ -2701,20 +2614,7 @@ impl Workspace {
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),
             slack,
-            slack_subs: Mutex::new(slack_subs),
-            slack_subsystem: Mutex::new(std::collections::BTreeMap::new()),
-            slack_connected: Mutex::new(std::collections::BTreeMap::new()),
-            slack_inflight: Mutex::new(std::collections::HashMap::new()),
-            slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
-            slack_user_names: Mutex::new(std::collections::BTreeMap::new()),
-            slack_author_failures: Mutex::new(std::collections::HashSet::new()),
-            slack_draft_user_failures: Mutex::new(std::collections::HashSet::new()),
-            slack_thread_failures: Mutex::new(std::collections::HashSet::new()),
-            slack_thread_full_reads: Mutex::new(std::collections::HashMap::new()),
-            slack_thread_first_walks: Mutex::new(std::collections::HashSet::new()),
-            slack_thread_edit_watermarks: Mutex::new(std::collections::HashMap::new()),
-            slack_ledger_failures: Mutex::new(std::collections::HashSet::new()),
-            slack_drafts,
+            slack_ports,
             browser_handoffs,
             terminals: Mutex::new(HashMap::new()),
             terminal_handoffs,
@@ -2725,10 +2625,6 @@ impl Workspace {
             vault_ports,
             ask_sources,
             pending_seq,
-            slack_recently_delivered: Mutex::new(HashMap::new()),
-            slack_load_failed: std::sync::atomic::AtomicBool::new(slack_load_failed),
-            slack_user_id_retries: Mutex::new(std::collections::BTreeMap::new()),
-            slack_verification_started: std::sync::atomic::AtomicBool::new(false),
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
             unwakeable_crons: Mutex::new(std::collections::HashSet::new()),
             cooling_crons: Mutex::new(std::collections::HashMap::new()),
@@ -2864,6 +2760,9 @@ impl Workspace {
             }
             *self.systemone.write() = systemone;
             *self.vault.write() = vault;
+            // The subsystem's own copy, so a workspace's idle window and
+            // stale age follow the file a boot on it would read.
+            self.slack.config_handle().write().clone_from(&next.slack);
             *self.config.write() = Arc::new(next);
             self.reload_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         }
@@ -6759,7 +6658,7 @@ impl Workspace {
                 }
             }
             Command::RespondSlackPost { key, id, .. } => {
-                let waiting = self.slack_draft_waiting(*id, key);
+                let waiting = self.slack.slack_draft_waiting(*id, key);
                 if !waiting {
                     return Err(DispatchError::NoDraftWaiting { key: key.clone(), id: *id });
                 }
@@ -7269,10 +7168,10 @@ impl Workspace {
                     // The guard above already refused a draft this one is not
                     // waiting for, so a `false` here is a resolve that landed
                     // between the two: the same refusal, not a silent drop.
-                    let answered = self.resolve_slack_draft(
+                    let answered = self.slack.resolve_slack_draft(
                         id,
                         &key,
-                        crate::slack::DraftResolution::Answered(answer),
+                        forge_tools::slack::DraftResolution::Answered(answer),
                     );
                     if !answered {
                         return Err(DispatchError::NoDraftWaiting { key: key.clone(), id });
@@ -18931,7 +18830,7 @@ mod worker_activity_tests {
                 ws.note_ask(&seat);
             }
             PendingInteractionKind::SlackDraft => {
-                let (_id, _decision) = ws.register_slack_draft(
+                let (_id, _decision) = ws.slack.register_slack_draft(
                     &seat,
                     forge_primitives::slack::SlackDraft {
                         id: uuid::Uuid::new_v4(),
@@ -19172,7 +19071,7 @@ mod worker_activity_tests {
             tagged: Vec::new(),
         };
 
-        let (_id, _decision) = ws.register_slack_draft(&seat, draft("first"));
+        let (_id, _decision) = ws.slack.register_slack_draft(&seat, draft("first"));
         assert_eq!(ws.pending_request_seq(&seat), 1, "the first draft is an ask");
         // A seat with no domain still holds a registry ask, and the kind
         // answers through the ledger's no-domain arm.
@@ -19181,7 +19080,7 @@ mod worker_activity_tests {
             Some(PendingInteractionKind::SlackDraft),
             "the draft is the seat's needs-you kind with no domain at all",
         );
-        let (_id, _decision) = ws.register_slack_draft(&seat, draft("second"));
+        let (_id, _decision) = ws.slack.register_slack_draft(&seat, draft("second"));
         assert_eq!(ws.pending_request_seq(&seat), 2, "a second draft is a second ask");
 
         let (_id, _answer, _) = ws.register_settings_write(
@@ -19416,7 +19315,7 @@ mod worker_activity_tests {
             thread: None,
             tagged: Vec::new(),
         };
-        let (_id, _decision) = ws.register_slack_draft(&seat, draft);
+        let (_id, _decision) = ws.slack.register_slack_draft(&seat, draft);
 
         let asks = ws.pending_asks(&seat);
         assert_eq!(asks.len(), 1, "a parked draft reads back");
@@ -19677,7 +19576,7 @@ mod worker_activity_tests {
             thread: None,
             tagged: Vec::new(),
         };
-        let (_id, _decision) = ws.register_slack_draft(&seat, draft);
+        let (_id, _decision) = ws.slack.register_slack_draft(&seat, draft);
 
         assert_eq!(
             ws.session_activity(&seat),

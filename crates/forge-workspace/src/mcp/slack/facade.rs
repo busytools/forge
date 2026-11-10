@@ -278,7 +278,7 @@ fn resolve_in(
     ws: &Workspace,
     caller: &SessionSlot,
 ) -> Result<(String, Arc<dyn SlackApi>), SlackWorkspaceError> {
-    if ws.slack.is_empty() {
+    if !ws.slack.is_configured() {
         return Err(SlackWorkspaceError::NotConfigured);
     }
     let unbound = || SlackWorkspaceError::Unbound {
@@ -288,7 +288,7 @@ fn resolve_in(
     let Some(label) = ws.slack_workspace_for_slot(caller) else {
         return Err(unbound());
     };
-    let Some(api) = ws.slack.client(&label) else {
+    let Some(api) = ws.slack.api_client(&label) else {
         return Err(SlackWorkspaceError::BoundButNotLive { label });
     };
     Ok((label, api))
@@ -484,10 +484,10 @@ impl Drop for ResolveOnDrop {
     fn drop(&mut self) {
         // The waiter is gone rather than answering: the drop path is a
         // session that died mid-wait, never a decision.
-        self.workspace.resolve_slack_draft(
+        self.workspace.slack.resolve_slack_draft(
             self.id,
             &self.caller,
-            crate::slack::DraftResolution::Abandoned,
+            forge_tools::slack::DraftResolution::Abandoned,
         );
     }
 }
@@ -571,7 +571,7 @@ impl ProdSlackFacade {
         conversation: &str,
         draft: &mut SlackDraft,
     ) {
-        let host = Arc::new(crate::slack::SlackSubsystemHost::new(ws));
+        let host = Arc::new(forge_tools::slack::SlackSubsystemHost::new(&ws.slack));
         // A tag lookup is a Slack call, so they run beside the thread read
         // rather than one after another in front of the park. The parent's
         // own mentions join the same set once it lands, so one lookup names
@@ -596,11 +596,7 @@ impl ProdSlackFacade {
                     // A missing thread name is the only other symptom, so a
                     // persistent failure must not live at debug, where no
                     // shipped directive reaches it.
-                    let first = ws.slack_thread_failures.lock().insert((
-                        label.to_owned(),
-                        conversation.to_owned(),
-                        ts.clone(),
-                    ));
+                    let first = ws.slack.first_thread_failure(label, conversation, &ts);
                     if first {
                         tracing::warn!(
                             target: "forge_workspace::slack",
@@ -664,7 +660,7 @@ impl ProdSlackFacade {
     /// One user-name lookup on its own task, so a batch of them overlaps the
     /// thread read in front of the park.
     fn look_up_user(
-        host: &Arc<crate::slack::SlackSubsystemHost>,
+        host: &Arc<forge_tools::slack::SlackSubsystemHost>,
         api: &Arc<dyn SlackApi>,
         label: &str,
         user: String,
@@ -718,7 +714,7 @@ impl ProdSlackFacade {
         caller: &SessionSlot,
         draft: SlackDraft,
     ) -> GateDecision {
-        let (id, decision) = workspace.register_slack_draft(caller, draft);
+        let (id, decision) = workspace.slack.register_slack_draft(caller, draft);
         let guard = ResolveOnDrop { workspace: Arc::clone(workspace), id, caller: caller.clone() };
         let resolved = match decision.await {
             Ok(forge_primitives::slack::SlackDraftAnswer::Approve) => GateDecision::Approved,
@@ -792,7 +788,7 @@ impl SlackFacade for ProdSlackFacade {
             // each part has its own request budget, so a stamp taken once
             // for the whole operation would expire between parts on a slow
             // but healthy Slack.
-            let _in_flight = ws.begin_slack_post(&draft.workspace, &conversation);
+            let _in_flight = ws.slack.begin_slack_post(&draft.workspace, &conversation);
             match api.post_message(&draft.conversation, part, draft.thread_ts.as_deref()).await {
                 Ok(posted) => {
                     // The channel Slack answers with, not the request
@@ -812,7 +808,7 @@ impl SlackFacade for ProdSlackFacade {
                         );
                         &conversation
                     };
-                    ws.record_slack_own_post(&draft.workspace, landed, &posted.ts);
+                    ws.slack.record_slack_own_post(&draft.workspace, landed, &posted.ts);
                     ts.push(posted.ts);
                 }
                 Err(error) if ts.is_empty() => {
@@ -894,7 +890,7 @@ impl SlackFacade for ProdSlackFacade {
                 // the identity the sweep sees - and the agent authored the
                 // change, whoever posted the message first. Keyed by the
                 // resolved id: the request may have named the DM's partner.
-                ws.record_slack_own_post(&label, &conversation, &request.ts);
+                ws.slack.record_slack_own_post(&label, &conversation, &request.ts);
                 Ok(())
             }
             Err(SlackError::Api { error, .. })
@@ -1200,12 +1196,12 @@ impl SlackFacade for ProdSlackFacade {
         // call, and the map must never hold none between them, or a sweep
         // in the gap delivers the file message before the shares are
         // ledgered.
-        let upload_call = ws.begin_slack_post(&label, &conversation);
+        let upload_call = ws.slack.begin_slack_post(&label, &conversation);
         let uploaded = api
             .complete_upload(&file_id, &request.conversation, request.thread_ts.as_deref())
             .await
             .map_err(|err| SlackAttachmentError::Fetch(err.to_string()))?;
-        let _shares = ws.begin_slack_post(&label, &conversation);
+        let _shares = ws.slack.begin_slack_post(&label, &conversation);
         drop(upload_call);
         // Slack names the message the upload was posted as on the file's
         // shares, keyed by the share's own conversation - which need not be
@@ -1237,7 +1233,7 @@ impl SlackFacade for ProdSlackFacade {
             );
         }
         for (conversation, ts) in shared {
-            ws.record_slack_own_post(&label, &conversation, &ts);
+            ws.slack.record_slack_own_post(&label, &conversation, &ts);
         }
         Ok(())
     }
@@ -1245,7 +1241,8 @@ impl SlackFacade for ProdSlackFacade {
     fn subscribed_targets(&self, caller: &SessionSlot, label: &str) -> Vec<SlackSubscription> {
         let Some(ws) = self.workspace.upgrade() else { return Vec::new() };
         let Some(cx) = caller_context(&ws, caller) else { return Vec::new() };
-        ws.slack_subscriptions_for_project(&cx.project_name)
+        ws.slack
+            .slack_subscriptions_for_project(&cx.project_name)
             .into_iter()
             .filter(|sub| sub.workspace == label && sub.team_role == cx.worker_label)
             .collect()
@@ -1290,10 +1287,10 @@ impl SlackFacade for ProdSlackFacade {
                 // cursor yet, since the cursor is shared by every owner
                 // watching it and resetting it would drop their pending
                 // windows.
-                if !ws.slack_has_cursor(&label, id) {
-                    ws.set_slack_watermark(&label, id, &slack_ts_now());
+                if !ws.slack.slack_has_cursor(&label, id) {
+                    ws.slack.set_slack_watermark(&label, id, &slack_ts_now());
                 }
-                created.push(ws.watch_slack_conversation(
+                created.push(ws.slack.watch_slack_conversation(
                     &label,
                     &project,
                     team_role.as_deref(),
@@ -1320,15 +1317,15 @@ impl SlackFacade for ProdSlackFacade {
             // every owner watching it: a second subscriber resetting it
             // would silently drop every owner's pending window.
             if let SlackSubscriptionTarget::Conversation { id, .. } = &sub.target
-                && !ws.slack_has_cursor(&label, id)
+                && !ws.slack.slack_has_cursor(&label, id)
             {
-                ws.set_slack_watermark(&label, id, &slack_ts_now());
+                ws.slack.set_slack_watermark(&label, id, &slack_ts_now());
             }
-            ws.add_slack_subscription(sub.clone(), durable);
+            ws.slack.add_slack_subscription(sub.clone(), durable);
             created.push(sub);
         }
-        if mentions_requested && !ws.slack_has_cursor(&label, MENTION_CURSOR) {
-            ws.set_slack_watermark(&label, MENTION_CURSOR, &slack_ts_now());
+        if mentions_requested && !ws.slack.slack_has_cursor(&label, MENTION_CURSOR) {
+            ws.slack.set_slack_watermark(&label, MENTION_CURSOR, &slack_ts_now());
         }
         // A workspace that just gained its first subscription needs a pump.
         ws.start_slack_subsystem();
@@ -1342,8 +1339,11 @@ impl SlackFacade for ProdSlackFacade {
     ) -> Result<SlackSubscription, SlackUnsubscribeError> {
         let ws = self.workspace.upgrade().ok_or(SlackUnsubscribeError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(SlackUnsubscribeError::UnknownCallerProject)?;
-        let removed =
-            ws.remove_slack_subscription_owned_by(&cx.project_name, id, cx.worker_label.as_deref());
+        let removed = ws.slack.remove_slack_subscription_owned_by(
+            &cx.project_name,
+            id,
+            cx.worker_label.as_deref(),
+        );
         ws.stop_slack_subsystem_if_idle();
         if let Some(removed) = removed {
             return Ok(removed);
@@ -1351,7 +1351,7 @@ impl SlackFacade for ProdSlackFacade {
         // The owner-scoped removal matched nothing, which is either an id
         // the project never had or one another session owns; the caller is
         // told which.
-        if ws.slack_subscriptions_for_project(&cx.project_name).iter().any(|s| s.id == id) {
+        if ws.slack.slack_subscriptions_for_project(&cx.project_name).iter().any(|s| s.id == id) {
             Err(SlackUnsubscribeError::NotOwnedByCaller)
         } else {
             Err(SlackUnsubscribeError::NoSuchSubscription)
@@ -1664,12 +1664,12 @@ mod tests {
     use crate::config::LoadedConfig;
     use crate::mcp::slack::Unsubscribe;
     use crate::mcp::test_support::text_of;
-    use crate::slack::DraftResolution;
     use forge_primitives::slack::{
         SlackBookmark, SlackConfig, SlackDraftAnswer, SlackDraftEnding, SlackDraftOperation,
         SlackFile, SlackFileShare, SlackFileShares, SlackPin, SlackPinMessage, SlackUserProfile,
     };
     use forge_sdk::mcp::tool::{Tool as _, ToolInput};
+    use forge_tools::slack::DraftResolution;
     use forge_tools::slack::{
         AuthTest, MessagePage, PostedMessage, SearchPage, SlackApi, SlackError,
     };
@@ -2200,7 +2200,7 @@ mod tests {
         let (ws, rx) = Workspace::testing_stub_with_slack(
             dir.path().to_path_buf(),
             config,
-            Arc::new(crate::slack::SlackWorkspaces::from_apis(apis)),
+            Arc::new(forge_tools::slack::SlackWorkspaces::from_apis(apis)),
             None,
         );
         if with_store {
@@ -2265,7 +2265,7 @@ token = "y"
         let (ws, _rx) = Workspace::testing_stub_with_slack(
             dir.path().to_path_buf(),
             config,
-            Arc::new(crate::slack::SlackWorkspaces::from_apis(apis)),
+            Arc::new(forge_tools::slack::SlackWorkspaces::from_apis(apis)),
             None,
         );
         let facade = ProdSlackFacade::from_arc(&ws);
@@ -2322,7 +2322,7 @@ token = "y"
     /// id. The post is parked on a oneshot until this is resolved.
     async fn wait_for_draft(ws: &Arc<Workspace>) -> Uuid {
         for _ in 0..200 {
-            if let Some(id) = ws.slack_drafts.lock().keys().next().copied() {
+            if let Some(id) = ws.slack.held_drafts().first().map(|(_, draft)| draft.id) {
                 return id;
             }
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
@@ -2547,7 +2547,7 @@ token = "y"
         );
 
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
         let _ = task.await;
     }
 
@@ -2555,7 +2555,7 @@ token = "y"
     /// carries.
     async fn parked_draft(ws: &Arc<Workspace>) -> forge_primitives::slack::SlackDraft {
         for _ in 0..200 {
-            let draft = ws.slack_drafts.lock().values().next().map(|(_, draft, _)| draft.clone());
+            let draft = ws.slack.held_drafts().into_iter().next().map(|(_, draft)| draft);
             if let Some(draft) = draft {
                 return draft;
             }
@@ -2624,7 +2624,7 @@ token = "y"
         );
 
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
         let _ = task.await;
     }
 
@@ -2651,7 +2651,7 @@ token = "y"
             "the parent's mention draws its name, not the raw id",
         );
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
         let _ = task.await;
     }
 
@@ -2679,7 +2679,7 @@ token = "y"
             "an unnamed mention keeps its id rather than a guessed name",
         );
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
         let _ = task.await;
     }
 
@@ -2712,7 +2712,7 @@ token = "y"
             "the parent's mention still reads as its name",
         );
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
         let _ = task.await;
     }
 
@@ -2756,7 +2756,7 @@ token = "y"
         assert!(!kept.ends_with(' '), "the cut lands at a word boundary: {excerpt:?}");
 
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
         let _ = task.await;
     }
 
@@ -2783,7 +2783,7 @@ token = "y"
         );
 
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
         let _ = task.await;
     }
 
@@ -2806,7 +2806,7 @@ token = "y"
             "the read was attempted against the conversation, not skipped",
         );
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
         let _ = task.await;
     }
 
@@ -2888,7 +2888,7 @@ token = "y"
             "the read names the conversation Slack knows",
         );
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
         let _ = task.await;
     }
 
@@ -2917,7 +2917,7 @@ token = "y"
             "the read names the conversation Slack knows",
         );
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
         let _ = task.await;
     }
 
@@ -2944,7 +2944,7 @@ token = "y"
 
         assert_eq!(parked_draft(&ws).await.thread, None, "no author means no name to draw");
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
         let _ = task.await;
     }
 
@@ -2970,7 +2970,7 @@ token = "y"
         );
         assert!(excerpt.starts_with('é'), "the glyph survives whole: {excerpt:?}");
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
         let _ = task.await;
     }
 
@@ -2994,7 +2994,7 @@ token = "y"
             "the thread parent is not the message a reply's edit acts on",
         );
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
         let _ = task.await;
     }
 
@@ -3025,7 +3025,7 @@ token = "y"
         );
 
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
         let _ = task.await;
     }
 
@@ -3051,7 +3051,7 @@ token = "y"
                 "the operation names the message it acts on",
             );
             let id = wait_for_draft(&ws).await;
-            ws.resolve_slack_draft(id, &caller(), answered(false));
+            ws.slack.resolve_slack_draft(id, &caller(), answered(false));
             let _ = task.await;
         }
     }
@@ -3077,7 +3077,7 @@ token = "y"
             "the raw id is drawn rather than an invented or empty name",
         );
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
         let _ = task.await;
     }
 
@@ -3109,7 +3109,7 @@ token = "y"
             "the bot's own name wins over a lookup",
         );
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
         let _ = task.await;
     }
 
@@ -3136,7 +3136,7 @@ token = "y"
         );
 
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
         let _ = task.await;
     }
 
@@ -3152,7 +3152,7 @@ token = "y"
             async move { facade.post(&caller(), post_request("C1", "hello")).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
 
         let outcome = task.await.expect("the post task does not panic").expect("the post landed");
         assert_eq!(
@@ -3176,15 +3176,18 @@ token = "y"
             async move { facade.post(&caller(), post_request("C1", &text)).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
 
         let outcome = task.await.expect("no panic").expect("the parts land");
         assert_eq!(outcome.ts, vec!["1.0".to_owned(), "2.0".to_owned()], "two parts were sent");
         for ts in &outcome.ts {
-            assert!(ws.slack_own_post("acme", "C1", ts), "part {ts} must be refused to the sweep");
+            assert!(
+                ws.slack.slack_own_post("acme", "C1", ts),
+                "part {ts} must be refused to the sweep"
+            );
         }
         assert!(
-            !ws.slack_own_post("acme", "C2", "1.0"),
+            !ws.slack.slack_own_post("acme", "C2", "1.0"),
             "and the ledger stays scoped to the conversation it was posted in",
         );
     }
@@ -3204,16 +3207,16 @@ token = "y"
             async move { facade.post(&caller(), post_request("U123", "hello")).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
         let outcome = task.await.expect("no panic").expect("the post lands");
 
         assert_eq!(outcome.ts, vec!["1700000000.000100".to_owned()]);
         assert!(
-            ws.slack_own_post("acme", "D456", "1700000000.000100"),
+            ws.slack.slack_own_post("acme", "D456", "1700000000.000100"),
             "the conversation the post landed in is refused to the sweep",
         );
         assert!(
-            !ws.slack_own_post("acme", "U123", "1700000000.000100"),
+            !ws.slack.slack_own_post("acme", "U123", "1700000000.000100"),
             "the address it was sent to is not the conversation the sweep reads",
         );
     }
@@ -3232,7 +3235,7 @@ token = "y"
             async move { facade.post(&caller(), post_request("C1", &text)).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
         let outcome = task.await.expect("no panic");
 
         assert!(
@@ -3240,7 +3243,7 @@ token = "y"
             "the failure names how much landed: {outcome:?}",
         );
         assert!(
-            ws.slack_own_post("acme", "C1", "1.0"),
+            ws.slack.slack_own_post("acme", "C1", "1.0"),
             "the part Slack took is refused to the sweep",
         );
     }
@@ -3257,11 +3260,11 @@ token = "y"
             async move { facade.post(&caller(), post_request("C1", "hello")).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
 
         let mut marked = false;
         for _ in 0..400 {
-            if ws.slack_post_in_flight("acme", "C1").is_some() {
+            if ws.slack.slack_post_in_flight("acme", "C1").is_some() {
                 marked = true;
                 break;
             }
@@ -3272,7 +3275,7 @@ token = "y"
         gate.notify_one();
         task.await.expect("no panic").expect("the post lands");
         assert!(
-            ws.slack_post_in_flight("acme", "C1").is_none(),
+            ws.slack.slack_post_in_flight("acme", "C1").is_none(),
             "and clears it once the ts is ledgered",
         );
     }
@@ -3291,27 +3294,18 @@ token = "y"
             async move { facade.post(&caller(), post_request("C1", &text)).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
 
-        until(|| ws.slack_post_in_flight("acme", "C1").is_some()).await;
+        until(|| ws.slack.slack_post_in_flight("acme", "C1").is_some()).await;
         // As if the first part had used its whole request budget.
-        let stale = std::time::Instant::now()
-            .checked_sub(forge_tools::slack::REQUEST_TIMEOUT)
-            .and_then(|instant| instant.checked_sub(std::time::Duration::from_secs(1)))
-            .expect("the clock is past the timeout");
-        ws.slack_inflight
-            .lock()
-            .get_mut(&("acme".to_owned(), "C1".to_owned()))
-            .expect("the part's entry")
-            .iter_mut()
-            .for_each(|stamp| stamp.since = stale);
+        ws.slack.expire_post_marks("acme", "C1");
         gate.notify_one();
 
         // Part two is parked once its call has been recorded; its mark
         // must be fresh, not the expired one.
         until(|| api.posts().len() == 2).await;
         assert!(
-            ws.slack_post_in_flight("acme", "C1").is_some(),
+            ws.slack.slack_post_in_flight("acme", "C1").is_some(),
             "the second part takes a fresh mark of its own",
         );
         gate.notify_one();
@@ -3330,11 +3324,11 @@ token = "y"
             async move { facade.post(&caller(), post_request("C1", "hello")).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
 
         assert!(task.await.expect("no panic").is_err(), "the post fails");
         assert!(
-            ws.slack_post_in_flight("acme", "C1").is_none(),
+            ws.slack.slack_post_in_flight("acme", "C1").is_none(),
             "a failed post leaves no mark behind",
         );
     }
@@ -3354,11 +3348,11 @@ token = "y"
             async move { facade.post_attachment(&caller(), upload_request("C1", &source)).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
 
         let mut marked = false;
         for _ in 0..400 {
-            if ws.slack_post_in_flight("acme", "C1").is_some() {
+            if ws.slack.slack_post_in_flight("acme", "C1").is_some() {
                 marked = true;
                 break;
             }
@@ -3369,7 +3363,7 @@ token = "y"
         gate.notify_one();
         task.await.expect("no panic").expect("an approved upload sends");
         assert!(
-            ws.slack_post_in_flight("acme", "C1").is_none(),
+            ws.slack.slack_post_in_flight("acme", "C1").is_none(),
             "and clears it once the upload's shares are ledgered",
         );
     }
@@ -3391,18 +3385,18 @@ token = "y"
             async move { facade.post_attachment(&caller(), upload_request("C1", &source)).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
 
         until(|| api.file_info_calls() >= 1).await;
         assert!(
-            ws.slack_post_in_flight("acme", "C1").is_some(),
+            ws.slack.slack_post_in_flight("acme", "C1").is_some(),
             "the shares read holds a fresh mark of its own",
         );
 
         gate.notify_one();
         task.await.expect("no panic").expect("the upload sends");
         assert!(
-            ws.slack_post_in_flight("acme", "C1").is_none(),
+            ws.slack.slack_post_in_flight("acme", "C1").is_none(),
             "and clears it once the shares are ledgered",
         );
     }
@@ -3422,14 +3416,14 @@ token = "y"
             async move { facade.post_attachment(&caller(), upload_request("C1", &source)).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
 
         assert!(
             task.await.expect("no panic").is_ok(),
             "an unreadable share is a ledger gap, not a failed upload",
         );
         assert!(
-            ws.slack_post_in_flight("acme", "C1").is_none(),
+            ws.slack.slack_post_in_flight("acme", "C1").is_none(),
             "and the mark is cleared whatever the share read did",
         );
     }
@@ -3448,11 +3442,11 @@ token = "y"
             async move { facade.post(&caller(), post_request("C1", "hello")).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
         task.await.expect("no panic").expect("the post lands");
 
         assert!(
-            ws.slack_own_post("acme", "C1", "1700000000.000100"),
+            ws.slack.slack_own_post("acme", "C1", "1700000000.000100"),
             "the resolved conversation is what the fallback keys on",
         );
     }
@@ -3474,15 +3468,15 @@ token = "y"
             async move { facade.post_attachment(&caller(), upload_request("U123", &source)).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
         task.await.expect("no panic").expect("an approved upload sends");
 
         assert!(
-            ws.slack_own_post("acme", "D456", "1700000000.000100"),
+            ws.slack.slack_own_post("acme", "D456", "1700000000.000100"),
             "the share's own conversation holds the message, so that is what the ledger keys",
         );
         assert!(
-            !ws.slack_own_post("acme", "U123", "1700000000.000100"),
+            !ws.slack.slack_own_post("acme", "U123", "1700000000.000100"),
             "the request string is not a conversation",
         );
     }
@@ -3502,12 +3496,12 @@ token = "y"
             async move { facade.post_attachment(&caller(), upload_request("C1", &source)).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
         task.await.expect("no panic").expect("an approved upload sends");
 
         assert_eq!(api.file_info_calls(), 0, "the answer was enough; no follow-up read");
         assert!(
-            ws.slack_own_post("acme", "C1", "1700000000.000100"),
+            ws.slack.slack_own_post("acme", "C1", "1700000000.000100"),
             "and the message it named is refused to the sweep",
         );
     }
@@ -3523,11 +3517,11 @@ token = "y"
             async move { facade.edit(&caller(), edit_request("C1", "100.0", Some("new text"))).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
         task.await.expect("no panic").expect("an approved replacement is sent");
 
         assert!(
-            ws.slack_own_post("acme", "C1", "100.0"),
+            ws.slack.slack_own_post("acme", "C1", "100.0"),
             "the edited message's own ts is refused to the sweep",
         );
     }
@@ -3571,7 +3565,7 @@ token = "y"
         );
 
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
         let _ = task.await;
     }
 
@@ -3587,7 +3581,7 @@ token = "y"
             async move { facade.post_attachment(&caller(), upload_request("C1", &source)).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
 
         assert!(task.await.expect("no panic").is_err(), "a rejected upload must not send");
         assert_eq!(api.upload_url_count(), 0, "nothing is requested from Slack either");
@@ -3605,7 +3599,7 @@ token = "y"
             async move { facade.post_attachment(&caller(), upload_request("C1", &source)).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
         task.await.expect("no panic").expect("an approved upload sends");
 
         assert_eq!(api.upload_url_count(), 1, "the upload URL is requested once");
@@ -3640,7 +3634,7 @@ token = "y"
             vec![SlackDraftEnding::Abandoned],
             "a dropped waiter clears the registry and says which ending took the draft",
         );
-        assert!(ws.slack_drafts.lock().is_empty(), "and leaves nothing registered");
+        assert!(ws.slack.held_drafts().is_empty(), "and leaves nothing registered");
     }
 
     #[tokio::test]
@@ -3651,7 +3645,7 @@ token = "y"
             async move { facade.post(&caller(), post_request("C1", "hello")).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
 
         let outcome = task.await.expect("no panic");
         assert_eq!(outcome, Err(SlackPostError::Rejected));
@@ -3668,7 +3662,7 @@ token = "y"
             async move { facade.post(&caller(), post_request("C1", "hello")).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), sent_back("say staging, not prod"));
+        ws.slack.resolve_slack_draft(id, &caller(), sent_back("say staging, not prod"));
 
         let outcome = task.await.expect("no panic");
         assert_eq!(
@@ -3689,7 +3683,7 @@ token = "y"
             async move { facade.edit(&caller(), edit_request("C1", "100.0", Some("new"))).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), sent_back("keep the original wording"));
+        ws.slack.resolve_slack_draft(id, &caller(), sent_back("keep the original wording"));
 
         assert_eq!(
             task.await.expect("no panic"),
@@ -3706,7 +3700,7 @@ token = "y"
             async move { facade.edit(&caller(), edit_request("C1", "100.0", None)).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), sent_back("that one needs to stay"));
+        ws.slack.resolve_slack_draft(id, &caller(), sent_back("that one needs to stay"));
 
         assert_eq!(
             task.await.expect("no panic"),
@@ -3723,7 +3717,7 @@ token = "y"
             async move { facade.react(&caller(), react_request("C1", "100.0", "thumbsup", true)).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), sent_back("that reads as sarcasm here"));
+        ws.slack.resolve_slack_draft(id, &caller(), sent_back("that reads as sarcasm here"));
 
         assert_eq!(
             task.await.expect("no panic"),
@@ -3744,7 +3738,11 @@ token = "y"
             async move { facade.post_attachment(&caller(), upload_request("C1", &source)).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), sent_back("wrong file, send the report instead"));
+        ws.slack.resolve_slack_draft(
+            id,
+            &caller(),
+            sent_back("wrong file, send the report instead"),
+        );
 
         assert_eq!(
             task.await.expect("no panic"),
@@ -3765,7 +3763,7 @@ token = "y"
             async move { facade.post(&caller(), post_request("C1", "prod is down")).await }
         });
         let first_id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(first_id, &caller(), sent_back("say staging, not prod"));
+        ws.slack.resolve_slack_draft(first_id, &caller(), sent_back("say staging, not prod"));
         assert!(first.await.expect("no panic").is_err(), "the first attempt was sent back");
 
         let second = tokio::spawn({
@@ -3777,7 +3775,7 @@ token = "y"
         assert_ne!(second_id, first_id, "the revision parks its own card");
         assert!(api.posts().is_empty(), "and nothing approves the revision on its behalf");
 
-        ws.resolve_slack_draft(second_id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(second_id, &caller(), answered(true));
         second.await.expect("no panic").expect("the reader's approval is what sends it");
         assert_eq!(api.posts().len(), 1, "one message goes out");
         assert_eq!(api.posts()[0].1, "staging is down", "the revised words are what went out");
@@ -3795,7 +3793,11 @@ token = "y"
             async move { facade.post(&caller(), post_request("C1", "hello")).await }
         });
         let id = wait_for_draft(&ws).await;
-        drop(ws.slack_drafts.lock().remove(&id));
+        let _ = ws.slack.resolve_slack_draft(
+            id,
+            &caller(),
+            forge_tools::slack::DraftResolution::Abandoned,
+        );
 
         let outcome = task.await.expect("no panic");
         assert_eq!(outcome, Err(SlackPostError::Rejected));
@@ -3817,7 +3819,7 @@ token = "y"
         tokio::time::advance(std::time::Duration::from_secs(24 * 60 * 60)).await;
         assert!(!task.is_finished(), "a held draft waits for the user, not a clock");
 
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
         let outcome = task.await.expect("no panic");
         assert!(outcome.is_ok(), "the answer still posts after a day of waiting: {outcome:?}");
         assert_eq!(api.posts().len(), 1, "the held message goes out once");
@@ -3835,7 +3837,7 @@ token = "y"
             async move { facade.post(&caller(), post_request("C1", "hello")).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
 
         let outcome = task.await.expect("no panic").expect("an approved draft posts");
         assert_eq!(api.posts().len(), 1, "exactly one message goes out");
@@ -3859,7 +3861,7 @@ token = "y"
             async move { facade.post(&caller(), post_request("C1", &long)).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
 
         let outcome = task.await.expect("no panic").expect("an approved draft posts");
         assert_eq!(outcome.parts, 2, "the split count travels with the ts");
@@ -3879,7 +3881,7 @@ token = "y"
             }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
         task.await.expect("no panic").expect("posted");
 
         assert_eq!(api.posts()[0].2.as_deref(), Some("100.0"));
@@ -3899,7 +3901,7 @@ token = "y"
             async move { facade.edit(&caller(), edit_request("C1", "100.0", Some("new text"))).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
 
         assert_eq!(
             task.await.expect("no panic"),
@@ -3918,7 +3920,7 @@ token = "y"
             async move { facade.edit(&caller(), edit_request("C1", "100.0", Some("new text"))).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
         task.await.expect("no panic").expect("an approved replacement is sent");
 
         assert_eq!(api.updates.lock().len(), 1);
@@ -3933,7 +3935,7 @@ token = "y"
             async move { facade.edit(&caller(), edit_request("C1", "100.0", Some("new text"))).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
 
         assert_eq!(task.await.expect("no panic"), Err(SlackEditError::Rejected));
         assert!(api.updates.lock().is_empty(), "a rejected replacement is never sent");
@@ -3948,7 +3950,7 @@ token = "y"
             async move { facade.edit(&caller(), edit_request("C1", "100.0", None)).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(true));
         task.await.expect("no panic").expect("an approved deletion is sent");
 
         assert_eq!(api.deletes.lock().len(), 1);
@@ -3963,7 +3965,7 @@ token = "y"
             async move { facade.edit(&caller(), edit_request("C1", "100.0", None)).await }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
 
         assert_eq!(task.await.expect("no panic"), Err(SlackEditError::Rejected));
         assert!(api.deletes.lock().is_empty(), "a rejected deletion is never sent");
@@ -3987,9 +3989,9 @@ token = "y"
             }
         });
         let first = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(first, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(first, &caller(), answered(true));
         let second = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(second, &caller(), answered(true));
+        ws.slack.resolve_slack_draft(second, &caller(), answered(true));
 
         task.await.expect("no panic").expect("both reactions applied");
 
@@ -4012,7 +4014,7 @@ token = "y"
             }
         });
         let id = wait_for_draft(&ws).await;
-        ws.resolve_slack_draft(id, &caller(), answered(false));
+        ws.slack.resolve_slack_draft(id, &caller(), answered(false));
 
         assert_eq!(task.await.expect("no panic"), Err(SlackReactError::Rejected));
         assert!(api.reactions.lock().is_empty(), "a rejected reaction is never applied");
@@ -4050,7 +4052,7 @@ token = "y"
             }
             assert_eq!(seen, Some(expected), "the draft names the act it would do");
             let id = wait_for_draft(&ws).await;
-            ws.resolve_slack_draft(id, &caller(), answered(false));
+            ws.slack.resolve_slack_draft(id, &caller(), answered(false));
             let _ = task.await;
         }
     }
@@ -4110,7 +4112,7 @@ token = "y"
         facade.subscribe(&caller(), SlackSubscribeRequest::Mentions).expect("first");
         facade.subscribe(&caller(), SlackSubscribeRequest::Mentions).expect("second");
 
-        assert_eq!(ws.slack_subscriptions_for_project("forge").len(), 2);
+        assert_eq!(ws.slack.slack_subscriptions_for_project("forge").len(), 2);
     }
 
     /// A conversation is deduped where a mention feed is not: a repeat hands
@@ -4146,7 +4148,7 @@ token = "y"
             },
             "and the record as it NOW stands, not the state before the mode moved",
         );
-        let stored = ws.slack_subscriptions_for_project("forge");
+        let stored = ws.slack.slack_subscriptions_for_project("forge");
         assert_eq!(stored.len(), 1, "one record, so the Inspector renders one row");
         assert_eq!(
             stored[0].target,
@@ -4181,7 +4183,7 @@ token = "y"
             SlackSubscriptionTarget::DirectMessages,
             "carrying the target it watched, not the other row's",
         );
-        let left = ws.slack_subscriptions_for_project("forge");
+        let left = ws.slack.slack_subscriptions_for_project("forge");
         assert_eq!(left.len(), 1, "only the untouched subscription remains");
         assert_eq!(left[0].id, first[0].id, "and it is the one the call did not name");
     }
@@ -4202,7 +4204,7 @@ token = "y"
             "the lead's subscription is not the worker's to remove, and the refusal says which case it is",
         );
         assert_eq!(
-            ws.slack_subscriptions_for_project("forge").len(),
+            ws.slack.slack_subscriptions_for_project("forge").len(),
             1,
             "a refused unsubscribe removes nothing",
         );
@@ -4236,7 +4238,7 @@ token = "y"
             created_at: SystemTime::UNIX_EPOCH,
         };
         let other_id = other.id;
-        ws.add_slack_subscription(other, false);
+        ws.slack.add_slack_subscription(other, false);
 
         assert_eq!(
             facade.unsubscribe(&caller(), other_id),
@@ -4384,7 +4386,7 @@ token = "y"
             )
             .expect("channels");
         assert_eq!(first.len() + second.len(), 2);
-        assert_eq!(ws.slack_subscriptions_for_project("forge").len(), 2);
+        assert_eq!(ws.slack.slack_subscriptions_for_project("forge").len(), 2);
     }
 
     /// A re-subscribe after the cursor cleared seeds fresh: the sweep
@@ -4401,9 +4403,9 @@ token = "y"
                 }]),
             )
             .expect("the first subscribe");
-        ws.set_slack_watermark("acme", "C1", "100.0");
-        let id = ws.slack_subscriptions_for_project("forge")[0].id;
-        assert!(ws.remove_slack_subscription_owned_by("forge", id, None).is_some());
+        ws.slack.set_slack_watermark("acme", "C1", "100.0");
+        let id = ws.slack.slack_subscriptions_for_project("forge")[0].id;
+        assert!(ws.slack.remove_slack_subscription_owned_by("forge", id, None).is_some());
 
         facade
             .subscribe(
@@ -4434,7 +4436,7 @@ token = "y"
     #[tokio::test]
     async fn subscribing_to_a_watched_conversation_does_not_reset_its_cursor() {
         let (_dir, ws, facade) = workspace_with_one_slack_workspace_and_store("acme");
-        ws.set_slack_watermark("acme", "C1", "100.0");
+        ws.slack.set_slack_watermark("acme", "C1", "100.0");
 
         facade
             .subscribe(
@@ -4475,7 +4477,7 @@ token = "y"
         };
         assert!(first.is_some(), "the first Mentions subscription seeds the stream");
 
-        ws.set_slack_watermark("acme", MENTION_CURSOR, "100.0");
+        ws.slack.set_slack_watermark("acme", MENTION_CURSOR, "100.0");
         facade
             .subscribe(&caller(), SlackSubscribeRequest::Mentions)
             .expect("the second Mentions subscription");

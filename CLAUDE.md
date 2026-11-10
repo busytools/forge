@@ -85,13 +85,17 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   family's own session, thirteen held tools and parked calls. Depends on
   forge-primitives and forge-mcp. Gotify's subscription set, app index
   and message dispatch into sessions arrive through the `GotifyHost`
-  port forge-workspace implements; Slack's client is polled by workspace
-  code directly. The vault family owns its tool descriptions, its ask
-  registry and the policy behind answering one: the workspace keeps the
-  machine-wide `[vault]` session and the registry handle, implements
-  `VaultHost` (the live session, the caller's cwd) and `VaultEmit` (the
-  wire frames its updates map onto), and registers the family's
-  `ToolProvider` and `AskSource`. No generic connector trait: the
+  port forge-workspace implements. Slack's subsystem lives here too - its
+  clients, the subscription set each pump sweeps, the durable cursors and
+  followed threads, the held drafts and the pumps - behind `SlackStore`
+  (the durable records), `SlackEmit` (the wire frames, the subscription
+  announcement and the delivery into a session) and the shared `AskSink`;
+  forge-workspace implements all three. The vault family owns its tool
+  descriptions, its ask registry and the policy behind answering one: the
+  workspace keeps the machine-wide `[vault]` session and the registry
+  handle, implements `VaultHost` (the live session, the caller's cwd) and
+  `VaultEmit` (the wire frames its updates map onto), and registers the
+  family's `ToolProvider` and `AskSource`. No generic connector trait: the
   variety is still small, and a trait waits until it is real.
 - **`forge-sdk`** - owns the `claude` subprocess: stream-json codec,
   transport, control dispatch, in-process MCP host, Options.
