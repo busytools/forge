@@ -24,16 +24,16 @@ impl DiagnosticsPreset {
     pub fn filter_directives(&self) -> &'static str {
         match self {
             Self::Runtime => {
-                "info,bridge.lifecycle=debug,bridge.protocol=debug,forge_server=debug,forge_workspace::output_tail=debug,app.permission=debug,forge_workspace::dictate=debug,forge_dictate=debug"
+                "info,bridge.lifecycle=debug,bridge.protocol=debug,forge_server=debug,forge_workspace::output_tail=debug,app.permission=debug,forge_dictate=debug"
             }
             Self::Session => {
-                "info,bridge.lifecycle=debug,forge_server=debug,forge_workspace::output_tail=debug,app.permission=debug,forge_workspace::dictate=debug,forge_dictate=debug"
+                "info,bridge.lifecycle=debug,forge_server=debug,forge_workspace::output_tail=debug,app.permission=debug,forge_dictate=debug"
             }
             Self::Bridge => {
                 "info,bridge.lifecycle=debug,bridge.protocol=debug,bridge.sdk=debug,bridge.permission=debug,bridge.mcp=debug"
             }
             Self::Full => {
-                "info,bridge.lifecycle=debug,bridge.protocol=debug,bridge.sdk=debug,bridge.permission=debug,bridge.mcp=debug,forge_server=debug,forge_workspace::output_tail=debug,app.permission=debug,app.input=debug,forge_workspace::dictate=debug,forge_dictate=debug"
+                "info,bridge.lifecycle=debug,bridge.protocol=debug,bridge.sdk=debug,bridge.permission=debug,bridge.mcp=debug,forge_server=debug,forge_workspace::output_tail=debug,app.permission=debug,app.input=debug,forge_dictate=debug"
             }
         }
     }

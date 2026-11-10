@@ -417,7 +417,7 @@ impl GotifyHost for SubsystemHost {
 
     /// Wrap the matched message into the notification wire shape and
     /// dispatch it to the subscriber. This is the only place a
-    /// forge-connectors match becomes a `GotifyNotification`, so the
+    /// forge-tools match becomes a `GotifyNotification`, so the
     /// prose shape stays workspace-owned
     /// (`forge_server::envelope::detect_inbound` keys on it).
     fn deliver(

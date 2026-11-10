@@ -1,7 +1,7 @@
 # forge - project guide
 
 A Rust workspace around Anthropic's `claude` CLI: a server that runs
-multi-session orchestration, and the clients that draw it. Fifteen crates,
+multi-session orchestration, and the clients that draw it. Sixteen crates,
 layered acyclically:
 
 ```
