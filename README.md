@@ -44,7 +44,7 @@ forge-test-harness->  primitives + sdk
 
 | Crate | Description |
 |---|---|
-| [`forge-primitives`](crates/forge-primitives) | Every type that crosses a crate boundary: message envelopes, content blocks, hook and permission payloads, IDs, render-side views. Pure data. |
+| [`forge-primitives`](crates/forge-primitives) | Every type that crosses a crate boundary: message envelopes, content blocks, hook and permission payloads, IDs, render-side views. Pure data, plus the ask seam's two stateless trait signatures. |
 | [`forge-capture`](crates/forge-capture) | Microphone capture: the input device, the input plan, the downmix and resampler, and the mono model-rate audio a host reads from it. A leaf: depends on no forge-* crate, so a client's own shell captures through it and `forge-dictate` takes its sample rate. |
 | [`forge-dictate`](crates/forge-dictate) | The dictation primitive: audio in, text out. Owns its model files, speech recognition and normalization, and takes audio as mono frames a host pushes in. Its forge-* dependencies are the capture leaf, for the sample rate, and `forge-primitives`, whose types its host trait crosses on; the leaf rule's intent is no workspace or server coupling, not no primitives. It knows nothing about a host. |
 | [`forge-tts`](crates/forge-tts) | The speech primitive: text in, audio chunks out. Owns the Kokoro-82M engine (ONNX Runtime in process, with Misaki's G2P), the model files a speaking model is made of, sentence splitting and the utterance bound. A leaf: it depends on no forge-* crate and knows nothing about a host. |

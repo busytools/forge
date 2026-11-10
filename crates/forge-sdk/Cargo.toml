@@ -23,7 +23,6 @@ forge-primitives = { workspace = true }
 # The tool-provider seam an owning family implements; the host consumes it,
 # so the family never depends on this crate.
 forge-mcp = { workspace = true }
-base64 = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

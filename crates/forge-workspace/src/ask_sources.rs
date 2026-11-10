@@ -24,6 +24,30 @@ use crate::documents::ParkedDocument;
 use crate::settings_ask::ParkedSettingsWrite;
 use crate::workspace::{ParkedBrowserHandOff, ParkedSlackDraft, ParkedTerminalHandOff};
 
+/// The core's one registered ask-source list, in the order a dock draws
+/// them.
+///
+/// **Both constructors call this.** A list maintained in two places is how
+/// a source added to one and not the other keeps the guard green while the
+/// production read never counts it - #2954's failure through another door.
+pub(crate) fn registered(
+    slack_drafts: &Arc<Mutex<HashMap<Uuid, ParkedSlackDraft>>>,
+    browser_handoffs: &Arc<Mutex<HashMap<Uuid, ParkedBrowserHandOff>>>,
+    terminal_handoffs: &Arc<Mutex<HashMap<Uuid, ParkedTerminalHandOff>>>,
+    document_handoffs: &Arc<Mutex<HashMap<Uuid, ParkedDocument>>>,
+    vault_asks: &Arc<forge_tools::vault::VaultAsks>,
+    settings_writes: &Arc<Mutex<HashMap<Uuid, ParkedSettingsWrite>>>,
+) -> Vec<Arc<dyn AskSource>> {
+    vec![
+        Arc::new(SlackDrafts(Arc::clone(slack_drafts))),
+        Arc::new(BrowserHandOffs(Arc::clone(browser_handoffs))),
+        Arc::new(TerminalHandOffs(Arc::clone(terminal_handoffs))),
+        Arc::new(DocumentHandOffs(Arc::clone(document_handoffs))),
+        vault_asks.clone(),
+        Arc::new(SettingsWrites(Arc::clone(settings_writes))),
+    ]
+}
+
 /// Composed Slack messages held for a decision.
 pub(crate) struct SlackDrafts(pub Arc<Mutex<HashMap<Uuid, ParkedSlackDraft>>>);
 
@@ -39,6 +63,11 @@ impl AskSource for SlackDrafts {
                 payload: PendingAsk::SlackDraft(Box::new(draft.clone())),
             })
             .collect()
+    }
+
+    fn held(&self, seat: &SessionSlot) -> Vec<(PendingInteractionKind, usize)> {
+        let count = self.0.lock().values().filter(|(owner, _, _)| owner == seat).count();
+        vec![(PendingInteractionKind::SlackDraft, count)]
     }
 
     fn kinds(&self) -> &'static [PendingInteractionKind] {
@@ -64,6 +93,11 @@ impl AskSource for BrowserHandOffs {
             .collect()
     }
 
+    fn held(&self, seat: &SessionSlot) -> Vec<(PendingInteractionKind, usize)> {
+        let count = self.0.lock().values().filter(|(owner, _, _)| owner == seat).count();
+        vec![(PendingInteractionKind::BrowserHandOff, count)]
+    }
+
     fn kinds(&self) -> &'static [PendingInteractionKind] {
         const KINDS: &[PendingInteractionKind] = &[PendingInteractionKind::BrowserHandOff];
         KINDS
@@ -85,6 +119,11 @@ impl AskSource for TerminalHandOffs {
                 payload: PendingAsk::TerminalHandOff(Box::new(handoff.clone())),
             })
             .collect()
+    }
+
+    fn held(&self, seat: &SessionSlot) -> Vec<(PendingInteractionKind, usize)> {
+        let count = self.0.lock().values().filter(|(owner, _, _)| owner == seat).count();
+        vec![(PendingInteractionKind::TerminalHandOff, count)]
     }
 
     fn kinds(&self) -> &'static [PendingInteractionKind] {
@@ -110,6 +149,11 @@ impl AskSource for DocumentHandOffs {
             .collect()
     }
 
+    fn held(&self, seat: &SessionSlot) -> Vec<(PendingInteractionKind, usize)> {
+        let count = self.0.lock().values().filter(|held| &held.seat == seat).count();
+        vec![(PendingInteractionKind::DocumentHandOff, count)]
+    }
+
     fn kinds(&self) -> &'static [PendingInteractionKind] {
         const KINDS: &[PendingInteractionKind] = &[PendingInteractionKind::DocumentHandOff];
         KINDS
@@ -131,6 +175,11 @@ impl AskSource for SettingsWrites {
                 payload: PendingAsk::SettingsWrite(Box::new(ask.clone())),
             })
             .collect()
+    }
+
+    fn held(&self, seat: &SessionSlot) -> Vec<(PendingInteractionKind, usize)> {
+        let count = self.0.lock().values().filter(|(owner, _, _)| owner == seat).count();
+        vec![(PendingInteractionKind::SettingsWrite, count)]
     }
 
     fn kinds(&self) -> &'static [PendingInteractionKind] {

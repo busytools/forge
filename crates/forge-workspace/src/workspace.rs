@@ -1672,6 +1672,15 @@ fn store_path(app_support: &Path, config_dir: &Path) -> PathBuf {
     crate::store::path_for(app_support, config_dir)
 }
 
+/// Bump one seat's ask counter. **The number is the ask's identity on the
+/// wire**, so the workspace's own registries and a subsystem's `AskSink`
+/// share this one implementation - a second copy would be a second identity.
+pub(crate) fn note_ask_in(seq: &parking_lot::Mutex<HashMap<SessionSlot, u64>>, slot: &SessionSlot) {
+    let mut held = seq.lock();
+    let next = held.entry(slot.clone()).or_insert(0);
+    *next = next.saturating_add(1);
+}
+
 /// Whether this path is the home directory's `.claude`, the default config
 /// dir.
 ///
@@ -2513,17 +2522,19 @@ impl Workspace {
         let terminal_handoffs = Arc::new(Mutex::new(HashMap::new()));
         let document_handoffs = Arc::new(parking_lot::Mutex::new(HashMap::new()));
         let settings_writes = Arc::new(Mutex::new(HashMap::new()));
-        // **One registration list.** Every needs-you read walks it, and the
-        // guard test's table is what these sources name, so a new kind cannot
-        // be added without a source that raises it.
-        let ask_sources: Vec<Arc<dyn forge_primitives::AskSource>> = vec![
-            Arc::new(crate::ask_sources::SlackDrafts(Arc::clone(&slack_drafts))),
-            Arc::new(crate::ask_sources::BrowserHandOffs(Arc::clone(&browser_handoffs))),
-            Arc::new(crate::ask_sources::TerminalHandOffs(Arc::clone(&terminal_handoffs))),
-            Arc::new(crate::ask_sources::DocumentHandOffs(Arc::clone(&document_handoffs))),
-            vault_asks.clone(),
-            Arc::new(crate::ask_sources::SettingsWrites(Arc::clone(&settings_writes))),
-        ];
+        // **One registration list**, built by the helper both constructors
+        // call. Every needs-you read walks it, and the guard test's table is
+        // what these sources name, so a new kind cannot be added without a
+        // source that raises it - and the test stub cannot drift from this
+        // list.
+        let ask_sources: Vec<Arc<dyn forge_primitives::AskSource>> = crate::ask_sources::registered(
+            &slack_drafts,
+            &browser_handoffs,
+            &terminal_handoffs,
+            &document_handoffs,
+            &vault_asks,
+            &settings_writes,
+        );
 
         // Catalog scan reads against the workspace's canonical
         // `config_dir` (where forge.toml lives). Each spawn binds to
@@ -8887,9 +8898,9 @@ impl Workspace {
             None => (0, 0),
         };
         for source in &self.ask_sources {
-            for ask in source.asks(slot) {
-                if let Some(entry) = ledger.iter_mut().find(|(kind, _)| *kind == ask.kind) {
-                    entry.1 += 1;
+            for (kind, count) in source.held(slot) {
+                if let Some(entry) = ledger.iter_mut().find(|(held, _)| *held == kind) {
+                    entry.1 += count;
                 }
             }
         }
@@ -8911,9 +8922,7 @@ impl Workspace {
     /// another at the same depth is, and an answer that shrinks a batch is
     /// not.
     pub(crate) fn note_ask(&self, slot: &SessionSlot) {
-        let mut held = self.pending_seq.lock();
-        let next = held.entry(slot.clone()).or_insert(0);
-        *next = next.saturating_add(1);
+        note_ask_in(&self.pending_seq, slot);
     }
 
     /// How many asks have ever arrived for `slot`, zero when none has.
@@ -19772,8 +19781,8 @@ mod worker_activity_tests {
     }
 
     /// **A parked vault call rides the same machinery every ask does.** It
-    /// parks in its own registry, so without `has_vault_ask` a seat holding
-    /// one kept its running mark and the needs-you row said nothing.
+    /// parks in the family's registry, so a source the ledger did not read
+    /// left a seat holding one with its running mark and no needs-you row.
     #[test]
     fn a_parked_vault_ask_reads_as_attention() {
         let (ws, _rx) = Workspace::testing_stub();
@@ -28348,17 +28357,25 @@ accounts = ["main"]
 /// nothing else. Each update maps one-to-one onto the `SessionUpdate`
 /// variant of the same name, so the wire stays exactly what the client
 /// already reads.
+/// The host's answer for the preflight's support directory: the base when
+/// there is one, else the boot failure this workspace recorded - so the
+/// preflight's warning carries the cause rather than a bare absence.
+fn app_support_answer(
+    app_support: Option<&PathBuf>,
+    error: Option<&String>,
+) -> Result<PathBuf, String> {
+    app_support.cloned().ok_or_else(|| {
+        error.cloned().unwrap_or_else(|| "the workspace holds no app-support directory".to_owned())
+    })
+}
+
 impl crate::dictate::DictateHost for Workspace {
     fn session_is_live(&self, key: &SessionSlot) -> bool {
         Workspace::session_is_live(self, key)
     }
 
     fn app_support_dir(&self) -> Result<std::path::PathBuf, String> {
-        self.app_support.clone().ok_or_else(|| {
-            self.app_support_error
-                .clone()
-                .unwrap_or_else(|| "the workspace holds no app-support directory".to_owned())
-        })
+        app_support_answer(self.app_support.as_ref(), self.app_support_error.as_ref())
     }
 
     fn emit(&self, update: crate::dictate::DictateUpdate) -> bool {

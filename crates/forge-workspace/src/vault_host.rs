@@ -66,13 +66,9 @@ impl VaultEmit for VaultPorts {
 
 impl AskSink for VaultPorts {
     fn note(&self, seat: &SessionSlot, _kind: PendingInteractionKind) {
-        // **The number is the ask's identity on the wire.** A client
-        // announces a new ask by it, so a re-read of the roster is not news,
-        // an ask replacing another at the same depth is, and an answer that
-        // shrinks a batch is not.
-        let mut held = self.pending_seq.lock();
-        let next = held.entry(seat.clone()).or_insert(0);
-        *next = next.saturating_add(1);
+        // The one counter the workspace's own registries bump too: the number
+        // is the ask's identity on the wire.
+        crate::workspace::note_ask_in(&self.pending_seq, seat);
     }
 
     fn resolve(&self, _seat: &SessionSlot, _id: uuid::Uuid) {
@@ -219,8 +215,77 @@ mod tests {
         );
     }
 
-    /// The production clients are the ones the vault session uses, and they
-    /// refuse a plaintext URL before touching the network.
+    /// **Every one of the family's updates crosses to its own wire frame**,
+    /// and the parked-call arm uses the ANSWERING send. With only an
+    /// observer attached that arm must report "nobody can answer" - swapped
+    /// to the plain send, a draft would look answerable while no dock could
+    /// ever open, and the blocked handler would park forever.
+    #[test]
+    fn the_family_updates_cross_to_their_wire_frames() {
+        use crate::update_fanout::SubscriberRole;
+        use forge_primitives::vault::{VaultAskEnding, VaultDraft, VaultTool};
+
+        let updates = UpdateFanout::default();
+        let seq: Arc<Mutex<HashMap<SessionSlot, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+        let ports = VaultPorts::new(updates.clone(), seq);
+        let key = SessionSlot::lead("Default", "forge");
+        let draft = VaultDraft::new(VaultTool::Get, "read the password for 'bank'");
+
+        let mut observer = updates.subscribe(SubscriberRole::Observing);
+        assert!(
+            !ports.emit(VaultUpdate::AskPending { key: key.clone(), draft: draft.clone() }),
+            "an observer alone cannot answer a parked call",
+        );
+        // The frame still reaches the observer - it draws no dock, and the
+        // answering send's report is what fails the call closed rather than
+        // parking it forever.
+        assert!(observer.try_recv().is_ok(), "the observer still sees the ask was raised");
+
+        let mut answerer = updates.subscribe(SubscriberRole::Answering);
+        assert!(
+            ports.emit(VaultUpdate::AskPending { key: key.clone(), draft: draft.clone() }),
+            "an answering subscriber makes the call answerable",
+        );
+        match std::sync::Arc::unwrap_or_clone(answerer.try_recv().expect("the card").update) {
+            SessionUpdate::VaultAskPending { key: got, draft: got_draft } => {
+                assert_eq!(got, key, "the card is addressed to the seat that asked");
+                assert_eq!(got_draft.id, draft.id);
+            }
+            other => panic!("the parked call crossed as {other:?}"),
+        }
+
+        assert!(ports.emit(VaultUpdate::AskResolved {
+            key: key.clone(),
+            id: draft.id,
+            ending: VaultAskEnding::Approved,
+        }));
+        match std::sync::Arc::unwrap_or_clone(answerer.try_recv().expect("the ending").update) {
+            SessionUpdate::VaultAskResolved { key: got, id, ending } => {
+                assert_eq!(got, key);
+                assert_eq!(id, draft.id);
+                assert_eq!(ending, VaultAskEnding::Approved);
+            }
+            other => panic!("the settlement crossed as {other:?}"),
+        }
+
+        assert!(ports.emit(VaultUpdate::LockChanged { locked: true }));
+        match std::sync::Arc::unwrap_or_clone(answerer.try_recv().expect("the lock").update) {
+            SessionUpdate::VaultLockChanged { locked } => assert!(locked),
+            other => panic!("the lock crossed as {other:?}"),
+        }
+
+        assert!(ports.emit(VaultUpdate::Rotated { refresh_token: "next".to_owned() }));
+        match std::sync::Arc::unwrap_or_clone(answerer.try_recv().expect("the rotation").update) {
+            SessionUpdate::VaultRotated { refresh_token } => assert_eq!(refresh_token, "next"),
+            other => panic!("the rotation crossed as {other:?}"),
+        }
+        assert!(
+            !format!("{:?}", VaultUpdate::Rotated { refresh_token: "next".to_owned() })
+                .contains("next"),
+            "the rotated token is a secret and the update's Debug redacts it",
+        );
+    }
+
     #[tokio::test]
     async fn production_client_is_https_only() {
         use std::time::Duration;

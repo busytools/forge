@@ -5,6 +5,11 @@
 //! async. Other crates depend on this; this depends on nothing
 //! forge-shaped.
 //!
+//! The one exception is the ask seam ([`AskSource`], [`AskSink`]): two
+//! traits with no state, no I/O and no async, kept here because the host
+//! and every ask source must both name them and this is the one crate both
+//! depend on.
+//!
 //! Module map:
 //!
 //! - [`command`] - `Command` enum (UI → agent channel envelope) + IDs.

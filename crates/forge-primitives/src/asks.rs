@@ -101,6 +101,11 @@ pub trait AskSource: Send + Sync {
     /// drawn.
     fn asks(&self, seat: &SessionSlot) -> Vec<Ask>;
 
+    /// The asks this source holds, as counts per kind, without building the
+    /// payloads. **The needs-you ledger reads this**, so a `pending_interaction`
+    /// check cannot clone a draft or touch live state a payload would.
+    fn held(&self, seat: &SessionSlot) -> Vec<(PendingInteractionKind, usize)>;
+
     /// The kinds this source can raise. The host's guard walks the
     /// registered sources' lists, so a source that raises a kind it does
     /// not name here is not covered by the census.

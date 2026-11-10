@@ -2143,6 +2143,33 @@ mod dictate_lifecycle_tests {
         );
     }
 
+    /// A host that cannot resolve an app-support directory turns both stores
+    /// off rather than failing preflight - diagnostics never break
+    /// dictation, and the absence is what the warning records.
+    #[test]
+    fn preflight_config_turns_both_stores_off_without_app_support() {
+        struct BrokenHost;
+
+        impl DictateHost for BrokenHost {
+            fn session_is_live(&self, _key: &SessionSlot) -> bool {
+                true
+            }
+
+            fn app_support_dir(&self) -> Result<PathBuf, String> {
+                Err("no resolvable data/cache/home dir".to_owned())
+            }
+
+            fn emit(&self, _update: DictateUpdate) -> bool {
+                true
+            }
+        }
+
+        let settings: DictateSettings = toml::from_str("enabled = true\n").expect("parse");
+        let cfg = preflight_config(&settings, &settings.pin_active(), &BrokenHost);
+        assert!(cfg.diagnostics_dir.is_none(), "per-take diagnostics are off");
+        assert!(cfg.digest_cache_dir.is_none(), "and so is the digest record");
+    }
+
     /// Put a live take on the runtime the way a registration does, and hand
     /// back its answer channel so a test can read what the caller gets.
     fn staged_session() -> SessionSlot {

@@ -659,6 +659,21 @@ mod tests {
         families: &std::collections::BTreeSet<McpFamily>,
         systemone_facade: Option<Arc<dyn SystemOneFacade>>,
     ) -> McpServer {
+        forge_server_families_with(kind, families, systemone_facade, true)
+    }
+
+    fn forge_server_families_with(
+        kind: SessionKind,
+        families: &std::collections::BTreeSet<McpFamily>,
+        systemone_facade: Option<Arc<dyn SystemOneFacade>>,
+        vault_configured: bool,
+    ) -> McpServer {
+        let vault = vault_configured.then(|| {
+            Arc::new(forge_tools::vault::VaultTools::new(
+                forge_tools::vault::MockVaultFacade::new().into_arc(),
+                fake_key("test"),
+            )) as Arc<dyn forge_mcp::ToolProvider>
+        });
         build_forge_server(
             ForgeServerFacades {
                 workspace: MockWorkspaceFacade::new().into_arc(),
@@ -674,15 +689,36 @@ mod tests {
                 tasks: MockTasksFacade::new().into_arc(),
                 systemone: systemone_facade,
                 voice: silent_voice(),
-                vault: Some(Arc::new(forge_tools::vault::VaultTools::new(
-                    forge_tools::vault::MockVaultFacade::new().into_arc(),
-                    fake_key("test"),
-                ))),
+                vault,
             },
             families,
             &fake_key("test"),
             kind,
         )
+    }
+
+    /// **A switched-off `[vault]` leaves no vault tool.** The family may be
+    /// selected, but with no session behind it the family registers nothing;
+    /// a tool a session could try would tell the model credentials are
+    /// reachable when they are not.
+    #[test]
+    fn an_absent_vault_configuration_registers_no_vault_tools() {
+        let server = forge_server_families_with(
+            SessionKind::Lead,
+            &McpFamily::all(),
+            Some(MockSystemOneFacade::new().into_arc()),
+            false,
+        );
+        let names = names_of(&server);
+        assert!(
+            !names.iter().any(|name| name.starts_with("vault__")),
+            "no vault tool registers without a configured session: {names:?}",
+        );
+        let configured = names_of(&forge_server(SessionKind::Lead));
+        assert!(
+            configured.iter().any(|name| name.starts_with("vault__")),
+            "the control: the same build with [vault] configured does register them",
+        );
     }
 
     /// Every tool name the server registered, read off its debug

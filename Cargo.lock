@@ -1913,7 +1913,6 @@ version = "1.2.5"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.23.1",
  "dirs",
  "forge-mcp",
  "forge-primitives",

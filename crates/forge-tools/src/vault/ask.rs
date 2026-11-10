@@ -198,6 +198,13 @@ impl AskSource for VaultAsks {
         self.held_asks(seat)
     }
 
+    fn held(&self, seat: &SessionSlot) -> Vec<(PendingInteractionKind, usize)> {
+        // Counts only: the lock state is needed to stamp a card a view draws,
+        // not to count one, so the needs-you read never touches the session.
+        let count = self.parked.lock().values().filter(|held| &held.seat == seat).count();
+        vec![(PendingInteractionKind::Vault, count)]
+    }
+
     fn kinds(&self) -> &'static [PendingInteractionKind] {
         const KINDS: &[PendingInteractionKind] = &[PendingInteractionKind::Vault];
         KINDS

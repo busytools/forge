@@ -439,14 +439,14 @@ impl Workspace {
         let terminal_handoffs = Arc::new(Mutex::new(HashMap::new()));
         let document_handoffs = Arc::new(parking_lot::Mutex::new(HashMap::new()));
         let settings_writes = Arc::new(Mutex::new(HashMap::new()));
-        let ask_sources: Vec<Arc<dyn forge_primitives::AskSource>> = vec![
-            Arc::new(crate::ask_sources::SlackDrafts(Arc::clone(&slack_drafts))),
-            Arc::new(crate::ask_sources::BrowserHandOffs(Arc::clone(&browser_handoffs))),
-            Arc::new(crate::ask_sources::TerminalHandOffs(Arc::clone(&terminal_handoffs))),
-            Arc::new(crate::ask_sources::DocumentHandOffs(Arc::clone(&document_handoffs))),
-            vault_asks.clone(),
-            Arc::new(crate::ask_sources::SettingsWrites(Arc::clone(&settings_writes))),
-        ];
+        let ask_sources: Vec<Arc<dyn forge_primitives::AskSource>> = crate::ask_sources::registered(
+            &slack_drafts,
+            &browser_handoffs,
+            &terminal_handoffs,
+            &document_handoffs,
+            &vault_asks,
+            &settings_writes,
+        );
         let (settings, _settings_rx) = tokio::sync::watch::channel(None);
         let workspace = Self {
             config_dir,

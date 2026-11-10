@@ -21,10 +21,18 @@ use base64::Engine as _;
 use futures::future::BoxFuture;
 use serde_json::Value;
 
+/// The future a [`ToolProvider::call`] returns, re-exported so an owning
+/// crate names it here rather than taking its own `futures` dependency.
+pub use futures::future::BoxFuture as ProviderFuture;
+
 /// One tool as its owning family describes it: the name the model calls,
 /// the description it reads, and the JSON Schema of the arguments.
+///
+/// Named `ToolSpec` rather than `Tool` because the host's own trait is
+/// `forge_sdk::mcp::tool::Tool`; two things called `Tool` in one import
+/// list is a wrong import waiting to happen.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Tool {
+pub struct ToolSpec {
     pub name: String,
     pub description: String,
     pub schema: Value,
@@ -91,7 +99,7 @@ pub enum ToolOutputBlock {
 /// [`ToolProvider::tools`], because that list is what the host advertises.
 pub trait ToolProvider: Send + Sync {
     /// Every tool this family offers, in the order it should be advertised.
-    fn tools(&self) -> Vec<Tool>;
+    fn tools(&self) -> Vec<ToolSpec>;
 
     /// Answer one call. `None` means "not mine"; the host answers unknown
     /// only when no provider claims it.
@@ -118,13 +126,8 @@ impl Providers {
         Self { providers }
     }
 
-    /// Register one more family.
-    pub fn push(&mut self, provider: std::sync::Arc<dyn ToolProvider>) {
-        self.providers.push(provider);
-    }
-
     /// Every tool the registered families describe, in registration order.
-    pub fn tools(&self) -> Vec<Tool> {
+    pub fn tools(&self) -> Vec<ToolSpec> {
         self.providers.iter().flat_map(|provider| provider.tools()).collect()
     }
 
@@ -180,8 +183,8 @@ mod tests {
     }
 
     impl ToolProvider for FixedProvider {
-        fn tools(&self) -> Vec<Tool> {
-            vec![Tool {
+        fn tools(&self) -> Vec<ToolSpec> {
+            vec![ToolSpec {
                 name: self.name.to_owned(),
                 description: format!("the {} tool", self.name),
                 schema: serde_json::json!({ "type": "object", "additionalProperties": false }),

@@ -209,7 +209,10 @@ Work top-down; first match wins.
    its bytes, the client draws them.
 5. **A type that crosses a crate boundary?** (envelope, snapshot
    struct, hook payload, anything sent over a channel or touched by
-   more than one crate) -> `forge-primitives`. Pure data shapes only.
+   more than one crate) -> `forge-primitives`. Data shapes only. The ask
+   seam's two traits (`AskSource`, `AskSink`) are the recorded exception:
+   signatures with no state, no I/O and no async, kept there because the
+   host and every ask source must both name them.
 6. **Provider credential, probe, usage mapping, billing or repair?**
    (how one `forge.toml` provider token authenticates, what endpoint
    its usage probe hits, how the payload maps to a snapshot, what a

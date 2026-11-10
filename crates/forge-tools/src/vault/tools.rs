@@ -13,10 +13,9 @@
 
 use std::sync::Arc;
 
-use forge_mcp::{Tool, ToolOutput, ToolProvider};
+use forge_mcp::{ProviderFuture, ToolOutput, ToolProvider, ToolSpec};
 use forge_primitives::SessionSlot;
 use forge_primitives::vault::VaultTool;
-use futures::future::BoxFuture;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -377,10 +376,10 @@ impl VaultTools {
 }
 
 impl ToolProvider for VaultTools {
-    fn tools(&self) -> Vec<Tool> {
+    fn tools(&self) -> Vec<ToolSpec> {
         VaultTool::ALL
             .into_iter()
-            .map(|tool| Tool {
+            .map(|tool| ToolSpec {
                 name: tool.as_str().to_owned(),
                 description: Self::describe(tool).to_owned(),
                 schema: Self::schema(tool),
@@ -392,7 +391,7 @@ impl ToolProvider for VaultTools {
         &'a self,
         name: &'a str,
         input: Value,
-    ) -> BoxFuture<'a, Option<Result<ToolOutput, String>>> {
+    ) -> ProviderFuture<'a, Option<Result<ToolOutput, String>>> {
         Box::pin(async move {
             // A name this family does not own is not its call to answer.
             let tool = VaultTool::parse(name)?;

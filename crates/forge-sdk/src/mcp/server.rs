@@ -374,9 +374,10 @@ mod tests_negotiation {
 
 #[cfg(test)]
 mod tests_tool_names {
-    use super::{JsonRpcRequest, McpServerBuilder};
+    use super::{JsonRpcRequest, McpServer, McpServerBuilder};
     use crate::mcp::tool::{Tool, ToolInput, ToolOutput};
     use serde_json::{Value, json};
+    use std::sync::Arc;
 
     struct Named(&'static str);
 
@@ -431,6 +432,93 @@ mod tests_tool_names {
             server.tool_names(),
             listed,
             "what a spawn records is exactly the set tools/list answers, in its order",
+        );
+    }
+
+    /// One family registered through the provider seam: its tools are
+    /// advertised from `tools()` and a call is dispatched back to `call()`.
+    struct Family {
+        name: &'static str,
+        answer: Result<&'static str, &'static str>,
+        claims: bool,
+    }
+
+    impl forge_mcp::ToolProvider for Family {
+        fn tools(&self) -> Vec<forge_mcp::ToolSpec> {
+            vec![forge_mcp::ToolSpec {
+                name: self.name.to_owned(),
+                description: "a provider-owned tool".to_owned(),
+                schema: json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            }]
+        }
+
+        fn call<'a>(
+            &'a self,
+            name: &'a str,
+            _input: Value,
+        ) -> forge_mcp::ProviderFuture<'a, Option<Result<ToolOutput, String>>> {
+            Box::pin(async move {
+                if !self.claims || name != self.name {
+                    return None;
+                }
+                Some(self.answer.map(ToolOutput::text).map_err(str::to_owned))
+            })
+        }
+    }
+
+    async fn call_tool(server: &McpServer, name: &str) -> (Vec<Value>, bool) {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": { "name": name, "arguments": {} },
+        }))
+        .expect("a tools/call request");
+        let response = server.dispatch(&request).await.expect("an id-bearing request is answered");
+        match response.result.expect("tools/call answers") {
+            crate::mcp::protocol::JsonRpcResult::ToolsCall { content, is_error } => {
+                (content, is_error)
+            }
+            other => panic!("tools/call answered something else: {other:?}"),
+        }
+    }
+
+    /// **A provider's tools are dispatched back to the provider.** The
+    /// advertised name must reach its own `call`, a provider's failure must
+    /// cross as the tool's error, and a name advertised but no longer
+    /// claimed must answer loudly rather than as (or as an empty) success.
+    #[tokio::test]
+    async fn a_provider_tool_answers_ok_err_and_a_stale_name() {
+        let ok = McpServerBuilder::new("forge", "1.2.3")
+            .provider(Arc::new(Family { name: "vault__search", answer: Ok("found"), claims: true }))
+            .build();
+        let (content, is_error) = call_tool(&ok, "vault__search").await;
+        assert!(!is_error, "a provider's success is a success");
+        assert_eq!(content[0]["text"], "found", "the provider's own answer crosses");
+
+        let err = McpServerBuilder::new("forge", "1.2.3")
+            .provider(Arc::new(Family {
+                name: "vault__search",
+                answer: Err("the vault is locked"),
+                claims: true,
+            }))
+            .build();
+        let (content, is_error) = call_tool(&err, "vault__search").await;
+        assert!(is_error, "a provider's failure is the tool's failure");
+        assert_eq!(content[0]["text"], "the vault is locked");
+
+        let stale = McpServerBuilder::new("forge", "1.2.3")
+            .provider(Arc::new(Family {
+                name: "vault__search",
+                answer: Ok("found"),
+                claims: false,
+            }))
+            .build();
+        let (content, is_error) = call_tool(&stale, "vault__search").await;
+        assert!(is_error, "an advertised name no provider claims is an error, not a success");
+        assert!(
+            content[0]["text"].as_str().is_some_and(|text| text.contains("no registered provider")),
+            "and the error names the cause: {content:?}",
         );
     }
 }

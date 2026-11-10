@@ -68,6 +68,25 @@ fn the_host_reports_the_workspaces_app_support_dir() {
     );
 }
 
+/// The other app-support branch: a workspace that resolved no base answers
+/// the boot failure it recorded, so the preflight's record carries the cause
+/// rather than a bare absence.
+#[test]
+fn the_host_reports_the_recorded_app_support_failure() {
+    let cause = "no resolvable data/cache/home dir".to_owned();
+    assert_eq!(
+        app_support_answer(None, Some(&cause)),
+        Err("no resolvable data/cache/home dir".to_owned()),
+    );
+    assert_eq!(
+        app_support_answer(None, None),
+        Err("the workspace holds no app-support directory".to_owned()),
+        "a workspace with neither a base nor a recorded cause still answers a reason",
+    );
+    let base = std::path::PathBuf::from("/tmp/base");
+    assert_eq!(app_support_answer(Some(&base), None), Ok(base.clone()));
+}
+
 /// The progress leg of the host mapping: a take's window crosses to the
 /// wire with its done/total and the initiator that ordered it.
 #[test]
