@@ -312,7 +312,7 @@ impl Workspace {
     }
 
     /// Spawn the cron scheduler: a background task that wakes every
-    /// [`CRON_TICK_INTERVAL`] and fires every due cron. The registry makes a
+    /// `CRON_TICK_INTERVAL` and fires every due cron. The registry makes a
     /// second call a no-op.
     pub fn start_cron_scheduler(self: &Arc<Self>) {
         self.bind_cron();

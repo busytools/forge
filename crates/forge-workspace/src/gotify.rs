@@ -60,8 +60,8 @@ impl Workspace {
     /// that worker's), from both the active set and (when present) the
     /// redb store. Returns the row as it stood (`None` when nothing
     /// matched). Backs the owner-scoped `gotify__unsubscribe` so a caller
-    /// removes only what it subscribed, mirroring
-    /// [`Self::remove_cron_owned_by`]. Worker teardown uses
+    /// removes only what it subscribed, mirroring the cron family's
+    /// owner-scoped delete. Worker teardown uses
     /// [`Self::remove_gotify_subscriptions_for_worker`] instead and is
     /// deliberately not owner-gated.
     pub(crate) fn remove_gotify_subscription_owned_by(
