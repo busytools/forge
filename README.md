@@ -31,11 +31,12 @@ forge-tts             leaf: speech synthesis, depends on no forge-* crate
 forge-system-one      leaf: decision-model client, depends on no forge-* crate
 forge-terminal        leaf: the PTY and screen model, depends on no forge-* crate
 forge-supervise       leaf: subsystem supervision, depends on no forge-* crate
+forge-mcp             leaf: the MCP tool-provider seam, depends on no forge-* crate
 forge-gateway     ->  primitives
-forge-connectors  ->  primitives
-forge-sdk         ->  primitives
+forge-tools       ->  primitives + mcp
+forge-sdk         ->  primitives + mcp
 forge-agent       ->  primitives + sdk + gateway
-forge-workspace   ->  primitives + agent + sdk + dictate + tts + system-one + terminal + gateway + connectors
+forge-workspace   ->  primitives + agent + sdk + dictate + tts + system-one + terminal + gateway + tools + mcp
 forge-browser     ->  primitives + sdk
 forge-server      ->  primitives + workspace + sdk + browser
 forge-test-harness->  primitives + sdk
@@ -51,7 +52,8 @@ forge-test-harness->  primitives + sdk
 | [`forge-terminal`](crates/forge-terminal) | One terminal per seat: the PTY, the screen model and the read loop, the OSC 133 scanner and the shell integration scripts, the text extractor, the attach repaint, and the state classifier. `alacritty_terminal` is its only terminal dependency; the event loop is forge's own, because the client's stream is the raw bytes. A leaf: depends on no forge-* crate. |
 | [`forge-supervise`](crates/forge-supervise) | Supervision for forge's long-lived background tasks: one registry that starts a member's future, restarts a death with bounded backoff, refuses to resurrect a deliberate stop, and answers a snapshot of what is running. A leaf: depends on no forge-* crate. |
 | [`forge-gateway`](crates/forge-gateway) | The account pool: one backend per provider token (credential resolution, the usage probe's HTTP and payload mapping, billing shape), plus account selection by declared models, account health, probe scheduling and backoff. Depends on forge-primitives only. |
-| [`forge-connectors`](crates/forge-connectors) | One module per external integration: the Gotify and Slack connectors and the outbound Vaultwarden client. Depends on forge-primitives only. |
+| [`forge-mcp`](crates/forge-mcp) | The MCP tool-provider seam: a tool's description, the output it answers with, the `ToolProvider` trait an owning crate implements, and the composition a host uses. A leaf: depends on no forge-* crate, so an owning crate brings its own tools without depending on forge-sdk. |
+| [`forge-tools`](crates/forge-tools) | One module per external integration: the Gotify and Slack connectors, the outbound Vaultwarden client, and the vault family's session, tools and held asks. Depends on forge-primitives and forge-mcp. |
 | [`forge-sdk`](crates/forge-sdk) | The `claude` subprocess. Stream-json codec, transport, control dispatch, in-process MCP host, options builder. |
 | [`forge-agent`](crates/forge-agent) | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. User-data reads, cloud calls, environment probes, event translation, tooling. |
 | [`forge-workspace`](crates/forge-workspace) | Multi-session orchestrator and the server's single point of contact. Owns `forge.toml`, per-session actors, the machine-local state store, the in-process MCP server forge exposes to every spawned session, and the output-tail reader a call's own read answers from. |

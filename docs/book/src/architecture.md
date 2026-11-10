@@ -1,6 +1,6 @@
 # Architecture
 
-Fifteen crates, layered so the dependency graph stays acyclic.
+Sixteen crates, layered so the dependency graph stays acyclic.
 
 ```
 forge-primitives      leaf: pure data, no logic, no I/O, no async
@@ -10,11 +10,12 @@ forge-tts             leaf: speech synthesis, depends on no forge-* crate
 forge-system-one      leaf: decision-model client, depends on no forge-* crate
 forge-terminal        leaf: the PTY and screen model, depends on no forge-* crate
 forge-supervise       leaf: subsystem supervision, depends on no forge-* crate
+forge-mcp             leaf: the MCP tool-provider seam, depends on no forge-* crate
 forge-gateway     ->  primitives
-forge-connectors  ->  primitives
-forge-sdk         ->  primitives
+forge-tools       ->  primitives + mcp
+forge-sdk         ->  primitives + mcp
 forge-agent       ->  primitives + sdk + gateway
-forge-workspace   ->  primitives + agent + sdk + dictate + tts + system-one + terminal + gateway + connectors
+forge-workspace   ->  primitives + agent + sdk + dictate + tts + system-one + terminal + gateway + tools + mcp
 forge-browser     ->  primitives + sdk
 forge-server      ->  primitives + workspace + sdk + browser
 forge-test-harness->  primitives + sdk
@@ -30,7 +31,8 @@ forge-test-harness->  primitives + sdk
 | `forge-terminal`     | One terminal per seat: the PTY, the screen model and the read loop, the OSC 133 scanner and the shell integration scripts, the text extractor, the attach repaint, and the state classifier. `alacritty_terminal` is its only terminal dependency; the event loop is forge's own because the client's stream is the raw bytes and that loop consumes them. A leaf: it depends on no forge-* crate and knows nothing about a seat, a socket or a session - the workspace keys it by the slot, the server carries its bytes, the client draws them. |
 | `forge-supervise`    | Supervision for forge's long-lived background tasks: one registry that starts a member's future, restarts a death with bounded backoff, refuses to resurrect a deliberate stop, and answers a snapshot of what is running. A leaf: it depends on no forge-* crate, and a member's own loop stays in the crate that owns it. |
 | `forge-gateway`      | The account pool: one backend per provider token (credential resolution, the usage probe's HTTP and payload mapping, billing shape), plus account selection by declared models, account health, probe scheduling and backoff. Depends on forge-primitives only; the `claude --version` user agent and TLS-trust plumbing arrive through the host port forge-agent implements.                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `forge-connectors`   | One module per external integration: the Gotify and Slack connectors and the outbound Vaultwarden client behind the vault family. Depends on forge-primitives only; Gotify's workspace state and message dispatch arrive through the host port forge-workspace implements, and the vault's session, tokens and unlocked account live there.                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `forge-mcp`          | The MCP tool-provider seam: a tool's description (name, description, input schema), the output it answers with, the `ToolProvider` trait a crate owning a tool family implements, and the composition a host uses to ask its providers in order. A leaf: it depends on no forge-* crate and knows nothing about a server, a transport or the CLI subprocess, so an owning crate brings its own tools without depending on forge-sdk. |
+| `forge-tools`        | One module per external integration: the Gotify and Slack connectors, the outbound Vaultwarden client, and the vault family's own session, thirteen held tools and parked calls. Depends on forge-primitives and forge-mcp; Gotify's workspace state and message dispatch arrive through the host port forge-workspace implements. The vault family owns its tool descriptions, its ask registry and the policy behind answering one; the workspace keeps the machine-wide `[vault]` session and the registry handle, implements `VaultHost` and `VaultEmit`, and registers the family's `ToolProvider` and `AskSource`. |
 | `forge-sdk`          | The `claude` subprocess. Stream-json codec, transport, control dispatch, the in-process MCP host, and the options builder.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `forge-agent`        | Drives one SDK client behind a channel-based `Agent` and `AgentHandle`. Owns user-data reads, cloud calls, environment probes, event translation and tooling. Async, may shell out.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `forge-workspace`    | The multi-session orchestrator and the server's single point of contact. Owns `forge.toml` loading, `DomainSession`, per-session actors, the machine-local state store, the in-process MCP server forge exposes to every spawned session, and the output-tail reader a call's own read answers from. The browser tools it carries reach the fleet through the `BrowserHost` port this crate defines.                                                                                                                                                                                                                                                                                                                                                                                   |
@@ -78,11 +80,12 @@ Work top-down; the first match wins.
    owns the account pool, and the workspace drives it.
 6. **I/O for an external integration, inbound or outbound** (its stream
    client, REST lookups, subscription matching, a provider's client and
-   crypto) goes in `forge-connectors`, one module per integration. The
-   connector holds no workspace state; Gotify reaches the workspace
-   through the `GotifyHost` port that forge-workspace implements, Slack
-   holds only its Web API client, and the vault module carries no
-   session or keys.
+   crypto) goes in `forge-tools`, one module per integration. The
+   integration owns its own state, its MCP tools and its held asks; what
+   it needs from the workspace arrives through a host port (Gotify's
+   `GotifyHost`, the vault family's `VaultHost` and `VaultEmit`). Its
+   tools are described through `forge-mcp`'s `ToolProvider`, so the
+   family never depends on forge-sdk.
 7. **Anything that speaks stream-json to the subprocess** (a decoder, a
    new control-request subtype, transport, the MCP host, the options
    builder) goes in `forge-sdk`, and ships with a wire-conformance
@@ -293,7 +296,10 @@ joins them when `[systemone]` is configured and enabled, `voice` joins them
 when `[tts]` is on, and `vault` joins them when `[vault]` is configured.
 Every `vault__*` call is held for the reader's approval, and the shared
 session asks for the master password in the dock's masked field on the
-first call after a start. A worker's families can be
+first call after a start. A group's tools live with the integration that
+owns them: the vault family's are described in `forge-tools` and
+registered through `forge-mcp`'s tool-provider seam, and the in-process
+host composes them like any other group. A worker's families can be
 narrowed at spawn - `agents__spawn`'s `mcp_families` list, revised by
 `agents__update` and stored on the worker's durable record - and each
 withheld family is named in that worker's own prompt. The `agents` group

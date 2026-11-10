@@ -508,33 +508,10 @@ pub enum SessionChipState {
     RateLimited,
 }
 
-/// What a session is waiting on a person for. The kind a needs-you row
-/// names, since "asked you a question" and "a permission prompt is
-/// waiting" are different asks with the same mark.
-///
-/// **One variant per ask source, and every source is here.** A question and
-/// a permission park in the session's pending set; a Slack draft, the
-/// browser, terminal and document hand-offs, a settings write and a vault
-/// call each park in a registry of the workspace's own. The split between
-/// those places is what let a terminal hand-off draw in the dock and mark
-/// nothing (#2954), the third time a kind was missed;
-/// [`Workspace::pending_interaction`] reads every source through one order.
-/// A new ask kind fails the build in the guard test's census until it is
-/// named there, and the census is what parks one of each and asserts the
-/// needs-you path answers it - so a kind cannot be named without being
-/// covered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PendingInteractionKind {
-    Question,
-    Permission,
-    SlackDraft,
-    BrowserHandOff,
-    TerminalHandOff,
-    DocumentHandOff,
-    SettingsWrite,
-    Vault,
-}
+// The kind a needs-you row names lives in forge-primitives, so a subsystem
+// port can name one without depending on the workspace. See the type's own
+// docs for the one-variant-per-source rule and the guard that enforces it.
+pub use forge_primitives::PendingInteractionKind;
 
 /// The dedupe key for a delivered Slack message: one destination is
 /// (project, owner, conversation, ts, edited), so a lead and a worker in
@@ -693,7 +670,21 @@ pub struct Workspace {
     /// the vault tools out of every session. Rebuilt by
     /// [`Workspace::reload_config`] only when the section itself changed, so
     /// an unrelated settings save never locks a live vault.
-    pub(crate) vault: parking_lot::RwLock<Option<Arc<crate::vault::VaultSession>>>,
+    ///
+    /// Shared (`Arc`) with the family's ask registry, which stamps every
+    /// parked card from the live session on each read.
+    pub(crate) vault: Arc<parking_lot::RwLock<Option<Arc<forge_tools::vault::VaultSession>>>>,
+    /// Vault calls held for the reader's approval. The family owns the
+    /// registry; the workspace holds it because the dispatch arms and the
+    /// teardown sweep route through it, and registers it as one of the ask
+    /// sources every needs-you read walks.
+    pub(crate) vault_asks: Arc<forge_tools::vault::VaultAsks>,
+    /// The family's updates mapped onto the wire and its arrivals numbered.
+    pub(crate) vault_ports: Arc<crate::vault_host::VaultPorts>,
+    /// Every ask source the core reads, in the order a dock draws them:
+    /// the session's own pending set is not here (it lives on the seat's
+    /// `DomainSession`), and each registry that parks an ask is.
+    pub(crate) ask_sources: Vec<Arc<dyn forge_primitives::AskSource>>,
     /// The per-seat voice service, built on first use: its sink and its note
     /// dispatch hold a `Weak<Workspace>`, which does not exist while the
     /// value is still being constructed.
@@ -769,7 +760,7 @@ pub struct Workspace {
     /// The parked document hand-offs, under their ids: each holds the
     /// awaiting tool's sender until the reader's answer releases it.
     pub(crate) document_handoffs:
-        parking_lot::Mutex<HashMap<uuid::Uuid, crate::documents::ParkedDocument>>,
+        Arc<parking_lot::Mutex<HashMap<uuid::Uuid, crate::documents::ParkedDocument>>>,
     /// The model catalogue: the last fetched feed and what the last check
     /// did. Loaded from its cache at boot, refreshed by
     /// `start_dictate_catalogue` and `Command::DictateCatalogueCheck`, and
@@ -1146,13 +1137,13 @@ pub struct Workspace {
     /// draft id and carrying the session that asked. The owner is stored
     /// beside it so an answer is only ever applied by the session it was
     /// addressed to.
-    pub(crate) slack_drafts: Mutex<HashMap<uuid::Uuid, ParkedSlackDraft>>,
+    pub(crate) slack_drafts: Arc<Mutex<HashMap<uuid::Uuid, ParkedSlackDraft>>>,
     /// Browser hand-offs parked for the person at a client, keyed by their id
     /// and carrying the session that asked. The owner is stored beside each so
     /// an answer is only ever applied by the session it was addressed to; the
     /// blocked `browser_hand_off` handler awaits the sender, with no timeout,
     /// for as long as the person takes.
-    pub(crate) browser_handoffs: Mutex<HashMap<uuid::Uuid, ParkedBrowserHandOff>>,
+    pub(crate) browser_handoffs: Arc<Mutex<HashMap<uuid::Uuid, ParkedBrowserHandOff>>>,
     /// The per-seat terminals, created lazily on first use and living as long
     /// as the seat: `/new`, `/resume` and a handoff leave the PTY, its shell
     /// and its scrollback untouched; a release ends the seat and its
@@ -1162,7 +1153,7 @@ pub struct Workspace {
     /// id and carrying the session that asked. The blocked `terminal__hand_off`
     /// handler awaits the sender, with no timeout, for as long as the person
     /// takes.
-    pub(crate) terminal_handoffs: Mutex<HashMap<uuid::Uuid, ParkedTerminalHandOff>>,
+    pub(crate) terminal_handoffs: Arc<Mutex<HashMap<uuid::Uuid, ParkedTerminalHandOff>>>,
     /// The id the next terminal takes. **One per seat today**, but the wire
     /// carries an id so a second terminal per seat is additive rather than a
     /// protocol change.
@@ -1173,17 +1164,11 @@ pub struct Workspace {
     /// domain, and nothing reaches `forge.toml` until the blocked handler's
     /// oneshot is answered.
     pub(crate) settings_writes:
-        Mutex<HashMap<uuid::Uuid, crate::settings_ask::ParkedSettingsWrite>>,
-    /// Vault calls held for the reader's approval, keyed by the call's id and
-    /// carrying the session that asked. Its own registry for the same reason
-    /// the settings write's is: a held call exists on a seat with no domain,
-    /// and no operation runs in the vault until the blocked handler's oneshot is
-    /// answered.
-    pub(crate) parked_vault_asks: Mutex<HashMap<uuid::Uuid, crate::vault_ask::ParkedVaultAsk>>,
+        Arc<Mutex<HashMap<uuid::Uuid, crate::settings_ask::ParkedSettingsWrite>>>,
     /// How many asks have ever arrived for a seat. **The ask's identity on the
     /// wire**: one ask replacing another reads as a different ask, and
     /// answering one of several leaves the number where it was.
-    pending_seq: Mutex<HashMap<SessionSlot, u64>>,
+    pending_seq: Arc<Mutex<HashMap<SessionSlot, u64>>>,
     /// Slack messages handed to a session recently, keyed by
     /// `(project, owner, conversation, ts)`. A sweep re-runs a batch
     /// whenever a 429 lands mid-sweep, a watermark write fails, or the
@@ -2486,27 +2471,54 @@ impl Workspace {
         // announces a rotation through this fan-out, and the session is made
         // before the struct's own field exists.
         let update_tx = UpdateFanout::default();
-        let vault = match config.vault.as_ref() {
-            Some(vault_config) => Some(Arc::new(
-                crate::vault::VaultSession::with_client(
-                    vault_config,
-                    app_support.as_deref(),
-                    &config_dir,
-                    crate::vault::production_client(&vault_config.url).map_err(|error| {
-                        WorkspaceError::ConfigInvalid {
-                            path: crate::config::forge_data_dir(&config_dir).join("forge.toml"),
-                            message: format!("[vault] {error}"),
-                        }
-                    })?,
-                    update_tx.clone(),
-                )
-                .map_err(|error| WorkspaceError::ConfigInvalid {
-                    path: crate::config::forge_data_dir(&config_dir).join("forge.toml"),
-                    message: format!("[vault] {error}"),
+        let pending_seq: Arc<Mutex<HashMap<SessionSlot, u64>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let vault_ports = Arc::new(crate::vault_host::VaultPorts::new(
+            update_tx.clone(),
+            Arc::clone(&pending_seq),
+        ));
+        let vault: Arc<parking_lot::RwLock<Option<Arc<forge_tools::vault::VaultSession>>>> =
+            Arc::new(parking_lot::RwLock::new(None));
+        if let Some(vault_config) = config.vault.as_ref() {
+            let emit: Arc<dyn forge_tools::vault::VaultEmit> = vault_ports.clone();
+            let session = forge_tools::vault::VaultSession::with_client(
+                vault_config,
+                app_support.as_deref(),
+                &forge_sdk::config_dir_store_key(&config_dir),
+                crate::vault_host::production_client(&vault_config.url).map_err(|error| {
+                    WorkspaceError::ConfigInvalid {
+                        path: crate::config::forge_data_dir(&config_dir).join("forge.toml"),
+                        message: format!("[vault] {error}"),
+                    }
                 })?,
-            )),
-            None => None,
-        };
+                emit,
+            )
+            .map_err(|error| WorkspaceError::ConfigInvalid {
+                path: crate::config::forge_data_dir(&config_dir).join("forge.toml"),
+                message: format!("[vault] {error}"),
+            })?;
+            *vault.write() = Some(Arc::new(session));
+        }
+        let sink: Arc<dyn forge_primitives::AskSink> = vault_ports.clone();
+        let emit: Arc<dyn forge_tools::vault::VaultEmit> = vault_ports.clone();
+        let vault_asks =
+            Arc::new(forge_tools::vault::VaultAsks::new(Arc::clone(&vault), emit, sink));
+        let slack_drafts = Arc::new(Mutex::new(HashMap::new()));
+        let browser_handoffs = Arc::new(Mutex::new(HashMap::new()));
+        let terminal_handoffs = Arc::new(Mutex::new(HashMap::new()));
+        let document_handoffs = Arc::new(parking_lot::Mutex::new(HashMap::new()));
+        let settings_writes = Arc::new(Mutex::new(HashMap::new()));
+        // **One registration list.** Every needs-you read walks it, and the
+        // guard test's table is what these sources name, so a new kind cannot
+        // be added without a source that raises it.
+        let ask_sources: Vec<Arc<dyn forge_primitives::AskSource>> = vec![
+            Arc::new(crate::ask_sources::SlackDrafts(Arc::clone(&slack_drafts))),
+            Arc::new(crate::ask_sources::BrowserHandOffs(Arc::clone(&browser_handoffs))),
+            Arc::new(crate::ask_sources::TerminalHandOffs(Arc::clone(&terminal_handoffs))),
+            Arc::new(crate::ask_sources::DocumentHandOffs(Arc::clone(&document_handoffs))),
+            vault_asks.clone(),
+            Arc::new(crate::ask_sources::SettingsWrites(Arc::clone(&settings_writes))),
+        ];
 
         // Catalog scan reads against the workspace's canonical
         // `config_dir` (where forge.toml lives). Each spawn binds to
@@ -2585,7 +2597,6 @@ impl Workspace {
             reload_generation: std::sync::atomic::AtomicU64::new(0),
             reload_gate: std::sync::Mutex::new(()),
             systemone: parking_lot::RwLock::new(systemone),
-            vault: parking_lot::RwLock::new(vault),
             voice: std::sync::OnceLock::new(),
             voice_preview_error: std::sync::Mutex::new(None),
             catalog,
@@ -2610,7 +2621,7 @@ impl Workspace {
             #[cfg(any(test, feature = "testing"))]
             live_seats_gate: Mutex::new(None),
             attached_clients: std::sync::atomic::AtomicUsize::new(0),
-            document_handoffs: parking_lot::Mutex::new(HashMap::new()),
+            document_handoffs,
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
             dictate_install: Mutex::new(crate::install::InstallState::default()),
             plugin_cli: Mutex::new(crate::plugins::PluginCli::real()),
@@ -2686,14 +2697,17 @@ impl Workspace {
             slack_thread_first_walks: Mutex::new(std::collections::HashSet::new()),
             slack_thread_edit_watermarks: Mutex::new(std::collections::HashMap::new()),
             slack_ledger_failures: Mutex::new(std::collections::HashSet::new()),
-            slack_drafts: Mutex::new(HashMap::new()),
-            browser_handoffs: Mutex::new(HashMap::new()),
+            slack_drafts,
+            browser_handoffs,
             terminals: Mutex::new(HashMap::new()),
-            terminal_handoffs: Mutex::new(HashMap::new()),
+            terminal_handoffs,
             next_terminal_id: std::sync::atomic::AtomicU16::new(1),
-            settings_writes: Mutex::new(HashMap::new()),
-            parked_vault_asks: Mutex::new(HashMap::new()),
-            pending_seq: Mutex::new(HashMap::new()),
+            settings_writes,
+            vault,
+            vault_asks,
+            vault_ports,
+            ask_sources,
+            pending_seq,
             slack_recently_delivered: Mutex::new(HashMap::new()),
             slack_load_failed: std::sync::atomic::AtomicBool::new(slack_load_failed),
             slack_user_id_retries: Mutex::new(std::collections::BTreeMap::new()),
@@ -2779,24 +2793,27 @@ impl Workspace {
             Some(vault_config) if self.config.read().vault.as_ref() == Some(vault_config) => {
                 self.vault.read().clone()
             }
-            Some(vault_config) => Some(Arc::new(
-                crate::vault::VaultSession::with_client(
-                    vault_config,
-                    self.app_support.as_deref(),
-                    &self.config_dir,
-                    crate::vault::production_client(&vault_config.url).map_err(|error| {
-                        WorkspaceError::ConfigInvalid {
-                            path: forge_toml.clone(),
-                            message: format!("[vault] {error}"),
-                        }
+            Some(vault_config) => {
+                let emit: Arc<dyn forge_tools::vault::VaultEmit> = self.vault_ports.clone();
+                Some(Arc::new(
+                    forge_tools::vault::VaultSession::with_client(
+                        vault_config,
+                        self.app_support.as_deref(),
+                        &forge_sdk::config_dir_store_key(&self.config_dir),
+                        crate::vault_host::production_client(&vault_config.url).map_err(
+                            |error| WorkspaceError::ConfigInvalid {
+                                path: forge_toml.clone(),
+                                message: format!("[vault] {error}"),
+                            },
+                        )?,
+                        emit,
+                    )
+                    .map_err(|error| WorkspaceError::ConfigInvalid {
+                        path: forge_toml.clone(),
+                        message: format!("[vault] {error}"),
                     })?,
-                    self.update_tx.clone(),
-                )
-                .map_err(|error| WorkspaceError::ConfigInvalid {
-                    path: forge_toml.clone(),
-                    message: format!("[vault] {error}"),
-                })?,
-            )),
+                ))
+            }
             None => None,
         };
 
@@ -3825,7 +3842,18 @@ impl Workspace {
                     systemone: systemone_facade,
                     voice: self.voice_service(),
                     vault: self.vault.read().as_ref().map(|_| {
-                        crate::mcp::vault::facade::ProdVaultFacade::from_arc(self).into_arc()
+                        // The family owns the facade and the tools; the host
+                        // hands it a weak reference to itself and the registry
+                        // its calls park in, so the family never keeps the
+                        // workspace alive.
+                        let host: Arc<dyn forge_tools::vault::VaultHost> = self.clone();
+                        let facade: Arc<dyn forge_tools::vault::VaultFacade> =
+                            Arc::new(forge_tools::vault::ProdVaultFacade::new(
+                                Arc::downgrade(&host),
+                                Arc::clone(&self.vault_asks),
+                            ));
+                        Arc::new(forge_tools::vault::VaultTools::new(facade, session_slot.clone()))
+                            as Arc<dyn forge_mcp::ToolProvider>
                     }),
                 },
                 &families,
@@ -6760,7 +6788,7 @@ impl Workspace {
                 }
             }
             Command::RespondVaultAsk { key, id, .. } => {
-                let waiting = self.vault_ask_waiting(*id, key);
+                let waiting = self.vault_asks.is_waiting(*id, key);
                 if !waiting {
                     return Err(DispatchError::NoVaultAskWaiting { key: key.clone(), id: *id });
                 }
@@ -7312,7 +7340,7 @@ impl Workspace {
                     }
                 }
                 Command::RespondVaultAsk { key, id, answer } => {
-                    let answered = self.resolve_vault_ask(id, &key, answer);
+                    let answered = self.vault_asks.resolve(id, &key, answer);
                     if !answered {
                         return Err(DispatchError::NoVaultAskWaiting { key: key.clone(), id });
                     }
@@ -8545,7 +8573,7 @@ impl Workspace {
         self.abandon_settings_writes(session_key);
         // A parked vault call is the same shape: the blocked tool handler
         // cannot be answered by a session that is gone.
-        self.abandon_vault_asks(session_key);
+        self.vault_asks.abandon(session_key);
         // Anything parked for this session's owner was waiting on a
         // session that is now gone: fail the peer asks so their callers
         // are told, rather than letting them wait out the timeout.
@@ -8812,22 +8840,35 @@ impl Workspace {
         self.pending_ask_ledger(slot).iter().map(|(_, held)| held).sum()
     }
 
-    /// Every ask source, in [`Self::pending_interaction`]'s precedence
-    /// order, with the number of asks each holds.
+    /// Every ask kind the core can mark, in [`Self::pending_interaction`]'s
+    /// precedence order, with the number held.
     ///
     /// **One list feeds the kind and the depth**, so a source cannot be
     /// counted without being answered or answered without being counted.
-    /// The guard test parks one ask of every kind and reads both back.
+    /// The registries come from [`Self::ask_sources`], the registered list a
+    /// moved subsystem joins; the session's own pending set is read here
+    /// because it lives on the seat's `DomainSession`, not in a registry.
     ///
-    /// **Lock order:** each registry read takes and releases its own lock,
-    /// and the domain guard is off before the registry reads after it, so no
-    /// path here holds a registry lock and the domain lock together.
-    fn pending_ask_ledger(&self, slot: &SessionSlot) -> [(PendingInteractionKind, usize); 8] {
-        let documents = self.document_handoffs.lock().values().filter(|h| &h.seat == slot).count();
-        let browsers =
-            self.browser_handoffs.lock().values().filter(|(owner, _, _)| owner == slot).count();
-        let terminals =
-            self.terminal_handoffs.lock().values().filter(|(owner, _, _)| owner == slot).count();
+    /// **Lock order:** each source read takes and releases its own lock, and
+    /// the domain guard is off before the sources are read, so no path here
+    /// holds a registry lock and the domain lock together.
+    fn pending_ask_ledger(&self, slot: &SessionSlot) -> Vec<(PendingInteractionKind, usize)> {
+        // **The precedence order is the core's, not a source's.** It is what
+        // a needs-you row names when a seat holds several asks, and it stays
+        // here so registration order never changes what a row draws.
+        const PRECEDENCE: [PendingInteractionKind; 8] = [
+            PendingInteractionKind::DocumentHandOff,
+            PendingInteractionKind::BrowserHandOff,
+            PendingInteractionKind::TerminalHandOff,
+            PendingInteractionKind::Question,
+            PendingInteractionKind::Permission,
+            PendingInteractionKind::SlackDraft,
+            PendingInteractionKind::SettingsWrite,
+            PendingInteractionKind::Vault,
+        ];
+        let mut ledger: Vec<(PendingInteractionKind, usize)> =
+            PRECEDENCE.into_iter().map(|kind| (kind, 0)).collect();
+
         let (questions, permissions) = match self.domain_session_for(slot) {
             Some(domain) => {
                 let guard = domain.lock();
@@ -8843,22 +8884,22 @@ impl Workspace {
             }
             None => (0, 0),
         };
-        let drafts =
-            self.slack_drafts.lock().values().filter(|(owner, _, _)| owner == slot).count();
-        let writes =
-            self.settings_writes.lock().values().filter(|(owner, _, _)| owner == slot).count();
-        let vaults =
-            self.parked_vault_asks.lock().values().filter(|(owner, _, _)| owner == slot).count();
-        [
-            (PendingInteractionKind::DocumentHandOff, documents),
-            (PendingInteractionKind::BrowserHandOff, browsers),
-            (PendingInteractionKind::TerminalHandOff, terminals),
+        for source in &self.ask_sources {
+            for ask in source.asks(slot) {
+                if let Some(entry) = ledger.iter_mut().find(|(kind, _)| *kind == ask.kind) {
+                    entry.1 += 1;
+                }
+            }
+        }
+        for (kind, count) in [
             (PendingInteractionKind::Question, questions),
             (PendingInteractionKind::Permission, permissions),
-            (PendingInteractionKind::SlackDraft, drafts),
-            (PendingInteractionKind::SettingsWrite, writes),
-            (PendingInteractionKind::Vault, vaults),
-        ]
+        ] {
+            if let Some(entry) = ledger.iter_mut().find(|(held, _)| *held == kind) {
+                entry.1 += count;
+            }
+        }
+        ledger
     }
 
     /// Note that an ask arrived for `slot`.
@@ -8934,38 +8975,14 @@ impl Workspace {
     /// A draft leads because it is parked in its own registry rather than in
     /// the session's pending set, so a seat with no domain can still hold one.
     pub fn pending_asks(&self, slot: &SessionSlot) -> Vec<crate::protocol::PendingAsk> {
-        let mut asks = Vec::new();
-        {
-            let parked = self.slack_drafts.lock();
-            asks.extend(parked.values().filter(|(owner, _, _)| owner == slot).map(
-                |(_, draft, _)| crate::protocol::PendingAsk::SlackDraft(Box::new(draft.clone())),
-            ));
-        }
-        {
-            let parked = self.browser_handoffs.lock();
-            asks.extend(parked.values().filter(|(owner, _, _)| owner == slot).map(
-                |(_, handoff, _)| {
-                    crate::protocol::PendingAsk::BrowserHandOff(Box::new(handoff.clone()))
-                },
-            ));
-        }
-        {
-            let parked = self.terminal_handoffs.lock();
-            asks.extend(parked.values().filter(|(owner, _, _)| owner == slot).map(
-                |(_, handoff, _)| {
-                    crate::protocol::PendingAsk::TerminalHandOff(Box::new(handoff.clone()))
-                },
-            ));
-        }
-        {
-            let parked = self.document_handoffs.lock();
-            asks.extend(parked.values().filter(|held| &held.seat == slot).map(|held| {
-                crate::protocol::PendingAsk::DocumentHandOff(Box::new(held.ask.clone()))
-            }));
-        }
-        let needs_unlock = self.vault.read().as_ref().is_some_and(|session| session.is_locked());
-        asks.extend(self.vault_asks(slot, needs_unlock));
-        asks.extend(self.settings_write_asks(slot));
+        // The registered sources in registration order, each in its own
+        // order; then the session's own pending set, which is not a registry.
+        let mut asks: Vec<crate::protocol::PendingAsk> = self
+            .ask_sources
+            .iter()
+            .flat_map(|source| source.asks(slot))
+            .map(|ask| ask.payload)
+            .collect();
         if let Some(domain) = self.domain_session_for(slot) {
             let guard = domain.lock();
             asks.extend(
@@ -18816,16 +18833,15 @@ mod worker_activity_tests {
         );
     }
 
-    /// One list, expanded twice: the exhaustive match naming an ask's
-    /// needs-you kind, and the fixture list the guard test parks.
+    /// The compiler's half of the census: the exhaustive match naming an
+    /// ask's needs-you kind, and the kind list it implies.
     ///
-    /// **A new `PendingAsk` variant cannot be named without being parked.**
+    /// **A new `PendingAsk` variant cannot be named without being mapped.**
     /// The generated match is exhaustive, so the variant must be added to
-    /// this one list; the list is also what the test iterates, so its
-    /// fixture is constructed, read back and asserted. A variant mapped onto
-    /// a kind another variant already names leaves a duplicate in
-    /// `ASK_KINDS`, which the test refuses - so every ask kind is exercised
-    /// on its own.
+    /// this one list, and `ASK_KINDS` grows with it. The guard test then
+    /// compares that list against the sources the workspace actually
+    /// registered - so a variant whose source was never registered fails
+    /// the test rather than being quietly uncounted.
     macro_rules! ask_census {
         ($($kind:ident => $variant:ident),* $(,)?) => {
             ask_census!(@match; [] $($kind $variant,)*);
@@ -18953,7 +18969,7 @@ mod worker_activity_tests {
             }
             PendingInteractionKind::Vault => {
                 ws.note_client_attached();
-                let (_id, _answer, _) = ws.register_vault_ask(
+                let (_id, _answer, _) = ws.vault_asks.register(
                     &seat,
                     forge_primitives::vault::VaultDraft::new(
                         forge_primitives::vault::VaultTool::Search,
@@ -18966,12 +18982,34 @@ mod worker_activity_tests {
         seat
     }
 
-    /// **Every ask kind is a needs-you kind.** Each kind the census names is
-    /// parked on a seat of its own and must read the kind back, say
-    /// `Attention`, count exactly one, and carry its own number - the last
-    /// what proves a registry registration announced its ask, and for a
-    /// prompt what proves its arrival was numbered. The terminal is here
-    /// because it drew in the dock and marked nothing (#2954).
+    /// The kinds the guard parks: **the registered ask sources' own lists**,
+    /// plus the two the session's own pending set carries. The list is what
+    /// the core reads, so parking one of each is parking every kind the
+    /// needs-you path can answer.
+    fn registered_kinds(ws: &Workspace) -> Vec<PendingInteractionKind> {
+        let mut kinds: Vec<PendingInteractionKind> = ws
+            .ask_sources
+            .iter()
+            .flat_map(|source| forge_primitives::AskSource::kinds(source.as_ref()).iter().copied())
+            .collect();
+        kinds.push(PendingInteractionKind::Question);
+        kinds.push(PendingInteractionKind::Permission);
+        kinds
+    }
+
+    /// **Every ask kind is a needs-you kind.** Each kind a registered source
+    /// raises (plus the two the session's own pending set carries) is parked
+    /// on a seat of its own and must read the kind back, say `Attention`,
+    /// count exactly one, and carry its own number - the last what proves a
+    /// registration announced its ask, and for a prompt what proves its
+    /// arrival was numbered. The terminal is here because it drew in the
+    /// dock and marked nothing (#2954).
+    ///
+    /// **The table is the registration, not a second list.** The kinds come
+    /// from the sources the workspace registered, and the compiler's census
+    /// is checked against them in both directions - so a kind with no
+    /// registered source, and a source raising a kind the census does not
+    /// name, each fail here rather than being quietly uncounted.
     #[tokio::test]
     async fn every_ask_kind_marks_its_seat() {
         let (ws, _rx) = Workspace::testing_stub();
@@ -18979,11 +19017,25 @@ mod worker_activity_tests {
         let (calls, _heard) = tokio::sync::mpsc::unbounded_channel();
         ws.install_browser_host(std::sync::Arc::new(crate::browser::testing::StubHost { calls }));
 
+        let kinds = registered_kinds(&ws);
+        for kind in ASK_KINDS {
+            assert!(
+                kinds.contains(kind),
+                "{kind:?} is named by the census but no registered source raises it",
+            );
+        }
+        for kind in &kinds {
+            assert!(
+                ASK_KINDS.contains(kind),
+                "{kind:?} is raised by a registered source but the census does not name it",
+            );
+        }
+
         let mut named: Vec<PendingInteractionKind> = Vec::new();
-        for (index, kind) in ASK_KINDS.iter().enumerate() {
+        for (index, kind) in kinds.iter().enumerate() {
             assert!(
                 !named.contains(kind),
-                "{kind:?} is named by two ask variants, so one of them is never parked",
+                "{kind:?} is named by two ask sources, so one of them is never parked",
             );
             named.push(*kind);
             let seat = park_one(&ws, &format!("ask-{index}"), *kind).await;
@@ -19134,7 +19186,7 @@ mod worker_activity_tests {
             },
         );
         assert_eq!(ws.pending_request_seq(&seat), 3, "a settings write is an ask");
-        let (_id, _answer, _) = ws.register_vault_ask(
+        let (_id, _answer, _) = ws.vault_asks.register(
             &seat,
             forge_primitives::vault::VaultDraft::new(
                 forge_primitives::vault::VaultTool::Search,
@@ -19733,14 +19785,14 @@ mod worker_activity_tests {
             forge_primitives::vault::VaultTool::Search,
             "search for 'bank'",
         );
-        let (id, _held, _) = ws.register_vault_ask(&seat, draft, false);
+        let (id, _held, _) = ws.vault_asks.register(&seat, draft, false);
         assert_eq!(
             ws.session_activity(&seat),
             L::Attention,
             "a held vault call is a person's to answer, not a running turn's",
         );
 
-        assert!(ws.resolve_vault_ask(
+        assert!(ws.vault_asks.resolve(
             id,
             &seat,
             forge_primitives::vault::VaultAskAnswer {
@@ -19750,7 +19802,9 @@ mod worker_activity_tests {
                 released: None,
             },
         ));
-        assert!(ws.settle_vault_ask(id, &seat, forge_primitives::vault::VaultAskEnding::Declined,));
+        assert!(
+            ws.vault_asks.settle(id, &seat, forge_primitives::vault::VaultAskEnding::Declined,)
+        );
         assert_eq!(ws.session_activity(&seat), L::Running, "answered, the turn runs again");
     }
 

@@ -16,12 +16,12 @@ pub(crate) mod facade;
 
 use std::sync::Arc;
 
-use forge_connectors::slack::SlackHistoryMessage;
 use forge_primitives::slack::{
     SlackConversation, SlackSubscription, SlackSubscriptionTarget, SlackWatchMode,
 };
 use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
+use forge_tools::slack::SlackHistoryMessage;
 use uuid::Uuid;
 
 use crate::SessionSlot;
@@ -1584,11 +1584,11 @@ mod tests {
     use super::*;
     use crate::mcp::slack::facade::{MockSlackFacade, SlackPostOutcome, SlackWorkspaceError};
     use crate::mcp::test_support::text_of;
-    use forge_connectors::slack::AuthTest;
     use forge_primitives::slack::{
         SlackBookmark, SlackConversation, SlackConversationText, SlackPin, SlackPinMessage,
         SlackUser, SlackUserProfile,
     };
+    use forge_tools::slack::AuthTest;
     use std::sync::Arc;
 
     fn channel(id: &str, name: &str) -> SlackConversation {
@@ -1965,15 +1965,15 @@ mod tests {
     #[test]
     fn the_gated_slack_descriptions_state_that_a_send_back_expects_a_revision() {
         let facade: Arc<dyn SlackFacade> = Arc::new(MockSlackFacade::new());
-        let post = Post { facade: facade.clone(), slot: caller_slot() }.description();
-        let edit = Edit { facade: facade.clone(), slot: caller_slot() }.description();
-        let react = React { facade: facade.clone(), slot: caller_slot() }.description();
-        let attachment = Attachment { facade, slot: caller_slot() }.description();
+        let post = Post { facade: facade.clone(), slot: caller_slot() }.description().to_owned();
+        let edit = Edit { facade: facade.clone(), slot: caller_slot() }.description().to_owned();
+        let react = React { facade: facade.clone(), slot: caller_slot() }.description().to_owned();
+        let attachment = Attachment { facade, slot: caller_slot() }.description().to_owned();
         for (name, description) in [
-            ("slack__post", post),
-            ("slack__edit", edit),
-            ("slack__react", react),
-            ("slack__attachment", attachment),
+            ("slack__post", &post),
+            ("slack__edit", &edit),
+            ("slack__react", &react),
+            ("slack__attachment", &attachment),
         ] {
             assert!(
                 description.contains("send the draft back with feedback"),

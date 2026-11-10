@@ -1,0 +1,21 @@
+[package]
+name = "forge-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "The tool-provider seam: the description an MCP tool carries, the output it answers with, and the trait a crate owning a tool family implements. No host, no transport."
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+base64 = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

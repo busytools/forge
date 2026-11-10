@@ -9,13 +9,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
-use forge_connectors::slack::{
-    AuthTest, MENTION_CURSOR, SlackApi, SlackError, SlackHistoryMessage, flatten_mrkdwn,
-    mention_ids, one_line_excerpt, read_thread, shared_messages, thread_parent, user_display_name,
-};
 use forge_primitives::slack::{
     SlackBookmark, SlackConversation, SlackDraft, SlackPerson, SlackPin, SlackSearchMatch,
     SlackSubscription, SlackSubscriptionTarget, SlackThreadName, SlackUser, SlackWatchMode,
+};
+use forge_tools::slack::{
+    AuthTest, MENTION_CURSOR, SlackApi, SlackError, SlackHistoryMessage, flatten_mrkdwn,
+    mention_ids, one_line_excerpt, read_thread, shared_messages, thread_parent, user_display_name,
 };
 use uuid::Uuid;
 
@@ -785,7 +785,7 @@ impl SlackFacade for ProdSlackFacade {
             .strip_prefix('#')
             .unwrap_or(&draft.conversation_label)
             .to_owned();
-        let parts = forge_connectors::slack::split_for_post(&draft.text);
+        let parts = forge_tools::slack::split_for_post(&draft.text);
         let mut ts: Vec<String> = Vec::new();
         for part in &parts {
             // One guard per call, covering the call and its ledger write:
@@ -1665,14 +1665,14 @@ mod tests {
     use crate::mcp::slack::Unsubscribe;
     use crate::mcp::test_support::text_of;
     use crate::slack::DraftResolution;
-    use forge_connectors::slack::{
-        AuthTest, MessagePage, PostedMessage, SearchPage, SlackApi, SlackError,
-    };
     use forge_primitives::slack::{
         SlackBookmark, SlackConfig, SlackDraftAnswer, SlackDraftEnding, SlackDraftOperation,
         SlackFile, SlackFileShare, SlackFileShares, SlackPin, SlackPinMessage, SlackUserProfile,
     };
     use forge_sdk::mcp::tool::{Tool as _, ToolInput};
+    use forge_tools::slack::{
+        AuthTest, MessagePage, PostedMessage, SearchPage, SlackApi, SlackError,
+    };
     use std::collections::{BTreeMap, HashMap};
     use tempfile::tempdir;
 
@@ -3169,7 +3169,7 @@ token = "y"
     #[tokio::test]
     async fn a_multi_part_post_ledgers_every_landed_part() {
         let (facade, ws, _api, _rx, _dir) = facade_with_recording_slack_and_store();
-        let text = "a".repeat(forge_connectors::slack::POST_LIMIT + 1);
+        let text = "a".repeat(forge_tools::slack::POST_LIMIT + 1);
 
         let task = tokio::spawn({
             let facade = facade.clone();
@@ -3225,7 +3225,7 @@ token = "y"
     async fn a_partial_multi_part_post_ledgers_the_parts_slack_took() {
         let (facade, ws, api, _rx, _dir) = facade_with_recording_slack_and_store();
         api.fail_post_at(1);
-        let text = "a".repeat(forge_connectors::slack::POST_LIMIT + 1);
+        let text = "a".repeat(forge_tools::slack::POST_LIMIT + 1);
 
         let task = tokio::spawn({
             let facade = facade.clone();
@@ -3284,7 +3284,7 @@ token = "y"
     async fn each_post_part_takes_a_fresh_in_flight_mark() {
         let (facade, ws, api, _rx, _dir) = facade_with_recording_slack_and_store();
         let gate = api.park_posts();
-        let text = "a".repeat(forge_connectors::slack::POST_LIMIT + 1);
+        let text = "a".repeat(forge_tools::slack::POST_LIMIT + 1);
 
         let task = tokio::spawn({
             let facade = facade.clone();
@@ -3296,7 +3296,7 @@ token = "y"
         until(|| ws.slack_post_in_flight("acme", "C1").is_some()).await;
         // As if the first part had used its whole request budget.
         let stale = std::time::Instant::now()
-            .checked_sub(forge_connectors::slack::REQUEST_TIMEOUT)
+            .checked_sub(forge_tools::slack::REQUEST_TIMEOUT)
             .and_then(|instant| instant.checked_sub(std::time::Duration::from_secs(1)))
             .expect("the clock is past the timeout");
         ws.slack_inflight
@@ -3853,7 +3853,7 @@ token = "y"
     #[tokio::test]
     async fn a_split_draft_reports_its_part_count() {
         let (facade, ws, api, _rx) = facade_with_recording_slack();
-        let long = "x".repeat(forge_connectors::slack::POST_LIMIT + 100);
+        let long = "x".repeat(forge_tools::slack::POST_LIMIT + 100);
         let task = tokio::spawn({
             let facade = facade.clone();
             async move { facade.post(&caller(), post_request("C1", &long)).await }

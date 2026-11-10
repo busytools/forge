@@ -64,44 +64,11 @@ pub enum PendingInteractionSlot {
     Question { tx: oneshot::Sender<QuestionOutcome>, request: Box<QuestionRequest> },
 }
 
-/// What a seat is held on, as the core kept it: the prompt a view that
-/// attached late has no other way to read.
-///
-/// The kinds are every member of the category, not the two the dock
-/// happened to draw first: a Slack draft parks on a reply the same way a
-/// permission and a question do - and a browser hand-off parks on a person -
-/// so a record carrying two of them told a builder the category was covered
-/// when it was not.
-#[derive(Clone)]
-pub enum PendingAsk {
-    Permission(Box<PermissionRequest>),
-    Question(Box<QuestionRequest>),
-    SlackDraft(Box<forge_primitives::slack::SlackDraft>),
-    BrowserHandOff(Box<forge_primitives::browser::HandOff>),
-    TerminalHandOff(Box<forge_primitives::terminal::TerminalHandOff>),
-    DocumentHandOff(Box<forge_primitives::document::DocumentHandOffAsk>),
-    SettingsWrite(Box<forge_primitives::settings::SettingsWriteAsk>),
-    Vault(Box<forge_primitives::vault::VaultDraft>),
-}
-
-impl PendingAsk {
-    /// The tool call this prompt is about, which is the id an answer names.
-    ///
-    /// `None` for a Slack draft and a hand-off: each is answered by its own
-    /// command with its own id, and names no tool call at all.
-    pub fn tool_id(&self) -> Option<&str> {
-        match self {
-            Self::Permission(request) => Some(&request.tool_call.tool_call_id),
-            Self::Question(request) => Some(&request.tool_call.tool_call_id),
-            Self::SlackDraft(_)
-            | Self::BrowserHandOff(_)
-            | Self::TerminalHandOff(_)
-            | Self::DocumentHandOff(_)
-            | Self::SettingsWrite(_)
-            | Self::Vault(_) => None,
-        }
-    }
-}
+// The record a seat is held on lives in forge-primitives, so an ask source
+// in another crate returns one without depending on the workspace. It is
+// re-exported here because every existing path names it through the
+// protocol module.
+pub use forge_primitives::PendingAsk;
 
 impl PendingInteractionSlot {
     /// The request this slot is holding, which is what it offers.

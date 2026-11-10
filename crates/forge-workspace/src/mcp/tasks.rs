@@ -1266,8 +1266,9 @@ mod tests {
         // the enum dropped it, so a session following it took a hard
         // `invalid arguments` where the schema would have said the same thing
         // more cheaply.
-        let description =
-            Update { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() }.description();
+        let description = Update { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() }
+            .description()
+            .to_owned();
         for spelling in ["pending", "in_progress", "waiting", "completed", "failed", "canceled"] {
             assert!(
                 description.contains(spelling),
@@ -1367,8 +1368,9 @@ mod tests {
     /// same test.
     #[test]
     fn the_list_description_owns_up_to_every_empty_result() {
-        let desc =
-            List { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() }.description();
+        let desc = List { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() }
+            .description()
+            .to_owned();
         for clause in [
             "An empty array means your project has no tasks in flight",
             "or that your project could not be resolved",

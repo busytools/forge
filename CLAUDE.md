@@ -12,11 +12,12 @@ forge-tts        ───── leaf (speech synthesis; depends on no forge-* c
 forge-system-one ───── leaf (decision-model client; depends on no forge-* crate)
 forge-terminal   ───── leaf (the PTY and screen model; depends on no forge-* crate)
 forge-supervise  ───── leaf (subsystem supervision; depends on no forge-* crate)
+forge-mcp        ───── leaf (the MCP tool-provider seam; depends on no forge-* crate)
 forge-gateway    ───→ primitives
-forge-connectors ───→ primitives
-forge-sdk        ───→ primitives
+forge-tools      ───→ primitives + mcp
+forge-sdk        ───→ primitives + mcp
 forge-agent      ───→ primitives + sdk + gateway
-forge-workspace  ───→ primitives + agent + sdk + dictate + tts + system-one + terminal + gateway + connectors
+forge-workspace  ───→ primitives + agent + sdk + dictate + tts + system-one + terminal + gateway + tools + mcp
 forge-browser    ───→ primitives + sdk
 forge-server     ───→ primitives + workspace + sdk + browser
 forge-test-harness ─→ primitives + sdk + workspace + server
@@ -70,17 +71,26 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   and the TLS-trust client arrive through the `ProviderHost` port
   forge-agent implements, so the crate stays HTTP + mapping and never
   spawns the CLI.
-- **`forge-connectors`** - one module per external integration: the
-  Gotify and Slack connectors and the outbound Vaultwarden client
-  behind the vault family. Depends on forge-primitives only. Gotify's
-  subscription set, app index and message dispatch into sessions
-  arrive through the `GotifyHost` port forge-workspace implements;
-  Slack's client is polled by workspace code directly, and the vault
-  module is HTTP, crypto and mapping with the session, its tokens and
-  the unlocked account in forge-workspace. Either way the crate stays
-  transport + mapping and holds no workspace state. No generic
-  connector trait: the variety is still small, and a trait waits until
-  it is real.
+- **`forge-mcp`** - the tool-provider seam: the description an MCP tool
+  carries (name, description, input schema), the output shape it answers
+  with, the `ToolProvider` trait a crate owning a tool family implements,
+  and the composition a host uses to ask its providers in order. A leaf:
+  it depends on no forge-* crate and knows nothing about a server, a
+  transport or the CLI subprocess, so an owning crate brings its own tools
+  without depending on forge-sdk.
+- **`forge-tools`** - one module per external integration: the Gotify
+  and Slack connectors, the outbound Vaultwarden client, and the vault
+  family's own session, thirteen held tools and parked calls. Depends on
+  forge-primitives and forge-mcp. Gotify's subscription set, app index
+  and message dispatch into sessions arrive through the `GotifyHost`
+  port forge-workspace implements; Slack's client is polled by workspace
+  code directly. The vault family owns its tool descriptions, its ask
+  registry and the policy behind answering one: the workspace keeps the
+  machine-wide `[vault]` session and the registry handle, implements
+  `VaultHost` (the live session, the caller's cwd) and `VaultEmit` (the
+  wire frames its updates map onto), and registers the family's
+  `ToolProvider` and `AskSource`. No generic connector trait: the
+  variety is still small, and a trait waits until it is real.
 - **`forge-sdk`** - owns the `claude` subprocess: stream-json codec,
   transport, control dispatch, in-process MCP host, Options.
 - **`forge-agent`** - drives one SDK Client behind a channel-based
@@ -206,11 +216,12 @@ Work top-down; first match wins.
    `forge-gateway`, one backend per token and the account pool.
 7. **I/O for an external integration, inbound or outbound?** (its
    stream client, REST lookups, subscription matching, reconnecting
-   subsystem pump, a provider's client and crypto) -> `forge-connectors`,
-   one module per integration. The connector holds no workspace state:
-   Gotify reaches the workspace through the `GotifyHost` port
-   forge-workspace implements, Slack holds only its Web API client, and
-   the vault module carries no session or keys.
+   subsystem pump, a provider's client and crypto) -> `forge-tools`, one
+   module per integration. The integration owns its own state, its MCP
+   tools and its held asks; what it needs from the workspace arrives
+   through a host port (Gotify's `GotifyHost`, the vault family's
+   `VaultHost` and `VaultEmit`). A family's tools are described through
+   `forge-mcp`'s `ToolProvider`, never built against forge-sdk.
 8. **Speaks stream-json to the `claude` subprocess?** (decoder,
    control_request subtype, transport, MCP host, OptionsBuilder)
    -> `forge-sdk`. Pair with a wire-conformance scenario.

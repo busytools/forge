@@ -55,6 +55,7 @@
 //! cross-crate `pub use` chains as a substitute.
 
 pub mod account;
+pub mod asks;
 pub mod background;
 pub mod biometric;
 pub mod browser;
@@ -101,6 +102,7 @@ pub mod vault;
 pub mod wire;
 pub mod workers;
 
+pub use asks::{Ask, AskSink, AskSource, PendingAsk, PendingInteractionKind};
 pub use call_output::CallOutput;
 pub use client::ClientConfig;
 pub use command::AgentCommand;

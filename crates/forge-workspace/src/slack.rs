@@ -5,19 +5,19 @@
 //! Everything here stays on `Workspace` as a second `impl` block, the
 //! way [`crate::gotify`] does, so the boot path and the `mcp::slack`
 //! facade keep their paths. The client itself lives in
-//! `forge_connectors::slack`; this module holds the workspace state.
+//! `forge_tools::slack`; this module holds the workspace state.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use forge_connectors::slack::{AuthTest, MENTION_CURSOR, SlackApi, SlackClient, SlackHost};
 use forge_primitives::slack::{
     DEFAULT_DM_POLL_SECONDS, DEFAULT_POLL_SECONDS, DEFAULT_STALE_AFTER_HOURS,
     DEFAULT_THREAD_IDLE_DAYS, MIN_DM_POLL_SECONDS, SlackConfig, SlackDraft, SlackDraftAnswer,
     SlackDraftEnding, SlackFollowedThread, SlackMessage, SlackSubscription,
     SlackSubscriptionTarget, SlackThreadOwner, SlackThreadRecord, SlackWatchMode,
 };
+use forge_tools::slack::{AuthTest, MENTION_CURSOR, SlackApi, SlackClient, SlackHost};
 use uuid::Uuid;
 
 use crate::SessionSlot;
@@ -485,8 +485,7 @@ impl Workspace {
         let mut stalled: Vec<(String, String, std::time::Duration)> = Vec::new();
         let mut oldest: Option<std::time::Duration> = None;
         for ((marked_workspace, marked_address), stamps) in inflight.iter_mut() {
-            stamps
-                .retain(|stamp| stamp.since.elapsed() <= forge_connectors::slack::REQUEST_TIMEOUT);
+            stamps.retain(|stamp| stamp.since.elapsed() <= forge_tools::slack::REQUEST_TIMEOUT);
             if stamps.is_empty() {
                 empty.push((marked_workspace.clone(), marked_address.clone()));
                 continue;
@@ -496,7 +495,7 @@ impl Workspace {
             }
             for stamp in stamps.iter_mut() {
                 let age = stamp.since.elapsed();
-                if age > forge_connectors::slack::REQUEST_TIMEOUT / 2 && !stamp.warned {
+                if age > forge_tools::slack::REQUEST_TIMEOUT / 2 && !stamp.warned {
                     stamp.warned = true;
                     stalled.push((marked_workspace.clone(), marked_address.clone(), age));
                 }
@@ -1432,7 +1431,7 @@ impl Workspace {
                 .map_or(DEFAULT_DM_POLL_SECONDS, |config| config.dm_poll_seconds)
                 .max(MIN_DM_POLL_SECONDS);
             let host: Arc<dyn SlackHost> = Arc::new(SlackSubsystemHost::new(self));
-            tokio::spawn(forge_connectors::slack::run_workspace_pump(
+            tokio::spawn(forge_tools::slack::run_workspace_pump(
                 host,
                 label,
                 poll_seconds,
@@ -2505,7 +2504,7 @@ mod tests {
         let (ws, _dir, _rx) = workspace_with_one_slack_workspace("acme");
         let host = SlackSubsystemHost::new(&ws);
         let stale = std::time::Instant::now()
-            .checked_sub(forge_connectors::slack::REQUEST_TIMEOUT)
+            .checked_sub(forge_tools::slack::REQUEST_TIMEOUT)
             .and_then(|instant| instant.checked_sub(std::time::Duration::from_secs(1)))
             .expect("the clock is past the timeout");
         ws.slack_inflight.lock().insert(
@@ -2532,7 +2531,7 @@ mod tests {
 
         let old = ws.begin_slack_post("acme", "C789");
         let stale = std::time::Instant::now()
-            .checked_sub(forge_connectors::slack::REQUEST_TIMEOUT)
+            .checked_sub(forge_tools::slack::REQUEST_TIMEOUT)
             .and_then(|instant| instant.checked_sub(std::time::Duration::from_secs(1)))
             .expect("the clock is past the timeout");
         ws.slack_inflight
@@ -2696,7 +2695,7 @@ mod tests {
 
         let host: Arc<dyn SlackHost> = Arc::new(SlackSubsystemHost::new(&ws));
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-        let pump = tokio::spawn(forge_connectors::slack::run_workspace_pump(
+        let pump = tokio::spawn(forge_tools::slack::run_workspace_pump(
             host,
             LIVE_WORKSPACE.to_owned(),
             1,
@@ -3152,7 +3151,7 @@ mod tests {
         );
     }
 
-    use forge_connectors::slack::MENTION_CURSOR;
+    use forge_tools::slack::MENTION_CURSOR;
 
     #[test]
     fn an_empty_workspace_label_is_refused() {

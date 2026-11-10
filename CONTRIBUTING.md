@@ -207,7 +207,7 @@ hard rule 27).
 
 ## Where code goes
 
-The workspace is fifteen crates with a strictly acyclic dependency graph,
+The workspace is sixteen crates with a strictly acyclic dependency graph,
 and putting something in the wrong one is the most common structural
 review comment. The
 [architecture page](https://busytools.github.io/forge/architecture.html)
@@ -220,8 +220,9 @@ a terminal's PTY, screen model and command marks go in `forge-terminal`,
 cross-crate types go in `forge-primitives`,
 provider credentials, probes, billing, account selection and account
 health go in `forge-gateway`,
-external-integration clients and matching, inbound or outbound, go in
-`forge-connectors`,
+external-integration clients, matching, held asks and tools, inbound or
+outbound, go in `forge-tools` (and the tool descriptions themselves are
+written against `forge-mcp`),
 anything speaking stream-json goes in `forge-sdk`, environment and I/O
 go in `forge-agent`, multi-session orchestration goes in
 `forge-workspace`, the browser the sessions drive goes in

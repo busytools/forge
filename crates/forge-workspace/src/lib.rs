@@ -53,6 +53,7 @@
 
 mod account_cache;
 mod account_loader;
+mod ask_sources;
 pub mod bench;
 mod biometric;
 pub mod board;
@@ -98,8 +99,7 @@ mod tasks;
 pub mod terminal;
 pub mod tts;
 mod update_fanout;
-mod vault;
-mod vault_ask;
+mod vault_host;
 mod views;
 pub mod voice;
 pub mod work;
@@ -125,8 +125,8 @@ pub use protocol::{
 pub use target::{ProjectKey, SessionSlot, SessionTarget};
 pub use tts::{TtsSettings, TtsSnapshot, TtsView};
 
+pub use forge_tools::vault::VaultState;
 pub use update_fanout::SeatUpdate;
-pub use vault::VaultState;
 pub use views::{
     AccountGatewayView, AccountLoadingRow, AccountPoolView, AccountUsageView, ProjectView,
 };

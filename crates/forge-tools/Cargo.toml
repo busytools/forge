@@ -1,12 +1,12 @@
 [package]
-name = "forge-connectors"
+name = "forge-tools"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "One module per external integration: the Gotify and Slack connectors and the outbound Vaultwarden client."
+description = "One module per external integration: the Gotify and Slack connectors, the outbound Vaultwarden client, and the vault family's session, tools and held asks."
 publish = false
 
 [lints]
@@ -14,11 +14,16 @@ workspace = true
 
 [features]
 # Lets another crate's log-filter test drive the Slack pump's throttle
-# reporter through its real site.
+# reporter through its real site, and exposes the vault family's
+# test-only session constructors to a host crate's tests.
 testing = []
 
 [dependencies]
 forge-primitives = { workspace = true }
+# The tool-provider seam: an owning crate describes its MCP tools and
+# answers calls through a trait the SDK host consumes, so it never depends
+# on the CLI subprocess crate.
+forge-mcp = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
@@ -26,12 +31,16 @@ base64 = { workspace = true }
 # is accepted for the vault family per the approved plan; see Cargo.toml's
 # [workspace.metadata] note.
 bitwarden-crypto = "4.0.0"
+chrono = { workspace = true }
 data-encoding = "2"
 form_urlencoded = "1.2"
 futures = { workspace = true }
 hmac = "0.13"
+libc = "0.2"
+parking_lot = { workspace = true }
 reqwest = { workspace = true, features = ["multipart"] }
 rsa = "0.10.0-rc.17"
+rustix = { workspace = true, features = ["fs"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha1 = "0.11"
@@ -46,5 +55,6 @@ zeroize = "1"
 
 [dev-dependencies]
 bitwarden-random = "4.0.0"
+tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }

@@ -422,6 +422,31 @@ impl Workspace {
         // `new_for_test`'s convention: the stub's whole app-support base
         // sits under the test's own config dir.
         let app_support = Some(config_dir.join("app-support"));
+        let pending_seq: Arc<Mutex<HashMap<SessionSlot, u64>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let vault_ports = Arc::new(crate::vault_host::VaultPorts::new(
+            update_tx.clone(),
+            Arc::clone(&pending_seq),
+        ));
+        let vault: Arc<parking_lot::RwLock<Option<Arc<forge_tools::vault::VaultSession>>>> =
+            Arc::new(parking_lot::RwLock::new(None));
+        let sink: Arc<dyn forge_primitives::AskSink> = vault_ports.clone();
+        let emit: Arc<dyn forge_tools::vault::VaultEmit> = vault_ports.clone();
+        let vault_asks =
+            Arc::new(forge_tools::vault::VaultAsks::new(Arc::clone(&vault), emit, sink));
+        let slack_drafts = Arc::new(Mutex::new(HashMap::new()));
+        let browser_handoffs = Arc::new(Mutex::new(HashMap::new()));
+        let terminal_handoffs = Arc::new(Mutex::new(HashMap::new()));
+        let document_handoffs = Arc::new(parking_lot::Mutex::new(HashMap::new()));
+        let settings_writes = Arc::new(Mutex::new(HashMap::new()));
+        let ask_sources: Vec<Arc<dyn forge_primitives::AskSource>> = vec![
+            Arc::new(crate::ask_sources::SlackDrafts(Arc::clone(&slack_drafts))),
+            Arc::new(crate::ask_sources::BrowserHandOffs(Arc::clone(&browser_handoffs))),
+            Arc::new(crate::ask_sources::TerminalHandOffs(Arc::clone(&terminal_handoffs))),
+            Arc::new(crate::ask_sources::DocumentHandOffs(Arc::clone(&document_handoffs))),
+            vault_asks.clone(),
+            Arc::new(crate::ask_sources::SettingsWrites(Arc::clone(&settings_writes))),
+        ];
         let (settings, _settings_rx) = tokio::sync::watch::channel(None);
         let workspace = Self {
             config_dir,
@@ -432,7 +457,6 @@ impl Workspace {
             reload_generation: std::sync::atomic::AtomicU64::new(0),
             reload_gate: std::sync::Mutex::new(()),
             systemone: parking_lot::RwLock::new(systemone),
-            vault: parking_lot::RwLock::new(None),
             voice: std::sync::OnceLock::new(),
             voice_preview_error: std::sync::Mutex::new(None),
             catalog: Arc::new(Mutex::new(HashMap::new())),
@@ -462,7 +486,7 @@ impl Workspace {
             live_seats_generation: std::sync::atomic::AtomicU64::new(0),
             live_seats_gate: Mutex::new(None),
             attached_clients: std::sync::atomic::AtomicUsize::new(0),
-            document_handoffs: parking_lot::Mutex::new(HashMap::new()),
+            document_handoffs,
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
             dictate_install: Mutex::new(crate::install::InstallState::default()),
             plugin_cli: Mutex::new(crate::plugins::PluginCli::real()),
@@ -539,14 +563,17 @@ impl Workspace {
             slack_thread_first_walks: Mutex::new(std::collections::HashSet::new()),
             slack_thread_edit_watermarks: Mutex::new(std::collections::HashMap::new()),
             slack_ledger_failures: Mutex::new(std::collections::HashSet::new()),
-            slack_drafts: Mutex::new(HashMap::new()),
-            browser_handoffs: Mutex::new(HashMap::new()),
+            slack_drafts,
+            browser_handoffs,
             terminals: Mutex::new(HashMap::new()),
-            terminal_handoffs: Mutex::new(HashMap::new()),
+            terminal_handoffs,
             next_terminal_id: std::sync::atomic::AtomicU16::new(1),
-            settings_writes: Mutex::new(HashMap::new()),
-            parked_vault_asks: Mutex::new(HashMap::new()),
-            pending_seq: Mutex::new(HashMap::new()),
+            settings_writes,
+            vault,
+            vault_asks,
+            vault_ports,
+            ask_sources,
+            pending_seq,
             slack_recently_delivered: Mutex::new(HashMap::new()),
             slack_load_failed: std::sync::atomic::AtomicBool::new(false),
             slack_user_id_retries: Mutex::new(std::collections::BTreeMap::new()),
@@ -1127,7 +1154,7 @@ impl Workspace {
                         forge_primitives::vault::VaultTool::Search,
                         "test",
                     );
-                    self.parked_vault_asks.lock().insert(draft.id, (slot.clone(), draft, None));
+                    self.vault_asks.seed(slot, draft);
                     self.note_ask(slot);
                 }
             }

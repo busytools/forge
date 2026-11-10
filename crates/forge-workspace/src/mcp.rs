@@ -62,7 +62,6 @@ use crate::mcp::settings::facade::SettingsFacade;
 use crate::mcp::slack::facade::SlackFacade;
 use crate::mcp::systemone::facade::SystemOneFacade;
 use crate::mcp::tasks::facade::TasksFacade;
-use crate::mcp::vault::facade::VaultFacade;
 use crate::mcp::workers::facade::WorkerFacade;
 
 pub mod agents;
@@ -81,7 +80,6 @@ pub mod tasks;
 pub mod terminal;
 #[cfg(test)]
 pub(crate) mod test_support;
-pub mod vault;
 pub mod voice;
 pub mod workers;
 
@@ -306,10 +304,10 @@ pub struct ForgeServerFacades {
     pub tasks: Arc<dyn TasksFacade>,
     pub systemone: Option<Arc<dyn SystemOneFacade>>,
     pub voice: Arc<crate::voice::VoiceService>,
-    /// The vault family's facade, `None` when `[vault]` is absent. The tools
+    /// The vault family's tools, `None` when `[vault]` is absent. The tools
     /// are doubly gated like systemone's: the family must be selected and a
-    /// session must exist.
-    pub vault: Option<Arc<dyn VaultFacade>>,
+    /// session must exist. The family owns its provider; the host registers it.
+    pub vault: Option<Arc<dyn forge_mcp::ToolProvider>>,
 }
 
 /// Build the per-session `forge` MCP server. ONE McpServer named
@@ -428,7 +426,7 @@ pub fn build_forge_server(
     if families.contains(&McpFamily::Vault)
         && let Some(vault) = vault
     {
-        builder = vault::add_tools(builder, &vault, slot);
+        builder = builder.provider(vault);
     }
     builder.instructions(TASK_BOARD_INSTRUCTIONS).build()
 }
@@ -676,7 +674,10 @@ mod tests {
                 tasks: MockTasksFacade::new().into_arc(),
                 systemone: systemone_facade,
                 voice: silent_voice(),
-                vault: Some(crate::mcp::vault::facade::MockVaultFacade::new().into_arc()),
+                vault: Some(Arc::new(forge_tools::vault::VaultTools::new(
+                    forge_tools::vault::MockVaultFacade::new().into_arc(),
+                    fake_key("test"),
+                ))),
             },
             families,
             &fake_key("test"),

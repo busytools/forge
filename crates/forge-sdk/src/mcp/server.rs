@@ -183,6 +183,10 @@ pub struct McpServerBuilder {
     version: String,
     instructions: Option<String>,
     tools: BTreeMap<String, Arc<dyn Tool>>,
+    /// Families whose tools are registered at [`Self::build`]: a provider
+    /// answers for its own names, so the host keeps no table mapping a name
+    /// back to the family that owns it.
+    providers: Vec<Arc<dyn forge_mcp::ToolProvider>>,
 }
 
 impl std::fmt::Debug for McpServerBuilder {
@@ -192,6 +196,7 @@ impl std::fmt::Debug for McpServerBuilder {
             .field("version", &self.version)
             .field("instructions", &self.instructions.is_some())
             .field("tools", &self.tools.keys().collect::<Vec<_>>())
+            .field("providers", &self.providers.len())
             .finish()
     }
 }
@@ -204,6 +209,7 @@ impl McpServerBuilder {
             version: version.into(),
             instructions: None,
             tools: BTreeMap::new(),
+            providers: Vec::new(),
         }
     }
 
@@ -219,19 +225,79 @@ impl McpServerBuilder {
     /// drop a tool with nothing to show for it.
     pub fn tool<T: Tool + 'static>(mut self, tool: T) -> Self {
         let name = tool.name().to_string();
-        if self.tools.insert(name.clone(), Arc::new(tool)).is_some() {
-            warn!(%name, server = %self.name, "mcp tool registered twice; keeping the later one");
-        }
+        self.insert(&name, Arc::new(tool));
         self
     }
 
+    /// Register a tool family another crate owns. The family names its own
+    /// tools and answers their calls; a name it does not claim reaches the
+    /// next provider, or the host's unknown-tool answer.
+    pub fn provider(mut self, provider: Arc<dyn forge_mcp::ToolProvider>) -> Self {
+        self.providers.push(provider);
+        self
+    }
+
+    fn insert(&mut self, name: &str, tool: Arc<dyn Tool>) {
+        if self.tools.insert(name.to_owned(), tool).is_some() {
+            warn!(name, server = %self.name, "mcp tool registered twice; keeping the later one");
+        }
+    }
+
     /// Finalise into a runnable server.
-    pub fn build(self) -> McpServer {
+    pub fn build(mut self) -> McpServer {
+        let providers = Arc::new(forge_mcp::Providers::new(std::mem::take(&mut self.providers)));
+        for described in providers.tools() {
+            let tool = ProviderTool {
+                providers: Arc::clone(&providers),
+                name: described.name.clone(),
+                description: described.description,
+                schema: described.schema,
+            };
+            self.insert(&described.name, Arc::new(tool));
+        }
         McpServer {
             name: self.name,
             version: self.version,
             instructions: self.instructions,
             tools: self.tools,
+        }
+    }
+}
+
+/// One tool a registered family described: the host advertises what the
+/// family said and forwards the call to the composition, which asks the
+/// family that owns the name.
+struct ProviderTool {
+    providers: Arc<forge_mcp::Providers>,
+    name: String,
+    description: String,
+    schema: serde_json::Value,
+}
+
+#[async_trait::async_trait]
+impl Tool for ProviderTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        self.schema.clone()
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        match self.providers.call(&self.name, input.value).await {
+            Some(Ok(output)) => output,
+            Some(Err(message)) => ToolOutput::error(message),
+            // The name was advertised from this composition, so a provider
+            // that no longer claims it is a family whose tools() and call()
+            // disagree; answer loudly rather than as a silent empty result.
+            None => {
+                ToolOutput::error(format!("no registered provider claims the `{}` tool", self.name))
+            }
         }
     }
 }

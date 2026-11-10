@@ -1,102 +1,40 @@
-//! Vault MCP - the Vaultwarden family (`mcp__forge__vault__*`).
+//! The vault family's MCP tools (`mcp__forge__vault__*`).
 //!
 //! Thirteen tools, every one held for the reader's approval: the blocked
-//! handler parks a `VaultDraft` on the workspace registry, the dock draws it,
+//! handler parks a `VaultDraft` in the family's registry, the dock draws it,
 //! and no operation runs in the vault unless the answer approved it. The card
 //! never carries a secret value; a reveal happens only after approval and
 //! travels in the tool result.
-
-pub mod facade;
+//!
+//! The family describes itself through `forge_mcp::ToolProvider`, so the
+//! host registers it without this crate depending on the CLI subprocess
+//! crate: the names, descriptions and schemas here are what the host
+//! advertises, unchanged from when the host owned them.
 
 use std::sync::Arc;
 
+use forge_mcp::{Tool, ToolOutput, ToolProvider};
+use forge_primitives::SessionSlot;
 use forge_primitives::vault::VaultTool;
-use forge_sdk::mcp::server::McpServerBuilder;
-use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
+use futures::future::BoxFuture;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::SessionSlot;
-use crate::mcp::vault::facade::{CreateInput, PatchInput, VaultFacade, VaultToolError};
+use crate::vault::facade::{CreateInput, PatchInput, VaultFacade, VaultToolError};
 
-/// Attach the vault tools to an existing [`McpServerBuilder`]. Called only
-/// when the family is selected AND `[vault]` is configured, the same double
-/// gate systemone uses.
-pub(crate) fn add_tools(
-    builder: McpServerBuilder,
-    facade: &Arc<dyn VaultFacade>,
-    slot: &SessionSlot,
-) -> McpServerBuilder {
-    let mut builder = builder;
-    for tool in VaultTool::ALL {
-        builder = builder.tool(VaultCall { facade: Arc::clone(facade), slot: slot.clone(), tool });
-    }
-    builder
-}
-
-/// One tool instance: the family shares a single `Tool` impl because the
-/// name, description and schema are chosen by the tool the instance names.
-struct VaultCall {
+/// The vault family, bound to the session whose dock answers its calls.
+pub struct VaultTools {
     facade: Arc<dyn VaultFacade>,
     slot: SessionSlot,
-    tool: VaultTool,
 }
 
-#[derive(serde::Deserialize)]
-struct SearchArgs {
-    query: String,
-    #[serde(default)]
-    limit: Option<usize>,
-}
-
-#[derive(serde::Deserialize)]
-struct GetArgs {
-    id: String,
-    #[serde(default)]
-    reveal: Option<String>,
-}
-
-#[derive(serde::Deserialize)]
-struct IdArgs {
-    id: String,
-}
-
-#[derive(serde::Deserialize)]
-struct AttachmentGetArgs {
-    item_id: String,
-    attachment_id: String,
-    destination: String,
-}
-
-#[derive(serde::Deserialize)]
-struct AttachmentPutArgs {
-    item_id: String,
-    path: String,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    replace_attachment_id: Option<String>,
-}
-
-#[derive(serde::Deserialize)]
-struct FolderNameArgs {
-    name: String,
-}
-
-#[derive(serde::Deserialize)]
-struct FolderUpdateArgs {
-    id: String,
-    name: String,
-}
-
-#[async_trait::async_trait]
-impl Tool for VaultCall {
-    fn name(&self) -> &'static str {
-        self.tool.as_str()
+impl VaultTools {
+    pub fn new(facade: Arc<dyn VaultFacade>, slot: SessionSlot) -> Self {
+        Self { facade, slot }
     }
 
-    fn description(&self) -> &'static str {
-        match self.tool {
+    fn describe(tool: VaultTool) -> &'static str {
+        match tool {
             VaultTool::Search => {
                 "Search the vault by item name, username or URI, case-insensitively. Returns \
                  metadata only: {items: [{id, name, username, uris, folder, collection, \
@@ -167,8 +105,8 @@ impl Tool for VaultCall {
         }
     }
 
-    fn input_schema(&self) -> Value {
-        match self.tool {
+    fn schema(tool: VaultTool) -> Value {
+        match tool {
             VaultTool::Search => serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -333,24 +271,24 @@ impl Tool for VaultCall {
         }
     }
 
-    async fn call(&self, input: ToolInput) -> ToolOutput {
-        match self.tool {
+    async fn invoke(&self, tool: VaultTool, input: Value) -> ToolOutput {
+        match tool {
             VaultTool::Search => {
-                let args = match parse::<SearchArgs>(input.value) {
+                let args = match parse::<SearchArgs>(input) {
                     Ok(args) => args,
                     Err(output) => return output,
                 };
                 reply(self.facade.search(&self.slot, &args.query, args.limit).await)
             }
             VaultTool::Get => {
-                let args = match parse::<GetArgs>(input.value) {
+                let args = match parse::<GetArgs>(input) {
                     Ok(args) => args,
                     Err(output) => return output,
                 };
                 reply(self.facade.get(&self.slot, &args.id, args.reveal.as_deref()).await)
             }
             VaultTool::Create => {
-                let args = match parse::<CreateInput>(input.value) {
+                let args = match parse::<CreateInput>(input) {
                     Ok(args) => args,
                     Err(output) => return output,
                 };
@@ -362,25 +300,25 @@ impl Tool for VaultCall {
                     id: String,
                     patch: PatchInput,
                 }
-                let args = match parse::<Args>(input.value) {
+                let args = match parse::<Args>(input) {
                     Ok(args) => args,
                     Err(output) => return output,
                 };
                 reply(self.facade.update(&self.slot, &args.id, &args.patch).await)
             }
             VaultTool::Trash | VaultTool::Restore | VaultTool::TotpCode => {
-                let args = match parse::<IdArgs>(input.value) {
+                let args = match parse::<IdArgs>(input) {
                     Ok(args) => args,
                     Err(output) => return output,
                 };
-                reply(match self.tool {
+                reply(match tool {
                     VaultTool::Trash => self.facade.trash(&self.slot, &args.id).await,
                     VaultTool::Restore => self.facade.restore(&self.slot, &args.id).await,
                     _ => self.facade.totp_code(&self.slot, &args.id).await,
                 })
             }
             VaultTool::AttachmentGet => {
-                let args = match parse::<AttachmentGetArgs>(input.value) {
+                let args = match parse::<AttachmentGetArgs>(input) {
                     Ok(args) => args,
                     Err(output) => return output,
                 };
@@ -396,7 +334,7 @@ impl Tool for VaultCall {
                 )
             }
             VaultTool::AttachmentPut => {
-                let args = match parse::<AttachmentPutArgs>(input.value) {
+                let args = match parse::<AttachmentPutArgs>(input) {
                     Ok(args) => args,
                     Err(output) => return output,
                 };
@@ -414,21 +352,21 @@ impl Tool for VaultCall {
             }
             VaultTool::FolderList => reply(self.facade.folder_list(&self.slot).await),
             VaultTool::FolderCreate => {
-                let args = match parse::<FolderNameArgs>(input.value) {
+                let args = match parse::<FolderNameArgs>(input) {
                     Ok(args) => args,
                     Err(output) => return output,
                 };
                 reply(self.facade.folder_create(&self.slot, &args.name).await)
             }
             VaultTool::FolderUpdate => {
-                let args = match parse::<FolderUpdateArgs>(input.value) {
+                let args = match parse::<FolderUpdateArgs>(input) {
                     Ok(args) => args,
                     Err(output) => return output,
                 };
                 reply(self.facade.folder_update(&self.slot, &args.id, &args.name).await)
             }
             VaultTool::FolderDelete => {
-                let args = match parse::<IdArgs>(input.value) {
+                let args = match parse::<IdArgs>(input) {
                     Ok(args) => args,
                     Err(output) => return output,
                 };
@@ -436,6 +374,78 @@ impl Tool for VaultCall {
             }
         }
     }
+}
+
+impl ToolProvider for VaultTools {
+    fn tools(&self) -> Vec<Tool> {
+        VaultTool::ALL
+            .into_iter()
+            .map(|tool| Tool {
+                name: tool.as_str().to_owned(),
+                description: Self::describe(tool).to_owned(),
+                schema: Self::schema(tool),
+            })
+            .collect()
+    }
+
+    fn call<'a>(
+        &'a self,
+        name: &'a str,
+        input: Value,
+    ) -> BoxFuture<'a, Option<Result<ToolOutput, String>>> {
+        Box::pin(async move {
+            // A name this family does not own is not its call to answer.
+            let tool = VaultTool::parse(name)?;
+            Some(Ok(self.invoke(tool, input).await))
+        })
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct SearchArgs {
+    query: String,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(serde::Deserialize)]
+struct GetArgs {
+    id: String,
+    #[serde(default)]
+    reveal: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct IdArgs {
+    id: String,
+}
+
+#[derive(serde::Deserialize)]
+struct AttachmentGetArgs {
+    item_id: String,
+    attachment_id: String,
+    destination: String,
+}
+
+#[derive(serde::Deserialize)]
+struct AttachmentPutArgs {
+    item_id: String,
+    path: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    replace_attachment_id: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct FolderNameArgs {
+    name: String,
+}
+
+#[derive(serde::Deserialize)]
+struct FolderUpdateArgs {
+    id: String,
+    name: String,
 }
 
 fn parse<T: DeserializeOwned>(value: Value) -> Result<T, ToolOutput> {
@@ -456,17 +466,20 @@ fn reply(result: Result<Value, VaultToolError>) -> ToolOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::vault::facade::MockVaultFacade;
+    use crate::vault::MockVaultFacade;
     use serde_json::json;
 
     async fn call(tool: VaultTool, args: Value) -> (ToolOutput, Vec<String>) {
         let facade = Arc::new(MockVaultFacade::new());
-        let call = VaultCall {
-            facade: Arc::clone(&facade) as Arc<dyn VaultFacade>,
-            slot: SessionSlot::lead("Default", "forge"),
-            tool,
-        };
-        let output = call.call(ToolInput { value: args }).await;
+        let family = VaultTools::new(
+            Arc::clone(&facade) as Arc<dyn VaultFacade>,
+            SessionSlot::lead("Default", "forge"),
+        );
+        let output = family
+            .call(tool.as_str(), args)
+            .await
+            .expect("the family owns its own tool")
+            .expect("the call answers");
         (output, facade.calls())
     }
 
@@ -475,21 +488,19 @@ mod tests {
     #[test]
     fn every_tool_schema_is_closed() {
         let facade = Arc::new(MockVaultFacade::new());
-        for tool in VaultTool::ALL {
-            let call = VaultCall {
-                facade: Arc::clone(&facade) as Arc<dyn VaultFacade>,
-                slot: SessionSlot::lead("Default", "forge"),
-                tool,
-            };
-            let schema = call.input_schema();
+        let family =
+            VaultTools::new(facade as Arc<dyn VaultFacade>, SessionSlot::lead("Default", "forge"));
+        let described = family.tools();
+        assert_eq!(described.len(), VaultTool::ALL.len(), "one description per tool");
+        for (tool, described) in VaultTool::ALL.into_iter().zip(described) {
+            assert_eq!(described.name, tool.as_str());
+            assert!(!described.description.is_empty());
             assert_eq!(
-                schema["additionalProperties"],
+                described.schema["additionalProperties"],
                 json!(false),
                 "{} is not closed",
                 tool.as_str(),
             );
-            assert_eq!(call.name(), tool.as_str());
-            assert!(!call.description().is_empty());
         }
     }
 
@@ -507,13 +518,7 @@ mod tests {
     /// an enum of the fixed names would reject it before the facade could.
     #[test]
     fn the_get_schema_admits_a_custom_reveal() {
-        let facade = Arc::new(MockVaultFacade::new());
-        let call = VaultCall {
-            facade: Arc::clone(&facade) as Arc<dyn VaultFacade>,
-            slot: SessionSlot::lead("Default", "forge"),
-            tool: VaultTool::Get,
-        };
-        let schema = call.input_schema();
+        let schema = VaultTools::schema(VaultTool::Get);
         let pattern = schema["properties"]["reveal"]["pattern"]
             .as_str()
             .expect("the reveal carries a pattern");
@@ -525,19 +530,12 @@ mod tests {
     /// closed, so an unnamed argument is refused by the CLI before the call.
     #[test]
     fn the_create_and_update_schemas_accept_a_totp_seed() {
-        let facade = Arc::new(MockVaultFacade::new());
-        let schema = |tool| {
-            VaultCall {
-                facade: Arc::clone(&facade) as Arc<dyn VaultFacade>,
-                slot: SessionSlot::lead("Default", "forge"),
-                tool,
-            }
-            .input_schema()
-        };
+        let create = VaultTools::schema(VaultTool::Create);
+        let update = VaultTools::schema(VaultTool::Update);
 
-        assert!(schema(VaultTool::Create)["properties"].get("totp").is_some(), "create names totp");
+        assert!(create["properties"].get("totp").is_some(), "create names totp");
         assert!(
-            schema(VaultTool::Update)["properties"]["patch"]["properties"].get("totp").is_some(),
+            update["properties"]["patch"]["properties"].get("totp").is_some(),
             "update names totp",
         );
     }
@@ -556,30 +554,39 @@ mod tests {
     async fn a_facade_refusal_is_a_tool_error() {
         let facade = Arc::new(MockVaultFacade::new());
         facade.fail_next("the vault is locked");
-        let call = VaultCall {
-            facade: Arc::clone(&facade) as Arc<dyn VaultFacade>,
-            slot: SessionSlot::lead("Default", "forge"),
-            tool: VaultTool::FolderList,
-        };
-        let output = call.call(ToolInput { value: json!({}) }).await;
+        let family = VaultTools::new(
+            Arc::clone(&facade) as Arc<dyn VaultFacade>,
+            SessionSlot::lead("Default", "forge"),
+        );
+        let output = family
+            .call("vault__folder_list", json!({}))
+            .await
+            .expect("the family owns the tool")
+            .expect("the call answers");
         assert!(output.is_error);
         assert!(format!("{output:?}").contains("the vault is locked"), "{output:?}");
     }
 
-    /// The family registers all thirteen tools when the builder is handed
-    /// the facade.
+    /// The family registers all thirteen tools when the host asks what it
+    /// offers.
     #[test]
     fn all_thirteen_tools_register() {
         let facade = Arc::new(MockVaultFacade::new());
-        let server = add_tools(
-            McpServerBuilder::new("forge", "test"),
-            &(Arc::clone(&facade) as Arc<dyn VaultFacade>),
-            &SessionSlot::lead("Default", "forge"),
-        )
-        .build();
-        let names = server.tool_names();
+        let family =
+            VaultTools::new(facade as Arc<dyn VaultFacade>, SessionSlot::lead("Default", "forge"));
+        let names: Vec<String> = family.tools().into_iter().map(|tool| tool.name).collect();
         for tool in VaultTool::ALL {
-            assert!(names.contains(&tool.as_str()), "{} missing", tool.as_str());
+            assert!(names.contains(&tool.as_str().to_owned()), "{} missing", tool.as_str());
         }
+    }
+
+    /// A name the family does not own is not its call to answer, so a host
+    /// composing several providers reaches the one that does.
+    #[tokio::test]
+    async fn an_unknown_tool_is_not_mine() {
+        let facade = Arc::new(MockVaultFacade::new());
+        let family =
+            VaultTools::new(facade as Arc<dyn VaultFacade>, SessionSlot::lead("Default", "forge"));
+        assert!(family.call("agents__spawn", json!({})).await.is_none());
     }
 }

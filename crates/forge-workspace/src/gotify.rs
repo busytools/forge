@@ -1,7 +1,7 @@
 //! The Gotify seam on [`Workspace`]: the forge.toml `[gotify]` config
 //! accessor, subscription CRUD (durable rows in the redb store,
 //! ephemeral ones in memory), the subsystem start/stop lifecycle, and
-//! the [`GotifyHost`] port impl the forge-connectors pump drives.
+//! the [`GotifyHost`] port impl the forge-tools pump drives.
 //!
 //! Everything here stays on `Workspace` as a second `impl` block, so
 //! every caller (the boot path in [`crate::workspace`], the
@@ -9,7 +9,7 @@
 //! Inspector GOTIFY snapshot) keeps its path. The `gotify_*` fields
 //! these methods own are `pub(crate)` for the same reason `db` is: so
 //! this sibling module can reach them without a wrapper. Stream,
-//! matching and the pump live in `forge_connectors::gotify`; store IO
+//! matching and the pump live in `forge_tools::gotify`; store IO
 //! in [`crate::store::gotify`]; the MCP tool surface in
 //! [`crate::mcp::gotify`]; delivery in [`crate::spawn`].
 
@@ -17,8 +17,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use forge_connectors::gotify::GotifyHost;
 use forge_primitives::GotifySubscription;
+use forge_tools::gotify::GotifyHost;
 
 use crate::protocol::{Command, SessionUpdate};
 use crate::target::ProjectKey;
@@ -198,7 +198,7 @@ impl Workspace {
 
     /// Start the Gotify subsystem when it's configured, has at least one
     /// active subscription, and isn't already running. Idempotent. Spawns
-    /// the forge-connectors pump, which runs the reconnecting stream task
+    /// the forge-tools pump, which runs the reconnecting stream task
     /// and translates its events into the `gotify_*` state below and
     /// `GotifyHost::deliver` calls. Called at boot and after a subscribe
     /// grows the active set.
@@ -253,7 +253,7 @@ impl Workspace {
         // the exit guard is what observes its end.
         let _pump = self.spawn_gotify_subsystem_task(
             token,
-            forge_connectors::gotify::run_subsystem(host, cfg, shutdown_rx),
+            forge_tools::gotify::run_subsystem(host, cfg, shutdown_rx),
         );
     }
 
@@ -367,7 +367,7 @@ fn url_host(url: &str) -> &str {
     authority.split('/').next().unwrap_or_default()
 }
 
-/// The [`GotifyHost`] the forge-connectors pump drives: a
+/// The [`GotifyHost`] the forge-tools pump drives: a
 /// `Weak<Workspace>` behind the port. The pump holds the host strongly,
 /// so the wrapper stays the weak boundary - the workspace can drop while
 /// the subsystem runs, and every port call degrades to a no-op then,
@@ -820,13 +820,13 @@ mod tests {
         );
     }
 
-    /// The GotifyHost impl the forge-connectors pump drives: the port
+    /// The GotifyHost impl the forge-tools pump drives: the port
     /// reads the `gotify_*` state, and `deliver` wraps the matched
     /// message into the notification wire shape addressed to the
     /// subscriber's project + team role.
     #[test]
     fn gotify_host_impl_reads_state_and_delivers_to_the_subscriber() {
-        use forge_connectors::gotify::GotifyHost as _;
+        use forge_tools::gotify::GotifyHost as _;
 
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
