@@ -1987,6 +1987,26 @@ pub(crate) mod tests {
     /// above that rather than near the value a quiet machine gives.
     const PAUSED_WAIT: Duration = Duration::from_secs(15);
 
+    /// A margin over the buffers a client and a peer that reads nothing can
+    /// stand between them, so a write of this size stays open long enough
+    /// for the peer to reset it (#2907).
+    ///
+    /// Measured capacity to a non-reading peer is about 320-800 KB on macOS
+    /// and about 4 MiB on Linux; with both buffers at their 8 MiB
+    /// `kern.ipc.maxsockbuf` cap this host reaches 8.25 MiB. 16 MiB clears
+    /// every default socket-buffer ceiling and that measured pair. It is a
+    /// margin, not a bound.
+    const UNWRITABLE_FRAME_BYTES: usize = 16 << 20;
+
+    /// How long a stalled peer waits for the client's first bytes before
+    /// answering that the write never began.
+    ///
+    /// The peer's clock starts at the handshake, so this also covers the
+    /// client serializing the frame: measured 349 ms idle and 1.25 s at
+    /// load 66. A test's own wait covers this one plus slack, because the
+    /// peer's deadline starts later.
+    const FRAME_STARTED_WAIT: Duration = Duration::from_secs(5);
+
     /// **An unknown binary frame is said at a level the client keeps.** This
     /// module is not a target the default directives name, so the line at
     /// `debug` never reached `forge.log`; the level is the mutation this test
@@ -2200,26 +2220,36 @@ pub(crate) mod tests {
         /// Every dial's request URI, in arrival order: what the client
         /// declared on the address it asked for.
         pub(crate) uris: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        /// A stalled peer's answer to "did the client's write begin": one
+        /// per connection, sent once it has seen the frame's first bytes or
+        /// given up waiting for them.
+        pub(crate) primed: mpsc::UnboundedReceiver<WriteBegan>,
     }
 
     pub(crate) async fn stub() -> Stub {
         stub_mode(false).await
     }
 
-    /// A stub whose drop is a reset rather than a goodbye: the peer is gone,
-    /// so the client's next write fails instead of landing in a half-closed
-    /// socket's buffer.
-    pub(crate) async fn resetting_stub() -> Stub {
+    /// A stub that reads nothing and resets on kill.
+    ///
+    /// A write of more than every buffer between the two ends cannot finish
+    /// against it, so the reset lands while that write is still open - the
+    /// state a client's write fails on, rather than the race a peer that
+    /// keeps reading leaves (#2907). `primed` says what it saw of the
+    /// frame's first bytes, which is what tells the test the write is in
+    /// flight.
+    pub(crate) async fn stalled_stub() -> Stub {
         stub_mode(true).await
     }
 
-    async fn stub_mode(reset: bool) -> Stub {
+    async fn stub_mode(stalled: bool) -> Stub {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("a port");
         let addr = listener.local_addr().expect("the bound address");
         let (heard_tx, heard) = mpsc::unbounded_channel();
         let (say, keep) = tokio::sync::broadcast::channel::<Value>(64);
         let (kill, kill_keep) = tokio::sync::broadcast::channel(8);
         let (spoken, spoken_keep) = tokio::sync::broadcast::channel::<Value>(64);
+        let (primed, primed_rx) = mpsc::unbounded_channel();
         let say_for_task = say.clone();
         let kill_for_task = kill.clone();
         let spoken_for_task = spoken.clone();
@@ -2228,15 +2258,16 @@ pub(crate) mod tests {
         tokio::spawn(async move {
             loop {
                 let Ok((stream, _)) = listener.accept().await else { return };
-                if reset {
+                if stalled {
                     // A zero linger turns the drop into a reset, which is the
-                    // state a client's next write fails on.
+                    // state a client's write fails on.
                     let held = socket2::SockRef::from(&stream);
                     let _ = held.set_linger(Some(Duration::ZERO));
                 }
                 let heard_tx = heard_tx.clone();
                 let spoken = spoken_for_task.clone();
                 let uris = std::sync::Arc::clone(&uris_for_task);
+                let primed = primed.clone();
                 let mut said = say_for_task.subscribe();
                 let mut killed = kill_for_task.subscribe();
                 tokio::spawn(async move {
@@ -2244,6 +2275,14 @@ pub(crate) mod tests {
                     // bytes**, and what a client declared lives on it; a test
                     // that does not read it cannot see the declaration.
                     let request_bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+                    // **A stalled peer keeps its own handle on the socket**:
+                    // peeking is how it tells the client's frame has begun
+                    // without consuming a byte of it.
+                    let watch = stalled.then(|| {
+                        socket2::SockRef::from(&stream)
+                            .try_clone()
+                            .expect("a handle to peek the peer's socket with")
+                    });
                     let tee = Tee { inner: stream, head: std::sync::Arc::clone(&request_bytes) };
                     let Ok(ws) = tokio_tungstenite::accept_async(tee).await else {
                         return;
@@ -2258,6 +2297,13 @@ pub(crate) mod tests {
                         held.push(target.to_owned());
                     }
                     let (mut writer, mut reader) = ws.split();
+                    if let Some(watch) = watch {
+                        let _ = primed.send(await_first_bytes(&watch).await);
+                        let _ = killed.recv().await;
+                        // Dropping the handle with the halves resets the
+                        // connection under a write that is still open.
+                        return;
+                    }
                     loop {
                         tokio::select! {
                             _ = killed.recv() => break,
@@ -2297,6 +2343,41 @@ pub(crate) mod tests {
             _kill_keep: kill_keep,
             _spoken_keep: spoken_keep,
             uris,
+            primed: primed_rx,
+        }
+    }
+
+    /// What a stalled peer learned about the client's write.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum WriteBegan {
+        /// The frame's first bytes are queued on the peer's socket.
+        Yes,
+        /// The bound expired with no bytes seen.
+        NoBytes,
+    }
+
+    /// Wait, bounded, until the peer's socket holds the first bytes of the
+    /// client's write - without taking them.
+    ///
+    /// A stalled peer reads nothing, so a frame larger than the buffers
+    /// cannot complete: from the first queued byte the client's write is
+    /// open, and a reset now lands inside it (#2907).
+    ///
+    /// A peek error reads as [`WriteBegan::NoBytes`], not as a state of its
+    /// own: an empty socket and one that cannot be peeked both leave the
+    /// reset landing on a write that never began, which is the one thing
+    /// the caller needs to know.
+    async fn await_first_bytes(watch: &socket2::Socket) -> WriteBegan {
+        let deadline = tokio::time::Instant::now() + FRAME_STARTED_WAIT;
+        loop {
+            let mut first = [std::mem::MaybeUninit::<u8>::uninit(); 1];
+            if watch.peek(&mut first).is_ok_and(|queued| queued > 0) {
+                return WriteBegan::Yes;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return WriteBegan::NoBytes;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
     }
 
@@ -2898,21 +2979,66 @@ pub(crate) mod tests {
     /// This is the shell's half of #2688: the page's no-reply dispatch
     /// answers `Ok` only after the writer has the frame, so a write that
     /// fails must answer `Err` rather than let a caller clear state for a
-    /// command nobody received. The peer resets here, and the dispatch is
-    /// taken after it has gone, which is the window the page cannot see.
+    /// command nobody received.
+    ///
+    /// **The peer stalls rather than merely vanishing (#2907).** A peer
+    /// killed a moment ago is a race: the write can still land in the
+    /// kernel buffer before the reset is read, and by the evidence this
+    /// half has, that write succeeded. So the peer here reads nothing and
+    /// the command is a margin larger than the buffers between the two
+    /// ends: the test waits until the frame's first bytes are queued on the
+    /// peer (the write is now open), resets it there, and the writer's own
+    /// failure is the answer. Nothing else is written on this connection in
+    /// that window - the client sends no greeting and its liveness probe is
+    /// 15 s out - so the first queued bytes are this frame's.
+    ///
+    /// **Waiting for the close first was measured and does not fit.** Once
+    /// the socket has observed the reset its run loop has left the
+    /// connection, so a dispatch goes through `apply_offline` and answers
+    /// "the socket is not open", which is never the `did not go` this test
+    /// asserts. The stall is the only shape that reaches the writer's own
+    /// failure.
     #[tokio::test]
     async fn refuses_a_frame_the_writer_could_not_put_on_the_wire() {
-        let stub = resetting_stub().await;
+        let mut stub = stalled_stub().await;
         let (socket, _rx) = connected(&stub).await;
+
+        let calling = tokio::spawn({
+            let socket = socket.clone();
+            async move {
+                socket
+                    .dispatch(
+                        json!({ "cancel": { "blob": "x".repeat(UNWRITABLE_FRAME_BYTES) } }),
+                        false,
+                    )
+                    .await
+            }
+        });
+        // The peer's own deadline starts after the handshake, so this one
+        // carries slack: otherwise it expires first and the specific
+        // never-primed panic below is unreachable.
+        let began =
+            tokio::time::timeout(FRAME_STARTED_WAIT + Duration::from_secs(1), stub.primed.recv())
+                .await
+                .expect("the peer answers within its own bound plus slack")
+                .expect("the stub still feeding");
+        assert_eq!(
+            began,
+            WriteBegan::Yes,
+            "the peer's socket never queued the frame's first bytes"
+        );
+        // **The write must still be open at the reset.** A frame the
+        // buffers could absorb would finish here, and the failure below
+        // would then name the writer for what is really a size regression.
+        settle(100).await;
+        assert!(!calling.is_finished(), "the frame fit the buffers: raise UNWRITABLE_FRAME_BYTES");
         stub.kill.send(()).expect("the peer resets");
 
-        let why = tokio::time::timeout(
-            Duration::from_secs(2),
-            socket.dispatch(json!({ "cancel": {} }), false),
-        )
-        .await
-        .expect("the refusal lands fast")
-        .expect_err("a command the writer could not send is refused");
+        let why = tokio::time::timeout(Duration::from_secs(2), calling)
+            .await
+            .expect("the refusal lands fast")
+            .expect("the call task")
+            .expect_err("a command the writer could not send is refused");
         assert!(why.contains("did not go"), "the write's own failure is the answer: {why}");
     }
 
