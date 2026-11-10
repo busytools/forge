@@ -23,7 +23,7 @@
   import { processes } from '../chat/processes.svelte';
   import { review } from '../chat/review.svelte';
   import { schedules } from '../chat/schedules.svelte';
-  import { panelStyle, portal } from '../chat/strip-panel';
+  import { panelStyle, portaledFrom, portal } from '../chat/strip-panel';
   import { subagents } from '../chat/subagents.svelte';
   import { tasks } from '../chat/tasks.svelte';
   import { hrefFor } from '../routes';
@@ -241,11 +241,19 @@
     return () => cancelAnimationFrame(raf);
   });
 
-  /** A pointer landing outside the button and its panel closes it. */
+  /**
+   * A pointer landing outside the button and its panel closes it.
+   *
+   * **A panel opened from a chip inside this one is outside it in DOM terms**:
+   * every segment portals its panel to the body. `portaledFrom` asks which
+   * segment drew the panel instead, so the pointerdown a click starts with
+   * does not tear that panel - and its link - down before the click lands.
+   */
   function away(event: Event): void {
     const at = event.target;
     if (!(at instanceof Node)) return;
     if (moreEl?.contains(at) === true || panelEl?.contains(at) === true) return;
+    if (portaledFrom(at, panelEl)) return;
     open = false;
   }
 

@@ -167,7 +167,7 @@
         class="sg-list"
         bind:this={listEl}
         style={limits}
-        use:portal
+        use:portal={segEl}
         role="presentation"
         onpointerenter={(event) => {
           if (hovering(event)) hold();

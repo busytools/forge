@@ -150,7 +150,7 @@
     </button>
 
     {#if open}
-      <div class="sg-list" bind:this={listEl} style={limits} use:portal>
+      <div class="sg-list" bind:this={listEl} style={limits} use:portal={segEl}>
         {#each monitors.rows() as row (row.id)}
           {@const line = `$ ${row.command}`}
           <div

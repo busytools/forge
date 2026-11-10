@@ -160,7 +160,7 @@
     </button>
 
     {#if open}
-      <div class="sg-list" bind:this={listEl} style={limits} use:portal>
+      <div class="sg-list" bind:this={listEl} style={limits} use:portal={segEl}>
         {#each connectors.rows() as row (`${row.kind}:${row.id}`)}
           <button
             type="button"

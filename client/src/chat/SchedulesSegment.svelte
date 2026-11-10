@@ -153,7 +153,7 @@
     </button>
 
     {#if open}
-      <div class="sg-list" bind:this={listEl} style={limits} use:portal>
+      <div class="sg-list" bind:this={listEl} style={limits} use:portal={segEl}>
         {#each schedules.rows() as row (row.id)}
           <button
             type="button"

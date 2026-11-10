@@ -54,18 +54,63 @@ export function panelStyle(el: HTMLElement | null): string {
 }
 
 /**
+ * Each portaled panel's anchor: the element it hangs off, recorded when it
+ * enters the body.
+ *
+ * **A portaled panel is nobody's DOM child**, so a listener asking whether a
+ * pointer landed inside someone's panel cannot see it by containment. The
+ * anchor is what says which segment drew it, and so which panel it belongs
+ * to for a dismissal that walks the tree.
+ */
+const anchors = new WeakMap<HTMLElement, HTMLElement | null>();
+
+/**
  * Move a node to the document body for the length of its life.
  *
  * **The strip's chips lane scrolls, so a panel drawn inside it is cut to
  * nothing** - measured: the panel kept its rect and painted a 2px sliver. A
  * panel is positioned in viewport coordinates (`panelStyle` measures rects),
  * which is what the body can carry; Svelte has no portal of its own.
+ *
+ * `anchor` is the segment the panel hangs off, which `portaledFrom` reads. A
+ * caller with no containing panel leaves it out: an unpaired panel is never
+ * inside anything.
  */
-export function portal(node: HTMLElement): { destroy: () => void } {
+export function portal(
+  node: HTMLElement,
+  anchor: HTMLElement | null = null,
+): { destroy: () => void } {
   document.body.appendChild(node);
+  anchors.set(node, anchor);
   return {
     destroy() {
       node.remove();
     },
   };
+}
+
+/**
+ * Whether `target` sits inside a panel whose anchor is inside `root`.
+ *
+ * **This is what keeps a nested panel alive.** A chip behind the `+N` panel
+ * opens its own panel, which is portaled to the body and so not a descendant
+ * of the `+N` panel. A dismisser that only asks "is this node inside my
+ * panel" reads that pointer as away and tears the chip's panel - and the link
+ * being clicked - down before the click lands.
+ *
+ * The nearest portaled ancestor decides: a panel opened from a chip inside
+ * `root` belongs to it, and one opened from the strip above the composer does
+ * not.
+ */
+export function portaledFrom(target: Node, root: HTMLElement | null): boolean {
+  if (root === null) return false;
+  let at: Node | null = target;
+  while (at !== null) {
+    if (at instanceof HTMLElement && anchors.has(at)) {
+      const anchor = anchors.get(at) ?? null;
+      return anchor !== null && root.contains(anchor);
+    }
+    at = at.parentNode;
+  }
+  return false;
 }

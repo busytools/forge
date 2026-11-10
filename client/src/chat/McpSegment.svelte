@@ -153,7 +153,7 @@
     </button>
 
     {#if open}
-      <div class="sg-list" bind:this={listEl} style={limits} use:portal>
+      <div class="sg-list" bind:this={listEl} style={limits} use:portal={segEl}>
         <!-- Rows key on the server's name, which is unique in a session's
              own snapshot. -->
         {#each mcp.rows() as row (row.name)}

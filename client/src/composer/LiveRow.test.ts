@@ -446,6 +446,77 @@ describe('the live row', () => {
     expect(document.querySelector('[data-panel-chip]'), 'the panel closed').toBeNull();
   });
 
+  it('leaves a hidden chip its own panel through the pointerdown a click starts with', () => {
+    // **The nested panel is portaled to the body, so it is not a child of the
+    // `+N` panel** - and a pointerdown landing in it must not read as away, or
+    // the panel is torn down before the browser dispatches the click on the
+    // link inside it (Ved, 2026-11-11: "open review" did nothing from a chip
+    // behind `+N`).
+    reviewWaiting(true);
+    boardTask();
+    tree();
+    draw(null);
+    expect(drawn()).toEqual(['terminal', 'git', 'review', 'tasks']);
+    measured(250, { terminal: 60, git: 90, review: 200, tasks: 50 }, 30);
+
+    const more = document.querySelector<HTMLButtonElement>('.live-row .live-more');
+    if (more === null) throw new Error('the row drew no +N');
+    more.click();
+    flushSync();
+    expect(
+      document.querySelector('[data-panel-chip="review"]'),
+      'precondition: review is behind the +N',
+    ).not.toBeNull();
+
+    const toggle = document.querySelector<HTMLButtonElement>('[data-panel-chip="review"] button');
+    if (toggle === null) throw new Error('the review chip drew no button');
+    toggle.click();
+    flushSync();
+
+    const door = document.querySelector<HTMLAnchorElement>('.sg-open');
+    if (door === null) throw new Error('the review panel drew no door');
+
+    door.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    flushSync();
+    expect(door.isConnected, 'the pointerdown tore the chip panel down').toBe(true);
+    expect(
+      document.querySelector('[data-panel-chip="review"]'),
+      'the +N panel closed on a pointer inside a panel its chip opened',
+    ).not.toBeNull();
+
+    // The click that follows lands on a live element, and the door's own
+    // handler closes the review panel as it always did.
+    let aliveAtClick: boolean | null = null;
+    door.addEventListener('click', () => {
+      aliveAtClick = door.isConnected;
+    });
+    door.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+    expect(aliveAtClick, 'the click found its element detached').toBe(true);
+    expect(document.querySelector('.sg-open'), 'the review panel closed').toBeNull();
+  });
+
+  it('still closes the +N panel on a pointer that lands outside it', () => {
+    reviewWaiting(true);
+    boardTask();
+    tree();
+    draw(null);
+    measured(250, { terminal: 60, git: 90, review: 200, tasks: 50 }, 30);
+
+    const more = document.querySelector<HTMLButtonElement>('.live-row .live-more');
+    if (more === null) throw new Error('the row drew no +N');
+    more.click();
+    flushSync();
+    expect(document.querySelector('[data-panel-chip="review"]')).not.toBeNull();
+
+    document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    flushSync();
+    expect(
+      document.querySelector('[data-panel-chip="review"]'),
+      'the panel stayed open on a pointer landing outside it',
+    ).toBeNull();
+  });
+
   it('says what waits in the body: the ask chip in its tone, the draft chip beside it', () => {
     const onask = vi.fn();
     const ondraft = vi.fn();
