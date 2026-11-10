@@ -59,7 +59,7 @@ export interface HomeRead {
    * already `ready` and its bound cleared before the page narrows it, so a
    * healthy-empty drawing would stand forever with nothing saying why. The
    * page draws this instead. Nothing periodic retries it: the next update
-   * that covers the home, or a reconnect, reads again.
+   * that covers the home, entering the page, or a reconnect, reads again.
    */
   failed: string | null;
   /**

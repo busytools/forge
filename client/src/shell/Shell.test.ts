@@ -1261,6 +1261,27 @@ describe('entering the home (#2955)', () => {
     expect(mockRereadHome, 'the return after a reconnect asked twice').toHaveBeenCalledTimes(1);
   });
 
+  /**
+   * **An entry while the link is down asks nothing.** The reconnect replays
+   * what the connection held, so that read is the one covering the entry; a
+   * read asked now would set the page's in-flight flag for a refresh that
+   * returns false and leave it set until the next status event.
+   */
+  it('does not ask on an entry while the link is down', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/', forge.address);
+    await until(() => forge.homeReads() >= 1, 'the launch to take');
+    await moveTo(LEAD_PATH, LEAD.project);
+
+    await forge.close();
+    // The forge is gone, so nothing would answer a second close either.
+    forges.length = 0;
+    await until(() => drawn().includes('Reconnecting'), 'the drop to be drawn');
+    await moveTo('/', 'forge');
+    expect(mockRereadHome, 'an entry on a closed link asked for a read').not.toHaveBeenCalled();
+  });
+
   it('leaves the in-flight guard to the page, so both entries ask', async () => {
     const forge = await stubForge({ mark: null, theme: null, font: null });
     forges.push(forge);

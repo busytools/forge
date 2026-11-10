@@ -249,8 +249,10 @@
    *
    * **The first route a connection is seen with is its boot entry**, which
    * the subscription above already reads: only a later move INTO the home
-   * asks again, and only while the socket is open - a read asked on a closed
-   * one sets the page's in-flight flag for a refresh that returns false.
+   * asks again, and only while the socket is open - a read asked while the
+   * link is down or reconnecting sets the page's in-flight flag for a
+   * refresh that returns false, and the reconnect's own replay of what the
+   * connection held is the read that covers the skipped ask.
    * **The ask goes through `rereadHome`**, the same guard the page's own
    * readers use: it skips a read already in flight and a refused subject.
    * That is not a promise of one encode - the subscription's initial read is
