@@ -46,6 +46,7 @@ mod error;
 mod fetch;
 #[cfg(all(test, target_os = "macos"))]
 mod gates;
+pub mod host;
 pub mod normalize;
 
 pub use audio::{AudioSource, SAMPLE_RATE, Samples, resample_mono};
@@ -62,10 +63,15 @@ pub use transcribe_cpp::CancelToken;
 #[cfg(test)]
 mod tests_leaf_invariant {
     /// This crate is a leaf: it may depend on another LEAF forge crate and
-    /// on nothing else of the workspace. The one edge it has is
-    /// `forge-capture`, which opens the microphone - the device half of a
-    /// take, shared with a client's own shell - and which is itself a leaf
-    /// with no forge-* dependencies at all.
+    /// on nothing else of the workspace. It has two edges: `forge-capture`,
+    /// which opens the microphone - the device half of a take, shared with
+    /// a client's own shell - and `forge-primitives`, whose `SessionSlot`
+    /// names the seat a take belongs to. Both are leaves.
+    ///
+    /// The primitives edge is deliberate and recorded in the project's
+    /// `CLAUDE.md`: the leaf rule's intent is no workspace or server
+    /// coupling, not no primitives. The host trait in [`host`] is what
+    /// keeps the rest of the workspace out.
     ///
     /// Depending on the workspace's core is the change this guards: a
     /// host, a session or a view reaching into dictation would end the
@@ -120,14 +126,17 @@ mod tests_leaf_invariant {
         let mine = forge_deps("forge-dictate");
         assert_eq!(
             mine,
-            vec!["forge-capture".to_owned()],
-            "forge-dictate's only forge-* dependency is the capture leaf, found {mine:?}"
+            vec!["forge-capture".to_owned(), "forge-primitives".to_owned()],
+            "forge-dictate's only forge-* dependencies are the capture and primitives leaves, \
+             found {mine:?}"
         );
-        let theirs = forge_deps("forge-capture");
-        assert!(
-            theirs.is_empty(),
-            "the crate forge-dictate leans on must itself be a leaf, but forge-capture depends on \
-             {theirs:?}"
-        );
+        for leaf in ["forge-capture", "forge-primitives"] {
+            let theirs = forge_deps(leaf);
+            assert!(
+                theirs.is_empty(),
+                "the crate forge-dictate leans on must itself be a leaf, but {leaf} depends on \
+                 {theirs:?}"
+            );
+        }
     }
 }

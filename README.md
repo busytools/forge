@@ -26,7 +26,7 @@ Strictly acyclic:
 ```
 forge-primitives      leaf: pure data, no logic, no I/O, no async
 forge-capture         leaf: microphone capture, depends on no forge-* crate
-forge-dictate     ->  capture
+forge-dictate     ->  capture + primitives
 forge-tts             leaf: speech synthesis, depends on no forge-* crate
 forge-system-one      leaf: decision-model client, depends on no forge-* crate
 forge-terminal        leaf: the PTY and screen model, depends on no forge-* crate
@@ -45,7 +45,7 @@ forge-test-harness->  primitives + sdk
 |---|---|
 | [`forge-primitives`](crates/forge-primitives) | Every type that crosses a crate boundary: message envelopes, content blocks, hook and permission payloads, IDs, render-side views. Pure data. |
 | [`forge-capture`](crates/forge-capture) | Microphone capture: the input device, the input plan, the downmix and resampler, and the mono model-rate audio a host reads from it. A leaf: depends on no forge-* crate, so a client's own shell captures through it and `forge-dictate` takes its sample rate. |
-| [`forge-dictate`](crates/forge-dictate) | The dictation primitive: audio in, text out. Owns its model files, speech recognition and normalization, and takes audio as mono frames a host pushes in. Its one forge-* dependency is the capture leaf, for the sample rate, and it knows nothing about a host. |
+| [`forge-dictate`](crates/forge-dictate) | The dictation primitive: audio in, text out. Owns its model files, speech recognition and normalization, and takes audio as mono frames a host pushes in. Its forge-* dependencies are the capture leaf, for the sample rate, and `forge-primitives`, whose types its host trait crosses on; the leaf rule's intent is no workspace or server coupling, not no primitives. It knows nothing about a host. |
 | [`forge-tts`](crates/forge-tts) | The speech primitive: text in, audio chunks out. Owns the Kokoro-82M engine (ONNX Runtime in process, with Misaki's G2P), the model files a speaking model is made of, sentence splitting and the utterance bound. A leaf: it depends on no forge-* crate and knows nothing about a host. |
 | [`forge-system-one`](crates/forge-system-one) | The System One decision-model client: the `[systemone]` config shape, the wire question/answer types with their validation, and the HTTP call with its timeout and error mapping. Depends on no forge-* crate. |
 | [`forge-terminal`](crates/forge-terminal) | One terminal per seat: the PTY, the screen model and the read loop, the OSC 133 scanner and the shell integration scripts, the text extractor, the attach repaint, and the state classifier. `alacritty_terminal` is its only terminal dependency; the event loop is forge's own, because the client's stream is the raw bytes. A leaf: depends on no forge-* crate. |

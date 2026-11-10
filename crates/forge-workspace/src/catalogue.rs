@@ -466,7 +466,7 @@ impl crate::Workspace {
         let active = self.active_models();
         let specs: Vec<(DictateRole, ModelSpec)> =
             active.iter().map(|(role, model)| (*role, model.spec.clone())).collect();
-        let preflight = self.dictate.snapshot.lock().clone();
+        let preflight = self.dictate.state.snapshot.lock().clone();
         let state = self.dictate_catalogue.lock();
         let entries: &[CatalogueEntry] =
             state.catalogue.as_ref().map_or(&[], |catalogue| catalogue.entries.as_slice());

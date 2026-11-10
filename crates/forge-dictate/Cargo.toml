@@ -43,6 +43,21 @@ time = { workspace = true }
 # crate because a client's shell opens the same device and must not carry
 # this crate's models to do it.
 forge-capture = { workspace = true }
+# The seat a take belongs to. The workspace used to hand this in; the host
+# trait below means the module names its own seat type, so the leaf gains
+# the primitives crate and stays a leaf in every other direction. See the
+# crate's `depends_on_no_forge_crate_but_a_leaf` test and the project's
+# `CLAUDE.md` for the exception's reason.
+forge-primitives = { workspace = true }
+# The host seam's live-take lifecycle: the stop channels and the meters
+# the runner awaits on. The crate's own synchronous API stays as it is;
+# this is the async half a host drives.
+tokio = { workspace = true }
+# The runtime state's mutex, matching the rest of the workspace's choice.
+parking_lot = { workspace = true }
+# `[dictate]` settings deserialize from the same TOML the workspace's
+# config does, and the device override stays an opaque `toml::Value`.
+toml = { workspace = true }
 
 # Metal is the only backend worth naming: elsewhere ggml selects one
 # itself and falls back to CPU.
@@ -52,3 +67,7 @@ llama-cpp-2 = { workspace = true, features = ["metal"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# `test-util` enables `#[tokio::test(start_paused = true)]`: the cap-tick
+# test races the interval's first tick against a queued stop, and only a
+# paused clock puts both arms ready on the first poll.
+tokio = { workspace = true, features = ["test-util"] }

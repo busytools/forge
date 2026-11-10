@@ -63,7 +63,7 @@ mod config;
 pub mod conversation_turns;
 pub mod conversation_window;
 mod crons;
-mod dictate;
+use forge_dictate::host as dictate;
 pub mod documents;
 mod domain_session;
 mod error;

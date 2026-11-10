@@ -299,6 +299,8 @@ use crate::target::{ProjectKey, SessionSlot, SessionTarget};
 use crate::update_fanout::{SeatUpdate, SubscriberRole, UpdateFanout};
 use crate::views::{AccountLoadingRow, ProjectView, SessionView};
 
+#[cfg(test)]
+mod dictate_tests;
 #[cfg(any(test, feature = "testing"))]
 pub(crate) mod testing;
 
@@ -727,15 +729,11 @@ pub struct Workspace {
     /// and refreshed by the in-memory usage poller, and it is what the
     /// gateway's selection walk reads to choose an account.
     pub(crate) accounts: Arc<forge_gateway::AccountPool>,
-    /// Dictation preflight: the per-model progress the launchpad
-    /// renders, the flag Escape sets, and the loaded engine held for
-    /// the run. Populated by `start_dictate_preflight`; inert when
-    /// `[dictate] enabled` is false.
-    pub(crate) dictate: Arc<crate::dictate::DictateState>,
-    /// Live dictation: the takes being fed frames and the submitted
-    /// takes still awaiting a transcript. Driven by
-    /// `Command::DictateStream` / `Command::DictateStop`.
-    pub(crate) dictate_runtime: Mutex<crate::dictate::DictateRuntime>,
+    /// Dictation: the subsystem's handle, holding preflight's state and
+    /// the live takes' runtime. This workspace is its host, so the
+    /// subsystem reaches the seat, the app-support dir and the update
+    /// fan-out through the `DictateHost` impl beside the field.
+    pub(crate) dictate: Arc<crate::dictate::Dictate>,
     /// The server's browser fleet, installed once at boot by forge-server.
     /// `None` is a workspace with no browser host (tests, a view): the
     /// browser tools then name their refusal.
@@ -2591,8 +2589,7 @@ impl Workspace {
             gateway_port,
             gateway_url: Mutex::new(None),
             gateway_bind_error: Mutex::new(None),
-            dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
-            dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
+            dictate: Arc::new(crate::dictate::Dictate::new(&config_dictate)),
             browser_host: std::sync::OnceLock::new(),
             live_seats_lock: std::sync::Mutex::new(()),
             live_seats_generation: std::sync::atomic::AtomicU64::new(0),
@@ -4230,7 +4227,7 @@ impl Workspace {
     /// `models` means `[dictate] enabled` is false and preflight has no
     /// Dictation section to draw.
     pub fn dictate_snapshot(&self) -> crate::dictate::DictateSnapshot {
-        self.dictate.snapshot.lock().clone()
+        self.dictate.state.snapshot.lock().clone()
     }
 
     /// Where the dictation models land. `None` when the platform has no
@@ -4251,7 +4248,7 @@ impl Workspace {
     /// and starts again is not refused by the take it left behind.
     /// Answers whether there was one to close.
     pub fn dictate_close(&self, key: &SessionSlot, initiator: u64) -> bool {
-        let mut runtime = self.dictate_runtime.lock();
+        let mut runtime = self.dictate.runtime.lock();
         let live = runtime
             .recordings
             .get(key)
@@ -4300,7 +4297,7 @@ impl Workspace {
     /// rather than holding it, because the take's own answer is what a
     /// reader sees either way.
     pub fn dictate_push(&self, key: &SessionSlot, samples: &[f32], initiator: Option<u64>) -> bool {
-        let runtime = self.dictate_runtime.lock();
+        let runtime = self.dictate.runtime.lock();
         runtime.frame_sink_for(key, initiator).is_some_and(|sink| sink.push_mono(samples))
     }
 
@@ -4309,7 +4306,7 @@ impl Workspace {
     /// carries [`crate::DictateFailure::Cancelled`] and forge quits,
     /// because there is no dictation-less runtime to fall back to.
     pub fn cancel_dictate_preflight(&self) {
-        self.dictate.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.dictate.state.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Fetch, verify and load the dictation models. One task per forge
@@ -4336,7 +4333,7 @@ impl Workspace {
         if !settings.enabled {
             return;
         }
-        let state = Arc::clone(&self.dictate);
+        let state = Arc::clone(&self.dictate.state);
         let this = Arc::clone(self);
         let updates = self.update_sender();
         let span = tracing::info_span!("dictate_preflight");
@@ -4364,7 +4361,11 @@ impl Workspace {
                 let models = this.dictate_models();
                 let _ = updates.send(SessionUpdate::DictateModelsChanged { models });
 
-                let cfg = crate::dictate::preflight_config(&settings, &resolved);
+                let cfg = crate::dictate::preflight_config(
+                    &settings,
+                    &resolved,
+                    this.app_support.as_deref(),
+                );
                 crate::dictate::run_dictate_preflight(cfg, Arc::clone(&state)).await;
                 // `run_dictate_preflight` parks the engine in the state
                 // only on success, and every failure path ends the run,
@@ -7383,7 +7384,8 @@ impl Workspace {
                     // `a_stream_take_registers_synchronously_and_keeps_its_frames`
                     // fails the moment this moves onto one.
                     match crate::dictate::register_stream_take(
-                        self,
+                        self.as_ref(),
+                        &self.dictate,
                         &key,
                         options,
                         surface.clone(),
@@ -7397,17 +7399,17 @@ impl Workspace {
                                 initiator,
                             });
                             tokio::spawn(crate::dictate::run_stream_take(
-                                Arc::clone(self),
+                                Arc::clone(self) as Arc<dyn crate::dictate::DictateHost>,
+                                Arc::clone(&self.dictate),
                                 key,
                                 take,
-                                updates,
                             ));
                         }
                         Err(message) => {
                             // The start refused, so any park the press's
                             // release left behind answers a take that will
                             // never exist.
-                            self.dictate_runtime.lock().clear_stop_pending(&key, initiator);
+                            self.dictate.runtime.lock().clear_stop_pending(&key, initiator);
                             let _ = updates.send(SessionUpdate::DictateEnded {
                                 key,
                                 outcome: crate::protocol::DictateOutcome::Refused { message },
@@ -7421,7 +7423,8 @@ impl Workspace {
                 Command::DictateStop { key, submit, initiator } => {
                     let ws = Arc::clone(self);
                     tokio::spawn(async move {
-                        crate::dictate::handle_dictate_stop(&ws, &key, submit, initiator).await;
+                        crate::dictate::handle_dictate_stop(&ws.dictate, &key, submit, initiator)
+                            .await;
                     });
                 }
                 // User-action store writes routed through the command
@@ -8346,7 +8349,7 @@ impl Workspace {
         // Release any live dictation before the pools go: a recording
         // task outliving its session's teardown would otherwise hold
         // the microphone for a composer nobody can reach.
-        crate::dictate::teardown_all(self);
+        crate::dictate::teardown_all(&self.dictate);
         // Drop command senders first so every SessionTask sees its
         // command channel close and exits cleanly; each task's exit
         // path then disconnects its subprocess (see the doc above).
@@ -8522,7 +8525,7 @@ impl Workspace {
         // `/resume` swaps the occupant and never reaches this path, which is
         // what leaves the PTY, its shell and its scrollback untouched.
         self.close_terminal(session_key);
-        crate::dictate::teardown_for_closed_session(self, session_key);
+        crate::dictate::teardown_for_closed_session(&self.dictate, session_key);
         // A parked write is not a prompt the gone session can answer, and a
         // reused label must not draw the previous occupant's edit on a dock.
         self.abandon_settings_writes(session_key);
@@ -27917,5 +27920,42 @@ accounts = ["main"]
             Some("work"),
             "a project with no key carries the org's",
         );
+    }
+}
+
+/// The workspace is the dictation subsystem's host: the module reaches the
+/// seat, the app-support dir and the update fan-out through this and
+/// nothing else. Each update maps one-to-one onto the `SessionUpdate`
+/// variant of the same name, so the wire stays exactly what the client
+/// already reads.
+impl crate::dictate::DictateHost for Workspace {
+    fn session_is_live(&self, key: &SessionSlot) -> bool {
+        self.command_senders.lock().contains_key(key)
+    }
+
+    fn app_support_dir(&self) -> Option<std::path::PathBuf> {
+        self.app_support.clone()
+    }
+
+    fn emit(&self, update: crate::dictate::DictateUpdate) -> bool {
+        let frame = match update {
+            crate::dictate::DictateUpdate::Level { key, peak_db, generation, initiator } => {
+                SessionUpdate::DictateLevel { key, peak_db, generation, initiator }
+            }
+            crate::dictate::DictateUpdate::Transcribing { key, generation, initiator } => {
+                SessionUpdate::DictateTranscribing { key, generation, initiator }
+            }
+            crate::dictate::DictateUpdate::Progress { key, generation, done, total, initiator } => {
+                SessionUpdate::DictateProgress { key, generation, done, total, initiator }
+            }
+            crate::dictate::DictateUpdate::Ended {
+                key,
+                outcome,
+                generation,
+                surface,
+                initiator,
+            } => SessionUpdate::DictateEnded { key, outcome, generation, surface, initiator },
+        };
+        self.update_sender().send(frame)
     }
 }

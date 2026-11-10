@@ -7,7 +7,7 @@ layered acyclically:
 ```
 forge-primitives ───── leaf (pure data, no logic)
 forge-capture    ───── leaf (microphone capture; depends on no forge-* crate)
-forge-dictate    ───→ capture (dictation)
+forge-dictate    ───→ capture + primitives (dictation)
 forge-tts        ───── leaf (speech synthesis; depends on no forge-* crate)
 forge-system-one ───── leaf (decision-model client; depends on no forge-* crate)
 forge-terminal   ───── leaf (the PTY and screen model; depends on no forge-* crate)
@@ -31,10 +31,13 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   takes its sample rate.
 - **`forge-dictate`** - the dictation primitive: audio in, text out.
   Owns its model files, speech recognition and normalization, and takes
-  audio as mono frames a host pushes in. Its one forge-* dependency is
-  the capture leaf, for the sample rate; it knows nothing about a host,
-  so it must not grow one, and a doc comment mentioning a keypress, a
-  composer or a session is a bug.
+  audio as mono frames a host pushes in. Its forge-* dependencies are the
+  capture leaf, for the sample rate, and `forge-primitives`: the leaf
+  rule's intent is that a leaf grows no workspace or server coupling, not
+  that it takes no forge-* crate at all, and the types its host trait
+  crosses on are primitives. It knows nothing about a host, so it must not
+  grow one, and a doc comment mentioning a keypress, a composer or a
+  session is a bug.
 - **`forge-tts`** - the speech primitive: text in, audio chunks out. Owns
   the Kokoro-82M engine (ONNX Runtime in process, with Misaki and its
   bundled espeak-ng for G2P), the model files a speaking model is made of,
@@ -166,10 +169,12 @@ Work top-down; first match wins.
 
 1. **Audio, speech recognition, or turning either into text?** (model
    fetch, transcription, transcript normalization)
-   -> `forge-dictate`. It leans on the capture leaf below and on nothing
-   else of the workspace, and its own types stay there even once another
-   crate reads them. Wanting a forge-* dependency here beyond the capture
-   leaf is a design problem, not a dependency problem. **Text into speech?**
+   -> `forge-dictate`. It leans on the capture leaf below and on
+   `forge-primitives` for the seat its host trait crosses on, and on
+   nothing else of the workspace, and its own types stay there even once
+   another crate reads them. Wanting a forge-* dependency here beyond the
+   capture leaf and primitives is a design problem, not a dependency
+   problem. **Text into speech?**
    (the engine, its model files, the sentence split, the utterance bound)
    -> `forge-tts`, a leaf beside it. The two directions are separate leaves
    on purpose - disjoint model families and dependencies - and a leaf
@@ -302,9 +307,9 @@ one, bias toward the deeper crate.
   means one is wrong; lift to primitives or import the re-export. The
   exceptions are the leaf crates that may not depend on any forge-*
   crate, `forge-capture`, `forge-tts`, `forge-system-one` and
-  `forge-dictate` (which leans on the first and on nothing else of the
-  workspace): their types stay in them and consumers import them from
-  there.
+  `forge-dictate` (which leans on the capture leaf and on primitives,
+  and on nothing else of the workspace): their types stay in them and
+  consumers import them from there.
 - **Provider dispatch outside `forge-gateway`.** A match on
   `Provider` in workspace or a view is the thing this crate exists to
   delete; route through `forge_gateway::backend(token)` instead.

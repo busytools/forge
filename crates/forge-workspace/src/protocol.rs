@@ -1401,30 +1401,7 @@ where
 /// What one finished dictation take produced. Plain data rather than
 /// [`forge_dictate::Outcome`]: a view words the notices, so it gets
 /// the observations and keeps the crate's error shapes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DictateOutcome {
-    /// Words to insert at the composer's caret. `truncated` means the
-    /// take hit the capture cap or the decode budget and is partial.
-    Landed { text: String, truncated: bool },
-    /// The audio normalised to nothing - a valid answer, not a failure.
-    Empty,
-    /// Nothing rose above the silence floor. A finite `peak_db` is a
-    /// quiet room and a retry is reasonable; negative infinity means
-    /// every sample was exactly zero, which is structural and sticky.
-    NoAudio {
-        #[serde(default, deserialize_with = "no_signal_reads_as_negative_infinity")]
-        peak_db: f32,
-        seconds: u64,
-    },
-    /// The take never happened. Covers a busy microphone, a device that
-    /// would not open, and dictation not being ready.
-    Refused { message: String },
-    /// Recognition failed. The response is the same whichever way.
-    Failed,
-    /// The user abandoned the take. Resets silently.
-    Cancelled,
-}
+pub use forge_dictate::host::DictateOutcome;
 
 /// The role a caller states for a spawn: a project's lead, or a worker
 /// named by its label.

@@ -450,8 +450,7 @@ impl Workspace {
                 crate::config::DEFAULT_GATEWAY_PORT
             ))),
             gateway_bind_error: Mutex::new(None),
-            dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
-            dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
+            dictate: Arc::new(crate::dictate::Dictate::new(&config_dictate)),
             browser_host: std::sync::OnceLock::new(),
             live_seats_lock: std::sync::Mutex::new(()),
             live_seats_generation: std::sync::atomic::AtomicU64::new(0),
@@ -846,7 +845,7 @@ impl Workspace {
     /// can render any of its states without fetching 3 GB. Test-only.
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_dictate_snapshot(&self, snapshot: crate::dictate::DictateSnapshot) {
-        *self.dictate.snapshot.lock() = snapshot;
+        *self.dictate.state.snapshot.lock() = snapshot;
     }
 
     /// Arm dictation with an engine over `models_dir`: its weights are
@@ -866,7 +865,7 @@ impl Workspace {
         let engine = forge_dictate::Engine::new(
             forge_dictate::ConfigBuilder::new().models_dir(models_dir).normalizer(None).build(),
         )?;
-        *self.dictate.engine.lock() = Some(engine);
+        *self.dictate.state.engine.lock() = Some(engine);
         *self.test_read_aloud_dir.lock() = Some(models_dir.join("dictate-read-aloud"));
         Ok(())
     }
