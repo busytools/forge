@@ -94,14 +94,20 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   announcement and the delivery into a session) and the shared `AskSink`;
   its MCP facade and fifteen tools behind `SlackFacadeHost` (the caller's
   `[[slack]]` binding, project and subscription identity), registered as
-  one `ToolProvider`. forge-workspace implements all four seams. The vault
-  family owns its tool descriptions, its ask registry and the policy behind
-  answering one: the workspace keeps the machine-wide `[vault]` session and
-  the registry handle, implements `VaultHost` (the live session, the
-  caller's cwd) and `VaultEmit` (the wire frames its updates map onto), and
-  registers the family's `ToolProvider` and `AskSource`. No generic
-  connector trait: the variety is still small, and a trait waits until it is
-  real.
+  one `ToolProvider`. forge-workspace implements all four seams. The cron
+  family - the durable schedule set, its mutation policy, the due-fire pass
+  and the `cron__*` tools - lives here behind `CronStore` (the rows and the
+  fired-prompt pairing), `CronEmit` (the schedule announcement and the
+  service notices), `CronHost` (delivery into a session and the shutdown
+  flag) and `CronFacadeHost` (the caller's project and worker label); the
+  workspace keeps the project catalogue, the session pool, the Command bus,
+  the store and the supervisor's tick. The vault family owns its tool
+  descriptions, its ask registry and the policy behind answering one: the
+  workspace keeps the machine-wide `[vault]` session and the registry
+  handle, implements `VaultHost` (the live session, the caller's cwd) and
+  `VaultEmit` (the wire frames its updates map onto), and registers the
+  family's `ToolProvider` and `AskSource`. No generic connector trait: the
+  variety is still small, and a trait waits until it is real.
 - **`forge-sdk`** - owns the `claude` subprocess: stream-json codec,
   transport, control dispatch, in-process MCP host, Options.
 - **`forge-agent`** - drives one SDK Client behind a channel-based
@@ -234,9 +240,10 @@ Work top-down; first match wins.
    module per integration. The integration owns its own state, its MCP
    tools and its held asks; what it needs from the workspace arrives
    through a host port (Gotify's `GotifyHost`, the Slack family's
-   `SlackStore`, `SlackEmit` and `SlackFacadeHost`, the vault family's
-   `VaultHost` and `VaultEmit`). A family's tools are described through
-   `forge-mcp`'s `ToolProvider`, never built against forge-sdk.
+   `SlackStore`, `SlackEmit` and `SlackFacadeHost`, the cron family's
+   `CronStore`, `CronEmit`, `CronHost` and `CronFacadeHost`, the vault
+   family's `VaultHost` and `VaultEmit`). A family's tools are described
+   through `forge-mcp`'s `ToolProvider`, never built against forge-sdk.
 8. **Speaks stream-json to the `claude` subprocess?** (decoder,
    control_request subtype, transport, MCP host, OptionsBuilder)
    -> `forge-sdk`. Pair with a wire-conformance scenario.

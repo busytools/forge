@@ -441,6 +441,8 @@ impl Workspace {
         let document_handoffs = Arc::new(parking_lot::Mutex::new(HashMap::new()));
         let settings_writes = Arc::new(Mutex::new(HashMap::new()));
         let db: Arc<Mutex<Option<crate::store::Db>>> = Arc::new(Mutex::new(None));
+        let (cron, cron_ports) =
+            crate::crons::build(Vec::new(), false, Arc::clone(&db), update_tx.clone());
         let (slack, slack_ports) = crate::slack::build(
             slack,
             config.slack.clone(),
@@ -542,8 +544,8 @@ impl Workspace {
             kick_dispatcher_tx,
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             _single_instance_lock: None,
-            crons: Mutex::new(Vec::new()),
-            crons_load_failed: std::sync::atomic::AtomicBool::new(false),
+            cron,
+            cron_ports,
             tasks: Mutex::new(Vec::new()),
             parked_by_slot: Mutex::new(HashMap::new()),
             pending_handoffs: Mutex::new(HashMap::new()),
@@ -574,8 +576,6 @@ impl Workspace {
             ask_sources,
             pending_seq,
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
-            unwakeable_crons: Mutex::new(std::collections::HashSet::new()),
-            cooling_crons: Mutex::new(std::collections::HashMap::new()),
             command_intercept: Mutex::new(None),
             test_extra_projects: Mutex::new(Vec::new()),
             test_user_preferences: Mutex::new(None),
@@ -584,6 +584,7 @@ impl Workspace {
         };
         let workspace = Arc::new(workspace);
         workspace.bind_slack();
+        workspace.bind_cron();
         (workspace, update_rx)
     }
 

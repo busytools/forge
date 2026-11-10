@@ -9,6 +9,17 @@ use crate::SessionSlot;
 use crate::mcp::gotify::types::GotifyNotification;
 use crate::mcp::peers::types::{PeerFailureReason, WrappedPrompt};
 
+/// A cron prompt buffered for a sleeping slot: the raw prompt plus whether
+/// this fire is overdue (delivered with a missed marker on drain), and the
+/// entry's identity, which the drained echo names.
+#[derive(Debug)]
+pub(crate) struct PendingCron {
+    pub text: String,
+    pub missed: bool,
+    pub cron_id: String,
+    pub description: Option<String>,
+}
+
 /// Everything parked for one slot, in the order a connecting session
 /// delivers it.
 #[derive(Default)]

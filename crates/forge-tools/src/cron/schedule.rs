@@ -30,7 +30,7 @@ fn parse_cron(expr: &str) -> Result<Cron, CronError> {
 /// Validate a 5-field cron expression, returning a human-readable error
 /// on failure. `cron__create` calls this to reject a malformed schedule
 /// at registration time with a clear message.
-pub(crate) fn validate_cron_expr(expr: &str) -> Result<(), String> {
+pub fn validate_cron_expr(expr: &str) -> Result<(), String> {
     parse_cron(expr).map(|_| ()).map_err(|e| e.to_string())
 }
 
@@ -76,7 +76,7 @@ fn next_recurring_fire_in_tz<Tz: TimeZone>(
 /// fires once and `advance_or_remove_cron` moves `next_fire` past every
 /// missed slot - catch-up-once falls out of the normal fire path, no
 /// separate boot reconcile needed.
-pub(crate) fn due_crons(crons: &[CronEntry], now: SystemTime) -> Vec<CronId> {
+pub fn due_crons(crons: &[CronEntry], now: SystemTime) -> Vec<CronId> {
     crons.iter().filter(|c| c.next_fire <= now).map(|c| c.id.clone()).collect()
 }
 

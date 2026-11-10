@@ -53,7 +53,6 @@ use forge_sdk::mcp::server::{McpServer, McpServerBuilder};
 use crate::SessionSlot;
 use crate::mcp::agents::facade::AgentDispatcher;
 use crate::mcp::browser::facade::BrowserFacade;
-use crate::mcp::cron::facade::CronFacade;
 use crate::mcp::documents::facade::DocumentFacade;
 use crate::mcp::gotify::facade::GotifyFacade;
 use crate::mcp::peers::facade::WorkspaceFacade;
@@ -66,7 +65,6 @@ use crate::mcp::workers::facade::WorkerFacade;
 pub mod agents;
 pub mod browser;
 pub(crate) mod caller_context;
-pub mod cron;
 pub(crate) mod deleted;
 pub mod documents;
 pub mod gotify;
@@ -297,7 +295,9 @@ pub struct ForgeServerFacades {
     pub terminal: Arc<dyn crate::mcp::terminal::facade::TerminalFacade>,
     pub documents: Arc<dyn DocumentFacade>,
     pub review: Arc<dyn ReviewFacade>,
-    pub cron: Arc<dyn CronFacade>,
+    /// The cron family's tools. The family owns its provider; the host
+    /// registers it.
+    pub cron: Option<Arc<dyn forge_mcp::ToolProvider>>,
     pub gotify: Arc<dyn GotifyFacade>,
     /// The Slack family's tools. The family owns its provider; the host
     /// registers it. Present whenever the family is selected: a file with no
@@ -401,8 +401,11 @@ pub fn build_forge_server(
     if review_available {
         builder = review::add_tools(builder, review, slot.clone());
     }
-    if families.contains(&McpFamily::Cron) {
-        builder = cron::add_tools(builder, cron, slot.clone());
+    // The family owns its provider; the host only registers it.
+    if families.contains(&McpFamily::Cron)
+        && let Some(cron) = cron
+    {
+        builder = builder.provider(cron);
     }
     if families.contains(&McpFamily::Gotify) {
         builder = gotify::add_tools(builder, gotify, slot.clone());
@@ -479,7 +482,6 @@ The chase asks an over-estimate owner once and escalates to the lead once \
 mod tests {
     use super::*;
     use crate::mcp::browser::facade::MockBrowserFacade;
-    use crate::mcp::cron::facade::MockCronFacade;
     use crate::mcp::documents::facade::MockDocumentFacade;
     use crate::mcp::gotify::facade::MockGotifyFacade;
     use crate::mcp::peers::facade::MockWorkspaceFacade;
@@ -488,6 +490,7 @@ mod tests {
     use crate::mcp::systemone::facade::MockSystemOneFacade;
     use crate::mcp::tasks::facade::MockTasksFacade;
     use crate::mcp::workers::facade::MockWorkerFacade;
+    use forge_tools::cron::facade::MockCronFacade;
     use forge_tools::slack::SlackTools;
     use forge_tools::slack::facade::MockSlackFacade;
 
@@ -690,7 +693,10 @@ mod tests {
                 terminal: crate::mcp::terminal::facade::MockTerminalFacade::new().into_arc(),
                 documents: MockDocumentFacade::new().into_arc(),
                 review: MockReviewFacade::new().into_arc(),
-                cron: MockCronFacade::new().into_arc(),
+                cron: Some(Arc::new(forge_tools::cron::CronTools::new(
+                    MockCronFacade::new().into_arc(),
+                    SessionSlot::from_str_for_test("caller"),
+                ))),
                 gotify: MockGotifyFacade::new().into_arc(),
                 slack: Some(Arc::new(SlackTools::new(
                     MockSlackFacade::new().into_arc(),
@@ -1015,7 +1021,10 @@ mod tests {
                     terminal: crate::mcp::terminal::facade::MockTerminalFacade::new().into_arc(),
                     documents: documents.into_arc(),
                     review: MockReviewFacade::new().into_arc(),
-                    cron: MockCronFacade::new().into_arc(),
+                    cron: Some(Arc::new(forge_tools::cron::CronTools::new(
+                        MockCronFacade::new().into_arc(),
+                        SessionSlot::from_str_for_test("caller"),
+                    ))),
                     gotify: MockGotifyFacade::new().into_arc(),
                     slack: Some(Arc::new(SlackTools::new(
                         MockSlackFacade::new().into_arc(),

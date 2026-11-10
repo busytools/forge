@@ -948,27 +948,15 @@ pub struct Workspace {
     /// exit / crash). Held purely for that side effect - never read.
     /// `None` in `testing_stub` and on the degraded acquire path.
     _single_instance_lock: Option<std::fs::File>,
-    /// Durable forge crons (`mcp__forge__cron`). In-memory working set,
-    /// loaded at boot from the machine-local redb store ([`crate::store::cron`])
-    /// and persisted back after every mutation - create/delete, the
-    /// scheduler's fire-advance, and boot catch-up - through the one
-    /// [`Workspace::with_crons_mut`] path. The single-instance guard keeps
-    /// this the only process holding that store, so this mutex alone
-    /// serialises writes.
-    /// `pub(crate)` so the impl block in [`crate::crons`] can reach it.
-    pub(crate) crons: Mutex<Vec<forge_primitives::CronEntry>>,
-    /// Set at boot when the durable crons could not be loaded: the store
-    /// could not open, or its read failed. The in-memory set is empty while
-    /// rows may still be on disk, so it is not the registry. `cron__list`
-    /// refuses on it rather than answering an empty array a caller would read
-    /// as "you have no crons".
-    ///
-    /// It gates `cron__list` only: under the same failed load `delete_cron`
-    /// still answers `NoSuchCron` from the empty set, and `create_cron` still
-    /// promises durability while `persist_cron` returns quietly. Both predate
-    /// this cut and the charter's list-then-delete flow is gated by the list
-    /// refusal; the siblings are #2943.
-    pub(crate) crons_load_failed: std::sync::atomic::AtomicBool,
+    /// The cron subsystem's one handle: the durable schedule set, the
+    /// mutation policy, the due-fire pass, the per-pass warning markers and
+    /// the fired-prompt/schedule pairing. `forge-tools` owns the state; this
+    /// workspace implements the seams beside this field and registers the
+    /// handle at boot.
+    pub(crate) cron: Arc<forge_tools::cron::Cron>,
+    /// The seams the cron subsystem reaches this workspace through: the redb
+    /// store, the update fanout and the delivery into a session.
+    pub(crate) cron_ports: Arc<crate::crons::CronPorts>,
     /// The live task list (`mcp__forge__tasks`). In-memory working set,
     /// loaded from the machine-local store at boot and persisted back
     /// after every mutation through the one [`Workspace::with_tasks_mut`]
@@ -1105,22 +1093,6 @@ pub struct Workspace {
     /// is in flight. The existing `live_workers.is_empty()` gate
     /// covers the post-dispatch case.
     respawn_in_flight: Mutex<std::collections::HashSet<ProjectKey>>,
-    /// The cron ids the LAST `fire_due_crons` pass found unwakeable, so
-    /// the first warning about one is a `WARN` and the repeats are not.
-    ///
-    /// Not a cache: nothing but that warning's level reads it, and it
-    /// holds only what the most recent pass saw, replaced wholesale at the
-    /// end of each pass. That is what stops an entry outliving its
-    /// condition - a cron that fires, advances or is deleted is simply
-    /// absent from the next pass's set, so one that goes unwakeable again
-    /// is new again and warns at `WARN` again. A set that never cleared
-    /// would silence a cron that is firing.
-    unwakeable_crons: Mutex<std::collections::HashSet<forge_primitives::CronId>>,
-    /// The cron ids the last `fire_due_crons` pass found cooling, with the
-    /// time each last warned. Replaced wholesale each pass, like
-    /// `unwakeable_crons`, so an episode that clears drops its marker and a
-    /// later one warns again.
-    cooling_crons: Mutex<std::collections::HashMap<forge_primitives::CronId, SystemTime>>,
     /// Test-only intercept buffer for app-level Commands. When
     /// `Some`, `dispatch` captures the command into the buffer
     /// instead of routing it to the spawn::* handler - used by
@@ -2476,6 +2448,8 @@ impl Workspace {
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
         let config_dictate = config.dictate.clone();
         let db = Arc::new(Mutex::new(db));
+        let (cron, cron_ports) =
+            crate::crons::build(crons, crons_load_failed, Arc::clone(&db), update_tx.clone());
         let (slack, slack_ports) = crate::slack::build(
             slack_clients,
             config.slack.clone(),
@@ -2594,8 +2568,8 @@ impl Workspace {
             kick_dispatcher_tx,
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             _single_instance_lock: single_instance_lock,
-            crons: Mutex::new(crons),
-            crons_load_failed: std::sync::atomic::AtomicBool::new(crons_load_failed),
+            cron,
+            cron_ports,
             tasks: Mutex::new(tasks),
             parked_by_slot: Mutex::new(HashMap::new()),
             pending_handoffs: Mutex::new(HashMap::new()),
@@ -2626,8 +2600,6 @@ impl Workspace {
             ask_sources,
             pending_seq,
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
-            unwakeable_crons: Mutex::new(std::collections::HashSet::new()),
-            cooling_crons: Mutex::new(std::collections::HashMap::new()),
             #[cfg(any(test, feature = "testing"))]
             command_intercept: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
@@ -3732,7 +3704,7 @@ impl Workspace {
             let documents_facade =
                 crate::mcp::documents::facade::ProdDocumentFacade::from_workspace(self);
             let review_facade = crate::mcp::review::facade::ProdReviewFacade::from_arc(self);
-            let cron_facade = crate::mcp::cron::facade::ProdCronFacade::from_arc(self);
+            let cron_tools = self.cron_tools(session_slot.clone());
             let gotify_facade = crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(self);
             let slack_tools = self.slack_tools(session_slot.clone());
             let settings_facade = crate::mcp::settings::facade::ProdSettingsFacade::from_arc(self);
@@ -3755,7 +3727,7 @@ impl Workspace {
                     terminal: terminal_facade,
                     documents: documents_facade,
                     review: review_facade,
-                    cron: cron_facade,
+                    cron: Some(cron_tools),
                     gotify: gotify_facade,
                     slack: Some(slack_tools),
                     settings: settings_facade,
@@ -8071,44 +8043,6 @@ impl Workspace {
     /// wave was already in flight.
     fn try_claim_respawn(&self, project_key: &crate::target::ProjectKey) -> bool {
         self.respawn_in_flight.lock().insert(project_key.clone())
-    }
-
-    /// Whether this fire pass is the FIRST to find `id` unwakeable,
-    /// recording it as seen if so. True is the pass that warns; false is
-    /// every later pass while the condition holds.
-    pub(crate) fn cron_unwakeable_is_new(&self, id: &forge_primitives::CronId) -> bool {
-        self.unwakeable_crons.lock().insert(id.clone())
-    }
-
-    /// Close a fire pass: `ids` is what it found unwakeable, and it
-    /// replaces the previous pass's set wholesale. That replacement is
-    /// the only clearing this state needs - an entry cannot survive a
-    /// pass that did not find its cron unwakeable, whether the cron fired,
-    /// advanced, was deleted, or simply was not due.
-    pub(crate) fn cron_unwakeable_commit(
-        &self,
-        ids: std::collections::HashSet<forge_primitives::CronId>,
-    ) {
-        *self.unwakeable_crons.lock() = ids;
-    }
-
-    /// When the previous fire pass last warned about this cron's cooling,
-    /// or `None` when that pass did not find it cooling.
-    pub(crate) fn cron_cooling_warned_at(
-        &self,
-        id: &forge_primitives::CronId,
-    ) -> Option<SystemTime> {
-        self.cooling_crons.lock().get(id).copied()
-    }
-
-    /// Close a fire pass with the crons it still found cooling and the
-    /// time each last warned, replacing the previous pass's map wholesale
-    /// for the same reason [`Self::cron_unwakeable_commit`] does.
-    pub(crate) fn cron_cooling_commit(
-        &self,
-        warned_at: std::collections::HashMap<forge_primitives::CronId, SystemTime>,
-    ) {
-        *self.cooling_crons.lock() = warned_at;
     }
 
     /// The session a worker label resumes onto.
@@ -21032,7 +20966,7 @@ mod worker_respawn_tests {
                     workspace,
                 ),
                 review: crate::mcp::review::facade::ProdReviewFacade::from_arc(workspace),
-                cron: crate::mcp::cron::facade::ProdCronFacade::from_arc(workspace),
+                cron: Some(workspace.cron_tools(SessionSlot::from_str_for_test("caller"))),
                 gotify: crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
                 slack: Some(workspace.slack_tools(SessionSlot::from_str_for_test("caller"))),
                 settings: crate::mcp::settings::facade::ProdSettingsFacade::from_arc(workspace),

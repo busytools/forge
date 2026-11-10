@@ -11153,14 +11153,14 @@ mod lead_charter_tests {
         }
         for (at, token) in &tokens {
             if token.starts_with('@')
-                && crate::mcp::cron::schedule::validate_cron_expr(token).is_ok()
+                && forge_tools::cron::schedule::validate_cron_expr(token).is_ok()
             {
                 return Some(*at);
             }
         }
         for window in tokens.windows(5) {
             let expr = window.iter().map(|(_, word)| *word).collect::<Vec<_>>().join(" ");
-            if crate::mcp::cron::schedule::validate_cron_expr(&expr).is_ok() {
+            if forge_tools::cron::schedule::validate_cron_expr(&expr).is_ok() {
                 return Some(window[0].0);
             }
         }

@@ -63,6 +63,8 @@ pub mod chase;
 mod config;
 pub mod conversation_turns;
 pub mod conversation_window;
+#[cfg(test)]
+mod cron_host_tests;
 mod crons;
 use forge_dictate::host as dictate;
 pub mod documents;
@@ -143,7 +145,7 @@ pub use workspace::{
 // `SessionUpdate` payloads. The `testing`-feature block below adds the
 // extra surface the `forge-test-harness` integration tests need (MCP
 // server builders, mock facades, the caller-key resolver).
-pub use mcp::cron::schedule::next_fire_after;
+pub use forge_tools::cron::schedule::next_fire_after;
 pub use mcp::gotify::types::GotifyNotification;
 pub use mcp::peers::types::{MessageId, WrappedKind, WrappedPrompt};
 pub use mcp::workers::types::{LiveWorkerState, WorkerEntry};

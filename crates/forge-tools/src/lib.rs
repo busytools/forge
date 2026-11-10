@@ -6,12 +6,15 @@
 //! that integration's own port, implemented by forge-workspace - Gotify's
 //! [`GotifyHost`](gotify::GotifyHost), the Slack family's
 //! [`slack::SlackStore`], [`slack::SlackEmit`] and
-//! [`slack::facade::SlackFacadeHost`], the vault family's
+//! [`slack::facade::SlackFacadeHost`], the cron family's
+//! [`cron::CronStore`], [`cron::CronEmit`], [`cron::CronHost`] and
+//! [`cron::facade::CronFacadeHost`], the vault family's
 //! [`vault::VaultHost`] - so each module stays transport + mapping and is
-//! testable offline. Three integrations exist today, and there is still
+//! testable offline. Four integrations exist today, and there is still
 //! deliberately no generic connector trait: the ports differ because what
 //! each integration needs differs.
 
+pub mod cron;
 pub mod gotify;
 pub mod slack;
 pub mod vault;
