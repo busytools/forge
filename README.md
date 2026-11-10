@@ -24,7 +24,7 @@ is a bug.
 Strictly acyclic:
 
 ```
-forge-primitives      leaf: pure data, no logic, no I/O, no async
+forge-primitives      leaf: data shapes + the ask seam; no logic, no I/O, no async
 forge-capture         leaf: microphone capture, depends on no forge-* crate
 forge-dictate     ->  capture + primitives
 forge-tts             leaf: speech synthesis, depends on no forge-* crate

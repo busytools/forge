@@ -216,7 +216,9 @@ mod tests {
     use super::*;
     use crate::vault::VaultConfig;
     use crate::vault::crypto;
-    use crate::vault::session::{TestEmit, test_install_unlocked, test_session};
+    use crate::vault::session::{
+        TestEmit, test_install_unlocked, test_keys_present, test_session, test_set_last_used,
+    };
     use forge_primitives::vault::{VaultAskDecision, VaultTool};
 
     #[derive(Default)]
@@ -298,6 +300,49 @@ mod tests {
             sink.noted.lock().as_slice(),
             [(asked.clone(), PendingInteractionKind::Vault)],
             "the host is told one vault ask arrived",
+        );
+    }
+
+    /// **A needs-you read does not touch the session.** The ledger walks
+    /// `AskSource::held`, which counts what is parked; `asks` builds the
+    /// payloads and stamps each from the live session, and
+    /// `VaultSession::is_locked` runs the idle check - so a
+    /// `pending_interaction` read on a long-idle unlock would lock the vault
+    /// just by asking whether anything was waiting.
+    ///
+    /// Mutant: make `held` delegate to `held_asks` and this reddens.
+    #[test]
+    fn the_held_read_does_not_lock_an_idle_session() {
+        let config = VaultConfig {
+            url: "http://127.0.0.1:1".to_owned(),
+            email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: Some(1),
+        };
+        let session = Arc::new(test_session(&config, None, "test").expect("a session"));
+        unlocked(&session);
+        test_set_last_used(
+            &session,
+            std::time::SystemTime::now() - std::time::Duration::from_secs(120),
+        );
+        let (asks, _emit, _sink) =
+            harness_with(std::sync::Arc::new(TestEmit::default()), Some(Arc::clone(&session)));
+        let seat = caller();
+        let _held = asks.register(&seat, a_draft(), false);
+
+        assert_eq!(
+            AskSource::held(asks.as_ref(), &seat),
+            [(PendingInteractionKind::Vault, 1)],
+            "the count sees the parked call",
+        );
+        assert!(
+            test_keys_present(&session),
+            "a needs-you count must not run the idle check and lock the vault",
+        );
+
+        let _ = AskSource::asks(asks.as_ref(), &seat);
+        assert!(
+            !test_keys_present(&session),
+            "and the payload read is what stamps the card and runs the check",
         );
     }
 

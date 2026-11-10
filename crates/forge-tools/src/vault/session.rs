@@ -821,6 +821,20 @@ pub fn test_install_unlocked(session: &VaultSession, unlocked: Unlocked) {
     state.keys = Some(std::sync::Arc::new(unlocked));
 }
 
+/// Whether the derived keys are present, WITHOUT running the idle check.
+/// [`VaultSession::is_locked`] cannot answer this for a test: it runs the
+/// very check the test is trying not to touch.
+#[cfg(any(test, feature = "testing"))]
+pub fn test_keys_present(session: &VaultSession) -> bool {
+    session.state.read().keys.is_some()
+}
+
+/// Age the idle clock, so a test can put the session past its bound.
+#[cfg(any(test, feature = "testing"))]
+pub fn test_set_last_used(session: &VaultSession, at: std::time::SystemTime) {
+    *session.last_used.lock() = Some(at);
+}
+
 /// A session over the connector's own client, for local test servers. The
 /// production path builds the clients through the host's own trust setup.
 #[cfg(any(test, feature = "testing"))]

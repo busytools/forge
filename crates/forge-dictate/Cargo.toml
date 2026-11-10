@@ -67,6 +67,9 @@ llama-cpp-2 = { workspace = true, features = ["metal"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# The unresolved app-support warning is part of the seam's contract, so a
+# test captures the record the way the config loader's tests do.
+tracing-subscriber = { workspace = true }
 # `test-util` enables `#[tokio::test(start_paused = true)]`: the cap-tick
 # test races the interval's first tick against a queued stop, and only a
 # paused clock puts both arms ready on the first poll.

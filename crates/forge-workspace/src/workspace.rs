@@ -8757,6 +8757,19 @@ impl Workspace {
         self.pending_ask_ledger(slot).iter().map(|(_, held)| held).sum()
     }
 
+    /// The row's two needs-you facts from ONE ledger walk: the strongest ask
+    /// and how many wait behind it. A row that draws both reads this rather
+    /// than walking every registered source twice.
+    pub fn pending_interaction_summary(
+        &self,
+        slot: &SessionSlot,
+    ) -> (Option<PendingInteractionKind>, usize) {
+        let ledger = self.pending_ask_ledger(slot);
+        let strongest = ledger.iter().find(|(_, held)| *held > 0).map(|(kind, _)| *kind);
+        let depth = ledger.iter().map(|(_, held)| held).sum();
+        (strongest, depth)
+    }
+
     /// Every ask kind the core can mark, in [`Self::pending_interaction`]'s
     /// precedence order, with the number held.
     ///
@@ -28256,30 +28269,30 @@ accounts = ["main"]
     }
 }
 
+/// The host's answer for the preflight's support directory: the base when
+/// there is one, else the boot failure this workspace recorded - so the
+/// preflight's warning carries the cause rather than a bare absence.
+fn app_support_answer(app_support: Option<&Path>, error: Option<&str>) -> Result<PathBuf, String> {
+    app_support.map(Path::to_path_buf).ok_or_else(|| {
+        error.map_or_else(
+            || "the workspace holds no app-support directory".to_owned(),
+            str::to_owned,
+        )
+    })
+}
+
 /// The workspace is the dictation subsystem's host: the module reaches the
 /// seat, the app-support dir and the update fan-out through this and
 /// nothing else. Each update maps one-to-one onto the `SessionUpdate`
 /// variant of the same name, so the wire stays exactly what the client
 /// already reads.
-/// The host's answer for the preflight's support directory: the base when
-/// there is one, else the boot failure this workspace recorded - so the
-/// preflight's warning carries the cause rather than a bare absence.
-fn app_support_answer(
-    app_support: Option<&PathBuf>,
-    error: Option<&String>,
-) -> Result<PathBuf, String> {
-    app_support.cloned().ok_or_else(|| {
-        error.cloned().unwrap_or_else(|| "the workspace holds no app-support directory".to_owned())
-    })
-}
-
 impl crate::dictate::DictateHost for Workspace {
     fn session_is_live(&self, key: &SessionSlot) -> bool {
         Workspace::session_is_live(self, key)
     }
 
     fn app_support_dir(&self) -> Result<std::path::PathBuf, String> {
-        app_support_answer(self.app_support.as_ref(), self.app_support_error.as_ref())
+        app_support_answer(self.app_support.as_deref(), self.app_support_error.as_deref())
     }
 
     fn emit(&self, update: crate::dictate::DictateUpdate) -> bool {

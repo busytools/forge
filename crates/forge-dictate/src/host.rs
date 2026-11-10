@@ -2143,6 +2143,44 @@ mod dictate_lifecycle_tests {
         );
     }
 
+    /// The events one call logs, by name and level: the level is part of
+    /// what the contract says, so a demoted line is not silently accepted.
+    #[derive(Clone, Default)]
+    struct Logged(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String)>>>);
+
+    struct CollectEventName(String);
+
+    impl tracing::field::Visit for CollectEventName {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "event_name" {
+                self.0 = format!("{value:?}").trim_matches('"').to_owned();
+            }
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Logged {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut visitor = CollectEventName(String::new());
+            event.record(&mut visitor);
+            if !visitor.0.is_empty() {
+                self.0.lock().expect("capture").push((*event.metadata().level(), visitor.0));
+            }
+        }
+    }
+
+    /// Capture the named events one call logs.
+    fn capture<R>(run: impl FnOnce() -> R) -> (R, Vec<(tracing::Level, String)>) {
+        use tracing_subscriber::layer::SubscriberExt;
+        let logged = Logged::default();
+        let subscriber = tracing_subscriber::registry().with(logged.clone());
+        let result = tracing::subscriber::with_default(subscriber, run);
+        (result, std::mem::take(&mut logged.0.lock().expect("capture")))
+    }
+
     /// A host that cannot resolve an app-support directory turns both stores
     /// off rather than failing preflight - diagnostics never break
     /// dictation, and the absence is what the warning records.
@@ -2165,7 +2203,14 @@ mod dictate_lifecycle_tests {
         }
 
         let settings: DictateSettings = toml::from_str("enabled = true\n").expect("parse");
-        let cfg = preflight_config(&settings, &settings.pin_active(), &BrokenHost);
+        let (cfg, logged) =
+            capture(|| preflight_config(&settings, &settings.pin_active(), &BrokenHost));
+        assert!(
+            logged.iter().any(|(level, name)| {
+                name == "dictate_state_dir_unresolved" && *level == tracing::Level::WARN
+            }),
+            "the absence is recorded, not silent: {logged:?}",
+        );
         assert!(cfg.diagnostics_dir.is_none(), "per-take diagnostics are off");
         assert!(cfg.digest_cache_dir.is_none(), "and so is the digest record");
     }

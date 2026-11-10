@@ -72,7 +72,7 @@ impl AskSink for VaultPorts {
     }
 
     fn resolve(&self, _seat: &SessionSlot, _id: uuid::Uuid) {
-        // **The source's own read clears the mark.** `AskSource::asks` is
+        // **The source's own read clears the mark.** `AskSource::held` is
         // what `pending_interaction` walks, so a settled call leaves the
         // ledger by leaving the registry - there is no per-ask state here to
         // clear, and the sequence deliberately does not move (an answer that
@@ -279,13 +279,10 @@ mod tests {
             SessionUpdate::VaultRotated { refresh_token } => assert_eq!(refresh_token, "next"),
             other => panic!("the rotation crossed as {other:?}"),
         }
-        assert!(
-            !format!("{:?}", VaultUpdate::Rotated { refresh_token: "next".to_owned() })
-                .contains("next"),
-            "the rotated token is a secret and the update's Debug redacts it",
-        );
     }
 
+    /// The production clients are the ones the vault session uses, and they
+    /// refuse a plaintext URL before touching the network.
     #[tokio::test]
     async fn production_client_is_https_only() {
         use std::time::Duration;

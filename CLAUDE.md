@@ -5,7 +5,7 @@ multi-session orchestration, and the clients that draw it. Sixteen crates,
 layered acyclically:
 
 ```
-forge-primitives ───── leaf (pure data, no logic)
+forge-primitives ───── leaf (data shapes + the ask seam)
 forge-capture    ───── leaf (microphone capture; depends on no forge-* crate)
 forge-dictate    ───→ capture + primitives (dictation)
 forge-tts        ───── leaf (speech synthesis; depends on no forge-* crate)
@@ -24,7 +24,9 @@ forge-test-harness ─→ primitives + sdk + workspace + server
 ```
 
 - **`forge-primitives`** - every type that crosses a forge-* crate
-  boundary. No logic, no I/O, no async.
+  boundary. No logic, no I/O, no async, with one recorded exception: the
+  ask seam's two traits (`AskSource`, `AskSink`), stateless signatures
+  kept here because the host and every ask source must both name them.
 - **`forge-capture`** - microphone capture: the device, the input plan,
   the downmix and resampler, and the mono frames a host reads from it.
   A leaf: no forge-* dependency, and no knowledge of a host, a take or
