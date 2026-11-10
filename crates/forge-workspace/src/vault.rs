@@ -299,10 +299,10 @@ impl VaultSession {
         if self.lock_generation.load(std::sync::atomic::Ordering::SeqCst) != generation {
             return Err(VaultError::Locked);
         }
-        // The redemption spent the token the client released, so the lineage
-        // rotated: the client rewrites its blob with the one this session
-        // now holds.
-        let rotated = token.refresh_token.clone();
+        // **News only when the token moved**: a redemption that answers the
+        // released token again leaves the client's blob correct, so there is
+        // nothing to rewrite.
+        let rotated = token.refresh_token.clone().filter(|next| next != refresh_token);
         state.tokens = Some(Tokens {
             access: std::mem::take(&mut token.access_token),
             refresh: token.refresh_token.take(),
@@ -970,6 +970,65 @@ mod tests {
         std::time::SystemTime::now()
             .checked_sub(std::time::Duration::from_secs(seconds))
             .expect("the clock is older than the test's span")
+    }
+
+    /// A released-material unlock announces a moved token, so the client
+    /// rewrites its blob with the lineage the redemption returned.
+    #[tokio::test]
+    async fn a_released_unlock_announces_a_moved_token() {
+        assert!(released_rotation_announcement("next").await, "a moved token is news");
+    }
+
+    /// **A redemption that answers the released token again is not a
+    /// rotation**, so no client rewrites a blob nothing changed.
+    #[tokio::test]
+    async fn a_released_unlock_does_not_announce_the_same_token() {
+        assert!(!released_rotation_announcement("released").await, "the same token is not news");
+    }
+
+    /// Whether a released-material unlock whose redemption answers `next`
+    /// produced a `VaultRotated`.
+    async fn released_rotation_announcement(next: &str) -> bool {
+        use crate::update_fanout::SubscriberRole;
+
+        let pre =
+            Prelogin { kdf: 0, kdf_iterations: 100_000, kdf_memory: None, kdf_parallelism: None };
+        let master_key = crypto::derive_master_key("open sesame", "hi@vedhavyas.dev", &pre)
+            .expect("the master key");
+        let (user_key, wrapped_user_key) = master_key.make_user_key().expect("the user key");
+        let token = serde_json::json!({
+            "access_token": "access",
+            "refresh_token": next,
+            "Key": wrapped_user_key.to_string(),
+        })
+        .to_string();
+        let (address, _server) = serve(vec![
+            response("200 OK", &token),
+            response("200 OK", r#"{"profile":{},"folders":[],"ciphers":[]}"#),
+        ])
+        .await;
+        let updates = UpdateFanout::default();
+        let mut announced = updates.subscribe(SubscriberRole::Answering);
+        let config = VaultConfig {
+            url: format!("http://{address}"),
+            email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
+        };
+        let session = test_session_with_updates(&config, None, Path::new("/tmp"), updates)
+            .expect("a session");
+
+        session
+            .unlock_released("released", &user_key.0.to_base64().to_string())
+            .await
+            .expect("the unlock");
+
+        let mut rotated = false;
+        while let Ok(frame) = announced.try_recv() {
+            if matches!(&*frame.update, SessionUpdate::VaultRotated { .. }) {
+                rotated = true;
+            }
+        }
+        rotated
     }
 
     /// **A refresh that answers the same token is not a rotation.** Announcing
