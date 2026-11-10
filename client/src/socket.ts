@@ -307,13 +307,27 @@ export interface Connection {
  * commands the server dispatches itself, like a hand-off's answer. These are
  * the page commands with nothing behind them on the wire: a client that omits
  * `reply_to` for one of them has no second way to learn what happened.
+ *
+ * **One list for every transport.** The desktop half has its own dispatch
+ * path (`connect/rust.ts`) and imports this set rather than keeping a copy:
+ * the second copy drifted once already and left the vault's three commands
+ * reply-less on every native client.
  */
-const ANSWERS_THROUGH_A_REPLY = new Set([
+export const ANSWERS_THROUGH_A_REPLY: ReadonlySet<string> = new Set([
   'spawn_worker',
   'despawn_worker',
   'upsert_review_thread',
   'delete_review_thread',
   'submit_review',
+  // The vault's enrolment material rides the reply; so does a biometric
+  // release's blob, which the web gate fetches before it wraps or unwraps,
+  // and the enrol write's own `true`/`false`, which a rotation rewrite reads.
+  'biometric_release',
+  'biometric_enrol',
+  // The rotation's update-only rewrite, whose `true`/`false` decides whether
+  // the vault locks.
+  'biometric_rewrite',
+  'vault_enrolment_material',
 ]);
 
 /**

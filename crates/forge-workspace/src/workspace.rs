@@ -2470,6 +2470,10 @@ impl Workspace {
             &crate::config::forge_data_dir(&config_dir).join("forge.toml"),
         )?
         .map(Arc::new);
+        // Built above the struct rather than with it: the vault session
+        // announces a rotation through this fan-out, and the session is made
+        // before the struct's own field exists.
+        let update_tx = UpdateFanout::default();
         let vault = match config.vault.as_ref() {
             Some(vault_config) => Some(Arc::new(
                 crate::vault::VaultSession::with_client(
@@ -2482,6 +2486,7 @@ impl Workspace {
                             message: format!("[vault] {error}"),
                         }
                     })?,
+                    update_tx.clone(),
                 )
                 .map_err(|error| WorkspaceError::ConfigInvalid {
                     path: crate::config::forge_data_dir(&config_dir).join("forge.toml"),
@@ -2537,7 +2542,6 @@ impl Workspace {
         accounts.seed_from_cache(&state.account_usage);
 
         let gateway_port = config.gateway_port;
-        let update_tx = UpdateFanout::default();
         let (kick_dispatcher_tx, kick_dispatcher_rx) = mpsc::unbounded_channel::<KickRequest>();
         let config_dictate = config.dictate.clone();
         let db = Arc::new(Mutex::new(db));
@@ -2775,6 +2779,7 @@ impl Workspace {
                             message: format!("[vault] {error}"),
                         }
                     })?,
+                    self.update_tx.clone(),
                 )
                 .map_err(|error| WorkspaceError::ConfigInvalid {
                     path: forge_toml.clone(),
@@ -7831,6 +7836,59 @@ impl Workspace {
                         updated_at: now,
                     };
                     self.push_task(task);
+                }
+                Command::BiometricEnrol { enrolment, device, purpose, blob, respond } => {
+                    // The write's own answer rides the reply: `false` is what
+                    // a rotation rewrite turns into a lock (decision 15), and
+                    // a refusal is a dispatch error so the two cannot be
+                    // mistaken for each other.
+                    self.enrol_biometric(enrolment, &device, &purpose, &blob)
+                        .map_err(|reason| DispatchError::BiometricRefused { reason })?;
+                    if let Some(respond) = respond {
+                        let _ = respond.send(true);
+                    }
+                }
+                Command::BiometricRewrite { enrolment, purpose, blob, respond } => {
+                    // **Update-only**: an unknown id or purpose answers
+                    // `false`, which the rotation turns into a lock rather
+                    // than letting a revoked device re-register itself.
+                    let replaced = self
+                        .rewrite_biometric(enrolment, &purpose, &blob)
+                        .map_err(|reason| DispatchError::BiometricRefused { reason })?;
+                    if let Some(respond) = respond {
+                        let _ = respond.send(replaced);
+                    }
+                }
+                Command::BiometricRelease { enrolment, purpose, respond } => {
+                    // The wait the transport answered: a store failure is a
+                    // dispatch refusal, so it surfaces as a refusal rather
+                    // than as `null` - the answer that means "not enrolled"
+                    // and sends the client to its password.
+                    let answer = self
+                        .release_biometric(enrolment, &purpose)
+                        .map_err(|reason| DispatchError::BiometricRefused { reason })?;
+                    if let Some(respond) = respond {
+                        let _ = respond.send(answer);
+                    }
+                }
+                Command::BiometricRevoke { enrolment, purpose } => {
+                    self.revoke_biometric(enrolment, purpose.as_deref())
+                        .map_err(|reason| DispatchError::BiometricRefused { reason })?;
+                }
+                // The shared vault's lock is workspace state, never agent
+                // traffic; the press is answered by the re-stamped cards and
+                // the settings card's next read.
+                Command::VaultLock => {
+                    self.lock_vault();
+                }
+                Command::VaultEnrolmentMaterial { respond } => {
+                    // The material rides the reply alone: a locked session
+                    // answers `null`, which is the state a device cannot
+                    // enrol from.
+                    let material = self.vault_enrolment_material();
+                    if let Some(respond) = respond {
+                        let _ = respond.send(material);
+                    }
                 }
                 other => {
                     tracing::warn!(
@@ -19322,6 +19380,7 @@ mod worker_activity_tests {
                 decision: forge_primitives::vault::VaultAskDecision::Decline,
                 master_password: None,
                 two_factor: None,
+                released: None,
             },
         ));
         assert!(ws.settle_vault_ask(id, &seat, forge_primitives::vault::VaultAskEnding::Declined,));

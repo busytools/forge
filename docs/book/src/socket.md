@@ -310,8 +310,9 @@ a view that did not answer it can close the dock.
 tool, the item, the field or masked diff, an attachment's name and size,
 and whether the shared session is locked. The blocked tool call waits for
 `respond_vault_ask { key, id, answer }`; the answer is `approve`,
-`send_back` with a note, or `decline`, plus the master password and 2FA
-code when the card asked for them. An approval unlocks the one shared
+`send_back` with a note, or `decline`, plus the unlock material when the card
+asked for it: the master password and 2FA code, or the refresh token and user
+key a platform authenticator released. An approval unlocks the one shared
 session and runs the call; `needs_unlock` is stamped from the live session
 on every read, so the other parked cards re-base to ordinary approve cards.
 The unlock pushes a restamped `vault_ask_pending` for each card still
@@ -323,6 +324,20 @@ answer is a local channel**: it travels the same connection the card came
 over, and the password's privacy is the socket's - `[server] bind` is the
 boundary, so a vault answer is only meaningful over loopback or the private
 network the config names.
+
+**A device enrols on the same session, with material the core hands out.**
+`vault_enrolment_material` answers through `reply_to` with the session's
+current refresh token and the account's user key, or `null` while it is
+locked; the client wraps them under its platform authenticator and registers
+the blob with `biometric_enrol`. When the session's refresh token rotates -
+the release redemption or the session's own refresh - it pushes the
+slot-less `vault_rotated` with the new token, and the client holding the
+enrolment rewrites its blob through the update-only `biometric_rewrite` (a
+row the person created, never a new one); a client that cannot falls back to
+the password. **The frame is live-socket-only**: a device that was disconnected
+when the token rotated keeps the spent token, and its next gesture start
+falls back to the password once - enrolling that device again is the
+settings card's `enrol`, which needs the vault open.
 
 ## Subjects
 
@@ -355,16 +370,16 @@ variant's own name rather than on `kind`:
 }
 ```
 
-A command's variant is its name around its field bag - `Command` has 64
-variants, 58 of them struct variants; the six unit variants,
+A command's variant is its name around its field bag - `Command` has 70
+variants, 63 of them struct variants; the seven unit variants,
 `dictate_catalogue_check`, `dictate_bench_stop`, `voice_bench_start`,
-`voice_bench_stop`, `plugin_update_all` and `plugin_check_updates`, cross as
-the name alone. An update is the same
+`voice_bench_stop`, `plugin_update_all`, `plugin_check_updates` and
+`vault_lock`, cross as the name alone. An update is the same
 shape one level in,
 `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 76 of `SessionUpdate`'s 79 variants are struct variants too. The other
-three are why the payload is not one shape: they are unit variants and cross
-as the name alone - `"catalog_loaded"`, `"cli_version_changed"` and
+and 79 of `SessionUpdate`'s 82 variants are struct variants too. The other
+three are why the update payload is not one shape: they are unit variants and
+cross as the name alone - `"catalog_loaded"`, `"cli_version_changed"` and
 `"dictate_availability"`.
 
 ## What a client sends
@@ -909,10 +924,12 @@ writes it at all - because the command is fire-and-forget: its effect
 arrives through the subscription, which is why a client subscribes before
 it acts.
 
-**`reply_to` is required on exactly five of them**: a worker spawn, a
-despawn, and the three review writes. Their outcome rides the reply and no
-update carries it, so a client that omitted `reply_to` would not be declining
-a reply - it would be declining to learn whether the work happened.
+**`reply_to` is required on exactly nine of them**: a worker spawn, a
+despawn, the three review writes, and the four biometric commands - a
+release, an enrolment, a rotation's update-only rewrite, and the vault's
+material request. Their outcome rides the reply and no update carries it, so
+a client that omitted `reply_to` would not be declining a reply - it would be
+declining to learn whether the work happened.
 
 **Both mismatches are refused, with a sentence naming the field**, and
 refused before the command runs: a required field left off, and a
@@ -920,14 +937,15 @@ refused before the command runs: a required field left off, and a
 for the same reason the first does - a client that set it is waiting on a
 channel nothing will ever come down.
 
-**Each of the five answers with its own type**: a spawn with a
-worker-spawn reply, a despawn with a despawn result, and the review writes
-with a `bool` and a review set. One channel cannot carry five different
-answers, so the reply type follows the command. A refusal arrives in that
-same reply, as the body of the answer rather than as an `error` - which is
-what the five are for. A command that is _not_ one of the five refuses as
-an `error` like anything else the core declines, whether or not a reply
-was asked for.
+**Each of the nine answers with its own type**: a spawn with a
+worker-spawn reply, a despawn with a despawn result, the review writes with a
+`bool` and a review set, and the biometric four with the released blob, the
+enrolment's `true`, the rewrite's `true`/`false`, and the vault's released
+material. One channel cannot carry nine different answers, so the reply type
+follows the command. A refusal arrives in that same reply, as the body of the
+answer rather than as an `error` - which is what the nine are for. A command
+that is _not_ one of the nine refuses as an `error` like anything else the
+core declines, whether or not a reply was asked for.
 
 **`read_call_output` answers a call's own output**: the newest lines of
 the file the CLI streamed the task's output to, or a named reason there is
@@ -1108,6 +1126,8 @@ facts a row is drawn from.
 | `unseen`                               | The seats whose last turn finished while nobody was showing them. A mark is drawn from this, and nothing else can reconstruct it.                                                                                                                                                                                                                                                                            |
 | `accounts`                             | Loading state per account, whether all of them settled, the gateway listener's ready state and port, and each account's cached usage snapshot.                                                                                                                                                                                                                                                              |
 | `connectors`                           | The connector liveness: Gotify's connection, Slack's workspaces and whether the stored subscription set failed to load. **What a project is subscribed to is not here** - those sets are per project and ride the `board` subject's project row.                                                                                                                                                            |
+| `biometric`                            | The device enrolments the settings page lists: each device, the purposes it enrolled, and each purpose's enrol and last-release stamps. **No wrapped blob is here** - the bytes stay behind `biometric_release`, which answers the client that unwraps them.                                                                                                                                              |
+| `vault`                                | The shared vault session's lock state and idle bound, and `null` when the config declares no `[vault]`. The client draws the settings vault card from it.                                                                                                                                                                                                                                                    |
 | `dictate`                              | Whether dictation is on, the per-model fetch and load state, and where the models land.                                                                                                                                                                                                                                                                                                                      |
 | `voice`                                | Whether `[tts] enabled` is set, and where the speaking model's files land.                                                                                                                                                                                                                                                                                                                                    |
 | `cli_version`                          | The installed and latest `claude` versions.                                                                                                                                                                                                                                                                                                                                                                  |

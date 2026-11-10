@@ -132,5 +132,10 @@
   "forge_version_short": "<forge-version-short>",
   "boot_id": "<boot-id>",
   "service_status": null,
-  "fatal_error": null
+  "fatal_error": null,
+  "biometric": {
+    "outcome": "read",
+    "value": []
+  },
+  "vault": null
 }

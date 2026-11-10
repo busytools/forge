@@ -44,9 +44,9 @@ vi.mock('../perf', async (importOriginal) => {
 });
 
 import { noteSnapshot, noteSubscribeWritten } from '../perf';
-import { subjectKey, type ServerMessage } from '../protocol';
+import { subjectKey, type Command, type ServerMessage } from '../protocol';
 import { onRefusal, type Refusal } from '../refusals';
-import type { BrowserFrame, Connection } from '../socket';
+import { ANSWERS_THROUGH_A_REPLY, type BrowserFrame, type Connection } from '../socket';
 import { DEFAULT_SETTINGS, type SessionSlot } from '../wire/types';
 import { connectRust } from './rust';
 
@@ -388,7 +388,7 @@ describe('a command whose outcome rides the subscription', () => {
   });
 });
 
-describe('the five commands that answer through a reply', () => {
+describe('the commands that answer through a reply', () => {
   it('a reply command answers with its body and a no-reply one with the crossing', async () => {
     const connection = await opened();
     invoke.mockImplementation((command: string) => {
@@ -437,6 +437,40 @@ describe('the five commands that answer through a reply', () => {
     expect(answered, 'the delete promises its outcome').toBeInstanceOf(Promise);
     await expect(answered).resolves.toBe(true);
     expect(invoke).toHaveBeenCalledWith('client_dispatch', { command, reply: true });
+  });
+
+  /**
+   * **Every reply-carrying command, dispatched for real.** The set is shared
+   * with the page transport now, and this test is what keeps the desktop path
+   * from missing a name: the set drifted once (a thread delete) and the
+   * vault's three commands then shipped reply-less on every native client,
+   * where the server refuses a reply-less command outright.
+   */
+  it('every command in the shared set crosses with reply: true', async () => {
+    const connection = await opened();
+    invoke.mockImplementation((command: string) => {
+      if (command === 'client_state') return Promise.resolve(OPEN);
+      if (command === 'client_dispatch') return Promise.resolve('the body');
+      return Promise.resolve(undefined);
+    });
+    // **The vault's names are asserted literally.** A loop over the very set
+    // it checks cannot notice a name missing from it, which is how the
+    // desktop path lost these in the first place.
+    for (const name of [
+      'biometric_release',
+      'biometric_enrol',
+      'biometric_rewrite',
+      'vault_enrolment_material',
+    ]) {
+      expect(ANSWERS_THROUGH_A_REPLY.has(name), `${name} carries a reply`).toBe(true);
+    }
+    for (const name of ANSWERS_THROUGH_A_REPLY) {
+      // The name is this test's data and its payload is irrelevant: the
+      // transport decides on the variant alone.
+      const command = { [name]: {} } as unknown as Command;
+      await connection.dispatch(command);
+      expect(invoke).toHaveBeenCalledWith('client_dispatch', { command, reply: true });
+    }
   });
 
   it('a dispatch while closed throws before anything is registered, and the seat is noted', async () => {

@@ -142,6 +142,11 @@
 
   .settings-value { white-space: pre-wrap; }
   .settings-dim { color: var(--dim); }
+  /* One purpose inside a device's row: its name, its last release and its own
+     revoke, laid on the row's value side. */
+  .settings-setting-value .biometric-purpose { display: inline-flex;
+    align-items: center; gap: 8px; margin-left: 12px; }
+  .biometric-purpose .settings-btn { padding: 1px 8px; }
   .settings-chips { display: inline-flex; flex-wrap: wrap; gap: 5px; vertical-align: middle;
     justify-content: flex-end; }
   .settings-chips code { font-family: var(--mono); font-size: 11.5px; color: var(--text);
@@ -389,6 +394,14 @@
           <span class="settings-pane-summary">18 keys / 3 groups</span>
         </header>
         <div class="settings-pane-body">
+          <div class="settings-card" role="group" aria-labelledby="card-connectors-1">
+            <header class="settings-card-head">
+              <h3 id="card-connectors-1">plugins</h3>
+              <span class="settings-card-count">1 key</span>
+              <span class="settings-card-grow"></span>
+            </header>
+            <div class="settings-setting"><span class="settings-setting-label"><code title="plugins.auto_update">auto_update</code><span class="chip settings-class" data-class="not_read_yet"><span class="settings-class-mark"></span><span class="settings-class-word">not read yet</span></span></span><span class="settings-setting-value">true</span></div>
+          </div>
           <div class="settings-card" role="group" aria-labelledby="card-connectors-0">
             <header class="settings-card-head">
               <h3 id="card-connectors-0">slack / Trust Machines</h3>
@@ -400,20 +413,34 @@
           </div>
           <div class="settings-card" role="group" aria-labelledby="card-connectors-2">
             <header class="settings-card-head">
-              <h3 id="card-connectors-2">vault / example</h3>
-              <span class="settings-card-count">2 keys</span>
+              <h3 id="card-connectors-2">vault</h3>
+              <span class="settings-card-count">3 keys</span>
               <span class="settings-card-grow"></span>
             </header>
             <div class="settings-setting"><span class="settings-setting-label"><code title="vault.url">url</code><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span><span class="settings-setting-value">https://vault.example.com</span></div>
             <div class="settings-setting"><span class="settings-setting-label"><code title="vault.email">email</code><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span><span class="settings-setting-value">me@example.com</span></div>
+            <div class="settings-setting"><span class="settings-setting-label"><code title="vault.idle_minutes">idle_minutes</code><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span><span class="settings-setting-value">30</span></div>
           </div>
-          <div class="settings-card" role="group" aria-labelledby="card-connectors-1">
+          <!-- The vault's account card, right after its own key card: the
+               shared session's state and the manual lock, app-level because
+               one vault serves the whole config dir. -->
+          <div class="settings-card" role="group" aria-labelledby="card-vault-lock">
             <header class="settings-card-head">
-              <h3 id="card-connectors-1">plugins</h3>
-              <span class="settings-card-count">1 key</span>
+              <h3 id="card-vault-lock">vault</h3>
               <span class="settings-card-grow"></span>
             </header>
-            <div class="settings-setting"><span class="settings-setting-label"><code title="plugins.auto_update">auto_update</code><span class="chip settings-class" data-class="not_read_yet"><span class="settings-class-mark"></span><span class="settings-class-word">not read yet</span></span></span><span class="settings-setting-value">true</span></div>
+            <div class="settings-setting"><span class="settings-setting-label"><code>unlocked</code><span class="settings-dim">locks after 30 minutes without use</span></span><span class="settings-setting-value"><span class="settings-btn ghost">lock</span></span></div>
+          </div>
+          <!-- The vault's device enrolments: the runtime list, not a config
+               key. Each purpose carries its own revoke. -->
+          <div class="settings-card" role="group" aria-labelledby="card-vault-devices">
+            <header class="settings-card-head">
+              <h3 id="card-vault-devices">devices</h3>
+              <span class="settings-card-count">1</span>
+              <span class="settings-card-grow"></span>
+            </header>
+            <div class="settings-setting"><span class="settings-setting-label"><code>this device</code><span class="settings-dim">not enrolled - enrol while the vault is unlocked</span></span><span class="settings-setting-value"><span class="settings-btn ghost">enrol</span></span></div>
+            <div class="settings-setting"><span class="settings-setting-label"><code>macOS (3f2a9c1b)</code><span class="settings-dim">enrolled 3h ago</span></span><span class="settings-setting-value"><span class="biometric-purpose"><code>vault</code><span class="settings-dim">last used 12m ago</span><span class="settings-btn ghost">revoke</span></span></span></div>
           </div>
         </div>
       </section>

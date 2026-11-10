@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import SettingsBody from './SettingsBody.svelte';
 import { settingsWire } from '../dev/settings.fixture';
 import { emptyDraft } from './editor';
+import type { SettingsDocument } from '../wire/settings';
 
 /**
  * The page's controls: the sub-nav switches the pane, each instance is a
@@ -272,5 +273,85 @@ describe('the settings page', () => {
       document.body.textContent,
       'the unset font names the bundled face, not a settable name',
     ).toContain('not set · the bundled face');
+  });
+
+  it('draws the device enrolments beside the vault key card in connectors', () => {
+    // The server has no `vault` area: every `[vault]` key is area
+    // `connectors` and groups under `vault`, and this document is that shape.
+    const vault: SettingsDocument = {
+      ...settingsWire,
+      areas: [
+        {
+          id: 'connectors',
+          name: 'connectors',
+          note: 'gotify, slack, system one, the vault and the plugin switch',
+          keys: [
+            {
+              path: 'vault.url',
+              leaf: 'url',
+              group: ['vault'],
+              pattern: 'vault.url',
+              class: 'live',
+              classLabel: 'live',
+              value: { kind: 'string', text: 'https://vault.test' },
+              edit: { kind: 'string', allowed: [], required: true, group: null },
+            },
+          ],
+        },
+      ],
+      totals: { keys: 1, areas: 1 },
+    };
+    const at = { secs_since_epoch: 1_790_000_000, nanos_since_epoch: 0 };
+    app = mount(SettingsBody, {
+      target: document.body,
+      props: {
+        document: vault,
+        mark: null,
+        cliVersion: null,
+        selected: 'connectors',
+        onSelect: () => {},
+        draft: emptyDraft(),
+        onToggleEditing: () => {},
+        onValue: () => {},
+        onEntryValue: () => {},
+        onAdd: () => {},
+        onRemoveRequest: () => {},
+        onCancelAdd: () => {},
+        onUndoRemove: () => {},
+        biometric: {
+          outcome: 'read',
+          value: [
+            {
+              id: 'device-1',
+              device: "Ved's MacBook Pro",
+              created_at: at,
+              purposes: [{ purpose: 'vault', created_at: at, last_used_at: null }],
+            },
+          ],
+        },
+        device: { outcome: 'ready' },
+        onEnrolDevice: () => {},
+        vault: { locked: false, idle_minutes: 15 },
+      },
+    });
+    flushSync();
+
+    expect(document.body.textContent).toContain("Ved's MacBook Pro");
+    expect(document.body.textContent, 'the revoke is drawn with its purpose').toContain('revoke');
+    expect(document.body.textContent, 'this device draws its own gate state').toContain(
+      'not enrolled - enrol while the vault is unlocked',
+    );
+    expect(
+      [...document.querySelectorAll('button')].some(
+        (button) => button.textContent?.trim() === 'enrol',
+      ),
+      "the enrol control is the person's own press",
+    ).toBe(true);
+    expect(document.body.textContent, 'the account card draws its lock state').toContain(
+      'unlocked',
+    );
+    expect(document.body.textContent, 'and the idle bound it locks on').toContain(
+      'locks after 15 minutes without use',
+    );
   });
 });

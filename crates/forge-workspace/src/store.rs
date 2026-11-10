@@ -8,11 +8,11 @@
 //! so a second opener on the same path fails here rather than corrupting.
 //!
 //! This wrapper is deliberately general - open plus the raw handle.
-//! Table logic lives per-tenant in the submodules: Gotify subscriptions
-//! ([`gotify`]), Slack subscriptions ([`slack`]), durable crons
-//! ([`cron`]) and the schedules their fired prompts came from
-//! ([`cron_names`]), session identities ([`sessions`]), review
-//! threads ([`review`]), forge state
+//! Table logic lives per-tenant in the submodules: biometric enrolments
+//! ([`biometric`]), Gotify subscriptions ([`gotify`]), Slack subscriptions
+//! ([`slack`]), durable crons ([`cron`]) and the schedules their fired
+//! prompts came from ([`cron_names`]), session identities ([`sessions`]),
+//! review threads ([`review`]), forge state
 //! ([`state`], the account-usage cache), the
 //! usage scan's per-file token summaries ([`token_usage`]), cached
 //! model pricing ([`pricing`]), plugin update history ([`plugins`]),
@@ -32,6 +32,7 @@ use std::path::Path;
 use anyhow::Context;
 
 pub mod bench_results;
+pub mod biometric;
 pub mod cron;
 pub mod cron_names;
 pub mod dictate_models;

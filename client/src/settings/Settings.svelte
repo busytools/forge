@@ -1,5 +1,13 @@
 <script lang="ts">
   import type { HomeRead } from '../home/live';
+  import { remove } from '../biometric';
+  import { readDeviceGate, type DeviceGate } from '../biometric/device';
+  import { VAULT_PURPOSE } from '../biometric/vault';
+  import {
+    enrolVault,
+    enrolmentIdIfMinted,
+    forgetVaultMaterial,
+  } from '../biometric/vault-enrolment';
   import { watchModels } from '../models/live';
   import { boxKey } from '../composer/box.svelte';
   import type { Command } from '../protocol';
@@ -57,6 +65,37 @@
   type Pending = { kind: 'remove'; entry: EntryTarget } | { kind: 'discard'; then: Then };
 
   let selected = $state<string | null>(null);
+  /** This device's own gate state, read once when the page opens. */
+  let device = $state<DeviceGate>({ outcome: 'reading' });
+
+  function refreshDevice(): void {
+    void readDeviceGate().then((read) => (device = read));
+  }
+
+  $effect(() => {
+    refreshDevice();
+  });
+
+  /**
+   * Enrol this device while the vault is open. **This is the only enrolment
+   * path**: nothing enrols on an unlock frame, because that frame reaches
+   * every connected client and would let a revoked device re-register.
+   */
+  async function enrolDevice(): Promise<void> {
+    // **One press at a time**: a second press interleaved with the first
+    // could store a gate key and then lose the write, leaving a key that
+    // opens nothing.
+    if (device.outcome === 'enrolling') return;
+    if (home.wire?.vault?.locked !== false) {
+      device = { outcome: 'needs_unlock' };
+      return;
+    }
+    device = { outcome: 'enrolling' };
+    const result = await enrolVault(connection);
+    if (result.outcome === 'enrolled') device = { outcome: 'enrolled' };
+    else if (result.outcome === 'needs_unlock') device = { outcome: 'needs_unlock' };
+    else device = { outcome: result.outcome, reason: result.reason };
+  }
   let editing = $state(false);
   let draft = $state<Draft>(emptyDraft());
   let saving = $state(false);
@@ -667,6 +706,25 @@
       onSpeakingDeactivate={() => speakingAct({ dictate_deactivate: { role: 'speaking' } })}
       onSpeakingVoice={chooseVoice}
       onSpeakingPreview={startPreview}
+      biometric={home.wire === null ? null : home.wire.biometric}
+      onRevokeBiometric={(enrolment: string, purpose: string) => {
+        void connection.dispatch({ biometric_revoke: { enrolment, purpose } });
+        // **This device's own item goes with its server row**: a revoked
+        // registration must not leave a gesture that can never succeed, or
+        // material a later rotation would rewrite the deleted row with.
+        if (purpose === VAULT_PURPOSE && enrolment === enrolmentIdIfMinted()) {
+          forgetVaultMaterial();
+          void remove(VAULT_PURPOSE).then(() => {
+            refreshDevice();
+          });
+        }
+      }}
+      {device}
+      onEnrolDevice={enrolDevice}
+      vault={home.wire === null ? undefined : home.wire.vault}
+      onLockVault={() => {
+        void connection.dispatch('vault_lock');
+      }}
     />
 
     {#if editing && (dirty > 0 || saving || refusal !== null || saved || conflict !== null || restart.length > 0)}

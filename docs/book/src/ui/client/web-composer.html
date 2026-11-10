@@ -295,6 +295,13 @@
     border: 1px solid var(--line); border-radius: 8px; background: var(--s1);
     color: var(--text); font-family: var(--mono); font-size: var(--fs-data); }
   .dock .unlock .fld .ph { color: var(--dim); }
+  /* The gesture takes the row it needs; the password is a link beneath it,
+     and a refusal's reason sits under both. */
+  .dock .unlock .bio { flex: 1 1 100%; min-height: 34px; display: flex;
+    align-items: center; justify-content: center; }
+  .dock .unlock .link { border: 0; background: none; color: var(--dim);
+    text-decoration: underline; }
+  .dock .unlock .why { flex: 1 1 100%; color: var(--bad); }
   .dock .opts { display: flex; flex-direction: column; gap: 1px; }
   .opt { display: flex; align-items: flex-start; gap: 10px; padding: 6px 9px;
     border-radius: 9px; font-size: var(--fs-base); }
@@ -826,6 +833,107 @@ on the folded bar.</p>
       the keys - so it draws the id, the masked diff and an attachment's name, then the masked
       master-password field and the optional 2FA code. Approve waits, drawn unavailable, until the
       password is entered. The draft carries no secret value; the password rides only the approval.</p>
+    </div>
+    <div class="col">
+      <div class="lab">held vault call, locked &middot; enrolled device <span class="h">340px</span></div>
+      <div class="comp"><div class="surf">
+        <div class="live-row">
+          <span class="live-door att"><svg class="ic"><use href="#i-decide"/></svg>vault waiting</span>
+          <span class="live-fig"><span class="ring"></span><span>0:42</span>
+            <span class="sep">&middot;</span><span>thinking 1.2k</span></span>
+          <span class="div"></span>
+          <span class="live-more">+8</span>
+        </div>
+        <div class="slot"><div class="ask-body"><div class="dock">
+          <div class="d-head"><span class="tag warn">&#9888; needs you</span>
+            <span class="q mono">vault &middot; vault_update</span>
+            <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
+          <div class="d-q">change the login for 'bank'</div>
+          <div class="desc mono">id: cipher-id</div>
+          <div class="desc">the change, with every secret value masked</div>
+          <div class="wv mono">password: ********</div>
+          <div class="unlock">
+            <span class="btn p bio">Unlock with this device</span>
+            <span class="btn link">use the Vaultwarden password</span>
+          </div>
+          <div class="acts"><span class="btn">Send back with a note</span>
+            <span class="btn d">Decline</span></div>
+          <div class="keys"><span><span class="k">&#9166;</span> unlocks with this device</span>
+            <span><span class="k">tab</span> to the password, the send-back or the decline</span>
+            <span><span class="k">esc</span> declines</span></div>
+        </div></div></div>
+      </div></div>
+      <p class="note" style="margin:8px 0 0">Where the device holds an enrolment, the gesture is
+      the card's primary action and Enter runs it; the master password is one link beneath it, so
+      a broken sensor is a working path away. The approve verb is the gesture itself, and the
+      unlock material it releases rides only the approval.</p>
+    </div>
+    <div class="col">
+      <div class="lab">held vault call, locked &middot; the gesture refused <span class="h">340px</span></div>
+      <div class="comp"><div class="surf">
+        <div class="live-row">
+          <span class="live-door att"><svg class="ic"><use href="#i-decide"/></svg>vault waiting</span>
+          <span class="live-fig"><span class="ring"></span><span>0:42</span>
+            <span class="sep">&middot;</span><span>thinking 1.2k</span></span>
+          <span class="div"></span>
+          <span class="live-more">+8</span>
+        </div>
+        <div class="slot"><div class="ask-body"><div class="dock">
+          <div class="d-head"><span class="tag warn">&#9888; needs you</span>
+            <span class="q mono">vault &middot; vault_update</span>
+            <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
+          <div class="d-q">change the login for 'bank'</div>
+          <div class="desc mono">id: cipher-id</div>
+          <div class="desc">the change, with every secret value masked</div>
+          <div class="wv mono">password: ********</div>
+          <div class="unlock">
+            <span class="btn p bio">Unlock with this device</span>
+            <span class="btn link">use the Vaultwarden password</span>
+            <span class="desc why">the gesture was cancelled</span>
+          </div>
+          <div class="acts"><span class="btn">Send back with a note</span>
+            <span class="btn d">Decline</span></div>
+          <div class="keys"><span><span class="k">&#9166;</span> unlocks with this device</span>
+            <span><span class="k">tab</span> to the password, the send-back or the decline</span>
+            <span><span class="k">esc</span> declines</span></div>
+        </div></div></div>
+      </div></div>
+      <p class="note" style="margin:8px 0 0">A refused gesture never settles the call: the card
+      stands, says the platform's own reason under the button, and the password it offers is the
+      same link as before. Only a release that succeeds sends the approval.</p>
+    </div>
+    <div class="col">
+      <div class="lab">held vault call, locked &middot; the gesture running <span class="h">340px</span></div>
+      <div class="comp"><div class="surf">
+        <div class="live-row">
+          <span class="live-door att"><svg class="ic"><use href="#i-decide"/></svg>vault waiting</span>
+          <span class="live-fig"><span class="ring"></span><span>0:42</span>
+            <span class="sep">&middot;</span><span>thinking 1.2k</span></span>
+          <span class="div"></span>
+          <span class="live-more">+8</span>
+        </div>
+        <div class="slot"><div class="ask-body"><div class="dock">
+          <div class="d-head"><span class="tag warn">&#9888; needs you</span>
+            <span class="q mono">vault &middot; vault_update</span>
+            <span class="chevb"><svg class="ic"><use href="#i-down"/></svg></span></div>
+          <div class="d-q">change the login for 'bank'</div>
+          <div class="desc mono">id: cipher-id</div>
+          <div class="desc">the change, with every secret value masked</div>
+          <div class="wv mono">password: ********</div>
+          <div class="unlock">
+            <span class="btn p bio off">waiting for this device&hellip;</span>
+            <span class="btn link">use the Vaultwarden password</span>
+          </div>
+          <div class="acts"><span class="btn">Send back with a note</span>
+            <span class="btn d">Decline</span></div>
+          <div class="keys"><span><span class="k">&#9166;</span> unlocks with this device</span>
+            <span><span class="k">tab</span> to the password, the send-back or the decline</span>
+            <span><span class="k">esc</span> declines</span></div>
+        </div></div></div>
+      </div></div>
+      <p class="note" style="margin:8px 0 0">While the OS prompt is up the button says what the
+      card is waiting for and cannot be pressed twice; the row's other verbs stay as they were.
+      The state ends when the gesture does.</p>
     </div>
   </div>
   <div class="row">

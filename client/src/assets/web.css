@@ -3495,6 +3495,15 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   border: 1px solid var(--line); border-radius: 8px; background: var(--s1);
   color: var(--text); font-family: var(--mono); font-size: var(--fs-data); }
 .dock .unlock .fld::placeholder { color: var(--dim); }
+/* The gesture is the card's primary action and takes the row it needs; the
+   password is a link beneath it rather than a second button competing with
+   it. A refused gesture's reason sits under both, in the failure tone. */
+.dock .unlock .bio { flex: 1 1 100%; min-height: 40px; }
+.dock .unlock .link { border: 0; background: none; color: var(--dim); cursor: pointer;
+  font-family: var(--mono); font-size: var(--fs-data); padding: 4px 0;
+  text-decoration: underline; }
+.dock .unlock .link:hover { color: var(--text); }
+.dock .unlock .why { flex: 1 1 100%; margin: 0; color: var(--bad); }
 /* A long option list scrolls in place rather than pushing the foot off a
    phone: the prompt lane is a lane, not a page, and the words row below it
    must stay reachable however many options the wire sent. */
@@ -3615,8 +3624,11 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   .sendb { min-height: 44px; min-width: 44px; }
   /* The send-back field is a finger target like every other control. */
   .dock .sendback .notes { min-height: 44px; }
-  /* The vault card's unlock boxes too. */
+  /* The vault card's unlock boxes too. **The gesture's own rule below sets
+     40px and outranks the generic `.dock .btn` floor**, so it is stated here
+     at the same specificity. */
   .dock .unlock .fld { min-height: 44px; }
+  .dock .unlock .bio { min-height: 44px; }
 }
 /* The phase or the batch, for a screen reader only: the marks say nothing. */
 .dock .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
@@ -5187,6 +5199,11 @@ details[open] > summary .arw { opacity: 1; }
 
 .settings-page .settings-value { white-space: pre-wrap; }
 .settings-page .settings-dim { color: var(--dim); }
+/* One purpose inside a device's row: its name, its last release and its own
+   revoke, laid on the row's value side. */
+.settings-page .settings-setting-value .biometric-purpose { display: inline-flex;
+  align-items: center; gap: 8px; margin-left: 12px; }
+.settings-page .biometric-purpose .settings-btn { padding: 1px 8px; }
 .settings-page .settings-chips { display: inline-flex; flex-wrap: wrap; gap: 5px;
   vertical-align: middle; justify-content: flex-end; }
 .settings-page .settings-chips code { font-family: var(--mono); font-size: 11.5px; color: var(--text);

@@ -410,6 +410,86 @@ pub enum Command {
         id: uuid::Uuid,
         answer: forge_primitives::vault::VaultAskAnswer,
     },
+    /// A client enrolled one purpose's wrapped secret under its device's
+    /// enrolment. The blob is opaque: the client wrapped it under the platform
+    /// authenticator's key, and the core stores the bytes without decoding
+    /// them.
+    ///
+    /// `enrolment` is the id the client minted for the device; an id the core
+    /// has not seen starts the enrolment, and a known one adds or replaces the
+    /// purpose's blob - a rotation's rewrite is the same command again.
+    /// App-level (`key()` returns `None`); the outcome rides
+    /// [`SessionUpdate::BiometricEnrolmentsChanged`].
+    BiometricEnrol {
+        enrolment: uuid::Uuid,
+        /// The device's own name for itself, as the settings page draws it.
+        device: String,
+        /// The consumer the blob belongs to (`"vault"` in v1).
+        purpose: String,
+        /// The wrapped secret, base64.
+        blob: String,
+        /// Answers `true` when the blob was stored. **A store failure is a
+        /// dispatch refusal, never `false`**, so the two cannot be mistaken
+        /// for each other. The rotation rewrite reads the answer to decide
+        /// whether the vault must lock (decision 15).
+        #[serde(skip)]
+        respond: Option<oneshot::Sender<bool>>,
+    },
+    /// A rotation's rewrite of an **existing** enrolment: the same purpose
+    /// and a fresh blob on an id the core already holds.
+    ///
+    /// **The person's press is what creates a row**; this may only update
+    /// one. A device the person revoked has no row, so its rewrite answers
+    /// `false` - the client then locks rather than re-registering itself.
+    /// Answers `true` when the blob was replaced, `false` when the id or the
+    /// purpose is gone, and a store failure is a dispatch refusal. App-level;
+    /// the outcome rides [`SessionUpdate::BiometricEnrolmentsChanged`].
+    BiometricRewrite {
+        enrolment: uuid::Uuid,
+        purpose: String,
+        blob: String,
+        #[serde(skip)]
+        respond: Option<oneshot::Sender<bool>>,
+    },
+    /// A client asks for the blob it enrolled for one purpose, so its gate can
+    /// unwrap it. Answers through `reply_to` with the blob, or `null` when that
+    /// purpose is not enrolled on this device - the state a client falls back
+    /// to the password on. A store failure is a dispatch refusal instead, so
+    /// the two cannot read alike.
+    BiometricRelease {
+        enrolment: uuid::Uuid,
+        purpose: String,
+        #[serde(skip)]
+        respond: Option<oneshot::Sender<Option<forge_primitives::biometric::BiometricBlob>>>,
+    },
+    /// The reader dropped one purpose's enrolment, or (`purpose: None`) the
+    /// device's whole enrolment. App-level; the outcome rides
+    /// [`SessionUpdate::BiometricEnrolmentsChanged`].
+    BiometricRevoke {
+        enrolment: uuid::Uuid,
+        purpose: Option<String>,
+    },
+    /// The reader locked the shared vault now, rather than waiting for the
+    /// idle clock. **App-level**: the process holds one vault session, so the
+    /// settings page's vault card is where the press comes from and no seat
+    /// has a better claim to it than another. Workspace state rather than
+    /// agent traffic, and the parked cards are re-stamped so a dock that
+    /// already drew one asks for the password again.
+    VaultLock,
+    /// The material a client wraps to enrol this device: the shared session's
+    /// current refresh token and the account's user key, base64. Answers
+    /// through `reply_to` with [`forge_primitives::vault::VaultReleased`],
+    /// and `null` while the session is locked - the state a device cannot
+    /// enrol from.
+    ///
+    /// **It is the vault's material, not the biometric gate's.** The gate
+    /// stores and releases whatever blob a consumer wraps; only the vault
+    /// knows what its own material is, so the command lives on the vault's
+    /// surface.
+    VaultEnrolmentMaterial {
+        #[serde(skip)]
+        respond: Option<oneshot::Sender<Option<forge_primitives::vault::VaultReleased>>>,
+    },
     RespondQuestion {
         key: SessionSlot,
         tool_id: String,
@@ -973,7 +1053,13 @@ impl Command {
             | Self::PluginUpdateAll
             | Self::PluginCheckUpdates
             | Self::MarketplaceAdd { .. }
-            | Self::MarketplaceRepair { .. } => None,
+            | Self::MarketplaceRepair { .. }
+            | Self::BiometricEnrol { .. }
+            | Self::BiometricRelease { .. }
+            | Self::BiometricRevoke { .. }
+            | Self::BiometricRewrite { .. }
+            | Self::VaultLock
+            | Self::VaultEnrolmentMaterial { .. } => None,
         }
     }
 
@@ -1075,6 +1161,29 @@ impl std::fmt::Debug for Command {
                 .field("id", id)
                 .field("answer", answer)
                 .finish_non_exhaustive(),
+            Self::BiometricEnrol { enrolment, device, purpose, .. } => f
+                .debug_struct("BiometricEnrol")
+                .field("enrolment", enrolment)
+                .field("device", device)
+                .field("purpose", purpose)
+                .finish_non_exhaustive(),
+            Self::BiometricRelease { enrolment, purpose, .. } => f
+                .debug_struct("BiometricRelease")
+                .field("enrolment", enrolment)
+                .field("purpose", purpose)
+                .finish_non_exhaustive(),
+            Self::BiometricRevoke { enrolment, purpose } => f
+                .debug_struct("BiometricRevoke")
+                .field("enrolment", enrolment)
+                .field("purpose", purpose)
+                .finish(),
+            Self::BiometricRewrite { enrolment, purpose, .. } => f
+                .debug_struct("BiometricRewrite")
+                .field("enrolment", enrolment)
+                .field("purpose", purpose)
+                .finish_non_exhaustive(),
+            Self::VaultLock => f.write_str("VaultLock"),
+            Self::VaultEnrolmentMaterial { .. } => f.write_str("VaultEnrolmentMaterial"),
             Self::AnswerDocumentHandOff { key, id, answer } => f
                 .debug_struct("AnswerDocumentHandOff")
                 .field("key", key)
@@ -2242,6 +2351,33 @@ pub enum SessionUpdate {
         id: Uuid,
         ending: forge_primitives::vault::VaultAskEnding,
     },
+    /// The device enrolments moved, as the whole set the core holds. Pushed
+    /// rather than read: an enrol, a release's stamp and a revoke each leave a
+    /// set the settings page draws, and the card reads the same set - so a
+    /// second client redraws without asking. No wrapped blob rides here; see
+    /// [`forge_primitives::biometric::BiometricEnrolment`].
+    BiometricEnrolmentsChanged {
+        enrolments: Vec<forge_primitives::biometric::BiometricEnrolment>,
+    },
+    /// The shared vault session rotated its refresh token, so the copy an
+    /// enrolment blob holds is spent. A client that holds the material from
+    /// its last release rewrites its blob with this one (decision 15); one
+    /// that cannot falls back to the password on its next start.
+    ///
+    /// **Slot-less**: the session is process-wide, and only the client that
+    /// owns the enrolment acts on it. The token is a secret on the socket -
+    /// it never reaches a transcript or the live fold, and the manual `Debug`
+    /// redacts it.
+    VaultRotated {
+        refresh_token: String,
+    },
+    /// The shared vault session locked or unlocked outside a held card - the
+    /// idle bound passed, a refresh or a decryption failed, or an unlock
+    /// landed. Slot-less like the rotation: the session is process-wide, and
+    /// the settings page's vault card is what redraws.
+    VaultLockChanged {
+        locked: bool,
+    },
     /// One rendered clip of the seat's speech, mono 16-bit samples at
     /// `sample_rate`. Chunks arrive in `seq` order and every client with
     /// voice on for the seat plays them; a client with voice off receives
@@ -2345,7 +2481,10 @@ impl SessionUpdate {
             | Self::WorkerStatusChanged { .. }
             | Self::DictateAvailability { .. }
             | Self::FatalError { .. }
-            | Self::DictateModelsChanged { .. } => None,
+            | Self::DictateModelsChanged { .. }
+            | Self::BiometricEnrolmentsChanged { .. }
+            | Self::VaultRotated { .. }
+            | Self::VaultLockChanged { .. } => None,
         }
     }
 }
@@ -2685,6 +2824,15 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("id", id)
                 .field("ending", ending)
                 .finish_non_exhaustive(),
+            Self::BiometricEnrolmentsChanged { enrolments } => f
+                .debug_struct("BiometricEnrolmentsChanged")
+                .field("enrolments", &enrolments.len())
+                .finish(),
+            // The token is redacted: a Debug line must never carry it.
+            Self::VaultRotated { .. } => f.write_str("VaultRotated"),
+            Self::VaultLockChanged { locked } => {
+                f.debug_struct("VaultLockChanged").field("locked", locked).finish()
+            }
             Self::CatalogLoaded => f.write_str("CatalogLoaded"),
             Self::CliVersionChanged => f.write_str("CliVersionChanged"),
             Self::AccountsChanged { accounts } => f
@@ -2774,6 +2922,11 @@ pub enum DispatchError {
         "that vault call is no longer waiting: it has been answered, or its asking session went away"
     )]
     NoVaultAskWaiting { key: SessionSlot, id: Uuid },
+    /// A biometric enrolment write was refused before anything was stored, in
+    /// the core's own words: a blob that is not base64, an empty or oversized
+    /// one, a nameless purpose, or a store that could not be written.
+    #[error("the biometric enrolment was refused: {reason}")]
+    BiometricRefused { reason: String },
     /// A catalogue check was asked for with `[dictate]` switched off:
     /// there are no pinned models for a check to be about.
     #[error("dictation is off, so there is no catalogue to check")]

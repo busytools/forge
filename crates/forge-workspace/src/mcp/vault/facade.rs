@@ -430,27 +430,39 @@ impl ProdVaultFacade {
         }
 
         if session.is_locked() {
-            let Some(password) =
-                answer.master_password.as_deref().filter(|password| !password.is_empty())
-            else {
-                session.audit(
-                    caller,
-                    tool,
-                    item_id,
-                    item_name,
-                    field,
-                    "approve",
-                    "failed: a locked session was approved without the master password",
-                );
-                return Err(VaultToolError::Locked);
+            // The card offers both paths: the material a platform
+            // authenticator released, or the master password. Either one
+            // reaches the same session; the material is what a start uses
+            // once the device is enrolled.
+            let unlocked = if let Some(released) = answer.released.as_ref() {
+                session.unlock_released(&released.refresh_token, &released.user_key).await
+            } else {
+                let Some(password) =
+                    answer.master_password.as_deref().filter(|password| !password.is_empty())
+                else {
+                    session.audit(
+                        caller,
+                        tool,
+                        item_id,
+                        item_name,
+                        field,
+                        "approve",
+                        "failed: a locked session was approved without the master password",
+                    );
+                    return Err(VaultToolError::Locked);
+                };
+                let two_factor = answer.two_factor.as_deref().filter(|code| !code.is_empty());
+                session.unlock(password, two_factor).await
             };
-            let two_factor = answer.two_factor.as_deref().filter(|code| !code.is_empty());
-            let unlocked = session.unlock(password, two_factor).await;
             if let Some(mut password) = answer.master_password.take() {
                 password.zeroize();
             }
             if let Some(mut code) = answer.two_factor.take() {
                 code.zeroize();
+            }
+            if let Some(mut released) = answer.released.take() {
+                released.refresh_token.zeroize();
+                released.user_key.zeroize();
             }
             if let Err(error) = unlocked {
                 session.audit(
@@ -2074,7 +2086,7 @@ mod tests {
     use crate::config::VaultConfig;
     use crate::protocol::Command;
     use crate::vault::{test_install_unlocked, test_session};
-    use forge_primitives::vault::{VaultAskAnswer, VaultAskDecision};
+    use forge_primitives::vault::{VaultAskAnswer, VaultAskDecision, VaultReleased};
 
     fn audit_text(dir: &tempfile::TempDir) -> String {
         std::fs::read_to_string(
@@ -2236,8 +2248,11 @@ mod tests {
                 kick: None,
             },
         );
-        let config =
-            VaultConfig { url: format!("http://{address}"), email: "hi@vedhavyas.dev".to_owned() };
+        let config = VaultConfig {
+            url: format!("http://{address}"),
+            email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
+        };
         let session =
             Arc::new(test_session(&config, Some(dir.path()), dir.path()).expect("a session"));
         test_install_unlocked(
@@ -2264,6 +2279,7 @@ mod tests {
                     decision: VaultAskDecision::Approve,
                     master_password: None,
                     two_factor: None,
+                    released: None,
                 },
             })
             .expect("the answer routes");
@@ -2285,7 +2301,7 @@ mod tests {
                     request.lines().next().unwrap_or_default(),
                 );
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 let _ = socket.write_all(response.as_bytes()).await;
@@ -2304,6 +2320,7 @@ mod tests {
         let config = VaultConfig {
             url: "http://127.0.0.1:1".to_owned(),
             email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
         };
         let session = Arc::new(test_session(&config, None, Path::new("/tmp")).expect("a session"));
         *workspace.vault.write() = Some(session);
@@ -2338,6 +2355,7 @@ mod tests {
                     decision: VaultAskDecision::Decline,
                     master_password: None,
                     two_factor: None,
+                    released: None,
                 },
             })
             .expect("the answer routes");
@@ -2377,6 +2395,7 @@ mod tests {
         let config = VaultConfig {
             url: "http://127.0.0.1:1".to_owned(),
             email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
         };
         let session =
             Arc::new(test_session(&config, Some(dir.path()), dir.path()).expect("a session"));
@@ -2533,6 +2552,7 @@ mod tests {
         let config = VaultConfig {
             url: "http://127.0.0.1:1".to_owned(),
             email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
         };
         let session =
             Arc::new(test_session(&config, Some(dir.path()), dir.path()).expect("a session"));
@@ -2613,6 +2633,7 @@ mod tests {
                     decision: VaultAskDecision::SendBack { note: "use the bank folder".to_owned() },
                     master_password: None,
                     two_factor: None,
+                    released: None,
                 },
             })
             .expect("the answer routes");
@@ -2932,6 +2953,7 @@ mod tests {
         let next = VaultConfig {
             url: "http://127.0.0.1:1".to_owned(),
             email: "other@example.com".to_owned(),
+            idle_minutes: None,
         };
         *workspace.vault.write() = Some(Arc::new(
             test_session(&next, Some(dir.path()), dir.path()).expect("the new session"),
@@ -2944,6 +2966,7 @@ mod tests {
                     decision: VaultAskDecision::Approve,
                     master_password: Some("old password".to_owned()),
                     two_factor: None,
+                    released: None,
                 },
             })
             .expect("the answer routes");
@@ -2977,6 +3000,7 @@ mod tests {
                     decision: VaultAskDecision::Approve,
                     master_password: None,
                     two_factor: None,
+                    released: None,
                 },
             })
             .expect("the answer routes");
@@ -3031,8 +3055,11 @@ mod tests {
         ])
         .await;
         let (workspace, mut rx) = Workspace::testing_stub();
-        let config =
-            VaultConfig { url: format!("http://{address}"), email: "hi@vedhavyas.dev".to_owned() };
+        let config = VaultConfig {
+            url: format!("http://{address}"),
+            email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
+        };
         let session = Arc::new(test_session(&config, None, Path::new("/tmp")).expect("session"));
         *workspace.vault.write() = Some(session);
         let facade = Arc::new(ProdVaultFacade::from_arc(&workspace));
@@ -3060,6 +3087,7 @@ mod tests {
                     decision: VaultAskDecision::Approve,
                     master_password: Some("open sesame".to_owned()),
                     two_factor: None,
+                    released: None,
                 },
             })
             .expect("the answer routes");
@@ -3091,11 +3119,129 @@ mod tests {
                     decision: VaultAskDecision::Approve,
                     master_password: None,
                     two_factor: None,
+                    released: None,
                 },
             })
             .expect("the answer routes");
         let decoded = second.await.expect("the second call finishes").expect("the second read");
         assert_eq!(decoded["name"], "bank");
+    }
+
+    /// A start from released material: the card carries the enrolment's
+    /// refresh token and the user key instead of the password, and the call
+    /// runs exactly as a password unlock leaves it.
+    #[tokio::test]
+    async fn an_unlock_from_released_material_reaches_the_same_session() {
+        use forge_connectors::vault::crypto::{derive_master_key, encrypt_str};
+
+        let pre = forge_connectors::vault::models::Prelogin {
+            kdf: 0,
+            kdf_iterations: 100_000,
+            kdf_memory: None,
+            kdf_parallelism: None,
+        };
+        let master_key =
+            derive_master_key("open sesame", "hi@vedhavyas.dev", &pre).expect("the master key");
+        let (user_key, wrapped_user_key) = master_key.make_user_key().expect("the user key");
+        let cipher = serde_json::json!({
+            "id": "item-1",
+            "type": 1,
+            "name": encrypt_str("bank", &user_key.0).expect("encrypting the name"),
+            "login": {},
+        });
+        // The redemption answers a rotated refresh token, which the session
+        // keeps for its own refreshes.
+        let token = serde_json::json!({
+            "access_token": "access",
+            "refresh_token": "rotated",
+            "Key": wrapped_user_key.to_string(),
+        })
+        .to_string();
+        let sync = r#"{"profile":{},"folders":[],"ciphers":[]}"#.to_owned();
+        let address = serve_vault(vec![
+            ("/identity/connect/token", token),
+            ("/api/sync", sync),
+            ("/api/ciphers/item-1", cipher.to_string()),
+        ])
+        .await;
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let config = VaultConfig {
+            url: format!("http://{address}"),
+            email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
+        };
+        let session = Arc::new(test_session(&config, None, Path::new("/tmp")).expect("session"));
+        *workspace.vault.write() = Some(Arc::clone(&session));
+        let facade = Arc::new(ProdVaultFacade::from_arc(&workspace));
+        let caller = SessionSlot::lead("Default", "forge");
+
+        let reader = Arc::clone(&facade);
+        let reader_caller = caller.clone();
+        let call = tokio::spawn(async move { reader.get(&reader_caller, "item-1", None).await });
+        let draft = parked_draft(&mut rx).await;
+        assert!(draft.needs_unlock, "the locked session asks for an unlock");
+
+        workspace
+            .dispatch(Command::RespondVaultAsk {
+                key: caller.clone(),
+                id: draft.id,
+                answer: VaultAskAnswer {
+                    decision: VaultAskDecision::Approve,
+                    master_password: None,
+                    two_factor: None,
+                    released: Some(VaultReleased {
+                        refresh_token: "refresh".to_owned(),
+                        user_key: user_key.0.to_base64().to_string(),
+                    }),
+                },
+            })
+            .expect("the answer routes");
+
+        let decoded = call.await.expect("the call finishes").expect("the item is read");
+        assert_eq!(decoded["name"], "bank");
+        assert!(!session.is_locked(), "the session unlocked from the released material");
+    }
+
+    /// A release the account refuses leaves the session locked, so the card
+    /// can offer the password rather than pretending the gesture worked.
+    #[tokio::test]
+    async fn a_refused_release_leaves_the_session_locked() {
+        // A token answer with no access token: the redemption is refused.
+        let address = serve_vault(vec![("/identity/connect/token", "{}".to_owned())]).await;
+        let (workspace, mut rx) = Workspace::testing_stub();
+        let config = VaultConfig {
+            url: format!("http://{address}"),
+            email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
+        };
+        let session = Arc::new(test_session(&config, None, Path::new("/tmp")).expect("session"));
+        *workspace.vault.write() = Some(Arc::clone(&session));
+        let facade = Arc::new(ProdVaultFacade::from_arc(&workspace));
+        let caller = SessionSlot::lead("Default", "forge");
+
+        let reader = Arc::clone(&facade);
+        let reader_caller = caller.clone();
+        let call = tokio::spawn(async move { reader.get(&reader_caller, "item-1", None).await });
+        let draft = parked_draft(&mut rx).await;
+
+        workspace
+            .dispatch(Command::RespondVaultAsk {
+                key: caller.clone(),
+                id: draft.id,
+                answer: VaultAskAnswer {
+                    decision: VaultAskDecision::Approve,
+                    master_password: None,
+                    two_factor: None,
+                    released: Some(VaultReleased {
+                        refresh_token: "spent".to_owned(),
+                        user_key: "not-a-key".to_owned(),
+                    }),
+                },
+            })
+            .expect("the answer routes");
+
+        assert!(call.await.expect("the call finishes").is_err(), "the call is refused");
+        assert!(session.is_locked(), "a refused release leaves the session locked");
     }
 
     /// The command inputs carry secret values, so their Debug lines must not.
@@ -3267,8 +3413,11 @@ mod tests {
         let name = encrypt_str("bank", &user_key).expect("encrypt the name");
         let (address, seen, release) = serve_paused_cipher(name).await;
         let dir = tempfile::tempdir().expect("tempdir");
-        let config =
-            VaultConfig { url: format!("http://{address}"), email: "hi@vedhavyas.dev".to_owned() };
+        let config = VaultConfig {
+            url: format!("http://{address}"),
+            email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
+        };
         let old =
             Arc::new(test_session(&config, Some(dir.path()), dir.path()).expect("the old session"));
         test_install_unlocked(
@@ -3317,6 +3466,7 @@ mod tests {
                     decision: VaultAskDecision::Approve,
                     master_password: None,
                     two_factor: None,
+                    released: None,
                 },
             })
             .expect("the answer routes");
@@ -3357,6 +3507,7 @@ mod tests {
                 &VaultConfig {
                     url: format!("http://{address}"),
                     email: "hi@vedhavyas.dev".to_owned(),
+                    idle_minutes: None,
                 },
                 Some(dir.path()),
                 dir.path(),
@@ -3424,6 +3575,7 @@ mod tests {
                 &VaultConfig {
                     url: format!("http://{address}"),
                     email: "hi@vedhavyas.dev".to_owned(),
+                    idle_minutes: None,
                 },
                 Some(dir.path()),
                 dir.path(),
@@ -3495,6 +3647,7 @@ mod tests {
                 &VaultConfig {
                     url: format!("http://{address}"),
                     email: "hi@vedhavyas.dev".to_owned(),
+                    idle_minutes: None,
                 },
                 Some(dir.path()),
                 dir.path(),
@@ -3557,6 +3710,7 @@ mod tests {
                 &VaultConfig {
                     url: format!("http://{address}"),
                     email: "hi@vedhavyas.dev".to_owned(),
+                    idle_minutes: None,
                 },
                 Some(dir.path()),
                 dir.path(),
@@ -4234,6 +4388,7 @@ mod tests {
         let config = VaultConfig {
             url: "http://127.0.0.1:1".to_owned(),
             email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
         };
         let session =
             Arc::new(test_session(&config, Some(dir.path()), dir.path()).expect("a session"));

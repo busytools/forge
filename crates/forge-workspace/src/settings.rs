@@ -231,7 +231,8 @@ fn edit_spec(path: &str) -> EditSpec {
         | "dictate.max_capture_minutes"
         | "tts.max_utterance_seconds"
         | "handoff.at_percent"
-        | "handoff.after_compactions" => NUMBER,
+        | "handoff.after_compactions"
+        | "vault.idle_minutes" => NUMBER,
         "server.allowed_origins" | "sessions.heal_backoff" => LIST,
         // client
         "client.mark" => choice(forge_primitives::client::MARK_NAMES),
@@ -905,6 +906,17 @@ const CONNECTOR_KEYS: &[ConfigKey] = &[
         class: EffectClass::Live,
         rows: |config| {
             vec![text_set("vault.email", config.vault.as_ref().map(|vault| vault.email.clone()))]
+        },
+    },
+    ConfigKey {
+        path: "vault.idle_minutes",
+        area: "connectors",
+        class: EffectClass::Live,
+        rows: |config| {
+            vec![number(
+                "vault.idle_minutes",
+                config.vault.as_ref().and_then(|vault| vault.idle_minutes),
+            )]
         },
     },
     ConfigKey {
@@ -1918,6 +1930,7 @@ timeout_ms = 1000
 [vault]
 url = "https://vault.test"
 email = "hi@vedhavyas.dev"
+idle_minutes = 30
 
 [[slack]]
 workspace = "Test Slack"

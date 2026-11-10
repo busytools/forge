@@ -45,7 +45,13 @@ import { noteSnapshot, noteSubscribeWritten, seatLabel } from '../perf';
 import { READ_BOUND_MS, ReadBounds } from '../read-bound';
 import { refused } from '../refusals';
 import { StreamGate } from '../session/stream';
-import { report, type BrowserFrame, type Connection, type ConnectionStatus } from '../socket';
+import {
+  ANSWERS_THROUGH_A_REPLY,
+  report,
+  type BrowserFrame,
+  type Connection,
+  type ConnectionStatus,
+} from '../socket';
 import { Stores, type Store } from '../stores';
 import { coversHome } from '../wire/fleet';
 import { settingsFrom } from '../wire/types';
@@ -60,22 +66,6 @@ import type { ClientSettings, SessionSlot } from '../wire/types';
  * reads as away, and the reconcile that answers it is complete either way.
  */
 const HEARTBEAT_MS = 5_000;
-
-/**
- * The commands a PAGE dispatches that answer through a reply.
- *
- * The server's own set is `answers_through_a_reply`, which also carries
- * commands the server dispatches itself, like a hand-off's answer. These are
- * the page commands with nothing behind them on the wire: a client that omits
- * `reply_to` for one of them has no second way to learn what happened.
- */
-const ANSWERS_THROUGH_A_REPLY = new Set([
-  'spawn_worker',
-  'despawn_worker',
-  'upsert_review_thread',
-  'delete_review_thread',
-  'submit_review',
-]);
 
 /** A command's variant name, thrown on when the command is not one variant. */
 function variantOf(command: Command): string {

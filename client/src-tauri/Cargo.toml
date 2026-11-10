@@ -129,6 +129,19 @@ tauri-plugin-updater = "2"
 # decodes each one and paints it.
 webp = { version = "0.3", default-features = false }
 libc = "0.2"
+# **The biometric gate.** A Keychain item whose access-control policy the
+# system enforces: `security-framework` builds the policy, and the item and
+# query dictionaries are the sys crate over `core-foundation`, because the
+# safe item builder cannot set one. `LocalAuthentication` decides whether the
+# gesture is biometry or the device password. All three are already in this
+# crate's lockfile through Tauri's own stack.
+security-framework = { version = "3", features = ["OSX_10_15"] }
+security-framework-sys = { version = "2", features = ["OSX_10_15"] }
+core-foundation = "0.10"
+objc2-local-authentication = { version = "0.3", default-features = false, features = [
+    "std",
+    "LAContext",
+] }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = [
     "NSArray",

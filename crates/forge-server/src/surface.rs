@@ -8,6 +8,7 @@
 
 pub mod accounts;
 pub mod agents;
+pub mod biometric;
 pub mod board;
 pub mod composer;
 pub mod connectors;
@@ -19,6 +20,7 @@ pub mod reviews;
 pub mod roster;
 pub mod session;
 pub mod usage;
+pub mod vault;
 pub mod voice;
 pub mod workers;
 

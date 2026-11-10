@@ -162,7 +162,7 @@ function chatNews(payload: Record<string, unknown>): FleetNews {
  * **Slot-less is not the same as home news.** A variant that names no seat
  * reaches only a home subscriber, so it has no other reader to lean on - but
  * the read it wakes has to be able to come back different. These are the
- * eight where it can: each has a field on `HomeWire` that moves with it.
+ * ten where it can: each has a field on `HomeWire` that moves with it.
  *
  * A variant belongs here by what the home's ANSWER holds, not by what its
  * name suggests: `DictateModelsChanged` is here because the band's dictation
@@ -192,6 +192,11 @@ export const HOME_WAKES: ReadonlyMap<string, string> = new Map([
   ['dictate_models_changed', 'HomeWire.dictate.snapshot.models, whose rows the preflight resolves'],
   ['service_status', 'HomeWire.service_status, the issue the core holds'],
   ['fatal_error', 'HomeWire.fatal_error, the words the core stopped with'],
+  [
+    'biometric_enrolments_changed',
+    'HomeWire.biometric, the device enrolments the settings page lists and the card reads',
+  ],
+  ['vault_lock_changed', 'HomeWire.vault, the lock state and idle bound the settings card draws'],
 ]);
 
 /**
@@ -245,6 +250,10 @@ export const HOME_IGNORES: ReadonlyMap<string, string> = new Map([
   ],
   ['cron_schedules_changed', 'the schedules left the home for the board (#2517)'],
   ['connector_subscriptions_changed', 'the subscriptions left the home for the board (#2517)'],
+  [
+    'vault_rotated',
+    'the vault consumer listens for it on its own; no HomeWire field carries a token',
+  ],
 ]);
 
 /**

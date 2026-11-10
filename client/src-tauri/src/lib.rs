@@ -30,6 +30,7 @@ fn updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, Stri
 use tauri::Manager as _;
 
 mod asks;
+pub mod biometric;
 pub mod bridge;
 pub mod browser;
 mod launch;
@@ -693,6 +694,11 @@ pub fn run() -> u8 {
             commands::client_commit_diff,
             commands::client_heartbeat,
             commands::client_close,
+            biometric::biometric_availability,
+            biometric::biometric_enrolled,
+            biometric::biometric_store,
+            biometric::biometric_release,
+            biometric::biometric_remove,
             perf::client_perf
         ]);
     // iOS lands here too, and it registers nothing: the update commands are
@@ -713,6 +719,7 @@ pub fn run() -> u8 {
         .plugin(android::init())
         .plugin(android::init_file_names())
         .plugin(micstate::init())
+        .plugin(biometric::android::init())
         .plugin(launch::init())
         .invoke_handler(tauri::generate_handler![
             browser::viewer::browser_surface_rect,
@@ -761,6 +768,11 @@ pub fn run() -> u8 {
             commands::client_commit_diff,
             commands::client_heartbeat,
             commands::client_close,
+            biometric::biometric_availability,
+            biometric::biometric_enrolled,
+            biometric::biometric_store,
+            biometric::biometric_release,
+            biometric::biometric_remove,
             perf::client_perf
         ]);
 

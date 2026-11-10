@@ -54,6 +54,7 @@
 mod account_cache;
 mod account_loader;
 pub mod bench;
+mod biometric;
 pub mod board;
 pub mod browser;
 pub mod catalogue;
@@ -125,6 +126,7 @@ pub use target::{ProjectKey, SessionSlot, SessionTarget};
 pub use tts::{TtsSettings, TtsSnapshot, TtsView};
 
 pub use update_fanout::SeatUpdate;
+pub use vault::VaultState;
 pub use views::{
     AccountGatewayView, AccountLoadingRow, AccountPoolView, AccountUsageView, ProjectView,
 };
