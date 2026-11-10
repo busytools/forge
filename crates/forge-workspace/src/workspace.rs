@@ -2760,8 +2760,13 @@ impl Workspace {
             }
             *self.systemone.write() = systemone;
             *self.vault.write() = vault;
-            // The subsystem's own copy, so a workspace's idle window and
-            // stale age follow the file a boot on it would read.
+            // The subsystem keeps its own copy of `[[slack]]` because its
+            // idle window and stale age read it, so a reload has to move
+            // both. Two locks cannot be one write; the window between them
+            // is invisible: its only readers are a thread prune's idle check
+            // and a delivered block's stale header, each of which lands on
+            // the new values a moment later and neither of which reaches the
+            // wire.
             self.slack.config_handle().write().clone_from(&next.slack);
             *self.config.write() = Arc::new(next);
             self.reload_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);

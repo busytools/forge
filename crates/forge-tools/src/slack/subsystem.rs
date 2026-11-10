@@ -111,6 +111,28 @@ pub trait SlackStore: Send + Sync {
         parent_ts: &str,
         record: &SlackThreadRecord,
     ) -> Result<(), String>;
+
+    /// Read-modify-write one followed thread inside the host's own lock.
+    ///
+    /// `update` runs once, with the row as it stands (`None` when there is
+    /// none) and may change it in place: leaving `None` deletes the row (or
+    /// does nothing when there was none), leaving `Some` writes it. The
+    /// return is the record now stored, `None` when the row was deleted or
+    /// never existed.
+    ///
+    /// **One critical section, not two.** A per-call read followed by a
+    /// per-call write lets a teardown's prune read before a delivery's write
+    /// and erase the owner that delivery just added. The workspace held one
+    /// database guard across both before this state moved; this is that
+    /// guard, through the port.
+    fn update_thread(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        parent_ts: &str,
+        update: &mut dyn FnMut(&mut Option<SlackThreadRecord>),
+    ) -> Result<Option<SlackThreadRecord>, String>;
+
     fn threads_for(
         &self,
         workspace: &str,
@@ -535,7 +557,9 @@ impl Slack {
 
     /// Every draft currently held, as the session that asked and the draft.
     /// A snapshot: a caller that answers one races this read, which is what
-    /// the answering call's own return reports.
+    /// the answering call's own return reports. Test-only: the record read a
+    /// view takes is [`AskSource::asks`].
+    #[cfg(any(test, feature = "testing"))]
     pub fn held_drafts(&self) -> Vec<(SessionSlot, SlackDraft)> {
         self.slack_drafts
             .lock()
@@ -873,52 +897,46 @@ impl Slack {
         workspace: &str,
         conversation: &str,
         parent_ts: &str,
-        owner: SlackThreadOwner,
+        owner: &SlackThreadOwner,
         since: &str,
     ) {
         if !self.store.available() {
             return;
         }
-        let created;
-        let mut record = match self.store.thread(workspace, conversation, parent_ts) {
-            Ok(Some(record)) => {
-                created = false;
-                record
-            }
-            Ok(None) => {
-                // A thread whose newest reply is already older than the idle
-                // window would be dropped the moment the sweep listed it, and
-                // the sweep anchors every parent it can see on every tick -
-                // so writing the row would rewrite it forever for nothing.
-                if thread_idle_days(since) >= self.slack_thread_idle_days(workspace) {
-                    return;
+        let idle_days = self.slack_thread_idle_days(workspace);
+        let mut created = false;
+        // One read-modify-write under the host's guard: a concurrent prune
+        // that read the row first must not write back over the owner this
+        // adds.
+        let mut update = |record: &mut Option<SlackThreadRecord>| {
+            if let Some(record) = record {
+                if !record.owners.contains(owner) {
+                    record.owners.push(owner.clone());
                 }
-                created = true;
-                SlackThreadRecord {
-                    cursor: since.to_owned(),
-                    edit_watermark: Some(since.to_owned()),
-                    owners: Vec::new(),
-                    participating: false,
-                }
-            }
-            Err(error) => {
-                tracing::warn!(
-                    target: "forge_tools::slack",
-                    %error,
-                    "reading a Slack thread failed; the thread stays unfollowed",
-                );
                 return;
             }
+            // A thread whose newest reply is already older than the idle
+            // window would be dropped the moment the sweep listed it, and
+            // the sweep anchors every parent it can see on every tick -
+            // so writing the row would rewrite it forever for nothing.
+            if thread_idle_days(since) >= idle_days {
+                return;
+            }
+            created = true;
+            *record = Some(SlackThreadRecord {
+                cursor: since.to_owned(),
+                edit_watermark: Some(since.to_owned()),
+                owners: vec![owner.clone()],
+                participating: false,
+            });
         };
-        if record.owners.contains(&owner) {
-            return;
-        }
-        record.owners.push(owner);
-        if let Err(error) = self.store.set_thread(workspace, conversation, parent_ts, &record) {
+        if let Err(error) =
+            self.store.update_thread(workspace, conversation, parent_ts, &mut update)
+        {
             tracing::warn!(
                 target: "forge_tools::slack",
                 %error,
-                "writing a Slack thread failed",
+                "reading or writing a Slack thread failed; the thread stays unfollowed",
             );
             return;
         }
@@ -951,14 +969,14 @@ impl Slack {
         if !self.store.available() {
             return;
         }
-        let Ok(Some(mut record)) = self.store.thread(workspace, conversation, parent_ts) else {
-            return;
+        let mut update = |record: &mut Option<SlackThreadRecord>| {
+            if let Some(record) = record.as_mut() {
+                record.participating = true;
+            }
         };
-        if record.participating {
-            return;
-        }
-        record.participating = true;
-        if let Err(error) = self.store.set_thread(workspace, conversation, parent_ts, &record) {
+        if let Err(error) =
+            self.store.update_thread(workspace, conversation, parent_ts, &mut update)
+        {
             tracing::warn!(
                 target: "forge_tools::slack",
                 %error,
@@ -1020,33 +1038,66 @@ impl Slack {
             .filter(|sub| sub.workspace == workspace)
             .map(|sub| (sub.project.clone(), sub.team_role.clone()))
             .collect();
+        let idle_days = self.slack_thread_idle_days(workspace);
         let mut out = Vec::new();
-        for (parent_ts, mut record) in rows {
-            record.owners.retain(|owner| {
-                alive_owners.contains(&(owner.project.clone(), owner.team_role.clone()))
-            });
-            if record.owners.is_empty() {
-                let _ = self.store.remove_thread(workspace, conversation, &parent_ts);
-                self.forget_thread_clocks(workspace, conversation, &parent_ts);
-                continue;
-            }
-            if thread_idle_days(&record.cursor) >= self.slack_thread_idle_days(workspace) {
-                let _ = self.store.remove_thread(workspace, conversation, &parent_ts);
-                self.forget_thread_clocks(workspace, conversation, &parent_ts);
-                tracing::debug!(
+        for (parent_ts, _record) in rows {
+            // Each row is re-read and re-pruned inside one guarded update:
+            // the listing above is only the set of keys, so an owner a
+            // concurrent delivery added between the listing and here is
+            // judged on the row as it stands, never overwritten from a stale
+            // copy.
+            let mut kept = None;
+            let mut expired = false;
+            let mut idle = false;
+            let mut update = |record: &mut Option<SlackThreadRecord>| {
+                let empty;
+                let stale;
+                {
+                    let Some(existing) = record.as_mut() else { return };
+                    existing.owners.retain(|owner| {
+                        alive_owners.contains(&(owner.project.clone(), owner.team_role.clone()))
+                    });
+                    empty = existing.owners.is_empty();
+                    stale = !empty && thread_idle_days(&existing.cursor) >= idle_days;
+                    if !empty && !stale {
+                        kept = Some(SlackFollowedThread {
+                            parent_ts: parent_ts.clone(),
+                            owners: existing.owners.clone(),
+                            participating: existing.participating,
+                        });
+                        return;
+                    }
+                }
+                expired = empty;
+                idle = stale;
+                *record = None;
+            };
+            if let Err(error) =
+                self.store.update_thread(workspace, conversation, &parent_ts, &mut update)
+            {
+                tracing::warn!(
                     target: "forge_tools::slack",
-                    workspace,
-                    conversation,
-                    parent = %parent_ts,
-                    "dropping an idle Slack thread",
+                    %error,
+                    "pruning a Slack thread failed",
                 );
                 continue;
             }
-            out.push(SlackFollowedThread {
-                parent_ts,
-                owners: record.owners,
-                participating: record.participating,
-            });
+            if expired || idle {
+                self.forget_thread_clocks(workspace, conversation, &parent_ts);
+                if idle {
+                    tracing::debug!(
+                        target: "forge_tools::slack",
+                        workspace,
+                        conversation,
+                        parent = %parent_ts,
+                        "dropping an idle Slack thread",
+                    );
+                }
+                continue;
+            }
+            if let Some(row) = kept {
+                out.push(row);
+            }
         }
         out
     }
@@ -1075,34 +1126,25 @@ impl Slack {
         if !self.store.available() {
             return;
         }
-        let record = match self.store.thread(workspace, conversation, parent_ts) {
-            Ok(Some(record)) => record,
-            Ok(None) => SlackThreadRecord {
+        let mut update = |record: &mut Option<SlackThreadRecord>| {
+            if let Some(record) = record {
+                ts.clone_into(&mut record.cursor);
+                return;
+            }
+            *record = Some(SlackThreadRecord {
                 cursor: ts.to_owned(),
                 edit_watermark: None,
                 owners: Vec::new(),
                 participating: false,
-            },
-            Err(error) => {
-                tracing::warn!(
-                    target: "forge_tools::slack",
-                    %error,
-                    "reading a Slack thread failed; the cursor was not advanced",
-                );
-                return;
-            }
+            });
         };
-        let advanced = SlackThreadRecord {
-            cursor: ts.to_owned(),
-            edit_watermark: record.edit_watermark,
-            owners: record.owners,
-            participating: record.participating,
-        };
-        if let Err(error) = self.store.set_thread(workspace, conversation, parent_ts, &advanced) {
+        if let Err(error) =
+            self.store.update_thread(workspace, conversation, parent_ts, &mut update)
+        {
             tracing::warn!(
                 target: "forge_tools::slack",
                 %error,
-                "writing a Slack thread cursor failed",
+                "reading or writing a Slack thread cursor failed",
             );
         }
     }
@@ -1182,46 +1224,41 @@ impl Slack {
             self.cache_slack_thread_edit_watermark(&key, ts);
             return;
         }
-        let mut record = match self.store.thread(workspace, conversation, parent_ts) {
-            Ok(Some(record)) => record,
-            // No row: there is nothing durable to stamp, and a row created
-            // later seeds its own.
-            Ok(None) => {
-                self.cache_slack_thread_edit_watermark(&key, ts);
+        // No row: there is nothing durable to stamp, and a row created later
+        // seeds its own, so the mark is cached and no row is written.
+        let mut cached: Option<String> = None;
+        let mut update = |record: &mut Option<SlackThreadRecord>| {
+            let Some(record) = record.as_mut() else {
+                cached = Some(ts.to_owned());
                 return;
-            }
-            Err(error) => {
-                tracing::warn!(
-                    target: "forge_tools::slack",
-                    event_name = "slack_thread_edit_stamp_advance_read_failed",
-                    workspace,
-                    conversation,
-                    parent = %parent_ts,
-                    %error,
-                    "reading a Slack thread failed; its edit stamp was not advanced",
-                );
-                return;
+            };
+            match record.edit_watermark.as_deref() {
+                // The mark only moves forward: a caller that read a stale
+                // value must not roll a newer one back.
+                Some(mark) if ts <= mark => cached = Some(mark.to_owned()),
+                _ => {
+                    record.edit_watermark = Some(ts.to_owned());
+                    cached = Some(ts.to_owned());
+                }
             }
         };
-        if record.edit_watermark.as_deref().is_some_and(|mark| ts <= mark) {
-            if let Some(mark) = record.edit_watermark {
-                self.cache_slack_thread_edit_watermark(&key, &mark);
-            }
-            return;
-        }
-        record.edit_watermark = Some(ts.to_owned());
-        if let Err(error) = self.store.set_thread(workspace, conversation, parent_ts, &record) {
+        if let Err(error) =
+            self.store.update_thread(workspace, conversation, parent_ts, &mut update)
+        {
             tracing::warn!(
                 target: "forge_tools::slack",
-                event_name = "slack_thread_edit_stamp_advance_write_failed",
+                event_name = "slack_thread_edit_stamp_advance_failed",
                 workspace,
                 conversation,
                 parent = %parent_ts,
                 %error,
-                "writing a Slack thread's edit stamp failed; a restart may re-offer it",
+                "reading or writing a Slack thread failed; its edit stamp was not advanced",
             );
+            return;
         }
-        self.cache_slack_thread_edit_watermark(&key, ts);
+        if let Some(mark) = cached {
+            self.cache_slack_thread_edit_watermark(&key, &mark);
+        }
     }
 
     /// Cache a thread's edit stamp, moving it forward only.
@@ -1305,8 +1342,9 @@ impl Slack {
         self.slack_connected.lock().clone()
     }
 
-    /// The workspaces whose pump is running. Read by a test and by nothing
-    /// else: the Inspector draws liveness, not the handle.
+    /// The workspaces whose pump is running. Test-only: the Inspector draws
+    /// liveness, not the handle.
+    #[cfg(any(test, feature = "testing"))]
     pub fn pump_labels(&self) -> Vec<String> {
         self.slack_subsystem.lock().keys().cloned().collect()
     }
@@ -1549,33 +1587,34 @@ impl Slack {
             .filter(|sub| sub.workspace == workspace)
             .map(|sub| (sub.project.clone(), sub.team_role.clone()))
             .collect();
-        for (conversation, parent_ts, record) in rows {
-            let kept: Vec<SlackThreadOwner> = record
-                .owners
-                .iter()
-                .filter(|owner| {
+        for (conversation, parent_ts, _record) in rows {
+            // The row is re-read and re-pruned inside one guarded update, so
+            // an owner a concurrent delivery added between the listing and
+            // here survives: the filter runs on the row as it stands.
+            let mut pruned = false;
+            let mut update = |record: &mut Option<SlackThreadRecord>| {
+                let Some(existing) = record.as_mut() else { return };
+                let before = existing.owners.len();
+                existing.owners.retain(|owner| {
                     alive_owners.contains(&(owner.project.clone(), owner.team_role.clone()))
-                })
-                .cloned()
-                .collect();
-            if kept.len() == record.owners.len() {
+                });
+                pruned = existing.owners.len() != before;
+                if existing.owners.is_empty() {
+                    *record = None;
+                }
+            };
+            if let Err(error) =
+                self.store.update_thread(workspace, &conversation, &parent_ts, &mut update)
+            {
+                tracing::warn!(
+                    target: "forge_tools::slack",
+                    %error,
+                    "pruning a Slack thread failed",
+                );
                 continue;
             }
-            if kept.is_empty() {
-                let _ = self.store.remove_thread(workspace, &conversation, &parent_ts);
+            if pruned {
                 self.forget_thread_clocks(workspace, &conversation, &parent_ts);
-            } else {
-                let _ = self.store.set_thread(
-                    workspace,
-                    &conversation,
-                    &parent_ts,
-                    &SlackThreadRecord {
-                        cursor: record.cursor,
-                        edit_watermark: record.edit_watermark,
-                        owners: kept,
-                        participating: record.participating,
-                    },
-                );
             }
         }
     }
@@ -2009,7 +2048,7 @@ impl SlackHost for SlackSubsystemHost {
         since: &str,
     ) {
         let Some(slack) = self.0.upgrade() else { return };
-        slack.follow_slack_thread(workspace, conversation, parent_ts, owner, since);
+        slack.follow_slack_thread(workspace, conversation, parent_ts, &owner, since);
     }
 
     fn set_connected(&self, workspace: &str, connected: bool) {
@@ -2164,6 +2203,10 @@ mod tests {
     #[derive(Default)]
     struct TestStore {
         inner: Mutex<TestStoreInner>,
+        /// Widens the per-call read into a window a concurrent write can land
+        /// in, so `concurrent_followers_keep_every_owner` can tell the
+        /// guarded read-modify-write from the two-call pair it replaced.
+        slow_read: AtomicBool,
     }
 
     #[derive(Default)]
@@ -2177,7 +2220,10 @@ mod tests {
 
     impl TestStore {
         fn present() -> Self {
-            Self { inner: Mutex::new(TestStoreInner { available: true, ..Default::default() }) }
+            Self {
+                inner: Mutex::new(TestStoreInner { available: true, ..Default::default() }),
+                ..Default::default()
+            }
         }
 
         fn absent() -> Self {
@@ -2274,7 +2320,11 @@ mod tests {
             conversation: &str,
             parent_ts: &str,
         ) -> Result<Option<SlackThreadRecord>, String> {
-            Ok(self.thread(workspace, conversation, parent_ts))
+            let row = self.thread(workspace, conversation, parent_ts);
+            if self.slow_read.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(row)
         }
 
         fn set_thread(
@@ -2289,6 +2339,26 @@ mod tests {
                 record.clone(),
             );
             Ok(())
+        }
+
+        fn update_thread(
+            &self,
+            workspace: &str,
+            conversation: &str,
+            parent_ts: &str,
+            update: &mut dyn FnMut(&mut Option<SlackThreadRecord>),
+        ) -> Result<Option<SlackThreadRecord>, String> {
+            let key = (workspace.to_owned(), conversation.to_owned(), parent_ts.to_owned());
+            let mut inner = self.inner.lock();
+            let mut record = inner.threads.get(&key).cloned();
+            update(&mut record);
+            if let Some(record) = record {
+                inner.threads.insert(key, record.clone());
+                Ok(Some(record))
+            } else {
+                inner.threads.remove(&key);
+                Ok(None)
+            }
         }
 
         fn threads_for(
@@ -3024,6 +3094,42 @@ mod tests {
         );
     }
 
+    /// **A follower's read and write are one critical section.** Thirty-two
+    /// sessions follow the same thread at once and every owner must survive.
+    /// The store's `thread` read is widened, so the two-call pair the port
+    /// replaced (read, then write) loses owners to the interleaving while one
+    /// guarded update cannot.
+    ///
+    /// Mutant: restore `thread` + `set_thread` in `follow_slack_thread` and
+    /// this reddens.
+    #[test]
+    fn concurrent_followers_keep_every_owner() {
+        let h = harness();
+        h.store.slow_read.store(true, Ordering::SeqCst);
+        let parent = recent_ts();
+        let since = recent_ts();
+        std::thread::scope(|scope| {
+            for index in 0..32 {
+                let slack = Arc::clone(&h.slack);
+                let parent = parent.clone();
+                let since = since.clone();
+                scope.spawn(move || {
+                    slack.follow_slack_thread(
+                        "acme",
+                        "C1",
+                        &parent,
+                        &owner("forge", Some(&format!("w{index}"))),
+                        &since,
+                    );
+                });
+            }
+        });
+        h.store.slow_read.store(false, Ordering::SeqCst);
+
+        let row = h.store.thread("acme", "C1", &parent).expect("the row was written");
+        assert_eq!(row.owners.len(), 32, "every follower's owner survives the read-modify-write");
+    }
+
     /// The pinned split: two owners on one thread, one subscription
     /// removed - the remaining owner still receives and the removed one
     /// stops, and the row goes when the last owner does.
@@ -3436,7 +3542,7 @@ mod tests {
                 .expect("the clock is past the epoch")
                 .as_secs()
         );
-        slack.follow_slack_thread("acme", "C1", "100.0", owner("forge", Some("tester")), &since);
+        slack.follow_slack_thread("acme", "C1", "100.0", &owner("forge", Some("tester")), &since);
 
         assert!(host.thread_first_walk("acme", "C1", "100.0"), "a new row is a first walk");
         assert!(host.thread_first_walk("acme", "C1", "100.0"), "a peek does not consume the mark");
@@ -3454,7 +3560,7 @@ mod tests {
             "a whole-read attempt is stamped",
         );
 
-        slack.follow_slack_thread("acme", "C1", "100.0", owner("forge", None), &since);
+        slack.follow_slack_thread("acme", "C1", "100.0", &owner("forge", None), &since);
         assert!(
             !host.thread_first_walk("acme", "C1", "100.0"),
             "following an existing row again does not re-arm the mark",
@@ -3475,7 +3581,7 @@ mod tests {
                 .expect("the clock is past the epoch")
                 .as_secs()
         );
-        slack.follow_slack_thread("acme", "C1", "100.0", owner("forge", Some("gone")), &since);
+        slack.follow_slack_thread("acme", "C1", "100.0", &owner("forge", Some("gone")), &since);
         assert!(host.thread_first_walk("acme", "C1", "100.0"));
         assert!(host.thread_edit_watermark("acme", "C1", "100.0").is_some());
 
@@ -3504,7 +3610,7 @@ mod tests {
                 .expect("the clock is past the epoch")
                 .as_secs()
         );
-        slack.follow_slack_thread("acme", "C1", "100.0", owner("forge", Some("tester")), &since);
+        slack.follow_slack_thread("acme", "C1", "100.0", &owner("forge", Some("tester")), &since);
         // The pump hands over a reply's correction and records its stamp; a
         // newer reply then moves the reply cursor past it.
         host.set_thread_edit_watermark("acme", "C1", "100.0", "990.0");
@@ -3531,7 +3637,7 @@ mod tests {
             since.split('.').next().expect("a seconds prefix").parse().expect("numeric");
         let newer = format!("{}.000000", secs + 120);
         let older = format!("{}.000000", secs + 60);
-        slack.follow_slack_thread("acme", "C1", "100.0", owner("forge", Some("tester")), &since);
+        slack.follow_slack_thread("acme", "C1", "100.0", &owner("forge", Some("tester")), &since);
         host.set_thread_edit_watermark("acme", "C1", "100.0", &newer);
         host.set_thread_edit_watermark("acme", "C1", "100.0", &older);
 

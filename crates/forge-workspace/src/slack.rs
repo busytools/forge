@@ -135,6 +135,33 @@ impl SlackStore for SlackPorts {
             .map_err(|error| error.to_string())
     }
 
+    fn update_thread(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        parent_ts: &str,
+        update: &mut dyn FnMut(&mut Option<SlackThreadRecord>),
+    ) -> Result<Option<SlackThreadRecord>, String> {
+        // **The guard spans the read and the write.** The subsystem's other
+        // store calls lock per call; a thread's read-modify-write must not,
+        // or a prune can read before a delivery's write and drop the owner it
+        // added.
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return Ok(None) };
+        let mut record = crate::store::slack::thread(db, workspace, conversation, parent_ts)
+            .map_err(|error| error.to_string())?;
+        update(&mut record);
+        if let Some(record) = record {
+            crate::store::slack::set_thread(db, workspace, conversation, parent_ts, &record)
+                .map_err(|error| error.to_string())?;
+            Ok(Some(record))
+        } else {
+            crate::store::slack::remove_thread(db, workspace, conversation, parent_ts)
+                .map_err(|error| error.to_string())?;
+            Ok(None)
+        }
+    }
+
     fn threads_for(
         &self,
         workspace: &str,

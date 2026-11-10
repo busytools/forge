@@ -24,9 +24,8 @@ use serde::de::DeserializeOwned;
 pub mod subsystem;
 
 pub use subsystem::{
-    DraftResolution, PumpHttp, Slack, SlackDeliveryKey, SlackEmit, SlackPostInFlight,
-    SlackPostStamp, SlackSeams, SlackStore, SlackSubsystemHost, SlackUpdate, SlackWorkspaces,
-    validate_configs,
+    DraftResolution, PumpHttp, Slack, SlackEmit, SlackSeams, SlackStore, SlackSubsystemHost,
+    SlackUpdate, SlackWorkspaces, validate_configs,
 };
 
 /// What the pump needs from the workspace. The connector holds no state
