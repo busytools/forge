@@ -19,8 +19,8 @@ import { canHost } from './browser/host';
  * would not say which of the three stopped.
  *
  * **The Tauri API is imported lazily**, so the web build never loads it. A
- * disconnect that arrives before the import resolves skips the registration
- * rather than registering a listener and withdrawing it again.
+ * disconnect that lands before the import resolves registers nothing; one
+ * that lands after the listener is installed withdraws it.
  */
 export function observeForeground(arm: string, cb: () => void): (() => void) | null {
   if (!canHost()) return null;

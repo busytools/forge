@@ -481,12 +481,22 @@ describe('the board over a connection', () => {
    */
   it('drops a coalesced read when the last reader leaves', async () => {
     const forge = fakeConnection();
-    const stop = watchBoard(forge.connection).subscribe(() => {});
+    const board = watchBoard(forge.connection);
+    const stop = board.subscribe(() => {});
 
     forge.arrive(UPDATE);
     stop();
     await settle();
     expect(forge.refreshed, 'a coalesced read outlived the last reader').toEqual([]);
+
+    // **The timer's slot is cleared, not only its expiry.** A latched handle
+    // makes `schedule()` return forever, so every later update would be
+    // dropped until the five-minute beat.
+    const again = board.subscribe(() => {});
+    forge.arrive(NEWS);
+    await settle();
+    expect(forge.refreshed, 'a re-watched board stopped asking for its updates').toEqual([BOARD]);
+    again();
   });
 
   /**

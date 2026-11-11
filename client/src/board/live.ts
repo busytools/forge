@@ -36,9 +36,9 @@ export const COALESCE_MS = 50;
  * follows the row's own estimate, and no frame announces that one crossed.
  * The card's worked figure and the waiting card's age are read values too, so
  * they are refreshed at most five minutes after the page is watched again and
- * are as old as the time it was away - an accepted staleness, because these
- * windows are hours or an estimate (#2517). The `wrote ... ago` line and the
- * row page's `updated ... ago` tick off the page's own clock and need no read.
+ * can be up to the time it was away plus five minutes old - an accepted
+ * staleness, because these windows are hours or an estimate (#2517). Only the
+ * `wrote ... ago` line ticks off the page's own clock and needs no read.
  *
  * **And it runs only while the page is being watched.** The whole snapshot is
  * one of the client's largest reads, and a locked screen or a display going
@@ -49,9 +49,9 @@ export const COALESCE_MS = 50;
  *
  * **Gaining attention does not read.** The return's read already exists:
  * `connect/resync.ts` asks the board through this store's own guards after a
- * hidden spell, and reads nothing on a bare focus change on purpose. A read
- * here would buy one on every alt-tab, and a second on every return from
- * hidden.
+ * hide of at least `RETURN_HIDE_MS`, and reads nothing on a bare focus change
+ * on purpose. A read here would buy one on every alt-tab, and a second on
+ * every return from hidden.
  */
 const MARK_BEAT_MS = 5 * 60_000;
 
@@ -161,9 +161,9 @@ function boardStore(connection: Connection): Readable<BoardRead> {
    *
    * **A return restarts the beat and reads nothing of its own.** The return's
    * read already exists in `connect/resync.ts`, which asks this store through
-   * its own guards after a hidden spell and deliberately reads nothing on a
-   * bare focus change; a read here would buy one on every alt-tab, and a
-   * second on every return from hidden.
+   * its own guards after a hide of at least `RETURN_HIDE_MS` and deliberately
+   * reads nothing on a bare focus change; a read here would buy one on every
+   * alt-tab, and a second on every return from hidden.
    *
    * Both calls are idempotent, so a report that changes nothing - a restored
    * page, a repeated focus - costs nothing.
