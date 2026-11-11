@@ -11,6 +11,7 @@
 
 import { writable, type Readable, type Writable } from 'svelte/store';
 
+import { observeAttention, pageWatched } from '../attention';
 import { subjectKey } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
@@ -27,14 +28,21 @@ import { tasksChanged } from '../wire/home';
 export const COALESCE_MS = 50;
 
 /**
- * How often a mounted board re-reads while nothing writes.
+ * How often a watched board re-reads while nothing writes.
  *
- * **The rows carry time-derived marks** - `updated_secs_ago`, `worked_secs`,
- * and the overdue / no-movement / waiting-too-long marks read off them - and
- * those only advance on a read. A slow beat keeps them moving without a frame
- * to trigger one (#2517).
+ * **The beat exists for the server-derived marks alone.** `overdue`,
+ * `no_movement` and `waiting_too_long` are computed at read time from the
+ * rows' stamps, and no frame announces that a window crossed. Their windows
+ * are hours, so a flip arriving up to five minutes late is not observable in
+ * use - while the ages on screen tick off the page's own clock and need no
+ * read at all (#2517).
+ *
+ * **And it runs only while the page is being watched.** The whole snapshot is
+ * the client's largest read, and a locked screen or a display going off
+ * leaves nobody to read the answer; losing attention releases the beat, and
+ * gaining it takes one read and starts it again.
  */
-const BEAT_MS = 30_000;
+const MARK_BEAT_MS = 5 * 60_000;
 
 const NOTHING: BoardRead = { wire: null, refused: null };
 
@@ -72,6 +80,9 @@ function boardStore(connection: Connection): Readable<BoardRead> {
   let stale = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let beat: ReturnType<typeof setInterval> | null = null;
+  /** Whether the page had the person's attention when it was last asked. */
+  let watching = false;
+  let stopAttention: (() => void) | null = null;
   /** The tasks each project last announced, so an unchanged set is no read. */
   const lastTasks = new Map<string, string>();
   let stopMessages: (() => void) | null = null;
@@ -113,6 +124,40 @@ function boardStore(connection: Connection): Readable<BoardRead> {
     if (held === null || reading || held.state().kind === 'refused') return;
     reading = true;
     connection.refresh('board');
+  }
+
+  /** Start the marks' beat, if it is not already running. */
+  function beatOn(): void {
+    if (beat !== null) return;
+    beat = setInterval(reread, MARK_BEAT_MS);
+  }
+
+  /** Release the beat: a page nobody watches has no marks to advance. */
+  function beatOff(): void {
+    if (beat === null) return;
+    clearInterval(beat);
+    beat = null;
+  }
+
+  /**
+   * The page's attention moved.
+   *
+   * **A return is one read and a restarted beat**: the marks moved while
+   * nothing was watching, and that read is what they stand at now. It goes
+   * through the page's guards like every other read, so one already in
+   * flight is not asked twice.
+   */
+  function attention(next: boolean): void {
+    // **One chain per watched period.** The repeated reports a comeback can
+    // produce must not each buy a whole-board encode.
+    if (next === watching) return;
+    watching = next;
+    if (!next) {
+      beatOff();
+      return;
+    }
+    reread();
+    beatOn();
   }
 
   function watch(): void {
@@ -164,22 +209,25 @@ function boardStore(connection: Connection): Readable<BoardRead> {
         stale = false;
       }
     });
-    // The slow beat a mounted board needs: a row's ages and its time-derived
-    // marks move with the clock, and no frame announces that. **A refused
-    // subject is not asked again** - the refusal is the answer, and a beat
-    // that re-asked it would knock on a door already shut.
-    beat = setInterval(reread, BEAT_MS);
+    // The slow beat the server-derived marks need, while there is a page
+    // being watched to read it: **a refused subject is not asked again** -
+    // the refusal is the answer, and a beat that re-asked it would knock on a
+    // door already shut.
+    watching = pageWatched();
+    if (watching) beatOn();
+    stopAttention = observeAttention(attention);
   }
 
   function unwatch(): void {
     stopMessages?.();
     stopStatus?.();
+    stopAttention?.();
     stopMessages = null;
     stopStatus = null;
+    stopAttention = null;
     if (timer !== null) clearTimeout(timer);
     timer = null;
-    if (beat !== null) clearInterval(beat);
-    beat = null;
+    beatOff();
     connection.unsubscribe('board');
     held = null;
   }
