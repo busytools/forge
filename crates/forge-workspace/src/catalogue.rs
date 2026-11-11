@@ -470,10 +470,14 @@ impl crate::Workspace {
         let state = self.dictate_catalogue.lock();
         let entries: &[CatalogueEntry] =
             state.catalogue.as_ref().map_or(&[], |catalogue| catalogue.entries.as_slice());
+        // One read, used by both halves of the snapshot: two calls could see
+        // different install states and draw an IN USE row that disagrees
+        // with the speaking block beside it.
+        let speaking = self.voices();
         let mut in_use =
             if settings.enabled { in_use(entries, &active, &preflight) } else { Vec::new() };
         if self.voice_enabled() {
-            let view = self.voices();
+            let view = &speaking;
             let variant = crate::tts::SpeakingVariant::named(&view.active.variant)
                 .unwrap_or_else(crate::tts::SpeakingVariant::pinned);
             let install = self.speaking_install(&view.active.variant);
@@ -509,7 +513,7 @@ impl crate::Workspace {
         DictateModelsSnapshot {
             enabled: settings.enabled,
             models_dir: settings.models_dir(),
-            speaking: self.voices(),
+            speaking,
             in_use,
             check: state.check.clone(),
             updates: if settings.enabled { updates_for(entries, &specs) } else { Vec::new() },

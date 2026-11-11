@@ -133,6 +133,7 @@ pub const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     forge_agent::userdata::catalog::scan=debug,\
     forge_workspace::output_tail=debug,\
     forge_workspace::idle_sweep=debug,\
+    forge_workspace::voice=debug,\
     forge_workspace::work=debug,\
     forge_workspace::browser=debug,\
     forge_browser=debug,\

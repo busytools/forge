@@ -313,9 +313,6 @@ impl Workspace {
         Ok(())
     }
 
-    /// Install one feed variant: fetch its doc, take the quant the row
-    /// draws, and download that file into the models directory.
-    ///
     /// The install prelude, without the spawn: the enabled check, the
     /// `BenchRunning`/`Installing` guards, and setting the state to
     /// `Downloading`. The page's command and the boot path both start here.
@@ -346,6 +343,9 @@ impl Workspace {
         Ok(())
     }
 
+    /// Install one feed variant: fetch its doc, take the quant the row
+    /// draws, and download that file into the models directory.
+    ///
     /// The outcome rides [`SessionUpdate::DictateModelsChanged`], the same
     /// way a catalogue check's does.
     pub(crate) fn start_install(self: &Arc<Self>, variant: String) -> Result<(), DispatchError> {
