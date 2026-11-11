@@ -24,10 +24,11 @@ on a slow five-minute beat: a row's time-derived marks are computed by the
 server at read time, and no update announces that a window crossed. A page
 nobody is watching releases the beat entirely, and the return re-read the
 page already makes when it comes back from a hidden spell asks the board once
-through the same guards. Only the `wrote ... ago` line keeps ticking off the
-page's own clock; the card's worked time and the chip and waiting-card ages
-advance only on a read, so they can sit up to five minutes behind and then
-jump.
+through the same guards. The `wrote ... ago` line and the row page's
+`updated ... ago` keep ticking off the page's own clock; the card's worked
+time and the chip and waiting-card ages advance only on a read, so they are
+refreshed at most five minutes after the page is watched again and are as old
+as the time it was away.
 
 ## What it draws
 
