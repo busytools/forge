@@ -2,9 +2,10 @@
 //! cron scheduler's own family.
 //!
 //! Each module owns the network client, payload mapping and matching rules
-//! for one integration, plus the tool family and held asks that integration
-//! brings; the cron module owns the durable schedule set and the policy over
-//! it. What a module needs from its host arrives through the
+//! for one integration, and the moved families own their tools and held asks
+//! too - Gotify's tools still live in the workspace. The cron module owns the
+//! durable schedule set and the policy over it. What a module needs from its
+//! host arrives through the
 //! ports that module declares, implemented by forge-workspace - Gotify's
 //! [`GotifyHost`](gotify::GotifyHost), the vault family's
 //! [`vault::VaultHost`] and [`vault::VaultEmit`], the Slack family's

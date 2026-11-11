@@ -1562,6 +1562,35 @@ port = 49201
         assert_eq!(*order.lock().expect("the order"), vec!["reap", "prune"]);
     }
 
+    /// **The Slack host binds before the cron catch-up can spawn.** The
+    /// catch-up is the one boot step that can spawn a session, and that
+    /// session's MCP server composes the Slack provider; a bind after it
+    /// leaves a window where a subscribe's announcement reaches an unbound
+    /// host and is dropped. The tested boot intercepts the catch-up's own
+    /// dispatch, so no behavioural test sees the window - the call order in
+    /// `start_subsystems` is the pin, and only that order keeps it true.
+    ///
+    /// Mutant: move the two Slack start calls below `fire_due_crons` and
+    /// this reddens.
+    #[test]
+    fn the_slack_host_binds_before_the_cron_catch_up() {
+        let source = include_str!("boot.rs");
+        // Production only: the needles also occur as string literals below.
+        let production = source.split("\n#[cfg(test)]\nmod tests {").next().unwrap_or(source);
+        let position = |needle: &str| {
+            production.find(needle).unwrap_or_else(|| panic!("boot.rs no longer calls {needle}"))
+        };
+        let catch_up = position("workspace.fire_due_crons(");
+        assert!(
+            position("workspace.start_slack_verification();") < catch_up,
+            "the verification binds the Slack host and must run before the catch-up",
+        );
+        assert!(
+            position("workspace.start_slack_subsystem();") < catch_up,
+            "the pumps bind the Slack host and must start before the catch-up",
+        );
+    }
+
     /// **The wave starts the rotation announcer**: the one watcher that turns
     /// a cooldown write and its clock-driven thaw into a roster frame. Dropping
     /// the call leaves a home row's `would_bind` stale with every test green.
