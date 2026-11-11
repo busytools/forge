@@ -17,10 +17,10 @@
  */
 
 import { rereadBoard } from '../board/live';
-import { canHost } from '../browser/host';
+import { observeForeground } from '../foreground';
 import { rereadHome } from '../home/live';
 import { rereadSeat } from '../session/live';
-import { report, type Connection } from '../socket';
+import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 
 /**
@@ -101,17 +101,8 @@ export function watchReturn(connection: Connection, shown: () => SessionSlot | n
   // unreliable (`asks.rs`), so the shell emits a resume the page listens for
   // - and a page reachable only from a shell must not load the Tauri API
   // where there is none.
-  if (canHost()) {
-    void import('@tauri-apps/api/event')
-      .then(({ listen }) => listen('client://foreground', () => freshen()))
-      .then((stop) => {
-        if (stopped) stop();
-        else stops.push(stop);
-      })
-      .catch((why: unknown) => {
-        report('the shell foreground listener could not be installed', why);
-      });
-  }
+  const stopForeground = observeForeground('return re-read', freshen);
+  if (stopForeground !== null) stops.push(stopForeground);
 
   return () => {
     stopped = true;

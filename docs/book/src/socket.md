@@ -1165,10 +1165,10 @@ seat events its rows' `stale` mark is read from (`spawning`, `connected`,
 `session_replaced`, `releasing`, `connection_failed`,
 `worker_status_changed`). A row's ages and its time-derived marks move with
 the clock and no frame announces that, so a page holding the subject re-reads
-on a slow beat of its own - 30 s - while it is mounted. The home hears
-`tasks_changed` too, because its fleet row's counts are derived from the same
-tasks; it hears neither of the other two, because its snapshot no longer
-carries them.
+on a slow beat of its own - five minutes - while the page is being watched.
+The home hears `tasks_changed` too, because its fleet row's counts are derived
+from the same tasks; it hears neither of the other two, because its snapshot
+no longer carries them.
 
 **`session <org>/<project>/<label>`** is one seat: its record, its
 conversation, and what the composer is doing.
