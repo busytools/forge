@@ -12,6 +12,7 @@
 import { writable, type Readable, type Writable } from 'svelte/store';
 
 import { observeAttention, pageWatched } from '../attention';
+import { observeForeground } from '../foreground';
 import { subjectKey } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
@@ -30,17 +31,25 @@ export const COALESCE_MS = 50;
 /**
  * How often a watched board re-reads while nothing writes.
  *
- * **The beat exists for the server-derived marks alone.** `overdue`,
- * `no_movement` and `waiting_too_long` are computed at read time from the
- * rows' stamps, and no frame announces that a window crossed. Their windows
- * are hours, so a flip arriving up to five minutes late is not observable in
- * use - while the ages on screen tick off the page's own clock and need no
- * read at all (#2517).
+ * **The beat exists for what the server computes at read time.** The marks
+ * `no_movement` and `waiting_too_long` are four-hour windows by default and
+ * `overdue` follows the row's own estimate, and no frame announces that one
+ * crossed. The card's worked figure and the waiting card's age are read
+ * values too. Only the `wrote ... ago` line ticks off the page's own clock,
+ * so everything else can sit up to five minutes behind and then jump - an
+ * accepted staleness, because these windows are hours or an estimate (#2517).
  *
  * **And it runs only while the page is being watched.** The whole snapshot is
- * the client's largest read, and a locked screen or a display going off
- * leaves nobody to read the answer; losing attention releases the beat, and
- * gaining it takes one read and starts it again.
+ * one of the client's largest reads, and a locked screen or a display going
+ * off leaves nobody to read the answer; losing attention releases the beat,
+ * and gaining it starts it again - from focus or visibility on the desktop and
+ * the web, and from the shell's `client://foreground` resume on Android, which
+ * reports neither on return.
+ *
+ * **Gaining attention does not read.** The return's read already exists:
+ * `connect/resync.ts` asks the board through this store's own guards when the
+ * hide was long enough, and a read here would double it on every return and
+ * buy one on every alt-tab.
  */
 const MARK_BEAT_MS = 5 * 60_000;
 
@@ -80,9 +89,8 @@ function boardStore(connection: Connection): Readable<BoardRead> {
   let stale = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let beat: ReturnType<typeof setInterval> | null = null;
-  /** Whether the page had the person's attention when it was last asked. */
-  let watching = false;
   let stopAttention: (() => void) | null = null;
+  let stopForeground: (() => void) | null = null;
   /** The tasks each project last announced, so an unchanged set is no read. */
   const lastTasks = new Map<string, string>();
   let stopMessages: (() => void) | null = null;
@@ -142,22 +150,17 @@ function boardStore(connection: Connection): Readable<BoardRead> {
   /**
    * The page's attention moved.
    *
-   * **A return is one read and a restarted beat**: the marks moved while
-   * nothing was watching, and that read is what they stand at now. It goes
-   * through the page's guards like every other read, so one already in
-   * flight is not asked twice.
+   * **A return restarts the beat and reads nothing of its own.** The return's
+   * read already exists in `connect/resync.ts`, which asks this store through
+   * its own guards once a hidden spell was long enough; a read here would
+   * double that on every return and buy one on every alt-tab.
+   *
+   * Both calls are idempotent, so a report that changes nothing - a restored
+   * page, a repeated focus - costs nothing.
    */
   function attention(next: boolean): void {
-    // **One chain per watched period.** The repeated reports a comeback can
-    // produce must not each buy a whole-board encode.
-    if (next === watching) return;
-    watching = next;
-    if (!next) {
-      beatOff();
-      return;
-    }
-    reread();
-    beatOn();
+    if (next) beatOn();
+    else beatOff();
   }
 
   function watch(): void {
@@ -212,19 +215,23 @@ function boardStore(connection: Connection): Readable<BoardRead> {
     // The slow beat the server-derived marks need, while there is a page
     // being watched to read it: **a refused subject is not asked again** -
     // the refusal is the answer, and a beat that re-asked it would knock on a
-    // door already shut.
-    watching = pageWatched();
-    if (watching) beatOn();
+    // door already shut. **The shell's resume is its own arm**: Android
+    // reports neither focus nor reliably a visibility change on return, so
+    // without it the beat would never come back after the first suspend.
+    if (pageWatched()) beatOn();
     stopAttention = observeAttention(attention);
+    stopForeground = observeForeground(() => attention(true));
   }
 
   function unwatch(): void {
     stopMessages?.();
     stopStatus?.();
     stopAttention?.();
+    stopForeground?.();
     stopMessages = null;
     stopStatus = null;
     stopAttention = null;
+    stopForeground = null;
     if (timer !== null) clearTimeout(timer);
     timer = null;
     beatOff();

@@ -10,6 +10,24 @@ import type { Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import { COALESCE_MS, rereadBoard, watchBoard } from './live';
 
+/**
+ * The shell's resume listener, captured rather than registered: the event the
+ * Rust half emits is the phone's only return signal, and a test drives it from
+ * here. Each install's unlisten is kept so the release can be watched.
+ */
+const { foreground, unlistens } = vi.hoisted(() => ({
+  foreground: [] as ((event: unknown) => void)[],
+  unlistens: [] as ReturnType<typeof vi.fn>[],
+}));
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: (name: string, cb: (event: unknown) => void) => {
+    if (name === 'client://foreground') foreground.push(cb);
+    const stop = vi.fn();
+    unlistens.push(stop);
+    return Promise.resolve(stop);
+  },
+}));
+
 const BOARD: Subject = 'board';
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
 
@@ -130,26 +148,34 @@ async function settle(): Promise<void> {
 }
 
 /**
- * Whether the page is being watched, as the tests drive it.
+ * Whether the window has focus, and whether the document is hidden, as the
+ * tests drive them.
  *
- * **Neither signal is jsdom's to decide**: `hasFocus()` is false with
- * nothing focused, and `hidden` is the environment's - so a test states the
- * page it is in and then fires the event a browser would.
+ * **Neither signal is jsdom's to decide**: `hasFocus()` is false with nothing
+ * focused, and `hidden` is the environment's - so a test states the page it is
+ * in and then fires the event a browser would. They are two flags because
+ * they are two signals: a locked screen is a lost focus, a background tab is a
+ * hidden document, and each must decide its case alone.
  */
-let watched = true;
+let focused = true;
+let hidden = false;
 
 // Every case runs on fake timers, and the slow-beat cases below advance the
 // same clock rather than installing one of their own.
 beforeEach(() => {
   vi.useFakeTimers();
-  watched = true;
-  vi.spyOn(document, 'hasFocus').mockImplementation(() => watched);
-  Object.defineProperty(document, 'hidden', { configurable: true, get: () => !watched });
+  focused = true;
+  hidden = false;
+  foreground.length = 0;
+  unlistens.length = 0;
+  vi.spyOn(document, 'hasFocus').mockImplementation(() => focused);
+  Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   delete (document as unknown as { hidden?: boolean }).hidden;
+  delete (window as unknown as Record<string, unknown>)['__TAURI_INTERNALS__'];
   vi.useRealTimers();
 });
 
@@ -180,7 +206,8 @@ describe('the board over a connection', () => {
 
   it('subscribes once, shared by every reader of the board store', () => {
     const forge = fakeConnection();
-    const removed = vi.spyOn(window, 'removeEventListener');
+    const removedWindow = vi.spyOn(window, 'removeEventListener');
+    const removedDocument = vi.spyOn(document, 'removeEventListener');
     const first = watchBoard(forge.connection).subscribe(() => {});
     const second = watchBoard(forge.connection).subscribe(() => {});
     expect(forge.subscribed, 'the board was not subscribed once').toEqual([BOARD]);
@@ -189,10 +216,15 @@ describe('the board over a connection', () => {
     second();
     expect(forge.unsubscribed, 'the subscription did not go with the last reader').toEqual([BOARD]);
     expect(forge.listening(), 'a listener outlived the last reader').toBe(0);
+    // Every listener the attention observer installed is taken back.
     expect(
-      removed.mock.calls.map(([type]) => type),
-      'the attention observer outlived the last reader',
-    ).toContain('focus');
+      removedDocument.mock.calls.map(([type]) => type),
+      'the document listener outlived the last reader',
+    ).toContain('visibilitychange');
+    expect(
+      removedWindow.mock.calls.map(([type]) => type),
+      'a window listener outlived the last reader',
+    ).toEqual(expect.arrayContaining(['focus', 'blur', 'pageshow']));
   });
 
   it('answers with the whole read the server sent', () => {
@@ -229,60 +261,67 @@ describe('the board over a connection', () => {
     const stop = watchBoard(forge.connection).subscribe(() => {});
     expect(forge.refreshed).toEqual([]);
 
-    vi.advanceTimersByTime(30_000);
-    expect(forge.refreshed, 'the beat fired inside the first five minutes').toEqual([]);
-    vi.advanceTimersByTime(MARK_BEAT_MS - 30_000);
+    vi.advanceTimersByTime(MARK_BEAT_MS - 1);
+    expect(forge.refreshed, 'the beat fired early').toEqual([]);
+    vi.advanceTimersByTime(1);
     expect(forge.refreshed, "the beat did not advance the rows' marks").toEqual([BOARD]);
+
+    // The beat recurs, so a one-shot timer cannot pass: the first answer
+    // lands and the next cadence buys another read.
+    forge.arrive({ kind: 'snapshot', subject: BOARD, data: { projects: [] } });
+    vi.advanceTimersByTime(MARK_BEAT_MS);
+    expect(forge.refreshed, 'the beat did not fire a second time').toEqual([BOARD, BOARD]);
 
     stop();
     vi.advanceTimersByTime(MARK_BEAT_MS);
-    expect(forge.refreshed, 'the beat outlived the last reader').toEqual([BOARD]);
+    expect(forge.refreshed, 'the beat outlived the last reader').toEqual([BOARD, BOARD]);
   });
 
   /**
-   * **The beat is the client's largest read and runs only for a reader.** A
-   * locked screen or a display going off reports `blur`, and a background
-   * tab reports `visibilitychange`; both leave nobody to read an answer.
+   * **The beat is one of the client's largest reads and runs only for a
+   * reader.** A locked screen or a display going off reports `blur`, and a
+   * background tab reports `visibilitychange`; both leave nobody to read an
+   * answer.
    */
   it('stops the beat when the window loses attention', () => {
     const forge = fakeConnection();
     const stop = watchBoard(forge.connection).subscribe(() => {});
 
-    watched = false;
+    focused = false;
     window.dispatchEvent(new Event('blur'));
     vi.advanceTimersByTime(MARK_BEAT_MS * 3);
     expect(forge.refreshed, 'an unwatched page was read on the beat').toEqual([]);
     stop();
   });
 
-  it('stops the beat when the document goes hidden', () => {
+  it('stops the beat when the document goes hidden, with focus still held', () => {
     const forge = fakeConnection();
     const stop = watchBoard(forge.connection).subscribe(() => {});
 
-    watched = false;
+    // Focus stays true, so `document.hidden` is the only signal that can
+    // stop the beat here.
+    hidden = true;
     document.dispatchEvent(new Event('visibilitychange'));
     vi.advanceTimersByTime(MARK_BEAT_MS * 3);
     expect(forge.refreshed, 'a hidden page was read on the beat').toEqual([]);
     stop();
   });
 
-  it('takes one read when attention returns, and restarts the beat', () => {
+  it('restarts the beat on the return, without a read of its own', () => {
     const forge = fakeConnection();
     const stop = watchBoard(forge.connection).subscribe(() => {});
 
-    watched = false;
+    focused = false;
     window.dispatchEvent(new Event('blur'));
     vi.advanceTimersByTime(MARK_BEAT_MS);
-    expect(forge.refreshed).toEqual([]);
+    expect(forge.refreshed, 'an unwatched page was read on the beat').toEqual([]);
 
-    watched = true;
+    focused = true;
     window.dispatchEvent(new Event('focus'));
-    expect(forge.refreshed, 'the return did not read the marks').toEqual([BOARD]);
+    expect(forge.refreshed, "the return asked for the resync read's job").toEqual([]);
 
-    // The answer lands, so the restarted beat is free to ask.
-    forge.arrive({ kind: 'snapshot', subject: BOARD, data: { projects: [] } });
     vi.advanceTimersByTime(MARK_BEAT_MS);
-    expect(forge.refreshed, 'the beat did not restart with the attention').toEqual([BOARD, BOARD]);
+    expect(forge.refreshed, 'the beat did not restart with the attention').toEqual([BOARD]);
     stop();
   });
 
@@ -298,16 +337,18 @@ describe('the board over a connection', () => {
   });
 
   it('starts no beat for a board watched while the page is not', () => {
-    watched = false;
+    focused = false;
     const forge = fakeConnection();
     const stop = watchBoard(forge.connection).subscribe(() => {});
 
     vi.advanceTimersByTime(MARK_BEAT_MS * 2);
     expect(forge.refreshed, 'a board nobody watches was read on the beat').toEqual([]);
 
-    watched = true;
+    focused = true;
     window.dispatchEvent(new Event('focus'));
-    expect(forge.refreshed, 'the return did not read the marks').toEqual([BOARD]);
+    expect(forge.refreshed, 'the return asked for a read of its own').toEqual([]);
+    vi.advanceTimersByTime(MARK_BEAT_MS);
+    expect(forge.refreshed, 'the beat did not start with the attention').toEqual([BOARD]);
     stop();
   });
 
@@ -319,14 +360,86 @@ describe('the board over a connection', () => {
     await settle();
     expect(forge.refreshed, 'the update did not ask for its read').toEqual([BOARD]);
 
-    watched = false;
+    focused = false;
     window.dispatchEvent(new Event('blur'));
-    watched = true;
+    focused = true;
     window.dispatchEvent(new Event('focus'));
     expect(forge.refreshed, 'the return queued a second read behind one in flight').toEqual([
       BOARD,
     ]);
+
+    // The restarted beat's first fire lands while that read is still out.
+    vi.advanceTimersByTime(MARK_BEAT_MS);
+    expect(forge.refreshed, 'the beat queued behind the read in flight').toEqual([BOARD]);
+
+    forge.arrive({ kind: 'snapshot', subject: BOARD, data: { projects: [] } });
+    vi.advanceTimersByTime(MARK_BEAT_MS);
+    expect(forge.refreshed, 'the beat did not ask once the read was answered').toEqual([
+      BOARD,
+      BOARD,
+    ]);
     stop();
+  });
+
+  /**
+   * **Android's only resume is the shell's event.** It reports neither focus
+   * nor reliably a visibility change, so a beat stopped by a hidden document
+   * comes back through `client://foreground` or not at all.
+   */
+  it('restarts the beat on the shell resume a phone reports instead of focus', async () => {
+    (window as unknown as Record<string, unknown>)['__TAURI_INTERNALS__'] = {};
+    const forge = fakeConnection();
+    const stop = watchBoard(forge.connection).subscribe(() => {});
+    // The listener is installed behind a dynamic import, so it lands a
+    // microtask after the store is watched.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(foreground, 'the shell resume listener is installed under a shell').toHaveLength(1);
+
+    hidden = true;
+    document.dispatchEvent(new Event('visibilitychange'));
+    vi.advanceTimersByTime(MARK_BEAT_MS * 2);
+    expect(forge.refreshed, 'a hidden page was read on the beat').toEqual([]);
+
+    // No focus and no visibility change: the shell's event is the only word.
+    foreground[0]?.({});
+    vi.advanceTimersByTime(MARK_BEAT_MS);
+    expect(forge.refreshed, 'the shell resume did not restart the beat').toEqual([BOARD]);
+
+    stop();
+    expect(unlistens.at(-1), 'the shell listener is given back').toHaveBeenCalled();
+  });
+
+  /**
+   * **A later subscribe is a fresh watch.** The observer goes with the last
+   * reader, so a store taken again must install it again and read the page's
+   * attention afresh rather than trust the state the last watch left.
+   */
+  it('re-registers the observer and re-seeds the watched state on a later subscribe', () => {
+    const forge = fakeConnection();
+    const board = watchBoard(forge.connection);
+
+    // A resubscribe while the page is watched starts the beat from the seed,
+    // with no event to tell it so.
+    const first = board.subscribe(() => {});
+    first();
+    const second = board.subscribe(() => {});
+    vi.advanceTimersByTime(MARK_BEAT_MS);
+    expect(forge.refreshed, 'a resubscribed board did not seed the watched state').toEqual([BOARD]);
+    forge.arrive({ kind: 'snapshot', subject: BOARD, data: { projects: [] } });
+    second();
+
+    // A resubscribe while it is not watched installs the observer again, so
+    // the next real report starts the beat.
+    focused = false;
+    const third = board.subscribe(() => {});
+    vi.advanceTimersByTime(MARK_BEAT_MS * 2);
+    expect(forge.refreshed, 'a board resubscribed unwatched was read on the beat').toEqual([BOARD]);
+
+    focused = true;
+    window.dispatchEvent(new Event('focus'));
+    vi.advanceTimersByTime(MARK_BEAT_MS);
+    expect(forge.refreshed, 'the observer was not re-registered').toEqual([BOARD, BOARD]);
+    third();
   });
 
   it('coalesces a burst into one read', async () => {

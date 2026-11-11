@@ -26,7 +26,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
 import { observeAttention, pageWatched } from './attention';
-import { canHost } from './browser/host';
+import { observeForeground } from './foreground';
 import { HEARTBEAT_TICK_MS } from './heartbeat';
 import { cannotPaint } from './paint';
 import { CLIENT_VERSION } from './protocol';
@@ -417,36 +417,6 @@ function observeVisibility(cb: (hidden: boolean) => void): (() => void) | null {
   const report = (): void => cb(cannotPaint());
   document.addEventListener('visibilitychange', report);
   return () => document.removeEventListener('visibilitychange', report);
-}
-
-/**
- * Reports a shell resume as one event; returns its disconnect, or null where
- * the page has no shell.
- *
- * **Android reports neither focus nor reliably a visibility change on
- * return** (the same reason `connect/resync.ts` listens for this event), so
- * the shell's own resume is the only arm the probe gets there.
- */
-function observeForeground(cb: () => void): (() => void) | null {
-  if (!canHost()) return null;
-  let closed = false;
-  let unlisten: (() => void) | null = null;
-  // The event module stays a lazy import so the web build never loads it.
-  void import('@tauri-apps/api/event')
-    .then(({ listen }) => listen('client://foreground', cb))
-    .then((stop) => {
-      if (closed) stop();
-      else unlisten = stop;
-    })
-    .catch((why: unknown) => {
-      // **The Android arm is load-bearing**, so a failed install is said
-      // aloud: the loop would stay stopped after a resume with no clue.
-      console.warn('forge client: the frame probe foreground listener could not be installed', why);
-    });
-  return () => {
-    closed = true;
-    unlisten?.();
-  };
 }
 
 function observeLongTasks(cb: (ms: number, name: string) => void): () => void {
