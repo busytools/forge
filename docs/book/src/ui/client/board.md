@@ -22,9 +22,12 @@ arrives as an update, and the page re-reads without the reader doing
 anything. While it is mounted and the page is being watched, it also re-reads
 on a slow five-minute beat: a row's time-derived marks are computed by the
 server at read time, and no update announces that a window crossed. A page
-nobody is watching releases the beat entirely, and takes one read when it is
-watched again. The ages on screen keep moving either way, because they tick
-off the page's own clock.
+nobody is watching releases the beat entirely, and the return re-read the
+page already makes when it comes back from a hidden spell asks the board once
+through the same guards. Only the `wrote ... ago` line keeps ticking off the
+page's own clock; the card's worked time and the chip and waiting-card ages
+advance only on a read, so they can sit up to five minutes behind and then
+jump.
 
 ## What it draws
 
