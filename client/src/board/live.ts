@@ -32,12 +32,13 @@ export const COALESCE_MS = 50;
  * How often a watched board re-reads while nothing writes.
  *
  * **The beat exists for what the server computes at read time.** The marks
- * `no_movement` and `waiting_too_long` are four-hour windows by default and
- * `overdue` follows the row's own estimate, and no frame announces that one
- * crossed. The card's worked figure and the waiting card's age are read
- * values too. Only the `wrote ... ago` line ticks off the page's own clock,
- * so everything else can sit up to five minutes behind and then jump - an
- * accepted staleness, because these windows are hours or an estimate (#2517).
+ * `no_movement` and `waiting_too_long` are four-hour windows and `overdue`
+ * follows the row's own estimate, and no frame announces that one crossed.
+ * The card's worked figure and the waiting card's age are read values too, so
+ * they are refreshed at most five minutes after the page is watched again and
+ * are as old as the time it was away - an accepted staleness, because these
+ * windows are hours or an estimate (#2517). The `wrote ... ago` line and the
+ * row page's `updated ... ago` tick off the page's own clock and need no read.
  *
  * **And it runs only while the page is being watched.** The whole snapshot is
  * one of the client's largest reads, and a locked screen or a display going
@@ -47,9 +48,10 @@ export const COALESCE_MS = 50;
  * reports neither on return.
  *
  * **Gaining attention does not read.** The return's read already exists:
- * `connect/resync.ts` asks the board through this store's own guards when the
- * hide was long enough, and a read here would double it on every return and
- * buy one on every alt-tab.
+ * `connect/resync.ts` asks the board through this store's own guards after a
+ * hidden spell, and reads nothing on a bare focus change on purpose. A read
+ * here would buy one on every alt-tab, and a second on every return from
+ * hidden.
  */
 const MARK_BEAT_MS = 5 * 60_000;
 
@@ -134,9 +136,16 @@ function boardStore(connection: Connection): Readable<BoardRead> {
     connection.refresh('board');
   }
 
-  /** Start the marks' beat, if it is not already running. */
+  /**
+   * Start the marks' beat, if it is not already running.
+   *
+   * **A report can land after the last reader left** - the shell's resume is
+   * a promise, and its disconnect may not have completed - so nothing is
+   * armed for a store nobody holds: an interval left behind would be a timer
+   * nothing ever clears.
+   */
   function beatOn(): void {
-    if (beat !== null) return;
+    if (beat !== null || held === null) return;
     beat = setInterval(reread, MARK_BEAT_MS);
   }
 
@@ -152,8 +161,9 @@ function boardStore(connection: Connection): Readable<BoardRead> {
    *
    * **A return restarts the beat and reads nothing of its own.** The return's
    * read already exists in `connect/resync.ts`, which asks this store through
-   * its own guards once a hidden spell was long enough; a read here would
-   * double that on every return and buy one on every alt-tab.
+   * its own guards after a hidden spell and deliberately reads nothing on a
+   * bare focus change; a read here would buy one on every alt-tab, and a
+   * second on every return from hidden.
    *
    * Both calls are idempotent, so a report that changes nothing - a restored
    * page, a repeated focus - costs nothing.
@@ -220,7 +230,7 @@ function boardStore(connection: Connection): Readable<BoardRead> {
     // without it the beat would never come back after the first suspend.
     if (pageWatched()) beatOn();
     stopAttention = observeAttention(attention);
-    stopForeground = observeForeground(() => attention(true));
+    stopForeground = observeForeground('board marks beat', () => attention(true));
   }
 
   function unwatch(): void {

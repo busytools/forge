@@ -600,7 +600,8 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
   const observe = options.observeLongTasks ?? observeLongTasks;
   const heartbeat = options.observeHeartbeat ?? observeHeartbeat;
   const attention = options.observeAttention ?? observeAttention;
-  const foreground = options.observeForeground ?? observeForeground;
+  const foreground =
+    options.observeForeground ?? ((cb: () => void) => observeForeground('frame probe', cb));
   const defer =
     options.defer ??
     ((cb: () => void): void => {

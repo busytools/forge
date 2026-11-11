@@ -13,20 +13,26 @@ import { COALESCE_MS, rereadBoard, watchBoard } from './live';
 /**
  * The shell's resume listener, captured rather than registered: the event the
  * Rust half emits is the phone's only return signal, and a test drives it from
- * here. Each install's unlisten is kept so the release can be watched.
+ * here. Each install keeps its event name beside its unlisten, so a release
+ * can be asserted on the arm it belongs to.
  */
-const { foreground, unlistens } = vi.hoisted(() => ({
+const { foreground, installed } = vi.hoisted(() => ({
   foreground: [] as ((event: unknown) => void)[],
-  unlistens: [] as ReturnType<typeof vi.fn>[],
+  installed: [] as { name: string; stop: ReturnType<typeof vi.fn> }[],
 }));
 vi.mock('@tauri-apps/api/event', () => ({
   listen: (name: string, cb: (event: unknown) => void) => {
     if (name === 'client://foreground') foreground.push(cb);
     const stop = vi.fn();
-    unlistens.push(stop);
+    installed.push({ name, stop });
     return Promise.resolve(stop);
   },
 }));
+
+/** The unlisten a listener's install was given, found by the event it serves. */
+function stopFor(name: string): ReturnType<typeof vi.fn> | undefined {
+  return installed.find((entry) => entry.name === name)?.stop;
+}
 
 const BOARD: Subject = 'board';
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
@@ -75,6 +81,7 @@ function fakeConnection() {
   const refreshed: Subject[] = [];
   const messages = new Set<(message: ServerMessage) => void>();
   const statuses = new Set<(status: ConnectionStatus) => void>();
+  let status: ConnectionStatus = 'open';
 
   const connection: Connection = {
     subscribe(what) {
@@ -118,7 +125,7 @@ function fakeConnection() {
     settings: () => null,
     skew: () => null,
     serverProtocol: () => PROTOCOL_VERSION,
-    status: () => 'open',
+    status: () => status,
     probe: () => {},
     close: () => {},
   };
@@ -132,6 +139,10 @@ function fakeConnection() {
     listening: () => messages.size + statuses.size,
     arrive(message: ServerMessage) {
       for (const fn of [...messages]) fn(message);
+    },
+    setStatus(next: ConnectionStatus) {
+      status = next;
+      for (const fn of [...statuses]) fn(next);
     },
   };
 }
@@ -167,7 +178,10 @@ beforeEach(() => {
   focused = true;
   hidden = false;
   foreground.length = 0;
-  unlistens.length = 0;
+  installed.length = 0;
+  // The shell marker is per-case: one leaked from a case that forgot to clean
+  // up would arm the foreground listener under every later case.
+  expect('__TAURI_INTERNALS__' in window, 'a shell marker outlived its case').toBe(false);
   vi.spyOn(document, 'hasFocus').mockImplementation(() => focused);
   Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
 });
@@ -307,7 +321,7 @@ describe('the board over a connection', () => {
     stop();
   });
 
-  it('restarts the beat on the return, without a read of its own', () => {
+  it('restarts the beat on the return, without a read of its own', async () => {
     const forge = fakeConnection();
     const stop = watchBoard(forge.connection).subscribe(() => {});
 
@@ -318,6 +332,9 @@ describe('the board over a connection', () => {
 
     focused = true;
     window.dispatchEvent(new Event('focus'));
+    // **The coalesce window is flushed**: a gain that only scheduled a read
+    // would land inside it, and a synchronous assertion would miss it.
+    await settle();
     expect(forge.refreshed, "the return asked for the resync read's job").toEqual([]);
 
     vi.advanceTimersByTime(MARK_BEAT_MS);
@@ -325,18 +342,19 @@ describe('the board over a connection', () => {
     stop();
   });
 
-  it('asks nothing for an attention report that changes nothing', () => {
+  it('asks nothing for an attention report that changes nothing', async () => {
     const forge = fakeConnection();
     const stop = watchBoard(forge.connection).subscribe(() => {});
 
     // The page was already watched when the board was taken, so a report of
     // the same state - a restored page, a repeated focus - is no return.
     window.dispatchEvent(new Event('focus'));
+    await settle();
     expect(forge.refreshed, 'a repeated attention report bought a read').toEqual([]);
     stop();
   });
 
-  it('starts no beat for a board watched while the page is not', () => {
+  it('starts no beat for a board watched while the page is not', async () => {
     focused = false;
     const forge = fakeConnection();
     const stop = watchBoard(forge.connection).subscribe(() => {});
@@ -346,9 +364,27 @@ describe('the board over a connection', () => {
 
     focused = true;
     window.dispatchEvent(new Event('focus'));
+    await settle();
     expect(forge.refreshed, 'the return asked for a read of its own').toEqual([]);
     vi.advanceTimersByTime(MARK_BEAT_MS);
     expect(forge.refreshed, 'the beat did not start with the attention').toEqual([BOARD]);
+    stop();
+  });
+
+  /**
+   * **One interval, however many reports of the same gain arrive.** A second
+   * `setInterval` would orphan the first, and the orphan keeps firing after
+   * the page hides - the polling this change removes.
+   */
+  it('keeps one beat across a repeated attention report', () => {
+    const forge = fakeConnection();
+    const stop = watchBoard(forge.connection).subscribe(() => {});
+
+    window.dispatchEvent(new Event('focus'));
+    focused = false;
+    window.dispatchEvent(new Event('blur'));
+    vi.advanceTimersByTime(MARK_BEAT_MS * 3);
+    expect(forge.refreshed, 'an orphaned beat read a page nobody watches').toEqual([]);
     stop();
   });
 
@@ -364,6 +400,7 @@ describe('the board over a connection', () => {
     window.dispatchEvent(new Event('blur'));
     focused = true;
     window.dispatchEvent(new Event('focus'));
+    await settle();
     expect(forge.refreshed, 'the return queued a second read behind one in flight').toEqual([
       BOARD,
     ]);
@@ -406,7 +443,110 @@ describe('the board over a connection', () => {
     expect(forge.refreshed, 'the shell resume did not restart the beat').toEqual([BOARD]);
 
     stop();
-    expect(unlistens.at(-1), 'the shell listener is given back').toHaveBeenCalled();
+    expect(stopFor('client://foreground'), 'the shell listener is given back').toHaveBeenCalled();
+  });
+
+  /**
+   * **A foreground report can land after the last reader left.** The shell's
+   * resume is a promise and its disconnect may not have completed, so the arm
+   * must not start a beat for a store nobody holds - an interval nothing ever
+   * clears.
+   */
+  it('starts no beat from a foreground report that lands after the watch ended', async () => {
+    (window as unknown as Record<string, unknown>)['__TAURI_INTERNALS__'] = {};
+    const forge = fakeConnection();
+    const board = watchBoard(forge.connection);
+    const stop = board.subscribe(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    const resume = foreground[0];
+    expect(resume, 'the shell resume listener is installed under a shell').toBeDefined();
+
+    focused = false;
+    stop();
+    resume?.({});
+    expect(vi.getTimerCount(), 'a beat was armed for a store nobody holds').toBe(0);
+
+    // A board taken again while the page is unwatched stays quiet: a leftover
+    // interval would read it as soon as this subscribe gave it a subject.
+    const again = board.subscribe(() => {});
+    vi.advanceTimersByTime(MARK_BEAT_MS * 3);
+    expect(forge.refreshed, 'a leftover beat read a page nobody watches').toEqual([]);
+    again();
+  });
+
+  /**
+   * **A coalesced update is a read of a page that is still being watched.**
+   * Once the last reader leaves there is nobody to draw it, so the pending
+   * timer goes with the watch.
+   */
+  it('drops a coalesced read when the last reader leaves', async () => {
+    const forge = fakeConnection();
+    const stop = watchBoard(forge.connection).subscribe(() => {});
+
+    forge.arrive(UPDATE);
+    stop();
+    await settle();
+    expect(forge.refreshed, 'a coalesced read outlived the last reader').toEqual([]);
+  });
+
+  /**
+   * **A drop takes the read in flight with it.** Nothing will answer a read
+   * the socket carried away, so the next update must ask again rather than
+   * be folded into a read that is never coming.
+   */
+  it('asks again for an update that lands after a reconnect', async () => {
+    const forge = fakeConnection();
+    const stop = watchBoard(forge.connection).subscribe(() => {});
+
+    forge.arrive(UPDATE);
+    await settle();
+    expect(forge.refreshed, 'the update did not ask for its read').toEqual([BOARD]);
+
+    forge.setStatus('connecting');
+    forge.setStatus('open');
+    forge.arrive(NEWS);
+    await settle();
+    expect(forge.refreshed, 'the update after a reconnect was dropped').toEqual([BOARD, BOARD]);
+    stop();
+  });
+
+  /**
+   * **The dedupe is per project.** One key for every project would make each
+   * project's announcement look like a change to the last one's set, which is
+   * the read-per-announcement loop #2540 removed.
+   */
+  it("dedupes each project's task set on its own key", async () => {
+    const forge = fakeConnection();
+    const stop = watchBoard(forge.connection).subscribe(() => {});
+    const other: SessionSlot = { org: 'TestOrg', project: 'other', label: 'lead' };
+    const first = { id: 't1', project_name: 'proj', subject: 'a row', status: 'pending' };
+    const second = { id: 't2', project_name: 'other', subject: 'another row', status: 'pending' };
+    const mine: ServerMessage = {
+      kind: 'update',
+      update: { tasks_changed: { key: LEAD, tasks: [first as unknown as Task] } },
+    };
+    const theirs: ServerMessage = {
+      kind: 'update',
+      update: { tasks_changed: { key: other, tasks: [second as unknown as Task] } },
+    };
+
+    forge.arrive(mine);
+    await settle();
+    expect(forge.refreshed, 'the first project did not ask for a read').toEqual([BOARD]);
+    forge.arrive({ kind: 'snapshot', subject: BOARD, data: { projects: [] } });
+
+    forge.arrive(theirs);
+    await settle();
+    expect(forge.refreshed, 'the second project did not ask for a read').toEqual([BOARD, BOARD]);
+    forge.arrive({ kind: 'snapshot', subject: BOARD, data: { projects: [] } });
+
+    forge.arrive(mine);
+    await settle();
+    expect(forge.refreshed, 'an unchanged set asked again under another key').toEqual([
+      BOARD,
+      BOARD,
+    ]);
+    stop();
   });
 
   /**

@@ -14,24 +14,29 @@ import { canHost } from './browser/host';
  * Reports a shell resume as one event; returns its own disconnect, or null
  * where the page has no shell.
  *
- * **The Tauri API is imported lazily**, so the web build never loads it, and
- * a disconnect that arrives before the listener resolves takes it back on
- * resolution.
+ * **`arm` names the reader in the failure warning**, because a phone's log is
+ * the only place a failed install is ever seen and a bare "shell listener"
+ * would not say which of the three stopped.
+ *
+ * **The Tauri API is imported lazily**, so the web build never loads it. A
+ * disconnect that arrives before the import resolves skips the registration
+ * rather than registering a listener and withdrawing it again.
  */
-export function observeForeground(cb: () => void): (() => void) | null {
+export function observeForeground(arm: string, cb: () => void): (() => void) | null {
   if (!canHost()) return null;
   let closed = false;
   let unlisten: (() => void) | null = null;
   void import('@tauri-apps/api/event')
-    .then(({ listen }) => listen('client://foreground', cb))
+    .then(({ listen }) => (closed ? null : listen('client://foreground', cb)))
     .then((stop) => {
+      if (stop === null) return;
       if (closed) stop();
       else unlisten = stop;
     })
     .catch((why: unknown) => {
       // **The arm is load-bearing on the phone**, so a failed install is said
       // aloud: a loop or a beat would stay stopped after a resume with no clue.
-      console.warn('forge client: the shell foreground listener could not be installed', why);
+      console.warn(`forge client: the ${arm} foreground listener could not be installed`, why);
     });
   return () => {
     closed = true;
