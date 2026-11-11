@@ -43,6 +43,44 @@ pub struct Hub {
     token: Option<String>,
 }
 
+/// The Hub calls one speaking install makes, as a seam a test can stand in
+/// for. Production holds [`Hub`]; the install path holds a `dyn HubPort`.
+#[async_trait::async_trait]
+pub trait HubPort: Send + Sync {
+    async fn revision(&self, repo: &str) -> Result<String, String>;
+    async fn blobs(&self, repo: &str, revision: &str) -> Result<Vec<HubBlob>, String>;
+    async fn download(
+        &self,
+        repo: &str,
+        revision: &str,
+        blob: &HubBlob,
+        dest: &Path,
+        on_bytes: &mut (dyn FnMut(u64) + Send),
+    ) -> Result<(), String>;
+}
+
+#[async_trait::async_trait]
+impl HubPort for Hub {
+    async fn revision(&self, repo: &str) -> Result<String, String> {
+        Hub::revision(self, repo).await
+    }
+
+    async fn blobs(&self, repo: &str, revision: &str) -> Result<Vec<HubBlob>, String> {
+        Hub::blobs(self, repo, revision).await
+    }
+
+    async fn download(
+        &self,
+        repo: &str,
+        revision: &str,
+        blob: &HubBlob,
+        dest: &Path,
+        on_bytes: &mut (dyn FnMut(u64) + Send),
+    ) -> Result<(), String> {
+        Hub::download(self, repo, revision, blob, dest, on_bytes).await
+    }
+}
+
 impl Hub {
     pub fn new(token: Option<String>) -> Result<Self, String> {
         // A stalled Hub must fail the install rather than hold it in

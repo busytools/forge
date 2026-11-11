@@ -7,7 +7,8 @@ use std::path::PathBuf;
 use forge_dictate::{ModelFacts, ModelSpec};
 use serde::Deserialize;
 
-use crate::dictate::{DictateModel, DictateModelState, DictateRole};
+use crate::dictate::{DictateFailure, DictateModel, DictateModelState, DictateRole};
+use crate::install::InstallState;
 
 /// The speaking model's own name. `[tts] speaking_model` accepts this, or one
 /// of [`VARIANTS`]' names to pin a quantisation.
@@ -155,7 +156,8 @@ impl SpeakingInstall {
 #[serde(deny_unknown_fields)]
 pub struct TtsSettings {
     /// Off unless asked for. Turning it on makes the speaking role available;
-    /// the model installs from the models page or the settings card.
+    /// the active model installs at boot when it is missing, as well as from
+    /// the models page or the settings card.
     #[serde(default)]
     pub enabled: bool,
     /// Where the model files live. Absent uses the platform cache directory.
@@ -347,7 +349,15 @@ impl crate::Workspace {
         let settings = &config.tts;
         let (active, from) = self.speaking_variant();
         let installs = self.speaking_installs();
-        let installed = |variant: &str| installs.iter().any(|row| row.variant == variant);
+        // A variant is installed only when its record is present and the
+        // files the engine loads are on disk: an evicted model or voice
+        // directory reads as missing, exactly as the boot trigger reads it.
+        // The record alone is the install's memory, not the engine's input.
+        let installed = |variant: &str| {
+            self.speaking_install(variant)
+                .and_then(|install| self.files_for_install(&install))
+                .is_some_and(|files| files.present())
+        };
         let row = |variant: &SpeakingVariant| SpeakingVariantView {
             variant: variant.variant.to_owned(),
             file: variant.file.to_owned(),
@@ -362,8 +372,27 @@ impl crate::Workspace {
             .find(|row| row.variant == active.variant)
             .map(SpeakingInstall::voice_names)
             .unwrap_or_default();
-        let state =
-            if active_installed { DictateModelState::Ready } else { DictateModelState::Pending };
+        // While the speaking install runs, the row says what it is doing -
+        // fetching or failed - rather than "waiting". The models page's IN USE
+        // row reads this row; the page's install and the boot's are the same
+        // state, so one mapping covers both.
+        let state = if active_installed {
+            DictateModelState::Ready
+        } else {
+            match &*self.dictate_install.lock() {
+                InstallState::Downloading { file, got, total } if file.as_str() == active.file => {
+                    DictateModelState::Downloading {
+                        downloaded: *got,
+                        total: *total,
+                        resumed_from: None,
+                    }
+                }
+                InstallState::Failed { file, reason } if file.as_str() == active.file => {
+                    DictateModelState::Failed(DictateFailure::Other { message: reason.clone() })
+                }
+                _ => DictateModelState::Pending,
+            }
+        };
         // The running system's flag, not a saved value the restart has not
         // taken: the tool gate and the registered set read the same one.
         let enabled = self.voice_enabled();
@@ -461,5 +490,211 @@ mod tests {
 
         assert!(workspace.voice_enabled(), "the running service still answers on");
         assert!(workspace.voices().enabled, "the home read follows the service");
+    }
+
+    /// The speaking row follows the install in flight: a boot's download is
+    /// drawn as `Downloading`, not `Pending`, so the models page's IN USE row
+    /// reads "fetching" while the model lands. Deleting the mapping leaves
+    /// the row `Pending` and this test red.
+    #[tokio::test]
+    async fn the_speaking_row_carries_the_downloading_state_while_the_install_runs() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.tts.enabled = true;
+        let (workspace, _updates) =
+            crate::Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+                .expect("the stub builds");
+        let variant = SpeakingVariant::pinned();
+        *workspace.dictate_install.lock() = crate::install::InstallState::Downloading {
+            file: variant.file.to_owned(),
+            got: 12,
+            total: 100,
+        };
+        let view = workspace.voices();
+        let row = view.snapshot.models.first().expect("the speaking row is drawn");
+        assert_eq!(
+            row.state,
+            crate::dictate::DictateModelState::Downloading {
+                downloaded: 12,
+                total: 100,
+                resumed_from: None,
+            }
+        );
+    }
+
+    /// The speaking row carries the failed state too: an offline boot's
+    /// install lands on `InstallState::Failed`, and the row must read
+    /// "failed" rather than "waiting". Making the `Failed` arm unreachable
+    /// leaves this red.
+    #[tokio::test]
+    async fn the_speaking_row_carries_the_failed_state_when_the_install_fails() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.tts.enabled = true;
+        let (workspace, _updates) =
+            crate::Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+                .expect("the stub builds");
+        let variant = SpeakingVariant::pinned();
+        *workspace.dictate_install.lock() = crate::install::InstallState::Failed {
+            file: variant.file.to_owned(),
+            reason: "the Hub is down".to_owned(),
+        };
+        let view = workspace.voices();
+        let row = view.snapshot.models.first().expect("the speaking row is drawn");
+        assert!(
+            matches!(row.state, crate::dictate::DictateModelState::Failed(_)),
+            "the row drew the failed install as {:?}",
+            row.state
+        );
+        let in_use = workspace.dictate_models().in_use;
+        assert!(
+            in_use.iter().any(|model| {
+                model.role == crate::dictate::DictateRole::Speaking
+                    && matches!(model.state, crate::dictate::DictateModelState::Failed(_))
+            }),
+            "the in-use copy carried the failed install"
+        );
+    }
+
+    /// A download for another variant is not drawn on the active row: the
+    /// file-match guard keeps the fp16 install's progress off the fp32 row.
+    #[tokio::test]
+    async fn the_speaking_row_ignores_another_variants_download() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.tts.enabled = true;
+        let (workspace, _updates) =
+            crate::Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+                .expect("the stub builds");
+        let active = SpeakingVariant::pinned();
+        let other = SpeakingVariant::named("kokoro-82m-fp16").expect("the fp16 variant is known");
+        assert_ne!(other.file, active.file, "the test needs two different files");
+        *workspace.dictate_install.lock() = crate::install::InstallState::Downloading {
+            file: other.file.to_owned(),
+            got: 12,
+            total: 100,
+        };
+        let view = workspace.voices();
+        let row = view.snapshot.models.first().expect("the speaking row is drawn");
+        assert_eq!(
+            row.state,
+            crate::dictate::DictateModelState::Pending,
+            "another variant's download was drawn on the active row"
+        );
+    }
+
+    /// A failure for another variant is not drawn on the active row: the
+    /// file-match guard keeps the fp16 failure off the fp32 row. Dropping the
+    /// guard leaves this red.
+    #[tokio::test]
+    async fn the_speaking_row_ignores_another_variants_failure() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.tts.enabled = true;
+        let (workspace, _updates) =
+            crate::Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+                .expect("the stub builds");
+        let active = SpeakingVariant::pinned();
+        let other = SpeakingVariant::named("kokoro-82m-fp16").expect("the fp16 variant is known");
+        assert_ne!(other.file, active.file, "the test needs two different files");
+        *workspace.dictate_install.lock() = crate::install::InstallState::Failed {
+            file: other.file.to_owned(),
+            reason: "the Hub is down".to_owned(),
+        };
+        let view = workspace.voices();
+        let row = view.snapshot.models.first().expect("the speaking row is drawn");
+        assert_eq!(
+            row.state,
+            crate::dictate::DictateModelState::Pending,
+            "another variant's failure was drawn on the active row"
+        );
+    }
+
+    /// The row and the variant list read the files, not the record: an
+    /// evicted model draws `Pending` and offers the install again, and the
+    /// files coming back draw `Ready`. Reverting `active_installed` to the
+    /// record alone leaves this red.
+    #[tokio::test]
+    async fn the_speaking_row_reads_pending_until_the_files_are_back() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.tts.enabled = true;
+        config.tts.models_dir = Some(dir.path().join("models").to_string_lossy().into_owned());
+        let (workspace, _updates) =
+            crate::Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+                .expect("the stub builds");
+        let variant = SpeakingVariant::pinned();
+        let db = crate::store::Db::open(&dir.path().join("db.redb")).expect("the store opens");
+        crate::store::speaking_models::record_installed(
+            &db,
+            &crate::tts::SpeakingInstall {
+                variant: variant.variant.to_owned(),
+                revision: "test-revision".to_owned(),
+                model: variant.file.to_owned(),
+                model_size: variant.size,
+                model_sha256: variant.sha256.to_owned(),
+                voices: Vec::new(),
+                at: "2026-11-11T00:00:00Z".to_owned(),
+            },
+        )
+        .expect("the record lands");
+        workspace.install_db_for_test(db);
+
+        let view = workspace.voices();
+        let row = view.snapshot.models.first().expect("the speaking row is drawn");
+        assert_eq!(
+            row.state,
+            crate::dictate::DictateModelState::Pending,
+            "a record with no files drew installed"
+        );
+        assert!(!view.active.installed, "the record alone claimed the variant was installed");
+
+        // The model alone is still not the set: the voice styles are what
+        // the engine renders with, so the row stays Pending until they are
+        // back. A model-file-only check reads Ready here.
+        let model = dir.path().join("models").join(variant.file);
+        std::fs::create_dir_all(model.parent().expect("the model dir"))
+            .expect("the model dir builds");
+        std::fs::write(&model, b"stub").expect("the model file lands");
+
+        let view = workspace.voices();
+        let row = view.snapshot.models.first().expect("the speaking row is drawn");
+        assert_eq!(
+            row.state,
+            crate::dictate::DictateModelState::Pending,
+            "a model with no voice styles drew installed"
+        );
+        assert!(!view.active.installed, "the model alone claimed the variant was installed");
+
+        std::fs::create_dir_all(dir.path().join("models").join("voices"))
+            .expect("the voice dir builds");
+
+        let view = workspace.voices();
+        let row = view.snapshot.models.first().expect("the speaking row is drawn");
+        assert_eq!(row.state, crate::dictate::DictateModelState::Ready);
+        assert!(view.active.installed, "the present files did not read installed");
+    }
+
+    /// `begin_install` names the speaking file from the first tick: the row
+    /// reads "downloading" before the Hub answers, rather than "waiting".
+    /// Reverting the name to an empty string leaves this red.
+    #[tokio::test]
+    async fn begin_install_names_the_speaking_file() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.tts.enabled = true;
+        let (workspace, _updates) =
+            crate::Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+                .expect("the stub builds");
+        let variant = SpeakingVariant::pinned();
+        workspace.begin_install(variant.variant).expect("the prelude accepts the install");
+        assert_eq!(
+            *workspace.dictate_install.lock(),
+            crate::install::InstallState::Downloading {
+                file: variant.file.to_owned(),
+                got: 0,
+                total: 0,
+            }
+        );
     }
 }

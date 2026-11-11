@@ -134,6 +134,7 @@ pub const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     forge_agent::userdata::catalog::scan=debug,\
     forge_workspace::output_tail=debug,\
     forge_workspace::idle_sweep=debug,\
+    forge_workspace::voice=debug,\
     forge_workspace::work=debug,\
     forge_workspace::browser=debug,\
     forge_browser=debug,\
@@ -491,6 +492,15 @@ mod tests {
                 .split(',')
                 .any(|directive| directive.trim() == idle_sweep_target),
             "the idle sweep's delivery records keep their directive ({idle_sweep_target}): \
+             {DEFAULT_LOG_DIRECTIVES}",
+        );
+        // `forge_workspace::voice` carries the speaking prewarm's records,
+        // the bench refusal among them, which are `debug` and land nowhere
+        // without this directive.
+        let voice_target = "forge_workspace::voice=debug";
+        assert!(
+            DEFAULT_LOG_DIRECTIVES.split(',').any(|directive| directive.trim() == voice_target),
+            "the speaking prewarm's records keep their directive ({voice_target}): \
              {DEFAULT_LOG_DIRECTIVES}",
         );
         // `forge_agent::userdata::catalog::scan` carries the scan's

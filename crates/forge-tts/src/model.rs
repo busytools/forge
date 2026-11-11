@@ -46,6 +46,17 @@ impl ModelFiles {
         Ok(())
     }
 
+    /// Whether the files a load needs are on disk, by presence only: the
+    /// model file, the voice directory, and every declared file's path.
+    /// Cheap enough for a boot trigger, where [`Self::verify`] (which hashes
+    /// each declared digest) is not. A file evicted after the record was
+    /// written reads as absent.
+    pub fn present(&self) -> bool {
+        self.model.is_file()
+            && self.voices.is_dir()
+            && self.digests.iter().all(|(path, _)| path.is_file())
+    }
+
     /// The installed voice ids: every `.bin` file stem in `voices`, sorted.
     pub fn installed_voices(&self) -> Result<Vec<String>, Error> {
         let entries = std::fs::read_dir(&self.voices)
@@ -147,6 +158,36 @@ mod tests {
         };
         let files = model(dir.path()).with_digests(vec![(path, digest)]);
         files.verify().expect("the declared digest matches");
+    }
+
+    #[test]
+    fn present_requires_the_model_the_voice_directory_and_each_declared_file() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let voices = dir.path().join("voices");
+        std::fs::create_dir(&voices).expect("the voice dir is made");
+        let model = dir.path().join("model.onnx");
+        std::fs::write(&model, b"weights").expect("the model is written");
+        let voice = voices.join("af_heart.bin");
+        std::fs::write(&voice, b"styles").expect("a style is written");
+        // The declared digests are wrong on purpose: presence does not hash.
+        let files =
+            ModelFiles::new(model, voices.clone()).with_digests(vec![(voice, "00".repeat(32))]);
+        assert!(files.present(), "every file the load needs is on disk");
+
+        std::fs::remove_dir_all(&voices).expect("the voice dir is removed");
+        assert!(!files.present(), "an evicted voice directory is not present");
+    }
+
+    #[test]
+    fn present_sees_a_declared_voice_file_that_is_gone() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let voices = dir.path().join("voices");
+        std::fs::create_dir(&voices).expect("the voice dir is made");
+        let model = dir.path().join("model.onnx");
+        std::fs::write(&model, b"weights").expect("the model is written");
+        let files = ModelFiles::new(model, voices)
+            .with_digests(vec![(dir.path().join("voices/af_heart.bin"), "00".repeat(32))]);
+        assert!(!files.present(), "a declared voice file that is gone reads as absent");
     }
 
     #[test]

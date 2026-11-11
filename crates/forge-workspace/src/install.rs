@@ -292,13 +292,11 @@ impl Workspace {
         Ok(())
     }
 
-    /// Install one feed variant: fetch its doc, take the quant the row
-    /// draws, and download that file into the models directory.
-    ///
-    /// The outcome rides [`SessionUpdate::DictateModelsChanged`], the same
-    /// way a catalogue check's does.
-    pub(crate) fn start_install(self: &Arc<Self>, variant: String) -> Result<(), DispatchError> {
-        let speaking = crate::tts::SpeakingVariant::named(&variant);
+    /// The install prelude, without the spawn: the enabled check, the
+    /// `BenchRunning`/`Installing` guards, and setting the state to
+    /// `Downloading`. The page's command and the boot path both start here.
+    pub(crate) fn begin_install(&self, variant: &str) -> Result<(), DispatchError> {
+        let speaking = crate::tts::SpeakingVariant::named(variant);
         let config = self.config_arc();
         if speaking.is_some() {
             if !config.tts.enabled {
@@ -312,13 +310,25 @@ impl Workspace {
         if self.bench_running() {
             return Err(DispatchError::BenchRunning);
         }
-        {
-            let mut state = self.dictate_install.lock();
-            if matches!(*state, InstallState::Downloading { .. }) {
-                return Err(DispatchError::Installing);
-            }
-            *state = InstallState::Downloading { file: String::new(), got: 0, total: 0 };
+        let mut state = self.dictate_install.lock();
+        if matches!(*state, InstallState::Downloading { .. }) {
+            return Err(DispatchError::Installing);
         }
+        // Name the speaking variant's file now, so the speaking row reads
+        // "downloading" from the first tick rather than "waiting" until the
+        // Hub answers.
+        let file = speaking.map_or_else(String::new, |speaking| speaking.file.to_owned());
+        *state = InstallState::Downloading { file, got: 0, total: 0 };
+        Ok(())
+    }
+
+    /// Install one feed variant: fetch its doc, take the quant the row
+    /// draws, and download that file into the models directory.
+    ///
+    /// The outcome rides [`SessionUpdate::DictateModelsChanged`], the same
+    /// way a catalogue check's does.
+    pub(crate) fn start_install(self: &Arc<Self>, variant: String) -> Result<(), DispatchError> {
+        self.begin_install(&variant)?;
         let this = Arc::clone(self);
         tokio::spawn(async move {
             let runner = Arc::clone(&this);
@@ -397,7 +407,7 @@ impl Workspace {
     /// Fetch, check and record one variant. Every failure lands as an
     /// `InstallState::Failed` whose reason is its own, so the page says
     /// which step stopped rather than that something did.
-    async fn run_install(self: Arc<Self>, variant: String) {
+    pub(crate) async fn run_install(self: Arc<Self>, variant: String) {
         if let Some(speaking) = crate::tts::SpeakingVariant::named(&variant) {
             return self.run_speaking_install(speaking).await;
         }
@@ -487,7 +497,7 @@ impl Workspace {
     /// the variant's ONNX file and every named voice at that revision, and
     /// record the set only once every digest matched.
     async fn run_speaking_install(self: Arc<Self>, speaking: crate::tts::SpeakingVariant) {
-        use crate::hub::{self, Hub};
+        use crate::hub;
         use crate::tts::{HUB_REPO, SpeakingInstall, VoiceFile};
 
         let Some(dir) = self.config_arc().tts.models_dir() else {
@@ -496,8 +506,7 @@ impl Workspace {
                 "no models directory is configured".to_owned(),
             );
         };
-        let token = self.config_arc().huggingface.token.clone();
-        let hub = match Hub::new(token) {
+        let hub = match self.hub() {
             Ok(hub) => hub,
             Err(reason) => return self.fail_install(speaking.file.to_owned(), reason),
         };
@@ -534,7 +543,8 @@ impl Workspace {
         let model = dir.join(speaking.file);
         let existed = model.exists();
         if let Err(reason) =
-            download_blob(&self, &hub, &revision, &files.model, &model, 0, total).await
+            download_blob(&self, &*hub, &revision, &files.model, &model, speaking.file, 0, total)
+                .await
         {
             remove_written(&written);
             return self.fail_install(speaking.file.to_owned(), reason);
@@ -557,7 +567,8 @@ impl Workspace {
             let dest = dir.join("voices").join(format!("{name}.bin"));
             let existed = dest.exists();
             if let Err(reason) =
-                download_blob(&self, &hub, &revision, blob, &dest, done, total).await
+                download_blob(&self, &*hub, &revision, blob, &dest, speaking.file, done, total)
+                    .await
             {
                 remove_written(&written);
                 return self.fail_install(speaking.file.to_owned(), reason);
@@ -624,25 +635,29 @@ fn remove_written(written: &[(std::path::PathBuf, bool)]) {
 }
 
 /// Fetch one file of a speaking install, reporting the whole set's progress.
+///
+/// `state_file` is the install's own file name, not the destination's: the
+/// speaking row matches the state's file against the variant's model, so a
+/// voice leg that named its own file would leave the row "waiting" for the
+/// rest of the set.
 async fn download_blob(
     workspace: &Arc<Workspace>,
-    hub: &crate::hub::Hub,
+    hub: &dyn crate::hub::HubPort,
     revision: &str,
     blob: &crate::hub::HubBlob,
     dest: &std::path::Path,
+    state_file: &str,
     base: u64,
     total: u64,
 ) -> Result<(), String> {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    let file =
-        dest.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
     let last = AtomicU64::new(u64::MAX);
-    hub.download(crate::tts::HUB_REPO, revision, blob, dest, |written| {
+    hub.download(crate::tts::HUB_REPO, revision, blob, dest, &mut |written| {
         let got = base + written;
         let percent = got.saturating_mul(100).checked_div(total).unwrap_or(0);
         if last.swap(percent, Ordering::Relaxed) != percent {
-            workspace.note_download(&file, got, total);
+            workspace.note_download(state_file, got, total);
             workspace.push_models();
         }
     })

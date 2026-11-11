@@ -532,7 +532,7 @@ area `[dictate]` opens: a take becomes text, and a reply becomes speech.
 
 | Key                     | Type    | Default            | Notes                                                                                                                                                                                                                                                |
 | ----------------------- | ------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `enabled`               | boolean | `false`            | Off unless asked for. Turning it on makes the speaking role available; the model installs from the models page or the settings card.                                                                                                               |
+| `enabled`               | boolean | `false`            | Off unless asked for. Turning it on makes the speaking role available; the active model installs at boot when it is missing, as `[dictate]`'s does, as well as from the models page or the settings card.                                            |
 | `models_dir`            | string  | platform cache dir | Where the installed files live. `~` is expanded.                                                                                                                                                                                                       |
 | `speaking_model`        | string  | `hexgrad/Kokoro-82M` | The model the role runs, or one of its ONNX variants (`kokoro-82m-fp32`, `kokoro-82m-fp16`, `kokoro-82m-int8`). An unknown name fails the load: `[tts] speaking_model names <name>, which is not a known model`.                                        |
 | `voice`                 | string  | `af_heart`         | The voice every reply renders in. An id that is not installed is refused by name: `voice <id> is not installed`.                                                                                                                                      |
@@ -564,8 +564,11 @@ sentences and each sentence's audio arrives when it finishes rendering. The
 output is 24 kHz mono 16-bit, Kokoro's own rate, and a model whose rate
 differed would be resampled once in the engine.
 
-**The model installs from the models page or the settings page's speaking
-card.** Every file is fetched at one
+**The model installs at boot when the active variant is missing**, the
+same way `[dictate]`'s preflight fetches its own, and can also be installed
+from the models page or the settings page's speaking card. A boot install
+never blocks the start: a failed fetch or digest mismatch is warned and
+left for the page to retry. Every file is fetched at one
 pinned revision and checked against the LFS sha256 the Hub publishes; a
 digest that disagrees leaves nothing behind. The engine checks the whole
 set again before it loads it, so a truncated or substituted file is refused
