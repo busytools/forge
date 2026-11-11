@@ -648,8 +648,9 @@ fn start_subsystems(workspace: &Arc<Workspace>) {
     // download is opt-in.
     workspace.start_dictate_preflight();
 
-    // Load the speaking engine beside it, so the first `say` pays no model
-    // load. No-op unless `[tts] enabled` is set.
+    // Install the speaking model when it is missing, then load the engine
+    // beside it, so the first `say` pays neither the download nor the load.
+    // No-op unless `[tts] enabled` is set.
     workspace.start_voice_prewarm();
 
     // Spawn the worker-kick drainer task (#259). Routes every
@@ -1728,8 +1729,9 @@ port = 49201
     /// role is on and the model is absent: a fresh `[tts] enabled` boot has
     /// nothing installed, so the prewarm fetches the set through the same
     /// Hub seam the models page's install uses. With the role off the
-    /// prewarm starts but installs nothing, which the guard test beside this
-    /// one reads.
+    /// prewarm starts but installs nothing, which
+    /// `the_boot_does_neither_when_tts_is_off` in
+    /// `forge-workspace/src/voice.rs` reads.
     #[tokio::test]
     async fn the_boot_wave_installs_a_missing_voice_model_when_tts_is_on() {
         let (workspace, _dir) = fixture_with_tts();
@@ -1748,7 +1750,7 @@ port = 49201
         }
         assert!(
             !downloaded.is_empty(),
-            "the boot installed the missing speaking model; no download reached the Hub",
+            "the boot started the install for the missing speaking model; no download reached the Hub",
         );
     }
 

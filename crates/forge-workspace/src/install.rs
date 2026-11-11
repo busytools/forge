@@ -338,7 +338,11 @@ impl Workspace {
         if matches!(*state, InstallState::Downloading { .. }) {
             return Err(DispatchError::Installing);
         }
-        *state = InstallState::Downloading { file: String::new(), got: 0, total: 0 };
+        // Name the speaking variant's file now, so the speaking row reads
+        // "downloading" from the first tick rather than "waiting" until the
+        // Hub answers.
+        let file = speaking.map_or_else(String::new, |speaking| speaking.file.to_owned());
+        *state = InstallState::Downloading { file, got: 0, total: 0 };
         Ok(())
     }
 
