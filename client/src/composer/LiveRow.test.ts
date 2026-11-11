@@ -513,6 +513,14 @@ describe('the live row', () => {
 
     const toggle = document.querySelector<HTMLButtonElement>('[data-panel-chip="tasks"] button');
     if (toggle === null) throw new Error('the tasks chip drew no button');
+    // A real press starts with a pointerdown on the toggle, and this one is
+    // inside the menu: the menu must not take the chip away before its click.
+    toggle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    flushSync();
+    expect(
+      document.querySelector('[data-panel-chip="tasks"]'),
+      'the +N panel closed on the pointerdown that starts a chip click',
+    ).not.toBeNull();
     toggle.click();
     flushSync();
 

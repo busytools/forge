@@ -84,9 +84,6 @@ export function portal(
   anchors.set(node, anchor);
   return {
     destroy() {
-      // The map holds live panels: a destroyed one no longer answers for a
-      // pointer that reaches its detached subtree.
-      anchors.delete(node);
       node.remove();
     },
   };
