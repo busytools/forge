@@ -220,9 +220,10 @@ a terminal's PTY, screen model and command marks go in `forge-terminal`,
 cross-crate types go in `forge-primitives`,
 provider credentials, probes, billing, account selection and account
 health go in `forge-gateway`,
-external-integration clients, matching, held asks and tools, inbound or
-outbound, go in `forge-tools` (and the tool descriptions themselves are
-written against `forge-mcp`),
+integration clients, matching, held asks and tools, inbound or outbound,
+and the cron scheduler's own state and policy, go in `forge-tools` (Gotify's
+tools are the exception and still live in the workspace; the moved families'
+tool descriptions are written against `forge-mcp`),
 anything speaking stream-json goes in `forge-sdk`, environment and I/O
 go in `forge-agent`, multi-session orchestration goes in
 `forge-workspace`, the browser the sessions drive goes in

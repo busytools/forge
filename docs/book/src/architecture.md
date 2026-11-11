@@ -82,10 +82,11 @@ Work top-down; the first match wins.
    REST lookups, subscription matching, a provider's client and crypto),
    **or the cron scheduler's own state, policy and fire pass**, goes in
    `forge-tools`, one module per integration. The family owns its own
-   state, its MCP tools and its held asks - Gotify is the exception, its
-   tools still living in the workspace; what it needs from the workspace
-   arrives through host ports (Gotify's `GotifyHost`, the vault family's
-   `VaultHost` and `VaultEmit`, the Slack family's `SlackStore`,
+   state, its MCP tools and its held asks - Gotify is the exception: its
+   tools and subscription state still live in the workspace, while what it
+   needs from the workspace arrives through host ports (Gotify's
+   `GotifyHost`, the vault family's `VaultHost` and `VaultEmit`, the
+   Slack family's `SlackStore`,
    `SlackEmit` and `SlackFacadeHost`, the cron family's `CronStore`,
    `CronEmit`, `CronHost` and `CronFacadeHost`). Its tools are described
    through `forge-mcp`'s `ToolProvider`, so the family never depends on

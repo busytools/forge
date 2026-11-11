@@ -659,6 +659,15 @@ fn start_subsystems(workspace: &Arc<Workspace>) {
     // helper no-ops a second call.
     workspace.start_kick_dispatcher();
 
+    // Prove each configured `[[slack]]` token with `auth.test`, then start
+    // one pump per workspace with a durable subscription loaded at boot.
+    // Both bind the Slack host, and they run before the cron catch-up
+    // below because that is the one boot step that can spawn a session,
+    // whose MCP server composes the Slack provider. A failed token is
+    // logged and that workspace stays dormant; it never stops the boot.
+    workspace.start_slack_verification();
+    workspace.start_slack_subsystem();
+
     // Boot catch-up: one tick fires each overdue cron once, advancing
     // past the missed slots (a cron missed while forge was down fires
     // now, not once per skipped tick). Runs after Workspace::new so
@@ -683,16 +692,6 @@ fn start_subsystems(workspace: &Arc<Workspace>) {
     // Start the Gotify subsystem when configured with at least one
     // durable subscription loaded at boot; no-op otherwise.
     workspace.start_gotify_subsystem();
-
-    // Prove each configured `[[slack]]` token with `auth.test`. A
-    // failure is logged and that workspace stays dormant; it never
-    // stops the boot. No-op with no `[[slack]]` entry.
-    workspace.start_slack_verification();
-
-    // Start one Slack pump per workspace with a durable subscription
-    // loaded at boot; no-op otherwise. The subscribe tool starts one
-    // for a workspace that gains its first.
-    workspace.start_slack_subsystem();
 
     // Drop review state left behind by branches deleted since the
     // last run. Worker teardown only catches a branch already gone at

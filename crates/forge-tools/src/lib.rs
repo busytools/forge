@@ -1,8 +1,10 @@
-//! `forge-tools` - one module per external integration, inbound or outbound.
+//! `forge-tools` - one module per integration, inbound or outbound, plus the
+//! cron scheduler's own family.
 //!
 //! Each module owns the network client, payload mapping and matching rules
-//! for one external integration, plus the tool family and held asks that
-//! integration brings. What a module needs from its host arrives through the
+//! for one integration, plus the tool family and held asks that integration
+//! brings; the cron module owns the durable schedule set and the policy over
+//! it. What a module needs from its host arrives through the
 //! ports that module declares, implemented by forge-workspace - Gotify's
 //! [`GotifyHost`](gotify::GotifyHost), the vault family's
 //! [`vault::VaultHost`] and [`vault::VaultEmit`], the Slack family's

@@ -240,9 +240,10 @@ Work top-down; first match wins.
    provider's client and crypto), **or the cron scheduler's own state,
    policy and fire pass** -> `forge-tools`, one module per integration.
    The family owns its own state, its MCP tools and its held asks -
-   Gotify is the exception, its tools still living in the workspace; what
-   it needs from the workspace arrives through a host port (Gotify's
-   `GotifyHost`, the Slack family's `SlackStore`, `SlackEmit` and
+   Gotify is the exception: its tools and subscription state still live in
+   the workspace, while what it needs from the workspace arrives through a
+   host port (Gotify's `GotifyHost`, the Slack family's `SlackStore`,
+   `SlackEmit` and
    `SlackFacadeHost`, the cron family's `CronStore`, `CronEmit`,
    `CronHost` and `CronFacadeHost`, the vault family's `VaultHost` and
    `VaultEmit`). A family's tools are described
@@ -343,7 +344,7 @@ one, bias toward the deeper crate.
   means one is wrong; lift to primitives or import the re-export. The
   exceptions are the crates at the edge of the graph - `forge-capture`,
   `forge-tts`, `forge-system-one`, `forge-mcp` (whose description and
-  output types every tool family speaks), and `forge-dictate` (which
+  output types every `ToolProvider` family speaks), and `forge-dictate` (which
   leans on the capture leaf and on primitives, and on nothing else of the
   workspace): their types stay in them and consumers import them from
   there.

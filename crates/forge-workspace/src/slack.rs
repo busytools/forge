@@ -365,11 +365,11 @@ impl Workspace {
         self: &Arc<Self>,
         slot: SessionSlot,
     ) -> Arc<dyn forge_mcp::ToolProvider> {
-        // No bind here: both boot paths that can start a pump
-        // (`start_slack_verification`, `start_slack_subsystem`) bind before
-        // any session exists to compose a provider, and `testing_stub` binds
-        // at construction. An unbound arm is the debug record of a host that
-        // reached this without either, not a state a tool call can create.
+        // No bind here: boot's Slack start calls bind before the cron
+        // catch-up can spawn a session (whose MCP server composes this
+        // provider), and `testing_stub` binds at construction. An unbound
+        // arm is the debug record of a host that reached this without
+        // either, not a state a tool call can create.
         let host: Arc<dyn forge_tools::slack::facade::SlackFacadeHost> = self.clone();
         let facade: Arc<dyn forge_tools::slack::facade::SlackFacade> =
             Arc::new(forge_tools::slack::facade::ProdSlackFacade::new(

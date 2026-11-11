@@ -53,8 +53,9 @@ pub enum CronFireOutcome {
     /// Every account serving the project's model is cooling until the
     /// carried reset: the entry stays due.
     DeferredCooling { cooling: CronCooling },
-    /// The Command channel is closed (shutting down): the entry stays due
-    /// so the next boot catch-up re-fires it.
+    /// The Command channel is closed (shutting down), or the host was not
+    /// bound yet: the entry stays due so the next tick or boot catch-up
+    /// re-fires it.
     DispatchFailed,
     /// The owner is asleep and this cron may not wake it: the entry stays
     /// due without advancing.
@@ -155,13 +156,17 @@ impl Cron {
     /// the whole in-memory set. A boot read that failed leaves that set
     /// EMPTY while the store handle stays live, so a whole-set write would
     /// erase every durable row the read never loaded.
-    ///
-    /// Public only so the host's test wrapper (`Workspace::with_crons_mut`,
-    /// itself `cfg(test)`) can drive a test's schedule set; every production
-    /// caller is in this module.
-    pub fn with_crons_mut<R>(&self, f: impl FnOnce(&mut Vec<CronEntry>) -> R) -> R {
+    fn with_entries_mut<R>(&self, f: impl FnOnce(&mut Vec<CronEntry>) -> R) -> R {
         let mut crons = self.entries.lock();
         f(&mut crons)
+    }
+
+    /// The host's test wrapper (`Workspace::with_crons_mut`, itself
+    /// `cfg(test)`) drives a test's schedule set through here; every
+    /// production caller is in this module.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn with_crons_mut<R>(&self, f: impl FnOnce(&mut Vec<CronEntry>) -> R) -> R {
+        self.with_entries_mut(f)
     }
 
     /// Persist one cron row, replacing any prior record for its id. Called
@@ -192,7 +197,7 @@ impl Cron {
     /// Append a cron and persist it. Backs `cron__create`.
     pub fn push_cron(&self, entry: CronEntry) {
         let project_name = entry.project_name.clone();
-        self.with_crons_mut(|crons| {
+        self.with_entries_mut(|crons| {
             self.persist_cron(&entry);
             crons.push(entry);
         });
@@ -204,7 +209,7 @@ impl Cron {
     /// fire-router's dead-slot removal; the owner-scoped `cron__delete`
     /// uses [`Self::remove_cron_owned_by`].
     pub fn remove_cron(&self, project_name: &str, id: &CronId) -> bool {
-        let removed = self.with_crons_mut(|crons| {
+        let removed = self.with_entries_mut(|crons| {
             let before = crons.len();
             crons.retain(|c| !(c.id == *id && c.project_name == project_name));
             let removed = crons.len() != before;
@@ -230,7 +235,7 @@ impl Cron {
         id: &CronId,
         label: Option<&str>,
     ) -> Option<CronEntry> {
-        let removed = self.with_crons_mut(|crons| {
+        let removed = self.with_entries_mut(|crons| {
             let pos = crons.iter().position(|c| {
                 c.id == *id && c.project_name == project_name && c.team_role.as_deref() == label
             });
@@ -251,7 +256,7 @@ impl Cron {
     /// Some(label))`. Backs the host's worker teardown, so a despawned
     /// dynamic worker's crons go with its durable row.
     pub fn remove_crons_for_worker(&self, project_name: &str, label: &str) {
-        let removed = self.with_crons_mut(|crons| {
+        let removed = self.with_entries_mut(|crons| {
             let mut removed: Vec<CronId> = Vec::new();
             crons.retain(|c| {
                 let taking =
@@ -358,7 +363,7 @@ impl Cron {
         // The entry's project comes out of the fold, since a run-once the
         // advance removes is the one thing that can no longer answer it.
         let mut project_name = None;
-        self.with_crons_mut(|crons| {
+        self.with_entries_mut(|crons| {
             let Some(pos) = crons.iter().position(|c| &c.id == id) else { return };
             project_name = Some(crons[pos].project_name.clone());
             match &crons[pos].kind {
@@ -563,8 +568,9 @@ impl Cron {
                         "cron fire deferred; leaving it due to retry",
                     );
                     self.emit.service_status(format!(
-                        "Cron in '{}' could not fire yet (its session is shutting down, or a \
-                         spawn would be refused right now); it stays due and retries",
+                        "Cron in '{}' could not fire yet (its session is shutting down, the \
+                         host was not bound yet, or a spawn would be refused right now); it \
+                         stays due and retries",
                         cron.project_name
                     ));
                 }
@@ -595,7 +601,7 @@ impl Cron {
     /// host fixture's entry point to the otherwise private mutation.
     #[cfg(any(test, feature = "testing"))]
     pub fn seed(&self, entry: CronEntry) {
-        self.with_crons_mut(|crons| {
+        self.with_entries_mut(|crons| {
             self.persist_cron(&entry);
             crons.push(entry);
         });

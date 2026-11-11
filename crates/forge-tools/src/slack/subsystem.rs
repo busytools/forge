@@ -1209,7 +1209,7 @@ impl Slack {
         // A stamped row answers from a plain read; only a row that predates
         // the field needs the guarded seed below, so a cache miss on a
         // current row costs no write. A read that fails falls through to the
-        // guarded seed, which reports the same store error once.
+        // guarded seed, which reports the store error.
         if let Ok(Some(record)) = self.store.thread(workspace, conversation, parent_ts)
             && let Some(mark) = record.edit_watermark
         {
@@ -2283,11 +2283,26 @@ mod tests {
         /// cloned its rows: the follow lands between a prune's listing and
         /// its per-row work.
         follow_during_list: Mutex<Option<RacingFollow>>,
-        /// Adds an owner to one thread inside a per-row read or guarded
-        /// update: the follow lands between a legacy edit-stamp seed's read
-        /// and its write, which a guarded update keeps and a stale write
-        /// back loses.
+        /// Adds an owner to one thread at the per-row read `follow_at_read`
+        /// names: before a guarded update's clone, so its closure keeps the
+        /// owner, or after a plain read's clone, so the whole-record write
+        /// that follows loses it.
         follow_during_thread: Mutex<Option<RacingFollow>>,
+        /// Which per-row read (1-based) the armed follow lands on. A witness
+        /// arms this on the read it means, rather than the first read a
+        /// seed happens to make.
+        follow_at_read: AtomicUsize,
+        /// Per-row reads taken, so the follow can be armed by number.
+        thread_reads: AtomicUsize,
+        /// Thread writes attempted, so a witness can pin that a read path
+        /// wrote nothing at all.
+        thread_writes: AtomicUsize,
+        /// Fails every thread write while leaving reads working: a witness
+        /// for what a failed seed write still answers.
+        fail_thread_writes: AtomicBool,
+        /// Runs at the start of the next guarded update, before its clone: a
+        /// concurrent change that lands while the seed is being stored.
+        before_thread_update: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
     #[derive(Default)]
@@ -2352,6 +2367,15 @@ mod tests {
             {
                 record.owners.push(owner);
             }
+        }
+
+        /// Count this per-row read and answer whether the armed follow lands
+        /// on it. The caller picks the side of its clone: a guarded update
+        /// injects before the clone so its closure sees the owner, a plain
+        /// read injects after so the caller's copy does not carry it.
+        fn follow_now(&self) -> bool {
+            let read = self.thread_reads.fetch_add(1, Ordering::SeqCst) + 1;
+            self.follow_at_read.load(Ordering::SeqCst) == read
         }
     }
 
@@ -2459,7 +2483,9 @@ mod tests {
             let row = self.thread(workspace, conversation, parent_ts);
             // The follow lands after the read cloned its row: the stale copy
             // a two-call shape writes back does not carry it.
-            self.inject_follow(&mut self.inner.lock(), workspace);
+            if self.follow_now() {
+                self.inject_follow(&mut self.inner.lock(), workspace);
+            }
             if self.slow_read.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -2477,6 +2503,10 @@ mod tests {
             if !inner.available {
                 return Ok(());
             }
+            self.thread_writes.fetch_add(1, Ordering::SeqCst);
+            if self.fail_thread_writes.load(Ordering::SeqCst) {
+                return Err("the thread write failed".to_owned());
+            }
             inner.threads.insert(
                 (workspace.to_owned(), conversation.to_owned(), parent_ts.to_owned()),
                 record.clone(),
@@ -2491,16 +2521,26 @@ mod tests {
             parent_ts: &str,
             update: &mut dyn FnMut(&mut Option<SlackThreadRecord>),
         ) -> Result<Option<SlackThreadRecord>, String> {
+            if let Some(before) = self.before_thread_update.lock().take() {
+                before();
+            }
             let key = (workspace.to_owned(), conversation.to_owned(), parent_ts.to_owned());
             let mut inner = self.inner.lock();
             if !inner.available {
                 return Ok(None);
             }
-            // A guarded update that landed just before this one, which the
-            // closure below must see.
-            self.inject_follow(&mut inner, workspace);
+            // A guarded update's read and write are one critical section, so
+            // a follow that lands on this read is in the store before the
+            // closure runs, and the closure keeps the owner.
+            if self.follow_now() {
+                self.inject_follow(&mut inner, workspace);
+            }
             let mut record = inner.threads.get(&key).cloned();
             update(&mut record);
+            self.thread_writes.fetch_add(1, Ordering::SeqCst);
+            if self.fail_thread_writes.load(Ordering::SeqCst) {
+                return Err("the thread write failed".to_owned());
+            }
             if let Some(record) = record {
                 inner.threads.insert(key, record.clone());
                 Ok(Some(record))
@@ -3380,11 +3420,14 @@ mod tests {
 
     /// **A legacy row's edit-stamp seed is a read-modify-write too.** The
     /// seed only writes when the row has no stamp, which is the one thread
-    /// write still done as a per-call read followed by a whole-record write.
-    /// The fake adds an owner from a guarded follow right after the read,
-    /// standing in for a delivery landing in that window; the two-call shape
-    /// writes the stale record back and erases the owner, the guarded one
-    /// keeps it.
+    /// write still done as a read followed by a whole-record write. The fake
+    /// lands an owner from a guarded follow on the seed's own row read -
+    /// before a guarded update's clone, so its closure keeps the owner, or
+    /// after a plain read's clone, so the whole-record write that follows
+    /// erases it.
+    ///
+    /// The stamped-row fast path reads the row first, so the follow is armed
+    /// on the second read: the one the seed itself makes.
     ///
     /// Mutant: restore `thread` + `set_thread` in
     /// `slack_thread_edit_watermark` and this reddens.
@@ -3403,6 +3446,7 @@ mod tests {
         );
         *h.store.follow_during_thread.lock() =
             Some((("acme".to_owned(), "C1".to_owned(), parent.clone()), owner("forge", Some("b"))));
+        h.store.follow_at_read.store(2, Ordering::SeqCst);
 
         assert_eq!(
             h.slack.slack_thread_edit_watermark("acme", "C1", &parent).as_deref(),
@@ -3420,6 +3464,108 @@ mod tests {
             row.edit_watermark.as_deref(),
             Some(parent.as_str()),
             "and the seed is written on the same row",
+        );
+    }
+
+    /// A stamped row answers from the read without a write. The seed exists
+    /// only for a row that predates the field.
+    ///
+    /// Mutant: drop the stamped-row early return in
+    /// `slack_thread_edit_watermark` and the write counter moves.
+    #[test]
+    fn a_stamped_thread_reads_its_stamp_without_writing_the_row() {
+        let h = harness();
+        let parent = recent_ts();
+        h.store.inner.lock().threads.insert(
+            ("acme".to_owned(), "C1".to_owned(), parent.clone()),
+            SlackThreadRecord {
+                cursor: parent.clone(),
+                edit_watermark: Some("900.0".to_owned()),
+                owners: vec![owner("forge", Some("a"))],
+                participating: false,
+            },
+        );
+
+        assert_eq!(
+            h.slack.slack_thread_edit_watermark("acme", "C1", &parent).as_deref(),
+            Some("900.0"),
+            "the row's own stamp is the answer",
+        );
+        assert_eq!(
+            h.store.thread_writes.load(Ordering::SeqCst),
+            0,
+            "a stamp the row already carries must not be written back",
+        );
+    }
+
+    /// A seed whose write fails answers the stamp its closure read, the
+    /// row's cursor. Answering nothing would re-offer the thread's whole
+    /// edit history on the next read.
+    ///
+    /// Mutant: `return None` on the failed write, and this reddens.
+    #[test]
+    fn a_failed_seed_write_answers_the_stamp_the_closure_read() {
+        let h = harness();
+        let parent = recent_ts();
+        h.store.inner.lock().threads.insert(
+            ("acme".to_owned(), "C1".to_owned(), parent.clone()),
+            SlackThreadRecord {
+                cursor: parent.clone(),
+                edit_watermark: None,
+                owners: vec![owner("forge", Some("a"))],
+                participating: false,
+            },
+        );
+        h.store.fail_thread_writes.store(true, Ordering::SeqCst);
+
+        assert_eq!(
+            h.slack.slack_thread_edit_watermark("acme", "C1", &parent).as_deref(),
+            Some(parent.as_str()),
+            "the cursor the closure read is known even when the write is not",
+        );
+        assert_eq!(
+            h.store.thread("acme", "C1", &parent).expect("the row survives").edit_watermark,
+            None,
+            "premise: the write really failed, so nothing was stored",
+        );
+    }
+
+    /// A concurrent advance that lands while the seed is being stored is not
+    /// rolled back by the seed's own cache write.
+    ///
+    /// Mutant: replace the seed's forward-only cache write with a plain
+    /// insert, and the older stamp overwrites the newer one.
+    #[test]
+    fn a_seed_does_not_roll_back_a_concurrent_edit_stamp_advance() {
+        let h = harness();
+        let parent = recent_ts();
+        h.store.inner.lock().threads.insert(
+            ("acme".to_owned(), "C1".to_owned(), parent.clone()),
+            SlackThreadRecord {
+                cursor: "400.0".to_owned(),
+                edit_watermark: None,
+                owners: vec![owner("forge", Some("a"))],
+                participating: false,
+            },
+        );
+        let advance_key = ("acme".to_owned(), "C1".to_owned(), parent.clone());
+        let slack = Arc::clone(&h.slack);
+        *h.store.before_thread_update.lock() = Some(Box::new(move || {
+            // Only the advance's CACHE write matters here: it is the one a
+            // seed's late insert could roll back. Its own durable write would
+            // re-enter the store's lock.
+            slack.cache_slack_thread_edit_watermark(&advance_key, "900.0");
+        }));
+
+        assert_eq!(
+            h.slack.slack_thread_edit_watermark("acme", "C1", &parent).as_deref(),
+            Some("400.0"),
+            "the seed still answers the stamp its closure read",
+        );
+        assert_eq!(
+            h.slack.slack_thread_edit_watermark("acme", "C1", &parent).as_deref(),
+            Some("900.0"),
+            "the newer stamp a concurrent advance cached must survive the seed",
         );
     }
 

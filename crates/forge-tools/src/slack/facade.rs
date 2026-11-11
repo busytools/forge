@@ -44,9 +44,10 @@ pub struct SlackCaller {
 ///
 /// **The host must be bound before any tool call.** `subscribe` and
 /// `unsubscribe` start and stop pumps directly, and a pump's announcements
-/// and deliveries are host actions that a bound workspace answers; the
-/// workspace binds in the same call that composes a family's provider, so a
-/// `ToolProvider` it hands out is never unbound.
+/// and deliveries are host actions that a bound workspace answers. The
+/// workspace binds at boot before the cron catch-up can spawn a session (the
+/// catch-up is the one boot step that can), and `testing_stub` binds at
+/// construction, so a provider it hands out is never unbound.
 pub trait SlackFacadeHost: Send + Sync {
     /// The `[[slack]]` label this caller's project acts in: the project's
     /// binding, else its org's.

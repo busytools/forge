@@ -122,6 +122,12 @@ impl CronEmit for CronPorts {
 impl CronHost for CronPorts {
     fn deliver(&self, cron: &CronEntry, missed: bool) -> CronFireOutcome {
         let Some(workspace) = self.host_workspace() else {
+            tracing::debug!(
+                target: "forge_workspace::crons",
+                event_name = "cron_deliver_unbound",
+                project = %cron.project_name,
+                "no workspace is bound yet; a due cron's delivery was left for the next tick",
+            );
             return CronFireOutcome::DispatchFailed;
         };
         // The delivery's own outcome, never a bus acceptance: the advance
@@ -179,11 +185,12 @@ impl Workspace {
         self: &Arc<Self>,
         slot: SessionSlot,
     ) -> Arc<dyn forge_mcp::ToolProvider> {
-        // No bind here: boot starts the scheduler and the boot catch-up
-        // before any session exists to compose a provider, every fire path
-        // binds again, and `testing_stub` binds at construction. An unbound
-        // arm is the debug record of a host that reached this without any of
-        // them, not a state a tool call can create.
+        // No bind here: every fire path binds before it delivers, the boot
+        // catch-up included - and that one is what can spawn a session whose
+        // MCP server composes this provider - while `testing_stub` binds at
+        // construction. An unbound arm is the debug record of a host that
+        // reached this without any of them, not a state a tool call can
+        // create.
         let host: Arc<dyn forge_tools::cron::facade::CronFacadeHost> = self.clone();
         let facade: Arc<dyn forge_tools::cron::facade::CronFacade> =
             Arc::new(forge_tools::cron::facade::ProdCronFacade::new(
