@@ -2228,11 +2228,36 @@ async fn a_non_text_origin_is_refused_at_the_upgrade() {
 }
 
 /// The shell's webview origin is allowed, and the settings frame follows the
-/// greeting on that connection as on any other.
+/// greeting on that connection as on any other. **The attach record names
+/// it**: the shell's dial is what puts an origin on this handshake, so a
+/// dropped forwarding would log every shell as a native client and a stall
+/// would name no client-side log at all.
 #[tokio::test]
 async fn a_shell_origin_connects_and_reads_the_settings_frame() {
+    install_capture();
     let (url, _fleet) = a_server().await;
-    let _socket = connect_with_origin(&url, "tauri://localhost").await;
+    let socket = connect_with_origin(&url, "tauri://localhost").await;
+    let peer = match socket.get_ref() {
+        tokio_tungstenite::MaybeTlsStream::Plain(stream) => {
+            stream.local_addr().expect("the test client's address")
+        }
+        _ => panic!("the test's client is a plain socket"),
+    };
+
+    let caught = captured();
+    let line = caught
+        .lines()
+        .find(|line| line.contains("\"connection_attached\"") && line.contains(&peer.to_string()))
+        .unwrap_or_else(|| panic!("the attach must name its origin; caught: {caught}"));
+    let parsed: serde_json::Value = serde_json::from_str(line).expect("the line is JSON");
+    assert_eq!(
+        parsed["origin"], "tauri://localhost",
+        "the attach names the origin the shell dialed: {line}",
+    );
+    assert_eq!(
+        parsed["client_kind"], "shell",
+        "the attach names the client-side log to ask for: {line}",
+    );
 }
 
 /// An origin the operator listed in `[server] allowed_origins` is the web

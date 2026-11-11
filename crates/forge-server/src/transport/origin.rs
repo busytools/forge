@@ -80,6 +80,24 @@ pub(crate) fn allows(origin: Option<&str>, server: &ServerConfig) -> bool {
     own_origins(server).iter().any(|allowed| allowed == origin)
 }
 
+/// What kind of client an `Origin` names, for the record a connection writes
+/// when it attaches: which client-side log a slow or stalled connection can
+/// be read out of.
+///
+/// The shell's webview serves both shipped apps, and its own log is on the
+/// host that dialed (`forge-perf.log` in the shell's app log directory, the
+/// same directory as its `forge.log`). Any other allowed origin is a web
+/// page, whose perf log forge writes itself as `forge-perf-web.log` beside
+/// `forge.log`. A client with no origin is the protocol client or a harness,
+/// and has no page log.
+pub(crate) fn kind(origin: Option<&str>) -> &'static str {
+    match origin {
+        None => "native",
+        Some(origin) if SHELL_ORIGINS.contains(&origin.trim_end_matches('/')) => "shell",
+        Some(_) => "web",
+    }
+}
+
 /// The origins the server itself is reached at, from `[server] bind` and
 /// `[server] port`. No port is hardcoded: a web client served from the
 /// server's own address is the one origin the config knows.
@@ -208,5 +226,22 @@ mod tests {
     #[test]
     fn an_absent_origin_is_a_native_client() {
         assert!(allows(None, &config()));
+    }
+
+    /// **An origin names the kind of client**, which is how a stalled
+    /// connection's record points a reader at the client-side log: the shell
+    /// keeps its own perf log on the host that dialed, a web page's log is
+    /// forge's own `forge-perf-web.log`, and a native client has neither.
+    #[test]
+    fn an_origin_names_the_client_kind() {
+        for origin in SHELL_ORIGINS {
+            assert_eq!(kind(Some(origin)), "shell", "{origin}");
+        }
+        assert_eq!(kind(Some("tauri://localhost/")), "shell", "a trailing slash is tolerated");
+        for origin in ["http://localhost:53219", "https://127.0.0.1:53219", "http://10.0.0.5:9001"]
+        {
+            assert_eq!(kind(Some(origin)), "web", "{origin}");
+        }
+        assert_eq!(kind(None), "native");
     }
 }

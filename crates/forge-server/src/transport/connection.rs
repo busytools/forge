@@ -757,10 +757,13 @@ pub async fn upgrade(
     // text frames it knows, and a client that says nothing (every installed
     // build before this one) never receives a frame it cannot read.
     let deflate = uri.query().is_some_and(|query| query.split('&').any(|pair| pair == "deflate=1"));
+    // The origin is owned from here on: the handshake's headers are gone by
+    // the time the connection task runs, and the attach record names it.
+    let origin = origin.map(str::to_owned);
     let limit = MAX_CLIENT_MESSAGE_BYTES;
     ws.max_frame_size(limit)
         .max_message_size(limit)
-        .on_upgrade(move |socket| greet(socket, state, peer, deflate))
+        .on_upgrade(move |socket| greet(socket, state, peer, deflate, origin))
 }
 
 /// The frame that tells a client it is speaking to a forge and carries the
@@ -798,14 +801,35 @@ struct Arrival {
 /// than to whatever else holds the port, and it carries the settings the
 /// client draws with - so the client is configured before it draws anything
 /// rather than discovering a theme later.
-async fn greet<S>(socket: S, state: Arc<TransportState>, peer: std::net::SocketAddr, deflate: bool)
-where
+async fn greet<S>(
+    socket: S,
+    state: Arc<TransportState>,
+    peer: std::net::SocketAddr,
+    deflate: bool,
+    origin: Option<String>,
+) where
     S: futures_util::Stream<Item = Result<Message, axum::Error>>
         + futures_util::Sink<Message, Error = axum::Error>
         + Unpin
         + Send,
 {
     let mut socket = ClientSocket::new(socket, deflate);
+    // **The connection's own number is minted once, where it starts**, so
+    // every record about it - attached, stalled, wedged, ended - names the
+    // same client and a reader can follow one connection through the log.
+    let me = mint_connection_id();
+    // **An attach names the client, so a stall has a log to ask for.** The
+    // shell keeps its perf log on the host that dialed, a web page's log is
+    // forge's own `forge-perf-web.log`, and a native client has neither.
+    tracing::debug!(
+        target: "forge_server::transport",
+        event_name = "connection_attached",
+        client = me,
+        peer = %peer,
+        origin = origin.as_deref().unwrap_or("<none>"),
+        client_kind = origin_gate::kind(origin.as_deref()),
+        "a client attached, and its kind names the client-side log it is read from",
+    );
     let client = state.surface.client_config();
     let greeting = greeting_for(&client, &state);
     let Ok(text) = serde_json::to_string(&greeting) else {
@@ -841,11 +865,18 @@ where
     let progress = Arc::new(Progress::new());
     let mut socket = socket.watched(Arc::clone(&progress));
     if let Err(error) =
-        supervise(&mut socket, &state, peer, settings, sent_settings, &progress).await
+        supervise(&mut socket, &state, peer, me, settings, sent_settings, &progress).await
     {
+        // **An ending names the client and the seat it had on screen**, so it
+        // is read beside the stall and wedge records it shares a clock with
+        // rather than as an anonymous error.
+        let slot = shown_seat(progress.showing_seat().as_ref());
         tracing::debug!(
             target: "forge_server::transport",
             event_name = "connection_ended",
+            client = me,
+            peer = %peer,
+            slot = %slot,
             %error,
             "the connection ended on an error rather than on the client closing",
         );
@@ -874,12 +905,8 @@ struct ConnectionLife {
 }
 
 impl ConnectionLife {
-    fn new() -> Self {
-        Self {
-            me: mint_connection_id(),
-            watching: Watching::default(),
-            dictate: Streaming::default(),
-        }
+    fn new(me: u64) -> Self {
+        Self { me, watching: Watching::default(), dictate: Streaming::default() }
     }
 }
 
@@ -896,6 +923,7 @@ async fn supervise<S>(
     socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     peer: std::net::SocketAddr,
+    me: u64,
     settings: tokio::sync::watch::Receiver<Option<Arc<str>>>,
     sent_settings: Option<Arc<str>>,
     progress: &Progress,
@@ -906,8 +934,7 @@ where
         + Unpin
         + Send,
 {
-    let mut life = ConnectionLife::new();
-    let me = life.me;
+    let mut life = ConnectionLife::new(me);
     // The future's borrow of `life` ends with this block, whether the
     // connection returned or the watchdog dropped it, which is what lets the
     // teardown below run on either path.
@@ -933,15 +960,15 @@ where
                     // **A wedge is forge's own problem, so it is a warning**
                     // and it names the connection and the seat on screen: a
                     // reader can act on which page stopped, not on a number.
-                    // `None` when the client had shown nothing, which reads
+                    // `<none>` when the client had shown nothing, which reads
                     // as no seat rather than as an empty one.
-                    let slot = progress.showing_seat();
+                    let slot = shown_seat(progress.showing_seat().as_ref());
                     tracing::warn!(
                         target: "forge_server::transport",
                         event_name = "connection_wedged",
                         client = me,
                         peer = %peer,
-                        slot = ?slot,
+                        slot = %slot,
                         silent_ms = silent.as_secs_f64() * 1000.0,
                         bound_seconds = state.heartbeat.wedge.as_secs(),
                         "no write completed on this connection past its bound, so it is ended: \
@@ -958,10 +985,16 @@ where
     if let Err(error) = &outcome
         && let Some(stalled) = error.downcast_ref::<WriteStalled>()
     {
+        // **A stalled write names the seat and the peer**, so a slow open can
+        // be tied to the page on screen and to the address that dialed: the
+        // write's own record never lands, and this is the only record it gets.
+        let slot = shown_seat(progress.showing_seat().as_ref());
         tracing::debug!(
             target: "forge_server::transport",
             event_name = "connection_write_stalled",
             client = me,
+            peer = %peer,
+            slot = %slot,
             bound_seconds = stalled.bound.as_secs(),
             waited_ms = stalled.waited.as_secs_f64() * 1000.0,
             "a frame write outlived its bound, so the connection is ended: the peer stopped \
@@ -970,6 +1003,14 @@ where
     }
     finish(state, &mut life, &outcome).await;
     outcome
+}
+
+/// The seat a connection was showing, as its records name it: the slot a
+/// person can act on, or `<none>` when it had shown nothing. One spelling for
+/// every record that carries it, so the wedged, stalled, ended and detach
+/// records of one connection can be read against each other.
+fn shown_seat(seat: Option<&SessionSlot>) -> String {
+    seat.map_or_else(|| "<none>".to_owned(), SessionSlot::display)
 }
 
 /// Why a connection ended, for the teardown records that run after it: a
@@ -1008,9 +1049,9 @@ where
 {
     // This connection's own number: the stamp that names which take is
     // this connection's, on the commands that start and stop one and on
-    // the updates that come back. Minted by the supervisor so the teardown
-    // closes the take this connection started and no other, on the reap path
-    // as well as this one.
+    // the updates that come back. Minted where the connection starts, so the
+    // teardown closes the take this connection started and no other, on the
+    // reap path as well as this one.
     let me = life.me;
     let caller = Caller { id: me, peer };
     // This connection is a client that can draw the viewer for as long as it
@@ -1141,7 +1182,7 @@ async fn finish(
     {
         // The seat is what a person would name: a stale viewer keeps a
         // profile warm, and the profile is the shown seat's.
-        let slot = watching.showing.as_ref().map_or(String::new(), |seat| seat.display().clone());
+        let slot = shown_seat(watching.showing.as_ref());
         tracing::warn!(
             target: "forge_server::transport",
             event_name = "browser_detach_stalled",
@@ -5647,6 +5688,9 @@ mod tests {
         "127.0.0.1:0".parse().expect("a test address")
     }
 
+    /// The origin a desktop shell's webview dials from.
+    const SHELL_ORIGIN: &str = "tauri://localhost";
+
     /// A sink that accepts every frame at once, for the tests that only need
     /// a send to complete.
     struct NullSink;
@@ -6014,7 +6058,7 @@ mod tests {
                     attached_from(),
                     receiver,
                     None,
-                    &mut ConnectionLife::new(),
+                    &mut ConnectionLife::new(mint_connection_id()),
                 )
                 .await
             }
@@ -6051,6 +6095,314 @@ mod tests {
             stalled.waited >= WRITE_BOUND,
             "the bound's own record carries how long the write ran: {:?}",
             stalled.waited,
+        );
+    }
+
+    /// Every record a site writes, captured on this test's own thread.
+    ///
+    /// **A guard rather than `test_support::logged`, which runs a closure to
+    /// completion on the caller's thread.** A connection is a task on this
+    /// current-thread runtime, so the thread-local subscriber applies for as
+    /// long as the guard is held across the awaits.
+    fn catch_records() -> (Arc<Mutex<Vec<u8>>>, tracing::subscriber::DefaultGuard) {
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("the sink is not poisoned").extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let written = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let sink = Arc::clone(&written);
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .flatten_event(true)
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(move || Sink(Arc::clone(&sink)))
+            .with_ansi(false)
+            .finish();
+        (written, tracing::subscriber::set_default(subscriber))
+    }
+
+    /// The one record an event name wrote, as parsed JSON.
+    fn record(written: &Arc<Mutex<Vec<u8>>>, event_name: &str) -> serde_json::Value {
+        let caught = String::from_utf8(written.lock().expect("not poisoned").clone())
+            .expect("the capture holds utf-8");
+        let line = caught
+            .lines()
+            .find(|line| line.contains(&format!("\"{event_name}\"")))
+            .unwrap_or_else(|| panic!("no `{event_name}` record was written; caught: {caught}"));
+        serde_json::from_str(line).expect("the record is JSON")
+    }
+
+    /// Every record an event name wrote, in the order they were written.
+    fn records(written: &Arc<Mutex<Vec<u8>>>, event_name: &str) -> Vec<serde_json::Value> {
+        let caught = String::from_utf8(written.lock().expect("not poisoned").clone())
+            .expect("the capture holds utf-8");
+        caught
+            .lines()
+            .filter(|line| line.contains(&format!("\"{event_name}\"")))
+            .map(|line| serde_json::from_str(line).expect("the record is JSON"))
+            .collect()
+    }
+
+    /// Drive one connection from `greet` to its end, with the origin it dials.
+    fn greeted(
+        state: Arc<TransportState>,
+        peer: std::net::SocketAddr,
+        origin: Option<&'static str>,
+    ) -> (mpsc::UnboundedSender<Message>, tokio::task::JoinHandle<()>) {
+        let (to_server, inbound) = mpsc::unbounded_channel();
+        let (outbound, _from_server) = mpsc::unbounded_channel();
+        let driven = tokio::spawn(async move {
+            greet(Peer { inbound, outbound }, state, peer, false, origin.map(str::to_owned)).await;
+        });
+        (to_server, driven)
+    }
+
+    /// **A stalled write's record names the seat and the peer.** The
+    /// remote-open diagnosis placed an 11-20 s open on the snapshot's socket
+    /// write and nothing else: `connection_write_stalled` named only an
+    /// internal client id, so a stall could not be tied to the seat on screen
+    /// or to the address that dialed. This is that tie - the record a reader
+    /// asks the client-side log about.
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_write_names_the_seat_and_the_peer() {
+        let (written, _guard) = catch_records();
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state =
+            Arc::new(TransportState::for_workspace(&fleet.workspace()).with_heartbeat(Heartbeat {
+                every: WRITE_BOUND * 5,
+                dead: WRITE_BOUND * 10,
+                wedge: WRITE_BOUND * 10,
+            }));
+        let peer = attached_from();
+        let slot = lead();
+        let (to_server, inbound) = mpsc::unbounded_channel();
+        let progress = Arc::new(Progress::new());
+        let settings = crate::transport::settings_channel();
+        let driven = tokio::spawn({
+            let state = Arc::clone(&state);
+            let progress = Arc::clone(&progress);
+            async move {
+                let mut socket =
+                    ClientSocket::new(StoppedReading { inbound, writing: None }, false)
+                        .watched(Arc::clone(&progress));
+                let receiver = settings.subscribe();
+                supervise(
+                    &mut socket,
+                    &state,
+                    peer,
+                    mint_connection_id(),
+                    receiver,
+                    None,
+                    &progress,
+                )
+                .await
+            }
+        });
+
+        showing(&to_server, Some(slot.clone()));
+        until(|| progress.showing_seat().as_ref() == Some(&slot), "the showing reached the record")
+            .await;
+
+        // The snapshot answering the subscribe is the frame whose write
+        // never completes.
+        to_server
+            .send(Message::Text(
+                serde_json::to_string(&ClientMessage::Subscribe {
+                    what: Subject::Usage,
+                    answering: false,
+                    review: false,
+                })
+                .expect("the subscribe encodes")
+                .into(),
+            ))
+            .expect("the message goes");
+
+        let outcome = tokio::time::timeout(WRITE_BOUND * 2, driven)
+            .await
+            .expect("the connection ends at the write bound rather than never")
+            .expect("the connection task joins");
+        let error = outcome.expect_err("a peer that stopped reading must not end cleanly");
+        assert!(
+            error.downcast_ref::<WriteStalled>().is_some(),
+            "the connection ends on the write bound rather than on another error: {error:?}",
+        );
+
+        let line = record(&written, "connection_write_stalled");
+        assert_eq!(line["level"], "DEBUG", "a stalled write is information: {line}");
+        assert_eq!(line["slot"], slot.display(), "the record names the seat on screen: {line}");
+        assert_eq!(line["peer"], peer.to_string(), "the record names the client: {line}");
+    }
+
+    /// **An ending names the seat and the peer too.** A connection that ends
+    /// on an error is read beside the wedged and stalled records, and it
+    /// carried neither: the same read that places a stall has to know which
+    /// page stopped and where it dialed in from. This peer vanishes - it stops
+    /// answering the keepalive - which is the ordinary error ending.
+    #[tokio::test(start_paused = true)]
+    async fn an_ending_names_the_seat_and_the_peer() {
+        let (written, _guard) = catch_records();
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state =
+            Arc::new(TransportState::for_workspace(&fleet.workspace()).with_heartbeat(Heartbeat {
+                every: Duration::from_millis(10),
+                dead: Duration::from_millis(100),
+                wedge: WRITE_BOUND * 10,
+            }));
+        let peer = attached_from();
+        let slot = lead();
+        let (to_server, inbound) = mpsc::unbounded_channel();
+        let (outbound, _from_server) = mpsc::unbounded_channel();
+        // The greeting path rather than the supervisor alone: the ending is
+        // recorded after the supervisor returns, so only the real entry point
+        // sees it.
+        let driven = tokio::spawn({
+            let state = Arc::clone(&state);
+            async move {
+                greet(Peer { inbound, outbound }, state, peer, false, None).await;
+            }
+        });
+
+        showing(&to_server, Some(slot.clone()));
+
+        tokio::time::timeout(WRITE_BOUND * 2, driven)
+            .await
+            .expect("the connection ends when its peer stops answering, not never")
+            .expect("the connection task joins");
+
+        let line = record(&written, "connection_ended");
+        assert_eq!(line["level"], "DEBUG", "a session's own work is information: {line}");
+        assert_eq!(line["slot"], slot.display(), "the record names the seat on screen: {line}");
+        assert_eq!(line["peer"], peer.to_string(), "the record names the client: {line}");
+        assert!(
+            line["error"].as_str().is_some_and(|error| error.contains("keepalive")),
+            "the record says why the connection ended: {line}",
+        );
+
+        // **One connection, one id.** The attach mints it and hands it to the
+        // supervisor; a second mint inside that handoff would leave the attach
+        // record naming a connection none of the later records name, and no
+        // other assertion here would notice.
+        let attached = record(&written, "connection_attached");
+        let reaped = record(&written, "connection_reaped");
+        assert!(
+            reaped["client"].as_u64().is_some(),
+            "the reaped record names a connection at all: {reaped}",
+        );
+        assert_eq!(
+            attached["client"], reaped["client"],
+            "the reaped record names the connection the attach named: {attached} beside {reaped}",
+        );
+        assert_eq!(
+            reaped["client"], line["client"],
+            "the ended record names the connection the reap named: {reaped} beside {line}",
+        );
+    }
+
+    /// **An ending with nothing shown names no seat.** The slot is a display
+    /// string or `<none>`, never an empty one, so a reader does not have to
+    /// tell "no seat" from a seat whose name is empty.
+    #[tokio::test(start_paused = true)]
+    async fn an_ending_without_a_showing_names_no_seat() {
+        let (written, _guard) = catch_records();
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state =
+            Arc::new(TransportState::for_workspace(&fleet.workspace()).with_heartbeat(Heartbeat {
+                every: Duration::from_millis(10),
+                dead: Duration::from_millis(100),
+                wedge: WRITE_BOUND * 10,
+            }));
+        let peer = "127.0.0.1:7".parse().expect("a test address");
+        // The sender stays alive so the keepalive reaps the peer; a closed
+        // stream would be a clean close and write no ending at all.
+        let (to_server, driven) = greeted(Arc::clone(&state), peer, None);
+
+        tokio::time::timeout(WRITE_BOUND * 2, driven)
+            .await
+            .expect("the connection ends when its peer stops answering, not never")
+            .expect("the connection task joins");
+        drop(to_server);
+
+        let line = record(&written, "connection_ended");
+        assert_eq!(
+            line["slot"], "<none>",
+            "an ending with nothing on screen names no seat: {line}",
+        );
+    }
+
+    /// **An attach names the client**, so a slow or stalled connection says
+    /// which client-side log to ask for: the shell's own perf log lives on the
+    /// host that dialed, the web page's is forge's `forge-perf-web.log`, and a
+    /// native client has neither. This pins the shell and native branches of
+    /// the kind mapping; the web branch is `origin.rs`'s own unit test.
+    #[tokio::test(start_paused = true)]
+    async fn an_attach_names_the_clients_origin_and_kind() {
+        let (written, _guard) = catch_records();
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state =
+            Arc::new(TransportState::for_workspace(&fleet.workspace()).with_heartbeat(Heartbeat {
+                every: Duration::from_millis(10),
+                dead: Duration::from_millis(100),
+                wedge: WRITE_BOUND * 10,
+            }));
+        let shell_peer: std::net::SocketAddr = "127.0.0.1:5".parse().expect("a test address");
+        let native_peer: std::net::SocketAddr = "127.0.0.1:6".parse().expect("a test address");
+        let (shell_out, shell) = greeted(Arc::clone(&state), shell_peer, Some(SHELL_ORIGIN));
+        let (native_out, native) = greeted(Arc::clone(&state), native_peer, None);
+
+        until(
+            || records(&written, "connection_attached").len() == 2,
+            "both attaches reached the record",
+        )
+        .await;
+        drop(shell_out);
+        drop(native_out);
+        tokio::time::timeout(WRITE_BOUND * 2, shell)
+            .await
+            .expect("the shell's connection ends when its peer goes")
+            .expect("the shell's connection task joins");
+        tokio::time::timeout(WRITE_BOUND * 2, native)
+            .await
+            .expect("the native connection ends when its peer goes")
+            .expect("the native connection task joins");
+
+        let lines = records(&written, "connection_attached");
+        let shell_line = lines
+            .iter()
+            .find(|line| line["peer"] == shell_peer.to_string())
+            .unwrap_or_else(|| panic!("no attach names the shell's peer: {lines:?}"));
+        assert_eq!(shell_line["level"], "DEBUG", "an attach is information: {shell_line}");
+        assert_eq!(shell_line["origin"], SHELL_ORIGIN, "the record names the origin: {shell_line}");
+        assert_eq!(
+            shell_line["client_kind"], "shell",
+            "the record names the client-side log to ask for: {shell_line}",
+        );
+        assert!(
+            shell_line["client"].as_u64().is_some(),
+            "the record names the connection: {shell_line}",
+        );
+
+        let native_line = lines
+            .iter()
+            .find(|line| line["peer"] == native_peer.to_string())
+            .unwrap_or_else(|| panic!("no attach names the native peer: {lines:?}"));
+        assert_eq!(
+            native_line["origin"], "<none>",
+            "a client with no origin names no origin: {native_line}",
+        );
+        assert_eq!(
+            native_line["client_kind"], "native",
+            "a client with no origin has no page log: {native_line}",
         );
     }
 
@@ -6093,7 +6445,7 @@ mod tests {
 
         tokio::time::timeout(
             WRITE_BOUND * 2,
-            greet(ClientSocket::new(&mut peer, false), state, attached_from(), false),
+            greet(ClientSocket::new(&mut peer, false), state, attached_from(), false, None),
         )
         .await
         .expect("the greeting ends at the write bound rather than never");
@@ -7924,20 +8276,34 @@ mod tests {
         let driven = tokio::spawn(async move {
             let receiver = settings.subscribe();
             let mut peer = peer.watched(Arc::clone(&watched_progress));
-            supervise(&mut peer, &state, attached_from(), receiver, None, &watched_progress).await
+            supervise(
+                &mut peer,
+                &state,
+                attached_from(),
+                mint_connection_id(),
+                receiver,
+                None,
+                &watched_progress,
+            )
+            .await
         });
         Driven { to_server, written, driven, progress }
     }
 
     /// Wait until `condition` holds, or fail the test with `why`.
+    ///
+    /// **The deadline is the wall clock, not tokio's.** A paused runtime does
+    /// not advance its own clock while the loop is always ready, so a
+    /// `tokio::time::timeout` here never fires and a condition that never
+    /// holds hangs to the runner's kill. Five wall-clock seconds is the bound
+    /// the non-paused tests always had, and it holds under the paused clock
+    /// too.
     async fn until(condition: impl Fn() -> bool, why: &str) {
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while !condition() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap_or_else(|_| panic!("timed out waiting for {why}"));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !condition() {
+            assert!(std::time::Instant::now() < deadline, "{why}");
+            tokio::task::yield_now().await;
+        }
     }
 
     fn home_snapshots(written: &Arc<Mutex<Vec<ServerMessage>>>) -> usize {
@@ -8625,6 +8991,7 @@ mod tests {
     /// wedge, one for the detach.
     #[tokio::test(start_paused = true)]
     async fn a_wedged_connection_whose_detach_stalls_still_ends() {
+        let (written, _guard) = catch_records();
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         let host = Arc::new(StalledDetach::default());
@@ -8638,7 +9005,18 @@ mod tests {
                 wedge: Duration::from_millis(200),
             },
         ));
-        let Driven { to_server, driven, .. } = connection(&state);
+        let Driven { to_server, driven, progress, .. } = connection(&state);
+
+        // The seat on screen before the wedge, so the record can be held to
+        // naming it: a wedge that named no seat would leave a reader with a
+        // connection number and nothing to act on.
+        let slot = lead();
+        showing(&to_server, Some(slot.clone()));
+        until(
+            || progress.showing_seat().as_ref() == Some(&slot),
+            "the showing reached the wedge record",
+        )
+        .await;
 
         // A browser attach that parks: the connection wedges inside the call.
         to_server
@@ -8674,6 +9052,70 @@ mod tests {
             1,
             "the teardown never attempted the detach",
         );
+
+        let line = record(&written, "connection_wedged");
+        assert_eq!(line["level"], "WARN", "a wedge is forge's own problem: {line}");
+        assert_eq!(line["slot"], slot.display(), "the wedge names the seat on screen: {line}");
+        assert_eq!(line["peer"], attached_from().to_string(), "the wedge names the client: {line}");
+    }
+
+    /// **A stalled detach with nothing on screen names no seat.** The detach
+    /// record is read beside the wedge that caused it, and an empty `slot`
+    /// would read as a seat with no name rather than as no seat at all.
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_detach_with_nothing_shown_names_no_seat() {
+        let (written, _guard) = catch_records();
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let host = Arc::new(StalledDetach::default());
+        fleet.workspace().install_browser_host(
+            Arc::clone(&host) as Arc<dyn forge_workspace::browser::BrowserHost>
+        );
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()).with_heartbeat(
+            crate::transport::Heartbeat {
+                every: Duration::from_millis(20),
+                dead: Duration::from_secs(30),
+                wedge: Duration::from_millis(200),
+            },
+        ));
+        let Driven { to_server, driven, .. } = connection(&state);
+
+        // A browser attach that parks: the connection wedges inside the call.
+        // No showing was sent, so nothing is on screen.
+        to_server
+            .send(Message::Text(
+                serde_json::to_string(&ClientMessage::BrowserView {
+                    seat: lead(),
+                    tab: None,
+                    reply_to: None,
+                })
+                .expect("the attach encodes")
+                .into(),
+            ))
+            .expect("the message goes");
+        let mut turns = 0;
+        while !host.attach_entered.load(Ordering::Relaxed) {
+            assert!(turns < 100_000, "the attach never parked");
+            turns += 1;
+            tokio::task::yield_now().await;
+        }
+        drop(to_server);
+
+        let ended = tokio::time::timeout(WRITE_BOUND * 2, driven)
+            .await
+            .expect("a stalled detach held a wedged connection open past its bound")
+            .expect("the connection task joins");
+        assert!(
+            ended
+                .expect_err("a wedged connection did not end cleanly")
+                .downcast_ref::<WedgeStalled>()
+                .is_some(),
+            "the connection ended for a reason other than the wedge it faked",
+        );
+
+        let line = record(&written, "browser_detach_stalled");
+        assert_eq!(line["level"], "WARN", "a stale viewer is forge's problem: {line}");
+        assert_eq!(line["slot"], "<none>", "a detach with nothing on screen names no seat: {line}");
     }
 
     /// **Only a completed flush is progress.** A flush still pending is not,
