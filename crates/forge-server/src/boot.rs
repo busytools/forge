@@ -1154,6 +1154,16 @@ mod tests {
     /// carries a row until the test seeds one, so nothing spawns by
     /// default.
     fn fixture(serve: bool) -> (Arc<Workspace>, tempfile::TempDir) {
+        fixture_with(serve, false)
+    }
+
+    /// A boot fixture with the speaking role on, its models dir under the
+    /// fixture's own tree, so a wave test can read the prewarm's install.
+    fn fixture_with_tts() -> (Arc<Workspace>, tempfile::TempDir) {
+        fixture_with(false, true)
+    }
+
+    fn fixture_with(serve: bool, tts: bool) -> (Arc<Workspace>, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
         let port = listener.local_addr().expect("the port the OS handed out").port();
@@ -1163,10 +1173,8 @@ mod tests {
         drop(socket);
         let forge = dir.path().join("forge");
         std::fs::create_dir_all(&forge).expect("forge/");
-        std::fs::write(
-            forge.join("forge.toml"),
-            format!(
-                "\
+        let mut toml = format!(
+            "\
 [[orgs]]
 name = \"TestOrg\"
 accounts = [\"Stub\"]
@@ -1193,9 +1201,16 @@ port = {socket_port}
 [gateway]
 port = {port}
 ",
-            ),
-        )
-        .expect("write forge.toml");
+        );
+        if tts {
+            use std::fmt::Write as _;
+            let _ = write!(
+                toml,
+                "\n[tts]\nenabled = true\nmodels_dir = \"{}\"\n",
+                dir.path().join("tts").display()
+            );
+        }
+        std::fs::write(forge.join("forge.toml"), toml).expect("write forge.toml");
         let workspace = Workspace::new_for_test(dir.path().to_owned()).expect("workspace");
         (Arc::new(workspace), dir)
     }
@@ -1645,6 +1660,95 @@ port = 49201
             workspace.test_voice_prewarm_started(),
             "the boot wave asks for the prewarm; dropping the call leaves the first say \
              paying the load",
+        );
+    }
+
+    /// A Hub stand-in for the boot's install: the revision, the listing and
+    /// the download, answered without the network, recording the downloads
+    /// so the test reads the dispatch.
+    struct StubHub {
+        downloads: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl StubHub {
+        fn new() -> Self {
+            Self { downloads: std::sync::Mutex::new(Vec::new()) }
+        }
+
+        fn downloaded(&self) -> Vec<String> {
+            self.downloads.lock().expect("unpoisoned").clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl forge_workspace::hub::HubPort for StubHub {
+        async fn revision(&self, _repo: &str) -> Result<String, String> {
+            Ok("test-revision".to_owned())
+        }
+
+        async fn blobs(
+            &self,
+            _repo: &str,
+            _revision: &str,
+        ) -> Result<Vec<forge_workspace::hub::HubBlob>, String> {
+            let variant = forge_workspace::tts::SpeakingVariant::pinned();
+            Ok(vec![
+                forge_workspace::hub::HubBlob {
+                    path: variant.path.to_owned(),
+                    size: variant.size,
+                    sha256: Some(variant.sha256.to_owned()),
+                },
+                forge_workspace::hub::HubBlob {
+                    path: "voices/af_heart.bin".to_owned(),
+                    size: 4,
+                    sha256: Some("stub".to_owned()),
+                },
+            ])
+        }
+
+        async fn download(
+            &self,
+            _repo: &str,
+            _revision: &str,
+            blob: &forge_workspace::hub::HubBlob,
+            dest: &std::path::Path,
+            on_bytes: &mut (dyn FnMut(u64) + Send),
+        ) -> Result<(), String> {
+            self.downloads.lock().expect("unpoisoned").push(blob.path.clone());
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            }
+            std::fs::write(dest, b"stub").map_err(|error| error.to_string())?;
+            on_bytes(4);
+            Ok(())
+        }
+    }
+
+    /// The wave's voice prewarm installs the active speaking model when the
+    /// role is on and the model is absent: a fresh `[tts] enabled` boot has
+    /// nothing installed, so the prewarm fetches the set through the same
+    /// Hub seam the models page's install uses. With the role off the
+    /// prewarm starts but installs nothing, which the guard test beside this
+    /// one reads.
+    #[tokio::test]
+    async fn the_boot_wave_installs_a_missing_voice_model_when_tts_is_on() {
+        let (workspace, _dir) = fixture_with_tts();
+        let hub = Arc::new(StubHub::new());
+        workspace.set_test_hub_for_test(Arc::clone(&hub) as Arc<dyn forge_workspace::hub::HubPort>);
+
+        start_subsystems(&workspace);
+
+        let mut downloaded = Vec::new();
+        for _ in 0..200 {
+            downloaded = hub.downloaded();
+            if !downloaded.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            !downloaded.is_empty(),
+            "the boot installed the missing speaking model; no download reached the Hub",
         );
     }
 

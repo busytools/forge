@@ -7,7 +7,8 @@ use std::path::PathBuf;
 use forge_dictate::{ModelFacts, ModelSpec};
 use serde::Deserialize;
 
-use crate::dictate::{DictateModel, DictateModelState, DictateRole};
+use crate::dictate::{DictateFailure, DictateModel, DictateModelState, DictateRole};
+use crate::install::InstallState;
 
 /// The speaking model's own name. `[tts] speaking_model` accepts this, or one
 /// of [`VARIANTS`]' names to pin a quantisation.
@@ -362,8 +363,27 @@ impl crate::Workspace {
             .find(|row| row.variant == active.variant)
             .map(SpeakingInstall::voice_names)
             .unwrap_or_default();
-        let state =
-            if active_installed { DictateModelState::Ready } else { DictateModelState::Pending };
+        // While the speaking install runs, the row says what it is doing -
+        // fetching or failed - rather than "waiting", so the home card
+        // shows the boot's own progress. The page's install and the boot's
+        // are the same state, so one mapping covers both.
+        let state = if active_installed {
+            DictateModelState::Ready
+        } else {
+            match &*self.dictate_install.lock() {
+                InstallState::Downloading { file, got, total } if file.as_str() == active.file => {
+                    DictateModelState::Downloading {
+                        downloaded: *got,
+                        total: *total,
+                        resumed_from: None,
+                    }
+                }
+                InstallState::Failed { file, reason } if file.as_str() == active.file => {
+                    DictateModelState::Failed(DictateFailure::Other { message: reason.clone() })
+                }
+                _ => DictateModelState::Pending,
+            }
+        };
         // The running system's flag, not a saved value the restart has not
         // taken: the tool gate and the registered set read the same one.
         let enabled = self.voice_enabled();
@@ -461,5 +481,35 @@ mod tests {
 
         assert!(workspace.voice_enabled(), "the running service still answers on");
         assert!(workspace.voices().enabled, "the home read follows the service");
+    }
+
+    /// The speaking row follows the install in flight: a boot's download is
+    /// drawn as `Downloading`, not `Pending`, so the home card reads
+    /// "fetching" while the model lands. Deleting the mapping leaves the row
+    /// `Pending` and this test red.
+    #[tokio::test]
+    async fn the_speaking_row_carries_the_downloading_state_while_the_install_runs() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.tts.enabled = true;
+        let (workspace, _updates) =
+            crate::Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+                .expect("the stub builds");
+        let variant = SpeakingVariant::pinned();
+        *workspace.dictate_install.lock() = crate::install::InstallState::Downloading {
+            file: variant.file.to_owned(),
+            got: 12,
+            total: 100,
+        };
+        let view = workspace.voices();
+        let row = view.snapshot.models.first().expect("the speaking row is drawn");
+        assert_eq!(
+            row.state,
+            crate::dictate::DictateModelState::Downloading {
+                downloaded: 12,
+                total: 100,
+                resumed_from: None,
+            }
+        );
     }
 }

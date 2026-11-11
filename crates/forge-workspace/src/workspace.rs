@@ -820,6 +820,10 @@ pub struct Workspace {
     /// A test's own cleanup source, on the same terms.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) test_cleanup_source: Mutex<Option<forge_dictate::cleanup::CleanupSource>>,
+    /// A test's own Hub, so a speaking install runs against a stub instead
+    /// of the network. Not present in production builds.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) test_hub: Mutex<Option<std::sync::Arc<dyn crate::hub::HubPort>>>,
     /// A test's own catalogue directory, so a check never writes to the
     /// real app-support dir. Not present in production builds.
     #[cfg(any(test, feature = "testing"))]
@@ -2631,6 +2635,8 @@ impl Workspace {
             #[cfg(any(test, feature = "testing"))]
             test_cleanup_source: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
+            test_hub: Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
             test_catalogue_dir: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             test_read_aloud_dir: Mutex::new(None),
@@ -2746,6 +2752,18 @@ impl Workspace {
     /// reference that a reload could pull out from under it.
     pub(crate) fn config_arc(&self) -> Arc<LoadedConfig> {
         Arc::clone(&self.config.read())
+    }
+
+    /// The Hub one speaking install talks to. A test supplies its own through
+    /// [`Self::set_test_hub_for_test`]; production reads the `[huggingface]`
+    /// token and builds the real client.
+    pub(crate) fn hub(&self) -> Result<Arc<dyn crate::hub::HubPort>, String> {
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(hub) = self.test_hub.lock().clone() {
+            return Ok(hub);
+        }
+        let token = self.config_arc().huggingface.token.clone();
+        crate::hub::Hub::new(token).map(|hub| Arc::new(hub) as Arc<dyn crate::hub::HubPort>)
     }
 
     /// Whether a spawn's resolution ran entirely inside one settled config:

@@ -481,6 +481,8 @@ impl Workspace {
             #[cfg(any(test, feature = "testing"))]
             test_cleanup_source: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
+            test_hub: Mutex::new(None),
+            #[cfg(any(test, feature = "testing"))]
             test_catalogue_dir: Mutex::new(None),
             #[cfg(any(test, feature = "testing"))]
             test_read_aloud_dir: Mutex::new(None),
@@ -585,6 +587,13 @@ impl Workspace {
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_scan_gate(&self, gate: Arc<tokio::sync::Semaphore>) {
         *self.test_scan_gate.lock() = Some(gate);
+    }
+
+    /// Stand a stub Hub in for the network, so a speaking install runs
+    /// against the fixture's own bytes. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn set_test_hub_for_test(&self, hub: Arc<dyn crate::hub::HubPort>) {
+        *self.test_hub.lock() = Some(hub);
     }
 
     /// Report the seat's tree moved, as the file watch's own mark does, so a

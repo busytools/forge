@@ -522,6 +522,11 @@ impl crate::Workspace {
             return;
         }
         let files = self.speaking_files();
+        // The active variant's model is absent: boot installs it, exactly as
+        // dictate's preflight fetches its own, then warms it. The install is
+        // the page's own path, so a boot that races a page press leaves the
+        // page's install in charge.
+        let variant = files.is_none().then(|| self.speaking_variant().0.variant.to_owned());
         let model = files
             .as_ref()
             .map_or_else(|| "unresolved".to_owned(), |files| files.model.display().to_string());
@@ -537,8 +542,52 @@ impl crate::Workspace {
             model = %model,
             "loading the speaking engine"
         );
+        let this = Arc::clone(self);
         tokio::spawn(
             async move {
+                if let Some(variant) = variant {
+                    match this.begin_install(&variant) {
+                        Ok(()) => {
+                            tracing::info!(
+                                event_name = "voice_prewarm_install_starting",
+                                variant = %variant,
+                                "the active speaking model is missing; installing it at boot"
+                            );
+                            Arc::clone(&this).run_install(variant).await;
+                            if let crate::install::InstallState::Failed { file, reason } =
+                                &*this.dictate_install.lock()
+                            {
+                                tracing::warn!(
+                                    event_name = "voice_prewarm_install_failed",
+                                    %file,
+                                    %reason,
+                                    "the speaking model install failed at boot; the page can retry"
+                                );
+                            }
+                            this.push_models();
+                        }
+                        Err(crate::DispatchError::Installing) => {
+                            tracing::info!(
+                                event_name = "voice_prewarm_install_in_flight",
+                                variant = %variant,
+                                "an install is already running; the prewarm leaves it to the first say"
+                            );
+                            // The in-flight install owns the model; the slot
+                            // stays empty so the first say fills it once the
+                            // install lands.
+                            return;
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                event_name = "voice_prewarm_install_failed",
+                                variant = %variant,
+                                failure = %error,
+                                "the boot could not start the speaking model install; the page can retry"
+                            );
+                            return;
+                        }
+                    }
+                }
                 match service.warm().await {
                     Ok(()) => tracing::info!(
                         event_name = "voice_prewarm_ready",
@@ -1605,13 +1654,79 @@ mod tests {
         assert_eq!(loads.load(Ordering::SeqCst), 1, "the next say reuses the parked engine");
     }
 
+    /// A Hub stand-in for the boot prewarm: the revision, the listing and
+    /// the download, answered without the network. The install's own digest
+    /// check runs in the real client, so a stub's download writes its bytes
+    /// and skips the check; the listing carries the compiled variant's own
+    /// model, which is what the release check compares.
+    struct StubHub {
+        revision: Result<String, String>,
+        blobs: Result<Vec<crate::hub::HubBlob>, String>,
+        downloads: Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::hub::HubPort for StubHub {
+        async fn revision(&self, _repo: &str) -> Result<String, String> {
+            self.revision.clone()
+        }
+
+        async fn blobs(
+            &self,
+            _repo: &str,
+            _revision: &str,
+        ) -> Result<Vec<crate::hub::HubBlob>, String> {
+            self.blobs.clone()
+        }
+
+        async fn download(
+            &self,
+            _repo: &str,
+            _revision: &str,
+            blob: &crate::hub::HubBlob,
+            dest: &std::path::Path,
+            on_bytes: &mut (dyn FnMut(u64) + Send),
+        ) -> Result<(), String> {
+            self.downloads.lock().expect("unpoisoned").push(blob.path.clone());
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            }
+            std::fs::write(dest, b"stub").map_err(|error| error.to_string())?;
+            on_bytes(4);
+            Ok(())
+        }
+    }
+
     fn prewarm_workspace(tts_enabled: bool) -> (Arc<crate::Workspace>, tempfile::TempDir) {
+        prewarm_workspace_with_hub(
+            tts_enabled,
+            &Arc::new(StubHub {
+                revision: Err("the stub Hub is down".to_owned()),
+                blobs: Err("the stub Hub is down".to_owned()),
+                downloads: Mutex::new(Vec::new()),
+            }),
+        )
+    }
+
+    fn prewarm_workspace_with_hub(
+        tts_enabled: bool,
+        hub: &Arc<StubHub>,
+    ) -> (Arc<crate::Workspace>, tempfile::TempDir) {
         let dir = tempfile::tempdir().expect("a temp dir");
         let mut config = crate::config::LoadedConfig::empty_for_test();
         config.tts.enabled = tts_enabled;
+        // A stub Hub, so the prewarm's install never reaches the network and
+        // never writes into the live cache. The stub's answer is the caller's;
+        // the down stub is the failure the boot must survive, and the success
+        // is the boot's own install.
+        config.tts.models_dir = Some(dir.path().join("models").to_string_lossy().into_owned());
         let (workspace, _updates) =
             crate::Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
                 .expect("the stub builds");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("the store opens"),
+        );
+        workspace.set_test_hub_for_test(Arc::clone(hub) as Arc<dyn crate::hub::HubPort>);
         workspace.install_voice_engine_for_test(Arc::new(StubEngine::new(Arc::new(Mutex::new(
             Vec::new(),
         )))));
@@ -1635,6 +1750,273 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         panic!("the boot prewarm did not load the engine");
+    }
+
+    /// **The boot installs the active speaking model when it is missing, and
+    /// warms the engine after it.** A boot with `[tts] enabled` and no
+    /// installed variant asks the Hub for the set, lands it through the same
+    /// path the models page runs, and only then loads the engine. Removing
+    /// the boot install branch leaves this red on the Hub's own download
+    /// count.
+    #[tokio::test]
+    async fn the_boot_installs_a_missing_active_model_and_warms_after_it() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.tts.enabled = true;
+        config.tts.models_dir = Some(dir.path().join("models").to_string_lossy().into_owned());
+        let (workspace, _updates) =
+            crate::Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+                .expect("the stub builds");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("the store opens"),
+        );
+        let variant = crate::tts::SpeakingVariant::pinned();
+        let hub = Arc::new(StubHub {
+            revision: Ok("test-revision".to_owned()),
+            blobs: Ok(vec![
+                crate::hub::HubBlob {
+                    path: variant.path.to_owned(),
+                    size: variant.size,
+                    sha256: Some(variant.sha256.to_owned()),
+                },
+                crate::hub::HubBlob {
+                    path: "voices/af_heart.bin".to_owned(),
+                    size: 4,
+                    sha256: Some("stub".to_owned()),
+                },
+            ]),
+            downloads: Mutex::new(Vec::new()),
+        });
+        workspace.set_test_hub_for_test(Arc::clone(&hub) as Arc<dyn crate::hub::HubPort>);
+        workspace.install_voice_engine_for_test(Arc::new(StubEngine::new(Arc::new(Mutex::new(
+            Vec::new(),
+        )))));
+
+        workspace.start_voice_prewarm();
+        assert!(workspace.test_voice_prewarm_started(), "the wave asked for it");
+
+        let service = workspace.voice_service();
+        for _ in 0..400 {
+            if service.engine.lock().await.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(service.engine.lock().await.is_some(), "the prewarm warmed the engine");
+        assert!(
+            !hub.downloads.lock().expect("unpoisoned").is_empty(),
+            "the boot started the install against the Hub"
+        );
+        let view = workspace.voices();
+        let row = view.snapshot.models.first().expect("the speaking row is drawn");
+        assert_eq!(row.state, crate::dictate::DictateModelState::Ready);
+        assert!(workspace.speaking_files().is_some(), "the installed model resolves");
+    }
+
+    /// **An installed variant is not installed again.** The prewarm's
+    /// `speaking_files` resolves, so the boot loads the engine and never asks
+    /// the Hub for a revision. A boot that installed unconditionally would
+    /// download the model on every start.
+    #[tokio::test]
+    async fn the_boot_does_not_install_when_the_active_variant_is_installed() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.tts.enabled = true;
+        config.tts.models_dir = Some(dir.path().join("models").to_string_lossy().into_owned());
+        let (workspace, _updates) =
+            crate::Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+                .expect("the stub builds");
+        let variant = crate::tts::SpeakingVariant::pinned();
+        let db = crate::store::Db::open(&dir.path().join("db.redb")).expect("the store opens");
+        crate::store::speaking_models::record_installed(
+            &db,
+            &crate::tts::SpeakingInstall {
+                variant: variant.variant.to_owned(),
+                revision: "test-revision".to_owned(),
+                model: variant.file.to_owned(),
+                model_size: variant.size,
+                model_sha256: variant.sha256.to_owned(),
+                voices: Vec::new(),
+                at: "2026-11-11T00:00:00Z".to_owned(),
+            },
+        )
+        .expect("the record lands");
+        workspace.install_db_for_test(db);
+        let hub = Arc::new(StubHub {
+            revision: Ok("test-revision".to_owned()),
+            blobs: Ok(Vec::new()),
+            downloads: Mutex::new(Vec::new()),
+        });
+        workspace.set_test_hub_for_test(Arc::clone(&hub) as Arc<dyn crate::hub::HubPort>);
+        workspace.install_voice_engine_for_test(Arc::new(StubEngine::new(Arc::new(Mutex::new(
+            Vec::new(),
+        )))));
+
+        workspace.start_voice_prewarm();
+        let service = workspace.voice_service();
+        for _ in 0..400 {
+            if service.engine.lock().await.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(service.engine.lock().await.is_some(), "the prewarm warmed the engine");
+        assert!(
+            hub.downloads.lock().expect("unpoisoned").is_empty(),
+            "an installed variant was downloaded again at boot"
+        );
+    }
+
+    /// **`[tts]` off does neither.** A boot with the role switched off starts
+    /// no install and loads no engine: the wave-asked signal is set, and the
+    /// early return is what keeps the boot from fetching a multi-gigabyte
+    /// model for a role nobody turned on.
+    #[tokio::test]
+    async fn the_boot_does_neither_when_tts_is_off() {
+        let hub = Arc::new(StubHub {
+            revision: Ok("test-revision".to_owned()),
+            blobs: Ok(Vec::new()),
+            downloads: Mutex::new(Vec::new()),
+        });
+        let (workspace, _dir) = prewarm_workspace_with_hub(false, &hub);
+        workspace.start_voice_prewarm();
+        assert!(workspace.test_voice_prewarm_started(), "the wave asked for it");
+
+        let service = workspace.voice_service();
+        for _ in 0..40 {
+            assert!(
+                service.engine.lock().await.is_none(),
+                "the prewarm loaded the engine with [tts] off"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            hub.downloads.lock().expect("unpoisoned").is_empty(),
+            "the boot reached the Hub with [tts] off"
+        );
+    }
+
+    /// **An install already running at boot is left alone.** The prewarm's
+    /// `begin_install` answers `Installing`, which the boot must not treat as
+    /// a failure: the in-flight install owns the model, and the slot stays
+    /// empty for the first say.
+    #[tokio::test]
+    async fn the_boot_leaves_an_install_already_running_alone() {
+        let hub = Arc::new(StubHub {
+            revision: Ok("test-revision".to_owned()),
+            blobs: Ok(Vec::new()),
+            downloads: Mutex::new(Vec::new()),
+        });
+        let (workspace, _dir) = prewarm_workspace_with_hub(true, &hub);
+        let in_flight = crate::install::InstallState::Downloading {
+            file: "model_quantized.onnx".to_owned(),
+            got: 1,
+            total: 2,
+        };
+        *workspace.dictate_install.lock() = in_flight.clone();
+
+        workspace.start_voice_prewarm();
+        for _ in 0..50 {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert_eq!(
+            *workspace.dictate_install.lock(),
+            in_flight,
+            "the boot left the in-flight install alone"
+        );
+        assert!(
+            hub.downloads.lock().expect("unpoisoned").is_empty(),
+            "the boot started a second install over the in-flight one"
+        );
+        assert!(
+            workspace.voice_service().engine.lock().await.is_none(),
+            "the prewarm left the slot empty for the first say"
+        );
+    }
+
+    /// **A failed install is warned and left for the page to retry.** The
+    /// boot does not block on it and does not panic: the state lands on
+    /// `InstallState::Failed`, which the models page's install bar reads.
+    #[tokio::test]
+    async fn the_boot_leaves_a_failed_install_for_the_page_to_retry() {
+        let (workspace, _dir) = prewarm_workspace(true);
+        workspace.start_voice_prewarm();
+        for _ in 0..400 {
+            if matches!(
+                *workspace.dictate_install.lock(),
+                crate::install::InstallState::Failed { .. }
+            ) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            matches!(
+                *workspace.dictate_install.lock(),
+                crate::install::InstallState::Failed { .. }
+            ),
+            "a failed install did not leave InstallState::Failed for the page to retry"
+        );
+    }
+
+    /// **The configured variant is the one boot installs.** A name in
+    /// `[tts] speaking_model` beats the compiled pin, so the Hub is asked for
+    /// that variant's model rather than the pinned one.
+    #[tokio::test]
+    async fn the_boot_installs_the_configured_variant() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let mut config = crate::config::LoadedConfig::empty_for_test();
+        config.tts.enabled = true;
+        config.tts.models_dir = Some(dir.path().join("models").to_string_lossy().into_owned());
+        config.tts.speaking_model = Some("kokoro-82m-fp16".to_owned());
+        let (workspace, _updates) =
+            crate::Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
+                .expect("the stub builds");
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("the store opens"),
+        );
+        let variant = crate::tts::SpeakingVariant::named("kokoro-82m-fp16")
+            .expect("the fp16 variant is known");
+        let hub = Arc::new(StubHub {
+            revision: Ok("test-revision".to_owned()),
+            blobs: Ok(vec![
+                crate::hub::HubBlob {
+                    path: variant.path.to_owned(),
+                    size: variant.size,
+                    sha256: Some(variant.sha256.to_owned()),
+                },
+                crate::hub::HubBlob {
+                    path: "voices/af_heart.bin".to_owned(),
+                    size: 4,
+                    sha256: Some("stub".to_owned()),
+                },
+            ]),
+            downloads: Mutex::new(Vec::new()),
+        });
+        workspace.set_test_hub_for_test(Arc::clone(&hub) as Arc<dyn crate::hub::HubPort>);
+        workspace.install_voice_engine_for_test(Arc::new(StubEngine::new(Arc::new(Mutex::new(
+            Vec::new(),
+        )))));
+
+        workspace.start_voice_prewarm();
+        let service = workspace.voice_service();
+        for _ in 0..400 {
+            if service.engine.lock().await.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(service.engine.lock().await.is_some(), "the prewarm warmed the engine");
+        let downloads = hub.downloads.lock().expect("unpoisoned");
+        assert_eq!(
+            downloads.first().map(String::as_str),
+            Some(variant.path),
+            "the boot installed the configured variant, not the pin"
+        );
+        assert!(
+            workspace.speaking_install("kokoro-82m-fp16").is_some(),
+            "the configured variant landed"
+        );
     }
 
     /// The dispatch guard is not the wave-asked signal: a first call with
