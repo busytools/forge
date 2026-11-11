@@ -387,21 +387,42 @@ mod tests {
     use super::*;
     use crate::cron::facade::MockCronFacade;
 
-    /// The text the output carries, as a tool test reads it.
+    /// The text of the output's first block. The panics are the test's own
+    /// failure to say which: reaching for text and finding a picture is the
+    /// wrong question, not a value to return.
     fn text_of(output: &ToolOutput) -> String {
-        output
-            .blocks
-            .iter()
-            .filter_map(|block| match block {
-                forge_mcp::ToolOutputBlock::Text { text } => Some(text.as_str()),
-                forge_mcp::ToolOutputBlock::Image { .. } => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        let Some(block) = output.blocks.first() else {
+            panic!("text_of: the output carries no block at all");
+        };
+        match block {
+            forge_mcp::ToolOutputBlock::Text { text } => text.clone(),
+            forge_mcp::ToolOutputBlock::Image { .. } => panic!("text_of: this block is an image"),
+        }
     }
 
     fn caller_slot() -> SessionSlot {
         SessionSlot::lead("TestOrg", "forge")
+    }
+
+    /// Every name the family advertises is one its dispatcher answers, and a
+    /// name it does not own is not its call to answer. The specs and the
+    /// `call` match are two hand-maintained lists, so a renamed arm must
+    /// redden here rather than leave a tool advertised but undispatchable.
+    #[tokio::test]
+    async fn every_advertised_cron_tool_is_dispatchable() {
+        let facade: Arc<dyn CronFacade> = Arc::new(MockCronFacade::new());
+        let tools = CronTools::new(facade, caller_slot());
+        for spec in tools.tools() {
+            assert!(
+                tools.call(&spec.name, serde_json::json!({})).await.is_some(),
+                "{} is advertised but no call arm answers it",
+                spec.name,
+            );
+        }
+        assert!(
+            tools.call("cron__not_a_tool", serde_json::json!({})).await.is_none(),
+            "a name this family does not own is not its call to answer",
+        );
     }
 
     fn sample_entry(id: &str) -> CronEntry {

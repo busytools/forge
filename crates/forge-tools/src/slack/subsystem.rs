@@ -1206,6 +1206,16 @@ impl Slack {
         if !self.store.available() {
             return None;
         }
+        // A stamped row answers from a plain read; only a row that predates
+        // the field needs the guarded seed below, so a cache miss on a
+        // current row costs no write. A read that fails falls through to the
+        // guarded seed, which reports the same store error once.
+        if let Ok(Some(record)) = self.store.thread(workspace, conversation, parent_ts)
+            && let Some(mark) = record.edit_watermark
+        {
+            self.cache_slack_thread_edit_watermark(&key, &mark);
+            return Some(mark);
+        }
         // The seed is a read-modify-write like any other: a row written
         // before the stamp existed gains one inside the same guard, so a
         // follow that lands in between cannot have its owner overwritten by
@@ -1240,14 +1250,20 @@ impl Slack {
                 conversation,
                 parent = %parent_ts,
                 %error,
-                "reading or writing a Slack thread failed; its edits are judged from the beginning",
+                "reading or writing a Slack thread failed; its edit stamp was not stored",
             );
-            return None;
+            // The closure still read the row's cursor; a write that failed
+            // must not make the caller re-offer the thread's whole edit
+            // history.
+            return mark;
         }
         // No row: nothing durable to stamp, and a row created later seeds
         // its own, so nothing is cached against its key.
         let mark = mark?;
-        self.slack_thread_edit_watermarks.lock().insert(key, mark.clone());
+        // Forward only, like every other cache write: a concurrent advance
+        // that landed while the seed was being stored must not be rolled
+        // back here.
+        self.cache_slack_thread_edit_watermark(&key, &mark);
         Some(mark)
     }
 

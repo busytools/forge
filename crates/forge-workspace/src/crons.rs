@@ -15,9 +15,7 @@ use std::time::{Duration, SystemTime};
 
 use forge_primitives::cron::{CronEntry, CronId, CronName};
 use forge_primitives::{SessionSlot, cloud::service_status::ServiceSeverity};
-use forge_tools::cron::{
-    Cron, CronCooling, CronEmit, CronFireOutcome, CronHost, CronSeams, CronStore,
-};
+use forge_tools::cron::{Cron, CronEmit, CronFireOutcome, CronHost, CronSeams, CronStore};
 use parking_lot::Mutex;
 use tracing::Instrument;
 
@@ -58,16 +56,6 @@ impl CronPorts {
 }
 
 impl CronStore for CronPorts {
-    fn available(&self) -> bool {
-        self.db.lock().is_some()
-    }
-
-    fn list(&self) -> Result<Vec<CronEntry>, String> {
-        let db = self.db.lock();
-        let Some(db) = db.as_ref() else { return Ok(Vec::new()) };
-        crate::store::cron::list(db).map_err(|error| error.to_string())
-    }
-
     fn upsert(&self, cron: &CronEntry) -> Result<(), String> {
         let db = self.db.lock();
         let Some(db) = db.as_ref() else { return Ok(()) };
@@ -137,26 +125,10 @@ impl CronHost for CronPorts {
             return CronFireOutcome::DispatchFailed;
         };
         // The delivery's own outcome, never a bus acceptance: the advance
-        // decision turns on whether the prompt actually landed.
-        match crate::spawn::deliver_cron_prompt(&workspace, cron, missed) {
-            crate::spawn::CronFireOutcome::Delivered => CronFireOutcome::Delivered,
-            crate::spawn::CronFireOutcome::TargetGone => CronFireOutcome::TargetGone,
-            crate::spawn::CronFireOutcome::TargetCannotBeWoken { directory } => {
-                CronFireOutcome::TargetCannotBeWoken { directory }
-            }
-            crate::spawn::CronFireOutcome::DeferredCooling { cooling } => {
-                CronFireOutcome::DeferredCooling {
-                    cooling: CronCooling {
-                        reset_in: cooling.reset_in,
-                        org: cooling.org,
-                        model: cooling.model,
-                        tried: cooling.tried,
-                    },
-                }
-            }
-            crate::spawn::CronFireOutcome::DispatchFailed => CronFireOutcome::DispatchFailed,
-            crate::spawn::CronFireOutcome::SkippedAsleep => CronFireOutcome::SkippedAsleep,
-        }
+        // decision turns on whether the prompt actually landed. The
+        // delivery returns the port's outcome type itself, so there is no
+        // second enum to drift from it.
+        crate::spawn::deliver_cron_prompt(&workspace, cron, missed)
     }
 
     fn is_shutting_down(&self) -> bool {
@@ -207,10 +179,11 @@ impl Workspace {
         self: &Arc<Self>,
         slot: SessionSlot,
     ) -> Arc<dyn forge_mcp::ToolProvider> {
-        // A provider is the only way a tool call reaches the facade, so
-        // binding here is what keeps a create's schedule announcement from
-        // reaching an unbound host.
-        self.bind_cron();
+        // No bind here: boot starts the scheduler and the boot catch-up
+        // before any session exists to compose a provider, every fire path
+        // binds again, and `testing_stub` binds at construction. An unbound
+        // arm is the debug record of a host that reached this without any of
+        // them, not a state a tool call can create.
         let host: Arc<dyn forge_tools::cron::facade::CronFacadeHost> = self.clone();
         let facade: Arc<dyn forge_tools::cron::facade::CronFacade> =
             Arc::new(forge_tools::cron::facade::ProdCronFacade::new(

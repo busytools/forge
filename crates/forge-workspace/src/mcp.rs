@@ -296,8 +296,9 @@ pub struct ForgeServerFacades {
     pub documents: Arc<dyn DocumentFacade>,
     pub review: Arc<dyn ReviewFacade>,
     /// The cron family's tools. The family owns its provider; the host
-    /// registers it.
-    pub cron: Option<Arc<dyn forge_mcp::ToolProvider>>,
+    /// registers it whenever the family is selected, and every composition
+    /// supplies one - there is no disabled-cron shape to fall through.
+    pub cron: Arc<dyn forge_mcp::ToolProvider>,
     pub gotify: Arc<dyn GotifyFacade>,
     /// The Slack family's tools. The family owns its provider; the host
     /// registers it. Present whenever the family is selected: a file with no
@@ -402,9 +403,7 @@ pub fn build_forge_server(
         builder = review::add_tools(builder, review, slot.clone());
     }
     // The family owns its provider; the host only registers it.
-    if families.contains(&McpFamily::Cron)
-        && let Some(cron) = cron
-    {
+    if families.contains(&McpFamily::Cron) {
         builder = builder.provider(cron);
     }
     if families.contains(&McpFamily::Gotify) {
@@ -693,10 +692,10 @@ mod tests {
                 terminal: crate::mcp::terminal::facade::MockTerminalFacade::new().into_arc(),
                 documents: MockDocumentFacade::new().into_arc(),
                 review: MockReviewFacade::new().into_arc(),
-                cron: Some(Arc::new(forge_tools::cron::CronTools::new(
+                cron: Arc::new(forge_tools::cron::CronTools::new(
                     MockCronFacade::new().into_arc(),
                     SessionSlot::from_str_for_test("caller"),
-                ))),
+                )),
                 gotify: MockGotifyFacade::new().into_arc(),
                 slack: Some(Arc::new(SlackTools::new(
                     MockSlackFacade::new().into_arc(),
@@ -1021,10 +1020,10 @@ mod tests {
                     terminal: crate::mcp::terminal::facade::MockTerminalFacade::new().into_arc(),
                     documents: documents.into_arc(),
                     review: MockReviewFacade::new().into_arc(),
-                    cron: Some(Arc::new(forge_tools::cron::CronTools::new(
+                    cron: Arc::new(forge_tools::cron::CronTools::new(
                         MockCronFacade::new().into_arc(),
                         SessionSlot::from_str_for_test("caller"),
-                    ))),
+                    )),
                     gotify: MockGotifyFacade::new().into_arc(),
                     slack: Some(Arc::new(SlackTools::new(
                         MockSlackFacade::new().into_arc(),

@@ -72,8 +72,6 @@ pub struct CronCooling {
 
 /// The durable half: the cron rows and the fired-prompt/schedule pairing.
 pub trait CronStore: Send + Sync {
-    fn available(&self) -> bool;
-    fn list(&self) -> Result<Vec<CronEntry>, String>;
     fn upsert(&self, cron: &CronEntry) -> Result<(), String>;
     fn delete(&self, id: &CronId) -> Result<(), String>;
     fn put_name(&self, prompt: &str, name: &CronName, now: SystemTime) -> Result<(), String>;
@@ -115,8 +113,17 @@ pub struct CronSeams {
 /// The durable schedule set and the policy over it.
 pub struct Cron {
     entries: Mutex<Vec<CronEntry>>,
-    /// Set at boot when the durable rows could not be read. `cron__list`
-    /// refuses on it: an empty list would claim the caller has none.
+    /// Set at boot when the durable rows could not be read: the store could
+    /// not open, or its read failed. The in-memory set is empty while rows
+    /// may still be on disk, so it is not the registry. `cron__list` refuses
+    /// on it rather than answering an empty array a caller would read as
+    /// "you have no crons".
+    ///
+    /// It gates `cron__list` only: under the same failed load `delete_cron`
+    /// still answers `NoSuchCron` from the empty set, and `create_cron` still
+    /// promises durability while `persist_cron` returns quietly. Both predate
+    /// this cut and the charter's list-then-delete flow is gated by the list
+    /// refusal; the siblings are #2943.
     load_failed: std::sync::atomic::AtomicBool,
     /// The ids the LAST pass found unwakeable, so the first warning about
     /// one is a `WARN` and the repeats are not. Replaced wholesale each
@@ -148,6 +155,10 @@ impl Cron {
     /// the whole in-memory set. A boot read that failed leaves that set
     /// EMPTY while the store handle stays live, so a whole-set write would
     /// erase every durable row the read never loaded.
+    ///
+    /// Public only so the host's test wrapper (`Workspace::with_crons_mut`,
+    /// itself `cfg(test)`) can drive a test's schedule set; every production
+    /// caller is in this module.
     pub fn with_crons_mut<R>(&self, f: impl FnOnce(&mut Vec<CronEntry>) -> R) -> R {
         let mut crons = self.entries.lock();
         f(&mut crons)
@@ -285,7 +296,7 @@ impl Cron {
 
     /// A snapshot of every cron across all projects. Backs the per-tick
     /// due-check.
-    pub fn all_crons_snapshot(&self) -> Vec<CronEntry> {
+    fn all_crons_snapshot(&self) -> Vec<CronEntry> {
         self.entries.lock().clone()
     }
 

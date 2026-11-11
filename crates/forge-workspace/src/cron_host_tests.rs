@@ -147,7 +147,7 @@ fn deliver_cron(
     owner: Option<&str>,
     prompt: &str,
     missed: bool,
-) -> crate::spawn::CronFireOutcome {
+) -> forge_tools::cron::CronFireOutcome {
     crate::spawn::deliver_cron_prompt(
         ws,
         &schedule("delivered-cron", project, prompt, owner),
@@ -685,7 +685,7 @@ fn deliver_cron_prompt_to_running_lead_emits_cron_prompt_appended() {
     let mut fired = schedule("c1", "cronlead", "morning", None);
     fired.description = Some("Morning summary".to_owned());
     let outcome = crate::spawn::deliver_cron_prompt(&ws, &fired, false);
-    assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
+    assert!(matches!(outcome, forge_tools::cron::CronFireOutcome::Delivered));
 
     // The running lead receives the raw cron prompt as a plain user turn.
     let dispatched = ws.drain_test_dispatch_buffer();
@@ -755,7 +755,7 @@ fn deliver_worker_cron_to_a_live_worker_prompts_the_worker() {
 
     ws.enable_test_dispatch_intercept();
     let outcome = deliver_cron(&ws, "proj", Some("reviewer"), "review the diff", false);
-    assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
+    assert!(matches!(outcome, forge_tools::cron::CronFireOutcome::Delivered));
     let dispatched = ws.drain_test_dispatch_buffer();
     assert!(
         dispatched.iter().any(|c| matches!(
@@ -1016,7 +1016,7 @@ fn deliver_asleep_worker_cron_buffers_and_wakes_the_project() {
 
     ws.enable_test_dispatch_intercept();
     let outcome = deliver_cron(&ws, "proj", Some("reviewer"), "nightly", false);
-    assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
+    assert!(matches!(outcome, forge_tools::cron::CronFireOutcome::Delivered));
     let dispatched = ws.drain_test_dispatch_buffer();
     assert!(
         dispatched.iter().any(|c| matches!(
@@ -1046,7 +1046,7 @@ fn deliver_cron_to_spawning_worker_buffers_via_owner() {
 
     ws.enable_test_dispatch_intercept();
     let outcome = deliver_cron(&ws, "proj", Some("reviewer"), "nightly", false);
-    assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
+    assert!(matches!(outcome, forge_tools::cron::CronFireOutcome::Delivered));
     let dispatched = ws.drain_test_dispatch_buffer();
     assert!(
         !dispatched.iter().any(|c| matches!(
@@ -1073,7 +1073,7 @@ fn deliver_worker_cron_parks_for_an_owner_that_is_still_spawning() {
     ws.enable_test_dispatch_intercept();
     let outcome = deliver_cron(&ws, "proj", Some("reviewer"), "nightly", false);
     assert!(
-        matches!(outcome, crate::spawn::CronFireOutcome::Delivered),
+        matches!(outcome, forge_tools::cron::CronFireOutcome::Delivered),
         "a worker still spawning is not unwakeable - its worktree is being created \
              along with it; got {}",
         outcome_name(&outcome),
@@ -1099,7 +1099,7 @@ fn deliver_worker_cron_does_not_park_for_a_failed_entry() {
     ws.enable_test_dispatch_intercept();
     let outcome = deliver_cron(&ws, "proj", Some("reviewer"), "nightly", false);
     assert!(
-        matches!(outcome, crate::spawn::CronFireOutcome::TargetCannotBeWoken { .. }),
+        matches!(outcome, forge_tools::cron::CronFireOutcome::TargetCannotBeWoken { .. }),
         "a Failed entry is not a worker the wave will start, so its fire must not \
              park; got {}",
         outcome_name(&outcome),
@@ -1124,7 +1124,7 @@ fn deliver_worker_cron_does_not_dispatch_to_a_connected_failed_entry() {
     ws.enable_test_dispatch_intercept();
     let outcome = deliver_cron(&ws, "proj", Some("reviewer"), "nightly", false);
     assert!(
-        matches!(outcome, crate::spawn::CronFireOutcome::TargetCannotBeWoken { .. }),
+        matches!(outcome, forge_tools::cron::CronFireOutcome::TargetCannotBeWoken { .. }),
         "a failed worker's slot is not a dispatch target, however connected it still \
              reads; got {}",
         outcome_name(&outcome),
@@ -1151,7 +1151,7 @@ async fn deliver_asleep_dynamic_worker_cron_buffers_and_wakes_the_project() {
 
     ws.enable_test_dispatch_intercept();
     let outcome = deliver_cron(&ws, "proj", Some("scratch"), "hourly", false);
-    assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
+    assert!(matches!(outcome, forge_tools::cron::CronFireOutcome::Delivered));
     let dispatched = ws.drain_test_dispatch_buffer();
     assert!(
         dispatched.iter().any(|c| matches!(
@@ -1276,7 +1276,7 @@ fn deliver_worker_cron_with_owner_conclusively_gone_is_target_gone() {
     ws.seed_test_project("proj", "/tmp/wc-gone");
     let outcome = deliver_cron(&ws, "proj", Some("ghost"), "x", false);
     assert!(
-        matches!(outcome, crate::spawn::CronFireOutcome::TargetGone),
+        matches!(outcome, forge_tools::cron::CronFireOutcome::TargetGone),
         "a label with no row in the session store is conclusively gone",
     );
 }
@@ -1313,7 +1313,7 @@ fn deliver_worker_cron_with_an_unwakeable_owner_is_neither_parked_nor_delivered(
     .expect("seed the worker's row");
 
     let outcome = deliver_cron(&ws, "proj", Some("steward"), "x", false);
-    let crate::spawn::CronFireOutcome::TargetCannotBeWoken { directory } = outcome else {
+    let forge_tools::cron::CronFireOutcome::TargetCannotBeWoken { directory } = outcome else {
         panic!("an owner whose worktree is gone cannot be woken, so its fire is not delivered");
     };
     assert_eq!(
@@ -1332,7 +1332,7 @@ fn deliver_worker_cron_with_an_unwakeable_owner_is_neither_parked_nor_delivered(
         .expect("restore the worktree");
     let delivered = deliver_cron(&ws, "proj", Some("steward"), "x", false);
     assert!(
-        matches!(delivered, crate::spawn::CronFireOutcome::Delivered),
+        matches!(delivered, forge_tools::cron::CronFireOutcome::Delivered),
         "the same fire is delivered once the worktree is back, so the refusal above \
              was the missing directory and not the fixture",
     );
@@ -1367,7 +1367,7 @@ fn a_cron_wake_reads_the_rows_own_tree() {
     ws.seed_test_worker_row_at(&key, "steward", &root.to_string_lossy(), true);
 
     let outcome = deliver_cron(&ws, "proj", Some("steward"), "x", false);
-    let crate::spawn::CronFireOutcome::TargetCannotBeWoken { directory } = outcome else {
+    let forge_tools::cron::CronFireOutcome::TargetCannotBeWoken { directory } = outcome else {
         panic!("an owner whose own tree has no worktree cannot be woken");
     };
     assert_eq!(
@@ -1386,7 +1386,7 @@ fn deliver_worker_cron_leaves_it_when_the_owner_check_cannot_read() {
     ws.seed_test_project("proj", "/tmp/wc-unknown");
     let outcome = deliver_cron(&ws, "proj", Some("scratch"), "x", false);
     assert!(
-        matches!(outcome, crate::spawn::CronFireOutcome::DispatchFailed),
+        matches!(outcome, forge_tools::cron::CronFireOutcome::DispatchFailed),
         "a failed owner check leaves the cron for the next tick, not TargetGone",
     );
 }
@@ -1405,7 +1405,7 @@ fn deliver_cron_with_the_listener_unbound_leaves_the_fire_for_the_next_tick() {
     // the refusal below is the map and not the owner check.
     let bound = deliver_cron(&ws, "proj", None, "x", false);
     assert!(
-        matches!(bound, crate::spawn::CronFireOutcome::Delivered),
+        matches!(bound, forge_tools::cron::CronFireOutcome::Delivered),
         "the same fire with the listener bound is delivered",
     );
     ws.drain_test_dispatch_buffer();
@@ -1413,7 +1413,7 @@ fn deliver_cron_with_the_listener_unbound_leaves_the_fire_for_the_next_tick() {
     ws.seed_test_gateway_ready(false);
     let unbound = deliver_cron(&ws, "proj", None, "x", false);
     assert!(
-        matches!(unbound, crate::spawn::CronFireOutcome::DispatchFailed),
+        matches!(unbound, forge_tools::cron::CronFireOutcome::DispatchFailed),
         "an unbound listener is a transient refusal, not a delivered fire",
     );
     assert_eq!(
@@ -1509,14 +1509,14 @@ fn deliver_cron_during_a_cooldown_leaves_the_fire_for_the_next_tick() {
 
 /// The outcome's own name, so a failure says which variant it got
 /// rather than only that it was not the expected one.
-fn outcome_name(outcome: &crate::spawn::CronFireOutcome) -> &'static str {
+fn outcome_name(outcome: &forge_tools::cron::CronFireOutcome) -> &'static str {
     match outcome {
-        crate::spawn::CronFireOutcome::Delivered => "Delivered",
-        crate::spawn::CronFireOutcome::TargetGone => "TargetGone",
-        crate::spawn::CronFireOutcome::TargetCannotBeWoken { .. } => "TargetCannotBeWoken",
-        crate::spawn::CronFireOutcome::DeferredCooling { .. } => "DeferredCooling",
-        crate::spawn::CronFireOutcome::DispatchFailed => "DispatchFailed",
-        crate::spawn::CronFireOutcome::SkippedAsleep => "SkippedAsleep",
+        forge_tools::cron::CronFireOutcome::Delivered => "Delivered",
+        forge_tools::cron::CronFireOutcome::TargetGone => "TargetGone",
+        forge_tools::cron::CronFireOutcome::TargetCannotBeWoken { .. } => "TargetCannotBeWoken",
+        forge_tools::cron::CronFireOutcome::DeferredCooling { .. } => "DeferredCooling",
+        forge_tools::cron::CronFireOutcome::DispatchFailed => "DispatchFailed",
+        forge_tools::cron::CronFireOutcome::SkippedAsleep => "SkippedAsleep",
     }
 }
 

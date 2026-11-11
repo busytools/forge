@@ -3727,7 +3727,7 @@ impl Workspace {
                     terminal: terminal_facade,
                     documents: documents_facade,
                     review: review_facade,
-                    cron: Some(cron_tools),
+                    cron: cron_tools,
                     gotify: gotify_facade,
                     slack: Some(slack_tools),
                     settings: settings_facade,
@@ -14884,7 +14884,7 @@ already completed."
 
         let outcome =
             crate::spawn::deliver_cron_prompt(&ws, &test_cron("c1", "cronlead", "morning"), false);
-        assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
+        assert!(matches!(outcome, forge_tools::cron::CronFireOutcome::Delivered));
         assert!(
             drain_updates(&mut rx)
                 .iter()
@@ -14895,7 +14895,7 @@ already completed."
         ws.domain_session_for(&lead_key).expect("domain").lock().turn_pending = true;
         let outcome =
             crate::spawn::deliver_cron_prompt(&ws, &test_cron("c2", "cronlead", "again"), false);
-        assert!(matches!(outcome, crate::spawn::CronFireOutcome::Delivered));
+        assert!(matches!(outcome, forge_tools::cron::CronFireOutcome::Delivered));
         assert!(
             drain_updates(&mut rx)
                 .iter()
@@ -20966,7 +20966,7 @@ mod worker_respawn_tests {
                     workspace,
                 ),
                 review: crate::mcp::review::facade::ProdReviewFacade::from_arc(workspace),
-                cron: Some(workspace.cron_tools(SessionSlot::from_str_for_test("caller"))),
+                cron: workspace.cron_tools(SessionSlot::from_str_for_test("caller")),
                 gotify: crate::mcp::gotify::facade::ProdGotifyFacade::from_arc(workspace),
                 slack: Some(workspace.slack_tools(SessionSlot::from_str_for_test("caller"))),
                 settings: crate::mcp::settings::facade::ProdSettingsFacade::from_arc(workspace),

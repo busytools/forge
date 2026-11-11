@@ -365,10 +365,11 @@ impl Workspace {
         self: &Arc<Self>,
         slot: SessionSlot,
     ) -> Arc<dyn forge_mcp::ToolProvider> {
-        // A provider is the only way a tool call reaches the facade, so
-        // binding here is what keeps a subscribe's pump start from
-        // announcing into an unbound host.
-        self.bind_slack();
+        // No bind here: both boot paths that can start a pump
+        // (`start_slack_verification`, `start_slack_subsystem`) bind before
+        // any session exists to compose a provider, and `testing_stub` binds
+        // at construction. An unbound arm is the debug record of a host that
+        // reached this without either, not a state a tool call can create.
         let host: Arc<dyn forge_tools::slack::facade::SlackFacadeHost> = self.clone();
         let facade: Arc<dyn forge_tools::slack::facade::SlackFacade> =
             Arc::new(forge_tools::slack::facade::ProdSlackFacade::new(
@@ -767,16 +768,19 @@ mod tests {
         let ports = Arc::clone(&ws.slack_ports);
 
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
-        let (attempt_tx, attempt_rx) = std::sync::mpsc::channel();
+        let (removed_tx, removed_rx) = std::sync::mpsc::channel();
         let updater = {
             let ports = Arc::clone(&ports);
             std::thread::spawn(move || {
                 ports.update_subscription(id, &mut |_sub| {
                     entered_tx.send(()).expect("the test is listening");
-                    // The remover has reached its own lock attempt; hold the
-                    // guard a while so the mutant's window is real.
-                    let _ = attempt_rx.recv_timeout(std::time::Duration::from_secs(5));
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    // Wait for the remover to have FINISHED, not to have
+                    // started. A guarded port cannot let it finish, so this
+                    // wait expires; a port that split the read and the write
+                    // lets it finish, and the write below then resurrects
+                    // the row. A started-only signal leaves the mutant's win
+                    // to a timing race a loaded machine can lose.
+                    let _ = removed_rx.recv_timeout(std::time::Duration::from_secs(5));
                 })
             })
         };
@@ -786,8 +790,9 @@ mod tests {
         let remover = {
             let ports = Arc::clone(&ports);
             std::thread::spawn(move || {
-                attempt_tx.send(()).expect("the test is listening");
-                ports.remove_subscription(id)
+                let removed = ports.remove_subscription(id);
+                let _ = removed_tx.send(());
+                removed
             })
         };
         assert_eq!(updater.join().expect("the updater finishes"), Ok(true));
@@ -797,6 +802,81 @@ mod tests {
         assert!(
             stored.iter().all(|sub| sub.id != id),
             "the unsubscribe must not be undone by an update that read before it",
+        );
+    }
+
+    /// **The thread port's guard spans the read and the write**, like the
+    /// subscription port's above. This drives the real port over a real
+    /// store: one update's closure holds the guard while a removal reaches
+    /// for the same thread. A shape that reads the row under one lock and
+    /// writes it back under another lets the removal land between them, and
+    /// the write-back resurrects the row the removal took.
+    ///
+    /// Mutant: split the body into a `thread()` read followed by a
+    /// `set_thread(...)` write and the removal is undone.
+    #[test]
+    fn the_store_port_holds_its_lock_across_a_thread_update() {
+        let (ws, dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let ports = Arc::clone(&ws.slack_ports);
+        let record = forge_primitives::slack::SlackThreadRecord {
+            cursor: "100.0".to_owned(),
+            edit_watermark: None,
+            owners: vec![forge_primitives::slack::SlackThreadOwner {
+                project: "forge".to_owned(),
+                team_role: None,
+            }],
+            participating: true,
+        };
+        ports.set_thread("acme", "C1", "100.0", &record).expect("seed the thread");
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (removed_tx, removed_rx) = std::sync::mpsc::channel();
+        let updater = {
+            let ports = Arc::clone(&ports);
+            std::thread::spawn(move || {
+                ports.update_thread("acme", "C1", "100.0", &mut |record| {
+                    if let Some(record) = record.as_mut() {
+                        record.owners.push(forge_primitives::slack::SlackThreadOwner {
+                            project: "forge".to_owned(),
+                            team_role: Some("b".to_owned()),
+                        });
+                    }
+                    entered_tx.send(()).expect("the test is listening");
+                    // The completion wait, for the reason the subscription
+                    // test above states: a guarded port cannot let the
+                    // removal finish, a split read/write can, and the write
+                    // below then resurrects the row.
+                    let _ = removed_rx.recv_timeout(std::time::Duration::from_secs(5));
+                })
+            })
+        };
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the update entered its closure");
+        let remover = {
+            let ports = Arc::clone(&ports);
+            std::thread::spawn(move || {
+                let removed = ports.remove_thread("acme", "C1", "100.0");
+                let _ = removed_tx.send(());
+                removed
+            })
+        };
+        assert!(
+            updater
+                .join()
+                .expect("the updater finishes")
+                .expect("the guarded update succeeds")
+                .is_some(),
+            "the row the update read is written back",
+        );
+        assert_eq!(remover.join().expect("the remover finishes"), Ok(true));
+        assert_eq!(
+            ports.thread("acme", "C1", "100.0").expect("read the row after both"),
+            None,
+            "the removal must not be undone by an update that read before it",
         );
     }
 

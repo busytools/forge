@@ -562,10 +562,10 @@ mod tests {
                     &workspace,
                 ),
                 review: MockReviewFacade::new().into_arc(),
-                cron: Some(Arc::new(forge_tools::cron::CronTools::new(
+                cron: Arc::new(forge_tools::cron::CronTools::new(
                     MockCronFacade::new().into_arc(),
                     seat(),
-                ))),
+                )),
                 gotify: MockGotifyFacade::new().into_arc(),
                 slack: Some(Arc::new(SlackTools::new(MockSlackFacade::new().into_arc(), seat()))),
                 settings: crate::mcp::settings::facade::ProdSettingsFacade::from_arc(&workspace),

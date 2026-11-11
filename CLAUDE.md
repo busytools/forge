@@ -82,9 +82,10 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   it depends on no forge-* crate and knows nothing about a server, a
   transport or the CLI subprocess, so an owning crate brings its own tools
   without depending on forge-sdk.
-- **`forge-tools`** - one module per external integration: the Gotify
-  and Slack connectors, the outbound Vaultwarden client, and the vault
-  family's own session, thirteen held tools and parked calls. Depends on
+- **`forge-tools`** - one module per integration: the Gotify and Slack
+  connectors, the cron scheduler's family, the outbound Vaultwarden
+  client, and the vault family's own session, thirteen held tools and
+  parked calls. Depends on
   forge-primitives and forge-mcp. Gotify's subscription set, app index
   and message dispatch into sessions arrive through the `GotifyHost`
   port forge-workspace implements. The Slack family lives here too: its
@@ -234,15 +235,17 @@ Work top-down; first match wins.
    failure allows), or is it which account a session spawns under,
    whether an account is healthy, or when it is next probed? ->
    `forge-gateway`, one backend per token and the account pool.
-7. **I/O for an external integration, inbound or outbound?** (its
-   stream client, REST lookups, subscription matching, reconnecting
-   subsystem pump, a provider's client and crypto) -> `forge-tools`, one
-   module per integration. The integration owns its own state, its MCP
-   tools and its held asks; what it needs from the workspace arrives
-   through a host port (Gotify's `GotifyHost`, the Slack family's
-   `SlackStore`, `SlackEmit` and `SlackFacadeHost`, the cron family's
-   `CronStore`, `CronEmit`, `CronHost` and `CronFacadeHost`, the vault
-   family's `VaultHost` and `VaultEmit`). A family's tools are described
+7. **I/O for an integration, inbound or outbound?** (its stream client,
+   REST lookups, subscription matching, reconnecting subsystem pump, a
+   provider's client and crypto), **or the cron scheduler's own state,
+   policy and fire pass** -> `forge-tools`, one module per integration.
+   The family owns its own state, its MCP tools and its held asks -
+   Gotify is the exception, its tools still living in the workspace; what
+   it needs from the workspace arrives through a host port (Gotify's
+   `GotifyHost`, the Slack family's `SlackStore`, `SlackEmit` and
+   `SlackFacadeHost`, the cron family's `CronStore`, `CronEmit`,
+   `CronHost` and `CronFacadeHost`, the vault family's `VaultHost` and
+   `VaultEmit`). A family's tools are described
    through `forge-mcp`'s `ToolProvider`, never built against forge-sdk.
 8. **Speaks stream-json to the `claude` subprocess?** (decoder,
    control_request subtype, transport, MCP host, OptionsBuilder)

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use forge_agent::client::SessionLaunchSettings;
+use forge_tools::cron::{CronCooling, CronFireOutcome};
 
 use crate::mcp::gotify::types::GotifyNotification;
 use crate::mcp::peers::types::WrappedPrompt;
@@ -490,40 +491,6 @@ pub(crate) fn handle_deliver_peer_prompt(
     Ok(())
 }
 
-/// Outcome of a cron fire's delivery, so `fire_due_crons` can decide the
-/// entry's fate rather than treating every hand-off as a success.
-pub(crate) enum CronFireOutcome {
-    /// Dispatched into a running session, or buffered + a spawn kicked off.
-    /// The caller advances/removes the cron as normal.
-    Delivered,
-    /// The cron's project is no longer in forge.toml. The caller removes
-    /// the entry instead of advancing a dead cron forever.
-    TargetGone,
-    /// The owner still has a row, but the boot wave would skip it, so
-    /// nothing can drain a prompt buffered for it and the prompt cannot
-    /// reach anyone. `directory` is where its session would have started,
-    /// for the warning. Distinct from [`Self::TargetGone`] because the
-    /// row is kept: a restored worktree brings the owner back.
-    ///
-    /// The caller's fate for the entry splits on the kind. A recurring
-    /// cron drops this fire and advances - leaving it due would re-fire
-    /// every tick, and parking it would grow a bucket nothing drains. A
-    /// one-shot stays due instead, because advancing removes a one-shot:
-    /// dropping it would throw the prompt away with no later slot.
-    TargetCannotBeWoken { directory: std::path::PathBuf },
-    /// Every account serving the project's model is cooling until the
-    /// carried reset: the caller leaves the entry due, because a refusal
-    /// right now would expire the parked prompt.
-    DeferredCooling { cooling: crate::workspace::ProjectCooling },
-    /// The Command channel is closed (workspace shutting down). The caller
-    /// leaves the cron due so the next boot catch-up re-fires it.
-    DispatchFailed,
-    /// The owner is asleep and this cron may not wake it (`wake: false`).
-    /// The caller leaves the entry due without advancing, so the next
-    /// session start (or a tick while the owner is awake) delivers it.
-    SkippedAsleep,
-}
-
 /// Text delivered for a cron fire: the raw prompt, prefixed with a plain
 /// marker when the fire is overdue so the owner can tell a catch-up from
 /// an on-time fire.
@@ -636,7 +603,14 @@ pub(crate) fn deliver_cron_prompt(
     // case, and that one is permanent - deferring it would retry a broken
     // cron forever, so it is left to fail as before.
     if let Some(cooling) = workspace.project_walk_cooling(&view.key) {
-        return CronFireOutcome::DeferredCooling { cooling };
+        return CronFireOutcome::DeferredCooling {
+            cooling: CronCooling {
+                reset_in: cooling.reset_in,
+                org: cooling.org,
+                model: cooling.model,
+                tried: cooling.tried,
+            },
+        };
     }
     // Buffer by owner, then wake via resume: SpawnProject resumes the lead,
     // whose reconnect re-spawns the persisted workers; each drains its own
