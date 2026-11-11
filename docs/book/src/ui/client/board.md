@@ -19,9 +19,12 @@ move them. The seat chips and the fleet's `waiting on you` count come from
 the home snapshot beside it; the row and running counts are the board's own.
 So a seat that claims a row, a row that is cut, or a move made in another view
 arrives as an update, and the page re-reads without the reader doing
-anything. While it is mounted it also re-reads on a slow 30 s beat:
-a row's age, its worked time and the marks read off them move with the clock,
-and no update announces that.
+anything. While it is mounted and the page is being watched, it also re-reads
+on a slow five-minute beat: a row's time-derived marks are computed by the
+server at read time, and no update announces that a window crossed. A page
+nobody is watching releases the beat entirely, and takes one read when it is
+watched again. The ages on screen keep moving either way, because they tick
+off the page's own clock.
 
 ## What it draws
 
