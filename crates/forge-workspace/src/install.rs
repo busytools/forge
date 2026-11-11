@@ -564,7 +564,8 @@ impl Workspace {
         let model = dir.join(speaking.file);
         let existed = model.exists();
         if let Err(reason) =
-            download_blob(&self, &*hub, &revision, &files.model, &model, 0, total).await
+            download_blob(&self, &*hub, &revision, &files.model, &model, speaking.file, 0, total)
+                .await
         {
             remove_written(&written);
             return self.fail_install(speaking.file.to_owned(), reason);
@@ -587,7 +588,8 @@ impl Workspace {
             let dest = dir.join("voices").join(format!("{name}.bin"));
             let existed = dest.exists();
             if let Err(reason) =
-                download_blob(&self, &*hub, &revision, blob, &dest, done, total).await
+                download_blob(&self, &*hub, &revision, blob, &dest, speaking.file, done, total)
+                    .await
             {
                 remove_written(&written);
                 return self.fail_install(speaking.file.to_owned(), reason);
@@ -654,25 +656,29 @@ fn remove_written(written: &[(std::path::PathBuf, bool)]) {
 }
 
 /// Fetch one file of a speaking install, reporting the whole set's progress.
+///
+/// `state_file` is the install's own file name, not the destination's: the
+/// speaking row matches the state's file against the variant's model, so a
+/// voice leg that named its own file would leave the row "waiting" for the
+/// rest of the set.
 async fn download_blob(
     workspace: &Arc<Workspace>,
     hub: &dyn crate::hub::HubPort,
     revision: &str,
     blob: &crate::hub::HubBlob,
     dest: &std::path::Path,
+    state_file: &str,
     base: u64,
     total: u64,
 ) -> Result<(), String> {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    let file =
-        dest.file_name().map_or_else(String::new, |name| name.to_string_lossy().into_owned());
     let last = AtomicU64::new(u64::MAX);
     hub.download(crate::tts::HUB_REPO, revision, blob, dest, &mut |written| {
         let got = base + written;
         let percent = got.saturating_mul(100).checked_div(total).unwrap_or(0);
         if last.swap(percent, Ordering::Relaxed) != percent {
-            workspace.note_download(&file, got, total);
+            workspace.note_download(state_file, got, total);
             workspace.push_models();
         }
     })

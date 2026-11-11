@@ -649,11 +649,23 @@ mod tests {
         );
         assert!(!view.active.installed, "the record alone claimed the variant was installed");
 
-        // The files the engine loads come back.
+        // The model alone is still not the set: the voice styles are what
+        // the engine renders with, so the row stays Pending until they are
+        // back. A model-file-only check reads Ready here.
         let model = dir.path().join("models").join(variant.file);
         std::fs::create_dir_all(model.parent().expect("the model dir"))
             .expect("the model dir builds");
         std::fs::write(&model, b"stub").expect("the model file lands");
+
+        let view = workspace.voices();
+        let row = view.snapshot.models.first().expect("the speaking row is drawn");
+        assert_eq!(
+            row.state,
+            crate::dictate::DictateModelState::Pending,
+            "a model with no voice styles drew installed"
+        );
+        assert!(!view.active.installed, "the model alone claimed the variant was installed");
+
         std::fs::create_dir_all(dir.path().join("models").join("voices"))
             .expect("the voice dir builds");
 

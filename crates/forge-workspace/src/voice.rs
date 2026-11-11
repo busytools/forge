@@ -1844,7 +1844,7 @@ mod tests {
         let mut config = crate::config::LoadedConfig::empty_for_test();
         config.tts.enabled = true;
         config.tts.models_dir = Some(dir.path().join("models").to_string_lossy().into_owned());
-        let (workspace, _updates) =
+        let (workspace, mut updates) =
             crate::Workspace::testing_stub_with_config(dir.path().to_path_buf(), config)
                 .expect("the stub builds");
         workspace.install_db_for_test(
@@ -1900,6 +1900,21 @@ mod tests {
             !hub.downloads.lock().expect("unpoisoned").is_empty(),
             "the boot started the install against the Hub"
         );
+        // Every progress frame names the variant's model file, never a voice
+        // style: the speaking row matches the state's file against the model,
+        // so a voice leg naming its own file would leave the row "waiting"
+        // for the rest of the set.
+        let mut named = 0;
+        while let Ok(update) = updates.try_recv() {
+            if let crate::SessionUpdate::DictateModelsChanged { models } =
+                std::sync::Arc::unwrap_or_clone(update.update)
+                && let crate::install::InstallState::Downloading { file, .. } = models.install
+            {
+                assert_eq!(file, variant.file, "a progress frame named a voice file");
+                named += 1;
+            }
+        }
+        assert!(named > 0, "no install progress frame was pushed");
         let view = workspace.voices();
         let row = view.snapshot.models.first().expect("the speaking row is drawn");
         assert_eq!(row.state, crate::dictate::DictateModelState::Ready);
@@ -1916,7 +1931,7 @@ mod tests {
         let (workspace, _dir, mut updates) = prewarm_workspace_with_hub(true, &hub);
         workspace.start_voice_prewarm();
 
-        let frame = tokio::time::timeout(Duration::from_secs(15), async {
+        tokio::time::timeout(Duration::from_secs(15), async {
             loop {
                 match updates
                     .recv()
@@ -1929,7 +1944,7 @@ mod tests {
                             crate::install::InstallState::Downloading { .. }
                         );
                         if !running {
-                            break models;
+                            break;
                         }
                     }
                     Some(_) => {}
@@ -1939,10 +1954,6 @@ mod tests {
         })
         .await
         .expect("the boot's install must push a settled models read");
-        assert!(
-            !matches!(frame.install, crate::install::InstallState::Downloading { .. }),
-            "the pushed read still carried a running install"
-        );
     }
 
     /// **An installed variant is not installed again.** The prewarm's
@@ -2252,6 +2263,13 @@ mod tests {
                 crate::install::InstallState::Failed { .. }
             ),
             "a failed install did not leave InstallState::Failed for the page to retry"
+        );
+        // A failed install must not warm: the slot stays empty for the first
+        // say, which fills it after the page's retry. Deleting the early
+        // return lets the stub loader fill it and reddens this.
+        assert!(
+            workspace.voice_service().engine.lock().await.is_none(),
+            "a failed install still warmed the engine"
         );
         // The row must draw the failure, not "waiting": the models page's IN
         // USE row reads this state.
