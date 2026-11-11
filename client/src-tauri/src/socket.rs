@@ -30,7 +30,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
-use tokio_tungstenite::tungstenite::http::Uri;
+use tokio_tungstenite::tungstenite::http::{HeaderValue, Uri};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 
@@ -196,6 +196,22 @@ impl AsyncWrite for Counting {
     }
 }
 
+/// The origin the shell's own dial names: the webview the page is served from.
+///
+/// **The page in a shell never dials itself**, so this half is the only place
+/// the server can learn the client is a shell rather than a native harness -
+/// and the attach record it writes is what points a slow or stalled connection
+/// at the right client-side log. The split is Tauri's own: Windows and Android
+/// serve the webview over `http://tauri.localhost`, every other platform over
+/// the custom `tauri://localhost`, and the server's gate allows both.
+fn shell_origin() -> &'static str {
+    if cfg!(any(windows, target_os = "android")) {
+        "http://tauri.localhost"
+    } else {
+        "tauri://localhost"
+    }
+}
+
 /// Dial `url`, wrapping the transport in the byte counter before tungstenite
 /// sees it.
 ///
@@ -218,7 +234,10 @@ async fn dial(
     // `disable_nagle: false`, so nothing about this socket's latency may move
     // with the dial's rewrite.
     let stream = Counting { inner: tcp, seen };
-    let request = url.into_client_request().map_err(|why| why.to_string())?;
+    let mut request = url.into_client_request().map_err(|why| why.to_string())?;
+    // The shell's own origin rides the handshake, so the server's attach
+    // record can tell a shell from a native client.
+    request.headers_mut().insert("Origin", HeaderValue::from_static(shell_origin()));
     let connector = secure.then(|| Connector::Rustls(Arc::new(tls_config())));
     let (ws, _) =
         tokio_tungstenite::client_async_tls_with_config(request, stream, Some(config), connector)
@@ -2065,6 +2084,42 @@ pub(crate) mod tests {
         }
     }
 
+    /// **The literal is the one the server allows**, not one this half and
+    /// its own assertion agree on: a wrong value would stay green here while
+    /// the server's gate refuses every shell handshake.
+    #[test]
+    fn the_webview_origin_is_the_one_the_server_allows() {
+        #[cfg(any(windows, target_os = "android"))]
+        assert_eq!(shell_origin(), "http://tauri.localhost");
+        #[cfg(not(any(windows, target_os = "android")))]
+        assert_eq!(shell_origin(), "tauri://localhost");
+    }
+
+    /// **The shell's dial names the webview's origin.** The page in a shell
+    /// never dials itself, so this half is the only place the server learns
+    /// the client is a shell; without the header every shell attaches as a
+    /// native client and a stalled connection names no client-side log.
+    #[tokio::test]
+    async fn the_dial_names_the_webview_origin() {
+        let stub = stub().await;
+        let (_socket, _rx) = connected(&stub).await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let held = stub.heads.lock().expect("the head log").clone();
+            if !held.is_empty() {
+                // A whole header line, not a substring: a renamed header that
+                // merely contains the origin is one the server never reads.
+                let named = held[0].lines().any(|line| {
+                    line.trim().eq_ignore_ascii_case(&format!("Origin: {}", shell_origin()))
+                });
+                assert!(named, "the dial did not name its origin: {held:?}");
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "no dial was recorded");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
     /// **The inflate is bounded by the frame bound the socket documents**
     /// (#2560): a gzip body can inflate past its compressed size, so an
     /// unbounded read is how a documented frame bound stops bounding.
@@ -2220,6 +2275,9 @@ pub(crate) mod tests {
         /// Every dial's request URI, in arrival order: what the client
         /// declared on the address it asked for.
         pub(crate) uris: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        /// Every dial's whole handshake head, in the same order: what the
+        /// client declared as headers as well as on the address.
+        pub(crate) heads: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
         /// A stalled peer's answer to "did the client's write begin": one
         /// per connection, sent once it has seen the frame's first bytes or
         /// given up waiting for them.
@@ -2255,6 +2313,8 @@ pub(crate) mod tests {
         let spoken_for_task = spoken.clone();
         let uris = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let uris_for_task = std::sync::Arc::clone(&uris);
+        let heads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let heads_for_task = std::sync::Arc::clone(&heads);
         tokio::spawn(async move {
             loop {
                 let Ok((stream, _)) = listener.accept().await else { return };
@@ -2267,6 +2327,7 @@ pub(crate) mod tests {
                 let heard_tx = heard_tx.clone();
                 let spoken = spoken_for_task.clone();
                 let uris = std::sync::Arc::clone(&uris_for_task);
+                let heads = std::sync::Arc::clone(&heads_for_task);
                 let primed = primed.clone();
                 let mut said = say_for_task.subscribe();
                 let mut killed = kill_for_task.subscribe();
@@ -2290,6 +2351,9 @@ pub(crate) mod tests {
                     let request =
                         String::from_utf8_lossy(&request_bytes.lock().expect("the head log"))
                             .to_string();
+                    if let Ok(mut held) = heads.lock() {
+                        held.push(request.clone());
+                    }
                     if let Some(target) =
                         request.lines().next().and_then(|line| line.split_whitespace().nth(1))
                         && let Ok(mut held) = uris.lock()
@@ -2343,6 +2407,7 @@ pub(crate) mod tests {
             _kill_keep: kill_keep,
             _spoken_keep: spoken_keep,
             uris,
+            heads,
             primed: primed_rx,
         }
     }

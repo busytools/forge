@@ -33,6 +33,19 @@ client - the protocol client, a harness - and is allowed, because browsers
 always send one. A refusal happens before the greeting, answers 403, and
 logs `socket_origin_refused` with the origin and the peer.
 
+**Every connection records the client that made it.** The server logs
+`connection_attached` with the peer, the origin, and the kind that origin
+names: `shell` for the Tauri webview's own origins (the desktop app dials
+from `tauri://localhost`, the Android app from `http://tauri.localhost`),
+`web` for any other allowed page origin, and `native` for a client that sent
+no origin. The connection id on that record follows the connection through
+`connection_wedged`, `connection_write_stalled` and `connection_ended`,
+which carry the peer and the seat on screen (`<none>` when the client had
+shown nothing). The kind is what says which client-side perf log to ask
+for: a shell's `forge-perf.log` is in its app log directory on the host
+that dialed, a web page's is forge's own `forge-perf-web.log` beside
+`forge.log`, and a native client has no page log.
+
 **The connection is kept alive by a ping.** The server pings every 15
 seconds and ends a connection whose ping has gone unanswered for 60: a
 peer that vanished without closing would otherwise read nothing for ever,
