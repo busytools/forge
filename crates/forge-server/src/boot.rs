@@ -659,6 +659,15 @@ fn start_subsystems(workspace: &Arc<Workspace>) {
     // helper no-ops a second call.
     workspace.start_kick_dispatcher();
 
+    // Prove each configured `[[slack]]` token with `auth.test`, then start
+    // one pump per workspace with a durable subscription loaded at boot.
+    // Both bind the Slack host, and they run before the cron catch-up
+    // below because that is the one boot step that can spawn a session,
+    // whose MCP server composes the Slack provider. A failed token is
+    // logged and that workspace stays dormant; it never stops the boot.
+    workspace.start_slack_verification();
+    workspace.start_slack_subsystem();
+
     // Boot catch-up: one tick fires each overdue cron once, advancing
     // past the missed slots (a cron missed while forge was down fires
     // now, not once per skipped tick). Runs after Workspace::new so
@@ -683,16 +692,6 @@ fn start_subsystems(workspace: &Arc<Workspace>) {
     // Start the Gotify subsystem when configured with at least one
     // durable subscription loaded at boot; no-op otherwise.
     workspace.start_gotify_subsystem();
-
-    // Prove each configured `[[slack]]` token with `auth.test`. A
-    // failure is logged and that workspace stays dormant; it never
-    // stops the boot. No-op with no `[[slack]]` entry.
-    workspace.start_slack_verification();
-
-    // Start one Slack pump per workspace with a durable subscription
-    // loaded at boot; no-op otherwise. The subscribe tool starts one
-    // for a workspace that gains its first.
-    workspace.start_slack_subsystem();
 
     // Drop review state left behind by branches deleted since the
     // last run. Worker teardown only catches a branch already gone at
@@ -1561,6 +1560,35 @@ port = 49201
         )
         .await;
         assert_eq!(*order.lock().expect("the order"), vec!["reap", "prune"]);
+    }
+
+    /// **The Slack host binds before the cron catch-up can spawn.** The
+    /// catch-up is the one boot step that can spawn a session, and that
+    /// session's MCP server composes the Slack provider; a bind after it
+    /// leaves a window where a subscribe's announcement reaches an unbound
+    /// host and is dropped. The tested boot intercepts the catch-up's own
+    /// dispatch, so no behavioural test sees the window - the call order in
+    /// `start_subsystems` is the pin, and only that order keeps it true.
+    ///
+    /// Mutant: move the two Slack start calls below `fire_due_crons` and
+    /// this reddens.
+    #[test]
+    fn the_slack_host_binds_before_the_cron_catch_up() {
+        let source = include_str!("boot.rs");
+        // Production only: the needles also occur as string literals below.
+        let production = source.split("\n#[cfg(test)]\nmod tests {").next().unwrap_or(source);
+        let position = |needle: &str| {
+            production.find(needle).unwrap_or_else(|| panic!("boot.rs no longer calls {needle}"))
+        };
+        let catch_up = position("workspace.fire_due_crons(");
+        assert!(
+            position("workspace.start_slack_verification();") < catch_up,
+            "the verification binds the Slack host and must run before the catch-up",
+        );
+        assert!(
+            position("workspace.start_slack_subsystem();") < catch_up,
+            "the pumps bind the Slack host and must start before the catch-up",
+        );
     }
 
     /// **The wave starts the rotation announcer**: the one watcher that turns

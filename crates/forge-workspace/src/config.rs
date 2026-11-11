@@ -68,26 +68,9 @@ pub(crate) struct VaultSection {
     pub idle_minutes: Option<u64>,
 }
 
-/// The validated `[vault]` section.
-#[derive(Clone, PartialEq, Eq)]
-pub(crate) struct VaultConfig {
-    pub url: String,
-    pub email: String,
-    /// `None` when `idle_minutes` is unset: no idle lock.
-    pub idle_minutes: Option<u64>,
-}
-
-/// Hand-written because the email is the account's identity and the salt the
-/// master key derives with.
-impl std::fmt::Debug for VaultConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VaultConfig")
-            .field("url", &self.url)
-            .field("email", &"[redacted]")
-            .field("idle_minutes", &self.idle_minutes)
-            .finish()
-    }
-}
+// The validated `[vault]` section's shape lives with the family that reads
+// it; this module owns the parsing and validation.
+pub(crate) use forge_tools::vault::VaultConfig;
 
 impl VaultSection {
     /// Validate the section, naming the first missing key by name so a
@@ -1409,7 +1392,7 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
     // The boot's SlackWorkspaces build runs these checks; a reload goes
     // through the same loader, so it must refuse the same file a restart
     // would.
-    crate::slack::validate_configs(&parsed.slack).map_err(|message| {
+    forge_tools::slack::validate_configs(&parsed.slack).map_err(|message| {
         WorkspaceError::ConfigInvalid { path: path.clone(), message: format!("slack: {message}") }
     })?;
 

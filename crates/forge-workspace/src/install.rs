@@ -71,31 +71,10 @@ pub struct InstalledModel {
     pub at: String,
 }
 
-/// Where a role's model came from.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "from", rename_all = "snake_case")]
-pub enum ActiveFrom {
-    /// `forge.toml` names this role's model, so the runtime cannot change
-    /// it; `key` is the `[dictate]` key that does.
-    Config { key: String, variant: String },
-    /// The last pick made on this machine.
-    Installed { variant: String },
-    /// The compiled default for this binary.
-    Pin,
-}
-
-/// The model one role runs, and where that choice came from.
-///
-/// Workspace side only: the wire carries `from`/`at` on the page's IN USE
-/// rows, which already carry every other field a spec has.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ActiveModel {
-    pub role: DictateRole,
-    pub spec: ModelSpec,
-    pub from: ActiveFrom,
-    /// RFC 3339, when a runtime pick chose it.
-    pub at: Option<String>,
-}
+// The resolution types moved with the subsystem into `forge-dictate`; they
+// are re-exported here so the install and catalogue paths keep reading them
+// as `crate::install::{ActiveFrom, ActiveModel}`.
+pub use crate::dictate::{ActiveFrom, ActiveModel};
 
 /// The runtime pick as one role records it: the variant, resolved through
 /// the installed set, and when the pick was made.
@@ -752,7 +731,7 @@ impl Workspace {
     /// compiled pins until that resolution lands, then whatever the config
     /// key, the runtime pick or the pin answered, per role.
     pub fn active_models(&self) -> Vec<(DictateRole, ActiveModel)> {
-        self.dictate.active.lock().clone()
+        self.dictate.state.active.lock().clone()
     }
 
     /// Resolve every role's model, fresh: the config key when set, else
@@ -918,7 +897,7 @@ impl Workspace {
         if let Some(key) = self.pinning_key(role) {
             return Err(DispatchError::PinnedRole { section: section_for(role), key });
         }
-        if let Some(holder) = self.dictate_runtime.lock().live_holder() {
+        if let Some(holder) = self.dictate.runtime.lock().live_holder() {
             return Err(DispatchError::TakeLive { holder });
         }
         if self.bench_running() {
@@ -959,7 +938,7 @@ impl Workspace {
         if let Some(key) = self.pinning_key(role) {
             return Err(DispatchError::PinnedRole { section: section_for(role), key });
         }
-        if let Some(holder) = self.dictate_runtime.lock().live_holder() {
+        if let Some(holder) = self.dictate.runtime.lock().live_holder() {
             return Err(DispatchError::TakeLive { holder });
         }
         if self.bench_running() {
@@ -1143,13 +1122,13 @@ impl Workspace {
             })
             .collect();
 
-        let cfg = crate::dictate::preflight_config(&self.config_arc().dictate, &next);
+        let cfg = crate::dictate::preflight_config(&self.config_arc().dictate, &next, self);
         let engine = build_engine(cfg).await?;
-        let previous = self.dictate.engine.lock().replace(engine);
+        let previous = self.dictate.state.engine.lock().replace(engine);
         drop(previous);
 
-        self.dictate.set_active(&next);
-        self.dictate.mark_all(&crate::dictate::DictateModelState::Ready);
+        self.dictate.state.set_active(&next);
+        self.dictate.state.mark_all(&crate::dictate::DictateModelState::Ready);
         Ok(stamp)
     }
 
@@ -1309,7 +1288,7 @@ mod tests_install {
 
         // The role runs one of them: its swap is the caller's next step, and
         // the refusal names the label.
-        ws.dictate.set_active(&[(
+        ws.dictate.state.set_active(&[(
             DictateRole::Normalization,
             crate::install::ActiveModel {
                 role: DictateRole::Normalization,
@@ -2168,7 +2147,7 @@ mod tests_install {
             reason.contains("broken-Q4_K_M.gguf"),
             "the failure must be about the model that was activated, got: {reason}"
         );
-        assert!(fixture.ws.dictate.engine.lock().is_none(), "nothing was swapped in");
+        assert!(fixture.ws.dictate.state.engine.lock().is_none(), "nothing was swapped in");
         assert_eq!(
             role_model(&fixture.ws.active_models(), DictateRole::Transcribing).from,
             ActiveFrom::Pin,
@@ -2183,7 +2162,7 @@ mod tests_install {
         let fixture = fixture_with(None, None);
         record_installed_model(&fixture.ws, "candidate");
         let (stop, _stop_rx) = tokio::sync::mpsc::channel(1);
-        fixture.ws.dictate_runtime.lock().recordings.insert(
+        fixture.ws.dictate.runtime.lock().recordings.insert(
             crate::SessionSlot::new("Busytools", "forge", "worker"),
             crate::dictate::LiveRecording { stop, sink: None, initiator: None },
         );
@@ -2266,7 +2245,7 @@ mod tests_install {
         record_installed_model(&fixture.ws, "picked");
         record_active(&fixture.ws, DictateRole::Transcribing, "picked");
         // The role runs the pick, and the compiled default is not on disk.
-        fixture.ws.dictate.set_active(&[(
+        fixture.ws.dictate.state.set_active(&[(
             DictateRole::Transcribing,
             ActiveModel {
                 role: DictateRole::Transcribing,

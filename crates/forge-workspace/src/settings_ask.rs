@@ -11,7 +11,7 @@
 use uuid::Uuid;
 
 use crate::SessionSlot;
-use crate::protocol::{PendingAsk, SessionUpdate};
+use crate::protocol::SessionUpdate;
 use crate::workspace::Workspace;
 use forge_primitives::settings::{SettingsWriteAsk, SettingsWriteEnding};
 
@@ -129,19 +129,6 @@ impl Workspace {
             self.settle_settings_write(id, slot, SettingsWriteEnding::Abandoned);
         }
     }
-
-    /// Every held write this seat owns, **in the registry's own order** - a
-    /// `HashMap` keeps no arrival order to offer, the same exception two
-    /// Slack drafts already have. A seat with one write sees the same frame
-    /// and read; only two at once can differ between them.
-    pub(crate) fn settings_write_asks(&self, slot: &SessionSlot) -> Vec<PendingAsk> {
-        self.settings_writes
-            .lock()
-            .values()
-            .filter(|(owner, _, _)| owner == slot)
-            .map(|(_, ask, _)| PendingAsk::SettingsWrite(Box::new(ask.clone())))
-            .collect()
-    }
 }
 
 #[cfg(test)]
@@ -149,6 +136,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::protocol::PendingAsk;
     use forge_primitives::settings::SettingsWriteChange;
     use serde_json::json;
 

@@ -53,35 +53,31 @@ use forge_sdk::mcp::server::{McpServer, McpServerBuilder};
 use crate::SessionSlot;
 use crate::mcp::agents::facade::AgentDispatcher;
 use crate::mcp::browser::facade::BrowserFacade;
-use crate::mcp::cron::facade::CronFacade;
 use crate::mcp::documents::facade::DocumentFacade;
 use crate::mcp::gotify::facade::GotifyFacade;
 use crate::mcp::peers::facade::WorkspaceFacade;
 use crate::mcp::review::facade::ReviewFacade;
 use crate::mcp::settings::facade::SettingsFacade;
-use crate::mcp::slack::facade::SlackFacade;
 use crate::mcp::systemone::facade::SystemOneFacade;
 use crate::mcp::tasks::facade::TasksFacade;
-use crate::mcp::vault::facade::VaultFacade;
 use crate::mcp::workers::facade::WorkerFacade;
 
 pub mod agents;
 pub mod browser;
 pub(crate) mod caller_context;
-pub mod cron;
 pub(crate) mod deleted;
 pub mod documents;
 pub mod gotify;
 pub mod peers;
 pub mod review;
 pub mod settings;
-pub mod slack;
+#[cfg(test)]
+mod slack_host_tests;
 pub mod systemone;
 pub mod tasks;
 pub mod terminal;
 #[cfg(test)]
 pub(crate) mod test_support;
-pub mod vault;
 pub mod voice;
 pub mod workers;
 
@@ -299,17 +295,24 @@ pub struct ForgeServerFacades {
     pub terminal: Arc<dyn crate::mcp::terminal::facade::TerminalFacade>,
     pub documents: Arc<dyn DocumentFacade>,
     pub review: Arc<dyn ReviewFacade>,
-    pub cron: Arc<dyn CronFacade>,
+    /// The cron family's tools. The family owns its provider; the host
+    /// registers it whenever the family is selected, and every composition
+    /// supplies one - there is no disabled-cron shape to fall through.
+    pub cron: Arc<dyn forge_mcp::ToolProvider>,
     pub gotify: Arc<dyn GotifyFacade>,
-    pub slack: Arc<dyn SlackFacade>,
+    /// The Slack family's tools. The family owns its provider; the host
+    /// registers it. Present whenever the family is selected: a file with no
+    /// `[[slack]]` entry still advertises the tools, which answer the
+    /// refusal themselves.
+    pub slack: Option<Arc<dyn forge_mcp::ToolProvider>>,
     pub settings: Arc<dyn SettingsFacade>,
     pub tasks: Arc<dyn TasksFacade>,
     pub systemone: Option<Arc<dyn SystemOneFacade>>,
     pub voice: Arc<crate::voice::VoiceService>,
-    /// The vault family's facade, `None` when `[vault]` is absent. The tools
+    /// The vault family's tools, `None` when `[vault]` is absent. The tools
     /// are doubly gated like systemone's: the family must be selected and a
-    /// session must exist.
-    pub vault: Option<Arc<dyn VaultFacade>>,
+    /// session must exist. The family owns its provider; the host registers it.
+    pub vault: Option<Arc<dyn forge_mcp::ToolProvider>>,
 }
 
 /// Build the per-session `forge` MCP server. ONE McpServer named
@@ -399,8 +402,9 @@ pub fn build_forge_server(
     if review_available {
         builder = review::add_tools(builder, review, slot.clone());
     }
+    // The family owns its provider; the host only registers it.
     if families.contains(&McpFamily::Cron) {
-        builder = cron::add_tools(builder, cron, slot.clone());
+        builder = builder.provider(cron);
     }
     if families.contains(&McpFamily::Gotify) {
         builder = gotify::add_tools(builder, gotify, slot.clone());
@@ -415,8 +419,11 @@ pub fn build_forge_server(
     {
         builder = systemone::add_tools(builder, systemone);
     }
-    if families.contains(&McpFamily::Slack) {
-        builder = slack::add_tools(builder, slack, slot.clone());
+    // The family owns its provider; the host only registers it.
+    if families.contains(&McpFamily::Slack)
+        && let Some(slack) = slack
+    {
+        builder = builder.provider(slack);
     }
     // Doubly gated like `systemone`: a switched-off `[tts]` leaves no tool a
     // session could try, even when the family is selected.
@@ -428,7 +435,7 @@ pub fn build_forge_server(
     if families.contains(&McpFamily::Vault)
         && let Some(vault) = vault
     {
-        builder = vault::add_tools(builder, &vault, slot);
+        builder = builder.provider(vault);
     }
     builder.instructions(TASK_BOARD_INSTRUCTIONS).build()
 }
@@ -474,16 +481,17 @@ The chase asks an over-estimate owner once and escalates to the lead once \
 mod tests {
     use super::*;
     use crate::mcp::browser::facade::MockBrowserFacade;
-    use crate::mcp::cron::facade::MockCronFacade;
     use crate::mcp::documents::facade::MockDocumentFacade;
     use crate::mcp::gotify::facade::MockGotifyFacade;
     use crate::mcp::peers::facade::MockWorkspaceFacade;
     use crate::mcp::review::facade::MockReviewFacade;
     use crate::mcp::settings::facade::MockSettingsFacade;
-    use crate::mcp::slack::facade::MockSlackFacade;
     use crate::mcp::systemone::facade::MockSystemOneFacade;
     use crate::mcp::tasks::facade::MockTasksFacade;
     use crate::mcp::workers::facade::MockWorkerFacade;
+    use forge_tools::cron::facade::MockCronFacade;
+    use forge_tools::slack::SlackTools;
+    use forge_tools::slack::facade::MockSlackFacade;
 
     fn fake_key(s: &str) -> SessionSlot {
         SessionSlot::from_str_for_test(s)
@@ -661,6 +669,21 @@ mod tests {
         families: &std::collections::BTreeSet<McpFamily>,
         systemone_facade: Option<Arc<dyn SystemOneFacade>>,
     ) -> McpServer {
+        forge_server_families_with(kind, families, systemone_facade, true)
+    }
+
+    fn forge_server_families_with(
+        kind: SessionKind,
+        families: &std::collections::BTreeSet<McpFamily>,
+        systemone_facade: Option<Arc<dyn SystemOneFacade>>,
+        vault_configured: bool,
+    ) -> McpServer {
+        let vault = vault_configured.then(|| {
+            Arc::new(forge_tools::vault::VaultTools::new(
+                forge_tools::vault::MockVaultFacade::new().into_arc(),
+                fake_key("test"),
+            )) as Arc<dyn forge_mcp::ToolProvider>
+        });
         build_forge_server(
             ForgeServerFacades {
                 workspace: MockWorkspaceFacade::new().into_arc(),
@@ -669,19 +692,50 @@ mod tests {
                 terminal: crate::mcp::terminal::facade::MockTerminalFacade::new().into_arc(),
                 documents: MockDocumentFacade::new().into_arc(),
                 review: MockReviewFacade::new().into_arc(),
-                cron: MockCronFacade::new().into_arc(),
+                cron: Arc::new(forge_tools::cron::CronTools::new(
+                    MockCronFacade::new().into_arc(),
+                    SessionSlot::from_str_for_test("caller"),
+                )),
                 gotify: MockGotifyFacade::new().into_arc(),
-                slack: MockSlackFacade::new().into_arc(),
+                slack: Some(Arc::new(SlackTools::new(
+                    MockSlackFacade::new().into_arc(),
+                    SessionSlot::from_str_for_test("caller"),
+                ))),
+
                 settings: MockSettingsFacade::new().into_arc(),
                 tasks: MockTasksFacade::new().into_arc(),
                 systemone: systemone_facade,
                 voice: silent_voice(),
-                vault: Some(crate::mcp::vault::facade::MockVaultFacade::new().into_arc()),
+                vault,
             },
             families,
             &fake_key("test"),
             kind,
         )
+    }
+
+    /// **A switched-off `[vault]` leaves no vault tool.** The family may be
+    /// selected, but with no session behind it the family registers nothing;
+    /// a tool a session could try would tell the model credentials are
+    /// reachable when they are not.
+    #[test]
+    fn an_absent_vault_configuration_registers_no_vault_tools() {
+        let server = forge_server_families_with(
+            SessionKind::Lead,
+            &McpFamily::all(),
+            Some(MockSystemOneFacade::new().into_arc()),
+            false,
+        );
+        let names = names_of(&server);
+        assert!(
+            !names.iter().any(|name| name.starts_with("vault__")),
+            "no vault tool registers without a configured session: {names:?}",
+        );
+        let configured = names_of(&forge_server(SessionKind::Lead));
+        assert!(
+            configured.iter().any(|name| name.starts_with("vault__")),
+            "the control: the same build with [vault] configured does register them",
+        );
     }
 
     /// Every tool name the server registered, read off its debug
@@ -966,9 +1020,16 @@ mod tests {
                     terminal: crate::mcp::terminal::facade::MockTerminalFacade::new().into_arc(),
                     documents: documents.into_arc(),
                     review: MockReviewFacade::new().into_arc(),
-                    cron: MockCronFacade::new().into_arc(),
+                    cron: Arc::new(forge_tools::cron::CronTools::new(
+                        MockCronFacade::new().into_arc(),
+                        SessionSlot::from_str_for_test("caller"),
+                    )),
                     gotify: MockGotifyFacade::new().into_arc(),
-                    slack: MockSlackFacade::new().into_arc(),
+                    slack: Some(Arc::new(SlackTools::new(
+                        MockSlackFacade::new().into_arc(),
+                        SessionSlot::from_str_for_test("caller"),
+                    ))),
+
                     settings: MockSettingsFacade::new().into_arc(),
                     tasks: MockTasksFacade::new().into_arc(),
                     systemone: None,

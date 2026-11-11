@@ -1,49 +1,86 @@
 //! Cron MCP - durable scheduled prompts (`mcp__forge__cron__*`).
 //!
 //! A forge cron fires a prompt into the session that owns it, on a
-//! schedule, and survives forge restarts (persisted to the machine-local
-//! redb store; see [`crate::store::cron`]). Unlike the cloud routines
-//! (`create_trigger` /
-//! `CronCreate`), which fire into cloud-hosted sessions, these durably
-//! target the local forge process.
+//! schedule, and survives forge restarts. Unlike the cloud routines
+//! (`create_trigger` / `CronCreate`), which fire into cloud-hosted
+//! sessions, these durably target the local forge process.
 //!
 //! The tools (`cron__create` / `cron__list` / `cron__delete`) are
 //! ANY-CALLER and owner-scoped: `create` stamps the caller as the new
 //! entry's owner, and `list` / `delete` narrow to the crons the caller
-//! owns. Mirrors `agents__list`, not the lead-only `agents__spawn`.
-//! Cron-list mutations are direct `Workspace` methods (state writes), not
-//! Command-bus dispatches.
+//! owns. Cron-list mutations are direct state writes, not Command-bus
+//! dispatches.
 //!
-//! - [`schedule`] - pure due-check, next-fire, and boot catch-up math.
-//! - [`facade`] - the `CronFacade` seam (prod over `Weak<Workspace>` +
-//!   a mock for tool tests).
+//! The family is one [`ToolProvider`], so the in-process MCP host composes
+//! it like any other group.
 
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use forge_sdk::mcp::server::McpServerBuilder;
-use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
-
+use forge_mcp::{ProviderFuture, ToolOutput, ToolProvider, ToolSpec};
+use forge_primitives::SessionSlot;
 use forge_primitives::cron::{CronEntry, CronId, CronKind};
 
-use crate::SessionSlot;
-use crate::mcp::cron::facade::{CronCreateError, CronDeleteError, CronFacade, CronListError};
+use crate::cron::facade::{CronCreateError, CronDeleteError, CronFacade, CronListError};
 
-pub(crate) mod facade;
-pub(crate) mod schedule;
+/// One tool's own shape, in the family's terms.
+#[async_trait::async_trait]
+trait Tool {
+    fn name(&self) -> &'static str;
+    fn description(&self) -> &'static str;
+    fn input_schema(&self) -> serde_json::Value;
+    async fn call(&self, input: serde_json::Value) -> ToolOutput;
+}
 
-/// Attach the three cron-coordination tools to an existing
-/// [`McpServerBuilder`]. Called for BOTH lead and worker sessions (crons
-/// are any-caller), so `build_forge_server` invokes this unconditionally.
-pub(crate) fn add_tools(
-    builder: McpServerBuilder,
-    facade: Arc<dyn CronFacade>,
-    slot: SessionSlot,
-) -> McpServerBuilder {
-    let create = Create { facade: facade.clone(), slot: slot.clone() };
-    let list = List { facade: facade.clone(), slot: slot.clone() };
-    let delete = Delete { facade, slot };
-    builder.tool(create).tool(list).tool(delete)
+/// One tool as the host advertises it.
+fn spec(tool: &dyn Tool) -> ToolSpec {
+    ToolSpec {
+        name: tool.name().to_owned(),
+        description: tool.description().to_owned(),
+        schema: tool.input_schema(),
+    }
+}
+
+/// The cron family's MCP tools, over one caller's facade.
+pub struct CronTools {
+    create: Create,
+    list: List,
+    delete: Delete,
+}
+
+impl CronTools {
+    /// Called for BOTH lead and worker sessions (crons are any-caller), so
+    /// the host registers this provider whenever the family is selected.
+    pub fn new(facade: Arc<dyn CronFacade>, slot: SessionSlot) -> Self {
+        Self {
+            create: Create { facade: facade.clone(), slot: slot.clone() },
+            list: List { facade: facade.clone(), slot: slot.clone() },
+            delete: Delete { facade, slot },
+        }
+    }
+}
+
+impl ToolProvider for CronTools {
+    fn tools(&self) -> Vec<ToolSpec> {
+        vec![spec(&self.create), spec(&self.list), spec(&self.delete)]
+    }
+
+    fn call<'a>(
+        &'a self,
+        name: &'a str,
+        input: serde_json::Value,
+    ) -> ProviderFuture<'a, Option<Result<ToolOutput, String>>> {
+        Box::pin(async move {
+            // A name this family does not own is not its call to answer.
+            let tool: &dyn Tool = match name {
+                "cron__create" => &self.create,
+                "cron__list" => &self.list,
+                "cron__delete" => &self.delete,
+                _ => return None,
+            };
+            Some(Ok(tool.call(input).await))
+        })
+    }
 }
 
 fn tool_error(text: String) -> ToolOutput {
@@ -187,8 +224,8 @@ impl Tool for Create {
         })
     }
 
-    async fn call(&self, input: ToolInput) -> ToolOutput {
-        let args: CreateArgs = match serde_json::from_value(input.value) {
+    async fn call(&self, input: serde_json::Value) -> ToolOutput {
+        let args: CreateArgs = match serde_json::from_value(input) {
             Ok(a) => a,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
@@ -263,7 +300,7 @@ impl Tool for List {
         })
     }
 
-    async fn call(&self, _input: ToolInput) -> ToolOutput {
+    async fn call(&self, _input: serde_json::Value) -> ToolOutput {
         let crons = match self.facade.list_crons(&self.slot) {
             Ok(crons) => crons,
             Err(CronListError::UnknownCallerProject) => {
@@ -318,14 +355,14 @@ impl Tool for Delete {
         })
     }
 
-    async fn call(&self, input: ToolInput) -> ToolOutput {
-        let args: DeleteArgs = match serde_json::from_value(input.value) {
+    async fn call(&self, input: serde_json::Value) -> ToolOutput {
+        let args: DeleteArgs = match serde_json::from_value(input) {
             Ok(a) => a,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
         match self.facade.delete_cron(&self.slot, &CronId::from(args.id.as_str())) {
             Ok(entry) => {
-                let envelope = crate::mcp::deleted::removed_record(&cron_to_json(&entry));
+                let envelope = forge_mcp::removed_record(&cron_to_json(&entry));
                 match serde_json::to_string_pretty(&envelope) {
                     Ok(json) => ToolOutput::text(json),
                     Err(err) => tool_error(format!("response serialization failed: {err}")),
@@ -348,11 +385,44 @@ impl Tool for Delete {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::cron::facade::MockCronFacade;
-    use crate::mcp::test_support::text_of;
+    use crate::cron::facade::MockCronFacade;
+
+    /// The text of the output's first block. The panics are the test's own
+    /// failure to say which: reaching for text and finding a picture is the
+    /// wrong question, not a value to return.
+    fn text_of(output: &ToolOutput) -> String {
+        let Some(block) = output.blocks.first() else {
+            panic!("text_of: the output carries no block at all");
+        };
+        match block {
+            forge_mcp::ToolOutputBlock::Text { text } => text.clone(),
+            forge_mcp::ToolOutputBlock::Image { .. } => panic!("text_of: this block is an image"),
+        }
+    }
 
     fn caller_slot() -> SessionSlot {
-        SessionSlot::from_str_for_test("caller")
+        SessionSlot::lead("TestOrg", "forge")
+    }
+
+    /// Every name the family advertises is one its dispatcher answers, and a
+    /// name it does not own is not its call to answer. The specs and the
+    /// `call` match are two hand-maintained lists, so a renamed arm must
+    /// redden here rather than leave a tool advertised but undispatchable.
+    #[tokio::test]
+    async fn every_advertised_cron_tool_is_dispatchable() {
+        let facade: Arc<dyn CronFacade> = Arc::new(MockCronFacade::new());
+        let tools = CronTools::new(facade, caller_slot());
+        for spec in tools.tools() {
+            assert!(
+                tools.call(&spec.name, serde_json::json!({})).await.is_some(),
+                "{} is advertised but no call arm answers it",
+                spec.name,
+            );
+        }
+        assert!(
+            tools.call("cron__not_a_tool", serde_json::json!({})).await.is_none(),
+            "a name this family does not own is not its call to answer",
+        );
     }
 
     fn sample_entry(id: &str) -> CronEntry {
@@ -370,8 +440,8 @@ mod tests {
         }
     }
 
-    fn input(value: serde_json::Value) -> ToolInput {
-        ToolInput { value }
+    fn input(value: serde_json::Value) -> serde_json::Value {
+        value
     }
 
     #[tokio::test]
@@ -601,7 +671,7 @@ mod tests {
         assert!(!out.is_error, "delete succeeds: {out:?}");
         assert_eq!(out.blocks.len(), 1, "the envelope stays one text block: {out:?}");
         let json: serde_json::Value =
-            serde_json::from_str(text_of(&out)).expect("the result is the adopted envelope");
+            serde_json::from_str(&text_of(&out)).expect("the result is the adopted envelope");
         assert_eq!(json["status"], "deleted");
         assert_eq!(
             json["removed"],

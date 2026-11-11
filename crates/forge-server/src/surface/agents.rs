@@ -156,6 +156,8 @@ fn row_for(
         Some(WorkerLiveness::Running) | None => workspace.session_activity(&slot),
     };
     let heal = workspace.heal_progress(&slot);
+    // One ledger walk for the row's two needs-you facts.
+    let (pending, pending_depth) = workspace.pending_interaction_summary(&slot);
     AgentRow {
         heal_attempt: heal.map(|progress| progress.attempt),
         heal_attempts: heal.and_then(|_| workspace.heal_attempts()),
@@ -163,8 +165,8 @@ fn row_for(
         last_activity: workspace.session_last_activity(&slot),
         failed_turn: workspace.session_failed_turn(&slot),
         died: workspace.death_stands(&slot),
-        pending: workspace.pending_interaction(&slot),
-        pending_depth: workspace.pending_interaction_depth(&slot),
+        pending,
+        pending_depth,
         pending_seq: workspace.pending_request_seq(&slot),
         // A worker's own spawn diagnostic is the more specific record, so
         // it wins; a lead has only the slot's, which is why the fallback
@@ -436,9 +438,19 @@ mod tests {
             "the row names the question its session is held on",
         );
         assert_eq!(
+            row_of(&asked).pending_depth,
+            1,
+            "and counts what the session is held on, not only names it",
+        );
+        assert_eq!(
             row_of(&quiet).pending,
             None,
             "a session holding nothing says so rather than borrowing its neighbour's ask",
+        );
+        assert_eq!(
+            row_of(&quiet).pending_depth,
+            0,
+            "and a quiet session's depth is zero rather than another session's count",
         );
     }
 

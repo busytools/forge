@@ -136,6 +136,30 @@ impl Drop for StoreCopy {
     }
 }
 
+/// The bench's own host: it is not a session host, and the only seam its
+/// config needs is the app-support base the caller handed it.
+///
+/// Test-gated like its one caller, [`resolved_live_roles`]: the installed
+/// binary builds no live-roles config, and the release lint denies a dead
+/// type.
+#[cfg(any(test, feature = "testing"))]
+struct BenchHost<'a>(&'a Path);
+
+#[cfg(any(test, feature = "testing"))]
+impl crate::dictate::DictateHost for BenchHost<'_> {
+    fn session_is_live(&self, _key: &crate::SessionSlot) -> bool {
+        false
+    }
+
+    fn app_support_dir(&self) -> Result<std::path::PathBuf, String> {
+        Ok(self.0.to_path_buf())
+    }
+
+    fn emit(&self, _update: crate::dictate::DictateUpdate) -> bool {
+        false
+    }
+}
+
 /// The models the live roles resolve to, read by a process that is not
 /// forge.
 ///
@@ -207,7 +231,7 @@ pub fn resolved_live_roles(config_dir: &Path, app_support: &Path) -> Result<Live
         }
     }
 
-    let config = crate::dictate::preflight_config(settings, &models);
+    let config = crate::dictate::preflight_config(settings, &models, &BenchHost(app_support));
     Ok(LiveRoles { models, config, models_dir })
 }
 
@@ -350,7 +374,7 @@ impl Workspace {
         let passage = forge_dictate::bench::READ_ALOUD_PASSAGE.to_owned();
         ReadAloudState {
             recordings: dir.as_deref().map(read_aloud_recordings).unwrap_or_default(),
-            recording: self.dictate_runtime.lock().set_recording.is_some(),
+            recording: self.dictate.runtime.lock().set_recording.is_some(),
             error: self.read_aloud_error.lock().clone(),
             terms: forge_dictate::bench::terms(&passage),
             passage,
@@ -396,7 +420,7 @@ impl Workspace {
         if !self.config_arc().dictate.enabled {
             return Err(DispatchError::DictateOff);
         }
-        let mut runtime = self.dictate_runtime.lock();
+        let mut runtime = self.dictate.runtime.lock();
         if let Some(holder) = runtime.live_holder() {
             return Err(DispatchError::TakeLive { holder });
         }
@@ -412,7 +436,7 @@ impl Workspace {
     /// nobody stops cannot grow without bound; the frames past the cap are
     /// dropped rather than silently stored as a shorter reading.
     pub fn read_aloud_push(&self, samples: &[f32], initiator: Option<u64>) -> bool {
-        let mut runtime = self.dictate_runtime.lock();
+        let mut runtime = self.dictate.runtime.lock();
         let Some(recording) = runtime.set_recording.as_mut() else {
             return false;
         };
@@ -439,7 +463,7 @@ impl Workspace {
         initiator: Option<u64>,
     ) -> Result<(), DispatchError> {
         let samples = {
-            let mut runtime = self.dictate_runtime.lock();
+            let mut runtime = self.dictate.runtime.lock();
             let started_by_this_connection = runtime
                 .set_recording
                 .as_ref()
@@ -512,7 +536,7 @@ impl Workspace {
             return Err(DispatchError::DictateOff);
         }
         self.claim_bench()?;
-        if let Some(holder) = self.dictate_runtime.lock().live_holder() {
+        if let Some(holder) = self.dictate.runtime.lock().live_holder() {
             self.release_bench();
             return Err(DispatchError::TakeLive { holder });
         }
@@ -624,7 +648,7 @@ impl Workspace {
             });
         }
         self.claim_bench()?;
-        if let Some(holder) = self.dictate_runtime.lock().live_holder() {
+        if let Some(holder) = self.dictate.runtime.lock().live_holder() {
             self.release_bench();
             return Err(DispatchError::TakeLive { holder });
         }
@@ -669,7 +693,7 @@ impl Workspace {
     async fn run_speaking_bench(self: Arc<Self>) {
         let settings = self.config_arc().dictate.clone();
         let active = self.active_models();
-        let cfg = crate::dictate::preflight_config(&settings, &active);
+        let cfg = crate::dictate::preflight_config(&settings, &active, self.as_ref());
         let Some(models_dir) = settings.models_dir() else {
             return self.settle_speaking_bench(Err("no models directory is configured".to_owned()));
         };
@@ -820,7 +844,7 @@ impl Workspace {
     async fn run_bench(self: Arc<Self>, target: BenchTarget, tier: forge_dictate::bench::Tier) {
         let settings = self.config_arc().dictate.clone();
         let active = self.active_models();
-        let cfg = crate::dictate::preflight_config(&settings, &active);
+        let cfg = crate::dictate::preflight_config(&settings, &active, self.as_ref());
         let Some(models_dir) = settings.models_dir() else {
             return self.fail_bench(target, "no models directory is configured".to_owned());
         };
@@ -1221,7 +1245,7 @@ mod tests {
     fn a_bench_refuses_by_name_while_a_take_is_live() {
         let (ws, _updates, _models) = crate::catalogue::tests_catalogue_view::enabled_stub();
         let (stop, _stop_rx) = tokio::sync::mpsc::channel(1);
-        ws.dictate_runtime.lock().recordings.insert(
+        ws.dictate.runtime.lock().recordings.insert(
             crate::SessionSlot::new("Busytools", "forge", "worker"),
             crate::dictate::LiveRecording { stop, sink: None, initiator: None },
         );
@@ -1523,7 +1547,7 @@ mod tests {
 
         ws.dispatch(crate::Command::DictateReadAloudStart { initiator: Some(1) }).unwrap();
         assert_eq!(
-            ws.dictate_runtime.lock().live_holder().as_deref(),
+            ws.dictate.runtime.lock().live_holder().as_deref(),
             Some("the read-aloud recording"),
             "a recording is a live capture"
         );
@@ -1536,7 +1560,7 @@ mod tests {
         );
 
         let (stop, _stop_rx) = tokio::sync::mpsc::channel(1);
-        ws.dictate_runtime.lock().recordings.insert(
+        ws.dictate.runtime.lock().recordings.insert(
             crate::SessionSlot::new("Busytools", "forge", "worker"),
             crate::dictate::LiveRecording { stop, sink: None, initiator: None },
         );

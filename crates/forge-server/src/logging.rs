@@ -88,11 +88,12 @@ impl LoggingRuntime {
 /// forge. (`forge_server` too: its session reads are one session's own
 /// work.)
 ///
-/// `forge_dictate` and `forge_workspace::dictate` are there for the
-/// same reason again: a take that reaches its capture cap, a normalizer
-/// that runs out of token budget and a take whose recognition failed are
-/// one session's own work, not forge's health. They were demoted out of
-/// `WARN` for it, so they are named here to stay readable.
+/// `forge_dictate` is there for the same reason again: a take that
+/// reaches its capture cap, a normalizer that runs out of token budget and
+/// a take whose recognition failed are one session's own work, not forge's
+/// health. They were demoted out of `WARN` for it, so the crate is named
+/// here to stay readable. Its records moved there with the subsystem; the
+/// old `forge_workspace::dictate` target no longer exists.
 ///
 /// `forge_browser` carries the browser service's own records of a viewer
 /// attaching and of a controller role being let go. Each is that session's
@@ -111,7 +112,7 @@ impl LoggingRuntime {
 /// starts, so the pair is the only way a "tool not found" is traced to the
 /// side that actually lacked the name.
 ///
-/// `forge_connectors::slack::throttle` carries the sweep's per-pass throttle
+/// `forge_tools::slack::throttle` carries the sweep's per-pass throttle
 /// detail, which was demoted to `debug` once the warning moved to one per
 /// episode. A workspace Slack throttles is that workspace's own rate limit
 /// rather than forge's health, so the repeated numbers are `debug`; the
@@ -141,10 +142,9 @@ pub const DEFAULT_LOG_DIRECTIVES: &str = "info,\
     forge_workspace::skills=debug,\
     forge_workspace::gotify=debug,\
     forge_agent::mcp=debug,\
-    forge_workspace::dictate=debug,\
     forge_workspace::subagent_cards=debug,\
     forge_dictate=debug,\
-    forge_connectors::slack::throttle=debug,\
+    forge_tools::slack::throttle=debug,\
     llama_cpp_2=error,\
     llama-cpp-2=error";
 
@@ -565,12 +565,9 @@ mod tests {
         // Dictation's own records were demoted out of WARN for the same
         // reason: a take reaching its capture cap, a normalizer hitting
         // its token budget and a take whose recognition failed are one
-        // session's work, not forge's health. Without these two the
-        // records land nowhere at all, which is the state the levels
-        // moved away from. `forge_dictate` covers the leaf crate's sites
-        // by module-path prefix; `forge_workspace::dictate` the seat
-        // that runs a take.
-        assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_workspace::dictate=debug"));
+        // session's work, not forge's health. Without this the records
+        // land nowhere at all, which is the state the levels moved away
+        // from. `forge_dictate` covers every site by module-path prefix.
         assert!(DEFAULT_LOG_DIRECTIVES.contains("forge_dictate=debug"));
         // The `[server] enabled = false` record is a `debug` on
         // `app.lifecycle` because a config choice is not a problem, so
@@ -671,7 +668,7 @@ mod tests {
     #[test]
     fn the_demoted_slack_throttle_detail_emits_under_the_default_directives() {
         let caught =
-            emitted_under_defaults(forge_connectors::slack::testing::emit_a_repeated_throttle_pass);
+            emitted_under_defaults(forge_tools::slack::testing::emit_a_repeated_throttle_pass);
 
         assert!(
             caught.contains("slack sweep still throttled"),

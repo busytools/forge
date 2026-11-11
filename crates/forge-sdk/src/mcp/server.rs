@@ -91,13 +91,6 @@ impl McpServer {
         self.tools.keys().map(String::as_str).collect()
     }
 
-    /// Every registered tool's name and input schema, so a test can pin the
-    /// surface a family advertises. Test-only.
-    #[cfg(any(test, feature = "testing"))]
-    pub fn tool_schemas(&self) -> Vec<(String, serde_json::Value)> {
-        self.tools.iter().map(|(name, tool)| (name.clone(), tool.input_schema())).collect()
-    }
-
     /// Dispatch one JSON-RPC request to the appropriate handler.
     ///
     /// Returns `None` for JSON-RPC notifications (no `id`) - notifications
@@ -183,6 +176,10 @@ pub struct McpServerBuilder {
     version: String,
     instructions: Option<String>,
     tools: BTreeMap<String, Arc<dyn Tool>>,
+    /// Families whose tools are registered at [`Self::build`]: a provider
+    /// answers for its own names, so the host keeps no table mapping a name
+    /// back to the family that owns it.
+    providers: Vec<Arc<dyn forge_mcp::ToolProvider>>,
 }
 
 impl std::fmt::Debug for McpServerBuilder {
@@ -192,6 +189,7 @@ impl std::fmt::Debug for McpServerBuilder {
             .field("version", &self.version)
             .field("instructions", &self.instructions.is_some())
             .field("tools", &self.tools.keys().collect::<Vec<_>>())
+            .field("providers", &self.providers.len())
             .finish()
     }
 }
@@ -204,6 +202,7 @@ impl McpServerBuilder {
             version: version.into(),
             instructions: None,
             tools: BTreeMap::new(),
+            providers: Vec::new(),
         }
     }
 
@@ -219,19 +218,79 @@ impl McpServerBuilder {
     /// drop a tool with nothing to show for it.
     pub fn tool<T: Tool + 'static>(mut self, tool: T) -> Self {
         let name = tool.name().to_string();
-        if self.tools.insert(name.clone(), Arc::new(tool)).is_some() {
-            warn!(%name, server = %self.name, "mcp tool registered twice; keeping the later one");
-        }
+        self.insert(&name, Arc::new(tool));
         self
     }
 
+    /// Register a tool family another crate owns. The family names its own
+    /// tools and answers their calls; a name it does not claim reaches the
+    /// next provider, or the host's unknown-tool answer.
+    pub fn provider(mut self, provider: Arc<dyn forge_mcp::ToolProvider>) -> Self {
+        self.providers.push(provider);
+        self
+    }
+
+    fn insert(&mut self, name: &str, tool: Arc<dyn Tool>) {
+        if self.tools.insert(name.to_owned(), tool).is_some() {
+            warn!(name, server = %self.name, "mcp tool registered twice; keeping the later one");
+        }
+    }
+
     /// Finalise into a runnable server.
-    pub fn build(self) -> McpServer {
+    pub fn build(mut self) -> McpServer {
+        let providers = Arc::new(forge_mcp::Providers::new(std::mem::take(&mut self.providers)));
+        for described in providers.tools() {
+            let tool = ProviderTool {
+                providers: Arc::clone(&providers),
+                name: described.name.clone(),
+                description: described.description,
+                schema: described.schema,
+            };
+            self.insert(&described.name, Arc::new(tool));
+        }
         McpServer {
             name: self.name,
             version: self.version,
             instructions: self.instructions,
             tools: self.tools,
+        }
+    }
+}
+
+/// One tool a registered family described: the host advertises what the
+/// family said and forwards the call to the composition, which asks the
+/// family that owns the name.
+struct ProviderTool {
+    providers: Arc<forge_mcp::Providers>,
+    name: String,
+    description: String,
+    schema: serde_json::Value,
+}
+
+#[async_trait::async_trait]
+impl Tool for ProviderTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        self.schema.clone()
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        match self.providers.call(&self.name, input.value).await {
+            Some(Ok(output)) => output,
+            Some(Err(message)) => ToolOutput::error(message),
+            // The name was advertised from this composition, so a provider
+            // that no longer claims it is a family whose tools() and call()
+            // disagree; answer loudly rather than as a silent empty result.
+            None => {
+                ToolOutput::error(format!("no registered provider claims the `{}` tool", self.name))
+            }
         }
     }
 }
@@ -308,9 +367,10 @@ mod tests_negotiation {
 
 #[cfg(test)]
 mod tests_tool_names {
-    use super::{JsonRpcRequest, McpServerBuilder};
+    use super::{JsonRpcRequest, McpServer, McpServerBuilder};
     use crate::mcp::tool::{Tool, ToolInput, ToolOutput};
     use serde_json::{Value, json};
+    use std::sync::Arc;
 
     struct Named(&'static str);
 
@@ -365,6 +425,93 @@ mod tests_tool_names {
             server.tool_names(),
             listed,
             "what a spawn records is exactly the set tools/list answers, in its order",
+        );
+    }
+
+    /// One family registered through the provider seam: its tools are
+    /// advertised from `tools()` and a call is dispatched back to `call()`.
+    struct Family {
+        name: &'static str,
+        answer: Result<&'static str, &'static str>,
+        claims: bool,
+    }
+
+    impl forge_mcp::ToolProvider for Family {
+        fn tools(&self) -> Vec<forge_mcp::ToolSpec> {
+            vec![forge_mcp::ToolSpec {
+                name: self.name.to_owned(),
+                description: "a provider-owned tool".to_owned(),
+                schema: json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            }]
+        }
+
+        fn call<'a>(
+            &'a self,
+            name: &'a str,
+            _input: Value,
+        ) -> forge_mcp::ProviderFuture<'a, Option<Result<ToolOutput, String>>> {
+            Box::pin(async move {
+                if !self.claims || name != self.name {
+                    return None;
+                }
+                Some(self.answer.map(ToolOutput::text).map_err(str::to_owned))
+            })
+        }
+    }
+
+    async fn call_tool(server: &McpServer, name: &str) -> (Vec<Value>, bool) {
+        let request: JsonRpcRequest = serde_json::from_value(json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": { "name": name, "arguments": {} },
+        }))
+        .expect("a tools/call request");
+        let response = server.dispatch(&request).await.expect("an id-bearing request is answered");
+        match response.result.expect("tools/call answers") {
+            crate::mcp::protocol::JsonRpcResult::ToolsCall { content, is_error } => {
+                (content, is_error)
+            }
+            other => panic!("tools/call answered something else: {other:?}"),
+        }
+    }
+
+    /// **A provider's tools are dispatched back to the provider.** The
+    /// advertised name must reach its own `call`, a provider's failure must
+    /// cross as the tool's error, and a name advertised but no longer
+    /// claimed must answer loudly rather than as (or as an empty) success.
+    #[tokio::test]
+    async fn a_provider_tool_answers_ok_err_and_a_stale_name() {
+        let ok = McpServerBuilder::new("forge", "1.2.3")
+            .provider(Arc::new(Family { name: "vault__search", answer: Ok("found"), claims: true }))
+            .build();
+        let (content, is_error) = call_tool(&ok, "vault__search").await;
+        assert!(!is_error, "a provider's success is a success");
+        assert_eq!(content[0]["text"], "found", "the provider's own answer crosses");
+
+        let err = McpServerBuilder::new("forge", "1.2.3")
+            .provider(Arc::new(Family {
+                name: "vault__search",
+                answer: Err("the vault is locked"),
+                claims: true,
+            }))
+            .build();
+        let (content, is_error) = call_tool(&err, "vault__search").await;
+        assert!(is_error, "a provider's failure is the tool's failure");
+        assert_eq!(content[0]["text"], "the vault is locked");
+
+        let stale = McpServerBuilder::new("forge", "1.2.3")
+            .provider(Arc::new(Family {
+                name: "vault__search",
+                answer: Ok("found"),
+                claims: false,
+            }))
+            .build();
+        let (content, is_error) = call_tool(&stale, "vault__search").await;
+        assert!(is_error, "an advertised name no provider claims is an error, not a success");
+        assert!(
+            content[0]["text"].as_str().is_some_and(|text| text.contains("no registered provider")),
+            "and the error names the cause: {content:?}",
         );
     }
 }

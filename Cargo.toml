@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-capture", "crates/forge-dictate", "crates/forge-tts", "crates/forge-system-one", "crates/forge-supervise", "crates/forge-gateway", "crates/forge-connectors", "crates/forge-browser", "crates/forge-terminal", "crates/forge-agent", "crates/forge-workspace", "crates/forge-server", "crates/forge-test-harness"]
+members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-mcp", "crates/forge-capture", "crates/forge-dictate", "crates/forge-tts", "crates/forge-system-one", "crates/forge-supervise", "crates/forge-gateway", "crates/forge-tools", "crates/forge-browser", "crates/forge-terminal", "crates/forge-agent", "crates/forge-workspace", "crates/forge-server", "crates/forge-test-harness"]
 
 [workspace.package]
 version = "1.2.5"
@@ -106,9 +106,10 @@ cpal = "0.18"
 
 # Workspace-internal crates
 forge-primitives = { path = "crates/forge-primitives", version = "=1.2.5" }
+forge-mcp = { path = "crates/forge-mcp", version = "=1.2.5" }
 forge-capture = { path = "crates/forge-capture", version = "=1.2.5" }
 forge-gateway = { path = "crates/forge-gateway", version = "=1.2.5" }
-forge-connectors = { path = "crates/forge-connectors", version = "=1.2.5" }
+forge-tools = { path = "crates/forge-tools", version = "=1.2.5" }
 forge-sdk = { path = "crates/forge-sdk", version = "=1.2.5" }
 forge-agent = { path = "crates/forge-agent", version = "=1.2.5" }
 forge-dictate = { path = "crates/forge-dictate", version = "=1.2.5" }

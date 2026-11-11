@@ -4,7 +4,7 @@
 //! `mcp__forge__gotify__*` tool family; matching notifications deliver
 //! as a user-turn into the durable subscriber. These are pure data
 //! shapes - the stream, REST lookups and match-and-route logic live in
-//! `forge-connectors::gotify`, which reaches workspace state through
+//! `forge-tools::gotify`, which reaches workspace state through
 //! its host port, and the subscription store in
 //! `forge-workspace::store::gotify`.
 

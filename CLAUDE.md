@@ -1,29 +1,32 @@
 # forge - project guide
 
 A Rust workspace around Anthropic's `claude` CLI: a server that runs
-multi-session orchestration, and the clients that draw it. Fifteen crates,
+multi-session orchestration, and the clients that draw it. Sixteen crates,
 layered acyclically:
 
 ```
-forge-primitives ───── leaf (pure data, no logic)
+forge-primitives ───── leaf (data shapes + the ask seam)
 forge-capture    ───── leaf (microphone capture; depends on no forge-* crate)
-forge-dictate    ───→ capture (dictation)
+forge-dictate    ───→ capture + primitives (dictation)
 forge-tts        ───── leaf (speech synthesis; depends on no forge-* crate)
 forge-system-one ───── leaf (decision-model client; depends on no forge-* crate)
 forge-terminal   ───── leaf (the PTY and screen model; depends on no forge-* crate)
 forge-supervise  ───── leaf (subsystem supervision; depends on no forge-* crate)
+forge-mcp        ───── leaf (the MCP tool-provider seam; depends on no forge-* crate)
 forge-gateway    ───→ primitives
-forge-connectors ───→ primitives
-forge-sdk        ───→ primitives
+forge-tools      ───→ primitives + mcp
+forge-sdk        ───→ primitives + mcp
 forge-agent      ───→ primitives + sdk + gateway
-forge-workspace  ───→ primitives + agent + sdk + dictate + tts + system-one + terminal + gateway + connectors
+forge-workspace  ───→ primitives + agent + sdk + dictate + tts + system-one + terminal + gateway + tools + mcp
 forge-browser    ───→ primitives + sdk
 forge-server     ───→ primitives + workspace + sdk + browser
 forge-test-harness ─→ primitives + sdk + workspace + server
 ```
 
 - **`forge-primitives`** - every type that crosses a forge-* crate
-  boundary. No logic, no I/O, no async.
+  boundary. No logic, no I/O, no async, with one recorded exception: the
+  ask seam's two traits (`AskSource`, `AskSink`), stateless signatures
+  kept here because the host and every ask source must both name them.
 - **`forge-capture`** - microphone capture: the device, the input plan,
   the downmix and resampler, and the mono frames a host reads from it.
   A leaf: no forge-* dependency, and no knowledge of a host, a take or
@@ -31,10 +34,15 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   takes its sample rate.
 - **`forge-dictate`** - the dictation primitive: audio in, text out.
   Owns its model files, speech recognition and normalization, and takes
-  audio as mono frames a host pushes in. Its one forge-* dependency is
-  the capture leaf, for the sample rate; it knows nothing about a host,
-  so it must not grow one, and a doc comment mentioning a keypress, a
-  composer or a session is a bug.
+  audio as mono frames a host pushes in. Its forge-* dependencies are the
+  capture leaf, for the sample rate, and `forge-primitives`: the leaf
+  rule's intent is that a leaf grows no workspace or server coupling, not
+  that it takes no primitives, and the types its host trait crosses on are
+  primitives. It knows nothing about the program embedding it, so it must
+  not grow one: the only session surface it may name is
+  `forge_primitives::SessionSlot` and the `DictateHost` trait it defines,
+  and a doc comment about a keypress, a composer or a workspace session
+  type is a bug.
 - **`forge-tts`** - the speech primitive: text in, audio chunks out. Owns
   the Kokoro-82M engine (ONNX Runtime in process, with Misaki and its
   bundled espeak-ng for G2P), the model files a speaking model is made of,
@@ -67,17 +75,40 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   and the TLS-trust client arrive through the `ProviderHost` port
   forge-agent implements, so the crate stays HTTP + mapping and never
   spawns the CLI.
-- **`forge-connectors`** - one module per external integration: the
-  Gotify and Slack connectors and the outbound Vaultwarden client
-  behind the vault family. Depends on forge-primitives only. Gotify's
-  subscription set, app index and message dispatch into sessions
-  arrive through the `GotifyHost` port forge-workspace implements;
-  Slack's client is polled by workspace code directly, and the vault
-  module is HTTP, crypto and mapping with the session, its tokens and
-  the unlocked account in forge-workspace. Either way the crate stays
-  transport + mapping and holds no workspace state. No generic
-  connector trait: the variety is still small, and a trait waits until
-  it is real.
+- **`forge-mcp`** - the tool-provider seam: the description an MCP tool
+  carries (name, description, input schema), the output shape it answers
+  with, the `ToolProvider` trait a crate owning a tool family implements,
+  and the composition a host uses to ask its providers in order. A leaf:
+  it depends on no forge-* crate and knows nothing about a server, a
+  transport or the CLI subprocess, so an owning crate brings its own tools
+  without depending on forge-sdk.
+- **`forge-tools`** - one module per integration: the Gotify and Slack
+  connectors, the cron scheduler's family, the outbound Vaultwarden
+  client, and the vault family's own session, thirteen held tools and
+  parked calls. Depends on
+  forge-primitives and forge-mcp. Gotify's subscription set, app index
+  and message dispatch into sessions arrive through the `GotifyHost`
+  port forge-workspace implements. The Slack family lives here too: its
+  clients, the subscription set each pump sweeps, the durable cursors and
+  followed threads, the held drafts and the pumps behind `SlackStore` (the
+  durable records), `SlackEmit` (the wire frames, the subscription
+  announcement and the delivery into a session) and the shared `AskSink`;
+  its MCP facade and fifteen tools behind `SlackFacadeHost` (the caller's
+  `[[slack]]` binding, project and subscription identity), registered as
+  one `ToolProvider`. forge-workspace implements all four seams. The cron
+  family - the durable schedule set, its mutation policy, the due-fire pass
+  and the `cron__*` tools - lives here behind `CronStore` (the rows and the
+  fired-prompt pairing), `CronEmit` (the schedule announcement and the
+  service notices), `CronHost` (delivery into a session and the shutdown
+  flag) and `CronFacadeHost` (the caller's project and worker label); the
+  workspace keeps the project catalogue, the session pool, the Command bus,
+  the store and the supervisor's tick. The vault family owns its tool
+  descriptions, its ask registry and the policy behind answering one: the
+  workspace keeps the machine-wide `[vault]` session and the registry
+  handle, implements `VaultHost` (the live session, the caller's cwd) and
+  `VaultEmit` (the wire frames its updates map onto), and registers the
+  family's `ToolProvider` and `AskSource`. No generic connector trait: the
+  variety is still small, and a trait waits until it is real.
 - **`forge-sdk`** - owns the `claude` subprocess: stream-json codec,
   transport, control dispatch, in-process MCP host, Options.
 - **`forge-agent`** - drives one SDK Client behind a channel-based
@@ -166,10 +197,12 @@ Work top-down; first match wins.
 
 1. **Audio, speech recognition, or turning either into text?** (model
    fetch, transcription, transcript normalization)
-   -> `forge-dictate`. It leans on the capture leaf below and on nothing
-   else of the workspace, and its own types stay there even once another
-   crate reads them. Wanting a forge-* dependency here beyond the capture
-   leaf is a design problem, not a dependency problem. **Text into speech?**
+   -> `forge-dictate`. It leans on the capture leaf below and on
+   `forge-primitives` for the seat its host trait crosses on, and on
+   nothing else of the workspace, and its own types stay there even once
+   another crate reads them. Wanting a forge-* dependency here beyond the
+   capture leaf and primitives is a design problem, not a dependency
+   problem. **Text into speech?**
    (the engine, its model files, the sentence split, the utterance bound)
    -> `forge-tts`, a leaf beside it. The two directions are separate leaves
    on purpose - disjoint model families and dependencies - and a leaf
@@ -192,20 +225,29 @@ Work top-down; first match wins.
    its bytes, the client draws them.
 5. **A type that crosses a crate boundary?** (envelope, snapshot
    struct, hook payload, anything sent over a channel or touched by
-   more than one crate) -> `forge-primitives`. Pure data shapes only.
+   more than one crate) -> `forge-primitives`. Data shapes only. The ask
+   seam's two traits (`AskSource`, `AskSink`) are the recorded exception:
+   signatures with no state, no I/O and no async, kept there because the
+   host and every ask source must both name them.
 6. **Provider credential, probe, usage mapping, billing or repair?**
    (how one `forge.toml` provider token authenticates, what endpoint
    its usage probe hits, how the payload maps to a snapshot, what a
    failure allows), or is it which account a session spawns under,
    whether an account is healthy, or when it is next probed? ->
    `forge-gateway`, one backend per token and the account pool.
-7. **I/O for an external integration, inbound or outbound?** (its
-   stream client, REST lookups, subscription matching, reconnecting
-   subsystem pump, a provider's client and crypto) -> `forge-connectors`,
-   one module per integration. The connector holds no workspace state:
-   Gotify reaches the workspace through the `GotifyHost` port
-   forge-workspace implements, Slack holds only its Web API client, and
-   the vault module carries no session or keys.
+7. **I/O for an integration, inbound or outbound?** (its stream client,
+   REST lookups, subscription matching, reconnecting subsystem pump, a
+   provider's client and crypto), **or the cron scheduler's own state,
+   policy and fire pass** -> `forge-tools`, one module per integration.
+   The family owns its own state, its MCP tools and its held asks -
+   Gotify is the exception: its tools and subscription state still live in
+   the workspace, while what it needs from the workspace arrives through a
+   host port (Gotify's `GotifyHost`, the Slack family's `SlackStore`,
+   `SlackEmit` and
+   `SlackFacadeHost`, the cron family's `CronStore`, `CronEmit`,
+   `CronHost` and `CronFacadeHost`, the vault family's `VaultHost` and
+   `VaultEmit`). A family's tools are described
+   through `forge-mcp`'s `ToolProvider`, never built against forge-sdk.
 8. **Speaks stream-json to the `claude` subprocess?** (decoder,
    control_request subtype, transport, MCP host, OptionsBuilder)
    -> `forge-sdk`. Pair with a wire-conformance scenario.
@@ -300,9 +342,10 @@ one, bias toward the deeper crate.
   subscribes to.
 - **Cross-crate type duplication.** Same-shaped `Foo` in two crates
   means one is wrong; lift to primitives or import the re-export. The
-  exceptions are the leaf crates that may not depend on any forge-*
-  crate, `forge-capture`, `forge-tts`, `forge-system-one` and
-  `forge-dictate` (which leans on the first and on nothing else of the
+  exceptions are the crates at the edge of the graph - `forge-capture`,
+  `forge-tts`, `forge-system-one`, `forge-mcp` (whose description and
+  output types every `ToolProvider` family speaks), and `forge-dictate` (which
+  leans on the capture leaf and on primitives, and on nothing else of the
   workspace): their types stay in them and consumers import them from
   there.
 - **Provider dispatch outside `forge-gateway`.** A match on

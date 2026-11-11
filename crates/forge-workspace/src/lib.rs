@@ -53,6 +53,7 @@
 
 mod account_cache;
 mod account_loader;
+mod ask_sources;
 pub mod bench;
 mod biometric;
 pub mod board;
@@ -62,8 +63,10 @@ pub mod chase;
 mod config;
 pub mod conversation_turns;
 pub mod conversation_window;
+#[cfg(test)]
+mod cron_host_tests;
 mod crons;
-mod dictate;
+use forge_dictate::host as dictate;
 pub mod documents;
 mod domain_session;
 mod error;
@@ -98,8 +101,7 @@ mod tasks;
 pub mod terminal;
 pub mod tts;
 mod update_fanout;
-mod vault;
-mod vault_ask;
+mod vault_host;
 mod views;
 pub mod voice;
 pub mod work;
@@ -125,8 +127,8 @@ pub use protocol::{
 pub use target::{ProjectKey, SessionSlot, SessionTarget};
 pub use tts::{TtsSettings, TtsSnapshot, TtsView};
 
+pub use forge_tools::vault::VaultState;
 pub use update_fanout::SeatUpdate;
-pub use vault::VaultState;
 pub use views::{
     AccountGatewayView, AccountLoadingRow, AccountPoolView, AccountUsageView, ProjectView,
 };
@@ -143,7 +145,7 @@ pub use workspace::{
 // `SessionUpdate` payloads. The `testing`-feature block below adds the
 // extra surface the `forge-test-harness` integration tests need (MCP
 // server builders, mock facades, the caller-key resolver).
-pub use mcp::cron::schedule::next_fire_after;
+pub use forge_tools::cron::schedule::next_fire_after;
 pub use mcp::gotify::types::GotifyNotification;
 pub use mcp::peers::types::{MessageId, WrappedKind, WrappedPrompt};
 pub use mcp::workers::types::{LiveWorkerState, WorkerEntry};

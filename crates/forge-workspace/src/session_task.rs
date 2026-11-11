@@ -2708,7 +2708,7 @@ impl SessionTask {
             let Some(first) = messages.first() else { continue };
             let prose = crate::spawn::slack_bundle_to_prose(
                 &messages,
-                workspace.slack_stale_after(&first.workspace),
+                workspace.slack.slack_stale_after(&first.workspace),
                 std::time::SystemTime::now(),
             );
             let uuid = forge_sdk::request_id::next_prompt_id();

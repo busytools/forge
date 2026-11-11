@@ -1,8 +1,9 @@
-//! The Slack Web API client: one uniform POST per method, form params,
-//! Bearer token, and the envelope rules that turn a logical failure into
-//! an error.
+//! The Slack integration: the Web API client, the family's subsystem (its
+//! clients, subscription set, durable records, pumps and held drafts), the
+//! MCP facade and its fifteen tools.
 //!
-//! Slack answers `{"ok": false, "error": "..."}` with HTTP 200 for a
+//! The client is one uniform POST per method, form params and a Bearer
+//! token; Slack answers `{"ok": false, "error": "..."}` with HTTP 200 for a
 //! logical failure, so a 200 is not success. Only a 429 arrives as a
 //! status, and it carries `Retry-After`.
 
@@ -21,15 +22,27 @@ use forge_primitives::slack::{
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-/// What the pump needs from the workspace. The connector holds no state
-/// of its own, so the subscription set, the watermarks and the liveness
-/// flag all live behind this.
+pub mod facade;
+pub mod subsystem;
+mod tools;
+
+pub use tools::SlackTools;
+
+pub use subsystem::{
+    DraftResolution, PumpHttp, Slack, SlackEmit, SlackSeams, SlackStore, SlackSubsystemHost,
+    SlackUpdate, SlackWorkspaces, validate_configs,
+};
+
+/// What a pump needs from the subsystem that owns its state. The clients,
+/// the subscription set and the liveness flag live on [`Slack`], and the
+/// durable watermarks and followed threads live in the store behind it.
+/// This is the port the pump drives them through.
 pub trait SlackHost: Send + Sync {
     /// A ready API for this workspace, or an error when the workspace is
-    /// not configured. The host builds it, so the token stays with the
-    /// workspace and the connector never asks for the credential itself.
-    /// The trait object is what the pump drives, so a test host can hand
-    /// back a double instead of a live client.
+    /// not configured. The subsystem builds it from its own config entry,
+    /// so the pump never asks for the credential itself, and the trait
+    /// object is what the pump drives - a test host can hand back a double
+    /// instead of a live client.
     fn client(&self, workspace: &str, timeout: Duration) -> Result<Arc<dyn SlackApi>, String>;
 
     /// The authenticated user's id for a workspace, resolved at boot.
@@ -742,7 +755,7 @@ impl OwnIdentity<'_> {
                 Err(error @ SlackError::RateLimited { .. }) => return Err(error),
                 Err(error) => {
                     tracing::warn!(
-                        target: "forge_connectors::slack",
+                        target: "forge_tools::slack",
                         event_name = "slack_auth_test_failed",
                         workspace,
                         %error,
@@ -840,7 +853,7 @@ async fn resolve_author(
             // again would spend a call on every message from them forever.
             Err(SlackError::Api { error, .. }) if error == "user_not_found" => {
                 tracing::debug!(
-                    target: "forge_connectors::slack",
+                    target: "forge_tools::slack",
                     workspace,
                     user,
                     error = %error,
@@ -857,7 +870,7 @@ async fn resolve_author(
             Err(error) => {
                 if host.first_author_failure(workspace, user) {
                     tracing::warn!(
-                        target: "forge_connectors::slack",
+                        target: "forge_tools::slack",
                         workspace,
                         user,
                         %error,
@@ -865,7 +878,7 @@ async fn resolve_author(
                     );
                 } else {
                     tracing::debug!(
-                        target: "forge_connectors::slack",
+                        target: "forge_tools::slack",
                         workspace,
                         user,
                         %error,
@@ -908,7 +921,7 @@ pub async fn user_display_name(
         Err(error) => {
             if host.first_draft_user_failure(workspace, user) {
                 tracing::warn!(
-                    target: "forge_connectors::slack",
+                    target: "forge_tools::slack",
                     event_name = "slack_draft_user_unreadable",
                     workspace,
                     user,
@@ -917,7 +930,7 @@ pub async fn user_display_name(
                 );
             } else {
                 tracing::debug!(
-                    target: "forge_connectors::slack",
+                    target: "forge_tools::slack",
                     event_name = "slack_draft_user_unreadable",
                     workspace,
                     user,
@@ -1201,7 +1214,7 @@ async fn fetch_history(
             Some(next) if pages < MAX_HISTORY_PAGES => cursor = Some(next),
             Some(_) => {
                 tracing::warn!(
-                    target: "forge_connectors::slack",
+                    target: "forge_tools::slack",
                     event_name = "slack_history_page_cap",
                     workspace,
                     channel,
@@ -1254,7 +1267,7 @@ async fn fetch_replies(
             Some(next) if pages < MAX_REPLY_PAGES => cursor = Some(next),
             Some(_) => {
                 tracing::warn!(
-                    target: "forge_connectors::slack",
+                    target: "forge_tools::slack",
                     event_name = "slack_thread_page_cap",
                     workspace,
                     channel,
@@ -1306,7 +1319,7 @@ pub async fn read_thread(
             Some(next) if pages < MAX_REPLY_PAGES => cursor = Some(next),
             Some(_) => {
                 tracing::warn!(
-                    target: "forge_connectors::slack",
+                    target: "forge_tools::slack",
                     event_name = "slack_thread_read_page_cap",
                     channel,
                     parent = %ts,
@@ -1413,7 +1426,7 @@ pub(crate) async fn sweep_scope(
         // than sweep half-blind; the host retries the id in the
         // background.
         tracing::warn!(
-            target: "forge_connectors::slack",
+            target: "forge_tools::slack",
             workspace,
             "slack user id unresolved; the sweep is skipped this tick",
         );
@@ -1493,7 +1506,7 @@ pub(crate) async fn sweep_scope(
         });
         if let Some(age) = in_flight {
             tracing::debug!(
-                target: "forge_connectors::slack",
+                target: "forge_tools::slack",
                 event_name = "slack_post_in_flight",
                 workspace,
                 conversation = %conversation.id,
@@ -1509,7 +1522,7 @@ pub(crate) async fn sweep_scope(
                 // from the beginning would deliver the channel's whole
                 // history as new. Skip it for this tick.
                 tracing::warn!(
-                    target: "forge_connectors::slack",
+                    target: "forge_tools::slack",
                     workspace,
                     conversation = %conversation.id,
                     %error,
@@ -1539,7 +1552,7 @@ pub(crate) async fn sweep_scope(
                 // Slack quirk, not a dead channel, so it earns no glyph.
                 if gone && (conversation.is_im || conversation.is_mpim) {
                     tracing::info!(
-                        target: "forge_connectors::slack",
+                        target: "forge_tools::slack",
                         workspace,
                         conversation = %conversation.id,
                         %error,
@@ -1554,7 +1567,7 @@ pub(crate) async fn sweep_scope(
                     conversation_gone = true;
                 }
                 tracing::warn!(
-                    target: "forge_connectors::slack",
+                    target: "forge_tools::slack",
                     workspace,
                     conversation = %conversation.id,
                     %error,
@@ -1576,7 +1589,7 @@ pub(crate) async fn sweep_scope(
         if watermark.is_none() {
             if let Some(newest) = window.iter().map(|message| message.ts.as_str()).max() {
                 tracing::info!(
-                    target: "forge_connectors::slack",
+                    target: "forge_tools::slack",
                     workspace,
                     conversation = %conversation.id,
                     cursor = %newest,
@@ -1609,7 +1622,7 @@ pub(crate) async fn sweep_scope(
                 }
                 Err(error) => {
                     tracing::warn!(
-                        target: "forge_connectors::slack",
+                        target: "forge_tools::slack",
                         workspace,
                         conversation = %conversation.id,
                         %error,
@@ -1691,7 +1704,7 @@ pub(crate) async fn sweep_scope(
                 // sweep continues with the conversations after it.
                 Err(error) => {
                     tracing::warn!(
-                        target: "forge_connectors::slack",
+                        target: "forge_tools::slack",
                         workspace,
                         conversation = %conversation.id,
                         parent = %parent,
@@ -1847,7 +1860,7 @@ pub(crate) async fn sweep_scope(
                 Ok(cursor) => cursor,
                 Err(error) => {
                     tracing::warn!(
-                        target: "forge_connectors::slack",
+                        target: "forge_tools::slack",
                         workspace,
                         conversation = %conversation.id,
                         parent = %thread.parent_ts,
@@ -1936,7 +1949,7 @@ pub(crate) async fn sweep_scope(
                 // partial read cannot advance the cursor.
                 Err(error) => {
                     tracing::warn!(
-                        target: "forge_connectors::slack",
+                        target: "forge_tools::slack",
                         event_name = "slack_thread_walk_failed",
                         workspace,
                         conversation = %conversation.id,
@@ -2153,7 +2166,7 @@ pub(crate) async fn sweep_mentions(
     // rather than sweeping half-blind.
     let Some(user_id) = host.user_id(workspace).filter(|id| !id.is_empty()) else {
         tracing::warn!(
-            target: "forge_connectors::slack",
+            target: "forge_tools::slack",
             workspace,
             "slack user id unresolved; the mention sweep is skipped this tick",
         );
@@ -2166,7 +2179,7 @@ pub(crate) async fn sweep_mentions(
         Ok(watermark) => watermark,
         Err(error) => {
             tracing::warn!(
-                target: "forge_connectors::slack",
+                target: "forge_tools::slack",
                 workspace,
                 %error,
                 "reading the mention cursor failed; skipping the mention sweep this tick",
@@ -2223,7 +2236,7 @@ pub(crate) async fn sweep_mentions(
             });
             if let Some(age) = in_flight {
                 tracing::debug!(
-                    target: "forge_connectors::slack",
+                    target: "forge_tools::slack",
                     event_name = "slack_post_in_flight",
                     workspace,
                     conversation = %hit.conversation_id,
@@ -2321,7 +2334,7 @@ pub(crate) async fn sweep_mentions(
             Some(next) if pages < MAX_SEARCH_PAGES => cursor = Some(next),
             Some(_) => {
                 tracing::warn!(
-                    target: "forge_connectors::slack",
+                    target: "forge_tools::slack",
                     workspace,
                     pages,
                     "search.messages kept handing back a cursor; stopping the mention walk",
@@ -2364,7 +2377,7 @@ impl ThrottleEpisode {
             (Some(delay), false) => {
                 self.active = true;
                 tracing::warn!(
-                    target: "forge_connectors::slack::throttle",
+                    target: "forge_tools::slack::throttle",
                     workspace = %workspace,
                     sweep = %sweep,
                     event_name = "slack_sweep_throttled",
@@ -2375,7 +2388,7 @@ impl ThrottleEpisode {
             }
             (Some(delay), true) => {
                 tracing::debug!(
-                    target: "forge_connectors::slack::throttle",
+                    target: "forge_tools::slack::throttle",
                     workspace = %workspace,
                     sweep = %sweep,
                     event_name = "slack_sweep_throttled",
@@ -2387,7 +2400,7 @@ impl ThrottleEpisode {
             (None, true) => {
                 self.active = false;
                 tracing::info!(
-                    target: "forge_connectors::slack::throttle",
+                    target: "forge_tools::slack::throttle",
                     workspace = %workspace,
                     sweep = %sweep,
                     event_name = "slack_sweep_recovered",
@@ -2429,7 +2442,7 @@ pub async fn run_workspace_pump(
     let dm_interval = Duration::from_secs(dm_poll_seconds);
     let Ok(client) = host.client(&workspace, REQUEST_TIMEOUT) else {
         tracing::warn!(
-            target: "forge_connectors::slack",
+            target: "forge_tools::slack",
             workspace = %workspace,
             "no client for this workspace; its pump stays down",
         );
@@ -2466,7 +2479,7 @@ pub async fn run_workspace_pump(
                 // would flip it back up in the same tick.
                 host.set_connected(&workspace, !outcome.conversation_gone);
                 tracing::debug!(
-                    target: "forge_connectors::slack",
+                    target: "forge_tools::slack",
                     workspace = %workspace,
                     delivered = outcome.delivered,
                     "slack sweep finished",
@@ -2479,7 +2492,7 @@ pub async fn run_workspace_pump(
             Err(error) => {
                 host.set_connected(&workspace, false);
                 tracing::warn!(
-                    target: "forge_connectors::slack",
+                    target: "forge_tools::slack",
                     workspace = %workspace,
                     %error,
                     "slack sweep failed",
@@ -2514,7 +2527,7 @@ pub async fn run_workspace_pump(
                     host.set_connected(&workspace, false);
                 }
                 tracing::warn!(
-                    target: "forge_connectors::slack",
+                    target: "forge_tools::slack",
                     workspace = %workspace,
                     %error,
                     "slack mention sweep failed",
@@ -2551,7 +2564,7 @@ async fn run_dm_pump(
         {
             Ok(outcome) => {
                 tracing::debug!(
-                    target: "forge_connectors::slack",
+                    target: "forge_tools::slack",
                     workspace = %workspace,
                     delivered = outcome.delivered,
                     "slack DM sweep finished",
@@ -2565,7 +2578,7 @@ async fn run_dm_pump(
                 // its to declare healthy.
                 host.set_connected(&workspace, false);
                 tracing::warn!(
-                    target: "forge_connectors::slack",
+                    target: "forge_tools::slack",
                     workspace = %workspace,
                     %error,
                     "slack DM sweep failed",
@@ -2840,7 +2853,7 @@ async fn walk_users(pages: &dyn UsersPages) -> Result<Vec<SlackUser>, SlackError
         }
     }
     tracing::warn!(
-        target: "forge_connectors::slack",
+        target: "forge_tools::slack",
         pages = MAX_USER_PAGES,
         users = out.len(),
         "users.list kept handing back a cursor; stopping the walk",
@@ -3289,7 +3302,7 @@ impl SlackClient {
             match page.next_cursor {
                 Some(_) if pages >= MAX_CONVERSATION_PAGES => {
                     tracing::warn!(
-                        target: "forge_connectors::slack",
+                        target: "forge_tools::slack",
                         pages,
                         conversations = out.len(),
                         "users.conversations kept handing back a cursor; stopping the walk",

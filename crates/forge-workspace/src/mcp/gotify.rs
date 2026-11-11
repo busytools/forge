@@ -18,8 +18,8 @@ use std::sync::Arc;
 use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
 
-use forge_connectors::gotify::GotifyRecent;
 use forge_primitives::GotifySubscription;
+use forge_tools::gotify::GotifyRecent;
 use uuid::Uuid;
 
 use crate::SessionSlot;

@@ -102,7 +102,9 @@ jobs:
               - 'crates/forge-workspace/**'
               - 'crates/forge-agent/**'
               - 'crates/forge-gateway/**'
-              - 'crates/forge-connectors/**'
+              - 'crates/forge-tools/**'
+              # The tool-provider seam forge-tools and forge-sdk share.
+              - 'crates/forge-mcp/**'
               - 'crates/forge-dictate/**'
               # The speaking engine's crate is on the macOS job's build and
               # its voice facade drives it.

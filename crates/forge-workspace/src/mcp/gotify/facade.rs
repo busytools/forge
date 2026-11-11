@@ -7,8 +7,8 @@
 use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
-use forge_connectors::gotify::{GotifyRecent, refresh_app_index};
 use forge_primitives::GotifySubscription;
+use forge_tools::gotify::{GotifyRecent, refresh_app_index};
 use uuid::Uuid;
 
 use crate::SessionSlot;
@@ -205,7 +205,7 @@ impl GotifyFacade for ProdGotifyFacade {
     async fn apps(&self) -> Result<Vec<String>, GotifyReadError> {
         let ws = self.workspace.upgrade().ok_or(GotifyReadError::NotConfigured)?;
         let cfg = ws.gotify_config().ok_or(GotifyReadError::NotConfigured)?;
-        forge_connectors::gotify::app_names(&SubsystemHost::new(&ws), &cfg)
+        forge_tools::gotify::app_names(&SubsystemHost::new(&ws), &cfg)
             .await
             .map_err(|err| GotifyReadError::Fetch(format!("{err:#}")))
     }
@@ -218,7 +218,7 @@ impl GotifyFacade for ProdGotifyFacade {
     ) -> Result<Vec<GotifyRecent>, GotifyReadError> {
         let ws = self.workspace.upgrade().ok_or(GotifyReadError::NotConfigured)?;
         let cfg = ws.gotify_config().ok_or(GotifyReadError::NotConfigured)?;
-        forge_connectors::gotify::recent_messages(
+        forge_tools::gotify::recent_messages(
             &SubsystemHost::new(&ws),
             &cfg,
             &applications,
@@ -364,9 +364,9 @@ mod tests {
     use crate::mcp::gotify::Unsubscribe;
     use crate::mcp::test_support::text_of;
     use crate::target::ProjectKey;
-    use forge_connectors::gotify::GotifyHost as _;
     use forge_primitives::WorkerLiveness;
     use forge_sdk::mcp::tool::{Tool as _, ToolInput};
+    use forge_tools::gotify::GotifyHost as _;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -494,8 +494,7 @@ client_token = "Ctest"
         assert_eq!(stub.application_fetches(), 1, "the subscribe refreshed the index");
         let resolved = host.app_name(7);
         let subs = ws.gotify_subscriptions_for_project("myproj");
-        let matched =
-            forge_connectors::gotify::matching_subscriptions(&subs, resolved.as_deref(), 5);
+        let matched = forge_tools::gotify::matching_subscriptions(&subs, resolved.as_deref(), 5);
         assert_eq!(
             matched.len(),
             1,

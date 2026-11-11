@@ -536,13 +536,14 @@ mod tests {
     #[tokio::test]
     async fn a_tool_driven_through_the_server_reaches_the_installed_host() {
         use crate::mcp::browser::facade::ProdBrowserFacade;
-        use crate::mcp::cron::facade::MockCronFacade;
         use crate::mcp::gotify::facade::MockGotifyFacade;
         use crate::mcp::peers::facade::MockWorkspaceFacade;
         use crate::mcp::review::facade::MockReviewFacade;
-        use crate::mcp::slack::facade::MockSlackFacade;
         use crate::mcp::tasks::facade::MockTasksFacade;
         use crate::mcp::workers::facade::MockWorkerFacade;
+        use forge_tools::cron::facade::MockCronFacade;
+        use forge_tools::slack::SlackTools;
+        use forge_tools::slack::facade::MockSlackFacade;
         use tokio::sync::mpsc;
 
         let (workspace, _updates) = crate::workspace::Workspace::testing_stub();
@@ -561,9 +562,12 @@ mod tests {
                     &workspace,
                 ),
                 review: MockReviewFacade::new().into_arc(),
-                cron: MockCronFacade::new().into_arc(),
+                cron: Arc::new(forge_tools::cron::CronTools::new(
+                    MockCronFacade::new().into_arc(),
+                    seat(),
+                )),
                 gotify: MockGotifyFacade::new().into_arc(),
-                slack: MockSlackFacade::new().into_arc(),
+                slack: Some(Arc::new(SlackTools::new(MockSlackFacade::new().into_arc(), seat()))),
                 settings: crate::mcp::settings::facade::ProdSettingsFacade::from_arc(&workspace),
                 vault: None,
                 tasks: MockTasksFacade::new().into_arc(),

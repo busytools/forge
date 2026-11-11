@@ -610,12 +610,13 @@ mod tests {
             email: "a@b.c".to_owned(),
             idle_minutes: None,
         };
-        let session =
-            Arc::new(crate::vault::test_session(&config, None, dir.path()).expect("a session"));
-        crate::vault::test_install_unlocked(
+        let session = Arc::new(
+            forge_tools::vault::session::test_session(&config, None, "test").expect("a session"),
+        );
+        forge_tools::vault::session::test_install_unlocked(
             &session,
-            forge_connectors::vault::crypto::Unlocked {
-                user_key: forge_connectors::vault::crypto::make_symmetric_key(),
+            forge_tools::vault::crypto::Unlocked {
+                user_key: forge_tools::vault::crypto::make_symmetric_key(),
                 private_key: None,
                 org_keys: std::collections::HashMap::new(),
                 failed_orgs: Vec::new(),
@@ -661,9 +662,9 @@ mod tests {
     #[test]
     fn locking_the_vault_locks_the_session_and_rebases_the_cards() {
         use crate::config::VaultConfig;
-        use crate::vault::{test_install_unlocked, test_session};
-        use forge_connectors::vault::crypto;
         use forge_primitives::vault::{VaultDraft, VaultTool};
+        use forge_tools::vault::crypto;
+        use forge_tools::vault::session::{test_install_unlocked, test_session};
 
         let dir = tempfile::tempdir().expect("tempdir");
         let (workspace, _updates) =
@@ -673,7 +674,7 @@ mod tests {
             email: "a@b.c".to_owned(),
             idle_minutes: None,
         };
-        let session = Arc::new(test_session(&config, None, dir.path()).expect("a session"));
+        let session = Arc::new(test_session(&config, None, "test").expect("a session"));
         test_install_unlocked(
             &session,
             crypto::Unlocked {
@@ -687,16 +688,16 @@ mod tests {
         *workspace.vault.write() = Some(Arc::clone(&session));
         let caller = SessionSlot::lead("Default", "forge");
         let draft = VaultDraft::new(VaultTool::Get, "read the password for 'bank'");
-        workspace.register_vault_ask(&caller, draft, false);
+        workspace.vault_asks.register(&caller, draft, false);
         assert!(!session.is_locked());
 
         assert!(workspace.lock_vault());
 
         assert!(session.is_locked(), "the lock drops the keys");
-        let asks = workspace.vault_asks(&caller, true);
+        let asks = forge_primitives::AskSource::asks(workspace.vault_asks.as_ref(), &caller);
         assert!(
             asks.iter().any(|ask| matches!(
-                ask,
+                &ask.payload,
                 crate::protocol::PendingAsk::Vault(draft) if draft.needs_unlock
             )),
             "the parked card asks for the password again",

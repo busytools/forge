@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn the_description_carries_the_conversational_rule() {
-        let description = Say { voice: service(), slot: slot() }.description();
+        let description = Say { voice: service(), slot: slot() }.description().to_owned();
         assert!(
             description.contains(
                 "While a listener is present, call this with the substance of each user-facing \

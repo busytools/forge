@@ -64,44 +64,11 @@ pub enum PendingInteractionSlot {
     Question { tx: oneshot::Sender<QuestionOutcome>, request: Box<QuestionRequest> },
 }
 
-/// What a seat is held on, as the core kept it: the prompt a view that
-/// attached late has no other way to read.
-///
-/// The kinds are every member of the category, not the two the dock
-/// happened to draw first: a Slack draft parks on a reply the same way a
-/// permission and a question do - and a browser hand-off parks on a person -
-/// so a record carrying two of them told a builder the category was covered
-/// when it was not.
-#[derive(Clone)]
-pub enum PendingAsk {
-    Permission(Box<PermissionRequest>),
-    Question(Box<QuestionRequest>),
-    SlackDraft(Box<forge_primitives::slack::SlackDraft>),
-    BrowserHandOff(Box<forge_primitives::browser::HandOff>),
-    TerminalHandOff(Box<forge_primitives::terminal::TerminalHandOff>),
-    DocumentHandOff(Box<forge_primitives::document::DocumentHandOffAsk>),
-    SettingsWrite(Box<forge_primitives::settings::SettingsWriteAsk>),
-    Vault(Box<forge_primitives::vault::VaultDraft>),
-}
-
-impl PendingAsk {
-    /// The tool call this prompt is about, which is the id an answer names.
-    ///
-    /// `None` for a Slack draft and a hand-off: each is answered by its own
-    /// command with its own id, and names no tool call at all.
-    pub fn tool_id(&self) -> Option<&str> {
-        match self {
-            Self::Permission(request) => Some(&request.tool_call.tool_call_id),
-            Self::Question(request) => Some(&request.tool_call.tool_call_id),
-            Self::SlackDraft(_)
-            | Self::BrowserHandOff(_)
-            | Self::TerminalHandOff(_)
-            | Self::DocumentHandOff(_)
-            | Self::SettingsWrite(_)
-            | Self::Vault(_) => None,
-        }
-    }
-}
+// The record a seat is held on lives in forge-primitives, so an ask source
+// in another crate returns one without depending on the workspace. It is
+// re-exported here because every existing path names it through the
+// protocol module.
+pub use forge_primitives::PendingAsk;
 
 impl PendingInteractionSlot {
     /// The request this slot is holding, which is what it offers.
@@ -1384,47 +1351,10 @@ impl std::fmt::Debug for Command {
     }
 }
 
-/// Read a no-signal peak - a level's, or the one a `no_audio` outcome
-/// carries - taking `null` as no signal rather than as a decode failure.
-///
-/// The counterpart of serde writing a non-finite float as `null`: a
-/// window that heard nothing peaks at exactly zero, whose dBFS is
-/// negative infinity. Without this, a Rust reader cannot decode the
-/// message at all, and the failure names the type rather than the case.
-fn no_signal_reads_as_negative_infinity<'de, D>(deserializer: D) -> Result<f32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Option::<f32>::deserialize(deserializer)?.unwrap_or(f32::NEG_INFINITY))
-}
-
 /// What one finished dictation take produced. Plain data rather than
 /// [`forge_dictate::Outcome`]: a view words the notices, so it gets
 /// the observations and keeps the crate's error shapes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DictateOutcome {
-    /// Words to insert at the composer's caret. `truncated` means the
-    /// take hit the capture cap or the decode budget and is partial.
-    Landed { text: String, truncated: bool },
-    /// The audio normalised to nothing - a valid answer, not a failure.
-    Empty,
-    /// Nothing rose above the silence floor. A finite `peak_db` is a
-    /// quiet room and a retry is reasonable; negative infinity means
-    /// every sample was exactly zero, which is structural and sticky.
-    NoAudio {
-        #[serde(default, deserialize_with = "no_signal_reads_as_negative_infinity")]
-        peak_db: f32,
-        seconds: u64,
-    },
-    /// The take never happened. Covers a busy microphone, a device that
-    /// would not open, and dictation not being ready.
-    Refused { message: String },
-    /// Recognition failed. The response is the same whichever way.
-    Failed,
-    /// The user abandoned the take. Resets silently.
-    Cancelled,
-}
+pub use forge_dictate::host::DictateOutcome;
 
 /// The role a caller states for a spawn: a project's lead, or a worker
 /// named by its label.
@@ -2220,7 +2150,10 @@ pub enum SessionUpdate {
     /// Rust reader do the same.
     DictateLevel {
         key: SessionSlot,
-        #[serde(default, deserialize_with = "no_signal_reads_as_negative_infinity")]
+        #[serde(
+            default,
+            deserialize_with = "forge_dictate::host::no_signal_reads_as_negative_infinity"
+        )]
         peak_db: f32,
         /// The take's own, as [`SessionUpdate::DictateStarted`] announced it:
         /// a reading that arrives after a newer take started is the older

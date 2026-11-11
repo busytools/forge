@@ -1,30 +1,49 @@
 //! The process-wide vault session and its audit.
 //!
 //! One `VaultSession` per forge process, built from `[vault]` at boot and
-//! swapped on a reload that changes the section. It owns the tokens and the
-//! derived keys; the connector holds neither. A call the server rejects with
-//! 401 tries the refresh token, and only a failed refresh locks the session
-//! and makes the next held call ask for the master password. `[vault]
-//! idle_minutes`, when set, locks an unused session on its first read after
-//! the bound.
+//! swapped on a reload that changes the section. The host holds the
+//! singleton; this module owns its type, its tokens and its derived keys.
+//! A call the server rejects with 401 tries the refresh token, and only a
+//! failed refresh locks the session and makes the next held call ask for
+//! the master password. `[vault] idle_minutes`, when set, locks an unused
+//! session on its first read after the bound.
 //!
 //! The master password never enters this struct. It arrives with one answer,
 //! is used to derive the master key, and is zeroized before the answer is
 //! dropped.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use forge_connectors::vault::crypto::{self, Unlocked};
-use forge_connectors::vault::models::{Prelogin, SyncData, TokenResponse, TwoFactorCode};
-use forge_connectors::vault::{VaultClient, VaultError};
+use forge_primitives::SessionSlot;
 use forge_primitives::vault::{VaultReleased, VaultTool};
 use serde_json::Value;
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::SessionSlot;
-use crate::config::VaultConfig;
-use crate::protocol::SessionUpdate;
-use crate::update_fanout::UpdateFanout;
+use crate::vault::crypto::{self, Unlocked};
+use crate::vault::models::{Prelogin, SyncData, TokenResponse, TwoFactorCode};
+use crate::vault::{VaultClient, VaultEmit, VaultError, VaultUpdate};
+
+/// The validated `[vault]` section.
+#[derive(Clone, PartialEq, Eq)]
+pub struct VaultConfig {
+    pub url: String,
+    pub email: String,
+    /// `None` when `idle_minutes` is unset: no idle lock.
+    pub idle_minutes: Option<u64>,
+}
+
+/// Hand-written because the email is the account's identity and the salt the
+/// master key derives with.
+impl std::fmt::Debug for VaultConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VaultConfig")
+            .field("url", &self.url)
+            .field("email", &"[redacted]")
+            .field("idle_minutes", &self.idle_minutes)
+            .finish()
+    }
+}
 
 /// The access and refresh tokens one unlock produced.
 struct Tokens {
@@ -49,7 +68,7 @@ struct SessionState {
 }
 
 /// One process-wide Vaultwarden session.
-pub(crate) struct VaultSession {
+pub struct VaultSession {
     client: VaultClient,
     email: String,
     state: parking_lot::RwLock<SessionState>,
@@ -62,7 +81,7 @@ pub(crate) struct VaultSession {
     refresh_gate: tokio::sync::Mutex<()>,
     /// Where a rotation is announced: the enrolment blobs hold the old token
     /// and the client that owns one rewrites it from this.
-    updates: UpdateFanout,
+    emit: Arc<dyn VaultEmit>,
     /// The configured idle bound in minutes, or `None` for no idle lock.
     idle_minutes: Option<u64>,
     /// When the session was last used, for the idle clock. **Wall clock, not
@@ -76,28 +95,26 @@ pub(crate) struct VaultSession {
 }
 
 impl VaultSession {
-    /// Build the session's audit around a client the workspace built. The
-    /// audit path is `<app-support>/vault/audit-<config-dir-store-key>.jsonl`;
-    /// a missing app-support dir leaves the session usable and the audit off.
-    pub(crate) fn with_client(
+    /// Build the session's audit around a client the host built. The audit
+    /// path is `<app-support>/vault/audit-<store-key>.jsonl`; a missing
+    /// app-support dir leaves the session usable and the audit off.
+    pub fn with_client(
         config: &VaultConfig,
         app_support: Option<&Path>,
-        config_dir: &Path,
+        store_key: &str,
         client: VaultClient,
-        updates: UpdateFanout,
+        emit: Arc<dyn VaultEmit>,
     ) -> Result<Self, VaultError> {
-        let audit = app_support.and_then(|base| {
-            match VaultAudit::new(base, &forge_sdk::config_dir_store_key(config_dir)) {
-                Ok(audit) => Some(audit),
-                Err(error) => {
-                    tracing::warn!(
-                        event_name = "vault_audit_open_failed",
-                        path = %base.join("vault").display(),
-                        %error,
-                        "the vault audit could not be opened; operations will not be recorded"
-                    );
-                    None
-                }
+        let audit = app_support.and_then(|base| match VaultAudit::new(base, store_key) {
+            Ok(audit) => Some(audit),
+            Err(error) => {
+                tracing::warn!(
+                    event_name = "vault_audit_open_failed",
+                    path = %base.join("vault").display(),
+                    %error,
+                    "the vault audit could not be opened; operations will not be recorded"
+                );
+                None
             }
         });
         Ok(Self {
@@ -106,7 +123,7 @@ impl VaultSession {
             state: parking_lot::RwLock::new(SessionState::default()),
             unlock_gate: tokio::sync::Mutex::new(()),
             refresh_gate: tokio::sync::Mutex::new(()),
-            updates,
+            emit,
             idle_minutes: config.idle_minutes,
             last_used: parking_lot::Mutex::new(None),
             lock_generation: std::sync::atomic::AtomicU64::new(0),
@@ -115,14 +132,14 @@ impl VaultSession {
     }
 
     /// The idle bound the config set, for the settings card.
-    pub(crate) fn idle_minutes(&self) -> Option<u64> {
+    pub fn idle_minutes(&self) -> Option<u64> {
         self.idle_minutes
     }
 
     /// Whether the derived keys are absent. A session that has never
     /// unlocked, one whose refresh failed and one past its idle bound all
     /// read locked.
-    pub(crate) fn is_locked(&self) -> bool {
+    pub fn is_locked(&self) -> bool {
         self.lock_if_idle();
         self.state.read().keys.is_none()
     }
@@ -174,7 +191,7 @@ impl VaultSession {
     /// token and the account's user key, base64 - or `None` when the session
     /// holds no tokens or keys, and when it holds no refresh token, because a
     /// blob built on material that cannot refresh is a shortcut to nothing.
-    pub(crate) fn enrolment_material(&self) -> Option<VaultReleased> {
+    pub fn enrolment_material(&self) -> Option<VaultReleased> {
         // A hand-out is a read like any other: it must not revive a session
         // past its idle bound, and it stamps the clock when it answers.
         self.lock_if_idle();
@@ -199,7 +216,7 @@ impl VaultSession {
     /// rides the live socket for the client that owns an enrolment to rewrite
     /// its blob, and no store keeps it.
     fn announce_rotation(&self, refresh_token: String) {
-        let _ = self.updates.send(SessionUpdate::VaultRotated { refresh_token });
+        let _ = self.emit.emit(VaultUpdate::Rotated { refresh_token });
     }
 
     /// Derive the master key and unlock the account, storing the tokens and
@@ -256,7 +273,7 @@ impl VaultSession {
         state.keys = Some(std::sync::Arc::new(unlocked));
         drop(state);
         self.touch();
-        let _ = self.updates.send(SessionUpdate::VaultLockChanged { locked: false });
+        let _ = self.emit.emit(VaultUpdate::LockChanged { locked: false });
         Ok(())
     }
 
@@ -310,7 +327,7 @@ impl VaultSession {
         state.keys = Some(std::sync::Arc::new(unlocked));
         drop(state);
         self.touch();
-        let _ = self.updates.send(SessionUpdate::VaultLockChanged { locked: false });
+        let _ = self.emit.emit(VaultUpdate::LockChanged { locked: false });
         if let Some(refresh_token) = rotated {
             self.announce_rotation(refresh_token);
         }
@@ -392,7 +409,7 @@ impl VaultSession {
     /// Drop the tokens and the derived keys. The key types zeroize on drop.
     /// A lock that found a session open announces it, so every view's vault
     /// card redraws - the settings page's own among them.
-    pub(crate) fn lock(&self) {
+    pub fn lock(&self) {
         // **Bumped before the state write**: an unlock that already read the
         // generation will find it changed and refuse to install its keys, so
         // this lock cannot be undone by network work that was already out.
@@ -406,7 +423,7 @@ impl VaultSession {
         };
         *self.last_used.lock() = None;
         if was_unlocked {
-            let _ = self.updates.send(SessionUpdate::VaultLockChanged { locked: true });
+            let _ = self.emit.emit(VaultUpdate::LockChanged { locked: true });
         }
     }
 
@@ -579,9 +596,7 @@ impl VaultSession {
         }
     }
 
-    pub(crate) async fn list_folders(
-        &self,
-    ) -> Result<Vec<forge_connectors::vault::Folder>, VaultError> {
+    pub(crate) async fn list_folders(&self) -> Result<Vec<crate::vault::Folder>, VaultError> {
         let token = self.access_token()?;
         match self.client.list_folders(&token).await {
             Err(VaultError::Unauthorized) => {
@@ -696,7 +711,7 @@ impl VaultSession {
         &self,
         cipher_id: &str,
         attachment_id: &str,
-    ) -> Result<forge_connectors::vault::AttachmentMeta, VaultError> {
+    ) -> Result<crate::vault::AttachmentMeta, VaultError> {
         let token = self.access_token()?;
         match self.client.get_attachment_meta(&token, cipher_id, attachment_id).await {
             Err(VaultError::Unauthorized) => {
@@ -780,7 +795,7 @@ impl VaultSession {
         });
         if let Err(error) = audit.append(&line.to_string()) {
             tracing::error!(
-                target: "forge_workspace::vault",
+                target: "forge_tools::vault",
                 event_name = "vault_audit_write_failed",
                 %error,
                 "a vault audit line was not written",
@@ -797,79 +812,81 @@ pub struct VaultState {
     pub idle_minutes: Option<u64>,
 }
 
-impl crate::workspace::Workspace {
-    /// The material a client wraps to enrol this device, from the shared
-    /// session - or `None` when it is locked or no `[vault]` is configured.
-    pub(crate) fn vault_enrolment_material(&self) -> Option<VaultReleased> {
-        self.vault.read().as_ref()?.enrolment_material()
-    }
-
-    /// The shared vault session as a view draws it - `None` when no `[vault]`
-    /// is configured.
-    pub fn vault_state(&self) -> Option<VaultState> {
-        let session = self.vault.read().clone()?;
-        Some(VaultState { locked: session.is_locked(), idle_minutes: session.idle_minutes() })
-    }
-}
-
 /// Install an unlocked state on a test session without the login round-trip.
-#[cfg(test)]
-pub(crate) fn test_install_unlocked(session: &VaultSession, unlocked: Unlocked) {
+#[cfg(any(test, feature = "testing"))]
+pub fn test_install_unlocked(session: &VaultSession, unlocked: Unlocked) {
     let mut state = session.state.write();
     state.tokens =
         Some(Tokens { access: "test-access".to_owned(), refresh: Some("test-refresh".to_owned()) });
     state.keys = Some(std::sync::Arc::new(unlocked));
 }
 
-/// A session over the connector's own client, for local test servers. The
-/// production path builds the clients through [`production_client`].
-#[cfg(test)]
-pub(crate) fn test_session(
-    config: &VaultConfig,
-    app_support: Option<&Path>,
-    config_dir: &Path,
-) -> Result<VaultSession, VaultError> {
-    test_session_with_updates(config, app_support, config_dir, UpdateFanout::default())
+/// Whether the derived keys are present, WITHOUT running the idle check.
+/// [`VaultSession::is_locked`] cannot answer this for a test: it runs the
+/// very check the test is trying not to touch.
+#[cfg(any(test, feature = "testing"))]
+pub fn test_keys_present(session: &VaultSession) -> bool {
+    session.state.read().keys.is_some()
 }
 
-/// [`test_session`] over a fan-out the test holds, so it can read what the
-/// session announces.
-#[cfg(test)]
-pub(crate) fn test_session_with_updates(
+/// Age the idle clock, so a test can put the session past its bound.
+#[cfg(any(test, feature = "testing"))]
+pub fn test_set_last_used(session: &VaultSession, at: std::time::SystemTime) {
+    *session.last_used.lock() = Some(at);
+}
+
+/// A session over the connector's own client, for local test servers. The
+/// production path builds the clients through the host's own trust setup.
+#[cfg(any(test, feature = "testing"))]
+pub fn test_session(
     config: &VaultConfig,
     app_support: Option<&Path>,
-    config_dir: &Path,
-    updates: UpdateFanout,
+    store_key: &str,
+) -> Result<VaultSession, VaultError> {
+    test_session_with_emit(config, app_support, store_key, std::sync::Arc::new(TestEmit::default()))
+}
+
+/// [`test_session`] over an emit sink the test holds, so it can read what
+/// the session announces.
+#[cfg(any(test, feature = "testing"))]
+pub fn test_session_with_emit(
+    config: &VaultConfig,
+    app_support: Option<&Path>,
+    store_key: &str,
+    emit: std::sync::Arc<dyn VaultEmit>,
 ) -> Result<VaultSession, VaultError> {
     let client = VaultClient::new(&config.url)?;
-    VaultSession::with_client(config, app_support, config_dir, client, updates)
+    VaultSession::with_client(config, app_support, store_key, client, emit)
 }
 
-/// The production vault clients: the machine's extra TLS roots, `https_only`,
-/// the account's own user agent, and the vault family's bounds. The download
-/// client takes a longer read and total bound because an attachment is opaque
-/// ciphertext up to the server's cap.
-pub(crate) fn production_client(base: &str) -> Result<VaultClient, VaultError> {
-    use forge_connectors::vault::client::{
-        CONNECT_TIMEOUT, DOWNLOAD_READ_TIMEOUT, DOWNLOAD_TIMEOUT, READ_TIMEOUT, REQUEST_TIMEOUT,
-    };
-    let build = |read_timeout: std::time::Duration, timeout: std::time::Duration| {
-        forge_agent::http_trust::with_extra_roots(
-            reqwest::Client::builder()
-                .user_agent(forge_connectors::vault::client::user_agent())
-                .https_only(true)
-                .connect_timeout(CONNECT_TIMEOUT)
-                .read_timeout(read_timeout)
-                .timeout(timeout),
-        )
-        .build()
-        .map_err(VaultError::Http)
-    };
-    VaultClient::with_clients(
-        base,
-        build(READ_TIMEOUT, REQUEST_TIMEOUT)?,
-        build(DOWNLOAD_READ_TIMEOUT, DOWNLOAD_TIMEOUT)?,
-    )
+/// What a session announced, for a test that holds the emit sink.
+#[cfg(any(test, feature = "testing"))]
+#[derive(Default)]
+pub struct TestEmit {
+    sent: parking_lot::Mutex<Vec<VaultUpdate>>,
+    refuse: bool,
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl TestEmit {
+    /// An emit that reports no subscriber would take the update, which is
+    /// the fail-closed path a parked call takes with no client attached.
+    pub fn refusing() -> Self {
+        Self { sent: parking_lot::Mutex::new(Vec::new()), refuse: true }
+    }
+
+    /// Take everything emitted since the last take.
+    pub fn take(&self) -> Vec<VaultUpdate> {
+        std::mem::take(&mut *self.sent.lock())
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl VaultEmit for TestEmit {
+    fn emit(&self, update: VaultUpdate) -> bool {
+        self.sent.lock().push(update);
+        !self.refuse
+    }
 }
 
 /// The append-only audit file, rotated 10 MB x 6.
@@ -987,10 +1004,8 @@ mod tests {
     }
 
     /// Whether a released-material unlock whose redemption answers `next`
-    /// produced a `VaultRotated`.
+    /// produced a rotation announcement.
     async fn released_rotation_announcement(next: &str) -> bool {
-        use crate::update_fanout::SubscriberRole;
-
         let pre =
             Prelogin { kdf: 0, kdf_iterations: 100_000, kdf_memory: None, kdf_parallelism: None };
         let master_key = crypto::derive_master_key("open sesame", "hi@vedhavyas.dev", &pre)
@@ -1007,28 +1022,21 @@ mod tests {
             response("200 OK", r#"{"profile":{},"folders":[],"ciphers":[]}"#),
         ])
         .await;
-        let updates = UpdateFanout::default();
-        let mut announced = updates.subscribe(SubscriberRole::Answering);
+        let emit = std::sync::Arc::new(TestEmit::default());
         let config = VaultConfig {
             url: format!("http://{address}"),
             email: "hi@vedhavyas.dev".to_owned(),
             idle_minutes: None,
         };
-        let session = test_session_with_updates(&config, None, Path::new("/tmp"), updates)
-            .expect("a session");
+        let session =
+            test_session_with_emit(&config, None, "test", emit.clone()).expect("a session");
 
         session
             .unlock_released("released", &user_key.0.to_base64().to_string())
             .await
             .expect("the unlock");
 
-        let mut rotated = false;
-        while let Ok(frame) = announced.try_recv() {
-            if matches!(&*frame.update, SessionUpdate::VaultRotated { .. }) {
-                rotated = true;
-            }
-        }
-        rotated
+        emit.take().iter().any(|update| matches!(update, VaultUpdate::Rotated { .. }))
     }
 
     /// **A refresh that answers the same token is not a rotation.** Announcing
@@ -1045,34 +1053,25 @@ mod tests {
         assert!(rotation_announcement("next").await, "a moved token is news");
     }
 
-    /// Whether a refresh answering `next` produced a `VaultRotated`.
+    /// Whether a refresh answering `next` produced a rotation announcement.
     async fn rotation_announcement(next: &str) -> bool {
-        use crate::update_fanout::SubscriberRole;
-
         let body =
             serde_json::json!({ "access_token": "fresh", "refresh_token": next }).to_string();
         let (address, _server) = serve(vec![response("200 OK", &body)]).await;
-        let updates = UpdateFanout::default();
-        let mut announced = updates.subscribe(SubscriberRole::Answering);
+        let emit = std::sync::Arc::new(TestEmit::default());
         let config = VaultConfig {
             url: format!("http://{address}"),
             email: "hi@vedhavyas.dev".to_owned(),
             idle_minutes: None,
         };
-        let session = test_session_with_updates(&config, None, Path::new("/tmp"), updates)
-            .expect("a session");
+        let session =
+            test_session_with_emit(&config, None, "test", emit.clone()).expect("a session");
         session.state.write().tokens =
             Some(Tokens { access: "stale".to_owned(), refresh: Some("same".to_owned()) });
 
         session.refresh("stale").await.expect("the refresh");
 
-        let mut rotated = false;
-        while let Ok(frame) = announced.try_recv() {
-            if matches!(&*frame.update, SessionUpdate::VaultRotated { .. }) {
-                rotated = true;
-            }
-        }
-        rotated
+        emit.take().iter().any(|update| matches!(update, VaultUpdate::Rotated { .. }))
     }
 
     /// **The enrolment hand-out is a read like any other.** A session past its
@@ -1080,17 +1079,14 @@ mod tests {
     /// enrol against a session the idle clock has already closed.
     #[test]
     fn the_enrolment_material_is_not_handed_out_past_the_idle_bound() {
-        use crate::update_fanout::SubscriberRole;
-
-        let updates = UpdateFanout::default();
-        let mut announced = updates.subscribe(SubscriberRole::Answering);
+        let emit = std::sync::Arc::new(TestEmit::default());
         let bound = VaultConfig {
             url: "http://127.0.0.1:1".to_owned(),
             email: "hi@vedhavyas.dev".to_owned(),
             idle_minutes: Some(30),
         };
-        let session = test_session_with_updates(&bound, None, Path::new("/tmp"), updates.clone())
-            .expect("a session");
+        let session =
+            test_session_with_emit(&bound, None, "test", emit.clone()).expect("a session");
         test_install_unlocked(
             &session,
             Unlocked {
@@ -1112,8 +1108,9 @@ mod tests {
             "a session past its bound hands nothing out",
         );
         assert!(session.is_locked(), "and the hand-out locked it");
-        match &*announced.try_recv().expect("the lock is announced").update {
-            SessionUpdate::VaultLockChanged { locked } => assert!(locked),
+        let announced = emit.take();
+        match announced.first().expect("the lock is announced") {
+            VaultUpdate::LockChanged { locked } => assert!(locked),
             other => panic!("the hand-out announced something else: {other:?}"),
         }
     }
@@ -1169,7 +1166,7 @@ mod tests {
                     idle_minutes: None,
                 },
                 None,
-                Path::new("/tmp"),
+                "test",
             )
             .expect("a session"),
         );
@@ -1243,7 +1240,7 @@ mod tests {
                     idle_minutes: None,
                 },
                 None,
-                Path::new("/tmp"),
+                "test",
             )
             .expect("a session"),
         );
@@ -1259,43 +1256,9 @@ mod tests {
         assert!(session.is_locked(), "the session stays locked");
     }
 
-    /// **The settings card's lock press is a command**, so its dispatch arm is
-    /// pinned: `VaultLock` locks the shared session and announces the change
-    /// every view redraws on.
-    #[test]
-    fn the_lock_command_locks_the_shared_session() {
-        use crate::update_fanout::SubscriberRole;
-
-        let updates = UpdateFanout::default();
-        let mut announced = updates.subscribe(SubscriberRole::Answering);
-        let session =
-            test_session_with_updates(&config(), None, Path::new("/tmp"), updates.clone())
-                .expect("a session");
-        test_install_unlocked(
-            &session,
-            Unlocked {
-                user_key: crypto::make_symmetric_key(),
-                private_key: None,
-                org_keys: std::collections::HashMap::new(),
-                failed_orgs: Vec::new(),
-                user_key_fingerprint: String::new(),
-            },
-        );
-        let (workspace, _rx) = crate::workspace::Workspace::testing_stub();
-        *workspace.vault.write() = Some(std::sync::Arc::new(session));
-
-        assert!(!workspace.vault_state().expect("a vault").locked, "the session starts open");
-        workspace.dispatch(crate::protocol::Command::VaultLock).expect("the lock routes");
-        assert!(workspace.vault_state().expect("a vault").locked, "the shared session locked");
-        match &*announced.try_recv().expect("the lock is announced").update {
-            SessionUpdate::VaultLockChanged { locked } => assert!(locked),
-            other => panic!("the lock announced something else: {other:?}"),
-        }
-    }
-
     #[test]
     fn a_new_session_is_locked() {
-        let session = test_session(&config(), None, Path::new("/tmp")).expect("a session");
+        let session = test_session(&config(), None, "test").expect("a session");
         assert!(session.is_locked());
         assert!(matches!(session.keys(), Err(VaultError::Locked)));
     }
@@ -1367,7 +1330,7 @@ mod tests {
             email: "hi@vedhavyas.dev".to_owned(),
             idle_minutes: None,
         };
-        let session = test_session(&config, None, Path::new("/tmp")).expect("a session");
+        let session = test_session(&config, None, "test").expect("a session");
         session.state.write().tokens =
             Some(Tokens { access: "stale".to_owned(), refresh: Some("good".to_owned()) });
         session
@@ -1377,7 +1340,7 @@ mod tests {
     /// token and the account's user key, and nothing when either is missing.
     #[test]
     fn the_enrolment_material_is_the_refresh_token_and_user_key() {
-        let session = test_session(&config(), None, Path::new("/tmp")).expect("a session");
+        let session = test_session(&config(), None, "test").expect("a session");
         assert!(session.enrolment_material().is_none(), "a locked session enrols nothing");
 
         let key = crypto::make_symmetric_key();
@@ -1419,17 +1382,14 @@ mod tests {
                 .expect("the wall clock is older than the test's span")
         }
 
-        use crate::update_fanout::SubscriberRole;
-
-        let updates = UpdateFanout::default();
-        let mut announced = updates.subscribe(SubscriberRole::Answering);
+        let emit = std::sync::Arc::new(TestEmit::default());
         let config = VaultConfig {
             url: "http://127.0.0.1:1".to_owned(),
             email: "hi@vedhavyas.dev".to_owned(),
             idle_minutes: Some(30),
         };
-        let session = test_session_with_updates(&config, None, Path::new("/tmp"), updates.clone())
-            .expect("a session");
+        let session =
+            test_session_with_emit(&config, None, "test", emit.clone()).expect("a session");
         test_install_unlocked(
             &session,
             Unlocked {
@@ -1450,8 +1410,9 @@ mod tests {
         *session.last_used.lock() = Some(ago(31 * 60));
         assert!(session.is_locked(), "a read past the bound locks the session");
         assert!(session.keys().is_err());
-        match &*announced.try_recv().expect("the idle lock is announced").update {
-            SessionUpdate::VaultLockChanged { locked } => assert!(locked),
+        let announced = emit.take();
+        match announced.first().expect("the idle lock is announced") {
+            VaultUpdate::LockChanged { locked } => assert!(locked),
             other => panic!("the idle lock announced something else: {other:?}"),
         }
 
@@ -1461,7 +1422,7 @@ mod tests {
             email: "hi@vedhavyas.dev".to_owned(),
             idle_minutes: None,
         };
-        let session = test_session(&open, None, Path::new("/tmp")).expect("a session");
+        let session = test_session(&open, None, "test").expect("a session");
         test_install_unlocked(
             &session,
             Unlocked {
@@ -1480,35 +1441,33 @@ mod tests {
     /// prints it.
     #[tokio::test]
     async fn a_rotation_announces_the_new_token_and_redacts_it() {
-        use crate::update_fanout::SubscriberRole;
-
         let (address, server) = serve(vec![
             response("401 Unauthorized", ""),
             response("200 OK", r#"{"access_token":"fresh","refresh_token":"next"}"#),
             response("200 OK", r#"{"profile":{},"folders":[],"ciphers":[]}"#),
         ])
         .await;
-        let updates = UpdateFanout::default();
-        let mut announced = updates.subscribe(SubscriberRole::Answering);
+        let emit = std::sync::Arc::new(TestEmit::default());
         let config = VaultConfig {
             url: format!("http://{address}"),
             email: "hi@vedhavyas.dev".to_owned(),
             idle_minutes: None,
         };
-        let session = test_session_with_updates(&config, None, Path::new("/tmp"), updates.clone())
-            .expect("a session");
+        let session =
+            test_session_with_emit(&config, None, "test", emit.clone()).expect("a session");
         session.state.write().tokens =
             Some(Tokens { access: "stale".to_owned(), refresh: Some("good".to_owned()) });
 
         session.sync().await.expect("the refresh recovers the call");
 
-        let frame = announced.try_recv().expect("the rotation is announced");
-        match &*frame.update {
-            SessionUpdate::VaultRotated { refresh_token } => assert_eq!(refresh_token, "next"),
+        let announced = emit.take();
+        let frame = announced.first().expect("the rotation is announced");
+        match frame {
+            VaultUpdate::Rotated { refresh_token } => assert_eq!(refresh_token, "next"),
             other => panic!("the rotation announced something else: {other:?}"),
         }
         assert!(
-            !format!("{:?}", *frame.update).contains("next"),
+            !format!("{frame:?}").contains("next"),
             "the rotated token is a secret and the Debug line redacts it",
         );
         server.await.expect("server");
@@ -1590,7 +1549,7 @@ mod tests {
                 idle_minutes: None,
             },
             None,
-            Path::new("/tmp"),
+            "test",
         )
         .expect("a session");
         session.state.write().tokens = Some(Tokens { access: "stale".to_owned(), refresh: None });
@@ -1610,8 +1569,7 @@ mod tests {
             email: "hi@vedhavyas.dev".to_owned(),
             idle_minutes: None,
         };
-        let config_dir = Path::new("/tmp");
-        let session = test_session(&config, Some(dir.path()), config_dir).expect("session");
+        let session = test_session(&config, Some(dir.path()), "store").expect("session");
         session.audit(
             &SessionSlot::lead("Default", "forge"),
             VaultTool::Get,
@@ -1621,10 +1579,7 @@ mod tests {
             "approve",
             "ok",
         );
-        let path = dir
-            .path()
-            .join("vault")
-            .join(format!("audit-{}.jsonl", forge_sdk::config_dir_store_key(config_dir)));
+        let path = dir.path().join("vault").join("audit-store.jsonl");
         let line = std::fs::read_to_string(path).expect("audit line");
         let value: serde_json::Value = serde_json::from_str(line.trim()).expect("audit json");
         let object = value.as_object().expect("an audit line is an object");
@@ -1682,7 +1637,7 @@ mod tests {
     /// the session drops them and the next held call asks for the password.
     #[test]
     fn a_decrypt_failure_drops_the_keys() {
-        let session = test_session(&config(), None, Path::new("/tmp")).expect("a session");
+        let session = test_session(&config(), None, "test").expect("a session");
         session.state.write().keys = Some(std::sync::Arc::new(Unlocked {
             user_key: crypto::make_symmetric_key(),
             private_key: None,
@@ -1717,22 +1672,5 @@ mod tests {
                 "{name} is private",
             );
         }
-    }
-
-    /// The production clients are the ones the vault session uses, and they
-    /// refuse a plaintext URL before touching the network.
-    #[tokio::test]
-    async fn production_client_is_https_only() {
-        use std::time::Duration;
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let address = listener.local_addr().expect("addr");
-        let client = production_client(&format!("http://{address}")).expect("clients build");
-        let error = client.prelogin("hi@example.com").await.expect_err("https only");
-        assert!(matches!(error, VaultError::Http(_)), "{error}");
-        assert!(
-            tokio::time::timeout(Duration::from_millis(100), listener.accept()).await.is_err(),
-            "no plaintext request was made",
-        );
     }
 }

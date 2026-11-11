@@ -321,7 +321,7 @@ impl GotifyStream {
                     }
                     if idle_past_deadline(last_activity, Instant::now()) {
                         tracing::warn!(
-                            target: "forge_connectors::gotify",
+                            target: "forge_tools::gotify",
                             idle_secs = IDLE_DEADLINE.as_secs(),
                             "Gotify stream idle past deadline; treating path as dead",
                         );
@@ -338,13 +338,13 @@ impl GotifyStream {
                                 }
                             }
                             Err(error) => {
-                                tracing::warn!(target: "forge_connectors::gotify", %error, "skipping unparseable stream frame");
+                                tracing::warn!(target: "forge_tools::gotify", %error, "skipping unparseable stream frame");
                             }
                         }
                     }
                     Some(Ok(_)) => last_activity = Instant::now(),
                     Some(Err(error)) => {
-                        tracing::warn!(target: "forge_connectors::gotify", %error, "Gotify stream read error");
+                        tracing::warn!(target: "forge_tools::gotify", %error, "Gotify stream read error");
                         return PumpOutcome::Reconnect;
                     }
                     None => return PumpOutcome::Reconnect,
@@ -412,13 +412,13 @@ async fn run(
                 connected_at.elapsed() >= MIN_HEALTHY_UPTIME
             }
             Ok(Err(error)) => {
-                tracing::warn!(target: "forge_connectors::gotify", %error, "Gotify connect failed; backing off");
+                tracing::warn!(target: "forge_tools::gotify", %error, "Gotify connect failed; backing off");
                 let _ = tx.send(GotifyEvent::Disconnected).await;
                 false
             }
             Err(_) => {
                 tracing::warn!(
-                    target: "forge_connectors::gotify",
+                    target: "forge_tools::gotify",
                     timeout_secs = CONNECT_TIMEOUT.as_secs(),
                     "Gotify connect timed out; backing off",
                 );
@@ -495,7 +495,7 @@ pub async fn refresh_app_index(host: &dyn GotifyHost, cfg: &GotifyConfig) -> boo
         }
         Err(error) => {
             tracing::warn!(
-                target: "forge_connectors::gotify",
+                target: "forge_tools::gotify",
                 %error,
                 "Gotify /application lookup failed; application-name filters will not match until the next reconnect",
             );

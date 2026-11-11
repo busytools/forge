@@ -210,7 +210,7 @@ impl Workspace {
         key: &SessionSlot,
         draft: forge_primitives::slack::SlackDraft,
     ) {
-        let _ = self.register_slack_draft(key, draft);
+        let _ = self.slack.register_slack_draft(key, draft);
     }
 
     /// [`Self::emit_for_test`], reporting whether a subscriber was there to
@@ -353,7 +353,7 @@ impl Workspace {
         Self::testing_stub_with_slack(
             config_dir,
             LoadedConfig::empty_for_test(),
-            Arc::new(crate::slack::SlackWorkspaces::default()),
+            Arc::new(forge_tools::slack::SlackWorkspaces::default()),
             None,
         )
     }
@@ -382,8 +382,10 @@ impl Workspace {
         config_dir: PathBuf,
         config: LoadedConfig,
     ) -> Result<(Arc<Self>, mpsc::UnboundedReceiver<SeatUpdate>), String> {
-        let slack =
-            crate::slack::SlackWorkspaces::from_config(&config.slack, &reqwest::Client::new())?;
+        let slack = forge_tools::slack::SlackWorkspaces::from_config(
+            &config.slack,
+            &reqwest::Client::new(),
+        )?;
         let systemone = crate::systemone::client_for(
             config.systemone.as_ref(),
             &crate::config::forge_data_dir(&config_dir).join("forge.toml"),
@@ -400,7 +402,7 @@ impl Workspace {
     pub(crate) fn testing_stub_with_slack(
         config_dir: PathBuf,
         config: LoadedConfig,
-        slack: Arc<crate::slack::SlackWorkspaces>,
+        slack: Arc<forge_tools::slack::SlackWorkspaces>,
         systemone: Option<Arc<forge_system_one::SystemOneClient>>,
     ) -> (Arc<Self>, mpsc::UnboundedReceiver<SeatUpdate>) {
         // Mirror the boot-time `ensure_forge_data_dir`: stub-based tests
@@ -422,6 +424,42 @@ impl Workspace {
         // `new_for_test`'s convention: the stub's whole app-support base
         // sits under the test's own config dir.
         let app_support = Some(config_dir.join("app-support"));
+        let pending_seq: Arc<Mutex<HashMap<SessionSlot, u64>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let vault_ports = Arc::new(crate::vault_host::VaultPorts::new(
+            update_tx.clone(),
+            Arc::clone(&pending_seq),
+        ));
+        let vault: Arc<parking_lot::RwLock<Option<Arc<forge_tools::vault::VaultSession>>>> =
+            Arc::new(parking_lot::RwLock::new(None));
+        let sink: Arc<dyn forge_primitives::AskSink> = vault_ports.clone();
+        let emit: Arc<dyn forge_tools::vault::VaultEmit> = vault_ports.clone();
+        let vault_asks =
+            Arc::new(forge_tools::vault::VaultAsks::new(Arc::clone(&vault), emit, sink));
+        let browser_handoffs = Arc::new(Mutex::new(HashMap::new()));
+        let terminal_handoffs = Arc::new(Mutex::new(HashMap::new()));
+        let document_handoffs = Arc::new(parking_lot::Mutex::new(HashMap::new()));
+        let settings_writes = Arc::new(Mutex::new(HashMap::new()));
+        let db: Arc<Mutex<Option<crate::store::Db>>> = Arc::new(Mutex::new(None));
+        let (cron, cron_ports) =
+            crate::crons::build(Vec::new(), false, Arc::clone(&db), update_tx.clone());
+        let (slack, slack_ports) = crate::slack::build(
+            slack,
+            config.slack.clone(),
+            Vec::new(),
+            false,
+            Arc::clone(&db),
+            update_tx.clone(),
+            Arc::clone(&pending_seq),
+        );
+        let ask_sources: Vec<Arc<dyn forge_primitives::AskSource>> = crate::ask_sources::registered(
+            &slack,
+            &browser_handoffs,
+            &terminal_handoffs,
+            &document_handoffs,
+            &vault_asks,
+            &settings_writes,
+        );
         let (settings, _settings_rx) = tokio::sync::watch::channel(None);
         let workspace = Self {
             config_dir,
@@ -432,11 +470,11 @@ impl Workspace {
             reload_generation: std::sync::atomic::AtomicU64::new(0),
             reload_gate: std::sync::Mutex::new(()),
             systemone: parking_lot::RwLock::new(systemone),
-            vault: parking_lot::RwLock::new(None),
             voice: std::sync::OnceLock::new(),
             voice_preview_error: std::sync::Mutex::new(None),
             catalog: Arc::new(Mutex::new(HashMap::new())),
             app_support,
+            app_support_error: None,
             pool: Mutex::new(HashMap::new()),
             // A stub reaches no network either: the refill has nothing to
             // fetch.
@@ -456,14 +494,13 @@ impl Workspace {
                 crate::config::DEFAULT_GATEWAY_PORT
             ))),
             gateway_bind_error: Mutex::new(None),
-            dictate: Arc::new(crate::dictate::DictateState::new(&config_dictate)),
-            dictate_runtime: Mutex::new(crate::dictate::DictateRuntime::default()),
+            dictate: Arc::new(crate::dictate::Dictate::new(&config_dictate)),
             browser_host: std::sync::OnceLock::new(),
             live_seats_lock: std::sync::Mutex::new(()),
             live_seats_generation: std::sync::atomic::AtomicU64::new(0),
             live_seats_gate: Mutex::new(None),
             attached_clients: std::sync::atomic::AtomicUsize::new(0),
-            document_handoffs: parking_lot::Mutex::new(HashMap::new()),
+            document_handoffs,
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
             dictate_install: Mutex::new(crate::install::InstallState::default()),
             plugin_cli: Mutex::new(crate::plugins::PluginCli::real()),
@@ -507,8 +544,8 @@ impl Workspace {
             kick_dispatcher_tx,
             kick_dispatcher_rx_slot: Mutex::new(Some(kick_dispatcher_rx)),
             _single_instance_lock: None,
-            crons: Mutex::new(Vec::new()),
-            crons_load_failed: std::sync::atomic::AtomicBool::new(false),
+            cron,
+            cron_ports,
             tasks: Mutex::new(Vec::new()),
             parked_by_slot: Mutex::new(HashMap::new()),
             pending_handoffs: Mutex::new(HashMap::new()),
@@ -516,7 +553,7 @@ impl Workspace {
             swap_epochs: std::sync::atomic::AtomicU64::new(0),
             held_prompts: Mutex::new(HashMap::new()),
             gotify_subs: Mutex::new(Vec::new()),
-            db: Arc::new(Mutex::new(None)),
+            db,
             catalog_loaded: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             catalog_scan_started: std::sync::atomic::AtomicBool::new(false),
             cli_version: Arc::new(Mutex::new(None)),
@@ -527,41 +564,28 @@ impl Workspace {
             gotify_app_index: Mutex::new(HashMap::new()),
             gotify_subsystem: Mutex::new(None),
             slack,
-            slack_subs: Mutex::new(Vec::new()),
-            slack_subsystem: Mutex::new(std::collections::BTreeMap::new()),
-            slack_connected: Mutex::new(std::collections::BTreeMap::new()),
-            slack_inflight: Mutex::new(std::collections::HashMap::new()),
-            slack_user_ids: Mutex::new(std::collections::BTreeMap::new()),
-            slack_user_names: Mutex::new(std::collections::BTreeMap::new()),
-            slack_author_failures: Mutex::new(std::collections::HashSet::new()),
-            slack_draft_user_failures: Mutex::new(std::collections::HashSet::new()),
-            slack_thread_failures: Mutex::new(std::collections::HashSet::new()),
-            slack_thread_full_reads: Mutex::new(std::collections::HashMap::new()),
-            slack_thread_first_walks: Mutex::new(std::collections::HashSet::new()),
-            slack_thread_edit_watermarks: Mutex::new(std::collections::HashMap::new()),
-            slack_ledger_failures: Mutex::new(std::collections::HashSet::new()),
-            slack_drafts: Mutex::new(HashMap::new()),
-            browser_handoffs: Mutex::new(HashMap::new()),
+            slack_ports,
+            browser_handoffs,
             terminals: Mutex::new(HashMap::new()),
-            terminal_handoffs: Mutex::new(HashMap::new()),
+            terminal_handoffs,
             next_terminal_id: std::sync::atomic::AtomicU16::new(1),
-            settings_writes: Mutex::new(HashMap::new()),
-            parked_vault_asks: Mutex::new(HashMap::new()),
-            pending_seq: Mutex::new(HashMap::new()),
-            slack_recently_delivered: Mutex::new(HashMap::new()),
-            slack_load_failed: std::sync::atomic::AtomicBool::new(false),
-            slack_user_id_retries: Mutex::new(std::collections::BTreeMap::new()),
-            slack_verification_started: std::sync::atomic::AtomicBool::new(false),
+            settings_writes,
+            vault,
+            vault_asks,
+            vault_ports,
+            ask_sources,
+            pending_seq,
             respawn_in_flight: Mutex::new(std::collections::HashSet::new()),
-            unwakeable_crons: Mutex::new(std::collections::HashSet::new()),
-            cooling_crons: Mutex::new(std::collections::HashMap::new()),
             command_intercept: Mutex::new(None),
             test_extra_projects: Mutex::new(Vec::new()),
             test_user_preferences: Mutex::new(None),
             test_claude_pid: Mutex::new(HashMap::new()),
             test_scan_gate: Mutex::new(None),
         };
-        (Arc::new(workspace), update_rx)
+        let workspace = Arc::new(workspace);
+        workspace.bind_slack();
+        workspace.bind_cron();
+        (workspace, update_rx)
     }
 
     /// Hold the CLI's per-user preferences document, so a cross-crate test
@@ -852,7 +876,7 @@ impl Workspace {
     /// can render any of its states without fetching 3 GB. Test-only.
     #[cfg(any(test, feature = "testing"))]
     pub fn seed_test_dictate_snapshot(&self, snapshot: crate::dictate::DictateSnapshot) {
-        *self.dictate.snapshot.lock() = snapshot;
+        *self.dictate.state.snapshot.lock() = snapshot;
     }
 
     /// Arm dictation with an engine over `models_dir`: its weights are
@@ -872,7 +896,7 @@ impl Workspace {
         let engine = forge_dictate::Engine::new(
             forge_dictate::ConfigBuilder::new().models_dir(models_dir).normalizer(None).build(),
         )?;
-        *self.dictate.engine.lock() = Some(engine);
+        *self.dictate.state.engine.lock() = Some(engine);
         *self.test_read_aloud_dir.lock() = Some(models_dir.join("dictate-read-aloud"));
         Ok(())
     }
@@ -900,7 +924,7 @@ impl Workspace {
         Self::testing_stub_with_slack(
             PathBuf::from("/tmp/forge-testing-stub-dictate"),
             config,
-            Arc::new(crate::slack::SlackWorkspaces::default()),
+            Arc::new(forge_tools::slack::SlackWorkspaces::default()),
             None,
         )
     }
@@ -1061,7 +1085,6 @@ impl Workspace {
             }
             PendingInteractionKind::SlackDraft => {
                 for _ in 0..count {
-                    let (sender, _receiver) = tokio::sync::oneshot::channel();
                     let draft = forge_primitives::slack::SlackDraft {
                         id: uuid::Uuid::new_v4(),
                         workspace: "test".to_owned(),
@@ -1073,7 +1096,7 @@ impl Workspace {
                         thread: None,
                         tagged: Vec::new(),
                     };
-                    self.slack_drafts.lock().insert(draft.id, (slot.clone(), draft, sender));
+                    self.slack.seed_draft(slot, draft);
                     self.note_ask(slot);
                 }
             }
@@ -1128,7 +1151,7 @@ impl Workspace {
                         forge_primitives::vault::VaultTool::Search,
                         "test",
                     );
-                    self.parked_vault_asks.lock().insert(draft.id, (slot.clone(), draft, None));
+                    self.vault_asks.seed(slot, draft);
                     self.note_ask(slot);
                 }
             }

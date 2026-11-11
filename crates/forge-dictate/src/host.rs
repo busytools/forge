@@ -1,5 +1,6 @@
-//! Dictation - the `[dictate]` section in `forge.toml`, and the
-//! preflight pass that makes the models usable before forge starts.
+//! Dictation's session-facing half: the `[dictate]` settings, the state
+//! a host holds, the preflight pass that makes the models usable before
+//! forge starts, and the live take lifecycle.
 //!
 //! The costs are what shape this. A first run fetches 3.07 GB; every
 //! later one re-hashes what is on disk, about 0.8 s for the pair now the
@@ -9,6 +10,15 @@
 //! every boot but the one after a file changed. None of that can happen
 //! while somebody is dictating, so all of it happens once, at boot, on
 //! the preflight screen.
+//!
+//! # The host seam
+//!
+//! Nothing here names a workspace type. The session it belongs to arrives
+//! as [`DictateHost`], which the embedding workspace implements: the seat's
+//! liveness, the app-support directory the preflight writes under, and one
+//! `emit` for the updates a take produces. The updates are the crate's own
+//! [`DictateUpdate`]; the host maps them onto its wire type. That is what
+//! keeps this crate a leaf while the state and the policy move here.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -20,8 +30,139 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use tokio::time::MissedTickBehavior;
 
-use crate::SessionSlot;
-use crate::protocol::{DictateOutcome, SessionUpdate};
+use forge_primitives::SessionSlot;
+
+use crate::ModelSpec;
+
+/// What one finished dictation take produced. Plain data rather than
+/// [`crate::engine::Outcome`]: a view words the notices, so it gets the
+/// observations and keeps the crate's error shapes.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DictateOutcome {
+    /// Words to insert at the caret. `truncated` means the take hit the
+    /// capture cap or the decode budget and is partial.
+    Landed { text: String, truncated: bool },
+    /// The audio normalised to nothing - a valid answer, not a failure.
+    Empty,
+    /// Nothing rose above the silence floor. A finite `peak_db` is a
+    /// quiet room and a retry is reasonable; negative infinity means
+    /// every sample was exactly zero, which is structural and sticky.
+    NoAudio {
+        #[serde(default, deserialize_with = "no_signal_reads_as_negative_infinity")]
+        peak_db: f32,
+        seconds: u64,
+    },
+    /// The take never happened. Covers a busy microphone, a device that
+    /// would not open, and dictation not being ready.
+    Refused { message: String },
+    /// Recognition failed. The response is the same whichever way.
+    Failed,
+    /// The user abandoned the take. Resets silently.
+    Cancelled,
+}
+
+/// Read a no-signal peak - a level's, or the one a `no_audio` outcome
+/// carries - taking `null` as no signal rather than as a decode failure.
+///
+/// The counterpart of serde writing a non-finite float as `null`: a
+/// window that heard nothing peaks at exactly zero, whose dBFS is
+/// negative infinity. Without this, a Rust reader cannot decode the
+/// message at all, and the failure names the type rather than the case.
+///
+/// Public because the wire's own `DictateLevel` carries the same field:
+/// the workspace points its `deserialize_with` here rather than keeping a
+/// second copy that can drift from this crate's.
+pub fn no_signal_reads_as_negative_infinity<'de, D>(deserializer: D) -> Result<f32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<f32>::deserialize(deserializer)?.unwrap_or(f32::NEG_INFINITY))
+}
+
+/// One frame a take produces. The host maps each onto its own wire update;
+/// none of them names a workspace type.
+#[derive(Debug, Clone)]
+pub enum DictateUpdate {
+    /// One level reading for the recording at `key`.
+    Level { key: SessionSlot, peak_db: f32, generation: u64, initiator: Option<u64> },
+    /// The take was submitted and a transcript is in flight.
+    Transcribing { key: SessionSlot, generation: u64, initiator: Option<u64> },
+    /// The take settled `done` segments of its transcription.
+    Progress {
+        key: SessionSlot,
+        generation: u64,
+        done: usize,
+        total: Option<usize>,
+        initiator: Option<u64>,
+    },
+    /// The take is done: insert, notice or reset per `outcome`.
+    Ended {
+        key: SessionSlot,
+        outcome: DictateOutcome,
+        generation: u64,
+        surface: Option<String>,
+        initiator: Option<u64>,
+    },
+}
+
+/// What the subsystem needs from the session it belongs to. The embedding
+/// workspace implements this; the module never reaches past it.
+pub trait DictateHost: Send + Sync {
+    /// Whether the session behind `key` still exists.
+    fn session_is_live(&self, key: &SessionSlot) -> bool;
+
+    /// Forge's machine-local support directory, where the preflight's
+    /// diagnostics and digest caches live. A host that cannot resolve one
+    /// answers the cause, so the preflight's record carries what acting on
+    /// it needs rather than a bare absence.
+    fn app_support_dir(&self) -> Result<PathBuf, String>;
+
+    /// Emit one update. `false` means no subscriber would take it, which
+    /// ends a progress forwarder rather than looping forever.
+    fn emit(&self, update: DictateUpdate) -> bool;
+}
+
+/// The model one role runs, and where that choice came from.
+///
+/// The catalogue and the install page build these; the preflight consumes
+/// them. Kept here because `DictateState::active` is the module's own
+/// state, and a workspace type in that field would put the crate's state
+/// behind the workspace again.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveModel {
+    pub role: DictateRole,
+    pub spec: ModelSpec,
+    pub from: ActiveFrom,
+    /// RFC 3339, when a runtime pick chose it.
+    pub at: Option<String>,
+}
+
+/// Where a role's model came from.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "from", rename_all = "snake_case")]
+pub enum ActiveFrom {
+    /// `forge.toml` names this role's model, so the runtime cannot change
+    /// it; `key` is the `[dictate]` key that does.
+    Config { key: String, variant: String },
+    /// The last pick made on this machine.
+    Installed { variant: String },
+    /// The compiled default for this binary.
+    Pin,
+}
+
+/// `~/` against the user's home directory. The workspace's config has a
+/// byte-identical copy for its own settings; this one stays here because
+/// the `[dictate]` settings are the module's, and a leaf cannot reach the
+/// workspace's.
+pub(crate) fn expand_home(path: &str) -> PathBuf {
+    if let Some(stripped) = path.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(stripped);
+    }
+    PathBuf::from(path)
+}
 
 /// Cap on one recording when `[dictate] max_capture_minutes` is absent.
 /// Matches the crate's own default; a capture reserves 4 bytes a sample
@@ -84,16 +225,16 @@ impl<'de> Deserialize<'de> for DictateMode {
 /// derives each row's in-force marker from this plus the defaults.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DictateOverrides {
-    pub styling: Option<forge_dictate::normalize::Styling>,
-    pub structure: Option<forge_dictate::normalize::Structure>,
-    pub context: Option<forge_dictate::normalize::Context>,
+    pub styling: Option<crate::normalize::Styling>,
+    pub structure: Option<crate::normalize::Structure>,
+    pub context: Option<crate::normalize::Context>,
 }
 
 impl DictateOverrides {
     /// The per-recording options this session dictates with: crate
     /// defaults with each overridden axis replaced.
-    pub fn normalize_options(self) -> forge_dictate::NormalizeOptions {
-        let mut options = forge_dictate::NormalizeOptions::default();
+    pub fn normalize_options(self) -> crate::NormalizeOptions {
+        let mut options = crate::NormalizeOptions::default();
         if let Some(v) = self.styling {
             options.styling = v;
         }
@@ -120,15 +261,15 @@ impl DictateOverrides {
 /// the unset state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DictateAxes {
-    pub styling: forge_dictate::normalize::Styling,
-    pub structure: forge_dictate::normalize::Structure,
-    pub context: forge_dictate::normalize::Context,
+    pub styling: crate::normalize::Styling,
+    pub structure: crate::normalize::Structure,
+    pub context: crate::normalize::Context,
 }
 
 impl DictateAxes {
     /// The options a take with these axes normalizes by.
-    pub fn normalize_options(self) -> forge_dictate::NormalizeOptions {
-        forge_dictate::NormalizeOptions {
+    pub fn normalize_options(self) -> crate::NormalizeOptions {
+        crate::NormalizeOptions {
             styling: self.styling,
             structure: self.structure,
             context: self.context,
@@ -139,7 +280,7 @@ impl DictateAxes {
 
 impl Default for DictateAxes {
     fn default() -> Self {
-        let options = forge_dictate::NormalizeOptions::default();
+        let options = crate::NormalizeOptions::default();
         Self { styling: options.styling, structure: options.structure, context: options.context }
     }
 }
@@ -150,9 +291,9 @@ impl Default for DictateAxes {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DictateOverrideUpdate {
-    Styling(forge_dictate::normalize::Styling),
-    Structure(forge_dictate::normalize::Structure),
-    Context(forge_dictate::normalize::Context),
+    Styling(crate::normalize::Styling),
+    Structure(crate::normalize::Structure),
+    Context(crate::normalize::Context),
     Reset,
 }
 
@@ -187,7 +328,7 @@ impl<'de> Deserialize<'de> for DictateBind {
 /// The `[dictate]` section. Every field has a default, so an absent
 /// section is exactly `enabled = false`.
 ///
-/// Deliberately narrower than [`forge_dictate::Config`]. A model spec
+/// Deliberately narrower than [`crate::Config`]. A model spec
 /// carries a URL, a byte length and a digest, and hand-editing one is
 /// how a file arrives that nothing can verify. The normalizer's three
 /// prompt axes are permissions rather than instructions - they say what
@@ -242,15 +383,15 @@ pub struct DictateSettings {
     /// The register a take's cleanup rewrites into, where a client has not
     /// chosen its own. Absent means the crate's default.
     #[serde(default)]
-    pub styling: Option<forge_dictate::normalize::Styling>,
+    pub styling: Option<crate::normalize::Styling>,
     /// Whether the cleanup may return a bulleted list. Absent means the
     /// crate's default.
     #[serde(default)]
-    pub structure: Option<forge_dictate::normalize::Structure>,
+    pub structure: Option<crate::normalize::Structure>,
     /// What the words are being written for. Absent means the crate's
     /// default.
     #[serde(default)]
-    pub context: Option<forge_dictate::normalize::Context>,
+    pub context: Option<crate::normalize::Context>,
 }
 
 fn enabled_by_default() -> bool {
@@ -306,11 +447,11 @@ impl DictateSettings {
     }
 
     /// The engine configuration these settings describe.
-    pub(crate) fn to_config(&self) -> forge_dictate::Config {
-        let mut builder = forge_dictate::ConfigBuilder::new()
+    pub fn to_config(&self) -> crate::Config {
+        let mut builder = crate::ConfigBuilder::new()
             .max_capture(Duration::from_secs(self.max_capture_minutes.saturating_mul(60)));
         if let Some(dir) = self.models_dir.as_deref() {
-            builder = builder.models_dir(crate::config::expand_home(dir));
+            builder = builder.models_dir(expand_home(dir));
         }
         if let Some(language) = self.language.as_deref() {
             builder = builder.language(language);
@@ -324,9 +465,9 @@ impl DictateSettings {
     /// Where the model files land. Preflight says it while fetching,
     /// because cancelling keeps what has arrived and a reader needs to
     /// know where.
-    pub(crate) fn models_dir(&self) -> Option<PathBuf> {
+    pub fn models_dir(&self) -> Option<PathBuf> {
         match self.models_dir.as_deref() {
-            Some(dir) => Some(crate::config::expand_home(dir)),
+            Some(dir) => Some(expand_home(dir)),
             None => dirs::cache_dir().map(|dir| dir.join("forge-dictate")),
         }
     }
@@ -335,7 +476,7 @@ impl DictateSettings {
     /// they run as. The one place the pair is spelled, so preflight's
     /// rows and the models page's IN USE rows cannot disagree about which
     /// models forge runs.
-    pub(crate) fn model_specs(&self) -> Vec<(DictateRole, forge_dictate::ModelSpec)> {
+    pub fn model_specs(&self) -> Vec<(DictateRole, crate::ModelSpec)> {
         let cfg = self.to_config();
         std::iter::once((DictateRole::Transcribing, cfg.asr_model))
             .chain(cfg.normalizer.map(|spec| (DictateRole::Normalization, spec)))
@@ -345,20 +486,10 @@ impl DictateSettings {
     /// The compiled pins as active models: what every role runs before any
     /// resolution has landed, and what a role with no key and no runtime
     /// pick keeps running.
-    pub(crate) fn pin_active(&self) -> Vec<(DictateRole, crate::install::ActiveModel)> {
+    pub fn pin_active(&self) -> Vec<(DictateRole, ActiveModel)> {
         self.model_specs()
             .into_iter()
-            .map(|(role, spec)| {
-                (
-                    role,
-                    crate::install::ActiveModel {
-                        role,
-                        spec,
-                        from: crate::install::ActiveFrom::Pin,
-                        at: None,
-                    },
-                )
-            })
+            .map(|(role, spec)| (role, ActiveModel { role, spec, from: ActiveFrom::Pin, at: None }))
             .collect()
     }
 
@@ -485,20 +616,20 @@ impl DictateSnapshot {
 
 /// Preflight's own handle on the work: the snapshot a view renders, the
 /// cancellation flag, and the active models the resolution landed.
-pub(crate) struct DictateState {
-    pub(crate) snapshot: Mutex<DictateSnapshot>,
-    pub(crate) cancelled: AtomicBool,
+pub struct DictateState {
+    pub snapshot: Mutex<DictateSnapshot>,
+    pub cancelled: AtomicBool,
     /// The live engine, held for the whole run. Dropping it unloads the
     /// weights, which is the one thing preflight exists to avoid.
-    pub(crate) engine: Mutex<Option<Arc<forge_dictate::Engine>>>,
+    pub engine: Mutex<Option<Arc<crate::Engine>>>,
     /// Which model each role runs: the compiled pins until the preflight
     /// resolves, then whatever the config, the runtime pick or the pin
     /// answered.
-    pub(crate) active: Mutex<Vec<(DictateRole, crate::install::ActiveModel)>>,
+    pub active: Mutex<Vec<(DictateRole, ActiveModel)>>,
 }
 
 impl DictateState {
-    pub(crate) fn new(settings: &DictateSettings) -> Self {
+    pub fn new(settings: &DictateSettings) -> Self {
         let models = if settings.enabled { settings.initial_models() } else { Vec::new() };
         let active = if settings.enabled { settings.pin_active() } else { Vec::new() };
         Self {
@@ -512,7 +643,7 @@ impl DictateState {
     /// Move the resolved models in, before the preflight fetches anything:
     /// the rows follow the files the roles will actually run, keeping the
     /// state a row already reached when its file is unchanged.
-    pub(crate) fn set_active(&self, models: &[(DictateRole, crate::install::ActiveModel)]) {
+    pub fn set_active(&self, models: &[(DictateRole, ActiveModel)]) {
         let rows = {
             let snapshot = self.snapshot.lock();
             models
@@ -542,13 +673,13 @@ impl DictateState {
     /// Move every row to one state: preflight's Loading and Ready points,
     /// and the same Ready after a runtime swap, where every role's model
     /// is loaded by the engine that just came up.
-    pub(crate) fn mark_all(&self, state: &DictateModelState) {
+    pub fn mark_all(&self, state: &DictateModelState) {
         for model in &mut self.snapshot.lock().models {
             model.state = state.clone();
         }
     }
 
-    pub(crate) fn fail(&self, failure: DictateFailure, file: Option<&str>) {
+    pub fn fail(&self, failure: DictateFailure, file: Option<&str>) {
         if let Some(file) = file {
             self.set_state(file, DictateModelState::Failed(failure.clone()));
         }
@@ -565,12 +696,13 @@ impl DictateState {
 /// warning rather than failing preflight - diagnostics never break
 /// dictation, but the absence must not be silent either: a capability
 /// believed present and quietly missing is the failure nobody can see.
-pub(crate) fn preflight_config(
+pub fn preflight_config(
     settings: &DictateSettings,
-    active: &[(DictateRole, crate::install::ActiveModel)],
-) -> forge_dictate::Config {
+    active: &[(DictateRole, ActiveModel)],
+    host: &dyn DictateHost,
+) -> crate::Config {
     let mut cfg = settings.to_config();
-    match forge_sdk::app_support_dir() {
+    match host.app_support_dir() {
         Ok(dir) => {
             cfg.diagnostics_dir = Some(dir.join("dictate-diagnostics"));
             cfg.digest_cache_dir = Some(dir.join("dictate-digests"));
@@ -598,7 +730,7 @@ pub(crate) fn preflight_config(
 ///
 /// Both legs are blocking and documented as panicking on a runtime
 /// thread in a debug build, so both run under `spawn_blocking`.
-pub(crate) async fn run_dictate_preflight(cfg: forge_dictate::Config, state: Arc<DictateState>) {
+pub async fn run_dictate_preflight(cfg: crate::Config, state: Arc<DictateState>) {
     let prepare_state = Arc::clone(&state);
     let prepare_cfg = cfg.clone();
     let prepared = tokio::task::spawn_blocking(move || prepare(&prepare_cfg, &prepare_state)).await;
@@ -618,10 +750,10 @@ pub(crate) async fn run_dictate_preflight(cfg: forge_dictate::Config, state: Arc
     let load_state = Arc::clone(&state);
     let load_cfg = cfg.clone();
     let loaded = tokio::task::spawn_blocking(move || {
-        let engine = forge_dictate::Engine::new(cfg)?;
+        let engine = crate::Engine::new(cfg)?;
         engine.wait_ready()?;
         load_state.engine.lock().replace(engine);
-        Ok::<(), forge_dictate::Error>(())
+        Ok::<(), crate::Error>(())
     })
     .await;
 
@@ -654,13 +786,13 @@ struct TransferProgress {
 
 impl TransferProgress {
     /// Fold one event in and return the row state it implies.
-    fn apply(&mut self, progress: forge_dictate::Progress) -> (String, DictateModelState) {
+    fn apply(&mut self, progress: crate::Progress) -> (String, DictateModelState) {
         match progress {
-            forge_dictate::Progress::Verifying { file } => {
+            crate::Progress::Verifying { file } => {
                 self.resumed_from.remove(&file);
                 (file, DictateModelState::Verifying)
             }
-            forge_dictate::Progress::Downloading { file, downloaded, total } => {
+            crate::Progress::Downloading { file, downloaded, total } => {
                 // The first report of a transfer carries whatever was
                 // already on disk, so it is the only chance to learn
                 // that this is a resume rather than a fresh fetch.
@@ -672,7 +804,7 @@ impl TransferProgress {
                 let resumed_from = self.resumed_from.get(&file).copied();
                 (file, DictateModelState::Downloading { downloaded, total, resumed_from })
             }
-            forge_dictate::Progress::Ready { file } => {
+            crate::Progress::Ready { file } => {
                 self.resumed_from.remove(&file);
                 self.in_flight.remove(&file);
                 // A finished model is not what a later cancellation is
@@ -699,12 +831,12 @@ impl TransferProgress {
 
 /// The fetch-and-verify leg. `Err(())` means `state` already carries the
 /// reason.
-fn prepare(cfg: &forge_dictate::Config, state: &DictateState) -> Result<(), ()> {
+fn prepare(cfg: &crate::Config, state: &DictateState) -> Result<(), ()> {
     use std::ops::ControlFlow;
 
     let mut transfers = TransferProgress::default();
 
-    let outcome = forge_dictate::prepare(cfg, |progress| {
+    let outcome = crate::prepare(cfg, |progress| {
         if state.cancelled.load(Ordering::Relaxed) {
             return ControlFlow::Break(());
         }
@@ -715,7 +847,7 @@ fn prepare(cfg: &forge_dictate::Config, state: &DictateState) -> Result<(), ()> 
 
     match outcome {
         Ok(()) => Ok(()),
-        Err(forge_dictate::Error::Cancelled) => {
+        Err(crate::Error::Cancelled) => {
             let (file, kept, total) = transfers.cancellation();
             state.fail(DictateFailure::Cancelled { kept, total }, Some(&file));
             Err(())
@@ -729,8 +861,8 @@ fn prepare(cfg: &forge_dictate::Config, state: &DictateState) -> Result<(), ()> 
 
 /// The file an error is about, so the row that failed is the one that
 /// goes red.
-fn failing_file(error: &forge_dictate::Error) -> Option<&str> {
-    use forge_dictate::Error as E;
+fn failing_file(error: &crate::Error) -> Option<&str> {
+    use crate::Error as E;
     let (E::HashMismatch { path, .. }
     | E::SizeMismatch { path, .. }
     | E::StalePartial { path, .. }
@@ -746,7 +878,7 @@ fn failing_file(error: &forge_dictate::Error) -> Option<&str> {
 
 /// Byte length the config records for the model at `path`, or zero when
 /// the error is about a file no spec names.
-fn spec_size(cfg: &forge_dictate::Config, path: &std::path::Path) -> u64 {
+fn spec_size(cfg: &crate::Config, path: &std::path::Path) -> u64 {
     let name = path.file_name().and_then(|n| n.to_str()).map(|n| n.trim_end_matches(".part"));
     std::iter::once(&cfg.asr_model)
         .chain(cfg.normalizer.as_ref())
@@ -754,9 +886,9 @@ fn spec_size(cfg: &forge_dictate::Config, path: &std::path::Path) -> u64 {
         .map_or(0, |spec| spec.size)
 }
 
-fn failure_for(cfg: &forge_dictate::Config, error: &forge_dictate::Error) -> DictateFailure {
+fn failure_for(cfg: &crate::Config, error: &crate::Error) -> DictateFailure {
     match error {
-        forge_dictate::Error::HashMismatch { path, expected, actual } => {
+        crate::Error::HashMismatch { path, expected, actual } => {
             DictateFailure::HashMismatch {
                 path: path.clone(),
                 expected: expected.clone(),
@@ -784,24 +916,24 @@ const PROGRESS_POLL: Duration = Duration::from_millis(150);
 /// abandon), and - for a take the client captures - the sink the socket
 /// pushes frames into. The seat is the map key, so the entry does not
 /// carry it again.
-pub(crate) struct LiveRecording {
-    pub(crate) stop: tokio::sync::mpsc::Sender<bool>,
+pub struct LiveRecording {
+    pub stop: tokio::sync::mpsc::Sender<bool>,
     /// `Some` on a take fed by frames the client sends; `None` on an
     /// entry that marks a take live without a socket feeding it.
-    pub(crate) sink: Option<forge_dictate::FrameSink>,
+    pub sink: Option<crate::FrameSink>,
     /// The connection this take belongs to, as its command carried it:
     /// every update about the take goes back there alone, and a stop or
     /// a close from any other connection is not this take's. `None`
     /// belongs to no connection.
-    pub(crate) initiator: Option<u64>,
+    pub initiator: Option<u64>,
 }
 
 /// A submitted take still awaiting its transcript. The recording is
 /// already stopped; the entry stays only so a stop can still abandon it.
-pub(crate) struct FinishingTake {
-    pub(crate) key: SessionSlot,
-    pub(crate) stop: tokio::sync::mpsc::Sender<bool>,
-    pub(crate) initiator: Option<u64>,
+pub struct FinishingTake {
+    pub key: SessionSlot,
+    pub stop: tokio::sync::mpsc::Sender<bool>,
+    pub initiator: Option<u64>,
 }
 
 /// The read-aloud set being recorded, when one is: the audio a client's
@@ -812,24 +944,24 @@ pub(crate) struct FinishingTake {
 ///
 /// The connection that started it is the only one that can feed or stop
 /// it, the same rule every framed take follows.
-pub(crate) struct SetRecording {
-    pub(crate) initiator: Option<u64>,
-    pub(crate) samples: Vec<f32>,
+pub struct SetRecording {
+    pub initiator: Option<u64>,
+    pub samples: Vec<f32>,
 }
 
 /// Dictation state across every session. Every take is fed by a client's
 /// own frames and holds no device, so several seats can dictate at once;
 /// several takes can also be finishing, because a new recording never
 /// waits for the previous transcript.
-pub(crate) struct DictateRuntime {
-    pub(crate) recordings: HashMap<SessionSlot, LiveRecording>,
-    pub(crate) finishing: Vec<FinishingTake>,
-    pub(crate) set_recording: Option<SetRecording>,
+pub struct DictateRuntime {
+    pub recordings: HashMap<SessionSlot, LiveRecording>,
+    pub finishing: Vec<FinishingTake>,
+    pub set_recording: Option<SetRecording>,
     /// Handed out with every take's `DictateStarted` and echoed on its
     /// `DictateEnded`, so a resolver arriving after a newer take on the
     /// same key is recognisably stale. Starts at 1; 0 is the "matches
     /// nothing" value refusals carry.
-    pub(crate) next_generation: u64,
+    pub next_generation: u64,
     /// A stop that arrived before the start it answers had registered,
     /// stamped on arrival and carrying its initiator so only a start by
     /// the same connection honours it. A registration honours it only
@@ -837,7 +969,7 @@ pub(crate) struct DictateRuntime {
     /// a park older than the window is a stop whose take already
     /// resolved (a refusal, a cap self-submit) and must not poison the
     /// next attempt.
-    pub(crate) stop_pending: Option<(SessionSlot, Option<u64>, Instant)>,
+    pub stop_pending: Option<(SessionSlot, Option<u64>, Instant)>,
 }
 
 /// How long after parking a stop is still treated as racing its
@@ -882,7 +1014,7 @@ impl DictateRuntime {
     /// capturing, a submitted take still transcribing, or the read-aloud
     /// set being recorded. A model swap and a bench are refused while one
     /// is, and the refusal names this holder.
-    pub(crate) fn live_holder(&self) -> Option<String> {
+    pub fn live_holder(&self) -> Option<String> {
         let slot =
             self.recordings.keys().next().or_else(|| self.finishing.first().map(|take| &take.key));
         match slot {
@@ -901,11 +1033,11 @@ impl DictateRuntime {
     /// for the frames already on the wire. Answering `None` for a foreign
     /// take is what keeps one client's microphone out of another client's
     /// dictation.
-    pub(crate) fn frame_sink_for(
+    pub fn frame_sink_for(
         &self,
         key: &SessionSlot,
         initiator: Option<u64>,
-    ) -> Option<&forge_dictate::FrameSink> {
+    ) -> Option<&crate::FrameSink> {
         let live = self.recordings.get(key)?;
         if live.initiator != initiator {
             return None;
@@ -941,7 +1073,7 @@ impl DictateRuntime {
     /// Drop `key`'s parked stop, if any: the take it answered has
     /// resolved some other way, and a left-behind park would poison
     /// the session's next attempt.
-    pub(crate) fn clear_stop_pending(&mut self, key: &SessionSlot, initiator: Option<u64>) {
+    pub fn clear_stop_pending(&mut self, key: &SessionSlot, initiator: Option<u64>) {
         if self
             .stop_pending
             .as_ref()
@@ -952,17 +1084,35 @@ impl DictateRuntime {
     }
 }
 
+/// The dictation subsystem's handle: preflight's state and the live
+/// takes' runtime. The embedding workspace holds one of these and hands
+/// it to the functions below; the host trait carries the session
+/// callbacks those functions need.
+pub struct Dictate {
+    pub state: Arc<DictateState>,
+    pub runtime: Mutex<DictateRuntime>,
+}
+
+impl Dictate {
+    pub fn new(settings: &DictateSettings) -> Self {
+        Self {
+            state: Arc::new(DictateState::new(settings)),
+            runtime: Mutex::new(DictateRuntime::default()),
+        }
+    }
+}
+
 /// A take the client will feed with frames, registered and ready to run:
 /// what the socket pushes into, what the runner finishes, and what the
 /// take normalizes by.
-pub(crate) struct RegisteredTake {
-    pub(crate) capture: forge_dictate::Capture,
-    pub(crate) stop: tokio::sync::mpsc::Receiver<bool>,
-    pub(crate) generation: u64,
-    pub(crate) floor_db: f32,
-    pub(crate) options: forge_dictate::NormalizeOptions,
-    pub(crate) surface: Option<String>,
-    pub(crate) initiator: Option<u64>,
+pub struct RegisteredTake {
+    pub capture: crate::Capture,
+    pub stop: tokio::sync::mpsc::Receiver<bool>,
+    pub generation: u64,
+    pub floor_db: f32,
+    pub options: crate::NormalizeOptions,
+    pub surface: Option<String>,
+    pub initiator: Option<u64>,
 }
 
 /// `Command::DictateStream`: register a take the client will feed with
@@ -973,15 +1123,16 @@ pub(crate) struct RegisteredTake {
 /// so the frame a client sends right after its start message must find
 /// the take already there. Nothing here opens a device, and that is what
 /// makes the synchronous registration possible.
-pub(crate) fn register_stream_take(
-    ws: &Arc<crate::Workspace>,
+pub fn register_stream_take(
+    host: &dyn DictateHost,
+    dictate: &Dictate,
     key: &SessionSlot,
     axes: DictateAxes,
     surface: Option<String>,
     initiator: Option<u64>,
 ) -> Result<RegisteredTake, String> {
     let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(1);
-    let mut runtime = ws.dictate_runtime.lock();
+    let mut runtime = dictate.runtime.lock();
     if runtime.recordings.contains_key(key) {
         let ours = runtime.recordings.get(key).is_some_and(|held| held.initiator == initiator);
         return Err(if ours {
@@ -998,8 +1149,8 @@ pub(crate) fn register_stream_take(
             "this client is already dictating on another seat · dictation did not start".to_owned()
         );
     }
-    let engine = ws
-        .dictate
+    let engine = dictate
+        .state
         .engine
         .lock()
         .clone()
@@ -1008,7 +1159,7 @@ pub(crate) fn register_stream_take(
     // The session can close between the press and this registration; a
     // take handed to a session that no longer exists is nobody's, and the
     // sink would hold frames for a seat no view is drawing.
-    if !ws.session_is_live(key) {
+    if !host.session_is_live(key) {
         return Err("the session closed · dictation did not start".to_owned());
     }
     runtime.recordings.insert(
@@ -1037,19 +1188,19 @@ pub(crate) fn register_stream_take(
 
 /// Own a stream-fed take from its registration to its delivered
 /// transcript: the recording lifecycle, with the axes the client sent.
-pub(crate) async fn run_stream_take(
-    ws: Arc<crate::Workspace>,
+pub async fn run_stream_take(
+    host: Arc<dyn DictateHost>,
+    dictate: Arc<Dictate>,
     key: SessionSlot,
     take: RegisteredTake,
-    updates: crate::update_fanout::UpdateFanout,
 ) {
     run_recording(
-        ws,
+        host,
+        dictate,
         key,
         take.capture,
         take.generation,
         take.stop,
-        updates,
         take.options,
         take.surface,
         take.initiator,
@@ -1065,14 +1216,14 @@ pub(crate) async fn run_stream_take(
 /// too - the park cannot tell the two apart on arrival - but it is
 /// only honoured while fresh, and every take-resolution path clears
 /// it, so it never poisons the session's next attempt.
-pub(crate) async fn handle_dictate_stop(
-    ws: &Arc<crate::Workspace>,
+pub async fn handle_dictate_stop(
+    dictate: &Dictate,
     key: &SessionSlot,
     submit: bool,
     initiator: Option<u64>,
 ) {
     let stop = {
-        let mut runtime = ws.dictate_runtime.lock();
+        let mut runtime = dictate.runtime.lock();
         if let Some(stop) = runtime.stop_channel_for(key, initiator) {
             runtime.clear_stop_pending(key, initiator);
             Some(stop)
@@ -1092,13 +1243,13 @@ pub(crate) async fn handle_dictate_stop(
 /// while the recording is still running; the transcript lands once the
 /// take's join has been normalized.
 async fn run_recording(
-    ws: Arc<crate::Workspace>,
+    host: Arc<dyn DictateHost>,
+    dictate: Arc<Dictate>,
     key: SessionSlot,
-    mut capture: forge_dictate::Capture,
+    mut capture: crate::Capture,
     generation: u64,
     mut stop: tokio::sync::mpsc::Receiver<bool>,
-    updates: crate::update_fanout::UpdateFanout,
-    options: forge_dictate::NormalizeOptions,
+    options: crate::NormalizeOptions,
     surface: Option<String>,
     initiator: Option<u64>,
 ) {
@@ -1106,7 +1257,7 @@ async fn run_recording(
     // recording is still open, and the tally gains its total after the
     // stop. The stream closes when the take's segmenter exits.
     tokio::spawn(forward_take_progress(
-        updates.clone(),
+        Arc::clone(&host),
         key.clone(),
         generation,
         initiator,
@@ -1117,11 +1268,12 @@ async fn run_recording(
     let meter = capture.meter();
     let cap = capture.max_capture();
     let submit =
-        record_until_stopped(&key, &meter, &mut stop, &updates, cap, generation, initiator).await;
+        record_until_stopped(&key, &meter, &mut stop, host.as_ref(), cap, generation, initiator)
+            .await;
     if !submit {
         drop(capture);
-        clear_recording_if_ours(&ws, &key, initiator);
-        let _ = updates.send(SessionUpdate::DictateEnded {
+        clear_recording_if_ours(&dictate, &key, initiator);
+        let _ = host.emit(DictateUpdate::Ended {
             key,
             outcome: DictateOutcome::Cancelled,
             generation,
@@ -1131,19 +1283,15 @@ async fn run_recording(
         return;
     }
 
-    let _ = updates.send(SessionUpdate::DictateTranscribing {
-        key: key.clone(),
-        generation,
-        initiator,
-    });
+    let _ = host.emit(DictateUpdate::Transcribing { key: key.clone(), generation, initiator });
     let Ok(ticket) = capture.finish_with(options) else {
         tracing::warn!(
             event_name = "dictate_submit_failed",
             slot = %key.display(),
             "dictation could not submit its take"
         );
-        clear_recording_if_ours(&ws, &key, initiator);
-        let _ = updates.send(SessionUpdate::DictateEnded {
+        clear_recording_if_ours(&dictate, &key, initiator);
+        let _ = host.emit(DictateUpdate::Ended {
             key,
             outcome: DictateOutcome::Failed,
             generation,
@@ -1154,7 +1302,7 @@ async fn run_recording(
     };
     // The recording is stopped; the runtime entry moves from the live
     // map to awaiting the transcript so Esc still routes here.
-    move_to_finishing(&ws, &key);
+    move_to_finishing(&dictate, &key);
 
     // The token is cloned out before the ticket moves into the blocking
     // read, so abandoning this take touches only its own jobs - a
@@ -1186,9 +1334,8 @@ async fn run_recording(
             }
         },
     };
-    remove_finishing(&ws, &key);
-    let _ =
-        updates.send(SessionUpdate::DictateEnded { key, outcome, generation, surface, initiator });
+    remove_finishing(&dictate, &key);
+    let _ = host.emit(DictateUpdate::Ended { key, outcome, generation, surface, initiator });
 }
 
 /// Forward a take's progress steps as updates while it runs. Steps
@@ -1196,11 +1343,11 @@ async fn run_recording(
 /// total) and again after the stop (total known); the task ends when
 /// the take's segmenter closes the stream.
 async fn forward_take_progress(
-    updates: crate::update_fanout::UpdateFanout,
+    host: Arc<dyn DictateHost>,
     key: SessionSlot,
     generation: u64,
     initiator: Option<u64>,
-    mut progress: Option<std::sync::mpsc::Receiver<forge_dictate::WindowProgress>>,
+    mut progress: Option<std::sync::mpsc::Receiver<crate::WindowProgress>>,
 ) {
     let Some(progress) = progress.as_mut() else { return };
     let mut tick = tokio::time::interval(PROGRESS_POLL);
@@ -1209,7 +1356,7 @@ async fn forward_take_progress(
         tick.tick().await;
         match progress.try_recv() {
             Ok(step) => {
-                let delivered = updates.send(SessionUpdate::DictateProgress {
+                let delivered = host.emit(DictateUpdate::Progress {
                     key: key.clone(),
                     generation,
                     done: step.done,
@@ -1254,7 +1401,7 @@ enum TakeResolution<T> {
 async fn wait_for_take<T>(
     answer: &mut tokio::task::JoinHandle<T>,
     stop: &mut tokio::sync::mpsc::Receiver<bool>,
-    cancel: &forge_dictate::CancelToken,
+    cancel: &crate::CancelToken,
 ) -> TakeResolution<T> {
     loop {
         tokio::select! {
@@ -1283,9 +1430,9 @@ async fn wait_for_take<T>(
 /// one the user already cancelled.
 async fn record_until_stopped(
     key: &SessionSlot,
-    capture: &forge_dictate::CaptureMeter,
+    capture: &crate::CaptureMeter,
     stop: &mut tokio::sync::mpsc::Receiver<bool>,
-    updates: &crate::update_fanout::UpdateFanout,
+    host: &dyn DictateHost,
     cap: Duration,
     generation: u64,
     initiator: Option<u64>,
@@ -1310,7 +1457,7 @@ async fn record_until_stopped(
                     return true;
                 }
                 let peak_db = capture.level();
-                let _ = updates.send(SessionUpdate::DictateLevel {
+                let _ = host.emit(DictateUpdate::Level {
                     key: key.clone(),
                     peak_db,
                     generation,
@@ -1323,16 +1470,19 @@ async fn record_until_stopped(
 
 /// Clear the seat's live entry when the take that owns it has resolved -
 /// a teardown may already have removed it, which this tolerates.
-fn clear_recording_if_ours(ws: &crate::Workspace, key: &SessionSlot, initiator: Option<u64>) {
-    let mut runtime = ws.dictate_runtime.lock();
+fn clear_recording_if_ours(dictate: &Dictate, key: &SessionSlot, initiator: Option<u64>) {
+    let mut runtime = dictate.runtime.lock();
     runtime.recordings.remove(key);
     runtime.clear_stop_pending(key, initiator);
 }
 
 /// Move this take's stop channel from the live map to the finishing
 /// list, so a stop during transcription still routes to it.
-fn move_to_finishing(ws: &crate::Workspace, key: &SessionSlot) {
-    let mut runtime = ws.dictate_runtime.lock();
+///
+/// Public so a host's integration tests can drive the finishing path the
+/// way a stop during transcription reaches it.
+pub fn move_to_finishing(dictate: &Dictate, key: &SessionSlot) {
+    let mut runtime = dictate.runtime.lock();
     if let Some(live) = runtime.recordings.remove(key) {
         runtime.finishing.push(FinishingTake {
             key: key.clone(),
@@ -1343,8 +1493,8 @@ fn move_to_finishing(ws: &crate::Workspace, key: &SessionSlot) {
 }
 
 /// Drop this take's finishing entry, whatever took it out of routing.
-fn remove_finishing(ws: &crate::Workspace, key: &SessionSlot) {
-    let mut runtime = ws.dictate_runtime.lock();
+fn remove_finishing(dictate: &Dictate, key: &SessionSlot) {
+    let mut runtime = dictate.runtime.lock();
     runtime.finishing.retain(|take| &take.key != key);
 }
 
@@ -1352,8 +1502,8 @@ fn remove_finishing(ws: &crate::Workspace, key: &SessionSlot) {
 /// (dropping the entry closes the stop channel, which is what makes its
 /// runner abandon it) and a submitted take loses its cancel route.
 /// Called when the session closes.
-pub(crate) fn teardown_for_closed_session(ws: &crate::Workspace, key: &SessionSlot) {
-    let mut runtime = ws.dictate_runtime.lock();
+pub fn teardown_for_closed_session(dictate: &Dictate, key: &SessionSlot) {
+    let mut runtime = dictate.runtime.lock();
     runtime.recordings.remove(key);
     runtime.finishing.retain(|take| &take.key != key);
     // A park for the closing seat is moot whoever left it.
@@ -1363,8 +1513,8 @@ pub(crate) fn teardown_for_closed_session(ws: &crate::Workspace, key: &SessionSl
 }
 
 /// Release every session's dictation at once, for workspace shutdown.
-pub(crate) fn teardown_all(ws: &crate::Workspace) {
-    let mut runtime = ws.dictate_runtime.lock();
+pub fn teardown_all(dictate: &Dictate) {
+    let mut runtime = dictate.runtime.lock();
     runtime.recordings.clear();
     runtime.finishing.clear();
     runtime.stop_pending = None;
@@ -1372,15 +1522,15 @@ pub(crate) fn teardown_all(ws: &crate::Workspace) {
 
 /// Map the crate's answer onto the wire outcome. A normalisation that
 /// produced nothing is a valid answer, not a failure.
-fn map_outcome(outcome: forge_dictate::Outcome) -> DictateOutcome {
+fn map_outcome(outcome: crate::Outcome) -> DictateOutcome {
     match outcome {
-        forge_dictate::Outcome::Transcript(transcript) if transcript.text.is_empty() => {
+        crate::Outcome::Transcript(transcript) if transcript.text.is_empty() => {
             DictateOutcome::Empty
         }
-        forge_dictate::Outcome::Transcript(transcript) => {
+        crate::Outcome::Transcript(transcript) => {
             DictateOutcome::Landed { text: transcript.text, truncated: transcript.truncated }
         }
-        forge_dictate::Outcome::NoAudio { peak, audio } => {
+        crate::Outcome::NoAudio { peak, audio } => {
             DictateOutcome::NoAudio { peak_db: peak, seconds: audio.as_secs() }
         }
     }
@@ -1389,7 +1539,7 @@ fn map_outcome(outcome: forge_dictate::Outcome) -> DictateOutcome {
 #[cfg(test)]
 mod transfer_progress_tests {
     use super::*;
-    use forge_dictate::Progress;
+    use crate::Progress;
 
     /// The models are prepared concurrently, so a cancel can land while
     /// one is still transferring and the other has already finished.
@@ -1456,8 +1606,6 @@ mod transfer_progress_tests {
 mod tests {
     use super::*;
 
-    use crate::{Command, SessionUpdate};
-
     /// An absent `[dictate]` section must not download three gigabytes
     /// because forge started, so the whole section defaults off.
     #[test]
@@ -1480,35 +1628,6 @@ mod tests {
         );
     }
 
-    /// The preflight config always points the diagnostics store at
-    /// forge's app-support dir. A refactor dropping that assignment
-    /// would leave the feature shipped-dead with CI green, which is why
-    /// the assembly is its own function and this pins it.
-    #[test]
-    fn preflight_config_points_diagnostics_at_app_support() {
-        let settings: DictateSettings = toml::from_str("enabled = true\n").expect("parse");
-        let cfg = preflight_config(&settings, &settings.pin_active());
-        assert_eq!(
-            cfg.diagnostics_dir.as_deref(),
-            forge_sdk::app_support_dir().ok().map(|dir| dir.join("dictate-diagnostics")).as_deref(),
-            "the diagnostics store must sit beside forge's other machine-local state"
-        );
-        assert!(
-            cfg.diagnostics_dir.is_some(),
-            "on this machine an app-support dir resolves, so the store must be armed"
-        );
-        assert_eq!(
-            cfg.digest_cache_dir.as_deref(),
-            forge_sdk::app_support_dir().ok().map(|dir| dir.join("dictate-digests")).as_deref(),
-            "the verified-digest record must sit beside forge's other machine-local state, or \
-             every boot re-hashes 3.07 GB"
-        );
-        assert!(
-            cfg.digest_cache_dir.is_some(),
-            "the record is what keeps a warm boot off the disk; nothing else arms it"
-        );
-    }
-
     /// The axes are `forge.toml` keys and the crate's own defaults stand
     /// in where they are absent - which is what a client draws as its
     /// unset state and resets to.
@@ -1525,9 +1644,9 @@ mod tests {
             toml::from_str("styling = \"formal\"\nstructure = \"lists\"\ncontext = \"email\"\n")
                 .expect("the axes parse");
         let axes = set.axes();
-        assert_eq!(axes.styling, forge_dictate::normalize::Styling::Formal);
-        assert_eq!(axes.structure, forge_dictate::normalize::Structure::Lists);
-        assert_eq!(axes.context, forge_dictate::normalize::Context::Email);
+        assert_eq!(axes.styling, crate::normalize::Styling::Formal);
+        assert_eq!(axes.structure, crate::normalize::Structure::Lists);
+        assert_eq!(axes.context, crate::normalize::Context::Email);
 
         // A typo fails the load the way every other `[dictate]` key does.
         let err = toml::from_str::<DictateSettings>("styling = \"chatty\"\n")
@@ -1583,103 +1702,21 @@ mod tests {
     fn normalize_options_merge_overridden_axes_over_the_crate_defaults() {
         let empty = DictateOverrides::default();
         let merged = empty.normalize_options();
-        assert_eq!(merged, forge_dictate::NormalizeOptions::default());
+        assert_eq!(merged, crate::NormalizeOptions::default());
         assert!(empty.is_empty(), "a fresh session has nothing to reset");
 
         let overridden = DictateOverrides {
-            styling: Some(forge_dictate::normalize::Styling::Formal),
+            styling: Some(crate::normalize::Styling::Formal),
             ..DictateOverrides::default()
         };
         let merged = overridden.normalize_options();
-        assert_eq!(merged.styling, forge_dictate::normalize::Styling::Formal);
+        assert_eq!(merged.styling, crate::normalize::Styling::Formal);
         assert_eq!(
             merged.structure,
-            forge_dictate::NormalizeOptions::default().structure,
+            crate::NormalizeOptions::default().structure,
             "an unset axis keeps the crate default"
         );
         assert!(!overridden.is_empty());
-    }
-
-    #[test]
-    fn a_set_override_lands_on_its_own_session_and_echoes_back() {
-        let (workspace, mut updates) = crate::Workspace::testing_stub();
-        let a = crate::SessionSlot::from_str_for_test("dictate-a");
-        let b = crate::SessionSlot::from_str_for_test("dictate-b");
-        workspace.register_domain_session(a.clone(), None);
-        workspace.register_domain_session(b.clone(), None);
-
-        workspace
-            .dispatch(Command::SetDictateOverride {
-                key: a.clone(),
-                update: DictateOverrideUpdate::Styling(forge_dictate::normalize::Styling::Formal),
-            })
-            .expect("dispatch");
-
-        let a_binding = workspace.domain_session_for(&a).expect("session a");
-        assert_eq!(
-            a_binding.lock().dictate_overrides.styling,
-            Some(forge_dictate::normalize::Styling::Formal),
-        );
-        let b_binding = workspace.domain_session_for(&b).expect("session b");
-        assert_eq!(b_binding.lock().dictate_overrides, DictateOverrides::default());
-
-        let echo = updates.try_recv().expect("an echo for the session that set it");
-        match std::sync::Arc::unwrap_or_clone(echo.update) {
-            SessionUpdate::DictateOverrides { key, overrides } => {
-                assert_eq!(key, a);
-                assert_eq!(overrides.styling, Some(forge_dictate::normalize::Styling::Formal));
-            }
-            other => panic!("unexpected update: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn reset_clears_every_axis_at_once() {
-        let (workspace, mut updates) = crate::Workspace::testing_stub();
-        let key = crate::SessionSlot::from_str_for_test("dictate-reset");
-        workspace.register_domain_session(key.clone(), None);
-
-        for update in [
-            DictateOverrideUpdate::Styling(forge_dictate::normalize::Styling::Casual),
-            DictateOverrideUpdate::Context(forge_dictate::normalize::Context::Email),
-        ] {
-            workspace
-                .dispatch(Command::SetDictateOverride { key: key.clone(), update })
-                .expect("dispatch");
-        }
-        workspace.dispatch(Command::ResetDictateOverrides { key: key.clone() }).expect("dispatch");
-
-        let binding = workspace.domain_session_for(&key).expect("session");
-        assert_eq!(binding.lock().dictate_overrides, DictateOverrides::default());
-
-        let mut echoes = 0;
-        let mut last = None;
-        while let Ok(frame) = updates.try_recv() {
-            if matches!(&*frame.update, SessionUpdate::DictateOverrides { .. }) {
-                echoes += 1;
-                last = Some(std::sync::Arc::unwrap_or_clone(frame.update));
-            }
-        }
-        assert_eq!(echoes, 3, "each set echoes, and the reset does too");
-
-        // **The cleared set is a PRESENT object of nulls, not silence**: a skip
-        // on an empty set would leave a client's stale set standing on every
-        // reset, with both stacks green.
-        let frame = serde_json::to_value(last.expect("the reset's own echo")).expect("serialise");
-        assert!(
-            frame["dictate_overrides"].get("overrides").is_some(),
-            "the reset echo must carry its overrides key, got: {frame}"
-        );
-    }
-
-    #[test]
-    fn an_override_for_an_unknown_session_is_refused() {
-        let (workspace, _updates) = crate::Workspace::testing_stub();
-        let key = crate::SessionSlot::from_str_for_test("never-registered");
-        let err = workspace
-            .dispatch(Command::ResetDictateOverrides { key })
-            .expect_err("an unknown session must be refused");
-        assert!(matches!(err, crate::DispatchError::UnknownSession(_)));
     }
 
     /// The mode rides the same parsing rules as `bind`: three values,
@@ -1775,7 +1812,7 @@ mod tests {
     /// on the finished name.
     #[test]
     fn a_partial_rejection_is_attributed_to_its_finished_row() {
-        let error = forge_dictate::Error::HashMismatch {
+        let error = crate::Error::HashMismatch {
             path: PathBuf::from("/models/s1-mini-f16.gguf.part"),
             expected: "abc".to_owned(),
             actual: "def".to_owned(),
@@ -1792,10 +1829,26 @@ mod tests {
 mod dictate_lifecycle_tests {
     use super::*;
 
-    use crate::Command;
-
     fn key(name: &str) -> SessionSlot {
-        SessionSlot::from_str_for_test(name.to_owned())
+        SessionSlot::new("TestOrg", "test-project", name)
+    }
+
+    /// A host that accepts every update and reports every seat live: the
+    /// policy tests need the seam's shape, not a workspace behind it.
+    struct TestHost;
+
+    impl DictateHost for TestHost {
+        fn session_is_live(&self, _key: &SessionSlot) -> bool {
+            true
+        }
+
+        fn app_support_dir(&self) -> Result<PathBuf, String> {
+            Err("the test host has no app-support directory".to_owned())
+        }
+
+        fn emit(&self, _update: DictateUpdate) -> bool {
+            true
+        }
     }
 
     /// The meter cadence is a decided constant - a deliberate fourth
@@ -1817,12 +1870,12 @@ mod dictate_lifecycle_tests {
     /// from no signal at all.
     #[test]
     fn crate_outcomes_map_onto_the_wire_outcomes() {
-        use forge_dictate::Outcome;
+        use crate::Outcome;
 
-        let landed = map_outcome(Outcome::Transcript(forge_dictate::Transcript {
+        let landed = map_outcome(Outcome::Transcript(crate::Transcript {
             text: "hello there".to_owned(),
             asr: "hello there".to_owned(),
-            stages: forge_dictate::Stages::default(),
+            stages: crate::Stages::default(),
             truncated: false,
         }));
         assert_eq!(
@@ -1831,10 +1884,10 @@ mod dictate_lifecycle_tests {
             "a transcript with words lands as words"
         );
 
-        let empty = map_outcome(Outcome::Transcript(forge_dictate::Transcript {
+        let empty = map_outcome(Outcome::Transcript(crate::Transcript {
             text: String::new(),
             asr: "um".to_owned(),
-            stages: forge_dictate::Stages::default(),
+            stages: crate::Stages::default(),
             truncated: false,
         }));
         assert_eq!(empty, DictateOutcome::Empty, "filler-only input normalises to nothing");
@@ -1850,917 +1903,25 @@ mod dictate_lifecycle_tests {
         );
     }
 
-    /// Put a live take on the runtime the way a registration does, and
-    /// hand back its stop channel so a test can watch what arrives.
-    fn live_take(ws: &crate::Workspace, owner: &SessionSlot) -> tokio::sync::mpsc::Receiver<bool> {
-        let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(1);
-        ws.dictate_runtime
-            .lock()
-            .recordings
-            .insert(owner.clone(), LiveRecording { stop: stop_tx, sink: None, initiator: None });
-        stop_rx
-    }
-
-    /// An engine over an empty models directory: takes register, meter
-    /// and cap exactly as they do in production, and every job it runs
-    /// answers the load failure a weightless engine gives.
-    fn synthetic_engine() -> (tempfile::TempDir, Arc<forge_dictate::Engine>) {
-        let dir = tempfile::tempdir().unwrap();
-        let engine = forge_dictate::Engine::new(
-            forge_dictate::ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build(),
-        )
-        .expect("an engine starts without its weights");
-        (dir, engine)
-    }
-
-    /// Register a seat as live, the way a started session is.
-    fn live_session(ws: &crate::Workspace, session: &SessionSlot) {
-        let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
-        ws.command_senders.lock().insert(session.clone(), cmd_tx);
-        // Kept alive for the test's length: a dropped receiver marks the
-        // session dead and every start would refuse.
-        std::mem::forget(cmd_rx);
-    }
-
-    /// A stream take registers SYNCHRONOUSLY: the frame a client sends
-    /// right after its start message, on the one ordered connection,
-    /// must find the take already there. The registration is what the
-    /// dispatch did, so nothing is awaited between the two.
-    #[tokio::test]
-    async fn a_stream_take_registers_synchronously_and_keeps_its_frames() {
-        let (ws, mut updates) = crate::Workspace::testing_stub();
-        let (_dir, engine) = synthetic_engine();
-        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
-        let session = key("streamer");
-        live_session(&ws, &session);
-
-        ws.dispatch(Command::DictateStream {
-            key: session.clone(),
-            options: DictateAxes::default(),
-            surface: None,
-            initiator: Some(1),
-        })
-        .expect("dispatch");
-
-        assert!(
-            ws.dictate_push(&session, &[0.5; 320], Some(1)),
-            "the first frame after a start must find its take"
-        );
-
-        let started = updates.recv().await.expect("the start echoes");
-        assert!(
-            matches!(&*started.update, SessionUpdate::DictateStarted { initiator: Some(1), .. }),
-            "the start echo carries the connection the take belongs to, got {started:?}"
-        );
-
-        // The meter reads the pushed audio.
-        let level = tokio::time::timeout(Duration::from_secs(2), updates.recv())
-            .await
-            .expect("a level must arrive while the take is live")
-            .expect("the stream stays open");
-        match std::sync::Arc::unwrap_or_clone(level.update) {
-            SessionUpdate::DictateLevel { peak_db, .. } => assert!(
-                (peak_db + 6.02).abs() < 0.5,
-                "the meter must read the pushed samples, got {peak_db} dB"
-            ),
-            other => panic!("expected a level, got {other:?}"),
-        }
-
-        // And the take resolves through the same pipeline: stop submits,
-        // and a weightless engine answers the load failure.
-        ws.dispatch(Command::DictateStop {
-            key: session.clone(),
-            submit: true,
-            initiator: Some(1),
-        })
-        .expect("dispatch");
-        let ended = tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                match updates
-                    .recv()
-                    .await
-                    .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
-                {
-                    Some(SessionUpdate::DictateEnded { outcome, .. }) => break outcome,
-                    Some(_) => {}
-                    None => panic!("the update stream closed before the take resolved"),
-                }
-            }
-        })
-        .await
-        .expect("the take must resolve");
-        assert_eq!(ended, DictateOutcome::Failed, "a weightless engine fails the take");
-        assert!(
-            ws.dictate_runtime.lock().recordings.is_empty(),
-            "a resolved take leaves no live entry behind"
-        );
-    }
-
-    /// **The readings and the submit name the take they belong to** (#839).
-    /// A reader drops a frame that is not its live take's, so a constant or a
-    /// stale number here leaves the meter and the phase unheard - silently,
-    /// because every frame still arrives.
-    #[tokio::test]
-    async fn the_readings_and_the_submit_carry_the_takes_generation() {
-        let (ws, mut updates) = crate::Workspace::testing_stub();
-        let (_dir, engine) = synthetic_engine();
-        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
-        let session = key("generation");
-        live_session(&ws, &session);
-
-        ws.dispatch(Command::DictateStream {
-            key: session.clone(),
-            options: DictateAxes::default(),
-            surface: None,
-            initiator: Some(1),
-        })
-        .expect("dispatch");
-        ws.dictate_push(&session, &[0.5; 320], Some(1));
-
-        let started = tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                let frame = updates.recv().await.expect("the stream stays open");
-                if let SessionUpdate::DictateStarted { generation, .. } =
-                    std::sync::Arc::unwrap_or_clone(frame.update)
-                {
-                    break generation;
-                }
-            }
-        })
-        .await
-        .expect("the take announces itself");
-
-        let level = tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                let frame = updates.recv().await.expect("the stream stays open");
-                if let SessionUpdate::DictateLevel { generation, .. } =
-                    std::sync::Arc::unwrap_or_clone(frame.update)
-                {
-                    break generation;
-                }
-            }
-        })
-        .await
-        .expect("a level arrives while the take is live");
-
-        ws.dispatch(Command::DictateStop {
-            key: session.clone(),
-            submit: true,
-            initiator: Some(1),
-        })
-        .expect("dispatch");
-        let transcribing = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                let frame = updates.recv().await.expect("the stream stays open");
-                match std::sync::Arc::unwrap_or_clone(frame.update) {
-                    SessionUpdate::DictateTranscribing { generation, .. } => break generation,
-                    SessionUpdate::DictateEnded { .. } => {
-                        panic!("the take ended before it said it was transcribing")
-                    }
-                    _ => {}
-                }
-            }
-        })
-        .await
-        .expect("the take submits");
-
-        assert_eq!(level, started, "a level names the take it belongs to");
-        assert_eq!(transcribing, started, "and so does the frame that submits it");
-    }
-
-    /// **The surface a client names on its take reaches the ending update.**
-    /// The record keeps it with the landed words and hands them back to that
-    /// page alone, so a seam that drops it here sends them to the wrong one.
-    #[tokio::test]
-    async fn a_stream_takes_surface_reaches_its_end() {
-        let (ws, mut updates) = crate::Workspace::testing_stub();
-        let (_dir, engine) = synthetic_engine();
-        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
-        let session = key("streamer");
-        live_session(&ws, &session);
-
-        ws.dispatch(Command::DictateStream {
-            key: session.clone(),
-            options: DictateAxes::default(),
-            surface: Some("review".to_owned()),
-            initiator: Some(1),
-        })
-        .expect("dispatch");
-        let started = tokio::time::timeout(Duration::from_secs(2), updates.recv())
-            .await
-            .expect("the start echoes")
-            .expect("the stream stays open");
-        assert!(
-            matches!(&*started.update, SessionUpdate::DictateStarted { .. }),
-            "the take registers, got {started:?}"
-        );
-
-        ws.dispatch(Command::DictateStop {
-            key: session.clone(),
-            submit: false,
-            initiator: Some(1),
-        })
-        .expect("dispatch");
-        let carried = tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                match updates
-                    .recv()
-                    .await
-                    .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
-                {
-                    Some(SessionUpdate::DictateEnded { surface, .. }) => break surface,
-                    Some(_) => {}
-                    None => panic!("the update stream closed before the take resolved"),
-                }
-            }
-        })
-        .await
-        .expect("the take must resolve");
-        assert_eq!(
-            carried.as_deref(),
-            Some("review"),
-            "the ending names the surface the client started the take with"
-        );
-    }
-
-    /// **The submitted take's ending carries the surface too.** The final send
-    /// is the one a landed take uses, and the one the composer folds into its
-    /// record, so a seam that drops it there loses the words' page.
-    #[tokio::test]
-    async fn a_submitted_takes_end_carries_its_surface() {
-        let (ws, mut updates) = crate::Workspace::testing_stub();
-        let (_dir, engine) = synthetic_engine();
-        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
-        let session = key("streamer");
-        live_session(&ws, &session);
-
-        ws.dispatch(Command::DictateStream {
-            key: session.clone(),
-            options: DictateAxes::default(),
-            surface: Some("review".to_owned()),
-            initiator: Some(1),
-        })
-        .expect("dispatch");
-        let started = tokio::time::timeout(Duration::from_secs(2), updates.recv())
-            .await
-            .expect("the start echoes")
-            .expect("the stream stays open");
-        assert!(
-            matches!(&*started.update, SessionUpdate::DictateStarted { .. }),
-            "the take registers, got {started:?}"
-        );
-        assert!(
-            ws.dictate_push(&session, &[0.5; 320], Some(1)),
-            "the frame after a start must find its take"
-        );
-
-        ws.dispatch(Command::DictateStop {
-            key: session.clone(),
-            submit: true,
-            initiator: Some(1),
-        })
-        .expect("dispatch");
-        let carried = tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                match updates
-                    .recv()
-                    .await
-                    .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
-                {
-                    Some(SessionUpdate::DictateEnded { surface, .. }) => break surface,
-                    Some(_) => {}
-                    None => panic!("the update stream closed before the take resolved"),
-                }
-            }
-        })
-        .await
-        .expect("the take must resolve");
-        assert_eq!(
-            carried.as_deref(),
-            Some("review"),
-            "the submitted ending names the surface the client started the take with"
-        );
-    }
-
-    /// One take's recognition failing is that session's own work rather
-    /// than a warning about forge, so the record is a `debug` - rule 20's
-    /// split - and it names the seat, which is what a reader acts on.
-    /// Both halves are the contract: re-raising the level, or dropping
-    /// the seat, silently undoes the call this pins.
-    #[tokio::test]
-    async fn a_failed_take_records_debug_with_its_seat() {
-        use tracing_subscriber::layer::SubscriberExt as _;
-
-        /// One record: its level, its target, and its fields.
-        #[derive(Clone, Default)]
-        struct Caught(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String, String)>>>);
-
-        #[derive(Default)]
-        struct Fields(String);
-
-        impl tracing::field::Visit for Fields {
-            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                if !self.0.is_empty() {
-                    self.0.push(' ');
-                }
-                let _ = std::fmt::write(&mut self.0, format_args!("{}={value:?}", field.name()));
-            }
-        }
-
-        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Caught {
-            fn on_event(
-                &self,
-                event: &tracing::Event<'_>,
-                _ctx: tracing_subscriber::layer::Context<'_, S>,
-            ) {
-                let mut fields = Fields::default();
-                event.record(&mut fields);
-                self.0.lock().expect("capture").push((
-                    *event.metadata().level(),
-                    event.metadata().target().to_owned(),
-                    fields.0,
-                ));
-            }
-        }
-
-        let (ws, mut updates) = crate::Workspace::testing_stub();
-        let (_dir, engine) = synthetic_engine();
-        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
-        let session = key("solo");
-        live_session(&ws, &session);
-
-        // A take runs on a spawned task, and `#[tokio::test]` is a
-        // current-thread runtime, so a thread-local default still catches
-        // every record it emits.
-        let caught = Caught::default();
-        let subscriber = tracing_subscriber::registry().with(caught.clone());
-        let _guard = tracing::subscriber::set_default(subscriber);
-
-        ws.dispatch(Command::DictateStream {
-            key: session.clone(),
-            options: DictateAxes::default(),
-            surface: None,
-            initiator: Some(1),
-        })
-        .expect("dispatch");
-        // Without audio the take resolves as `NoAudio` before it ever
-        // reaches the engine, so the frame is what puts it on the
-        // failure path this test pins.
-        assert!(
-            ws.dictate_push(&session, &[0.5; 320], Some(1)),
-            "the frame after a start must find its take"
-        );
-        ws.dispatch(Command::DictateStop {
-            key: session.clone(),
-            submit: true,
-            initiator: Some(1),
-        })
-        .expect("dispatch");
-
-        let ended = tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                match updates
-                    .recv()
-                    .await
-                    .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
-                {
-                    Some(SessionUpdate::DictateEnded { outcome, .. }) => break outcome,
-                    Some(_) => {}
-                    None => panic!("the update stream closed before the take resolved"),
-                }
-            }
-        })
-        .await
-        .expect("the take must resolve");
-        assert_eq!(ended, DictateOutcome::Failed, "a weightless engine fails the take");
-
-        let records = caught.0.lock().expect("capture");
-        let (level, target, fields) = records
-            .iter()
-            .find(|(_, _, fields)| fields.contains("dictate_failed"))
-            .unwrap_or_else(|| panic!("a failed take records `dictate_failed`, saw {records:?}"));
-        assert_eq!(
-            *level,
-            tracing::Level::DEBUG,
-            "a take's own failure is not a warning about forge: {fields}",
-        );
-        // The directive that keeps this record readable names a module
-        // path, and a target one character off matches nothing, so the
-        // path is measured from the record rather than assumed.
-        assert_eq!(
-            target.as_str(),
-            "forge_workspace::dictate",
-            "the record's target is the module path the filter directive names: {fields}",
-        );
-        assert!(
-            fields.contains("slot=TestOrg/test-project/solo"),
-            "the record names the seat it belongs to: {fields}",
-        );
-    }
-
-    /// A second take on one seat is refused by name, whichever path it
-    /// came in on: two takes would interleave their notices into one
-    /// draft with nothing saying why.
-    #[tokio::test]
-    async fn a_second_stream_take_on_one_seat_is_refused() {
-        let (ws, mut updates) = crate::Workspace::testing_stub();
-        let (_dir, engine) = synthetic_engine();
-        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
-        let session = key("streamer");
-        live_session(&ws, &session);
-
-        ws.dispatch(Command::DictateStream {
-            key: session.clone(),
-            options: DictateAxes::default(),
-            surface: None,
-            initiator: Some(1),
-        })
-        .expect("dispatch");
-        ws.dispatch(Command::DictateStream {
-            key: session.clone(),
-            options: DictateAxes::default(),
-            surface: None,
-            initiator: Some(2),
-        })
-        .expect("dispatch");
-
-        let first = updates.recv().await.expect("the first start echoes");
-        assert!(
-            matches!(&*first.update, SessionUpdate::DictateStarted { initiator: Some(1), .. }),
-            "got {first:?}"
-        );
-        let second = updates.recv().await.expect("the refusal echoes");
-        match std::sync::Arc::unwrap_or_clone(second.update) {
-            SessionUpdate::DictateEnded {
-                outcome: DictateOutcome::Refused { message },
-                initiator,
-                ..
-            } => {
-                assert_eq!(
-                    initiator,
-                    Some(2),
-                    "the refusal answers the connection that was refused, not the holder"
-                );
-                assert_eq!(
-                    message,
-                    "another client is already dictating on this session · dictation did not start",
-                    "decision 3's whole deliverable is that wording"
-                );
-            }
-            other => panic!("expected the refusal, got {other:?}"),
-        }
-        assert_eq!(
-            ws.dictate_runtime.lock().recordings.len(),
-            1,
-            "the refused start must not displace the live take"
-        );
-    }
-
-    /// Two seats may stream at once, one take per connection: a take fed by
-    /// a client's frames holds no device, so nothing about it is exclusive.
-    #[tokio::test]
-    async fn two_seats_may_stream_at_once() {
-        let (ws, _updates) = crate::Workspace::testing_stub();
-        let (_dir, engine) = synthetic_engine();
-        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
-        let first = key("first");
-        let second = key("second");
-        live_session(&ws, &first);
-        live_session(&ws, &second);
-
-        for (at, session) in [&first, &second].into_iter().enumerate() {
-            ws.dispatch(Command::DictateStream {
-                key: session.clone(),
-                options: DictateAxes::default(),
-                surface: None,
-                initiator: Some(at as u64 + 1),
-            })
-            .expect("dispatch");
-            assert!(
-                ws.dictate_push(session, &[0.5; 320], Some(at as u64 + 1)),
-                "each seat's own take must accept its frames"
-            );
-        }
-        assert_eq!(ws.dictate_runtime.lock().recordings.len(), 2, "both takes are live");
-    }
-
-    /// One live take per connection: a frame carries no seat, so a second
-    /// take on another seat from the same connection would have no stream
-    /// its audio could belong to. The refusal rides the same outcome a busy
-    /// seat's does, so the client that pressed draws it by name.
-    #[tokio::test]
-    async fn a_second_take_from_one_connection_is_refused() {
-        let (ws, mut updates) = crate::Workspace::testing_stub();
-        let (_dir, engine) = synthetic_engine();
-        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
-        let first = key("first");
-        let second = key("second");
-        live_session(&ws, &first);
-        live_session(&ws, &second);
-
-        ws.dispatch(Command::DictateStream {
-            key: first.clone(),
-            options: DictateAxes::default(),
-            surface: None,
-            initiator: Some(1),
-        })
-        .expect("dispatch");
-        ws.dispatch(Command::DictateStream {
-            key: second.clone(),
-            options: DictateAxes::default(),
-            surface: None,
-            initiator: Some(1),
-        })
-        .expect("dispatch");
-
-        let started = updates.recv().await.expect("the first start echoes");
-        assert!(
-            matches!(&*started.update, SessionUpdate::DictateStarted { initiator: Some(1), .. }),
-            "got {started:?}"
-        );
-        let refusal = updates.recv().await.expect("the refusal echoes");
-        match std::sync::Arc::unwrap_or_clone(refusal.update) {
-            SessionUpdate::DictateEnded {
-                outcome: DictateOutcome::Refused { message },
-                initiator,
-                ..
-            } => {
-                assert_eq!(initiator, Some(1), "the refusal answers the client that asked");
-                assert_eq!(
-                    message,
-                    "this client is already dictating on another seat · dictation did not start",
-                    "the refusal names the reason in the client's own terms"
-                );
-            }
-            other => panic!("expected the refusal, got {other:?}"),
-        }
-        assert!(ws.dictate_push(&first, &[0.5; 320], Some(1)), "the first take keeps its frames");
-        assert_eq!(ws.dictate_runtime.lock().recordings.len(), 1, "nothing else registered");
-    }
-
-    /// A frame belongs to the take its own connection started: a seat whose
-    /// live take is ANOTHER connection's keeps nothing of it, which is
-    /// decision 3's own scenario - a refused start still has its microphone
-    /// open for the frames already on the wire.
-    #[tokio::test]
-    async fn a_frame_from_another_connection_never_lands_in_this_take() {
-        let (ws, _updates) = crate::Workspace::testing_stub();
-        let (_dir, engine) = synthetic_engine();
-        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
-        let session = key("streamer");
-        live_session(&ws, &session);
-
-        ws.dispatch(Command::DictateStream {
-            key: session.clone(),
-            options: DictateAxes::default(),
-            surface: None,
-            initiator: Some(1),
-        })
-        .expect("dispatch");
-
-        assert!(
-            !ws.dictate_push(&session, &[0.5; 320], Some(2)),
-            "another connection's frames must not land in this take"
-        );
-        assert!(ws.dictate_push(&session, &[0.5; 320], Some(1)), "its own connection's do");
-    }
-
-    /// A frame for a seat with no live take is dropped rather than kept:
-    /// the client may be racing a refusal it has not seen, or a take that
-    /// already resolved.
-    #[tokio::test]
-    async fn frames_for_a_seat_with_no_live_take_are_dropped() {
-        let (ws, _updates) = crate::Workspace::testing_stub();
-        assert!(
-            !ws.dictate_push(&key("nobody"), &[0.5; 320], Some(1)),
-            "a frame with no take to hold it must be dropped"
-        );
-    }
-
-    /// A stream take with no engine refuses with the way out, and the
-    /// refusal resolves no take, so a client that never saw a start is
-    /// told why.
-    #[tokio::test]
-    async fn a_stream_take_without_an_engine_refuses_with_the_way_out() {
-        let (ws, mut updates) = crate::Workspace::testing_stub();
-        let session = key("streamer");
-        live_session(&ws, &session);
-
-        ws.dispatch(Command::DictateStream {
-            key: session.clone(),
-            options: DictateAxes::default(),
-            surface: None,
-            initiator: Some(1),
-        })
-        .expect("dispatch");
-
-        let ended = updates.recv().await.expect("the refusal echoes");
-        match std::sync::Arc::unwrap_or_clone(ended.update) {
-            SessionUpdate::DictateEnded {
-                outcome: DictateOutcome::Refused { message }, ..
-            } => {
-                assert!(
-                    message.contains("not ready"),
-                    "the refusal must say dictation is not ready, got: {message}"
-                );
-            }
-            other => panic!("expected the refusal, got {other:?}"),
-        }
-        assert!(ws.dictate_runtime.lock().recordings.is_empty(), "nothing may be left live");
-    }
-
-    /// A stream take for a seat with no session is refused: the frames would
-    /// have nowhere to land, and the refusal names the way out. The device
-    /// path's twin of this has pinned it since the beginning; a stream take
-    /// must not be the path without cover.
-    #[tokio::test]
-    async fn a_stream_take_for_a_seat_with_no_session_is_refused() {
-        let (ws, mut updates) = crate::Workspace::testing_stub();
-        let (_dir, engine) = synthetic_engine();
-        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
-        // Deliberately NOT marked live.
-        let session = key("ghost");
-
-        ws.dispatch(Command::DictateStream {
-            key: session.clone(),
-            options: DictateAxes::default(),
-            surface: None,
-            initiator: Some(1),
-        })
-        .expect("dispatch");
-
-        let ended = updates.recv().await.expect("the refusal echoes");
-        match std::sync::Arc::unwrap_or_clone(ended.update) {
-            SessionUpdate::DictateEnded {
-                outcome: DictateOutcome::Refused { message }, ..
-            } => {
-                assert!(
-                    message.contains("closed"),
-                    "the refusal must say the seat is gone, got: {message}"
-                );
-            }
-            other => panic!("expected the refusal, got {other:?}"),
-        }
-        assert!(ws.dictate_runtime.lock().recordings.is_empty(), "nothing may be left live");
-        assert!(
-            !ws.dictate_push(&session, &[0.5; 320], Some(1)),
-            "and nothing may accept frames for a seat no take was registered on"
-        );
-    }
-
-    /// A stream take nobody stops ends itself at the cap. A stalled stream
-    /// has no callback loop to notice the cap for it, so the runner counts
-    /// the clock - without which the take would hold the seat until teardown.
-    #[tokio::test]
-    async fn a_stream_take_nobody_stops_ends_at_its_cap() {
-        let (ws, mut updates) = crate::Workspace::testing_stub();
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = forge_dictate::ConfigBuilder::new()
-            .models_dir(dir.path())
-            .normalizer(None)
-            .max_capture(Duration::from_secs(1))
-            .build();
-        let engine = forge_dictate::Engine::new(cfg).expect("engine must start");
-        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
-        let session = key("capped");
-        live_session(&ws, &session);
-
-        ws.dispatch(Command::DictateStream {
-            key: session.clone(),
-            options: DictateAxes::default(),
-            surface: None,
-            initiator: Some(1),
-        })
-        .expect("dispatch");
-        assert!(ws.dictate_push(&session, &[0.5; 320], Some(1)), "the take is live");
-        let _ = updates.recv().await.expect("the start echoes");
-
-        // Nothing else stops it: no release, no drop, no further frame.
-        let ended = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                match updates
-                    .recv()
-                    .await
-                    .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
-                {
-                    Some(SessionUpdate::DictateEnded { .. }) => break true,
-                    Some(_) => {}
-                    None => break false,
-                }
-            }
-        })
-        .await
-        .expect("the cap must end a take nobody stops");
-        assert!(ended, "the take must resolve rather than hold the seat forever");
-        assert!(ws.dictate_runtime.lock().recordings.is_empty(), "and the seat is free again");
-    }
-
-    /// The connection going away DROPS the take it was streaming and frees
-    /// the seat AT ONCE: nothing it streamed lands anywhere - its reader is
-    /// gone - and a client that reconnects and starts again must not be
-    /// refused by the take it left behind.
-    #[tokio::test]
-    async fn closing_a_stream_take_drops_it_and_frees_the_seat() {
-        let (ws, mut updates) = crate::Workspace::testing_stub();
-        let (_dir, engine) = synthetic_engine();
-        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
-        let session = key("streamer");
-        live_session(&ws, &session);
-
-        ws.dispatch(Command::DictateStream {
-            key: session.clone(),
-            options: DictateAxes::default(),
-            surface: None,
-            initiator: Some(1),
-        })
-        .expect("dispatch");
-        assert!(ws.dictate_push(&session, &[0.5; 320], Some(1)));
-        let _ = updates.recv().await.expect("the start echoes");
-
-        assert!(
-            !ws.dictate_close(&session, 2),
-            "a take another connection started is not this one's to close"
-        );
-        assert_eq!(
-            ws.dictate_runtime.lock().recordings.len(),
-            1,
-            "and the foreign close leaves it recording"
-        );
-        assert!(ws.dictate_close(&session, 1), "the live stream take is closed");
-        assert!(
-            ws.dictate_runtime.lock().recordings.is_empty(),
-            "the seat is free before the take resolves, which is what the next start needs"
-        );
-        assert!(!ws.dictate_close(&session, 1), "closing a second time closes nothing");
-
-        // CANCELLED, not failed: a weightless engine FAILS a submitted
-        // take, so the abandoned end is what says nothing was submitted -
-        // the drop this path exists for.
-        let resolved = tokio::time::timeout(Duration::from_secs(3), async {
-            loop {
-                match updates
-                    .recv()
-                    .await
-                    .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
-                {
-                    Some(SessionUpdate::DictateEnded { outcome, .. }) => break Some(outcome),
-                    Some(_) => {}
-                    None => break None,
-                }
-            }
-        })
-        .await
-        .expect("a closed take must resolve rather than hold the seat");
-        assert!(
-            matches!(resolved, Some(DictateOutcome::Cancelled)),
-            "a dropped take must be abandoned with nothing submitted, got {resolved:?}"
-        );
-
-        // The property the refusal broke: the next take registers at once.
-        ws.dispatch(Command::DictateStream {
-            key: session.clone(),
-            options: DictateAxes::default(),
-            surface: None,
-            initiator: Some(1),
-        })
-        .expect("dispatch");
-        assert!(
-            ws.dictate_push(&session, &[0.5; 320], Some(1)),
-            "a take started right after a drop must land"
-        );
-    }
-
-    /// A stop belongs to the connection whose take it addresses: a stop
-    /// from any other connection parks for its own connection rather than
-    /// reaching this take, so a view's dictation is not killed by a stop
-    /// that never owned it.
-    #[tokio::test]
-    async fn a_stop_from_another_connection_leaves_the_take_running() {
-        let (ws, mut updates) = crate::Workspace::testing_stub();
-        let (_dir, engine) = synthetic_engine();
-        *ws.dictate.engine.lock() = Some(Arc::clone(&engine));
-        let session = key("streamer");
-        live_session(&ws, &session);
-
-        ws.dispatch(Command::DictateStream {
-            key: session.clone(),
-            options: DictateAxes::default(),
-            surface: None,
-            initiator: Some(1),
-        })
-        .expect("dispatch");
-        let _ = updates.recv().await.expect("the start echoes");
-
-        // Awaited rather than dispatched: the dispatch arm spawns the
-        // handler, so an assertion right after it reads before the handler
-        // has run. The park is this property's own statement - the stop
-        // found no take of its own and left one for a start that never
-        // comes - and it is settled the moment the handler returns.
-        handle_dictate_stop(&ws, &session, false, Some(2)).await;
-        assert!(
-            matches!(
-                &ws.dictate_runtime.lock().stop_pending,
-                Some((parked, who, _)) if parked == &session && *who == Some(2)
-            ),
-            "a foreign stop parks for its own connection rather than reaching this take"
-        );
-        assert!(
-            ws.dictate_push(&session, &[0.5; 320], Some(1)),
-            "a foreign stop must not end the take"
-        );
-        assert_eq!(ws.dictate_runtime.lock().recordings.len(), 1, "and the take is still live");
-    }
-
-    /// A take already submitted is still its connection's to cancel: the
-    /// transcript would have no reader left, so the close abandons it - and
-    /// another connection's close is not this take's at all.
-    #[tokio::test]
-    async fn closing_a_finishing_take_abandons_its_transcript() {
-        let (ws, _updates) = crate::Workspace::testing_stub();
-        let session = key("finishing");
-        let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
-        ws.dictate_runtime.lock().finishing.push(FinishingTake {
-            key: session.clone(),
-            stop: stop_tx,
-            initiator: Some(1),
-        });
-
-        assert!(!ws.dictate_close(&session, 2), "another connection's close is not this take's");
-        assert_eq!(
-            ws.dictate_runtime.lock().finishing.len(),
-            1,
-            "and a foreign close leaves the take awaiting its transcript"
-        );
-        assert!(ws.dictate_close(&session, 1), "the submitted take is its owner's to cancel");
-        assert_eq!(
-            stop_rx.try_recv(),
-            Ok(false),
-            "the close abandons the transcript rather than submitting it"
-        );
-    }
-
     /// The axes a client sends decide its take's normalizer options,
     /// where a `None` axis would have meant "the crate default".
     #[test]
     fn the_axes_a_client_sends_decide_its_takes_options() {
         let axes = DictateAxes {
-            styling: forge_dictate::normalize::Styling::Formal,
-            structure: forge_dictate::normalize::Structure::Lists,
-            context: forge_dictate::normalize::Context::Email,
+            styling: crate::normalize::Styling::Formal,
+            structure: crate::normalize::Structure::Lists,
+            context: crate::normalize::Context::Email,
         };
         let options = axes.normalize_options();
-        assert_eq!(options.styling, forge_dictate::normalize::Styling::Formal);
-        assert_eq!(options.structure, forge_dictate::normalize::Structure::Lists);
-        assert_eq!(options.context, forge_dictate::normalize::Context::Email);
+        assert_eq!(options.styling, crate::normalize::Styling::Formal);
+        assert_eq!(options.structure, crate::normalize::Structure::Lists);
+        assert_eq!(options.context, crate::normalize::Context::Email);
 
         let defaults = DictateAxes::default().normalize_options();
         assert_eq!(
             defaults,
-            forge_dictate::NormalizeOptions::default(),
+            crate::NormalizeOptions::default(),
             "an unset client must normalize exactly as the crate's own defaults do"
-        );
-    }
-
-    /// Stop routing reaches the recording that owns the key, and an
-    /// unknown key routes nowhere rather than to some other take.
-    #[tokio::test]
-    async fn a_stop_routes_to_the_take_that_started_on_the_key() {
-        let (ws, _updates) = crate::Workspace::testing_stub();
-        let owner = key("owner");
-        let mut stop_rx = live_take(&ws, &owner);
-
-        handle_dictate_stop(&ws, &key("owner"), true, None).await;
-        assert!(
-            matches!(stop_rx.try_recv(), Ok(true)),
-            "submit must reach the owning take's channel"
-        );
-
-        handle_dictate_stop(&ws, &key("stranger"), false, None).await;
-        assert!(
-            matches!(stop_rx.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)),
-            "a stop from a session with no take must not reach someone else's"
-        );
-    }
-
-    /// The stop channel follows the take from recording into finishing,
-    /// so Esc can still abandon a submitted take whose transcript is in
-    /// flight.
-    #[tokio::test]
-    async fn a_submitted_take_keeps_its_stop_channel_reachable() {
-        let (ws, _updates) = crate::Workspace::testing_stub();
-        let take = key("take");
-        let mut stop_rx = live_take(&ws, &take);
-
-        move_to_finishing(&ws, &take);
-        {
-            let runtime = ws.dictate_runtime.lock();
-            assert!(runtime.recordings.is_empty(), "a submitted take no longer holds a live entry");
-            assert_eq!(runtime.finishing.len(), 1, "the take is awaiting its transcript");
-        }
-        handle_dictate_stop(&ws, &take, false, None).await;
-        assert!(
-            matches!(stop_rx.try_recv(), Ok(false)),
-            "abandon must still reach the take after it finished recording"
         );
     }
 
@@ -2775,13 +1936,13 @@ mod dictate_lifecycle_tests {
         // released before the test ends, or the runtime drop would wait
         // out the blocking read.
         let (answer_tx, answer_rx) =
-            std::sync::mpsc::channel::<Result<forge_dictate::Outcome, forge_dictate::Error>>();
+            std::sync::mpsc::channel::<Result<crate::Outcome, crate::Error>>();
         let mut answer = tokio::task::spawn_blocking(move || {
-            answer_rx.recv().map_err(|_| forge_dictate::Error::EngineStopped)
+            answer_rx.recv().map_err(|_| crate::Error::EngineStopped)
         });
         let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
         drop(stop_tx);
-        let cancel = forge_dictate::CancelToken::new();
+        let cancel = crate::CancelToken::new();
 
         let started = std::time::Instant::now();
         let resolution = wait_for_take(&mut answer, &mut stop_rx, &cancel).await;
@@ -2803,13 +1964,13 @@ mod dictate_lifecycle_tests {
     #[tokio::test]
     async fn an_abandon_decision_fires_the_token_and_ends_the_wait() {
         let (answer_tx, answer_rx) =
-            std::sync::mpsc::channel::<Result<forge_dictate::Outcome, forge_dictate::Error>>();
+            std::sync::mpsc::channel::<Result<crate::Outcome, crate::Error>>();
         let mut answer = tokio::task::spawn_blocking(move || {
-            answer_rx.recv().map_err(|_| forge_dictate::Error::EngineStopped)
+            answer_rx.recv().map_err(|_| crate::Error::EngineStopped)
         });
         let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
         stop_tx.send(false).await.expect("the channel is open");
-        let cancel = forge_dictate::CancelToken::new();
+        let cancel = crate::CancelToken::new();
 
         let resolution = wait_for_take(&mut answer, &mut stop_rx, &cancel).await;
         drop(answer_tx);
@@ -2823,16 +1984,16 @@ mod dictate_lifecycle_tests {
     #[tokio::test]
     async fn a_submit_decision_during_transcription_keeps_waiting() {
         let (answer_tx, answer_rx) =
-            std::sync::mpsc::channel::<Result<forge_dictate::Outcome, forge_dictate::Error>>();
+            std::sync::mpsc::channel::<Result<crate::Outcome, crate::Error>>();
         let mut answer = tokio::task::spawn_blocking(move || {
-            answer_rx.recv().map_err(|_| forge_dictate::Error::EngineStopped)
+            answer_rx.recv().map_err(|_| crate::Error::EngineStopped)
         });
         let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
         stop_tx.send(true).await.expect("the channel is open");
         answer_tx
-            .send(Err(forge_dictate::Error::EngineStopped))
+            .send(Err(crate::Error::EngineStopped))
             .expect("an unbounded channel accepts the answer");
-        let cancel = forge_dictate::CancelToken::new();
+        let cancel = crate::CancelToken::new();
 
         let resolution = wait_for_take(&mut answer, &mut stop_rx, &cancel).await;
         drop(answer_tx);
@@ -2864,7 +2025,7 @@ mod dictate_lifecycle_tests {
             }
             let (stop_tx, mut stop_rx) = tokio::sync::mpsc::channel(1);
             stop_tx.send(false).await.expect("the channel is open");
-            let cancel = forge_dictate::CancelToken::new();
+            let cancel = crate::CancelToken::new();
 
             let resolution = wait_for_take(&mut answer, &mut stop_rx, &cancel).await;
 
@@ -2883,10 +2044,12 @@ mod dictate_lifecycle_tests {
     /// exactly as they do at the cap boundary.
     #[tokio::test(start_paused = true)]
     async fn a_queued_stop_beats_a_cap_tick_that_is_already_ready() {
-        let (_dir, engine) = synthetic_engine();
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = crate::ConfigBuilder::new().models_dir(dir.path()).normalizer(None).build();
+        let engine = crate::Engine::new(cfg).expect("engine must start");
         let stream = engine.capture_stream().expect("a stream take starts");
         let meter = stream.capture.meter();
-        let updates = crate::update_fanout::UpdateFanout::default();
+        let host = TestHost;
         let key = key("capped");
 
         // The same per-invocation redraw makes each round an independent
@@ -2896,33 +2059,11 @@ mod dictate_lifecycle_tests {
             stop_tx.send(false).await.expect("the channel is open");
 
             let submitted =
-                record_until_stopped(&key, &meter, &mut stop_rx, &updates, Duration::ZERO, 0, None)
+                record_until_stopped(&key, &meter, &mut stop_rx, &host, Duration::ZERO, 0, None)
                     .await;
 
             assert!(!submitted, "round {round}: the cap submitted a take the user cancelled");
         }
-    }
-
-    /// A stop the scheduler ordered before its start registered is
-    /// parked, not dropped: dropping it orphans the take until the
-    /// capture cap releases the microphone.
-    #[tokio::test]
-    async fn a_stop_before_its_start_is_parked_for_the_registration() {
-        let (ws, _updates) = crate::Workspace::testing_stub();
-        let owner = key("owner");
-
-        handle_dictate_stop(&ws, &owner, true, None).await;
-        assert!(
-            matches!(&ws.dictate_runtime.lock().stop_pending, Some((parked, _, _)) if *parked == owner),
-            "a stop with nothing to route parks itself for the start"
-        );
-
-        // A stop that DOES find a take neither parks nor leaves a stale
-        // park behind.
-        let mut stop_rx = live_take(&ws, &owner);
-        handle_dictate_stop(&ws, &owner, true, None).await;
-        assert_eq!(stop_rx.recv().await, Some(true));
-        assert_eq!(ws.dictate_runtime.lock().stop_pending, None);
     }
 
     /// A parked stop is only honoured while fresh: the race it covers
@@ -2962,73 +2103,200 @@ mod dictate_lifecycle_tests {
         assert!(runtime.stop_pending.is_some(), "and it survives for its own start");
     }
 
-    /// Teardown drops a session's park: an inert entry for a closed
-    /// session would otherwise sit in the Option forever.
-    #[tokio::test]
-    async fn closing_the_session_clears_its_parked_stop() {
-        let (ws, _updates) = crate::Workspace::testing_stub();
-        let owner = key("owner");
-        handle_dictate_stop(&ws, &owner, true, None).await;
-        assert!(ws.dictate_runtime.lock().stop_pending.is_some());
+    /// A test host that reports one app-support directory, so the
+    /// preflight's assembly can be pinned without a workspace.
+    struct DirHost(PathBuf);
 
-        ws.release_session(&owner);
-
-        assert_eq!(ws.dictate_runtime.lock().stop_pending, None);
-    }
-
-    /// A refused start clears the key's park: the release that follows
-    /// the refusal parks AFTER this clear, and that later park is
-    /// handled by the freshness window, but a park that arrived before
-    /// the refusal must not survive it.
-    #[tokio::test]
-    async fn a_refused_start_clears_the_park() {
-        let (ws, mut updates) = crate::Workspace::testing_stub();
-        let owner = key("owner");
-        ws.dictate_runtime.lock().stop_pending = Some((owner.clone(), None, Instant::now()));
-
-        // No engine on the stub, so the registration refuses.
-        ws.dispatch(Command::DictateStream {
-            key: owner.clone(),
-            options: DictateAxes::default(),
-            surface: None,
-            initiator: None,
-        })
-        .expect("dispatch");
-
-        assert_eq!(ws.dictate_runtime.lock().stop_pending, None);
-        let ended = updates.recv().await.expect("the refusal echo");
-        assert!(matches!(
-            std::sync::Arc::unwrap_or_clone(ended.update),
-            SessionUpdate::DictateEnded { outcome: DictateOutcome::Refused { .. }, .. }
-        ));
-    }
-
-    /// Closing the session that owns a live take must release it and cut
-    /// its channel - otherwise the take stays live and the meter keeps
-    /// emitting for a composer that no longer exists, and every later
-    /// start is refused naming a session the user closed.
-    #[tokio::test]
-    async fn closing_the_session_releases_its_live_take() {
-        let (ws, _updates) = crate::Workspace::testing_stub();
-        let owner = key("owner");
-        let mut stop_rx = live_take(&ws, &owner);
-        let (finishing_tx, _finishing_rx) = tokio::sync::mpsc::channel(1);
-        ws.dictate_runtime.lock().finishing =
-            vec![FinishingTake { key: owner.clone(), stop: finishing_tx, initiator: None }];
-
-        ws.release_session(&owner);
-
-        {
-            let runtime = ws.dictate_runtime.lock();
-            assert!(runtime.recordings.is_empty(), "a closed session must not keep a live take");
-            assert!(
-                runtime.finishing.is_empty(),
-                "a closed session's submitted take must not keep a cancel route"
-            );
+    impl DictateHost for DirHost {
+        fn session_is_live(&self, _key: &SessionSlot) -> bool {
+            true
         }
-        assert!(
-            matches!(stop_rx.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)),
-            "dropping the entry must close the channel, which is what makes the runner abandon the take"
+
+        fn app_support_dir(&self) -> Result<PathBuf, String> {
+            Ok(self.0.clone())
+        }
+
+        fn emit(&self, _update: DictateUpdate) -> bool {
+            true
+        }
+    }
+
+    /// The preflight config always points the diagnostics store at the
+    /// host's app-support dir. A refactor dropping that assignment leaves
+    /// the feature shipped-dead with CI green, which is why the assembly is
+    /// its own function and this pins it.
+    #[test]
+    fn preflight_config_points_diagnostics_at_app_support() {
+        let settings: DictateSettings = toml::from_str("enabled = true\n").expect("parse");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let host = DirHost(dir.path().to_path_buf());
+        let cfg = preflight_config(&settings, &settings.pin_active(), &host);
+        assert_eq!(
+            cfg.diagnostics_dir,
+            Some(dir.path().join("dictate-diagnostics")),
+            "the per-take diagnostics live under the host's app-support base",
         );
+        assert_eq!(
+            cfg.digest_cache_dir,
+            Some(dir.path().join("dictate-digests")),
+            "the verified-take cache is what keeps a warm boot off the disk; nothing else arms it",
+        );
+    }
+
+    /// The events one call logs, by name and level: the level is part of
+    /// what the contract says, so a demoted line is not silently accepted.
+    #[derive(Clone, Default)]
+    struct Logged(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String)>>>);
+
+    struct CollectEventName(String);
+
+    impl tracing::field::Visit for CollectEventName {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "event_name" {
+                self.0 = format!("{value:?}").trim_matches('"').to_owned();
+            }
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Logged {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut visitor = CollectEventName(String::new());
+            event.record(&mut visitor);
+            if !visitor.0.is_empty() {
+                self.0.lock().expect("capture").push((*event.metadata().level(), visitor.0));
+            }
+        }
+    }
+
+    /// Capture the named events one call logs.
+    fn capture<R>(run: impl FnOnce() -> R) -> (R, Vec<(tracing::Level, String)>) {
+        use tracing_subscriber::layer::SubscriberExt;
+        let logged = Logged::default();
+        let subscriber = tracing_subscriber::registry().with(logged.clone());
+        let result = tracing::subscriber::with_default(subscriber, run);
+        (result, std::mem::take(&mut logged.0.lock().expect("capture")))
+    }
+
+    /// A host that cannot resolve an app-support directory turns both stores
+    /// off rather than failing preflight - diagnostics never break
+    /// dictation, and the absence is what the warning records.
+    #[test]
+    fn preflight_config_turns_both_stores_off_without_app_support() {
+        struct BrokenHost;
+
+        impl DictateHost for BrokenHost {
+            fn session_is_live(&self, _key: &SessionSlot) -> bool {
+                true
+            }
+
+            fn app_support_dir(&self) -> Result<PathBuf, String> {
+                Err("no resolvable data/cache/home dir".to_owned())
+            }
+
+            fn emit(&self, _update: DictateUpdate) -> bool {
+                true
+            }
+        }
+
+        let settings: DictateSettings = toml::from_str("enabled = true\n").expect("parse");
+        let (cfg, logged) =
+            capture(|| preflight_config(&settings, &settings.pin_active(), &BrokenHost));
+        assert!(
+            logged.iter().any(|(level, name)| {
+                name == "dictate_state_dir_unresolved" && *level == tracing::Level::WARN
+            }),
+            "the absence is recorded, not silent: {logged:?}",
+        );
+        assert!(cfg.diagnostics_dir.is_none(), "per-take diagnostics are off");
+        assert!(cfg.digest_cache_dir.is_none(), "and so is the digest record");
+    }
+
+    /// Put a live take on the runtime the way a registration does, and hand
+    /// back its answer channel so a test can read what the caller gets.
+    fn staged_session() -> SessionSlot {
+        SessionSlot::new("Test", "proj", "vault-free")
+    }
+
+    fn live_take(dictate: &Dictate, owner: &SessionSlot) -> tokio::sync::mpsc::Receiver<bool> {
+        let (stop_tx, stop_rx) = tokio::sync::mpsc::channel(1);
+        dictate
+            .runtime
+            .lock()
+            .recordings
+            .insert(owner.clone(), LiveRecording { stop: stop_tx, sink: None, initiator: None });
+        stop_rx
+    }
+
+    /// Stop routing reaches the recording that owns the key, and an
+    /// unknown key routes nowhere rather than to some other take.
+    #[tokio::test]
+    async fn a_stop_routes_to_the_take_that_started_on_the_key() {
+        let settings: DictateSettings = toml::from_str("enabled = true\n").expect("parse");
+        let dictate = Dictate::new(&settings);
+        let owner = staged_session();
+        let mut stop_rx = live_take(&dictate, &owner);
+
+        handle_dictate_stop(&dictate, &owner, true, None).await;
+        assert!(
+            matches!(stop_rx.try_recv(), Ok(true)),
+            "submit must reach the owning take's channel"
+        );
+
+        handle_dictate_stop(&dictate, &SessionSlot::new("Test", "proj", "stranger"), false, None)
+            .await;
+        assert!(
+            matches!(stop_rx.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)),
+            "a stop from a session with no take must not reach someone else's"
+        );
+    }
+
+    /// The stop channel follows the take from recording into finishing,
+    /// so Esc can still abandon a submitted take whose transcript is in
+    /// flight.
+    #[tokio::test]
+    async fn a_submitted_take_keeps_its_stop_channel_reachable() {
+        let settings: DictateSettings = toml::from_str("enabled = true\n").expect("parse");
+        let dictate = Dictate::new(&settings);
+        let take = staged_session();
+        let mut stop_rx = live_take(&dictate, &take);
+
+        move_to_finishing(&dictate, &take);
+        {
+            let runtime = dictate.runtime.lock();
+            assert!(runtime.recordings.is_empty(), "a submitted take no longer holds a live entry");
+            assert_eq!(runtime.finishing.len(), 1, "the take is awaiting its transcript");
+        }
+        handle_dictate_stop(&dictate, &take, false, None).await;
+        assert!(
+            matches!(stop_rx.try_recv(), Ok(false)),
+            "abandon must still reach the take after it finished recording"
+        );
+    }
+
+    /// A stop the scheduler ordered before its start registered is
+    /// parked, not dropped: dropping it orphans the take until the
+    /// capture cap releases the microphone.
+    #[tokio::test]
+    async fn a_stop_before_its_start_is_parked_for_the_registration() {
+        let settings: DictateSettings = toml::from_str("enabled = true\n").expect("parse");
+        let dictate = Dictate::new(&settings);
+        let owner = staged_session();
+
+        handle_dictate_stop(&dictate, &owner, true, None).await;
+        assert!(
+            matches!(&dictate.runtime.lock().stop_pending, Some((parked, _, _)) if *parked == owner),
+            "a stop with nothing to route parks itself for the start"
+        );
+
+        // A stop that DOES find a take neither parks nor leaves a stale
+        // park behind.
+        let mut stop_rx = live_take(&dictate, &owner);
+        handle_dictate_stop(&dictate, &owner, true, None).await;
+        assert_eq!(stop_rx.recv().await, Some(true));
+        assert_eq!(dictate.runtime.lock().stop_pending, None);
     }
 }

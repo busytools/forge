@@ -274,7 +274,7 @@ fn org_keys(
             }
             Err(error) => {
                 tracing::warn!(
-                    target: "forge_connectors::vault",
+                    target: "forge_tools::vault",
                     event_name = "vault_org_key_unwrap_failed",
                     org_id = %org.id,
                     error = %error,
