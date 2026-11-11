@@ -156,7 +156,7 @@
     </button>
 
     {#if open}
-      <div class="sg-list" bind:this={listEl} style={limits} use:portal>
+      <div class="sg-list" bind:this={listEl} style={limits} use:portal={segEl}>
         {#if href !== null}
           <!-- The way into the whole board, in the strip the composer
                carries. A door rather than a row: it is drawn apart from the

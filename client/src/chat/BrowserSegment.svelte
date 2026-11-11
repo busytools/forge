@@ -418,7 +418,7 @@
         class="bz-list"
         style={limits}
         bind:this={panelEl}
-        use:portal
+        use:portal={segEl}
         role="group"
         aria-label="the browser's tabs"
         onpointerenter={(event) => {
