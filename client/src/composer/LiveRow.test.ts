@@ -496,6 +496,71 @@ describe('the live row', () => {
     expect(document.querySelector('.sg-open'), 'the review panel closed').toBeNull();
   });
 
+  it('leaves a task chip its own panel too, not only review', () => {
+    // **The wiring is per segment**: each panel's action hands over its own
+    // segment as the anchor. A second segment is the witness that one
+    // `use:portal={segEl}` cannot be dropped without a test noticing.
+    reviewWaiting(true);
+    boardTask();
+    tree();
+    draw(null);
+    measured(250, { terminal: 60, git: 90, review: 200, tasks: 50 }, 30);
+
+    const more = document.querySelector<HTMLButtonElement>('.live-row .live-more');
+    if (more === null) throw new Error('the row drew no +N');
+    more.click();
+    flushSync();
+
+    const toggle = document.querySelector<HTMLButtonElement>('[data-panel-chip="tasks"] button');
+    if (toggle === null) throw new Error('the tasks chip drew no button');
+    toggle.click();
+    flushSync();
+
+    const door = document.querySelector<HTMLAnchorElement>('.sg-open');
+    if (door === null) throw new Error('the tasks panel drew no door');
+    expect(door.textContent, "the tasks chip's own door").toContain('open board');
+
+    door.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    flushSync();
+    expect(door.isConnected, 'the pointerdown tore the tasks panel down').toBe(true);
+    expect(
+      document.querySelector('[data-panel-chip="tasks"]'),
+      'the +N panel closed on a pointer inside a panel its task chip opened',
+    ).not.toBeNull();
+  });
+
+  it("closes the +N panel on a pointer inside a visible chip's own panel", () => {
+    // The other half of the anchor check: a panel opened from a chip still on
+    // the row hangs off an anchor outside the `+N` panel, so that pointer is
+    // away - the case the fix must leave unchanged.
+    reviewWaiting(true);
+    boardTask();
+    tree();
+    draw(null);
+    measured(250, { terminal: 60, git: 90, review: 200, tasks: 50 }, 30);
+
+    const more = document.querySelector<HTMLButtonElement>('.live-row .live-more');
+    if (more === null) throw new Error('the row drew no +N');
+    more.click();
+    flushSync();
+
+    const gitToggle = document.querySelector<HTMLButtonElement>(
+      '.live-row [data-chip="git"] button',
+    );
+    if (gitToggle === null) throw new Error('the git chip drew no button');
+    gitToggle.click();
+    flushSync();
+
+    const list = document.querySelector<HTMLElement>('.sg-list');
+    if (list === null) throw new Error('the git panel did not open');
+    list.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    flushSync();
+    expect(
+      document.querySelector('[data-panel-chip="review"]'),
+      'the +N panel stayed open on a pointer inside a visible chip panel',
+    ).toBeNull();
+  });
+
   it('still closes the +N panel on a pointer that lands outside it', () => {
     reviewWaiting(true);
     boardTask();

@@ -245,9 +245,10 @@
    * A pointer landing outside the button and its panel closes it.
    *
    * **A panel opened from a chip inside this one is outside it in DOM terms**:
-   * every segment portals its panel to the body. `portaledFrom` asks which
-   * segment drew the panel instead, so the pointerdown a click starts with
-   * does not tear that panel - and its link - down before the click lands.
+   * every segment that has a panel portals it to the body. `portaledFrom`
+   * asks which segment drew the panel instead, so the pointerdown a click
+   * starts with does not tear that panel - and its link - down before the
+   * click lands.
    */
   function away(event: Event): void {
     const at = event.target;
