@@ -324,6 +324,18 @@
         onclose={closeShare}
       />
     {/key}
+  {:else if home.refused}
+    <!-- A refused home read is an answer, not a silence: the sheet says
+         why rather than waiting on a fleet that will never arrive. -->
+    <main class="wrap">
+      <p class="pending">This forge would not answer for the home: {home.refused}</p>
+    </main>
+  {:else if home.failed}
+    <!-- The read landed and this client could not draw it: the sheet's own
+         state, not an endless wait on a fleet it cannot read. -->
+    <main class="wrap">
+      <p class="pending">This forge sent a home this client could not read: {home.failed}</p>
+    </main>
   {:else if connected}
     <main class="wrap"><p class="pending">Reading the fleet...</p></main>
   {:else}

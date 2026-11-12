@@ -69,6 +69,11 @@ describe('the URLs the server serves', () => {
     expect(parseRoute(hrefFor({ name: 'settings' }))).toEqual({ name: 'settings' });
   });
 
+  it('resolves the share sheet and round-trips it', () => {
+    expect(parseRoute('/share')).toEqual({ name: 'share' });
+    expect(parseRoute(hrefFor({ name: 'share' }))).toEqual({ name: 'share' });
+  });
+
   it('resolves a seat review as a sub-path of the seat and round-trips it', () => {
     // The plausible regression is the bare four-segment path swallowing the
     // fifth: `/session/o/p/l/review` parsing as a label called `l` with a

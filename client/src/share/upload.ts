@@ -37,7 +37,13 @@ export interface Shared {
  * that have crossed.
  */
 export type ShareProgress =
-  | { kind: 'begin'; upload_id: number; resumed: boolean; received: number[] }
+  | {
+      kind: 'begin';
+      upload_id: number;
+      attempted: boolean;
+      resumed: boolean;
+      received: number[];
+    }
   | { kind: 'progress'; file: number; sent: number; total: number };
 
 /** What one upload answers: the absolute paths the server wrote. */

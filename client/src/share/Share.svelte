@@ -53,7 +53,7 @@
     upload = uploadShare,
   }: {
     /** The open connection: the prompt rides it, and the seat's record does. */
-    connection: Connection | null;
+    connection: Connection;
     /** Every seat the roster carries, in the order the picker draws them. */
     seats: SessionSlot[];
     /** The files the share handed this app, or the reason there are none. */
@@ -99,6 +99,8 @@
   let failure = $state<string | null>(null);
   /** The upload the last attempt began, so a retry can resume it. */
   let uploadId = $state<number | null>(null);
+  /** Whether this send had a previous upload to resume at all. */
+  let attempted = $state(false);
   /** Whether the attempt continued a held upload or began a new one. */
   let resumed = $state<boolean | null>(null);
   /** The offsets the server already held when the attempt began. */
@@ -123,17 +125,16 @@
   // the seat's composer state, and the box reads it from there.
   let read = $state<SessionRead>({ wire: null, refused: null, review: false });
   $effect(() => {
-    const open = connection;
     const seat = picked;
-    if (open === null || seat === null) return;
-    return watchSession(open, seat, false).subscribe(($next) => {
+    if (seat === null) return;
+    return watchSession(connection, seat, false).subscribe(($next) => {
       read = $next;
     });
   });
   const composer = $derived(composerFrom(read.wire?.composer));
 
   /** What `forge.toml` set, which a take with no pick of its own records under. */
-  const defaults = $derived(connection?.settings()?.dictate ?? DEFAULT_AXES);
+  const defaults = $derived(connection.settings()?.dictate ?? DEFAULT_AXES);
   let axesEdit = $state<DictateAxes | null>(null);
   let deviceEdit = $state<string | null>(null);
   const axes = $derived(axesEdit ?? axesFor(seatId, defaults));
@@ -155,9 +156,7 @@
   let dictateLine = $state<{ tone: string; text: string } | null>(null);
 
   const dictate = new Dictation({
-    // The mic is drawn only on an open connection, so no take can reach this
-    // with none: the cast is the wiring's required shape, not a promise.
-    connection: () => connection as Connection,
+    connection: () => connection,
     seat: () => picked ?? NO_SEAT,
     surface: 'share',
     shown: () => composer.take !== null,
@@ -187,7 +186,6 @@
   const canSend = $derived(
     phase === 'idle' &&
       picked !== null &&
-      connection !== null &&
       shared.files.length > 0 &&
       !over &&
       dictate.take === null &&
@@ -214,7 +212,7 @@
    * second upload would write the files again under new names.
    */
   async function send(): Promise<void> {
-    if (picked === null || connection === null) return;
+    if (picked === null) return;
     if (phase === 'uploading' || shared.files.length === 0 || over) return;
     const seat = picked;
     phase = 'uploading';
@@ -226,6 +224,7 @@
         const answer = await upload(seat, shared.files, uploadId, (message) => {
           if (message.kind === 'begin') {
             uploadId = message.upload_id;
+            attempted = message.attempted;
             resumed = message.resumed;
             received = message.received;
             return;
@@ -312,10 +311,6 @@
       </select>
     </label>
 
-    {#if connection === null}
-      <p class="line">Waiting for the connection...</p>
-    {/if}
-
     <div class="box">
       {#if dictate.take !== null || dictate.opening}
         <TakeCard
@@ -337,7 +332,7 @@
           }}
         />
         <div class="acts">
-          {#if offered && connection !== null}
+          {#if offered}
             <DictateControl {dictate} />
           {/if}
           <button class="chip add" type="button" disabled={!canSend} onclick={() => void send()}>
@@ -348,7 +343,7 @@
       {#if line !== null}
         <p class="line {line.tone}">{line.text}</p>
       {/if}
-      {#if dictate.panel && picked !== null && connection !== null}
+      {#if dictate.panel && picked !== null}
         <DictationPanel
           {connection}
           {axes}
@@ -367,7 +362,7 @@
     </div>
 
     {#if phase === 'uploading'}
-      <p class="line">
+      <p class="line" id="share-uploading">
         {#if progress === null}
           Uploading {shared.files.length === 1 ? 'the file' : 'the files'}...
         {:else}
@@ -375,9 +370,12 @@
         {/if}
       </p>
       {#if progress !== null}
+        <!-- The bar's name is the line above it: a progressbar with no
+             accessible name is a serious axe failure. -->
         <div
           class="bar"
           role="progressbar"
+          aria-labelledby="share-uploading"
           aria-valuenow={percent}
           aria-valuemin={0}
           aria-valuemax={100}
@@ -385,7 +383,7 @@
           <div class="fill" style:width={`${percent}%`}></div>
         </div>
       {/if}
-      {#if resumed !== null}
+      {#if attempted}
         <p class="line dim">
           {resumed ? "resuming from the server's offsets" : 'starting over from the first byte'}
         </p>

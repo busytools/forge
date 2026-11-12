@@ -2,6 +2,7 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { violationsOf } from '../testing/axe';
 import type { Connection } from '../socket';
 import { Stores } from '../stores';
 import type { Subject } from '../protocol';
@@ -103,7 +104,27 @@ describe('the share sheet', () => {
     expect(picker()?.value).toBe([LEAD.org, LEAD.project, LEAD.label].join('\u0000'));
   });
 
-  it('draws the resume line and the progress the upload reports', () => {
+  it('sends to the seat the picker was moved to', async () => {
+    const upload = vi.fn((_seat: SessionSlot, _files: SharedFile[], _id: number | null) =>
+      Promise.resolve({ paths: ['/inbox/photo.jpg'] }),
+    );
+    const { dispatched } = draw({ upload });
+    const select = picker();
+    if (select === null) throw new Error('the seat picker is not on the page');
+    select.value = [WORKER.org, WORKER.project, WORKER.label].join('\u0000');
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    flushSync();
+
+    sendButton()?.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(dispatched).toHaveLength(1);
+    });
+    expect(upload.mock.calls[0]?.[0]).toEqual(WORKER);
+    expect(dispatched[0]?.at).toEqual(WORKER);
+  });
+
+  it('draws the resume line and the progress the upload reports', async () => {
     let report: (progress: ShareProgress) => void = () => {};
     const upload = vi.fn(
       (
@@ -119,11 +140,12 @@ describe('the share sheet', () => {
     draw({ upload });
     sendButton()?.click();
     flushSync();
-    report({ kind: 'begin', upload_id: 7, resumed: true, received: [0] });
+    report({ kind: 'begin', upload_id: 7, attempted: true, resumed: true, received: [0] });
     report({ kind: 'progress', file: 0, sent: 5, total: 10 });
     flushSync();
     expect(lines().some((line) => line.includes("resuming from the server's offsets"))).toBe(true);
     expect(lines().some((line) => line.includes('50%'))).toBe(true);
+    expect(await violationsOf(document.body.innerHTML)).toEqual([]);
   });
 
   it('says when it is starting over', () => {
@@ -142,9 +164,34 @@ describe('the share sheet', () => {
     draw({ upload });
     sendButton()?.click();
     flushSync();
-    report({ kind: 'begin', upload_id: 7, resumed: false, received: [0] });
+    report({ kind: 'begin', upload_id: 7, attempted: true, resumed: false, received: [0] });
     flushSync();
     expect(lines().some((line) => line.includes('starting over from the first byte'))).toBe(true);
+  });
+
+  /// **A first send draws no resume line.** `attempted: false` is the fresh
+  /// begin, and a "starting over" line over it would describe an attempt
+  /// that never happened.
+  it('draws no resume line on a first send', () => {
+    let report: (progress: ShareProgress) => void = () => {};
+    const upload = vi.fn(
+      (
+        _seat: SessionSlot,
+        _files: unknown,
+        _id: number | null,
+        onProgress: (p: ShareProgress) => void,
+      ) => {
+        report = onProgress;
+        return new Promise<{ paths: string[] }>(() => {});
+      },
+    );
+    draw({ upload });
+    sendButton()?.click();
+    flushSync();
+    report({ kind: 'begin', upload_id: 7, attempted: false, resumed: false, received: [0] });
+    flushSync();
+    expect(lines().some((line) => line.includes('starting over'))).toBe(false);
+    expect(lines().some((line) => line.includes('resuming'))).toBe(false);
   });
 
   it('draws the reason and a retry when the upload fails', async () => {
@@ -156,6 +203,7 @@ describe('the share sheet', () => {
     flushSync();
     expect(lines().some((line) => line.includes('the socket is not open'))).toBe(true);
     expect(retryButton()).not.toBeNull();
+    expect(await violationsOf(document.body.innerHTML)).toEqual([]);
   });
 
   it('retries a held upload from its own id', async () => {
@@ -171,7 +219,13 @@ describe('the share sheet', () => {
         ids.push(id);
         attempt += 1;
         if (attempt === 1) {
-          onProgress({ kind: 'begin', upload_id: 42, resumed: false, received: [0] });
+          onProgress({
+            kind: 'begin',
+            upload_id: 42,
+            attempted: true,
+            resumed: false,
+            received: [0],
+          });
           return Promise.reject(new Error('the connection dropped'));
         }
         return Promise.resolve({ paths: ['/inbox/photo.jpg'] });

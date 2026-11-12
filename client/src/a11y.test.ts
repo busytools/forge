@@ -50,6 +50,7 @@ import ModelsBody from './models/ModelsBody.svelte';
 import { modelsWire } from './models/testing';
 import Palette from './session/Palette.svelte';
 import Session from './session/Session.svelte';
+import Share from './share/Share.svelte';
 import TerminalSegment from './chat/TerminalSegment.svelte';
 import Terminal from './terminal/Terminal.svelte';
 import { setTerminalRecord } from './terminal/record.svelte';
@@ -259,6 +260,28 @@ describe('axe over the rendered pages', () => {
   it('draws the connect screen with no violations', async () => {
     const html = render(Connect, {
       props: { settings: DEFAULT_SETTINGS, onconnect: () => {} },
+    }).body;
+    expect(await idsOf(html)).toEqual([]);
+  });
+
+  /**
+   * **The share sheet's idle form**, and its two other drawn states are
+   * covered by the mount test that can reach them: an upload in flight and a
+   * failure with its retry cannot be server-rendered, so `share.test.ts`
+   * audits those through the same harness. The progress bar's missing
+   * accessible name was the serious finding this page owed.
+   */
+  it('draws the share sheet with no violations', async () => {
+    const html = render(Share, {
+      props: {
+        connection: untouched(),
+        seats: [SLOT],
+        shared: {
+          files: [{ path: '/cache/share/1/photo.jpg', name: 'photo.jpg', size: 10, mime: null }],
+          error: null,
+        },
+        onclose: () => {},
+      },
     }).body;
     expect(await idsOf(html)).toEqual([]);
   });

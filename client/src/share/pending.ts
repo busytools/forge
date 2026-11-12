@@ -10,10 +10,10 @@
  * reason rather than opening on nothing.
  */
 
-import { writable } from 'svelte/store';
+import { get, writable } from 'svelte/store';
 
 import { canHost } from '../browser/host';
-import { goTo } from '../routes';
+import { currentRoute, goTo } from '../routes';
 import type { Shared } from './upload';
 
 /** The files a share handed this app, or `null` when none is waiting. */
@@ -39,6 +39,11 @@ export function shareOf(value: unknown): Shared | null {
     ];
   });
   const error = typeof held['error'] === 'string' ? held['error'] : null;
+  // **A payload whose rows all failed the narrowing is a refusal too**: the
+  // sheet says so rather than opening on a share with nothing in it.
+  if (rows.length === 0 && files.length > 0 && error === null) {
+    return { files: [], error: 'this share named files this client cannot read' };
+  }
   return { files: rows, error };
 }
 
@@ -88,6 +93,13 @@ export async function watchShares(): Promise<() => void> {
     const shared = shareOf(event.payload);
     if (shared === null || !worthOpening(shared)) return;
     pendingShare.set(shared);
-    goTo({ name: 'share' });
+    // **A share that arrives while the sheet is already open replaces it in
+    // place**: the keyed sheet remounts on the store, and a second `/share`
+    // entry would make the first Back stop on the page it already left.
+    if (get(currentRoute).name === 'share') return;
+    // **A share outranks a page's hold**: the sheet is the system handing
+    // forge a file, and the draft the hold protects stays in its box. A
+    // held move would swallow the share into a store no page draws.
+    goTo({ name: 'share' }, { force: true });
   });
 }
