@@ -223,6 +223,46 @@ class SharePluginTest {
     }
   }
 
+  /// **The budget is the share's, not one file's**: what one file used leaves
+  /// the next less, and a share past the wall is refused rather than wrapping.
+  @Test
+  fun aShareBudgetCarriesAcrossItsFiles() {
+    assertEquals(5L, SharePlugin.landedAfter(2L, 3L))
+    try {
+      SharePlugin.landedAfter(BUDGET - 1, 2)
+      fail("a share past the wall must be refused")
+    } catch (error: IllegalArgumentException) {
+      assertTrue(error.message!!.contains("larger than 200 MB"))
+    }
+  }
+
+  /// **A provider that answers zero is a stall, not progress**: the copy loop
+  /// would otherwise spin for ever on a provider that never advances.
+  @Test
+  fun aProviderThatStopsSendingIsRefused() {
+    val dir = tempDir()
+    try {
+      try {
+        SharePlugin.copyInto(dir, "stall.bin", null, BUDGET) {
+          object : ByteArrayInputStream("abc".toByteArray()) {
+            var reads = 0
+
+            override fun read(b: ByteArray, off: Int, len: Int): Int {
+              reads += 1
+              return if (reads == 1) super.read(b, off, len) else 0
+            }
+          }
+        }
+        fail("a stalled copy must be refused")
+      } catch (error: IllegalStateException) {
+        assertTrue(error.message!!.contains("stopped"))
+      }
+      assertEquals(0, dir.listFiles()?.size ?: 0)
+    } finally {
+      dir.deleteRecursively()
+    }
+  }
+
   @Test
   fun twoFilesOfOneNameCopyToTwoPaths() {
     val dir = tempDir()

@@ -15,8 +15,10 @@ import app.tauri.plugin.Plugin
 import java.io.File
 import java.io.InputStream
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /** One file a share handed this app, copied into its cache and named for the page. */
 internal data class SharedFile(
@@ -32,9 +34,11 @@ internal data class SharedFile(
  * **The page never sees a content URI.** A provider's grant is scoped to this
  * activity and dies with it, so each shared file is copied into the app's
  * cache here, under its display name, and the page is handed absolute paths.
- * The copy runs on one bounded executor: a share can be a few hundred
- * megabytes, and a provider that stalls a read must not hold a thread for
- * ever or start a new one per share.
+ * The copy runs on a bounded pool: a share can be a few hundred megabytes,
+ * and a provider that stalls a read must not hold a thread for ever or start
+ * a new one per share. **The timeout runs on a thread of its own**, because a
+ * timer sharing the copy pool would be starved by exactly the stuck copies it
+ * exists to cut loose.
  *
  * **The budget is enforced before and during the copy.** The provider's
  * published sizes are checked against the 200 MB cap first, and the bytes
@@ -50,8 +54,11 @@ internal data class SharedFile(
  */
 @TauriPlugin
 class SharePlugin(private val activity: Activity) : Plugin(activity) {
-  /** One copy thread plus one timeout timer; a stuck copy cannot block the timer. */
-  private val copies = Executors.newScheduledThreadPool(2)
+  /** The copy threads: bounded, so a share cannot start a thread per file. */
+  private val copies = Executors.newFixedThreadPool(2)
+
+  /** The copy timers, alone, so a stuck copy cannot hold the thread a timeout needs. */
+  private val timers = Executors.newSingleThreadScheduledExecutor()
 
   @Command
   fun take(invoke: Invoke) {
@@ -137,19 +144,28 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
         }
       }
     }
-    copies.submit {
-      val answer =
-        try {
-          Pair(copyStreams(streams), null)
-        } catch (error: Exception) {
-          // A share that cannot be read is said rather than drawn as an empty
-          // one: the page shows the reason instead of a sheet with no files.
-          Pair(emptyList(), error.message ?: error.toString())
-        }
-      finish(answer.first, answer.second)
-    }
-    copies.schedule(
-      { finish(emptyList(), COPY_TIMEOUT) },
+    val running = AtomicReference<Future<*>?>(null)
+    running.set(
+      copies.submit {
+        val answer =
+          try {
+            Pair(copyStreams(streams), null)
+          } catch (error: Exception) {
+            // A share that cannot be read is said rather than drawn as an empty
+            // one: the page shows the reason instead of a sheet with no files.
+            Pair(emptyList(), error.message ?: error.toString())
+          }
+        finish(answer.first, answer.second)
+      }
+    )
+    // **The timer cancels the copy it timed out**: a provider stuck in a read
+    // holds its pool thread until it is interrupted, and two of those would
+    // leave the next share nothing to run on.
+    timers.schedule(
+      {
+        running.get()?.cancel(true)
+        finish(emptyList(), COPY_TIMEOUT)
+      },
       COPY_TIMEOUT_SECONDS,
       TimeUnit.SECONDS,
     )
@@ -170,7 +186,7 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
       declared += size
     }
     val dir = shareDir()
-    var remaining = MAX_TOTAL
+    var landed = 0L
     return streams.map { raw ->
       val uri = Uri.parse(raw)
       val (display, _) = displayOf(uri)
@@ -181,10 +197,10 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
           null
         }
       val copied =
-        copyInto(dir, display, mime, remaining) {
+        copyInto(dir, display, mime, MAX_TOTAL - landed) {
           activity.contentResolver.openInputStream(uri)
         }
-      remaining -= copied.size
+      landed = landedAfter(landed, copied.size)
       copied
     }
   }
@@ -289,6 +305,20 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
 
     internal const val TOO_LARGE = "the share is larger than 200 MB"
     internal const val COPY_TIMEOUT = "the share took too long to copy"
+    internal const val STALLED = "the share's provider stopped before the file ended"
+
+    /**
+     * What a share's landed bytes become after one file, refusing a share
+     * that would cross the wall.
+     *
+     * **The budget is the share's, not one file's**: every file is measured
+     * against what the earlier ones already used, so a provider that
+     * under-reports one file cannot buy the next one room.
+     */
+    internal fun landedAfter(landed: Long, copied: Long): Long {
+      if (copied > MAX_TOTAL - landed) throw IllegalArgumentException(TOO_LARGE)
+      return landed + copied
+    }
 
     /** The stashed share a page had no listener for. */
     private var pending: JSObject? = null
@@ -444,6 +474,10 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
             while (true) {
               val read = input.read(buffer)
               if (read < 0) break
+              // **A read that answers nothing is not progress**: a provider
+              // that returns zero would spin this loop for ever, so it is a
+              // stall the sheet can say rather than a hang it cannot.
+              if (read == 0) throw IllegalStateException(STALLED)
               copied += read
               if (copied > budget) throw IllegalStateException(TOO_LARGE)
               output.write(buffer, 0, read)
