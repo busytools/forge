@@ -98,8 +98,9 @@ impl Kind {
 /// below is the only implementation now.
 #[async_trait::async_trait]
 pub trait FrameTransport: Send {
-    /// Deliver one encoded frame to this viewer. `Err` is a connection that
-    /// is gone, and the caller ends it.
+    /// Deliver one encoded frame to this viewer. **The socket transport
+    /// queues it and answers `Ok`**: a connection that is gone surfaces
+    /// through the connection's read half, which ends it.
     async fn deliver(&mut self, frame: &BrowserFrame) -> anyhow::Result<()>;
 
     /// Deliver one packet of the page's audio to this viewer.

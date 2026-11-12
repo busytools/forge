@@ -39,9 +39,9 @@ names: `shell` for the Tauri webview's own origins (the desktop app dials
 from `tauri://localhost`, the Android app from `http://tauri.localhost`),
 `web` for any other allowed page origin, and `native` for a client that sent
 no origin. The connection id on that record follows the connection through
-`connection_wedged`, `connection_write_stalled` and `connection_ended`,
-which carry the peer and the seat on screen (`<none>` when the client had
-shown nothing). The kind is what says which client-side perf log to ask
+`connection_wedged`, `connection_write_stalled`, `connection_writer_lost` and
+`connection_ended`, which carry the peer and the seat on screen (`<none>`
+when the client had shown nothing). The kind is what says which client-side perf log to ask
 for: a shell's `forge-perf.log` is in its app log directory on the host
 that dialed, a web page's is forge's own `forge-perf-web.log` beside
 `forge.log`, and a native client has no page log.
@@ -75,8 +75,8 @@ deadline: about 80 seconds.
 **The answer is a byte, and the deadlines differ by what each side can see.**
 The shell's transport counts bytes under the socket and calls the link dead 10
 seconds after a probe that drew none. A
-browser is handed whole messages only, so its deadline is the write bound
-above plus a margin (65 seconds). **The connection is one task reading and
+browser is handed whole messages only, so its deadline is the 60 s write
+bound plus a margin (65 seconds). **The connection is one task reading and
 one writing**: a read half that serves what the client asks, and a write half
 that owns the socket. So a probe is read and answered while a frame is being
 written - but **the pong is a frame like any other**, and it queues behind
@@ -106,9 +106,11 @@ progress and ends the connection after four write bounds without one, then
 runs the same teardown a clean close does. **Progress is a completed write**,
 stamped by the writer on every flush rather than once per loop turn, because
 one turn can issue several bounded writes. **A ping counts as sent only when
-the writer reports it written**, not when the read half queues it: a ping
-behind a bulk frame owes the peer nothing until it is on the wire, and the
-deadline starts there. Four write bounds also clear the unbounded snapshot
+the writer reports it written and no frame has arrived since it was queued**,
+not when the read half queues it: a ping behind a bulk frame owes the peer
+nothing until it is on the wire, and a ping the peer already answered owes
+nothing at all - so the deadline starts at the write, and only for a ping
+still unanswered. Four write bounds also clear the unbounded snapshot
 encode the loop performs between writes, so a legitimate long operation
 cannot trip it and a healthy connection is never reaped into a redial loop.
 

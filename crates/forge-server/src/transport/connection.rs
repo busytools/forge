@@ -1034,7 +1034,21 @@ where
     // queue is drained.** A client that closed has nobody to read the frames
     // left behind, and a writer waiting on a write that outlived its bound
     // would otherwise hold the socket half open past the connection's end.
-    socket.stop_writer().await;
+    if let Some(error) = socket.stop_writer().await {
+        // **A writer that unwound is forge's own problem, and the read half
+        // is already gone**: this is the only record the panic gets, so it
+        // carries the connection, the peer and the seat a reader acts on.
+        let slot = shown_seat(progress.showing_seat().as_ref());
+        tracing::warn!(
+            target: "forge_server::transport",
+            event_name = "connection_writer_lost",
+            client = me,
+            peer = %peer,
+            slot = %slot,
+            %error,
+            "the connection's writer task ended on a panic after the read half was gone",
+        );
+    }
     outcome
 }
 
@@ -4257,22 +4271,17 @@ impl Writer {
     /// and a writer stuck on a write that outlived its bound must not hold
     /// the socket open past the connection's end - so the task is aborted
     /// rather than drained, which drops the socket half with it.
-    async fn stop(&mut self) {
-        let Some(task) = self.task.take() else { return };
+    async fn stop(&mut self) -> Option<tokio::task::JoinError> {
+        let task = self.task.take()?;
         task.abort();
-        // **A panic here is forge's bug, not a silence.** The abort is
-        // expected and answers as a cancellation; anything else is the
-        // writer task unwinding after the read half was already gone, and it
-        // is the only record that panic gets.
-        if let Err(error) = task.await
-            && !error.is_cancelled()
-        {
-            tracing::debug!(
-                target: "forge_server::transport",
-                event_name = "connection_writer_lost",
-                %error,
-                "the connection's writer task ended on a panic after the read half was gone",
-            );
+        // **A panic here is forge's bug, not a silence, and the writer cannot
+        // say whose it is**: it knows neither the connection's number nor the
+        // peer, so the caller records it. The abort is what was asked for and
+        // answers as a cancellation; anything else is the task unwinding.
+        match task.await {
+            Ok(()) => None,
+            Err(error) if error.is_cancelled() => None,
+            Err(error) => Some(error),
         }
     }
 }
@@ -4333,9 +4342,10 @@ impl<S> ClientSocket<S> {
         ));
     }
 
-    /// Stop the writer without draining what it holds.
-    async fn stop_writer(&mut self) {
-        self.writer.stop().await;
+    /// Stop the writer without draining what it holds, answering its panic
+    /// when it ended on one.
+    async fn stop_writer(&mut self) -> Option<tokio::task::JoinError> {
+        self.writer.stop().await
     }
 }
 
@@ -4397,12 +4407,12 @@ where
     }
 
     fn start_send(self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
-        // **Every text frame crosses the encoder, whatever path built it.**
-        // The batched stream and a subscribe's queued backlog write Text
-        // frames of their own, straight through `feed`, so an encoder that
-        // lived only in the answer paths would leave them uncompressed for a
-        // client that declared the capability. A frame already encoded - the
-        // Binary kind, a control frame - passes through untouched.
+        // **The batching path's text frames cross the encoder here.** The
+        // batched stream and a subscribe's queued backlog build Text frames
+        // of their own, straight through `feed`, and the whole-frame sends
+        // encode through `frame_for` before they reach the writer; a frame
+        // already encoded - the Binary kind, a control frame - passes
+        // through untouched.
         let this = self.get_mut();
         let deflate = this.deflate;
         let item = match item {
@@ -4636,7 +4646,7 @@ impl WriteClock for SystemClock {
 /// a multi-MB record is the read half's own cost. **The frame's transfer is
 /// no longer the read half's to time**: `write_ms` is the handoff to the
 /// writer, and the socket's share of the write is server-unattributed (its
-/// own measurement is a later cut, `5396444e`). `waited` is what a slow peer
+/// own measurement is a later cut). `waited` is what a slow peer
 /// leaves behind here: another write still ahead of this one.
 fn send_frame_timed<S, C>(
     socket: &mut ClientSocket<S>,
@@ -6258,6 +6268,19 @@ mod tests {
         }
     }
 
+    /// **A completion that arrives after the answer is dropped.** The select
+    /// reads a Pong before the writer's completion, so the primitive is what
+    /// keeps an answered ping from arming a deadline: the generation moved
+    /// since the ping was queued, so the stamp is skipped.
+    #[tokio::test]
+    async fn a_stamp_for_a_ping_already_answered_is_dropped() {
+        let keepalive = Keepalive::default();
+        let generation = keepalive.generation();
+        keepalive.heard();
+        keepalive.stamp_if_unheard(generation, tokio::time::Instant::now());
+        assert_eq!(keepalive.sent(), None, "an answered ping owes nothing");
+    }
+
     /// Any frame is the answer, and the next beat asks again rather than
     /// reaping.
     #[tokio::test]
@@ -7034,10 +7057,6 @@ mod tests {
         );
     }
 
-    /// **The ping's own write is bounded.** It is the site #2473 survives on:
-    /// a peer that stops reading while the next ping waits behind a full
-    /// buffer leaves no other write in the loop to bound, so an unbounded ping
-    /// holds the role for ever.
     /// A peer that stopped reading, with a witness for its own drop: the
     /// socket half the writer owns, which a stopped writer must let go.
     struct StuckWithDrop {
@@ -7093,15 +7112,17 @@ mod tests {
 
     /// A sink that panics inside the writer task: forge's own bug, which the
     /// read half must report as one rather than as the peer leaving.
-    struct Panics;
+    struct Panics {
+        inbound: mpsc::UnboundedReceiver<Message>,
+    }
 
     impl futures_util::Stream for Panics {
         type Item = Result<Message, axum::Error>;
         fn poll_next(
-            self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<Option<Self::Item>> {
-            std::task::Poll::Pending
+            self.inbound.poll_recv(cx).map(|said| said.map(Ok))
         }
     }
 
@@ -7135,7 +7156,8 @@ mod tests {
     /// must say so: a forge bug reported as the client leaving is invisible.
     #[tokio::test]
     async fn a_writer_that_panics_ends_the_read_half_as_an_error() {
-        let mut socket = ClientSocket::new(Panics, false, Arc::new(Progress::new()));
+        let (_from_test, inbound) = mpsc::unbounded_channel();
+        let mut socket = ClientSocket::new(Panics { inbound }, false, Arc::new(Progress::new()));
         socket.write(Message::Text("a frame".into()));
 
         let seen = tokio::time::timeout(Duration::from_secs(5), socket.next())
@@ -7148,6 +7170,64 @@ mod tests {
             error.downcast_ref::<WriterLost>().is_some(),
             "the ending names the missing record: {error:?}",
         );
+    }
+
+    /// **A panicked writer is recorded against the connection that lost it.**
+    /// The writer knows neither the connection's number nor the peer, so the
+    /// record is the supervisor's; without it a panic leaves no line a reader
+    /// can act on. This also pins `stop`'s wait: a stop that aborts without
+    /// awaiting never sees the panic.
+    #[tokio::test]
+    async fn a_panicked_writer_is_recorded_with_the_connection_that_lost_it() {
+        let (written, _guard) = catch_records();
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+        let peer = attached_from();
+        let (to_server, inbound) = mpsc::unbounded_channel();
+        let progress = Arc::new(Progress::new());
+        let settings = crate::transport::settings_channel();
+        let driven = tokio::spawn({
+            let state = Arc::clone(&state);
+            let progress = Arc::clone(&progress);
+            async move {
+                let receiver = settings.subscribe();
+                let mut socket =
+                    ClientSocket::new(Panics { inbound }, false, Arc::clone(&progress));
+                supervise(
+                    &mut socket,
+                    &state,
+                    peer,
+                    mint_connection_id(),
+                    receiver,
+                    None,
+                    &progress,
+                )
+                .await
+            }
+        });
+
+        // The pong is the first write, and the sink panics on it.
+        to_server
+            .send(Message::Text(
+                serde_json::to_string(&ClientMessage::Ping).expect("the ping encodes").into(),
+            ))
+            .expect("the message goes");
+
+        let ended = tokio::time::timeout(WRITE_BOUND * 2, driven)
+            .await
+            .expect("a panicked writer ends the connection")
+            .expect("the connection task joins")
+            .expect_err("a panicked writer must not end cleanly");
+        assert!(
+            ended.downcast_ref::<WriterLost>().is_some(),
+            "the ending names the missing record: {ended:?}",
+        );
+
+        let line = record(&written, "connection_writer_lost");
+        assert_eq!(line["level"], "WARN", "a writer panic is forge's own problem: {line}");
+        assert_eq!(line["peer"], peer.to_string(), "the record names the peer: {line}");
+        assert!(line["client"].as_u64().is_some(), "the record names the connection: {line}");
     }
 
     /// **A connection's end aborts its writer; it does not leave it
@@ -7211,8 +7291,9 @@ mod tests {
         );
     }
 
-    /// A sink whose feed takes most of the bound and whose flush takes more
-    /// than the rest: together they outlast one bound, each is inside one.
+    /// A sink whose feed takes 35 s and whose flush takes another 35 s: each
+    /// half finishes inside a bound and together they outlast one, so only a
+    /// shape that judges the pair together ends it.
     struct SlowBoth {
         fed: std::pin::Pin<Box<tokio::time::Sleep>>,
         flushed: std::pin::Pin<Box<tokio::time::Sleep>>,
@@ -7246,13 +7327,15 @@ mod tests {
     /// **One whole send is one bound.** The base wrapped `SinkExt::send` -
     /// the feed and its flush - in a single `write_within`; splitting them
     /// into two bounded entries would give a frame twice the bound, past the
-    /// 65 s margin the browser's probe deadline is sized against. Here each
-    /// half finishes inside a bound and together they do not.
+    /// 65 s margin the browser's probe deadline is sized against. Each half
+    /// finishes inside a bound here - the feed at 35 s, its flush another
+    /// 35 s on - and together they do not: one bound ends it at 60 s, while
+    /// two bounds would let the send complete at 70 s.
     #[tokio::test(start_paused = true)]
     async fn a_whole_send_is_bounded_once() {
         let writer = Writer::new(
             SlowBoth {
-                fed: Box::pin(tokio::time::sleep(Duration::from_secs(50))),
+                fed: Box::pin(tokio::time::sleep(Duration::from_secs(35))),
                 flushed: Box::pin(tokio::time::sleep(Duration::from_secs(70))),
             },
             Arc::new(Progress::new()),
@@ -10076,6 +10159,44 @@ mod tests {
             Duration::ZERO,
             "a completed flush is progress",
         );
+    }
+
+    /// **A whole send stamps the watchdog clock, and only once written.**
+    /// After the split every answer, snapshot, viewer frame and keepalive
+    /// ping is one `Write::Send`, so a quiet connection's only progress is
+    /// its ping: a send that never stamps would wedge-reap every healthy
+    /// idle client at `WEDGE_DEAD` with a false record.
+    #[tokio::test(start_paused = true)]
+    async fn a_whole_send_moves_the_watchdog_clock_only_once_written() {
+        let progress = Arc::new(Progress::new());
+        // A send in flight is not progress.
+        let (_from_test, inbound) = mpsc::unbounded_channel();
+        let (writing, stalled) = oneshot::channel();
+        let stuck = ClientSocket::new(
+            StoppedReading { inbound, writing: Some(writing) },
+            false,
+            Arc::clone(&progress),
+        );
+        stuck.write(Message::Text("a frame".into()));
+        stalled.await.expect("the writer reached the flush it cannot complete");
+        tokio::time::advance(Duration::from_secs(10)).await;
+        assert_eq!(
+            progress.silent_for(tokio::time::Instant::now()),
+            Duration::from_secs(10),
+            "a whole send in flight is not progress",
+        );
+
+        // One that is written stamps, and the ping is what carries a quiet
+        // connection's clock.
+        let socket = ClientSocket::new(NullSink, false, Arc::clone(&progress));
+        let (done, written) = oneshot::channel();
+        socket.ping(done);
+        written.await.expect("the writer reported the ping written");
+        until(
+            || progress.silent_for(tokio::time::Instant::now()) == Duration::ZERO,
+            "a written whole send is progress",
+        )
+        .await;
     }
 
     /// **The seat on screen reaches the wedge record.** A connection can watch
