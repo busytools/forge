@@ -49,7 +49,7 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
       return
     }
     answered = token
-    copy(intent, streams) { files, error -> invoke.resolveObject(payload(files, error)) }
+    copy(streams) { files, error -> invoke.resolveObject(payload(files, error)) }
   }
 
   /**
@@ -64,21 +64,20 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
     val streams = streamsOf(intent)
     val token = shareToken(intent.action, intent.type, streams) ?: return
     answered = token
-    copy(intent, streams) { files, error ->
+    copy(streams) { files, error ->
       activity.runOnUiThread { trigger("share", payload(files, error)) }
     }
   }
 
   /** The copy, off the main thread, answered on it. */
   private fun copy(
-    intent: Intent?,
     streams: List<String>,
     done: (List<SharedFile>, String?) -> Unit,
   ) {
     Thread {
       val answer =
         try {
-          Pair(copyStreams(intent, streams), null)
+          Pair(copyStreams(streams), null)
         } catch (error: Exception) {
           // A share that cannot be read is said rather than drawn as an empty
           // one: the page shows the reason instead of a sheet with no files.
@@ -89,7 +88,7 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   /** Copy every shared URI into one directory for this share. */
-  private fun copyStreams(intent: Intent?, streams: List<String>): List<SharedFile> {
+  private fun copyStreams(streams: List<String>): List<SharedFile> {
     if (streams.isEmpty()) return emptyList()
     val dir = shareDir()
     return streams.map { raw ->
