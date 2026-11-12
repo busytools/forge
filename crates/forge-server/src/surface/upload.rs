@@ -1472,6 +1472,70 @@ mod tests {
         end(&uploads, began.upload_id).expect("the upload ends");
     }
 
+    /// **The write seeks to its offset first.** A failed write can leave the
+    /// file position past the bytes the registry counted; a retry that
+    /// appended there would strand the difference in the file while the
+    /// counter still passed the end check.
+    #[test]
+    fn a_chunk_seeks_to_its_offset_before_writing() {
+        struct Recording {
+            seeks: std::sync::Arc<Mutex<Vec<u64>>>,
+            content: Vec<u8>,
+            position: u64,
+        }
+        impl Write for Recording {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                let at = self.position as usize;
+                let end = at + buf.len();
+                if self.content.len() < end {
+                    self.content.resize(end, 0);
+                }
+                self.content[at..end].copy_from_slice(buf);
+                self.position = end as u64;
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl Seek for Recording {
+            fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+                if let SeekFrom::Start(at) = to {
+                    self.position = at;
+                    self.seeks.lock().unwrap().push(at);
+                }
+                Ok(self.position)
+            }
+        }
+        impl Partial for Recording {
+            fn sync(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+
+            fn len(&mut self) -> std::io::Result<u64> {
+                Ok(self.content.len() as u64)
+            }
+        }
+
+        let seeks = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let (_dir, uploads) = uploads();
+        let began = begin(&uploads, &[decl("a.bin", 6)]).expect("begins");
+        {
+            let mut registry = uploads.registry.lock().unwrap();
+            let upload = registry.get_mut(&began.upload_id).unwrap();
+            upload.files[0].handle = Some(Box::new(Recording {
+                seeks: std::sync::Arc::clone(&seeks),
+                content: Vec::new(),
+                position: 0,
+            }));
+        }
+        chunk(&uploads, began.upload_id, 0, 0, b"abc").expect("the first chunk");
+        chunk(&uploads, began.upload_id, 0, 3, b"def").expect("the second chunk");
+        assert_eq!(*seeks.lock().unwrap(), vec![0, 3], "each chunk seeks to its own offset first");
+        end(&uploads, began.upload_id).expect("the upload ends");
+    }
+
     /// **The end checks the file, not only the counter**: a partial that was
     /// truncated or grown under the registry is refused rather than linked.
     ///
@@ -1508,17 +1572,26 @@ mod tests {
         let began = begin(&uploads, &[decl("a.bin", 1), decl("b.bin", 1)]).expect("begins");
         feed(&uploads, began.upload_id, 0, b"a");
         feed(&uploads, began.upload_id, 1, b"b");
-        // The second final is a directory, so its hard link cannot be made.
+        // **The second final is a regular file somebody else owns**: a hard
+        // link refuses it where a rename would replace it, which is the
+        // difference this test exists to pin.
         let second = PathBuf::from(&began.paths[1]);
-        std::fs::create_dir_all(&second).expect("this test's own directory");
+        std::fs::write(&second, b"not ours").expect("this test's own file");
         let why = end(&uploads, began.upload_id).expect_err("the second move fails");
         assert!(why.contains("could not be moved into place"), "{why}");
+        assert_eq!(std::fs::read(&second).unwrap(), b"not ours", "the other file was replaced");
         assert!(!PathBuf::from(&began.paths[0]).exists(), "the first final was left behind");
         let project = dir.path().join("inbox").join("Busytools").join("forge");
         let leftovers = std::fs::read_dir(project)
             .expect("the inbox")
             .flatten()
-            .filter(|entry| entry.path().to_string_lossy().ends_with(".partial"))
+            .filter(|entry| {
+                entry
+                    .path()
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(PARTIAL_PREFIX))
+            })
             .count();
         assert_eq!(leftovers, 0, "a partial was left behind");
         assert!(uploads.resume(&seat(), began.upload_id, 1).is_err(), "nothing is held");
