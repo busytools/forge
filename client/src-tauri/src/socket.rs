@@ -2290,6 +2290,10 @@ pub(crate) mod tests {
     pub(crate) struct Stub {
         pub(crate) url: String,
         pub(crate) heard: mpsc::UnboundedReceiver<Value>,
+        /// Every binary frame a connection sent, in order: the share
+        /// upload's chunks are binary, and a stub that dropped them could not
+        /// tell a driver that sent none from one that sent the wrong bytes.
+        pub(crate) binary: mpsc::UnboundedReceiver<Vec<u8>>,
         pub(crate) say: tokio::sync::broadcast::Sender<Value>,
         pub(crate) kill: tokio::sync::broadcast::Sender<()>,
         /// Every text frame a connection sent, broadcast so a helper can
@@ -2337,6 +2341,7 @@ pub(crate) mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("a port");
         let addr = listener.local_addr().expect("the bound address");
         let (heard_tx, heard) = mpsc::unbounded_channel();
+        let (binary_tx, binary) = mpsc::unbounded_channel();
         let (say, keep) = tokio::sync::broadcast::channel::<Value>(64);
         let (kill, kill_keep) = tokio::sync::broadcast::channel(8);
         let (spoken, spoken_keep) = tokio::sync::broadcast::channel::<Value>(64);
@@ -2358,6 +2363,7 @@ pub(crate) mod tests {
                     let _ = held.set_linger(Some(Duration::ZERO));
                 }
                 let heard_tx = heard_tx.clone();
+                let binary_tx = binary_tx.clone();
                 let spoken = spoken_for_task.clone();
                 let uris = std::sync::Arc::clone(&uris_for_task);
                 let heads = std::sync::Arc::clone(&heads_for_task);
@@ -2411,6 +2417,13 @@ pub(crate) mod tests {
                                         let _ = heard_tx.send(value);
                                     }
                                 }
+                                // A binary frame is kept as its bytes: the
+                                // share upload's chunks are the only ones a
+                                // test drives, and they are read by offset.
+                                Some(Ok(Message::Binary(bytes))) => {
+                                    let _ = binary_tx.send(bytes.to_vec());
+                                }
+                                Some(Ok(_)) => {}
                                 _ => break,
                             },
                             pushed = said.recv() => match pushed {
@@ -2433,6 +2446,7 @@ pub(crate) mod tests {
         Stub {
             url: format!("ws://{addr}/socket"),
             heard,
+            binary,
             say,
             kill,
             spoken,
@@ -2535,7 +2549,7 @@ pub(crate) mod tests {
 
     /// Open a socket and wait until the connection is really up, so a test's
     /// first send is not folded into the disconnected wait.
-    async fn connected(stub: &Stub) -> (Socket, mpsc::UnboundedReceiver<SocketEvent>) {
+    pub(crate) async fn connected(stub: &Stub) -> (Socket, mpsc::UnboundedReceiver<SocketEvent>) {
         let (socket, mut rx) = opened(stub);
         loop {
             if let SocketEvent::Status(Status::Open) = next_event(&mut rx).await {

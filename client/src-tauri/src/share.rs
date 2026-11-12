@@ -107,16 +107,25 @@ pub async fn client_share_upload(
     upload_id: Option<u64>,
 ) -> Result<Value, String> {
     let bridge = Arc::clone(bridge.inner());
-    upload(&bridge, &channel, seat, files, upload_id).await
+    let socket = bridge.socket().ok_or_else(|| "the socket is not open".to_owned())?;
+    let mut progress = |update: ShareProgress| {
+        let _ = channel.send(update);
+    };
+    upload(&socket, &mut progress, seat, files, upload_id).await
 }
 
-async fn upload(
-    bridge: &Bridge,
-    channel: &tauri::ipc::Channel<ShareProgress>,
+/// Upload, reporting progress through `progress`: the command's channel, or a
+/// test's own collector.
+async fn upload<F>(
+    socket: &Socket,
+    progress: &mut F,
     seat: Value,
     files: Vec<SharedFile>,
     upload_id: Option<u64>,
-) -> Result<Value, String> {
+) -> Result<Value, String>
+where
+    F: FnMut(ShareProgress) + Send,
+{
     if files.is_empty() {
         return Err("there is nothing to upload".to_owned());
     }
@@ -128,27 +137,25 @@ async fn upload(
             MAX_TOTAL / (1024 * 1024),
         ));
     }
-    let socket = bridge.socket().ok_or_else(|| "the socket is not open".to_owned())?;
     // **A server that does not hold the upload is not a failure**: a restart
     // or the one-hour window took it, and the share starts over.
     let mut held = None;
     if let Some(id) = upload_id
-        && let Ok(offsets) = resume(&socket, &seat, id).await
+        && let Ok(offsets) = resume(socket, &seat, id).await
     {
         held = Some((id, offsets));
     }
     let (id, received, resumed) = if let Some((id, offsets)) = held {
         (id, offsets, true)
     } else {
-        (begin(&socket, &seat, &files).await?, vec![0; files.len()], false)
+        (begin(socket, &seat, &files).await?, vec![0; files.len()], false)
     };
-    let _ =
-        channel.send(ShareProgress::Begin { upload_id: id, resumed, received: received.clone() });
+    progress(ShareProgress::Begin { upload_id: id, resumed, received: received.clone() });
     for (index, file) in files.iter().enumerate() {
         let start = received.get(index).copied().unwrap_or(0);
-        send_file(&socket, channel, id, index, file, start).await?;
+        send_file(socket, progress, id, index, file, start).await?;
     }
-    let paths = end(&socket, &seat, id).await?;
+    let paths = end(socket, &seat, id).await?;
     Ok(json!({ "paths": paths }))
 }
 
@@ -197,14 +204,17 @@ async fn end(socket: &Socket, seat: &Value, id: u64) -> Result<Vec<String>, Stri
 /// **Each frame waits for its write.** The socket's queue is unbounded, so a
 /// driver that only posted frames would hold a whole share in memory on a
 /// phone; waiting on the write paces the upload to the link.
-async fn send_file(
+async fn send_file<F>(
     socket: &Socket,
-    channel: &tauri::ipc::Channel<ShareProgress>,
+    progress: &mut F,
     id: u64,
     index: usize,
     file: &SharedFile,
     start: u64,
-) -> Result<(), String> {
+) -> Result<(), String>
+where
+    F: FnMut(ShareProgress) + Send,
+{
     let index = u16::try_from(index).map_err(|_| "the share carries too many files".to_owned())?;
     let mut handle = tokio::fs::File::open(&file.path)
         .await
@@ -241,11 +251,7 @@ async fn send_file(
             .map_err(|_| format!("{} is past the upload's offset range", file.name))?;
         socket.send_binary_ack(chunk_frame(id, index, at, &buffer[..read])).await?;
         offset += read as u64;
-        let _ = channel.send(ShareProgress::Progress {
-            file: usize::from(index),
-            sent: offset,
-            total: len,
-        });
+        progress(ShareProgress::Progress { file: usize::from(index), sent: offset, total: len });
     }
     Ok(())
 }
@@ -396,6 +402,173 @@ mod tests {
             vec!["a".to_owned(), "b".to_owned()]
         );
         assert!(strings(None).is_empty());
+    }
+
+    use crate::socket::tests::{Stub, connected, stub};
+
+    /// The next command of one kind the shell put on the wire.
+    async fn next_command(stub: &mut Stub, kind: &str) -> Value {
+        loop {
+            let command = stub.heard_until(|value| value["kind"] == "command").await;
+            let variant = command["command"]
+                .as_object()
+                .and_then(|fields| fields.keys().next().cloned())
+                .unwrap_or_default();
+            if variant == kind {
+                return command;
+            }
+        }
+    }
+
+    /// Answer one command's reply by its own id.
+    fn reply(stub: &Stub, command: &Value, body: &Value) {
+        let id = command["reply_to"].as_u64().expect("the shell minted a reply id");
+        stub.say.send(json!({ "kind": "reply", "reply_to": id, "body": body })).expect("broadcast");
+    }
+
+    /// One file chunk's fields, as the wire carries them.
+    fn chunk_fields(frame: &[u8]) -> (u64, u16, u32, Vec<u8>) {
+        assert_eq!(frame[0], FILE_CHUNK_TAG, "the chunk's kind");
+        let id = u64::from_le_bytes(frame[1..9].try_into().expect("eight bytes"));
+        let file = u16::from_le_bytes(frame[9..11].try_into().expect("two bytes"));
+        let offset = u32::from_le_bytes(frame[11..15].try_into().expect("four bytes"));
+        (id, file, offset, frame[15..].to_vec())
+    }
+
+    fn seat() -> Value {
+        json!({ "org": "TestOrg", "project": "proj", "label": "lead" })
+    }
+
+    fn share_of(dir: &std::path::Path, name: &str, bytes: &[u8]) -> SharedFile {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).expect("this test's own file");
+        SharedFile {
+            path: path.display().to_string(),
+            name: name.to_owned(),
+            size: bytes.len() as u64,
+            mime: None,
+        }
+    }
+
+    /// **The driver's whole lifecycle over a real socket**: begin, one chunk
+    /// of the file at the offset the server expects, end, and the paths it
+    /// answers. The chunk's bytes and its header are both asserted, because a
+    /// wrong offset is a file with a hole rather than an error.
+    #[tokio::test]
+    async fn an_upload_begins_chunks_and_ends() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let file = share_of(dir.path(), "photo.jpg", b"hello world");
+        let mut stub = stub().await;
+        let (socket, _events) = connected(&stub).await;
+        let calling = tokio::spawn({
+            let socket = socket.clone();
+            let files = vec![file];
+            async move {
+                let mut progress = Vec::new();
+                let answer =
+                    upload(&socket, &mut |update| progress.push(update), seat(), files, None).await;
+                (answer, progress)
+            }
+        });
+
+        let begin = next_command(&mut stub, "file_upload_begin").await;
+        assert_eq!(
+            begin["command"]["file_upload_begin"]["files"][0]["name"], "photo.jpg",
+            "the file's own name declares it",
+        );
+        reply(&stub, &begin, &json!({ "upload_id": 7, "paths": ["/inbox/photo.jpg"] }));
+
+        let frame = stub.binary.recv().await.expect("the file's chunk");
+        let (id, index, offset, bytes) = chunk_fields(&frame);
+        assert_eq!((id, index, offset), (7, 0, 0), "the upload, the file and the first byte");
+        assert_eq!(bytes, b"hello world", "the file's own bytes");
+
+        let end = next_command(&mut stub, "file_upload_end").await;
+        assert_eq!(end["command"]["file_upload_end"]["upload_id"], 7);
+        reply(&stub, &end, &json!({ "paths": ["/inbox/photo.jpg"] }));
+
+        let (answer, progress) = calling.await.expect("the call task");
+        assert_eq!(answer.expect("the upload lands"), json!({ "paths": ["/inbox/photo.jpg"] }));
+        assert!(
+            matches!(
+                progress.first(),
+                Some(ShareProgress::Begin { upload_id: 7, resumed: false, .. })
+            ),
+            "the sheet is told the upload it may resume: {progress:?}",
+        );
+        assert!(
+            matches!(
+                progress.last(),
+                Some(ShareProgress::Progress { file: 0, sent: 11, total: 11 })
+            ),
+            "and how much of the file has crossed: {progress:?}",
+        );
+    }
+
+    /// **A retry continues from the server's offset.** The held upload says it
+    /// has three bytes; the driver's first chunk starts at 3 and carries the
+    /// rest, never the bytes the server already has.
+    #[tokio::test]
+    async fn a_retry_resumes_from_the_servers_offset() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let file = share_of(dir.path(), "a.bin", b"hello world");
+        let mut stub = stub().await;
+        let (socket, _events) = connected(&stub).await;
+        let calling = tokio::spawn({
+            let socket = socket.clone();
+            let files = vec![file];
+            async move {
+                let mut progress = Vec::new();
+                let answer =
+                    upload(&socket, &mut |update| progress.push(update), seat(), files, Some(7))
+                        .await;
+                (answer, progress)
+            }
+        });
+
+        let resume = next_command(&mut stub, "file_upload_resume").await;
+        assert_eq!(resume["command"]["file_upload_resume"]["upload_id"], 7);
+        reply(&stub, &resume, &json!({ "paths": ["/inbox/a.bin"], "received": [3] }));
+
+        let frame = stub.binary.recv().await.expect("the rest of the file");
+        let (id, index, offset, bytes) = chunk_fields(&frame);
+        assert_eq!((id, index, offset), (7, 0, 3), "the bytes the server already has are skipped");
+        assert_eq!(bytes, b"lo world");
+
+        let end = next_command(&mut stub, "file_upload_end").await;
+        reply(&stub, &end, &json!({ "paths": ["/inbox/a.bin"] }));
+        let (answer, progress) = calling.await.expect("the call task");
+        assert!(answer.is_ok());
+        assert!(
+            matches!(progress.first(), Some(ShareProgress::Begin { resumed: true, received, .. }) if received == &vec![3]),
+            "the sheet is told it is resuming: {progress:?}",
+        );
+    }
+
+    /// **A refused begin is the server's own words**, and no prompt can follow
+    /// it: the driver answers the error and sends nothing.
+    #[tokio::test]
+    async fn a_refused_begin_answers_the_servers_words() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let file = share_of(dir.path(), "big.bin", b"x");
+        let mut stub = stub().await;
+        let (socket, _events) = connected(&stub).await;
+        let calling = tokio::spawn({
+            let socket = socket.clone();
+            let files = vec![file];
+            async move {
+                let mut progress = Vec::new();
+                upload(&socket, &mut |update| progress.push(update), seat(), files, None).await
+            }
+        });
+        let begin = next_command(&mut stub, "file_upload_begin").await;
+        reply(
+            &stub,
+            &begin,
+            &json!("the share is 300000000 bytes; one share carries at most 209715200"),
+        );
+        let why = calling.await.expect("the call task").expect_err("the begin was refused");
+        assert!(why.contains("at most"), "{why}");
     }
 
     /// **The Kotlin half's payload parses as itself**: an absent `mime` is
