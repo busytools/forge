@@ -3992,6 +3992,22 @@ pub(crate) mod tests {
         }
     }
 
+    /// **An upload's end outlives the shipping bound.** The end flushes and
+    /// renames every file of a share before it answers, so a 200 MB share on a
+    /// phone's storage takes seconds; a timeout there would make the sheet's
+    /// retry start over and write the files again. Everything else keeps the
+    /// shipping bound, and a despawn stays unbounded.
+    #[test]
+    fn an_uploads_end_gets_the_long_bound_and_nothing_else_does() {
+        let bound = Duration::from_secs(30);
+        let end = json!({ "file_upload_end": { "key": {}, "upload_id": 1 } });
+        assert_eq!(reply_bound_for(&end, bound), Some(Duration::from_secs(120)));
+        let begin = json!({ "file_upload_begin": { "key": {}, "files": [] } });
+        assert_eq!(reply_bound_for(&begin, bound), Some(bound));
+        let despawn = json!({ "despawn_worker": {} });
+        assert_eq!(reply_bound_for(&despawn, bound), None);
+    }
+
     /// **The shipping liveness pair is the value the book states.** What the
     /// book tells a client author to expect, and the floor the server's own
     /// write bound sets for the peer that is slow rather than dead.

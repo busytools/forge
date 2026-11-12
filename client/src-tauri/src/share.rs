@@ -14,26 +14,38 @@
 //! from zero. The page is told which happened, because a sheet that silently
 //! restarted a 200 MB share is a sheet that lied about what it was doing.
 
+#[cfg(any(target_os = "android", test))]
 use std::io::SeekFrom;
 use std::sync::Arc;
 
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(any(target_os = "android", test))]
+use serde_json::json;
 #[cfg(target_os = "android")]
 use tauri::Manager as _;
+#[cfg(any(target_os = "android", test))]
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
 use crate::bridge::Bridge;
+#[cfg(any(target_os = "android", test))]
 use crate::socket::Socket;
 
+/// **The driver below is the Android half's.** A host build carries the
+/// command so the invoke surface is the same everywhere, and refuses it by
+/// name; only the Android build and the tests construct any of this.
+///
 /// The binary kind a file chunk crosses as (`Kind::FileChunk` on the server).
+#[cfg(any(target_os = "android", test))]
 const FILE_CHUNK_TAG: u8 = 6;
 
 /// One frame's payload cap, a bound of its own rather than the dictation
 /// frame's 16 KiB: an upload is bulk bytes, and 64 KiB keeps the per-frame
 /// overhead small without a large allocation per message.
+#[cfg(any(target_os = "android", test))]
 const CHUNK: usize = 64 * 1024;
 
 /// The most one share may carry, enforced here and on the server.
+#[cfg(any(target_os = "android", test))]
 const MAX_TOTAL: u64 = 200 * 1024 * 1024;
 
 /// One file the share handed the app: the cache path, its display name, the
@@ -59,13 +71,20 @@ pub(crate) struct Shared {
 /// One upload's progress, as the sheet draws it.
 ///
 /// `begin` comes first: the upload's id, which a retry needs to resume it,
-/// whether the server still held the previous attempt, and the offsets it
-/// already has. `progress` follows once per frame with the bytes of one file
-/// that have crossed.
+/// **whether this send had a previous upload to resume at all**
+/// (`attempted`), whether the server still held it (`resumed`), and the
+/// offsets it already has. A fresh send is `attempted: false`, which is what
+/// tells the sheet not to draw "starting over" over its first upload.
+/// `progress` follows once per frame with the bytes of one file that have
+/// crossed.
+/// **The command's own type on every target**, though only the Android build
+/// constructs a variant: a host build answers the command with a refusal
+/// before any progress exists.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum ShareProgress {
-    Begin { upload_id: u64, resumed: bool, received: Vec<u64> },
+    Begin { upload_id: u64, attempted: bool, resumed: bool, received: Vec<u64> },
     Progress { file: usize, sent: u64, total: u64 },
 }
 
@@ -100,22 +119,70 @@ pub async fn client_share_take(app: tauri::AppHandle) -> Result<Shared, String> 
 /// partial into place.
 #[tauri::command]
 pub async fn client_share_upload(
+    app: tauri::AppHandle,
     bridge: tauri::State<'_, Arc<Bridge>>,
     channel: tauri::ipc::Channel<ShareProgress>,
     seat: Value,
     files: Vec<SharedFile>,
     upload_id: Option<u64>,
 ) -> Result<Value, String> {
-    let bridge = Arc::clone(bridge.inner());
-    let socket = bridge.socket().ok_or_else(|| "the socket is not open".to_owned())?;
-    let mut progress = |update: ShareProgress| {
-        let _ = channel.send(update);
-    };
-    upload(&socket, &mut progress, seat, files, upload_id).await
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (&app, &bridge, &channel, &seat, &files, &upload_id);
+        Err("sharing a file needs the Android app".to_owned())
+    }
+    #[cfg(target_os = "android")]
+    {
+        // **A page names cached copies, not any file on the machine.** Every
+        // path resolves under the share cache root, so a page that went
+        // wrong cannot upload the person's home directory.
+        let root = share_cache_root(&app)?;
+        let mut checked = Vec::with_capacity(files.len());
+        for file in files {
+            let path = within(&root, std::path::Path::new(&file.path))?;
+            checked.push(SharedFile { path: path.display().to_string(), ..file });
+        }
+        let bridge = Arc::clone(bridge.inner());
+        let socket = bridge.socket().ok_or_else(|| "the socket is not open".to_owned())?;
+        let mut progress = |update: ShareProgress| {
+            let _ = channel.send(update);
+        };
+        upload(&socket, &mut progress, seat, checked, upload_id).await
+    }
+}
+
+/// The cache root the share intake copies into: `<app cache>/share`.
+#[cfg(target_os = "android")]
+fn share_cache_root(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .app_cache_dir()
+        .map(|base| base.join("share"))
+        .map_err(|why| format!("the app's cache directory is not there: {why}"))
+}
+
+/// `path` resolved inside `root`, or a refusal naming it.
+///
+/// **Both sides are canonicalised**: a `..` walk or a symlink pointing out
+/// resolves outside the root and is refused, however the path was spelled.
+/// Only the Android command calls it in a build; a host test still pins it.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn within(root: &std::path::Path, path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let root = root
+        .canonicalize()
+        .map_err(|why| format!("the share cache at {} is not there: {why}", root.display()))?;
+    let path = path
+        .canonicalize()
+        .map_err(|why| format!("{} could not be resolved: {why}", path.display()))?;
+    if path.starts_with(&root) {
+        Ok(path)
+    } else {
+        Err(format!("{} is outside the share cache", path.display()))
+    }
 }
 
 /// Upload, reporting progress through `progress`: the command's channel, or a
 /// test's own collector.
+#[cfg(any(target_os = "android", test))]
 async fn upload<F>(
     socket: &Socket,
     progress: &mut F,
@@ -129,7 +196,21 @@ where
     if files.is_empty() {
         return Err("there is nothing to upload".to_owned());
     }
-    let total: u64 = files.iter().map(|file| file.size).sum();
+    // **A declared size that cannot be added is refused, not wrapped**: in a
+    // release build two 2^63 declarations sum to 0 and the 200 MiB wall with
+    // it, so a size wider than the share is refused on its own first.
+    let mut total: u64 = 0;
+    for file in &files {
+        if file.size > MAX_TOTAL {
+            return Err(format!(
+                "{} is {} bytes; one share carries at most {MAX_TOTAL}",
+                file.name, file.size,
+            ));
+        }
+        total = total
+            .checked_add(file.size)
+            .ok_or_else(|| format!("the share's sizes cannot be added up at {}", file.name))?;
+    }
     if total > MAX_TOTAL {
         return Err(format!(
             "the share is {} MiB; one share carries at most {} MiB",
@@ -139,6 +220,7 @@ where
     }
     // **A server that does not hold the upload is not a failure**: a restart
     // or the one-hour window took it, and the share starts over.
+    let attempted = upload_id.is_some();
     let mut held = None;
     if let Some(id) = upload_id
         && let Ok(offsets) = resume(socket, &seat, id).await
@@ -150,7 +232,12 @@ where
     } else {
         (begin(socket, &seat, &files).await?, vec![0; files.len()], false)
     };
-    progress(ShareProgress::Begin { upload_id: id, resumed, received: received.clone() });
+    progress(ShareProgress::Begin {
+        upload_id: id,
+        attempted,
+        resumed,
+        received: received.clone(),
+    });
     for (index, file) in files.iter().enumerate() {
         let start = received.get(index).copied().unwrap_or(0);
         send_file(socket, progress, id, index, file, start).await?;
@@ -160,6 +247,7 @@ where
 }
 
 /// Begin an upload, answering the id it was given.
+#[cfg(any(target_os = "android", test))]
 async fn begin(socket: &Socket, seat: &Value, files: &[SharedFile]) -> Result<u64, String> {
     let declared: Vec<Value> = files
         .iter()
@@ -176,6 +264,7 @@ async fn begin(socket: &Socket, seat: &Value, files: &[SharedFile]) -> Result<u6
 }
 
 /// The offsets a held upload already has, or the server's refusal.
+#[cfg(any(target_os = "android", test))]
 async fn resume(socket: &Socket, seat: &Value, id: u64) -> Result<Vec<u64>, String> {
     let body = answer(
         socket
@@ -190,13 +279,14 @@ async fn resume(socket: &Socket, seat: &Value, id: u64) -> Result<Vec<u64>, Stri
 }
 
 /// Close an upload, answering the paths it wrote.
+#[cfg(any(target_os = "android", test))]
 async fn end(socket: &Socket, seat: &Value, id: u64) -> Result<Vec<String>, String> {
     let body = answer(
         socket
             .dispatch(json!({ "file_upload_end": { "key": seat, "upload_id": id } }), true)
             .await?,
     )?;
-    Ok(strings(body.get("paths")))
+    strings(body.get("paths"))
 }
 
 /// One file's bytes, from `start` to its end, one frame at a time.
@@ -204,6 +294,7 @@ async fn end(socket: &Socket, seat: &Value, id: u64) -> Result<Vec<String>, Stri
 /// **Each frame waits for its write.** The socket's queue is unbounded, so a
 /// driver that only posted frames would hold a whole share in memory on a
 /// phone; waiting on the write paces the upload to the link.
+#[cfg(any(target_os = "android", test))]
 async fn send_file<F>(
     socket: &Socket,
     progress: &mut F,
@@ -263,6 +354,7 @@ where
 /// header is the whole correlation a chunk carries: a frame with a wrong
 /// offset is a file with a hole, and one with a wrong upload is another
 /// person's bytes.
+#[cfg(any(target_os = "android", test))]
 fn chunk_frame(id: u64, file: u16, offset: u32, bytes: &[u8]) -> Vec<u8> {
     let mut frame = Vec::with_capacity(15 + bytes.len());
     frame.push(FILE_CHUNK_TAG);
@@ -275,6 +367,7 @@ fn chunk_frame(id: u64, file: u16, offset: u32, bytes: &[u8]) -> Vec<u8> {
 
 /// A reply body as an answer: an object is the answer, a string is the
 /// server's own refusal.
+#[cfg(any(target_os = "android", test))]
 fn answer(value: Option<Value>) -> Result<Value, String> {
     match value {
         Some(Value::String(why)) => Err(why),
@@ -284,12 +377,22 @@ fn answer(value: Option<Value>) -> Result<Value, String> {
     }
 }
 
-/// A JSON array of strings, dropping anything that is not one.
-fn strings(value: Option<&Value>) -> Vec<String> {
-    value
-        .and_then(Value::as_array)
-        .map(|rows| rows.iter().filter_map(Value::as_str).map(str::to_owned).collect())
-        .unwrap_or_default()
+/// A JSON array of strings, or the refusal that one member is not a string.
+///
+/// **A non-string is not dropped**: a path the server answered and this side
+/// silently discarded is a file the prompt would not name, which reads as a
+/// share that lost one.
+#[cfg(any(target_os = "android", test))]
+fn strings(value: Option<&Value>) -> Result<Vec<String>, String> {
+    let Some(rows) = value.and_then(Value::as_array) else { return Ok(Vec::new()) };
+    let mut paths = Vec::with_capacity(rows.len());
+    for row in rows {
+        match row.as_str() {
+            Some(path) => paths.push(path.to_owned()),
+            None => return Err(format!("the server's paths carried a non-string: {row}")),
+        }
+    }
+    Ok(paths)
 }
 
 /// The Kotlin handle: the share the activity was launched with.
@@ -394,14 +497,16 @@ mod tests {
         assert!(answer(None).is_err(), "no answer is not success");
     }
 
-    /// A paths list keeps only what is a path.
+    /// **A paths list is strings, or it is refused**: a member this side
+    /// dropped would be a file the prompt never named.
     #[test]
-    fn a_paths_list_drops_what_is_not_a_string() {
+    fn a_paths_list_keeps_its_strings_and_refuses_what_is_not_one() {
         assert_eq!(
-            strings(Some(&json!(["a", 1, null, "b"]))),
+            strings(Some(&json!(["a", "b"]))).expect("strings"),
             vec!["a".to_owned(), "b".to_owned()]
         );
-        assert!(strings(None).is_empty());
+        assert!(strings(Some(&json!(["a", 1]))).is_err(), "a non-string is refused");
+        assert!(strings(None).expect("no list is no paths").is_empty());
     }
 
     use crate::socket::tests::{Stub, connected, stub};
@@ -492,9 +597,9 @@ mod tests {
         assert!(
             matches!(
                 progress.first(),
-                Some(ShareProgress::Begin { upload_id: 7, resumed: false, .. })
+                Some(ShareProgress::Begin { upload_id: 7, attempted: false, resumed: false, .. })
             ),
-            "the sheet is told the upload it may resume: {progress:?}",
+            "a fresh send names its upload and no resume: {progress:?}",
         );
         assert!(
             matches!(
@@ -540,7 +645,11 @@ mod tests {
         let (answer, progress) = calling.await.expect("the call task");
         assert!(answer.is_ok());
         assert!(
-            matches!(progress.first(), Some(ShareProgress::Begin { resumed: true, received, .. }) if received == &vec![3]),
+            matches!(
+                progress.first(),
+                Some(ShareProgress::Begin { attempted: true, resumed: true, received, .. })
+                    if received == &vec![3]
+            ),
             "the sheet is told it is resuming: {progress:?}",
         );
     }
@@ -590,5 +699,180 @@ mod tests {
                 .expect("a refused share");
         assert!(empty.files.is_empty());
         assert_eq!(empty.error.as_deref(), Some("the provider refused it"));
+    }
+
+    /// **Two files cross in one upload**, each at its own index: a driver
+    /// that named every chunk file 0 would land the second file's bytes in
+    /// the first.
+    #[tokio::test]
+    async fn an_upload_with_two_files_chunks_both_at_their_own_offsets() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let first = share_of(dir.path(), "a.bin", b"abc");
+        let second = share_of(dir.path(), "b.bin", b"def");
+        let mut stub = stub().await;
+        let (socket, _events) = connected(&stub).await;
+        let calling = tokio::spawn({
+            let socket = socket.clone();
+            let files = vec![first, second];
+            async move {
+                let mut progress = Vec::new();
+                upload(&socket, &mut |update| progress.push(update), seat(), files, None).await
+            }
+        });
+
+        let begin = next_command(&mut stub, "file_upload_begin").await;
+        assert_eq!(
+            begin["command"]["file_upload_begin"]["files"].as_array().map(Vec::len),
+            Some(2),
+            "both files are declared",
+        );
+        reply(&stub, &begin, &json!({ "upload_id": 7, "paths": ["/inbox/a.bin", "/inbox/b.bin"] }));
+
+        let one = stub.binary.recv().await.expect("the first file's chunk");
+        let two = stub.binary.recv().await.expect("the second file's chunk");
+        let (id, index, offset, bytes) = chunk_fields(&one);
+        assert_eq!((id, index, offset), (7, 0, 0), "the first file at its own index");
+        assert_eq!(bytes, b"abc");
+        let (id, index, offset, bytes) = chunk_fields(&two);
+        assert_eq!((id, index, offset), (7, 1, 0), "the second file at index one");
+        assert_eq!(bytes, b"def");
+
+        let end = next_command(&mut stub, "file_upload_end").await;
+        reply(&stub, &end, &json!({ "paths": ["/inbox/a.bin", "/inbox/b.bin"] }));
+        let answer = calling.await.expect("the call task").expect("the upload lands");
+        assert_eq!(answer, json!({ "paths": ["/inbox/a.bin", "/inbox/b.bin"] }));
+    }
+
+    /// **A refused resume starts over at zero**, and the sheet is told the
+    /// send had an attempt that the server no longer held: `attempted: true`
+    /// with `resumed: false`.
+    #[tokio::test]
+    async fn a_refused_resume_falls_back_to_a_begin() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let file = share_of(dir.path(), "a.bin", b"abcdef");
+        let mut stub = stub().await;
+        let (socket, _events) = connected(&stub).await;
+        let calling = tokio::spawn({
+            let socket = socket.clone();
+            let files = vec![file];
+            async move {
+                let mut progress = Vec::new();
+                let answer =
+                    upload(&socket, &mut |update| progress.push(update), seat(), files, Some(9))
+                        .await;
+                (answer, progress)
+            }
+        });
+
+        let resume = next_command(&mut stub, "file_upload_resume").await;
+        assert_eq!(resume["command"]["file_upload_resume"]["upload_id"], 9);
+        reply(&stub, &resume, &json!("that upload is unknown or expired; start it again"));
+
+        let begin = next_command(&mut stub, "file_upload_begin").await;
+        reply(&stub, &begin, &json!({ "upload_id": 11, "paths": ["/inbox/a.bin"] }));
+
+        let frame = stub.binary.recv().await.expect("the whole file, from zero");
+        let (id, index, offset, bytes) = chunk_fields(&frame);
+        assert_eq!((id, index, offset), (11, 0, 0), "the new upload starts at the first byte");
+        assert_eq!(bytes, b"abcdef", "every byte is sent again");
+
+        let end = next_command(&mut stub, "file_upload_end").await;
+        reply(&stub, &end, &json!({ "paths": ["/inbox/a.bin"] }));
+        let (answer, progress) = calling.await.expect("the call task");
+        assert!(answer.is_ok(), "{answer:?}");
+        assert!(
+            matches!(
+                progress.first(),
+                Some(ShareProgress::Begin { attempted: true, resumed: false, .. })
+            ),
+            "the sheet is told it tried and started over: {progress:?}",
+        );
+    }
+
+    /// **A file that moved under the share is refused** rather than sent past
+    /// the bytes the server accepted, which would fail the end with the whole
+    /// upload wasted.
+    #[tokio::test]
+    async fn a_file_that_changed_since_the_share_is_refused() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let mut file = share_of(dir.path(), "a.bin", b"abcdef");
+        // The share says four bytes; the copy on disk holds six.
+        file.size = 4;
+        let mut stub = stub().await;
+        let (socket, _events) = connected(&stub).await;
+        let calling = tokio::spawn({
+            let socket = socket.clone();
+            let files = vec![file];
+            async move {
+                let mut progress = Vec::new();
+                upload(&socket, &mut |update| progress.push(update), seat(), files, None).await
+            }
+        });
+        let begin = next_command(&mut stub, "file_upload_begin").await;
+        reply(&stub, &begin, &json!({ "upload_id": 7, "paths": ["/inbox/a.bin"] }));
+        let why = calling.await.expect("the call task").expect_err("the file changed");
+        assert!(why.contains("changed since it was shared"), "{why}");
+    }
+
+    /// A share past the byte cap is refused before a single frame goes.
+    #[tokio::test]
+    async fn an_over_cap_share_is_refused_before_it_is_sent() {
+        let file = SharedFile {
+            path: "/nowhere".to_owned(),
+            name: "big.bin".to_owned(),
+            size: MAX_TOTAL + 1,
+            mime: None,
+        };
+        let stub = stub().await;
+        let (socket, _events) = connected(&stub).await;
+        let mut progress = Vec::new();
+        let why = upload(&socket, &mut |update| progress.push(update), seat(), vec![file], None)
+            .await
+            .expect_err("over the cap");
+        assert!(why.contains("at most"), "{why}");
+        assert!(progress.is_empty(), "nothing was reported to the sheet");
+    }
+
+    /// **Two declarations that cannot be added up are refused, not wrapped**:
+    /// in a release build two 2^63 sizes sum to 0 and the byte wall with them.
+    #[tokio::test]
+    async fn two_declarations_that_cannot_be_added_are_refused() {
+        let stub = stub().await;
+        let (socket, _events) = connected(&stub).await;
+        let mut progress = Vec::new();
+        let files = vec![
+            SharedFile { path: "/a".to_owned(), name: "a".to_owned(), size: 1 << 62, mime: None },
+            SharedFile { path: "/b".to_owned(), name: "b".to_owned(), size: 1 << 62, mime: None },
+        ];
+        let why = upload(&socket, &mut |update| progress.push(update), seat(), files, None)
+            .await
+            .expect_err("2^62");
+        assert!(why.contains("at most"), "{why}");
+    }
+
+    /// An empty share is refused in its own words, before any command.
+    #[tokio::test]
+    async fn a_share_with_no_files_is_refused() {
+        let stub = stub().await;
+        let (socket, _events) = connected(&stub).await;
+        let mut progress = Vec::new();
+        let why = upload(&socket, &mut |update| progress.push(update), seat(), Vec::new(), None)
+            .await
+            .expect_err("nothing to upload");
+        assert!(why.contains("nothing to upload"), "{why}");
+    }
+
+    /// **A page names cached copies, not any file on the machine.** A path
+    /// outside the share cache resolves outside the root and is refused.
+    #[test]
+    fn a_path_outside_the_share_cache_is_refused() {
+        let root = tempfile::tempdir().expect("a temp dir");
+        let inside = root.path().join("photo.jpg");
+        std::fs::write(&inside, b"x").expect("this test's own file");
+        assert!(within(root.path(), &inside).is_ok(), "the copy is inside the root");
+
+        let outside = tempfile::NamedTempFile::new().expect("a file elsewhere");
+        let why = within(root.path(), outside.path()).expect_err("outside the root");
+        assert!(why.contains("outside the share cache"), "{why}");
     }
 }
