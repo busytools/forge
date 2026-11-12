@@ -52,23 +52,27 @@ class SharePluginTest {
     // token is what lets the sheet say it carried no file instead of opening
     // on nothing. Only an intent that is not a share has none.
     assertEquals(
-      Intent.ACTION_SEND + "\u0000" + "image/png" + "\u0000",
-      SharePlugin.shareToken(Intent.ACTION_SEND, "image/png", emptyList()),
+      listOf(PROCESS.toString(), LAUNCH.toString(), Intent.ACTION_SEND, "image/png", "")
+        .joinToString("\u0000"),
+      SharePlugin.shareToken(LAUNCH, PROCESS, Intent.ACTION_SEND, "image/png", emptyList()),
     )
-    assertNull(SharePlugin.shareToken(Intent.ACTION_MAIN, "image/png", listOf("content://a")))
-    assertNull(SharePlugin.shareToken(null, null, emptyList()))
+    assertNull(
+      SharePlugin.shareToken(LAUNCH, PROCESS, Intent.ACTION_MAIN, "image/png", listOf("content://a"))
+    )
+    assertNull(SharePlugin.shareToken(LAUNCH, PROCESS, null, null, emptyList()))
   }
 
   @Test
   fun oneShareKeepsOneTokenAndAnotherShareDoesNot() {
-    val first = SharePlugin.shareToken(Intent.ACTION_SEND, "image/png", listOf("content://a"))
+    val first =
+      SharePlugin.shareToken(LAUNCH, PROCESS, Intent.ACTION_SEND, "image/png", listOf("content://a"))
     assertEquals(
       first,
-      SharePlugin.shareToken(Intent.ACTION_SEND, "image/png", listOf("content://a")),
+      SharePlugin.shareToken(LAUNCH, PROCESS, Intent.ACTION_SEND, "image/png", listOf("content://a")),
     )
     assertNotEquals(
       first,
-      SharePlugin.shareToken(Intent.ACTION_SEND, "image/png", listOf("content://b")),
+      SharePlugin.shareToken(LAUNCH, PROCESS, Intent.ACTION_SEND, "image/png", listOf("content://b")),
     )
   }
 
@@ -82,6 +86,81 @@ class SharePluginTest {
     assertTrue(!SharePlugin.shouldAnswer("a", "a"))
     assertTrue(!SharePlugin.shouldAnswer(null, null))
     assertTrue(!SharePlugin.shouldAnswer(null, "a"))
+  }
+
+  /// **A page reload inside one launch is not a second share**: the launch
+  /// and process stamps are unchanged, so the token matches the answered one.
+  @Test
+  fun aReloadInsideOneLaunchIsNotASecondShare() {
+    val token =
+      SharePlugin.shareToken(LAUNCH, PROCESS, Intent.ACTION_SEND, "image/png", listOf("content://a"))
+    assertTrue(!SharePlugin.shouldAnswer(token, token))
+  }
+
+  /// **A new launch with the same files is a new share**, even in one
+  /// process: the activity was created again, so the launch number moved.
+  @Test
+  fun aNewLaunchWithTheSameFilesIsAnsweredAgain() {
+    val first =
+      SharePlugin.shareToken(LAUNCH, PROCESS, Intent.ACTION_SEND, "image/png", listOf("content://a"))
+    val second =
+      SharePlugin.shareToken(
+        LAUNCH + 1,
+        PROCESS,
+        Intent.ACTION_SEND,
+        "image/png",
+        listOf("content://a"),
+      )
+    assertNotEquals(first, second)
+    assertTrue(SharePlugin.shouldAnswer(second, first))
+  }
+
+  /// **A re-share after the process ended is answered again.** The launch
+  /// counter starts over at one in the new process, so content and launch are
+  /// identical to the share already answered; the process stamp is what tells
+  /// them apart.
+  @Test
+  fun aReShareAfterAProcessRestartIsAnsweredAgain() {
+    val before =
+      SharePlugin.shareToken(LAUNCH, PROCESS, Intent.ACTION_SEND, "image/png", listOf("content://a"))
+    val after =
+      SharePlugin.shareToken(
+        LAUNCH,
+        PROCESS + 1,
+        Intent.ACTION_SEND,
+        "image/png",
+        listOf("content://a"),
+      )
+    assertNotEquals(before, after)
+    assertTrue(SharePlugin.shouldAnswer(after, before))
+  }
+
+  /// **A restored activity re-delivers the intent it already answered.** Its
+  /// stamps cannot match the previous process's, so the content is what says
+  /// it is the same delivery - and a restored ask for different files is
+  /// still a share to answer.
+  @Test
+  fun aRestoredActivityDoesNotAnswerTheSameLaunchIntentAgain() {
+    val before =
+      SharePlugin.shareToken(LAUNCH, PROCESS, Intent.ACTION_SEND, "image/png", listOf("content://a"))
+    val restored =
+      SharePlugin.shareToken(
+        LAUNCH,
+        PROCESS + 1,
+        Intent.ACTION_SEND,
+        "image/png",
+        listOf("content://a"),
+      )
+    assertTrue(!SharePlugin.shouldAnswer(restored, before, restored = true))
+    val other =
+      SharePlugin.shareToken(
+        LAUNCH,
+        PROCESS + 1,
+        Intent.ACTION_SEND,
+        "image/png",
+        listOf("content://b"),
+      )
+    assertTrue(SharePlugin.shouldAnswer(other, before, restored = true))
   }
 
   @Test
@@ -174,5 +253,9 @@ class SharePluginTest {
 
   private companion object {
     const val BUDGET = 200L * 1024 * 1024
+
+    /** The launch and process stamps a token carries in the tests. */
+    const val LAUNCH = 1
+    const val PROCESS = 7_000L
   }
 }

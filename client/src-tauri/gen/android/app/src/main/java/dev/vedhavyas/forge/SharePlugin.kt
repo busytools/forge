@@ -45,7 +45,8 @@ internal data class SharedFile(
  * it; a share into a running app arrives as a new intent and is pushed as an
  * event. Both answer the same payload, so the page has one reader. **A share
  * that arrives before the page listens is buffered**, and the answered token
- * is kept across a process restart, so a sent share is not prompted again.
+ * is kept across a process restart, so a re-delivered launch intent is not
+ * prompted twice - while a genuine re-share of the same files still is.
  */
 @TauriPlugin
 class SharePlugin(private val activity: Activity) : Plugin(activity) {
@@ -62,9 +63,8 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
     }
     val intent = MainActivity.newest
     val streams = streamsOf(intent)
-    val action = intent?.action
-    val token = shareToken(action, intent?.type, streams)
-    if (token == null || !shouldAnswer(token, answeredToken())) {
+    val token = shareToken(MainActivity.launches, process, intent?.action, intent?.type, streams)
+    if (token == null || !shouldAnswer(token, answeredToken(), MainActivity.restored)) {
       invoke.resolveObject(payload(emptyList(), null))
       return
     }
@@ -81,7 +81,8 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
     val streams = streamsOf(intent)
-    val token = shareToken(intent.action, intent.type, streams) ?: return
+    val token =
+      shareToken(MainActivity.launches, process, intent.action, intent.type, streams) ?: return
     answer(token, streams) { answerPayload ->
       activity.runOnUiThread {
         // **A share that arrives before the shell's channel is up is
@@ -100,19 +101,20 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
     streams: List<String>,
     done: (JSObject) -> Unit,
   ) {
-    markAnswered(token)
     if (streams.isEmpty()) {
       // **A SEND that carries no stream is a share of nothing, not a
       // failure**: the payload says so with its own flag, so the sheet draws
       // its neutral "carried no files" rather than an error it did not meet.
       done(payload(emptyList(), null, empty = true))
+      markAnswered(token)
       return
     }
     if (streams.size > MAX_FILES) {
       done(payload(emptyList(), "one share carries at most $MAX_FILES files"))
+      markAnswered(token)
       return
     }
-    copy(streams, done)
+    copy(token, streams, done)
   }
 
   /**
@@ -122,11 +124,17 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
    * timer answers the timeout even while the copy thread is blocked, and the
    * first answer wins.
    */
-  private fun copy(streams: List<String>, done: (JSObject) -> Unit) {
+  private fun copy(token: String, streams: List<String>, done: (JSObject) -> Unit) {
     val delivered = AtomicBoolean(false)
     val finish: (List<SharedFile>, String?) -> Unit = { files, error ->
       if (delivered.compareAndSet(false, true)) {
-        activity.runOnUiThread { done(payload(files, error)) }
+        activity.runOnUiThread {
+          done(payload(files, error))
+          // **The mark follows the delivery, never precedes it**: a process
+          // that dies mid-copy never showed the share, so the next start must
+          // answer it rather than treat it as already sent.
+          markAnswered(token)
+        }
       }
     }
     copies.submit {
@@ -268,6 +276,17 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
     private const val PREFS = "forge-share"
     private const val ANSWERED = "answered"
 
+    /**
+     * When this process first loaded the plugin, which is what tells one
+     * process's answered share from the next one's.
+     *
+     * **The launch counter starts over at one in every process**, so content
+     * plus launch cannot separate a re-share after a restart from the first
+     * launch's; this stamp can, and a page reload inside one process keeps it
+     * unchanged.
+     */
+    private val process = System.currentTimeMillis()
+
     internal const val TOO_LARGE = "the share is larger than 200 MB"
     internal const val COPY_TIMEOUT = "the share took too long to copy"
 
@@ -324,23 +343,59 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
     /**
      * What identifies one share, so a reload can tell it from a new one.
      *
+     * **The content alone is not the identity.** A page reload inside one
+     * launch must not re-answer, so the launch number is part of the token;
+     * and a genuine re-share of the same files after the process ended has
+     * the same content and a launch number that starts over at one, so the
+     * process stamp is too. [restored] is what then tells a re-delivered
+     * launch intent from a new share.
+     *
      * **A SEND with no stream still has a token**: it is a share this app
      * takes, it carried no file, and the sheet says so rather than the app
      * opening on nothing.
      */
-    internal fun shareToken(action: String?, type: String?, streams: List<String>): String? {
+    internal fun shareToken(
+      launch: Int,
+      process: Long,
+      action: String?,
+      type: String?,
+      streams: List<String>,
+    ): String? {
       if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return null
-      return (action ?: "") + "\u0000" + (type ?: "") + "\u0000" + streams.joinToString("\u0000")
+      return listOf(
+          process.toString(),
+          launch.toString(),
+          action ?: "",
+          type ?: "",
+          streams.joinToString("\u0000"),
+        )
+        .joinToString("\u0000")
+    }
+
+    /** A token without its process and launch stamps: what the share carried. */
+    internal fun contentOf(token: String): String {
+      val first = token.indexOf('\u0000')
+      if (first < 0) return ""
+      val second = token.indexOf('\u0000', first + 1)
+      return if (second < 0) "" else token.substring(second + 1)
     }
 
     /**
      * Whether this ask should answer the share.
      *
      * **A reload is not a second share**: the token is compared with the one
-     * already answered, across a process restart too.
+     * already answered. **A restored activity re-delivers the launch intent
+     * it already answered**, and neither the launch number nor the process
+     * stamp survives that restart, so a restored ask compares the content
+     * instead - while a fresh launch with the same files is a new share and
+     * answers again.
      */
-    internal fun shouldAnswer(token: String?, answered: String?): Boolean =
-      token != null && token != answered
+    internal fun shouldAnswer(token: String?, answered: String?, restored: Boolean = false): Boolean {
+      if (token == null) return false
+      if (token == answered) return false
+      if (restored && answered != null && contentOf(token) == contentOf(answered)) return false
+      return true
+    }
 
     /** A display name made safe for the cache, and never a path. */
     internal fun cacheName(display: String?): String {

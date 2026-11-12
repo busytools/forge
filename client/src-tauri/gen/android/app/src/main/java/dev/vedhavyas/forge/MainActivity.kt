@@ -47,6 +47,17 @@ class MainActivity : TauriActivity() {
     internal var launches = 0
 
     /**
+     * Whether this activity was re-created from saved state rather than
+     * freshly launched.
+     *
+     * **A restored activity re-delivers the intent it was launched with**, so
+     * the share plugin needs to tell that delivery from a new share: the
+     * system passes the saved state only when it is restoring the activity,
+     * and a share the person sends arrives as a fresh launch.
+     */
+    internal var restored = false
+
+    /**
      * The newest intent this process's activity was given.
      *
      * **The plugin's own activity reference is the one it was built with**, so
@@ -109,6 +120,7 @@ class MainActivity : TauriActivity() {
     )
     super.onCreate(savedInstanceState)
     launches += 1
+    restored = savedInstanceState != null
     newest = intent
     // Android grants the microphone at runtime; the manifest's declaration
     // only makes it askable. Both capture legs need it - the shell's own
