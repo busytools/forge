@@ -311,15 +311,19 @@
   {#if connection !== null && home.wire !== null}
     <!-- The share sheet: the files another app handed forge, the seat they go
          to, and the words that ride with them. Its seat list is the roster's,
-         and its own read of the picked seat is the page's. -->
-    <Share
-      {connection}
-      seats={home.wire.agents.map((agent) => agent.slot)}
-      shared={$pendingShare ?? { files: [], error: null }}
-      {dictate}
-      preselect={$lastSeat}
-      onclose={closeShare}
-    />
+         and its own read of the picked seat is the page's. **Keyed on the
+         share**: a second share while the sheet is open is a new sheet, not
+         the last one's sent state over new files. -->
+    {#key $pendingShare}
+      <Share
+        {connection}
+        seats={home.wire.agents.map((agent) => agent.slot)}
+        shared={$pendingShare ?? { files: [], error: null }}
+        {dictate}
+        preselect={$lastSeat}
+        onclose={closeShare}
+      />
+    {/key}
   {:else if connected}
     <main class="wrap"><p class="pending">Reading the fleet...</p></main>
   {:else}

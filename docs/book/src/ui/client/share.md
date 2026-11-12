@@ -48,7 +48,9 @@ cache paths, and the shell reads those bytes.
 **A cold start's share is the activity's launch intent**, which the page asks for once; a share
 into a running app arrives as an event and opens the sheet over whatever the reader was on. Both
 answer the same payload, and a share that carried no files - or one that could not be read - is
-said on the sheet rather than drawn as an empty form.
+said on the sheet rather than drawn as an empty form. **A second share while the sheet is open
+replaces it**: the sheet is keyed on the share, so it draws the new files' idle form rather than
+the last share's sent state.
 
 ## The box
 
