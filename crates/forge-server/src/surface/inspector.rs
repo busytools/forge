@@ -285,6 +285,13 @@ impl ViewSurface {
         self.workspace.release_seat(slot);
     }
 
+    /// How many holders the seat has. Test-only, for the transport's own
+    /// tests: the hold a connection takes is otherwise invisible.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn held_seat_count(&self, slot: &SessionSlot) -> usize {
+        self.workspace.held_seat_count(slot)
+    }
+
     /// Ask the core for a fresh context reading on `slot`, which its bridge
     /// answers with [`SessionUpdate::ContextUsageSnapshot`](crate::SessionUpdate::ContextUsageSnapshot).
     ///

@@ -3,13 +3,14 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
+use futures_util::stream::{FuturesUnordered, SplitStream};
 use futures_util::{SinkExt as _, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 
@@ -146,9 +147,9 @@ pub(crate) const WEDGE_DEAD: Duration = Duration::from_secs(240);
 /// driven. **A loop turn is not progress either**: one pass can issue several
 /// bounded writes (`batch::flush` feeds one or two frames, then a snapshot,
 /// then an optional home snapshot), so a turn-based stamp would claim progress
-/// the connection did not make. The stamp sits where every frame crosses -
-/// [`ClientSocket`]'s flush - so the watchdog's bound means "no write
-/// completed in the bound", which is what it claims.
+/// the connection did not make. The stamp sits where every frame crosses - the
+/// [writer](Writer), on a completed flush - so the watchdog's bound means "no
+/// write completed in the bound", which is what it claims.
 #[derive(Debug)]
 struct Progress {
     /// `tokio`'s clock rather than the standard one, so a test that pauses
@@ -236,20 +237,21 @@ impl std::error::Error for PeerVanished {}
 /// One connection's keepalive: the ping it has out, if any.
 ///
 /// **A silent read is not evidence of a dead peer until something has been
-/// asked of it.** A connection can spend longer than the bound in a single
-/// write - a 3.5 MB snapshot to a slow client was measured at 31.6 s - and
-/// through that stall no beat runs and no ping goes out, so a rule that
-/// counted "no frame read" as silence would kill a live client on the first
-/// tick after the write. What is tracked here is the one thing the peer was
-/// actually asked for: an unanswered ping.
+/// asked of it.** A connection can spend longer than the bound writing - a
+/// 3.5 MB snapshot to a slow client was measured at 31.6 s - while the peer
+/// reads nothing at all, and a rule that counted "no frame read" as silence
+/// would kill a live client. What is tracked here is the one thing the peer
+/// was actually asked for: an unanswered ping, stamped once the writer
+/// reports it on the wire.
 #[derive(Debug, Default)]
 struct Keepalive {
-    /// When the outstanding ping was sent, `None` when none is out. Any
+    /// When the outstanding ping was written, `None` when none is out. Any
     /// inbound frame clears it, because any frame is the peer answering in
-    /// some form. A lock rather than a cell: [`Keepalive::ping`] holds
-    /// `&self` across its send, and a cell is not `Sync`, which would make
-    /// the connection's future not `Send` for the sake of a stamp.
-    sent: std::sync::Mutex<Option<Instant>>,
+    /// some form. A lock rather than a cell: the stamp is taken from the
+    /// read half's `select!`, and a cell is not `Sync`. Tokio's clock rather
+    /// than the standard one, so a test that pauses time pauses the deadline
+    /// with it - the clock [`Progress`] already keeps.
+    sent: std::sync::Mutex<Option<tokio::time::Instant>>,
 }
 
 /// What one beat should do.
@@ -265,7 +267,7 @@ enum Beat {
 
 impl Keepalive {
     /// The outstanding ping's send time, if one is out.
-    fn sent(&self) -> Option<Instant> {
+    fn sent(&self) -> Option<tokio::time::Instant> {
         *self.sent.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
@@ -274,35 +276,23 @@ impl Keepalive {
         *self.sent.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 
-    /// What this beat should do. **Asking does not stamp the deadline**: a
-    /// send that queues behind a full buffer reaches the peer late, and a
-    /// deadline taken before it would have expired before the peer saw it.
-    fn beat(&self, now: Instant, dead: Duration) -> Beat {
+    /// A ping the writer has just written. **The stamp is taken when the
+    /// writer reports it written**, not when the read half queued it: a ping
+    /// held behind a stalled frame owes the peer nothing until it is on the
+    /// wire.
+    fn stamp(&self, at: tokio::time::Instant) {
+        *self.sent.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(at);
+    }
+
+    /// What this beat should do. **Asking does not stamp the deadline**: the
+    /// ping is queued behind whatever the writer is holding, and a deadline
+    /// taken before it reaches the wire would expire before the peer saw it.
+    fn beat(&self, now: tokio::time::Instant, dead: Duration) -> Beat {
         match self.sent() {
             Some(at) if now.duration_since(at) >= dead => Beat::Reap,
             Some(_) => Beat::Wait,
             None => Beat::Ping,
         }
-    }
-
-    /// Send the ping and start its deadline, **in that order**.
-    ///
-    /// The stamp is taken here, only once the send answers, so no caller can
-    /// stamp it early: a ping still held in a full buffer owes nothing until
-    /// it reaches the peer. The send is a `Sink` rather than a closure so a
-    /// test can hold it and watch the state at each side of the await.
-    async fn ping<S>(&self, sink: &mut S) -> anyhow::Result<()>
-    where
-        S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
-    {
-        write_within(WRITE_BOUND, async {
-            sink.send(Message::Ping(tokio_tungstenite::tungstenite::Bytes::new()))
-                .await
-                .map_err(anyhow::Error::from)
-        })
-        .await?;
-        *self.sent.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Instant::now());
-        Ok(())
     }
 }
 
@@ -811,9 +801,14 @@ async fn greet<S>(
     S: futures_util::Stream<Item = Result<Message, axum::Error>>
         + futures_util::Sink<Message, Error = axum::Error>
         + Unpin
-        + Send,
+        + Send
+        + 'static,
 {
-    let mut socket = ClientSocket::new(socket, deflate);
+    // **The watchdog's clock is made before the socket**, because the task
+    // that stamps it is the writer's and is started with the split. Every
+    // frame this connection writes stamps it, whichever path built the frame.
+    let progress = Arc::new(Progress::new());
+    let mut socket = ClientSocket::new(socket, deflate, Arc::clone(&progress));
     // **The connection's own number is minted once, where it starts**, so
     // every record about it - attached, stalled, wedged, ended - names the
     // same client and a reader can follow one connection through the log.
@@ -840,12 +835,7 @@ async fn greet<S>(
         );
         return;
     };
-    if write_within(WRITE_BOUND, async {
-        socket.send(Message::Text(text.into())).await.map_err(anyhow::Error::from)
-    })
-    .await
-    .is_err()
-    {
+    if socket.send(Message::Text(text.into())).await.is_err() {
         return;
     }
     // The effective config follows the greeting in the same open: the
@@ -859,11 +849,6 @@ async fn greet<S>(
     {
         return;
     }
-    // **The watchdog's clock is made here and carried by the socket**, so
-    // every frame this connection writes stamps it, whichever path built the
-    // frame.
-    let progress = Arc::new(Progress::new());
-    let mut socket = socket.watched(Arc::clone(&progress));
     if let Err(error) =
         supervise(&mut socket, &state, peer, me, settings, sent_settings, &progress).await
     {
@@ -1002,6 +987,11 @@ where
         );
     }
     finish(state, &mut life, &outcome).await;
+    // **The writer never outlives the read half, and nothing waiting in its
+    // queue is drained.** A client that closed has nobody to read the frames
+    // left behind, and a writer waiting on a write that outlived its bound
+    // would otherwise hold the socket half open past the connection's end.
+    socket.stop_writer().await;
     outcome
 }
 
@@ -1458,6 +1448,10 @@ where
     // Set when the keepalive reaped the peer, so the ending says so rather
     // than reading as a clean close.
     let mut vanished = false;
+    // Pings the read half has queued and is waiting on. A ping's deadline is
+    // stamped when the writer reports it written, so the read half can keep
+    // serving inbound frames while a bulk write holds the ping in the queue.
+    let mut pings: FuturesUnordered<oneshot::Receiver<()>> = FuturesUnordered::new();
     loop {
         let due = held.due();
         tokio::select! {
@@ -1870,13 +1864,20 @@ where
             // [`supervise`] samples `progress` from outside this task for
             // that case.
             _ = beat.tick() => {
-                match keepalive.beat(Instant::now(), beat_dead) {
-                    Beat::Wait => {}
-                    // The deadline is taken inside `ping`, after the send
-                    // answers: a send queued behind a full buffer reaches the
-                    // peer late, and the peer is owed the whole bound from
-                    // when it could first answer.
-                    Beat::Ping => keepalive.ping(socket).await?,
+                match keepalive.beat(tokio::time::Instant::now(), beat_dead) {
+                    // **A ping is queued, never awaited.** The writer stamps
+                    // the ping's deadline only once it reports the frame
+                    // written, and the read half stays free to answer the
+                    // peer while a bulk write holds the ping in the queue.
+                    Beat::Ping if pings.is_empty() => {
+                        let (done, written) = oneshot::channel();
+                        socket.ping(done);
+                        pings.push(written);
+                    }
+                    // A ping already queued owes the peer nothing yet, so the
+                    // next beat waits for that one rather than piling another
+                    // behind it.
+                    Beat::Wait | Beat::Ping => {}
                     Beat::Reap => {
                         let waited =
                             keepalive.sent().map(|at| at.elapsed()).unwrap_or_default();
@@ -1893,6 +1894,17 @@ where
                         vanished = true;
                         break;
                     }
+                }
+            }
+            // **A queued ping reached the wire.** The deadline starts here,
+            // when the writer reports it written, not when the read half
+            // queued it: a ping held behind a stalled frame owes the peer
+            // nothing until it is on the wire. A completion that never
+            // arrives means the writer died first, and the writer's own
+            // `done` carries that ending through `socket.next()`.
+            written = pings.next(), if !pings.is_empty() => {
+                if matches!(written, Some(Ok(()))) {
+                    keepalive.stamp(tokio::time::Instant::now());
                 }
             }
             // The deadline is a value, not a condition: with nothing held the
@@ -2073,11 +2085,10 @@ fn log_open(report: &OpenReport, write: &FrameWrite) {
         prep_ms = write.prep_ms,
         write_ms = write.write_ms,
         waited = write.waited,
-        "the snapshot's write: prep is the record serialised and \
-         compressed into the bytes the socket takes, write_ms is the \
-         socket's share after that, and waited says the write yielded at \
-         least once before it was done (a prior frame's flush, kernel \
-         send-buffer pressure or a slow reader)",
+        "the snapshot's handoff: prep is the record serialised and \
+         compressed into the bytes the writer takes, write_ms is the handoff \
+         after that, and waited says another write was still to complete when \
+         this one was handed over (a slow reader or a bulk frame ahead)",
     );
     // The session's open, in its own slices: the numbers a reader places a
     // slow switch with, beside the client's own marks and the client it
@@ -2128,10 +2139,11 @@ fn log_open(report: &OpenReport, write: &FrameWrite) {
          and the \
          record's assembly, and encode the record's value; pr_age_s is \
          how old the PR attempt the record carries is, absent until one \
-         has run; open_ms ends when the snapshot's write returns, so \
+         has run; open_ms ends when the snapshot is handed to the writer, so \
          frame_write's prep_ms and write_ms are inside it, and what the \
          slices and those two do not sum to is the subscribe path's own \
-         glue",
+         glue. The frame's transfer is the writer's and is not part of \
+         open_ms",
     );
 }
 
@@ -4117,41 +4129,201 @@ fn take_frame(
 /// case this exists for.
 const COMPRESSED_MIN_BYTES: usize = 64 * 1024;
 
-/// This connection's socket, with the one fact the write path needs from the
-/// upgrade: whether the client declared it can inflate a compressed frame.
+/// One write on its way to the socket's write half.
 ///
-/// **The declaration is made at the dial**, as a `deflate=1` query on the
-/// socket URL: an older server ignores a query it does not read, and a
-/// client that says nothing keeps every frame as text. The flag rides the
-/// Sink so every frame to a client goes through one encoder rather than the
-/// answer paths each deciding.
+/// Every frame the read half builds is one of these, and the order they are
+/// queued in is the order the socket writes them: the queue is what keeps the
+/// wire order while the two halves run independently.
+enum Write {
+    /// A frame to hand the sink. `written` is answered once the frame is on
+    /// the wire - written and flushed - which is the keepalive's whole
+    /// question: a ping the peer cannot see yet owes it nothing.
+    Frame(Message, Option<oneshot::Sender<()>>),
+    /// Flush what the frames before it handed the sink. `flushed` is a
+    /// test's own wait for a point in the queue, answered when it is reached.
+    Flush(Option<oneshot::Sender<()>>),
+    /// Close the socket and end the writer.
+    Close,
+}
+
+/// The write half of a connection, owned by a task of its own.
+///
+/// The read half never touches the socket. Every write it makes is a message
+/// on this queue, so a bulk write in flight cannot hold an inbound command's
+/// answer. The writer stamps [`Progress`] on each completed flush, so the
+/// watchdog measures the socket, not the read loop.
+struct Writer {
+    tx: mpsc::UnboundedSender<Write>,
+    /// Why the writer died, or `None` when its queue closed. The read half
+    /// polls this beside its own stream, so a dead writer ends the connection
+    /// with the error that killed it.
+    done: Option<oneshot::Receiver<Option<anyhow::Error>>>,
+    /// Writes handed over and not yet completed. A measured write reads it
+    /// to say whether another frame was ahead of it.
+    outstanding: Arc<std::sync::atomic::AtomicUsize>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Writer {
+    /// Start the writer task over the socket's write half.
+    fn new<S>(sink: S, progress: Arc<Progress>) -> Self
+    where
+        S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send + 'static,
+    {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (done_tx, done) = oneshot::channel();
+        let outstanding = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let pending = Arc::clone(&outstanding);
+        let task = tokio::spawn(async move {
+            let mut sink = sink;
+            let mut failure = None;
+            while let Some(write) = rx.recv().await {
+                // **Each entry is its own bounded write.** A feed the sink's
+                // buffer will not take, and a flush a stopped reader never
+                // completes, both end the connection at the bound rather than
+                // holding it. `flushed` separates the two, because only a
+                // completed flush is a write the watchdog can call progress.
+                let (result, flushed) = match write {
+                    // **A frame something waits on is flushed before its
+                    // completion answers.** "Written" is the peer can see it,
+                    // which is what the keepalive's deadline rests on; every
+                    // other frame is only handed to the sink, and the flush
+                    // the read half queued behind it puts it on the wire.
+                    Write::Frame(frame, written) => {
+                        let waited = written.is_some();
+                        let result = write_within(WRITE_BOUND, async {
+                            if waited {
+                                sink.send(frame).await.map_err(anyhow::Error::from)
+                            } else {
+                                sink.feed(frame).await.map_err(anyhow::Error::from)
+                            }
+                        })
+                        .await;
+                        if result.is_ok()
+                            && let Some(written) = written
+                        {
+                            let _ = written.send(());
+                        }
+                        (result, waited)
+                    }
+                    Write::Flush(flushed) => {
+                        let result = write_within(WRITE_BOUND, async {
+                            sink.flush().await.map_err(anyhow::Error::from)
+                        })
+                        .await;
+                        if result.is_ok()
+                            && let Some(flushed) = flushed
+                        {
+                            let _ = flushed.send(());
+                        }
+                        (result, true)
+                    }
+                    Write::Close => (
+                        write_within(WRITE_BOUND, async {
+                            sink.close().await.map_err(anyhow::Error::from)
+                        })
+                        .await,
+                        false,
+                    ),
+                };
+                pending.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                match result {
+                    Ok(()) => {
+                        if flushed {
+                            progress.stamp();
+                        }
+                    }
+                    Err(error) => {
+                        failure = Some(error);
+                        break;
+                    }
+                }
+            }
+            let _ = done_tx.send(failure);
+        });
+        Self { tx, done: Some(done), outstanding, task: Some(task) }
+    }
+
+    /// Queue one write. A queue whose writer is already gone drops it: the
+    /// read half learns why from [`done`](Self::done) at its next poll.
+    fn enqueue(&self, write: Write) {
+        self.outstanding.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if self.tx.send(write).is_err() {
+            self.outstanding.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Writes handed over and not yet completed.
+    fn outstanding(&self) -> usize {
+        self.outstanding.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Stop the writer without draining what it holds, and wait for its task
+    /// to end.
+    ///
+    /// **A client that closed has nobody to read the frames left behind**,
+    /// and a writer stuck on a write that outlived its bound must not hold
+    /// the socket open past the connection's end - so the task is aborted
+    /// rather than drained, which drops the socket half with it.
+    async fn stop(&mut self) {
+        let Some(task) = self.task.take() else { return };
+        task.abort();
+        let _ = task.await;
+    }
+}
+
+/// This connection's read half and its writer.
+///
+/// The socket's `Stream` is split from its `Sink` at construction: the read
+/// half owns the `SplitStream`, and the writer task owns the `SplitSink`.
+/// **This type's `Sink` enqueues and returns**, so no write site ever awaits
+/// the socket; the one encoder fact the write path needs from the upgrade
+/// still rides the Sink: whether the client declared it can inflate a
+/// compressed frame.
 struct ClientSocket<S> {
-    inner: S,
+    read: SplitStream<S>,
+    writer: Writer,
     deflate: bool,
-    /// The watchdog's clock, stamped whenever a flush completes. **This is
-    /// the one point every frame crosses** - a batched frame, a snapshot, a
-    /// browser frame, a terminal chunk, a ping - so a stamp here means bytes
-    /// moved, not that the loop turned. `None` for a socket with no watchdog.
-    progress: Option<Arc<Progress>>,
+    /// The watchdog's clock, shared with the writer task.
+    progress: Arc<Progress>,
+}
+
+impl<S> ClientSocket<S>
+where
+    S: futures_util::Stream<Item = Result<Message, axum::Error>>
+        + futures_util::Sink<Message, Error = axum::Error>
+        + Unpin
+        + Send
+        + 'static,
+{
+    /// Split the socket and start the task that writes its other half.
+    fn new(inner: S, deflate: bool, progress: Arc<Progress>) -> Self {
+        let (sink, read) = inner.split();
+        Self { read, writer: Writer::new(sink, Arc::clone(&progress)), deflate, progress }
+    }
 }
 
 impl<S> ClientSocket<S> {
-    fn new(inner: S, deflate: bool) -> Self {
-        Self { inner, deflate, progress: None }
-    }
-
-    /// Attach the watchdog's clock: every completed flush stamps it.
-    fn watched(mut self, progress: Arc<Progress>) -> Self {
-        self.progress = Some(progress);
-        self
-    }
-
     /// Record the seat this connection says it is showing, for a wedge's own
     /// record.
     fn note_showing(&self, seat: Option<&SessionSlot>) {
-        if let Some(progress) = self.progress.as_deref() {
-            progress.note_showing(seat);
-        }
+        self.progress.note_showing(seat);
+    }
+
+    /// Queue a keepalive ping and answer its completion when the writer
+    /// reports it written. **The read half never waits for this send**: a ping
+    /// behind a stalled frame must not hold the read loop, and the read half
+    /// stamps the keepalive when the completion arrives.
+    fn ping(&self, written: oneshot::Sender<()>) {
+        self.writer.enqueue(Write::Frame(
+            Message::Ping(tokio_tungstenite::tungstenite::Bytes::new()),
+            Some(written),
+        ));
+    }
+
+    /// Stop the writer without draining what it holds.
+    async fn stop_writer(&mut self) {
+        self.writer.stop().await;
     }
 }
 
@@ -4159,37 +4331,60 @@ impl<S> futures_util::Stream for ClientSocket<S>
 where
     S: futures_util::Stream<Item = Result<Message, axum::Error>> + Unpin,
 {
-    type Item = Result<Message, axum::Error>;
+    type Item = Result<Message, anyhow::Error>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        std::pin::Pin::new(&mut self.inner).poll_next(cx)
+        // **A dead writer ends the read half too.** The writer's failure is
+        // the connection's ending, and the read half polls it here so an
+        // inbound frame cannot arrive after the socket that would answer it
+        // is gone. This is the read half's only view of the writer's death,
+        // and the error is the writer's own so the record names the reason.
+        if let Some(mut done) = self.writer.done.take() {
+            match std::pin::Pin::new(&mut done).poll(cx) {
+                std::task::Poll::Ready(Ok(Some(error))) => {
+                    return std::task::Poll::Ready(Some(Err(error)));
+                }
+                std::task::Poll::Ready(Ok(None) | Err(_)) => {
+                    return std::task::Poll::Ready(None);
+                }
+                std::task::Poll::Pending => self.writer.done = Some(done),
+            }
+        }
+        std::pin::Pin::new(&mut self.read)
+            .poll_next(cx)
+            .map(|item| item.map(|result| result.map_err(anyhow::Error::from)))
     }
 }
 
 impl<S> futures_util::Sink<Message> for ClientSocket<S>
 where
-    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+    S: Unpin,
 {
     type Error = axum::Error;
 
     fn poll_ready(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), axum::Error>> {
-        std::pin::Pin::new(&mut self.inner).poll_ready(cx)
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        // **The queue is unbounded, so a frame can always be accepted.** A
+        // queue whose writer is gone drops the frame rather than failing it:
+        // the writer's `done` is what ends the connection, and it carries the
+        // reason the write died.
+        std::task::Poll::Ready(Ok(()))
     }
 
-    fn start_send(mut self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), axum::Error> {
+    fn start_send(self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
         // **Every text frame crosses the encoder, whatever path built it.**
         // The batched stream and a subscribe's queued backlog write Text
         // frames of their own, straight through `feed`, so an encoder that
         // lived only in the answer paths would leave them uncompressed for a
         // client that declared the capability. A frame already encoded - the
         // Binary kind, a control frame - passes through untouched.
-        let deflate = self.deflate;
+        let this = self.get_mut();
+        let deflate = this.deflate;
         let item = match item {
             // **A frame the encoder leaves alone keeps the bytes it already
             // owns.** The batched path and a subscribe's queued backlog write
@@ -4201,30 +4396,39 @@ where
             }
             other => other,
         };
-        std::pin::Pin::new(&mut self.inner).start_send(item)
+        this.writer.enqueue(Write::Frame(item, None));
+        Ok(())
     }
 
     fn poll_flush(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), axum::Error>> {
-        let flushed = std::pin::Pin::new(&mut self.inner).poll_flush(cx);
-        // **A completed flush is the connection's proof of progress**, and it
-        // is the only one: the watchdog's bound says "no write completed",
-        // which a loop-turn stamp could not claim.
-        if matches!(flushed, std::task::Poll::Ready(Ok(())))
-            && let Some(progress) = self.progress.as_deref()
-        {
-            progress.stamp();
-        }
-        flushed
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        // **The flush is queued, never waited for.** `SinkExt::send` is a
+        // frame plus a flush, and the pair leaves the read half the way it
+        // arrived: a bulk frame's flush is the writer's to complete, and the
+        // read half stays free to answer the peer meanwhile.
+        self.get_mut().writer.enqueue(Write::Flush(None));
+        std::task::Poll::Ready(Ok(()))
     }
 
     fn poll_close(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), axum::Error>> {
-        std::pin::Pin::new(&mut self.inner).poll_close(cx)
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.get_mut().writer.enqueue(Write::Close);
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+#[cfg(test)]
+impl<S> ClientSocket<S> {
+    /// Wait until everything handed to the writer before this call has been
+    /// written, so a test can read what the socket actually received.
+    async fn settle(&self) {
+        let (done, settled) = oneshot::channel();
+        self.writer.enqueue(Write::Flush(Some(done)));
+        let _ = settled.await;
     }
 }
 
@@ -4283,7 +4487,7 @@ where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
 {
     let frame = frame_for(socket, text);
-    write_within(WRITE_BOUND, async { socket.send(frame).await.map_err(anyhow::Error::from) }).await
+    socket.send(frame).await.map_err(anyhow::Error::from)
 }
 
 /// Answer one strip ask: through the reply it carried, or as the error frame
@@ -4371,19 +4575,22 @@ where
     let text = serde_json::to_string(&message)?;
     let frame = frame_for(socket, &text);
     let bytes = frame_bytes(&frame);
-    write_within(WRITE_BOUND, async { socket.send(frame).await.map_err(anyhow::Error::from) })
-        .await?;
+    socket.send(frame).await.map_err(anyhow::Error::from)?;
     Ok(bytes)
 }
 
-/// One frame's write, measured: its size, the time the socket took it, and
-/// whether the write yielded at least once before it was done.
+/// One frame's handoff, measured: its size, the time the read half spent
+/// handing it over, and whether another write was still ahead of it.
 struct FrameWrite {
     bytes: usize,
     /// The message's serialisation and compression into the bytes the socket
     /// takes, on the process's own clock.
     prep_ms: f64,
+    /// The handoff to the writer, after the frame was built: **the socket's
+    /// own share of the write is no longer the read half's to time**.
     write_ms: f64,
+    /// Whether another write was still to complete when this one was handed
+    /// over, which is what a slow peer looks like from the read half.
     waited: bool,
 }
 
@@ -4411,12 +4618,13 @@ impl WriteClock for SystemClock {
     }
 }
 
-/// [`send_frame`], timing the socket's share of the write.
+/// [`send_frame`], timing the handoff and saying what was already ahead.
 ///
-/// **The open's own line cannot place its remainder without it** (#2506):
-/// `open_ms` ends when this returns, so the frame's transfer is inside it,
-/// and a write that yielded is otherwise indistinguishable from the fold, the
-/// record's reads and the serialisation before it.
+/// **The open's own line still places its remainder** (#2506): `open_ms` ends
+/// when this returns, so the serialisation and compression are inside it -
+/// a multi-MB record is the read half's own cost. The frame's transfer is the
+/// writer's now and is not part of the open, and `waited` is what a slow peer
+/// leaves behind here: another write still ahead of this one.
 async fn send_frame_timed<S, C>(
     socket: &mut ClientSocket<S>,
     message: ServerMessage,
@@ -4434,25 +4642,14 @@ where
     let frame = frame_for(socket, &text);
     let prep_ms = prep_at.elapsed().as_secs_f64() * 1000.0;
     let bytes = frame_bytes(&frame);
-    let waited = AtomicBool::new(false);
+    let waited = socket.writer.outstanding() > 0;
     let at = clock.start(&frame);
-    let mut write = std::pin::pin!(async { socket.send(frame).await.map_err(anyhow::Error::from) });
-    write_within(WRITE_BOUND, async {
-        std::future::poll_fn(|cx| {
-            let poll = std::future::Future::poll(write.as_mut(), cx);
-            if poll.is_pending() {
-                waited.store(true, Ordering::Relaxed);
-            }
-            poll
-        })
-        .await
-    })
-    .await?;
+    socket.send(frame).await.map_err(anyhow::Error::from)?;
     Ok(FrameWrite {
         bytes,
         prep_ms,
         write_ms: clock.end().saturating_duration_since(at).as_secs_f64() * 1000.0,
-        waited: waited.load(Ordering::Relaxed),
+        waited,
     })
 }
 
@@ -5543,7 +5740,7 @@ mod tests {
     async fn a_ping_is_the_only_thing_that_can_go_unanswered() {
         let dead = Duration::from_secs(60);
         let keepalive = Keepalive::default();
-        let start = Instant::now();
+        let start = tokio::time::Instant::now();
 
         assert_eq!(keepalive.beat(start, dead), Beat::Ping, "no ping out: ask");
         assert_eq!(
@@ -5552,10 +5749,10 @@ mod tests {
             "nothing was sent, so nothing went unanswered and the beat asks",
         );
 
-        // A ping ON THE WIRE is what starts the clock.
-        let mut sink = NullSink;
-        keepalive.ping(&mut sink).await.expect("the ping goes");
-        let at = keepalive.sent().expect("the send stamped the deadline");
+        // A ping ON THE WIRE is what starts the clock, and the writer's
+        // completion is what tells the beat that.
+        let at = tokio::time::Instant::now();
+        keepalive.stamp(at);
         assert_eq!(
             keepalive.beat(at + Duration::from_secs(30), dead),
             Beat::Wait,
@@ -5576,7 +5773,7 @@ mod tests {
     fn asking_does_not_stamp_the_deadline() {
         let dead = Duration::from_secs(60);
         let keepalive = Keepalive::default();
-        let start = Instant::now();
+        let start = tokio::time::Instant::now();
 
         assert_eq!(keepalive.beat(start, dead), Beat::Ping);
         assert_eq!(keepalive.sent(), None, "the deadline starts when the ping is on the wire");
@@ -5691,9 +5888,19 @@ mod tests {
     /// The origin a desktop shell's webview dials from.
     const SHELL_ORIGIN: &str = "tauri://localhost";
 
-    /// A sink that accepts every frame at once, for the tests that only need
-    /// a send to complete.
+    /// A socket that accepts every frame at once and never says anything
+    /// back, for the tests that only need a send to complete.
     struct NullSink;
+
+    impl futures_util::Stream for NullSink {
+        type Item = Result<Message, axum::Error>;
+        fn poll_next(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            std::task::Poll::Pending
+        }
+    }
 
     impl futures_util::Sink<Message> for NullSink {
         type Error = axum::Error;
@@ -5720,13 +5927,47 @@ mod tests {
         }
     }
 
-    /// A sink whose flush yields once before it finishes: the write waited,
-    /// and for no measurable time.
-    struct YieldsOnce {
-        yielded: bool,
+    /// The door a [`Gated`] socket's flush waits behind.
+    #[derive(Clone, Default)]
+    struct Gate {
+        open: Arc<std::sync::atomic::AtomicBool>,
+        waker: Arc<Mutex<Option<std::task::Waker>>>,
     }
 
-    impl futures_util::Sink<Message> for YieldsOnce {
+    impl Gate {
+        /// Let the held flush finish, and wake the writer that parked on it.
+        fn open(&self) {
+            self.open.store(true, Ordering::Relaxed);
+            if let Some(waker) = self.waker.lock().expect("the gate").take() {
+                waker.wake();
+            }
+        }
+    }
+
+    /// A socket whose stream the test feeds and whose flush is held until the
+    /// test opens the gate: a peer that is reading nothing while the
+    /// connection is still up. Every frame the sink was handed is kept, in
+    /// order, so a test can read what crossed and in what order.
+    struct Gated {
+        inbound: mpsc::UnboundedReceiver<Message>,
+        fed: Arc<Mutex<Vec<Message>>>,
+        gate: Gate,
+        /// Signalled the first time a flush is held, so a test knows a write
+        /// is in flight.
+        held: Option<oneshot::Sender<()>>,
+    }
+
+    impl futures_util::Stream for Gated {
+        type Item = Result<Message, axum::Error>;
+        fn poll_next(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            self.inbound.poll_recv(cx).map(|said| said.map(Ok))
+        }
+    }
+
+    impl futures_util::Sink<Message> for Gated {
         type Error = axum::Error;
 
         fn poll_ready(
@@ -5735,19 +5976,22 @@ mod tests {
         ) -> std::task::Poll<Result<(), Self::Error>> {
             std::task::Poll::Ready(Ok(()))
         }
-        fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+        fn start_send(self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+            self.fed.lock().expect("the frame log").push(item);
             Ok(())
         }
         fn poll_flush(
             mut self: std::pin::Pin<&mut Self>,
             cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<Result<(), Self::Error>> {
-            if !self.yielded {
-                self.yielded = true;
-                cx.waker().wake_by_ref();
-                return std::task::Poll::Pending;
+            if self.gate.open.load(Ordering::Relaxed) {
+                return std::task::Poll::Ready(Ok(()));
             }
-            std::task::Poll::Ready(Ok(()))
+            if let Some(held) = self.held.take() {
+                let _ = held.send(());
+            }
+            *self.gate.waker.lock().expect("the gate") = Some(cx.waker().clone());
+            std::task::Poll::Pending
         }
         fn poll_close(
             self: std::pin::Pin<&mut Self>,
@@ -5757,9 +6001,19 @@ mod tests {
         }
     }
 
-    /// A sink that keeps every message it is handed, so a test can read the
-    /// frame a path actually wrote.
+    /// A socket that keeps every message it is handed and never says
+    /// anything back, so a test can read the frame a path actually wrote.
     struct Recorded(Arc<Mutex<Vec<Message>>>);
+
+    impl futures_util::Stream for Recorded {
+        type Item = Result<Message, axum::Error>;
+        fn poll_next(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            std::task::Poll::Pending
+        }
+    }
 
     impl futures_util::Sink<Message> for Recorded {
         type Error = axum::Error;
@@ -5797,12 +6051,14 @@ mod tests {
     #[tokio::test]
     async fn a_batched_text_frame_crosses_the_encoder() {
         let recorded = Arc::new(Mutex::new(Vec::new()));
-        let mut socket = ClientSocket::new(Recorded(Arc::clone(&recorded)), true);
+        let mut socket =
+            ClientSocket::new(Recorded(Arc::clone(&recorded)), true, Arc::new(Progress::new()));
         let text =
             format!("{{\"kind\":\"update\",\"pad\":\"{}\"}}", "x".repeat(COMPRESSED_MIN_BYTES));
         futures_util::SinkExt::send(&mut socket, Message::Text(text.clone().into()))
             .await
             .expect("the frame goes");
+        socket.settle().await;
         let held = recorded.lock().expect("the frame log");
         let Some(Message::Binary(bytes)) = held.first() else {
             panic!("a text frame over the threshold crossed as text: {:?}", held.first())
@@ -5822,7 +6078,8 @@ mod tests {
     #[tokio::test]
     async fn a_text_frame_the_encoder_leaves_alone_is_not_rebuilt() {
         let recorded = Arc::new(Mutex::new(Vec::new()));
-        let mut socket = ClientSocket::new(Recorded(Arc::clone(&recorded)), true);
+        let mut socket =
+            ClientSocket::new(Recorded(Arc::clone(&recorded)), true, Arc::new(Progress::new()));
         let frame = Message::Text("{\"kind\":\"update\"}".into());
         let Message::Text(kept) = &frame else { panic!("a text frame") };
         // Kept alive across the send: a rebuilt string could otherwise land
@@ -5830,6 +6087,7 @@ mod tests {
         let kept = kept.clone();
         let address = kept.as_str().as_ptr();
         futures_util::SinkExt::send(&mut socket, frame).await.expect("the frame goes");
+        socket.settle().await;
         {
             let held = recorded.lock().expect("the frame log");
             let Some(Message::Text(sent)) = held.first() else {
@@ -5845,12 +6103,14 @@ mod tests {
         // The control: a client that never declared the capability gets its
         // large frame passed through too, whatever its size.
         let recorded = Arc::new(Mutex::new(Vec::new()));
-        let mut socket = ClientSocket::new(Recorded(Arc::clone(&recorded)), false);
+        let mut socket =
+            ClientSocket::new(Recorded(Arc::clone(&recorded)), false, Arc::new(Progress::new()));
         let frame = Message::Text("x".repeat(COMPRESSED_MIN_BYTES).into());
         let Message::Text(kept) = &frame else { panic!("a text frame") };
         let kept = kept.clone();
         let address = kept.as_str().as_ptr();
         futures_util::SinkExt::send(&mut socket, frame).await.expect("the frame goes");
+        socket.settle().await;
         {
             let held = recorded.lock().expect("the frame log");
             let Some(Message::Text(sent)) = held.first() else {
@@ -5866,9 +6126,11 @@ mod tests {
         // **The threshold is inclusive**: a frame of exactly the minimum
         // compresses for a client that declared the capability.
         let recorded = Arc::new(Mutex::new(Vec::new()));
-        let mut socket = ClientSocket::new(Recorded(Arc::clone(&recorded)), true);
+        let mut socket =
+            ClientSocket::new(Recorded(Arc::clone(&recorded)), true, Arc::new(Progress::new()));
         let frame = Message::Text("x".repeat(COMPRESSED_MIN_BYTES).into());
         futures_util::SinkExt::send(&mut socket, frame).await.expect("the frame goes");
+        socket.settle().await;
         let held = recorded.lock().expect("the frame log");
         assert!(
             matches!(
@@ -5983,41 +6245,14 @@ mod tests {
         }
     }
 
-    /// **The stamp is taken after the send returns**, which is the caller's
-    /// ordering and not the state machine's: a ping held in a full buffer
-    /// must owe nothing until it is on the wire. The held sink is the stall,
-    /// and the state is read at each side of the await.
-    #[tokio::test]
-    async fn the_deadline_starts_when_the_ping_goes_out() {
-        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let mut sink = HeldSink { ready: std::sync::Arc::clone(&ready) };
-        let keepalive = Keepalive::default();
-        let mut sending = std::pin::pin!(keepalive.ping(&mut sink));
-
-        assert!(
-            futures_util::poll!(sending.as_mut()).is_pending(),
-            "the write is held in the buffer",
-        );
-        assert_eq!(
-            keepalive.sent(),
-            None,
-            "nothing may be owed while the ping is still to be written",
-        );
-
-        ready.store(true, std::sync::atomic::Ordering::Relaxed);
-        assert!(futures_util::poll!(sending.as_mut()).is_ready(), "the write completed");
-        assert!(keepalive.sent().is_some(), "and the answer is owed from the send's return");
-    }
-
     /// Any frame is the answer, and the next beat asks again rather than
     /// reaping.
     #[tokio::test]
     async fn an_answer_clears_the_outstanding_ping() {
         let dead = Duration::from_secs(60);
         let keepalive = Keepalive::default();
-        let mut sink = NullSink;
-        keepalive.ping(&mut sink).await.expect("the ping goes");
-        let at = keepalive.sent().expect("the send stamped the deadline");
+        let at = tokio::time::Instant::now();
+        keepalive.stamp(at);
 
         keepalive.heard();
 
@@ -6045,8 +6280,11 @@ mod tests {
 
         let (inbound, peer_in) = mpsc::unbounded_channel();
         let (writing, stuck) = oneshot::channel();
-        let mut peer =
-            ClientSocket::new(StoppedReading { inbound: peer_in, writing: Some(writing) }, false);
+        let mut peer = ClientSocket::new(
+            StoppedReading { inbound: peer_in, writing: Some(writing) },
+            false,
+            Arc::new(Progress::new()),
+        );
         let settings = crate::transport::settings_channel();
         let driven = tokio::spawn({
             let state = Arc::clone(&state);
@@ -6095,6 +6333,269 @@ mod tests {
             stalled.waited >= WRITE_BOUND,
             "the bound's own record carries how long the write ran: {:?}",
             stalled.waited,
+        );
+    }
+
+    /// Where a frame the test is looking for crossed, in the order the sink
+    /// was handed it.
+    fn written_frame(frames: &[Message], wanted: impl Fn(&ServerMessage) -> bool) -> Option<usize> {
+        frames.iter().position(|frame| match frame {
+            Message::Text(text) => {
+                serde_json::from_str::<ServerMessage>(text).is_ok_and(|message| wanted(&message))
+            }
+            _ => false,
+        })
+    }
+
+    fn is_pong(message: &ServerMessage) -> bool {
+        matches!(message, ServerMessage::Pong)
+    }
+
+    fn is_ping(frame: &Message) -> bool {
+        matches!(frame, Message::Ping(_))
+    }
+
+    /// **A write in flight stops nothing else on the connection.** The whole
+    /// point of the split: while the writer is stuck mid-frame, an inbound
+    /// command is read and executed, and its reply is queued behind the frame
+    /// already being written - in that order when the peer reads again.
+    #[tokio::test]
+    async fn an_inbound_command_is_served_while_a_write_is_in_flight() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+        let progress = Arc::new(Progress::new());
+        let (to_server, inbound) = mpsc::unbounded_channel();
+        let (held, first_flush) = oneshot::channel();
+        let gate = Gate::default();
+        let fed = Arc::new(Mutex::new(Vec::new()));
+        let mut socket = ClientSocket::new(
+            Gated { inbound, fed: Arc::clone(&fed), gate: gate.clone(), held: Some(held) },
+            false,
+            Arc::clone(&progress),
+        );
+        let settings = crate::transport::settings_channel();
+        let driven = tokio::spawn({
+            let state = Arc::clone(&state);
+            async move {
+                let receiver = settings.subscribe();
+                drive(
+                    &mut socket,
+                    &state,
+                    attached_from(),
+                    receiver,
+                    None,
+                    &mut ConnectionLife::new(mint_connection_id()),
+                )
+                .await
+            }
+        });
+
+        // The usage record is the bulk frame: the writer is stuck on its
+        // flush, and the gate is where it waits.
+        to_server
+            .send(Message::Text(
+                serde_json::to_string(&ClientMessage::Subscribe {
+                    what: Subject::Usage,
+                    answering: false,
+                    review: false,
+                })
+                .expect("the subscribe encodes")
+                .into(),
+            ))
+            .expect("the message goes");
+        first_flush.await.expect("the subscribe's answer reached the socket");
+
+        // A ping, then a showing. The ping is read first, so the pong is
+        // queued before the showing lands; the showing is the observable
+        // proof that the read half served inbound while the frame was in
+        // flight.
+        let seat = lead();
+        to_server
+            .send(Message::Text(
+                serde_json::to_string(&ClientMessage::Ping).expect("the ping encodes").into(),
+            ))
+            .expect("the message goes");
+        showing(&to_server, Some(seat.clone()));
+        until(
+            || progress.showing_seat().as_ref() == Some(&seat),
+            "the read half served an inbound command while a write was in flight",
+        )
+        .await;
+        assert_eq!(
+            written_frame(&fed.lock().expect("the frame log"), is_pong),
+            None,
+            "the pong crossed while the frame in flight still held the socket",
+        );
+
+        // The gate opens, and the queue drains in the order it was built.
+        gate.open();
+        until(
+            || written_frame(&fed.lock().expect("the frame log"), is_pong).is_some(),
+            "the queued reply crossed once the frame did",
+        )
+        .await;
+        {
+            let frames = fed.lock().expect("the frame log");
+            let snapshot = written_frame(frames.as_slice(), |message| {
+                matches!(message, ServerMessage::Snapshot { subject: Subject::Usage, .. })
+            })
+            .expect("the subscribe's answer crossed first");
+            let pong = written_frame(frames.as_slice(), is_pong).expect("the pong crossed");
+            assert!(
+                snapshot < pong,
+                "the reply queued behind the frame in flight, and in that order on the wire",
+            );
+        }
+
+        drop(to_server);
+        let _ = driven.await;
+    }
+
+    /// **A ping behind a stalled frame is not reaped, and its deadline starts
+    /// when the writer reports it written.** The beat keeps running on the
+    /// read half while the write is in flight, so the ping is queued at 15 s
+    /// and waits behind the frame until 50 s; a deadline taken at the queue
+    /// would have cut a peer that was reading again the moment the frame
+    /// landed.
+    #[tokio::test(start_paused = true)]
+    async fn a_ping_behind_a_stalled_frame_is_stamped_only_when_written() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+        let (to_server, inbound) = mpsc::unbounded_channel();
+        let (held, first_flush) = oneshot::channel();
+        let gate = Gate::default();
+        let fed = Arc::new(Mutex::new(Vec::new()));
+        let mut socket = ClientSocket::new(
+            Gated { inbound, fed: Arc::clone(&fed), gate: gate.clone(), held: Some(held) },
+            false,
+            Arc::new(Progress::new()),
+        );
+        let settings = crate::transport::settings_channel();
+        let driven = tokio::spawn({
+            let state = Arc::clone(&state);
+            async move {
+                let receiver = settings.subscribe();
+                drive(
+                    &mut socket,
+                    &state,
+                    attached_from(),
+                    receiver,
+                    None,
+                    &mut ConnectionLife::new(mint_connection_id()),
+                )
+                .await
+            }
+        });
+
+        to_server
+            .send(Message::Text(
+                serde_json::to_string(&ClientMessage::Subscribe {
+                    what: Subject::Usage,
+                    answering: false,
+                    review: false,
+                })
+                .expect("the subscribe encodes")
+                .into(),
+            ))
+            .expect("the message goes");
+        first_flush.await.expect("the subscribe's answer reached the socket");
+
+        // The beats run while the write is stuck: 15, 30 and 45 seconds.
+        // **Each advance is followed by scheduler turns**: `advance` moves the
+        // clock without yielding, so beats left unpolled would collapse into
+        // one tick when the read half next ran.
+        for _ in 0..3 {
+            advance_and_settle(HEARTBEAT_EVERY).await;
+        }
+        assert_eq!(
+            fed.lock().expect("the frame log").iter().filter(|frame| is_ping(frame)).count(),
+            0,
+            "the ping waits in the queue while the frame in flight holds the socket",
+        );
+
+        // At 50 s the peer reads again: the frame, then the ping, land.
+        advance_and_settle(Duration::from_secs(5)).await;
+        gate.open();
+        until(
+            || fed.lock().expect("the frame log").iter().any(is_ping),
+            "the queued ping crossed once the frame did",
+        )
+        .await;
+
+        // **The stamp is the ping's write, not its queue.** A deadline taken
+        // at 15 s would have been reaped by the beat at 75 s; the wire's
+        // deadline at 50 s is still inside its bound here.
+        advance_and_settle(Duration::from_secs(30)).await;
+        assert!(!driven.is_finished(), "a ping queued behind a stalled frame reaped its peer");
+
+        // And with no answer it is reaped eventually, on the wire's clock.
+        advance_and_settle(HEARTBEAT_DEAD).await;
+        let ended = tokio::time::timeout(WRITE_BOUND * 2, driven)
+            .await
+            .expect("the unanswered ping was reaped eventually")
+            .expect("the connection task joins");
+        assert!(
+            ended
+                .expect_err("a peer that never answered must not end cleanly")
+                .downcast_ref::<PeerVanished>()
+                .is_some(),
+            "the ending names the unanswered ping",
+        );
+    }
+
+    /// **A writer's failure ends the read half and releases what it held.**
+    /// The error surfaces through the read half's own stream, and the hold it
+    /// took goes back with the guard that owns it - a hold leaked here would
+    /// keep a seat's watch scanning for a connection that is gone.
+    #[tokio::test(start_paused = true)]
+    async fn a_writer_failure_ends_the_read_half_and_releases_its_holds() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+        let slot = lead();
+        let (to_server, peer_in) = mpsc::unbounded_channel();
+        let (writing, stuck) = oneshot::channel();
+        let mut socket = ClientSocket::new(
+            StoppedReading { inbound: peer_in, writing: Some(writing) },
+            false,
+            Arc::new(Progress::new()),
+        );
+        let settings = crate::transport::settings_channel();
+        let driven = tokio::spawn({
+            let state = Arc::clone(&state);
+            async move {
+                let receiver = settings.subscribe();
+                drive(
+                    &mut socket,
+                    &state,
+                    attached_from(),
+                    receiver,
+                    None,
+                    &mut ConnectionLife::new(mint_connection_id()),
+                )
+                .await
+            }
+        });
+
+        subscribed(&to_server, &slot);
+        stuck.await.expect("the seat's snapshot reached the socket");
+        assert_eq!(state.surface.held_seat_count(&slot), 1, "the subscribe took the seat's hold");
+
+        let ended = tokio::time::timeout(WRITE_BOUND * 2, driven)
+            .await
+            .expect("the writer's failure ends the read half")
+            .expect("the connection task joins")
+            .expect_err("a failed write must not end cleanly");
+        assert!(
+            ended.downcast_ref::<WriteStalled>().is_some(),
+            "the read half ends on the writer's own error: {ended:?}",
+        );
+        assert_eq!(
+            state.surface.held_seat_count(&slot),
+            0,
+            "the hold went back with the read half",
         );
     }
 
@@ -6190,9 +6691,11 @@ mod tests {
             let state = Arc::clone(&state);
             let progress = Arc::clone(&progress);
             async move {
-                let mut socket =
-                    ClientSocket::new(StoppedReading { inbound, writing: None }, false)
-                        .watched(Arc::clone(&progress));
+                let mut socket = ClientSocket::new(
+                    StoppedReading { inbound, writing: None },
+                    false,
+                    Arc::clone(&progress),
+                );
                 let receiver = settings.subscribe();
                 supervise(
                     &mut socket,
@@ -6410,26 +6913,51 @@ mod tests {
     /// a peer that stops reading while the next ping waits behind a full
     /// buffer leaves no other write in the loop to bound, so an unbounded ping
     /// holds the role for ever.
+    /// **The bound is the writer's, on both halves of a write.** A flush a
+    /// stopped reader never completes is a peer that stopped reading
+    /// mid-frame; a sink whose buffer is full is the same peer one step
+    /// earlier. Either ends the writer at the bound, and its `done` is what
+    /// the read half reads the reason from.
     #[tokio::test(start_paused = true)]
-    async fn a_ping_that_cannot_be_written_ends_at_the_write_bound() {
-        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let mut sink = HeldSink { ready: std::sync::Arc::clone(&ready) };
-        let keepalive = Keepalive::default();
+    async fn a_flush_that_never_completes_ends_the_writer_at_the_write_bound() {
+        let (_from_test, inbound) = mpsc::unbounded_channel();
+        let mut writer =
+            Writer::new(StoppedReading { inbound, writing: None }, Arc::new(Progress::new()));
+        writer.enqueue(Write::Frame(Message::Text("a frame".into()), None));
+        writer.enqueue(Write::Flush(None));
 
-        let outcome = tokio::time::timeout(WRITE_BOUND * 2, keepalive.ping(&mut sink))
+        let failure = tokio::time::timeout(WRITE_BOUND * 2, wait_for_writer(&mut writer))
             .await
-            .expect("the ping ends at the write bound rather than never");
-        let error = outcome.expect_err("a ping the buffer cannot take is not sent");
-
+            .expect("the flush ends at the write bound rather than never")
+            .expect("a flush that never completes is not a clean end");
         assert!(
-            error.downcast_ref::<WriteStalled>().is_some(),
-            "the ping ends on the write bound rather than on a sink error: {error:?}",
+            failure.downcast_ref::<WriteStalled>().is_some(),
+            "the writer ends on the write bound rather than on a sink error: {failure:?}",
         );
-        assert_eq!(
-            keepalive.sent(),
-            None,
-            "and no deadline is stamped for a ping the peer never saw",
+    }
+
+    /// The buffer full before any flush: the frame itself cannot be taken,
+    /// and that is bounded too.
+    #[tokio::test(start_paused = true)]
+    async fn a_frame_the_sink_cannot_take_ends_the_writer_at_the_write_bound() {
+        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut writer = Writer::new(HeldSink { ready }, Arc::new(Progress::new()));
+        writer.enqueue(Write::Frame(Message::Text("a frame".into()), None));
+
+        let failure = tokio::time::timeout(WRITE_BOUND * 2, wait_for_writer(&mut writer))
+            .await
+            .expect("the frame ends at the write bound rather than never")
+            .expect("a frame the buffer cannot take is not a clean end");
+        assert!(
+            failure.downcast_ref::<WriteStalled>().is_some(),
+            "the writer ends on the write bound rather than on a sink error: {failure:?}",
         );
+    }
+
+    /// The error a writer ended on, or `None` when its queue closed cleanly.
+    async fn wait_for_writer(writer: &mut Writer) -> Option<anyhow::Error> {
+        let mut done = writer.done.take().expect("the writer's own record");
+        (&mut done).await.expect("the writer keeps its record")
     }
 
     /// **The greeting's write is bounded too.** It is the first frame every
@@ -6441,14 +6969,11 @@ mod tests {
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let (_keep, inbound) = mpsc::unbounded_channel();
-        let mut peer = StoppedReading { inbound, writing: None };
+        let peer = StoppedReading { inbound, writing: None };
 
-        tokio::time::timeout(
-            WRITE_BOUND * 2,
-            greet(ClientSocket::new(&mut peer, false), state, attached_from(), false, None),
-        )
-        .await
-        .expect("the greeting ends at the write bound rather than never");
+        tokio::time::timeout(WRITE_BOUND * 2, greet(peer, state, attached_from(), false, None))
+            .await
+            .expect("the greeting ends at the write bound rather than never");
     }
 
     /// A frame for the write tests, whose encoded length is what the record
@@ -6471,10 +6996,10 @@ mod tests {
         let bytes = serde_json::to_string(&a_frame()).expect("the frame encodes").len();
         let clock = FakeClock { starts: std::cell::RefCell::new(Vec::new()), base: Instant::now() };
 
-        let write = send_frame_timed(&mut ClientSocket::new(NullSink, false), a_frame(), &clock)
-            .await
-            .expect("the write lands");
-        assert!(!write.waited, "a sink that never yields is reported as not waiting");
+        let mut socket = ClientSocket::new(NullSink, false, Arc::new(Progress::new()));
+        let write =
+            send_frame_timed(&mut socket, a_frame(), &clock).await.expect("the write lands");
+        assert!(!write.waited, "nothing was ahead of this frame");
         assert_eq!(write.bytes, bytes, "the record carries the frame's own size");
         assert_eq!(write.write_ms, 1000.0, "the record's elapsed is the clock's, exactly");
         assert_eq!(
@@ -6497,7 +7022,7 @@ mod tests {
         };
         let text = serde_json::to_string(&large).expect("the frame encodes").len();
         let clock = FakeClock { starts: std::cell::RefCell::new(Vec::new()), base: Instant::now() };
-        let mut socket = ClientSocket::new(NullSink, true);
+        let mut socket = ClientSocket::new(NullSink, true, Arc::new(Progress::new()));
 
         let write = send_frame_timed(&mut socket, large, &clock).await.expect("the write lands");
         assert!(
@@ -6552,19 +7077,39 @@ mod tests {
         );
     }
 
-    /// **`waited` is not a constant (#2506).** A write that yields says so;
-    /// the false case is pinned beside it.
+    /// **`waited` is not a constant (#2506).** A write handed over while
+    /// another is still to complete says so; the false case is pinned beside
+    /// it. The gate holds the first frame's flush, so the second write really
+    /// is behind one in flight - which is what a slow peer looks like from
+    /// the read half now that the write itself is the writer's.
     #[tokio::test]
-    async fn a_write_that_yields_is_timed_and_says_so() {
+    async fn a_write_handed_over_behind_another_says_it_waited() {
         let bytes = serde_json::to_string(&a_frame()).expect("the frame encodes").len();
         let clock = FakeClock { starts: std::cell::RefCell::new(Vec::new()), base: Instant::now() };
+        let (_from_test, inbound) = mpsc::unbounded_channel();
+        let (held, first_flush) = oneshot::channel();
+        let gate = Gate::default();
+        let mut socket = ClientSocket::new(
+            Gated {
+                inbound,
+                fed: Arc::new(Mutex::new(Vec::new())),
+                gate: gate.clone(),
+                held: Some(held),
+            },
+            false,
+            Arc::new(Progress::new()),
+        );
 
-        let mut yielding = ClientSocket::new(YieldsOnce { yielded: false }, false);
+        socket.send(Message::Text("{\"kind\":\"bulk\"}".into())).await.expect("the frame queues");
+        first_flush.await.expect("the writer reached the flush it cannot complete");
+
         let write =
-            send_frame_timed(&mut yielding, a_frame(), &clock).await.expect("the write lands");
-        assert!(write.waited, "a flush that yielded once is reported as having waited");
+            send_frame_timed(&mut socket, a_frame(), &clock).await.expect("the write lands");
+        assert!(write.waited, "a write handed over behind one in flight says so");
         assert_eq!(write.bytes, bytes, "the record carries the frame's own size");
         assert_eq!(write.write_ms, 1000.0, "the record's elapsed is the clock's, exactly");
+
+        gate.open();
     }
 
     /// The oldest boundary a window names, as a walk below the floor starts
@@ -8253,7 +8798,10 @@ mod tests {
     fn connection(state: &Arc<TransportState>) -> Driven {
         let (to_server, inbound) = mpsc::unbounded_channel();
         let (outbound, mut from_server) = mpsc::unbounded_channel();
-        let peer = ClientSocket::new(Peer { inbound, outbound }, false);
+        // **The clock is made here, not in the task**, so a test can read what
+        // a wedge would report without capturing the log.
+        let progress = Arc::new(Progress::new());
+        let peer = ClientSocket::new(Peer { inbound, outbound }, false, Arc::clone(&progress));
         let written = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&written);
         // The frames are recorded rather than dropped, so a test can wait on
@@ -8267,15 +8815,12 @@ mod tests {
         });
         let state = Arc::clone(state);
         let settings = crate::transport::settings_channel();
-        // **The clock is made here, not in the task**, so a test can read what
-        // a wedge would report without capturing the log.
-        let progress = Arc::new(Progress::new());
         let watched_progress = Arc::clone(&progress);
         // The production path rather than `drive` alone: the teardown these
         // tests assert on runs in `finish`, which a bare `drive` never calls.
         let driven = tokio::spawn(async move {
             let receiver = settings.subscribe();
-            let mut peer = peer.watched(Arc::clone(&watched_progress));
+            let mut peer = peer;
             supervise(
                 &mut peer,
                 &state,
@@ -8288,6 +8833,17 @@ mod tests {
             .await
         });
         Driven { to_server, written, driven, progress }
+    }
+
+    /// Move the paused clock on and let the tasks take what it fired.
+    /// **`tokio::time::advance` moves the clock without yielding**, so a
+    /// timer left unpolled would collapse into the next task run and a
+    /// heartbeat mid-stall would never be seen on its own.
+    async fn advance_and_settle(by: Duration) {
+        tokio::time::advance(by).await;
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
     }
 
     /// Wait until `condition` holds, or fail the test with `why`.
@@ -9118,34 +9674,38 @@ mod tests {
         assert_eq!(line["slot"], "<none>", "a detach with nothing on screen names no seat: {line}");
     }
 
-    /// **Only a completed flush is progress.** A flush still pending is not,
-    /// and a loop turn is not either: the bound would otherwise claim bytes
-    /// that never landed, and a slow but healthy connection would be reaped
-    /// mid-write - the false positive the watchdog exists to prevent.
+    /// **Only a completed flush is progress.** A frame handed to a writer
+    /// whose flush never completes is not, and a loop turn is not either: the
+    /// bound would otherwise claim bytes that never landed, and a slow but
+    /// healthy connection would be reaped mid-write - the false positive the
+    /// watchdog exists to prevent.
     #[tokio::test(start_paused = true)]
     async fn only_a_completed_flush_moves_the_watchdog_clock() {
         let progress = Arc::new(Progress::new());
-        let socket =
-            ClientSocket::new(YieldsOnce { yielded: false }, false).watched(Arc::clone(&progress));
-        let mut socket = std::pin::pin!(socket);
-        let waker = futures_util::task::noop_waker();
-        let mut cx = std::task::Context::from_waker(&waker);
+        let (_from_test, inbound) = mpsc::unbounded_channel();
+        let (writing, stalled) = oneshot::channel();
+        let mut socket = ClientSocket::new(
+            StoppedReading { inbound, writing: Some(writing) },
+            false,
+            Arc::clone(&progress),
+        );
 
         tokio::time::advance(Duration::from_secs(10)).await;
         let parked = progress.silent_for(tokio::time::Instant::now());
         assert_eq!(parked, Duration::from_secs(10), "nothing has flushed yet");
 
-        assert!(
-            futures_util::Sink::poll_flush(socket.as_mut(), &mut cx).is_pending(),
-            "the sink was expected to yield once",
-        );
+        socket.send(Message::Text("a frame".into())).await.expect("the frame queues");
+        stalled.await.expect("the writer reached the flush it cannot complete");
         assert_eq!(
             progress.silent_for(tokio::time::Instant::now()),
             parked,
             "a flush that has not completed is not progress",
         );
 
-        assert!(futures_util::Sink::poll_flush(socket.as_mut(), &mut cx).is_ready());
+        // The control: the same handoff to a socket whose flush completes.
+        let mut healthy = ClientSocket::new(NullSink, false, Arc::clone(&progress));
+        healthy.send(Message::Text("a frame".into())).await.expect("the frame queues");
+        healthy.settle().await;
         assert_eq!(
             progress.silent_for(tokio::time::Instant::now()),
             Duration::ZERO,
