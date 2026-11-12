@@ -2829,11 +2829,7 @@ where
                     // this connection writes before the workspace could ever
                     // see a command.
                     if let Some(body) = upload_answer(state, &command).await {
-                        return send(
-                            socket,
-                            ServerMessage::Reply { reply_to: to, body },
-                        )
-                        .await;
+                        return send(socket, ServerMessage::Reply { reply_to: to, body });
                     }
                     dispatch_answering(state, command, to, &reads.reply);
                     Ok(())
