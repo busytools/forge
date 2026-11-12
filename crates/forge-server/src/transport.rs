@@ -458,7 +458,7 @@ impl TransportState {
         // the registry sweeps on a clock rather than on the next client's
         // arrival. The weak handle lets the task go with the state.
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            runtime.spawn(sweep_uploads(Arc::downgrade(&state.surface.uploads())));
+            runtime.spawn(sweep_uploads(Arc::downgrade(state.surface.uploads())));
         }
         state
     }
