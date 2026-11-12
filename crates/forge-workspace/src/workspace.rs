@@ -4176,6 +4176,17 @@ impl Workspace {
         &self.config_dir
     }
 
+    /// forge's machine-local app-support base, or the boot failure that left
+    /// it unresolved.
+    ///
+    /// **The one answer for every caller that needs it**: the dictation
+    /// preflight, the shared inbox and anything else machine-local read it
+    /// here rather than resolving the platform dir again. Hard rule 14: no
+    /// cwd fallback, and a failure is reported rather than substituted.
+    pub fn app_support_dir(&self) -> Result<PathBuf, String> {
+        app_support_answer(self.app_support.as_deref(), self.app_support_error.as_deref())
+    }
+
     /// Per-model dictation progress for the preflight screen. Empty
     /// `models` means `[dictate] enabled` is false and preflight has no
     /// Dictation section to draw.
@@ -7841,6 +7852,19 @@ impl Workspace {
                     if let Some(respond) = respond {
                         let _ = respond.send(material);
                     }
+                }
+                // **The socket's own.** A file upload's registry, its
+                // partials and its inbox write live on the transport,
+                // which answers these before dispatch because the chunks
+                // that follow are binary frames only it sees. One reaching
+                // here is a caller that bypassed the wire.
+                Command::FileUploadBegin { .. }
+                | Command::FileUploadResume { .. }
+                | Command::FileUploadEnd { .. } => {
+                    tracing::debug!(
+                        target: "forge_workspace",
+                        "a file upload command reached the workspace; the transport answers it",
+                    );
                 }
                 other => {
                     tracing::warn!(
@@ -28265,7 +28289,7 @@ impl crate::dictate::DictateHost for Workspace {
     }
 
     fn app_support_dir(&self) -> Result<std::path::PathBuf, String> {
-        app_support_answer(self.app_support.as_deref(), self.app_support_error.as_deref())
+        Workspace::app_support_dir(self)
     }
 
     fn emit(&self, update: crate::dictate::DictateUpdate) -> bool {

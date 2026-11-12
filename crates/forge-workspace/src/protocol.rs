@@ -218,6 +218,21 @@ impl WorktreeDisposition {
     }
 }
 
+/// One file a client is about to upload: the name a person sees, the bytes
+/// the client declares, and the provider's type when it had one.
+///
+/// The declared size is the client's word about the file it copied; the
+/// server checks the bytes that arrive against it at the end and refuses an
+/// upload that does not add up. `mime` is informational and the inbox keeps
+/// the name, not the type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileDecl {
+    pub name: String,
+    pub size: u64,
+    #[serde(default)]
+    pub mime: Option<String>,
+}
+
 /// Command envelope: a view -> forge-workspace.
 ///
 /// Every variant carries a `SessionSlot` identifying the target
@@ -947,6 +962,32 @@ pub enum Command {
         key: SessionSlot,
         voice: String,
     },
+    /// Begin a file upload into the seat's project inbox.
+    ///
+    /// **Answered by the transport, not the workspace.** The upload registry,
+    /// the partial files and the inbox write are the socket's own, because
+    /// the chunks that follow are binary frames only it sees; this variant
+    /// exists so the begin crosses the wire as a command like every other
+    /// one. The reply carries the upload's id and the absolute paths the
+    /// files will land at.
+    FileUploadBegin {
+        key: SessionSlot,
+        files: Vec<FileDecl>,
+    },
+    /// Continue an upload the server still holds, answering the offsets it
+    /// already has. An unknown or expired id is refused in words, which is
+    /// what tells a client to begin again from the first byte.
+    FileUploadResume {
+        key: SessionSlot,
+        upload_id: u64,
+    },
+    /// Finish an upload: every file is checked against its declared size, the
+    /// partials are renamed into place, and the reply carries the paths.
+    /// Answered by the transport, as [`Self::FileUploadBegin`] is.
+    FileUploadEnd {
+        key: SessionSlot,
+        upload_id: u64,
+    },
 }
 
 impl Command {
@@ -998,6 +1039,11 @@ impl Command {
             | Self::DictateUninstall { .. }
             | Self::SetReviewThreadStatus { .. }
             | Self::CloseSession { .. }
+            // The transport answers these three itself: no session task has a
+            // part in a file upload.
+            | Self::FileUploadBegin { .. }
+            | Self::FileUploadResume { .. }
+            | Self::FileUploadEnd { .. }
             | Self::UpsertReviewThread { .. }
             | Self::DeleteReviewThread { .. }
             | Self::RespondSlackPost { .. }
@@ -1347,6 +1393,21 @@ impl std::fmt::Debug for Command {
             Self::VoicePreview { key, voice } => {
                 f.debug_struct("VoicePreview").field("key", key).field("voice", voice).finish()
             }
+            Self::FileUploadBegin { key, files } => f
+                .debug_struct("FileUploadBegin")
+                .field("key", key)
+                .field("files", &files.len())
+                .finish(),
+            Self::FileUploadResume { key, upload_id } => f
+                .debug_struct("FileUploadResume")
+                .field("key", key)
+                .field("upload_id", upload_id)
+                .finish(),
+            Self::FileUploadEnd { key, upload_id } => f
+                .debug_struct("FileUploadEnd")
+                .field("key", key)
+                .field("upload_id", upload_id)
+                .finish(),
         }
     }
 }

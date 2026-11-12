@@ -1,7 +1,7 @@
 //! The binary frames on the socket.
 //!
 //! One WebSocket binary message per frame: a one-byte kind tag, then the
-//! payload. Three kinds, and what tells them apart is the tag alone:
+//! payload. What tells each kind apart is the tag alone:
 //!
 //! - [`Kind::Dictation`] - a client's mono PCM at [`SAMPLE_RATE`], the rate
 //!   the dictation models read. The server decodes this one.
@@ -11,6 +11,12 @@
 //!   bytes are never re-encoded or decoded here**; the server only moves them.
 //! - [`Kind::BrowserAudio`] - the viewed page's audio, relayed to the
 //!   controlling client with its profile, sequence, sample rate and channels.
+//! - [`Kind::TerminalOutput`] and [`Kind::TerminalInput`] - one terminal's
+//!   output and a client's keystrokes, each an id and a sequence or bytes.
+//! - [`Kind::FileChunk`] - one chunk of a shared file's upload: the upload
+//!   id, the file's index, the offset the bytes belong at, then the bytes.
+//!   The server writes them into the upload's partial file and answers
+//!   nothing (the upload's own end reply is what says how it went).
 //!
 //! **Tag 3 is not a kind here.** A whole `ServerMessage` body, gzipped for a
 //! client that declared `deflate=1`, is built by the connection's encoder and
@@ -49,6 +55,15 @@ pub const HEADER_BYTES: usize = 1;
 /// the server hold a large allocation per message.
 pub const MAX_PAYLOAD_BYTES: usize = 16 * 1024;
 
+/// One file chunk's header, tag included: the upload, the file and the
+/// offset.
+pub const FILE_CHUNK_HEADER_BYTES: usize = 15;
+
+/// The largest file-chunk payload a frame may carry. **A bound of its own**,
+/// not the dictation frame's: an upload is bulk bytes, and 64 KiB keeps the
+/// per-frame overhead small without a large allocation per message.
+pub const MAX_FILE_CHUNK_BYTES: usize = 64 * 1024;
+
 /// What a binary frame is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -66,6 +81,9 @@ pub enum Kind {
     TerminalOutput,
     /// One client's terminal input: the terminal id, then the raw bytes.
     TerminalInput,
+    /// One chunk of a file a client is uploading: the upload id, the file's
+    /// index, the offset the bytes belong at, then the bytes themselves.
+    FileChunk,
 }
 
 impl Kind {
@@ -77,6 +95,7 @@ impl Kind {
             Self::BrowserAudio => 2,
             Self::TerminalOutput => forge_primitives::terminal::TERMINAL_OUTPUT_TAG,
             Self::TerminalInput => forge_primitives::terminal::TERMINAL_INPUT_TAG,
+            Self::FileChunk => 6,
         }
     }
 
@@ -87,6 +106,7 @@ impl Kind {
             2 => Some(Self::BrowserAudio),
             forge_primitives::terminal::TERMINAL_OUTPUT_TAG => Some(Self::TerminalOutput),
             forge_primitives::terminal::TERMINAL_INPUT_TAG => Some(Self::TerminalInput),
+            6 => Some(Self::FileChunk),
             _ => None,
         }
     }
@@ -180,6 +200,10 @@ pub enum Refusal {
     ServerOnly(u8),
     /// A terminal input frame shorter than its two-byte id.
     ShortTerminalInput(usize),
+    /// A file chunk shorter than its header.
+    ShortFileChunk(usize),
+    /// A file-chunk payload past [`MAX_FILE_CHUNK_BYTES`].
+    OversizedFileChunk(usize),
 }
 
 impl Refusal {
@@ -198,6 +222,14 @@ impl Refusal {
             Self::ShortTerminalInput(bytes) => {
                 format!("{bytes} bytes is shorter than a terminal input frame's two-byte id")
             }
+            Self::ShortFileChunk(bytes) => {
+                format!(
+                    "{bytes} bytes is shorter than a file chunk's {FILE_CHUNK_HEADER_BYTES}-byte header"
+                )
+            }
+            Self::OversizedFileChunk(bytes) => {
+                format!("{bytes} bytes of payload is past the file chunk cap")
+            }
         }
     }
 }
@@ -209,6 +241,9 @@ pub enum Frame {
     Audio(Vec<f32>),
     /// One client's terminal input: the terminal id and the bytes.
     TerminalInput { id: u16, bytes: Vec<u8> },
+    /// One file chunk: which upload, which file, the offset its bytes belong
+    /// at, and the bytes.
+    FileChunk { upload_id: u64, file_index: u16, offset: u32, bytes: Vec<u8> },
 }
 
 /// Decode one binary message a client sent.
@@ -241,6 +276,25 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, Refusal> {
             };
             Ok(Frame::TerminalInput {
                 id: u16::from_le_bytes([header[0], header[1]]),
+                bytes: bytes.to_vec(),
+            })
+        }
+        Kind::FileChunk => {
+            if payload.len() > MAX_FILE_CHUNK_BYTES {
+                return Err(Refusal::OversizedFileChunk(payload.len()));
+            }
+            let Some((header, bytes)) =
+                payload.split_at_checked(FILE_CHUNK_HEADER_BYTES - HEADER_BYTES)
+            else {
+                return Err(Refusal::ShortFileChunk(payload.len()));
+            };
+            Ok(Frame::FileChunk {
+                upload_id: u64::from_le_bytes([
+                    header[0], header[1], header[2], header[3], header[4], header[5], header[6],
+                    header[7],
+                ]),
+                file_index: u16::from_le_bytes([header[8], header[9]]),
+                offset: u32::from_le_bytes([header[10], header[11], header[12], header[13]]),
                 bytes: bytes.to_vec(),
             })
         }
@@ -443,6 +497,51 @@ mod tests {
         assert_eq!(decode(&frame), Err(Refusal::ServerOnly(4)));
     }
 
+    /// **A file chunk is the upload, the file, the offset and the bytes**, in
+    /// that order. The offset is what the server writes at, so a field that
+    /// moved here is a file with a hole rather than an error.
+    #[test]
+    fn a_file_chunk_carries_its_upload_file_offset_and_bytes() {
+        let mut bytes = vec![Kind::FileChunk.tag()];
+        bytes.extend_from_slice(&0x0102_0304_0506_0708_u64.to_le_bytes());
+        bytes.extend_from_slice(&3_u16.to_le_bytes());
+        bytes.extend_from_slice(&0x0a0b_0c0d_u32.to_le_bytes());
+        bytes.extend_from_slice(b"hi");
+        assert_eq!(
+            decode(&bytes),
+            Ok(Frame::FileChunk {
+                upload_id: 0x0102_0304_0506_0708,
+                file_index: 3,
+                offset: 0x0a0b_0c0d,
+                bytes: b"hi".to_vec(),
+            }),
+        );
+        assert_eq!(Kind::FileChunk.tag(), 6, "the tag a client sends");
+        assert_eq!(
+            FILE_CHUNK_HEADER_BYTES,
+            1 + 8 + 2 + 4,
+            "the tag, the upload, the file and the offset"
+        );
+    }
+
+    /// A chunk with no header is refused rather than read as an empty one.
+    #[test]
+    fn a_short_file_chunk_is_refused() {
+        assert_eq!(decode(&[Kind::FileChunk.tag(), 1, 2, 3]), Err(Refusal::ShortFileChunk(3)),);
+    }
+
+    /// The chunk cap is its own bound, checked before the payload is copied.
+    #[test]
+    fn an_oversized_file_chunk_is_refused_with_its_length() {
+        let mut bytes = vec![Kind::FileChunk.tag()];
+        bytes.extend(std::iter::repeat_n(0u8, FILE_CHUNK_HEADER_BYTES));
+        bytes.extend(std::iter::repeat_n(0u8, MAX_FILE_CHUNK_BYTES));
+        assert_eq!(
+            decode(&bytes),
+            Err(Refusal::OversizedFileChunk(FILE_CHUNK_HEADER_BYTES + MAX_FILE_CHUNK_BYTES)),
+        );
+    }
+
     /// Every refusal has its own sentence, so a log line says what the
     /// frame was rather than that something was wrong.
     #[test]
@@ -453,6 +552,8 @@ mod tests {
             Refusal::ServerOnly(1),
             Refusal::Oversized(MAX_PAYLOAD_BYTES + 1),
             Refusal::UnevenPayload(3),
+            Refusal::ShortFileChunk(3),
+            Refusal::OversizedFileChunk(MAX_FILE_CHUNK_BYTES + 1),
         ] {
             assert!(!refusal.reason().is_empty(), "{refusal:?} has no line");
         }

@@ -2224,13 +2224,16 @@ where
         // server takes.** Nothing binary comes from a client for the browser:
         // browser frames are the server's to send.
         Message::Binary(bytes) => {
-            take_frame(
-                &state.surface,
-                dictate,
-                &mut viewers.terminal,
-                me,
-                frame_route(&bytes, dictate),
-            );
+            let route = frame_route(&bytes, dictate);
+            // **A file chunk is written before the take routing**, on a
+            // blocking thread: it is a disk write, and the connection's loop
+            // must not carry it. The loop is sequential, so awaiting it here
+            // also keeps the chunks of one upload in the order they arrived.
+            if let FrameRoute::FileChunk { upload_id, file_index, offset, bytes } = route {
+                write_file_chunk(state, upload_id, file_index, offset, bytes).await;
+                return Ok(());
+            }
+            take_frame(&state.surface, dictate, &mut viewers.terminal, me, route);
             return Ok(());
         }
         _ => return Ok(()),
@@ -2765,6 +2768,18 @@ where
             match (reply_to, answers_through_a_reply(&command)) {
                 (Some(to), true) => {
                     dispatched(me, &command);
+                    // **The three file uploads answer here.** Their registry,
+                    // their partials and their inbox write are the socket's
+                    // own, and the chunks that feed them are binary frames
+                    // this connection writes before the workspace could ever
+                    // see a command.
+                    if let Some(body) = upload_answer(state, &command).await {
+                        return send(
+                            socket,
+                            ServerMessage::Reply { reply_to: to, body },
+                        )
+                        .await;
+                    }
                     dispatch_answering(state, command, to, &reads.reply);
                     Ok(())
                 }
@@ -3988,6 +4003,8 @@ enum FrameRoute {
     Audio(Vec<f32>),
     /// One client's terminal input, for the terminal this connection views.
     TerminalInput { id: u16, bytes: Vec<u8> },
+    /// One chunk of a shared file, for the upload registry to write.
+    FileChunk { upload_id: u64, file_index: u16, offset: u32, bytes: Vec<u8> },
     /// A binary message that is not a frame this server takes.
     Refused(super::frame::Refusal),
     /// A dictation frame, but this connection has not started a take to give
@@ -4017,6 +4034,44 @@ fn frame_route(bytes: &[u8], dictate: &Streaming) -> FrameRoute {
             FrameRoute::Audio(samples)
         }
         super::frame::Frame::TerminalInput { id, bytes } => FrameRoute::TerminalInput { id, bytes },
+        super::frame::Frame::FileChunk { upload_id, file_index, offset, bytes } => {
+            FrameRoute::FileChunk { upload_id, file_index, offset, bytes }
+        }
+    }
+}
+
+/// Write one file chunk into its upload's partial, off the connection's loop.
+///
+/// **Nothing answers a chunk.** A binary frame has no reply channel, so a
+/// refused chunk - an unknown upload, a gap, bytes past the declared size -
+/// is a debug record and the upload's own end reply is what the client acts
+/// on. Awaiting the write here is what keeps one upload's chunks in order.
+async fn write_file_chunk(
+    state: &TransportState,
+    upload_id: u64,
+    file_index: u16,
+    offset: u32,
+    bytes: Vec<u8>,
+) {
+    let uploads = Arc::clone(state.surface.uploads());
+    let written =
+        tokio::task::spawn_blocking(move || uploads.chunk(upload_id, file_index, offset, &bytes))
+            .await;
+    match written {
+        Ok(Ok(())) => {}
+        Ok(Err(why)) => tracing::debug!(
+            event_name = "file_chunk_refused",
+            upload_id,
+            file_index,
+            %why,
+            "a file chunk was not written",
+        ),
+        Err(error) => tracing::warn!(
+            event_name = "file_chunk_write_panicked",
+            upload_id,
+            %error,
+            "the blocking upload writer ended without answering",
+        ),
     }
 }
 
@@ -4035,6 +4090,14 @@ fn take_frame(
     route: FrameRoute,
 ) {
     match route {
+        // **A file chunk is the binary branch's own**: it is written before
+        // this routing, because a disk write must not ride the take path.
+        // The arm is here to keep the match total.
+        FrameRoute::FileChunk { upload_id, .. } => tracing::debug!(
+            event_name = "file_chunk_misrouted",
+            upload_id,
+            "a file chunk reached the take routing",
+        ),
         FrameRoute::TerminalInput { id, bytes } => {
             // **Only the answering connection viewing the terminal may type
             // into it, and only while a hand-off is parked.** The keystrokes
@@ -5050,7 +5113,65 @@ fn answers_through_a_reply(command: &Command) -> bool {
             | Command::BiometricEnrol { .. }
             | Command::BiometricRewrite { .. }
             | Command::VaultEnrolmentMaterial { .. }
+            // The file uploads are the transport's own, answered from the
+            // inbox registry before the workspace sees them.
+            | Command::FileUploadBegin { .. }
+            | Command::FileUploadResume { .. }
+            | Command::FileUploadEnd { .. }
     )
+}
+
+/// Run one blocking inbox operation off the connection's loop.
+///
+/// A `JoinError` is the blocking pool losing the task, not the operation
+/// refusing: it is said in its own words so a client does not read a
+/// crash as a full disk.
+async fn blocking<T, F>(work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| format!("the upload writer ended without answering: {error}"))?
+}
+
+/// One value as a reply body.
+fn encode<T: serde::Serialize>(value: T) -> Result<serde_json::Value, String> {
+    serde_json::to_value(value).map_err(|error| format!("the answer could not be encoded: {error}"))
+}
+
+/// Answer one of the file-upload commands from the transport's own inbox.
+///
+/// **The workspace has no part in an upload**: the registry, the partials
+/// and the inbox write are the socket's, because the chunks that follow are
+/// binary frames it alone sees. `None` is a command this is not about.
+async fn upload_answer(state: &TransportState, command: &Command) -> Option<serde_json::Value> {
+    let uploads = Arc::clone(state.surface.uploads());
+    let answer = match command {
+        Command::FileUploadBegin { key, files } => {
+            let key = key.clone();
+            let files = files.clone();
+            blocking(move || uploads.begin(&key, &files).and_then(encode)).await
+        }
+        Command::FileUploadResume { key, upload_id } => {
+            let key = key.clone();
+            let upload_id = *upload_id;
+            blocking(move || uploads.resume(&key, upload_id).and_then(encode)).await
+        }
+        Command::FileUploadEnd { key, upload_id } => {
+            let key = key.clone();
+            let upload_id = *upload_id;
+            blocking(move || uploads.end(&key, upload_id).and_then(encode)).await
+        }
+        _ => return None,
+    };
+    Some(match answer {
+        Ok(body) => body,
+        // **A refusal rides the reply**, as every reply-carrying command's
+        // does: a client that awaited it learns why in the core's words.
+        Err(why) => serde_json::Value::String(why),
+    })
 }
 
 /// A call's own output, read from the transport's held copy of its seat.

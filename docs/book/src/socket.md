@@ -113,7 +113,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 29,
+  "version": 32,
   "forge_version": "1.1.25 · abc1234",
   "forge_version_short": "1.1.25+abc1234",
   "settings": {
@@ -383,8 +383,8 @@ variant's own name rather than on `kind`:
 }
 ```
 
-A command's variant is its name around its field bag - `Command` has 70
-variants, 63 of them struct variants; the seven unit variants,
+A command's variant is its name around its field bag - `Command` has 73
+variants, 66 of them struct variants; the seven unit variants,
 `dictate_catalogue_check`, `dictate_bench_stop`, `voice_bench_start`,
 `voice_bench_stop`, `plugin_update_all`, `plugin_check_updates` and
 `vault_lock`, cross as the name alone. An update is the same
@@ -779,12 +779,46 @@ lines the ceiling reaches, flagged `truncated`, rather than refusing.
 `why`, because a page draws that as the absence of a control rather than as
 a broken file.
 
+**`file_upload_begin {key, files}`** - begin one share's upload into the
+seat's project inbox. `files` is one entry per file: `{name, size, mime}`,
+where `size` is the bytes the client copied and `mime` is the provider's type
+when it had one. The answer rides the reply: `{upload_id, paths}`, the id the
+chunks name and the absolute paths the files will land at. **The whole share
+is validated before anything is written** - a total past 200 MB, more than
+256 files, or a seat whose org or project cannot be a directory name is a
+refusal in the core's own words and creates nothing.
+
+**`file_upload_resume {key, upload_id}`** - continue an upload the server
+still holds. The answer is `{paths, received}`, the bytes it already has per
+file, so a client re-sends from those offsets. An id the server does not hold
+- a restart took the registry, or the one-hour grace window passed - is
+refused in words, which is what tells a client to begin again from the first
+byte. **The id is bound to the seat it was begun for**: a resume or an end
+naming another seat is refused exactly as an unknown id is.
+
+**`file_upload_end {key, upload_id}`** - finish the upload. Every file is
+checked against the size it declared; one that arrived short refuses the end
+and leaves the upload held, so a retry can finish it. On success the partials
+are renamed into place together and the reply carries `{paths}`.
+
+**The inbox** is
+`<app-support>/inbox/<org>/<project>/<YYYYMMDD-HHMMSS>-<name>`, where
+`<app-support>` is forge's machine-local app-support directory. The seat's
+org and project choose the directory; the label does not, because a project's
+agents share its inbox. The name is the shared file's display name sanitised
+- no path, no control characters, never `.` or `..`, capped - and a collision
+gets a suffix. **Files are kept until the person or the agent deletes them**:
+nothing sweeps the inbox. Partials carry a `.partial` suffix and are renamed
+only when the upload ends, so a half-written file never appears as a shared
+one; a dropped upload's entry and partials are kept for one hour and then
+swept, and a resume past that window starts over.
+
 **Binary messages are frames, and a frame's first byte says which kind.** A
 client that captures sends one dictation frame per 20 ms of speech:
 
 | bytes | field   | value                                                                       |
 | ----- | ------- | --------------------------------------------------------------------------- |
-| 1     | kind    | `0` = dictation; `1` = browser frame; `2` = browser audio; `4` = terminal output; `5` = terminal input |
+| 1     | kind    | `0` = dictation; `1` = browser frame; `2` = browser audio; `4` = terminal output; `5` = terminal input; `6` = file chunk |
 | rest  | samples | i16 little-endian, mono, 16 kHz (kind `0`)                                  |
 
 **A terminal output frame (kind `4`) is the server's**: a little-endian `u16`
@@ -795,6 +829,25 @@ resume after a pause is answered the same way** - the frames it missed are
 not replayed.
 **A terminal input frame (kind `5`) is a client's**: the same id and then the
 keystrokes. Both are refused from the wrong direction, as a browser frame is.
+
+**A file chunk (kind `6`) is a client's**: a little-endian `u64` upload id, a
+`u16` file index, a `u32` offset, then the bytes, up to 64 KiB of payload -
+a bound of its own rather than the dictation frame's 16 KiB.
+
+| bytes | field   | value                                             |
+| ----- | ------- | ------------------------------------------------- |
+| 1     | kind    | `6` = file chunk                                  |
+| 8     | upload  | the upload's id, little-endian u64                |
+| 2     | file    | the file's index in the share, little-endian u16  |
+| 4     | offset  | where the bytes belong, little-endian u32         |
+| rest  | bytes   | the file's own bytes, up to 64 KiB                |
+
+**The offset is what makes a retry safe.** A chunk whose offset is behind the
+bytes the server already holds is a duplicate and is ignored; one ahead of
+them is a gap and is refused, because the socket is ordered. The server
+writes at the offset it expects and checks the bytes against the size the
+upload declared, so a client's word about a file is never taken for the
+file.
 
 A dictation frame carries no seat. It addresses the take its own CONNECTION
 started: one connection streams one take at a time and its messages are
@@ -869,12 +922,14 @@ never asked never meets a frame it cannot read.
 path before the frames behind it are delivered, so a compressed snapshot and
 the updates that follow it keep the sequence the server wrote.
 
-**A binary frame from a client is audio or it is not a frame this server
-takes.** The browser frames and the page's sound are the server's alone, so
-one arriving from a client is refused by its kind tag; nothing is waiting on
-it and no ask is failed by it. A refused frame is answered by nothing - a
-binary frame has no reply channel - so the debug record is what makes it
-legible.
+**A binary frame from a client is audio, a terminal's keystrokes or a file
+chunk, or it is not a frame this server takes.** The browser frames and the
+page's sound are the server's alone, so one arriving from a client is refused
+by its kind tag; nothing is waiting on it and no ask is failed by it. A
+refused frame is answered by nothing - a binary frame has no reply channel -
+so the debug record is what makes it legible. **A refused file chunk is the
+same**: an unknown upload, a gap or bytes past the declared size writes a
+debug record, and the upload's own end reply is what the client acts on.
 
 **`dictate_stream {key, options, surface}`** - begin a take the CLIENT
 captures. The connection that sends it feeds the audio as the binary frames

@@ -19,6 +19,7 @@ pub mod plugins;
 pub mod reviews;
 pub mod roster;
 pub mod session;
+pub mod upload;
 pub mod usage;
 pub mod vault;
 pub mod voice;
@@ -67,6 +68,10 @@ pub struct ViewSurface {
     /// barrier rather than a large pool that might finish first.
     #[cfg(any(test, feature = "testing"))]
     usage_gate: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    /// The shared-file inbox every connection's uploads land in. Process-wide
+    /// because an upload outlives the connection that began it: a reconnected
+    /// client resumes the same entry.
+    uploads: Arc<upload::Uploads>,
 }
 
 /// The update the core emits, re-exported: it is the workspace-to-view
@@ -96,6 +101,7 @@ fn cap_bytes(kb: u64) -> usize {
 
 impl ViewSurface {
     pub fn new(workspace: Arc<Workspace>) -> Self {
+        let uploads = upload::Uploads::new(workspace.app_support_dir());
         Self {
             workspace,
             usage_cache: std::sync::Mutex::new(None),
@@ -105,7 +111,16 @@ impl ViewSurface {
             usage_scans: std::sync::atomic::AtomicU64::new(0),
             #[cfg(any(test, feature = "testing"))]
             usage_gate: std::sync::Mutex::new(None),
+            uploads: Arc::new(uploads),
         }
+    }
+
+    /// The shared-file inbox: an upload's registry and its partial files.
+    ///
+    /// **Every operation on it is blocking I/O**, so a caller runs each on a
+    /// blocking thread rather than on the connection's loop.
+    pub fn uploads(&self) -> &Arc<upload::Uploads> {
+        &self.uploads
     }
 
     /// The terminal a client asked to view, with this connection counted as

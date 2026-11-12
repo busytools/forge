@@ -38,6 +38,9 @@ axum = { workspace = true, features = ["ws"] }
 base64 = { workspace = true }
 # A frame over the compression threshold crosses gzipped as binary kind 3.
 flate2 = { workspace = true }
+# An upload id is unguessable by construction: it is the only thing a resume
+# names, so it comes from the OS's entropy rather than a counter.
+getrandom = { workspace = true }
 # The protocol client's own arguments. A BIN cannot see dev-dependencies, so
 # a binary crate's arguments are a real dependency or they are hand-parsed.
 clap = { workspace = true }
@@ -62,7 +65,9 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 # A forged delivery row is stamped at the forge, like every other row a page
 # serves: the client's clock anchors a turn on the first row carrying one.
-time = { workspace = true }
+# `local-offset` is the upload inbox's own: a share's file is named by the
+# clock a person reads it by, and the format needs the local offset.
+time = { workspace = true, features = ["local-offset"] }
 # The subscription verb hands out the workspace's own receiver, and naming
 # that type is a tokio channel. `net` is the listener the socket binds:
 # the workspace's own set does not carry it, and without it
