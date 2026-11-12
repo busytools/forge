@@ -60,6 +60,7 @@ function draw(
     connection?: Connection;
     files?: SharedFile[];
     error?: string | null;
+    empty?: boolean;
     preselect?: SessionSlot | null;
     upload?: UploadFn;
   } = {},
@@ -70,7 +71,11 @@ function draw(
     props: {
       connection: over.connection ?? connection,
       seats: [LEAD, WORKER],
-      shared: { files: over.files ?? FILES, error: over.error ?? null },
+      shared: {
+        files: over.files ?? FILES,
+        error: over.error ?? null,
+        empty: over.empty ?? false,
+      },
       preselect: over.preselect ?? null,
       onclose: () => {},
       upload: over.upload ?? (() => Promise.resolve({ paths: ['/inbox/photo.jpg'] })),
@@ -307,6 +312,23 @@ describe('the share sheet', () => {
     expect(lines().some((line) => line.includes('the provider refused it'))).toBe(true);
     expect(sendButton()).toBeNull();
   });
+
+  /// **A share of nothing is drawn neutrally, not as a failure.** A SEND
+  /// with no stream is a share the app took and that carried no file; the
+  /// sheet says that rather than accusing a share nothing went wrong with.
+  it('draws a share of nothing as the neutral line', () => {
+    draw({ files: [], empty: true });
+    expect(lines()).toEqual(['This share carried no files.']);
+    expect(document.querySelector('.line.bad')).toBeNull();
+    expect(sendButton()).toBeNull();
+  });
+
+  /// **A visit to the route with no share behind it draws the same line**,
+  /// which is what the book's empty state quotes.
+  it('draws the neutral line on a route visit with no share', () => {
+    draw({ files: [] });
+    expect(lines()).toEqual(['This share carried no files.']);
+  });
 });
 
 describe('the share prompt', () => {
@@ -331,6 +353,7 @@ describe('a share payload', () => {
       { path: '/cache/1/a.jpg', name: 'a.jpg', size: 4, mime: 'image/jpeg' },
     ]);
     expect(shared?.error).toBeNull();
+    expect(shared?.empty).toBe(false);
   });
 
   it('drops a row that is not a file', () => {
@@ -338,9 +361,24 @@ describe('a share payload', () => {
     expect(shared?.files).toHaveLength(1);
   });
 
+  /// **A payload whose rows all failed the narrowing is a refusal, not an
+  /// empty share**: the sheet draws the reason rather than the neutral line.
+  it('refuses a payload whose rows are all unreadable', () => {
+    const shared = shareOf({ files: [{ name: 'no path' }, { size: 3 }] });
+    expect(shared?.files).toEqual([]);
+    expect(shared?.error).toBe('this share named files this client cannot read');
+    expect(shared?.empty).toBe(false);
+  });
+
+  it('keeps a share of nothing as its own fact', () => {
+    const shared = shareOf({ files: [], error: null, empty: true });
+    expect(shared?.empty).toBe(true);
+  });
+
   it('is not a share worth opening when it names nothing', () => {
-    expect(worthOpening({ files: [], error: null })).toBe(false);
-    expect(worthOpening({ files: [], error: 'refused' })).toBe(true);
+    expect(worthOpening({ files: [], error: null, empty: false })).toBe(false);
+    expect(worthOpening({ files: [], error: 'refused', empty: false })).toBe(true);
+    expect(worthOpening({ files: [], error: null, empty: true })).toBe(true);
     expect(shareOf({ nothing: true })).toBeNull();
   });
 });

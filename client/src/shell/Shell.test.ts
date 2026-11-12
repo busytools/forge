@@ -508,6 +508,7 @@ describe('the shell at launch', () => {
       pendingShare.set({
         files: [{ path: '/cache/share/1/a.jpg', name: 'a.jpg', size: 1, mime: null }],
         error: null,
+        empty: false,
       });
       return Promise.resolve(true);
     });

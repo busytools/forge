@@ -58,8 +58,8 @@ cache paths, and the shell reads those bytes.
 
 **A cold start's share is the activity's launch intent**, which the page asks for once; a share
 into a running app arrives as an event and opens the sheet over whatever the reader was on. Both
-answer the same payload, and a share that carried no file - or one that could not be read - is
-said on the sheet rather than drawn as an empty form. **A share that arrives before the page's
+answer the same payload: a share that carried no file is drawn as its neutral line, one that could
+not be read is drawn with the intake's reason, and neither opens on an empty form. **A share that arrives before the page's
 listener is registered is buffered** and answered by the page's first ask, and the share already
 answered is remembered across a process restart, so a launch that re-delivers its intent does not
 prompt the same share twice. **A second share while the sheet is open replaces it**: the sheet is
@@ -70,7 +70,8 @@ and the page is already on its route rather than a second history entry.
 
 The sheet draws the idle form with its files, seat and box; an upload in flight with the line and
 the bar; a failure with the server's own reason and a retry; the sent ending with the seat and the
-paths; "this share carried no files" for an empty share or one whose files could not be read; "no
+paths; "this share carried no files" for a share that carried none - a SEND with no stream, or the
+route visited with no share behind it; the intake's reason for a share that could not be read; "no
 seat is running to send to" when the roster is empty; and the refused home read when the fleet
 would not answer.
 

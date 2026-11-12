@@ -102,9 +102,10 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
   ) {
     markAnswered(token)
     if (streams.isEmpty()) {
-      // **A SEND that carries no stream is a share of nothing**, and saying so
-      // is what makes the sheet's "this share carried no file" reachable.
-      done(payload(emptyList(), NO_FILE))
+      // **A SEND that carries no stream is a share of nothing, not a
+      // failure**: the payload says so with its own flag, so the sheet draws
+      // its neutral "carried no files" rather than an error it did not meet.
+      done(payload(emptyList(), null, empty = true))
       return
     }
     if (streams.size > MAX_FILES) {
@@ -267,7 +268,6 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
     private const val PREFS = "forge-share"
     private const val ANSWERED = "answered"
 
-    internal const val NO_FILE = "this share carried no file"
     internal const val TOO_LARGE = "the share is larger than 200 MB"
     internal const val COPY_TIMEOUT = "the share took too long to copy"
 
@@ -278,8 +278,14 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
     /** The share this process last answered, as the fast path over [`PREFS`]. */
     @Volatile private var answered: String? = null
 
-    /** The payload both doors answer with: the files, or why there are none. */
-    internal fun payload(files: List<SharedFile>, error: String?): JSObject {
+    /**
+     * The payload both doors answer with: the files, or why there are none.
+     *
+     * **`empty` is its own fact, not an error**: a SEND that carried no stream
+     * is a share of nothing and draws the sheet's neutral line, while `error`
+     * is a share that could not be read and draws its reason.
+     */
+    internal fun payload(files: List<SharedFile>, error: String?, empty: Boolean = false): JSObject {
       val rows = JSArray()
       for (file in files) {
         val row = JSObject()
@@ -292,6 +298,7 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
       val payload = JSObject()
       payload.put("files", rows)
       payload.put("error", error)
+      payload.put("empty", empty)
       return payload
     }
 

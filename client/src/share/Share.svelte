@@ -56,8 +56,8 @@
     connection: Connection;
     /** Every seat the roster carries, in the order the picker draws them. */
     seats: SessionSlot[];
-    /** The files the share handed this app, or the reason there are none. */
-    shared: { files: SharedFile[]; error: string | null };
+    /** The files the share handed this app, why there are none, or that it carried none. */
+    shared: { files: SharedFile[]; error: string | null; empty: boolean };
     /** Whether this install offers dictation at all. */
     dictate?: boolean;
     /** The seat the reader was last on, offered as the picker's first value. */
@@ -276,7 +276,7 @@
 
   {#if shared.error !== null}
     <p class="line bad">The share could not be read: {shared.error}</p>
-  {:else if shared.files.length === 0}
+  {:else if shared.empty || shared.files.length === 0}
     <p class="line">This share carried no files.</p>
   {:else if seats.length === 0}
     <p class="line">No seat is running to send to.</p>

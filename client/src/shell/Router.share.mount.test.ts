@@ -84,6 +84,7 @@ describe('a second share through the router', () => {
     pendingShare.set({
       files: [{ path: '/cache/1/a.jpg', name: 'a.jpg', size: 1, mime: null }],
       error: null,
+      empty: false,
     });
     draw();
     expect(document.body.textContent).toContain('a.jpg');
@@ -101,6 +102,7 @@ describe('a second share through the router', () => {
     pendingShare.set({
       files: [{ path: '/cache/2/b.pdf', name: 'b.pdf', size: 2, mime: null }],
       error: null,
+      empty: false,
     });
     flushSync();
     expect(document.body.textContent).toContain('b.pdf');

@@ -59,13 +59,19 @@ pub(crate) struct SharedFile {
     pub mime: Option<String>,
 }
 
-/// What the Kotlin half answers: the copied files, or why there are none.
+/// What the Kotlin half answers: the copied files, why there are none, or -
+/// when a share carried no stream at all - that it was a share of nothing.
+///
+/// **`empty` is its own fact, not an error**: a SEND with no stream draws the
+/// sheet's neutral line, while `error` is a share that could not be read.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Shared {
     #[serde(default)]
     pub files: Vec<SharedFile>,
     #[serde(default)]
     pub error: Option<String>,
+    #[serde(default)]
+    pub empty: bool,
 }
 
 /// One upload's progress, as the sheet draws it.
@@ -741,11 +747,19 @@ mod tests {
         assert_eq!(shared.files[0].mime, None);
         assert_eq!(shared.error, None);
 
-        let empty: Shared =
+        let refused: Shared =
             serde_json::from_value(json!({ "files": [], "error": "the provider refused it" }))
                 .expect("a refused share");
-        assert!(empty.files.is_empty());
-        assert_eq!(empty.error.as_deref(), Some("the provider refused it"));
+        assert!(refused.files.is_empty());
+        assert_eq!(refused.error.as_deref(), Some("the provider refused it"));
+        assert!(!refused.empty, "a refusal is not a share of nothing");
+
+        let nothing: Shared =
+            serde_json::from_value(json!({ "files": [], "error": null, "empty": true }))
+                .expect("a share of nothing");
+        assert!(nothing.files.is_empty());
+        assert_eq!(nothing.error, None);
+        assert!(nothing.empty, "a SEND with no stream is its own fact");
     }
 
     /// **Two files cross in one upload**, each at its own index: a driver

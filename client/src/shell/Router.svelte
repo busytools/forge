@@ -318,7 +318,7 @@
       <Share
         {connection}
         seats={home.wire.agents.map((agent) => agent.slot)}
-        shared={$pendingShare ?? { files: [], error: null }}
+        shared={$pendingShare ?? { files: [], error: null, empty: false }}
         {dictate}
         preselect={$lastSeat}
         onclose={closeShare}

@@ -22,10 +22,18 @@ export interface SharedFile {
   mime: string | null;
 }
 
-/** What the shell's share intake answers: the files, or why there are none. */
+/**
+ * What the shell's share intake answers: the files, why there are none, or
+ * that the share carried no file at all.
+ *
+ * **`empty` is not an error**: a SEND with no stream is a share of nothing
+ * and draws the sheet's neutral line, while `error` is a share the intake
+ * could not read and draws its reason.
+ */
 export interface Shared {
   files: SharedFile[];
   error: string | null;
+  empty: boolean;
 }
 
 /**

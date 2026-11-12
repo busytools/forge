@@ -279,6 +279,7 @@ describe('axe over the rendered pages', () => {
         shared: {
           files: [{ path: '/cache/share/1/photo.jpg', name: 'photo.jpg', size: 10, mime: null }],
           error: null,
+          empty: false,
         },
         onclose: () => {},
       },

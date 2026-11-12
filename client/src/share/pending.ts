@@ -39,12 +39,13 @@ export function shareOf(value: unknown): Shared | null {
     ];
   });
   const error = typeof held['error'] === 'string' ? held['error'] : null;
+  const empty = held['empty'] === true;
   // **A payload whose rows all failed the narrowing is a refusal too**: the
   // sheet says so rather than opening on a share with nothing in it.
   if (rows.length === 0 && files.length > 0 && error === null) {
-    return { files: [], error: 'this share named files this client cannot read' };
+    return { files: [], error: 'this share named files this client cannot read', empty: false };
   }
-  return { files: rows, error };
+  return { files: rows, error, empty };
 }
 
 /**
@@ -55,7 +56,10 @@ export function shareOf(value: unknown): Shared | null {
  * the sheet on that would put a dead page in front of every cold start.
  */
 export function worthOpening(shared: Shared): boolean {
-  return shared.files.length > 0 || shared.error !== null;
+  // **A share of nothing is still a share**: the sheet opens to say it
+  // carried no file, rather than the launch passing for one that shared
+  // nothing at all.
+  return shared.files.length > 0 || shared.error !== null || shared.empty;
 }
 
 /**
