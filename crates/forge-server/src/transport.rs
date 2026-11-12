@@ -304,6 +304,13 @@ pub mod wire;
 /// enum and field names rather than values, so it does not itself evidence
 /// the widened kind.
 ///
+/// **v32 adds the shared-file upload.** The app-level `file_upload_begin`,
+/// `file_upload_resume` and `file_upload_end` commands, and the `6` binary
+/// frame kind a share's chunks cross as. A v31 server refuses the kind and
+/// drops every chunk (a binary frame answers nothing), so a v31 client's
+/// upload would end against an upload it never fed; the two halves move
+/// together. `baselines/socket/32/` is the record a v32 server emitted.
+///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
