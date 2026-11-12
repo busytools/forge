@@ -189,6 +189,20 @@ impl Uploads {
         files: &[FileDecl],
         connection: u64,
     ) -> Result<Began, String> {
+        let now =
+            time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+        self.begin_at(seat, files, connection, now)
+    }
+
+    /// Begin one upload at the clock it is given, so a test can pin the names
+    /// two shares in one second choose rather than race the wall.
+    fn begin_at(
+        &self,
+        seat: &SessionSlot,
+        files: &[FileDecl],
+        connection: u64,
+        now: time::OffsetDateTime,
+    ) -> Result<Began, String> {
         self.sweep();
         let root = self.root.as_ref().map_err(Clone::clone)?;
         if files.is_empty() {
@@ -256,13 +270,16 @@ impl Uploads {
         std::fs::create_dir_all(&dir).map_err(|error| {
             format!("the inbox at {} could not be created: {error}", dir.display())
         })?;
-        let stamp = timestamp(
-            time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc()),
-        );
-        // **Every final this begin has reserved so far**: a later file of the
-        // same display name must not be handed an earlier one's name, because
-        // no final exists on disk yet to refuse it.
-        let mut reserved: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+        let stamp = timestamp(now);
+        // **Every final a live upload holds, plus the ones this begin has
+        // reserved so far**: a final that has not landed yet is not on disk,
+        // so only this set can refuse its name - to a later file of the same
+        // share, and to another share in the same second alike.
+        let mut reserved: std::collections::HashSet<PathBuf> = registry
+            .values()
+            .flat_map(|upload| upload.files.iter())
+            .map(|file| file.final_path.clone())
+            .collect();
         let mut made: Vec<FileState> = Vec::with_capacity(files.len());
         for (index, file) in files.iter().enumerate() {
             match reserve(&dir, &stamp, &sanitised_name(&file.name), upload_id, index, &reserved)
@@ -1051,6 +1068,22 @@ mod tests {
         let began = begin(&uploads, &[decl("photo.jpg", 1), decl("photo.jpg", 1)]).expect("begins");
         assert_ne!(began.paths[0], began.paths[1]);
         assert!(began.paths[1].contains("-2"), "{}", began.paths[1]);
+    }
+
+    /// **Two shares in one second do not choose one final name.** The second
+    /// share's final is not on disk yet - only a partial is - so the live
+    /// reservations are what give it the next suffix, rather than both
+    /// landing the same path and the second failing after its whole transfer.
+    #[test]
+    fn two_shares_in_one_second_do_not_share_a_final_name() {
+        let (_dir, uploads) = uploads();
+        let at = time::macros::datetime!(2026-11-12 09:07:05 UTC);
+        let first =
+            uploads.begin_at(&seat(), &[decl("photo.jpg", 1)], 1, at).expect("the first share");
+        let second =
+            uploads.begin_at(&seat(), &[decl("photo.jpg", 1)], 1, at).expect("the second share");
+        assert_ne!(first.paths[0], second.paths[0], "the second share took the first's name");
+        assert!(second.paths[0].contains("-2"), "{}", second.paths[0]);
     }
 
     /// A share past the cap is refused before anything is created.
