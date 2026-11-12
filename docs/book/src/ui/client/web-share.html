@@ -232,18 +232,16 @@
     </div>
 
     <div class="tile">
-      <div class="tcap">Disconnected - <b>waiting for the connection</b></div>
+      <div class="tcap">No seat - <b>nothing to send to</b></div>
       <div class="share">
         <div class="top"><h1>share to a seat</h1><span class="chip">close</span></div>
         <div class="files">
           <div class="file"><span class="nm">IMG_2041.jpg</span><span class="sz">3.2 MB</span></div>
         </div>
-        <p class="line">Waiting for the connection...</p>
-        <div class="box"><div class="field">say something about the files</div>
-          <div class="acts"><span class="chip add" disabled>send</span></div></div>
+        <p class="line">No seat is running to send to.</p>
       </div>
-      <div class="tnote">the existing connect flow runs; nothing is queued invisibly, and send
-        stays disabled until a socket is open</div>
+      <div class="tnote">a roster with no seats is said rather than drawn as an empty picker;
+        the page itself is only mounted once a fleet read has answered</div>
     </div>
 
     <div class="tile">

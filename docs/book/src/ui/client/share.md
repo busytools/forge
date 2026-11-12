@@ -6,9 +6,9 @@ it through the same history every page uses. The drawing it is held against is
 [web-share.html](./web-share.html), beside this page.
 
 **Android is the only intake in this cut.** The share sheet lists forge for `ACTION_SEND` and
-`ACTION_SEND_MULTIPLE`; the desktop app and the web client draw no door to this page and are
-unchanged. Desktop drag-and-drop and the web file picker are the next cut over the same server
-mechanism.
+`ACTION_SEND_MULTIPLE`; the desktop app and the web client draw no door to this page. The route
+is still addressable by URL there, where with no Android share behind it the sheet draws "this
+share carried no files" and cannot upload.
 
 ## What it draws
 
@@ -17,7 +17,7 @@ mechanism.
 | File list | each shared file's display name and size, and the share's total against the 200 MB cap | the shell's share intake |
 | Seat | one seat from the roster, the reader's last seat preselected, the roster's first when there is no last one | the home's `agents` |
 | Box | the words that go with the files, with the composer's own dictation control | the reader, and the seat's `composer` notice |
-| Progress | one line naming the file and its percentage, a bar, and whether the upload is resuming or starting over | the upload's own channel |
+| Progress | one line naming the file and its percentage, a bar labelled by that line, and - only when the send had a previous upload - whether it is resuming or starting over | the upload's own channel |
 | Ending | the reason and a retry, or the seat it was sent to and the paths the prompt names | the upload's answer, and the prompt's dispatch |
 
 **The upload comes first and the prompt second.** The agent is messaged only after the server has
@@ -35,8 +35,15 @@ agent reads the files with its own tools.
 machine-local app-support directory. The seat's org and project choose the directory; the label
 does not, because a project's agents share its inbox. The name is the shared file's display name
 sanitised, and a collision gets a suffix. **Files are kept until the person or the agent deletes
-them** - nothing sweeps the inbox - and a partial carries a `.partial` suffix until the upload
-ends, so a half-written file never appears as a shared one.
+them** - nothing sweeps the inbox - and a partial carries `.<upload-id>.partial` until the upload
+ends, so half-written bytes never appear as a shared file and one share's partial cannot collide
+with another's final name. The final name is linked into place only where nothing holds it.
+
+**The bounds are the server's and the app's alike**: one share carries at most 200 MB over 256
+files, and the app checks the published sizes and then the bytes that land against the same wall.
+The server also holds at most eight live uploads, 1,024 live partial files and 1 GiB of declared
+bytes at once, refusing a begin past any of them. A restart loses the registry, so the sweep takes
+the partials it orphaned by their age on disk as well as the entries it still holds.
 
 ## The intake
 
@@ -47,10 +54,24 @@ cache paths, and the shell reads those bytes.
 
 **A cold start's share is the activity's launch intent**, which the page asks for once; a share
 into a running app arrives as an event and opens the sheet over whatever the reader was on. Both
-answer the same payload, and a share that carried no files - or one that could not be read - is
-said on the sheet rather than drawn as an empty form. **A second share while the sheet is open
-replaces it**: the sheet is keyed on the share, so it draws the new files' idle form rather than
-the last share's sent state.
+answer the same payload, and a share that carried no file - or one that could not be read - is
+said on the sheet rather than drawn as an empty form. **A share that arrives before the page's
+listener is registered is buffered** and answered by the page's first ask, and the share already
+answered is remembered across a process restart, so a launch that re-delivers its intent does not
+prompt the same share twice. **A second share while the sheet is open replaces it**: the sheet is
+keyed on the share, so it draws the new files' idle form rather than the last share's sent state,
+and the page is already on its route rather than a second history entry.
+
+## The states
+
+The sheet draws the idle form with its files, seat and box; an upload in flight with the line and
+the bar; a failure with the server's own reason and a retry; the sent ending with the seat and the
+paths; "this share carried no files" for an empty share or one whose files could not be read; "no
+seat is running to send to" when the roster is empty; and the refused home read when the fleet
+would not answer.
+
+**"Starting over from the first byte" is drawn only after an attempt.** A first send has no
+previous upload to restart, so the sheet does not claim one.
 
 ## The box
 
