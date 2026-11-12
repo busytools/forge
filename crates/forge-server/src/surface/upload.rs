@@ -332,7 +332,7 @@ impl Uploads {
                     // A share that could not be reserved whole leaves nothing
                     // behind: the partials already made go with the refusal.
                     for state in made {
-                        let _ = std::fs::remove_file(state.partial);
+                        discard(&state.partial);
                     }
                     return Err(why);
                 }
@@ -553,7 +553,7 @@ impl Uploads {
             );
             for file in upload.files {
                 drop(file.handle);
-                let _ = std::fs::remove_file(&file.partial);
+                discard(&file.partial);
             }
             return Err(unknown());
         }
@@ -569,17 +569,17 @@ impl Uploads {
             // refuses it where a rename would replace it.
             match std::fs::hard_link(&partial, &final_path) {
                 Ok(()) => {
-                    let _ = std::fs::remove_file(&partial);
+                    discard(&partial);
                 }
                 Err(error) => {
                     let shown = final_path.display();
                     let why = format!("{shown} could not be moved into place: {error}");
-                    let _ = std::fs::remove_file(&partial);
+                    discard(&partial);
                     for rest in files {
-                        let _ = std::fs::remove_file(rest.partial);
+                        discard(&rest.partial);
                     }
                     for landed in &paths {
-                        let _ = std::fs::remove_file(landed);
+                        discard(Path::new(landed));
                     }
                     return Err(why);
                 }
@@ -602,7 +602,7 @@ impl Uploads {
             let Some(upload) = registry.remove(&id) else { continue };
             for file in upload.files {
                 drop(file.handle);
-                let _ = std::fs::remove_file(&file.partial);
+                discard(&file.partial);
             }
             tracing::debug!(
                 event_name = "upload_expired",
@@ -676,9 +676,29 @@ fn remove_orphans(
         let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) else {
             continue;
         };
-        if now.duration_since(modified).is_ok_and(|age| age > GRACE) {
-            let _ = std::fs::remove_file(&path);
+        if now.duration_since(modified).is_ok_and(|age| age > GRACE) && discard(&path) {
             *removed += 1;
+        }
+    }
+}
+
+/// Remove a file this server made, answering whether it is gone.
+///
+/// **A cleanup that fails is forge's own problem**: the file is litter in the
+/// inbox, and a silent `let _` is the one way nobody learns it is there. A
+/// file that is already gone is the outcome asked for, not a failure.
+fn discard(path: &Path) -> bool {
+    match std::fs::remove_file(path) {
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => {
+            tracing::warn!(
+                event_name = "upload_cleanup_failed",
+                path = %path.display(),
+                %error,
+                "a file this server made could not be removed",
+            );
+            false
         }
     }
 }
