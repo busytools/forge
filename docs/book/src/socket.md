@@ -76,10 +76,11 @@ deadline: about 80 seconds.
 The shell's transport counts bytes under the socket and calls the link dead 10
 seconds after a probe that drew none. A
 browser is handed whole messages only, so its deadline is the write bound
-above plus a margin (65 seconds). **A probe is answered while a frame is
-being written**: the connection reads on one task and writes on another, so a
-slow frame no longer holds a probe's answer behind it. The browser's margin
-is its own client-side bound and stays as it is.
+above plus a margin (65 seconds). **The connection is one task reading and
+one writing**: a read half that serves what the client asks, and a write half
+that owns the socket. So a probe is read and answered while a frame is being
+written - but **the pong is a frame like any other**, and it queues behind
+the frame in flight. The browser's margin still covers the write bound.
 
 **The frame is application-level rather than a WebSocket control frame**,
 because a browser page cannot send a Ping through its WebSocket API - one
@@ -89,8 +90,8 @@ server answers it with `pong` and no workspace involvement at all.
 **One frame write is bounded too.** The server ends a connection when a
 single write takes longer than 60 seconds: a peer that stopped reading
 holds that write open while answering no ping, and TCP can take minutes to
-report the socket gone. The write is the connection's write half, a task of
-its own, so the read half goes on serving commands while it runs. A frame
+report the socket gone. The write runs on the write half, the task that owns
+the socket, so the read half goes on serving commands while it runs. A frame
 that was partly written cannot be resumed, so the connection is torn down
 rather than the frame retried. The bound sits above the slowest frame
 measured - a 3.5 MB snapshot to a slow client, 31.6 s - and matches the

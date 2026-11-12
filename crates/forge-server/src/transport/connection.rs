@@ -234,6 +234,23 @@ impl std::fmt::Display for PeerVanished {
 
 impl std::error::Error for PeerVanished {}
 
+/// The connection's writer task ended without leaving a record, which is
+/// forge's own bug rather than the peer leaving.
+///
+/// **Its own marker because [`ending`] names the way out**: a writer that
+/// panicked would otherwise be recorded as a clean close, and a forge bug
+/// would be invisible behind the client's own name.
+#[derive(Debug)]
+struct WriterLost;
+
+impl std::fmt::Display for WriterLost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the connection's writer task ended without recording why")
+    }
+}
+
+impl std::error::Error for WriterLost {}
+
 /// One connection's keepalive: the ping it has out, if any.
 ///
 /// **A silent read is not evidence of a dead peer until something has been
@@ -245,13 +262,25 @@ impl std::error::Error for PeerVanished {}
 /// reports it on the wire.
 #[derive(Debug, Default)]
 struct Keepalive {
+    state: std::sync::Mutex<KeepaliveState>,
+}
+
+#[derive(Debug, Default)]
+struct KeepaliveState {
     /// When the outstanding ping was written, `None` when none is out. Any
     /// inbound frame clears it, because any frame is the peer answering in
-    /// some form. A lock rather than a cell: the stamp is taken from the
-    /// read half's `select!`, and a cell is not `Sync`. Tokio's clock rather
-    /// than the standard one, so a test that pauses time pauses the deadline
-    /// with it - the clock [`Progress`] already keeps.
-    sent: std::sync::Mutex<Option<tokio::time::Instant>>,
+    /// some form. Tokio's clock rather than the standard one, so a test that
+    /// pauses time pauses the deadline with it - the clock [`Progress`]
+    /// already keeps.
+    sent: Option<tokio::time::Instant>,
+    /// How many frames have arrived. **A ping's completion can be polled
+    /// after the answer it produced**: the select is biased to reads, so a
+    /// Pong and the writer's completion can both be ready on the same pass
+    /// and the Pong wins. The generation captured when the ping was queued
+    /// is what tells the completion its answer has already landed - without
+    /// it, the stamp would arm a deadline for a ping the peer answered and
+    /// reap a live streaming client 60 s later.
+    heard: u64,
 }
 
 /// What one beat should do.
@@ -266,22 +295,37 @@ enum Beat {
 }
 
 impl Keepalive {
+    fn lock(&self) -> std::sync::MutexGuard<'_, KeepaliveState> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// The outstanding ping's send time, if one is out.
     fn sent(&self) -> Option<tokio::time::Instant> {
-        *self.sent.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.lock().sent
     }
 
     /// A frame arrived, so whatever was asked, the peer is answering.
     fn heard(&self) {
-        *self.sent.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        let mut state = self.lock();
+        state.sent = None;
+        state.heard = state.heard.wrapping_add(1);
     }
 
-    /// A ping the writer has just written. **The stamp is taken when the
-    /// writer reports it written**, not when the read half queued it: a ping
-    /// held behind a stalled frame owes the peer nothing until it is on the
-    /// wire.
-    fn stamp(&self, at: tokio::time::Instant) {
-        *self.sent.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(at);
+    /// The generation a ping is queued under: any answer that lands after
+    /// this point moves it.
+    fn generation(&self) -> u64 {
+        self.lock().heard
+    }
+
+    /// A ping the writer has just written, stamped **only if no frame has
+    /// arrived since it was queued**. A ping held behind a stalled frame
+    /// owes the peer nothing until it is on the wire, and a ping the peer
+    /// already answered owes nothing at all.
+    fn stamp_if_unheard(&self, generation: u64, at: tokio::time::Instant) {
+        let mut state = self.lock();
+        if state.heard == generation {
+            state.sent = Some(at);
+        }
     }
 
     /// What this beat should do. **Asking does not stamp the deadline**: the
@@ -425,7 +469,7 @@ impl Drop for TerminalViewing {
 
 /// Send the attached terminal's screen as a VT stream, and where the stream
 /// continues from.
-async fn send_terminal_view<S>(
+fn send_terminal_view<S>(
     socket: &mut ClientSocket<S>,
     viewing: &TerminalViewing,
     repaint: &[u8],
@@ -450,7 +494,6 @@ where
             controller: viewing.entry.controller(),
         },
     )
-    .await
 }
 
 /// What the terminal has for the loop.
@@ -835,19 +878,19 @@ async fn greet<S>(
         );
         return;
     };
-    if socket.send(Message::Text(text.into())).await.is_err() {
-        return;
-    }
+    // **The greeting queues and the connection carries on.** A write that
+    // cannot complete ends the connection through the writer's own record in
+    // `supervise`, not here: the enqueue cannot fail, and a peer that reads
+    // nothing is the writer's bound to find.
+    socket.write(Message::Text(text.into()));
     // The effective config follows the greeting in the same open: the
     // greeting names the sets a client draws with, and the document is what
     // the settings page reads. It is already encoded once for every
     // connection.
     let settings = state.settings.subscribe();
     let sent_settings = state.settings.borrow().clone();
-    if let Some(text) = &sent_settings
-        && send_text(&mut socket, text).await.is_err()
-    {
-        return;
+    if let Some(text) = &sent_settings {
+        socket.write(frame_for(&socket, text));
     }
     if let Err(error) =
         supervise(&mut socket, &state, peer, me, settings, sent_settings, &progress).await
@@ -1452,6 +1495,10 @@ where
     // stamped when the writer reports it written, so the read half can keep
     // serving inbound frames while a bulk write holds the ping in the queue.
     let mut pings: FuturesUnordered<oneshot::Receiver<()>> = FuturesUnordered::new();
+    // The generation the queued ping was queued under: a frame that lands
+    // before its completion is the answer, and the completion must not stamp
+    // a deadline over it.
+    let mut ping_generation: Option<u64> = None;
     loop {
         let due = held.due();
         tokio::select! {
@@ -1491,7 +1538,7 @@ where
                         // Its turn at last: every ask ahead of it is answered,
                         // so this refusal lands on the ask it was made for.
                         Queued::Withdrawn(what) => {
-                            send(socket, released_subscribe(&what)).await?;
+                            send(socket, released_subscribe(&what))?;
                         }
                     }
                 }
@@ -1504,7 +1551,7 @@ where
                 let Some(answer) = answer else { break };
                 batch::flush(socket, held.take()).await?;
                 match answer {
-                    Answer::Reply(message) => send(socket, *message).await?,
+                    Answer::Reply(message) => send(socket, *message)?,
                     Answer::Read(read) => {
                         finish_read(socket, state, watching, holds, &mut reads.one, &mut held, *read)
                             .await?;
@@ -1521,7 +1568,7 @@ where
                                     .await?;
                                 }
                                 Queued::Withdrawn(what) => {
-                                    send(socket, released_subscribe(&what)).await?;
+                                    send(socket, released_subscribe(&what))?;
                                 }
                             }
                         }
@@ -1541,7 +1588,7 @@ where
                     if current != last_settings {
                         batch::flush(socket, held.take()).await?;
                         if let Some(text) = &current {
-                            send_text(socket, text).await?;
+                            send_text(socket, text)?;
                         }
                         last_settings = current;
                     }
@@ -1657,8 +1704,7 @@ where
                                 viewers: state.viewers,
                                 viewer: me,
                             },
-                        )
-                        .await?;
+                        )?;
                     }
                     // **The page navigated on its own**: a link click or a
                     // fragment moves the bar's arrows, and nobody asked.
@@ -1672,8 +1718,7 @@ where
                                 can_back: nav.can_back,
                                 can_forward: nav.can_forward,
                             },
-                        )
-                        .await?;
+                        )?;
                     }
                     // **A page's file chooser goes to the person driving it.**
                     // The shell opens its picker and answers with the bytes;
@@ -1724,8 +1769,7 @@ where
                                 tab: ask.tab,
                                 multiple: ask.multiple,
                             },
-                        )
-                        .await?;
+                        )?;
                     }
                     // **A finished download goes to the person driving.** A
                     // watcher's connection receives the broadcast and drops
@@ -1755,8 +1799,7 @@ where
                                 dropped,
                                 lost,
                             },
-                        )
-                        .await?;
+                        )?;
                     }
                     // **The page's own sound goes to the person driving.**
                     // Only the controller hears; a watcher's connection drops
@@ -1784,8 +1827,7 @@ where
                         if let Some(host) = state.browser_host.as_ref() {
                             host.detach(me).await;
                         }
-                        send(socket, ServerMessage::BrowserSurfaceFailed { id, tab, reason })
-                            .await?;
+                        send(socket, ServerMessage::BrowserSurfaceFailed { id, tab, reason })?;
                     }
                 }
             }
@@ -1805,8 +1847,7 @@ where
                         closing_at_ms: list.closing_at_ms,
                         rows: list.rows,
                     },
-                )
-                .await?;
+                )?;
             }
             // **The attached terminal's bytes, once a viewer asked.** The
             // frames are this terminal's own stream; a lag past the broadcast
@@ -1835,14 +1876,13 @@ where
                                 id: viewing.id,
                                 controller,
                             },
-                        )
-                        .await?;
+                        )?;
                     }
                     TerminalEvent::Resync => {
                         if let Some(viewing) = viewers.terminal.viewing.as_mut() {
                             let (repaint, seq) = viewing.entry.terminal.repaint_and_seq();
                             viewing.last_seq = seq.saturating_sub(1);
-                            send_terminal_view(socket, viewing, &repaint).await?;
+                            send_terminal_view(socket, viewing, &repaint)?;
                         }
                     }
                     TerminalEvent::Gone => {
@@ -1865,12 +1905,13 @@ where
             // that case.
             _ = beat.tick() => {
                 match keepalive.beat(tokio::time::Instant::now(), beat_dead) {
-                    // **A ping is queued, never awaited.** The writer stamps
-                    // the ping's deadline only once it reports the frame
+                    // **A ping is queued, never awaited.** The completion's
+                    // stamp is taken only once the writer reports the frame
                     // written, and the read half stays free to answer the
                     // peer while a bulk write holds the ping in the queue.
                     Beat::Ping if pings.is_empty() => {
                         let (done, written) = oneshot::channel();
+                        ping_generation = Some(keepalive.generation());
                         socket.ping(done);
                         pings.push(written);
                     }
@@ -1899,12 +1940,20 @@ where
             // **A queued ping reached the wire.** The deadline starts here,
             // when the writer reports it written, not when the read half
             // queued it: a ping held behind a stalled frame owes the peer
-            // nothing until it is on the wire. A completion that never
-            // arrives means the writer died first, and the writer's own
-            // `done` carries that ending through `socket.next()`.
+            // nothing until it is on the wire. **Unless a frame has arrived
+            // since it was queued**: the Pong and this completion can both be
+            // ready on the same pass, and the biased select above reads the
+            // Pong first - the generation captured at the queue is what
+            // stops a deadline being armed for a ping the peer answered. A
+            // completion that never arrives means the writer died first, and
+            // the writer's own `done` carries that ending through
+            // `socket.next()`.
             written = pings.next(), if !pings.is_empty() => {
-                if matches!(written, Some(Ok(()))) {
-                    keepalive.stamp(tokio::time::Instant::now());
+                let generation = ping_generation.take();
+                if matches!(written, Some(Ok(())))
+                    && let Some(generation) = generation
+                {
+                    keepalive.stamp_if_unheard(generation, tokio::time::Instant::now());
                 }
             }
             // The deadline is a value, not a condition: with nothing held the
@@ -2054,8 +2103,7 @@ where
     // screen (`Showing`), not when it starts listening.
     let seat = report.as_ref().and_then(|report| report.seat.clone());
     watching.subjects.push(subject.clone());
-    let write =
-        send_frame_timed(socket, ServerMessage::Snapshot { subject, data }, &SystemClock).await?;
+    let write = send_frame_timed(socket, ServerMessage::Snapshot { subject, data }, &SystemClock)?;
     if let Some(report) = &report {
         log_open(report, &write);
     }
@@ -2072,7 +2120,7 @@ where
     Ok(())
 }
 
-/// The open's two records: the snapshot's write, and the session's slices.
+/// The open's two records: the snapshot's handoff, and the session's slices.
 fn log_open(report: &OpenReport, write: &FrameWrite) {
     let Some(slot) = &report.seat else { return };
     // The snapshot's own write, its own record: the open below keeps the
@@ -2207,7 +2255,6 @@ where
                     dispatch_id: None,
                 },
             )
-            .await
         }
     }
 }
@@ -2277,8 +2324,7 @@ where
                 seat: None,
                 dispatch_id: None,
             },
-        )
-        .await;
+        );
     };
     handle_message(
         socket, state, watching, holds, updates, dictate, viewers, reads, arrival, client,
@@ -2311,7 +2357,7 @@ where
 {
     let Some(host) = state.browser_host.as_ref() else {
         let why = "this server has no browser to view".to_owned();
-        return refuse_attach(socket, reply_to, &why, seat).await;
+        return refuse_attach(socket, reply_to, &why, seat);
     };
     // **A hand-off opens by page**, so a parked ask survives the host being
     // replaced under it; everything else is the tab it names.
@@ -2355,8 +2401,7 @@ where
                     viewers: now.viewers,
                     viewer: me,
                 },
-            )
-            .await?;
+            )?;
             if let Some(frame) = kept {
                 let mut transport = super::frame::SocketFrames { socket: &mut *socket };
                 transport.deliver(&frame).await?;
@@ -2370,8 +2415,7 @@ where
                         can_back: nav.can_back,
                         can_forward: nav.can_forward,
                     },
-                )
-                .await?;
+                )?;
             }
             match reply_to {
                 Some(ask) => {
@@ -2386,7 +2430,6 @@ where
                             body: json!({ "ok": true, "profile": key, "tab": tab }),
                         },
                     )
-                    .await
                 }
                 None => Ok(()),
             }
@@ -2413,7 +2456,7 @@ where
             // neither a phantom viewer nor the role that viewer held.
             host.detach(me).await;
             *viewing = None;
-            refuse_attach(socket, reply_to, &why, seat).await
+            refuse_attach(socket, reply_to, &why, seat)
         }
     }
 }
@@ -2422,7 +2465,7 @@ where
 ///
 /// **The answer is the screen as a VT stream**, so a page that opens a
 /// terminal nobody has drawn yet has content immediately; frames follow.
-async fn attach_terminal<S>(
+fn attach_terminal<S>(
     socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     terminal: &mut TerminalViewingState,
@@ -2476,19 +2519,13 @@ where
                 paused: false,
                 last_seq,
             };
-            send_terminal_view(socket, &viewing, &repaint).await?;
+            send_terminal_view(socket, &viewing, &repaint)?;
             terminal.viewing = Some(viewing);
             match reply_to {
-                Some(ask) => {
-                    send(
-                        socket,
-                        ServerMessage::Reply {
-                            reply_to: ask,
-                            body: json!({ "ok": true, "id": id }),
-                        },
-                    )
-                    .await
-                }
+                Some(ask) => send(
+                    socket,
+                    ServerMessage::Reply { reply_to: ask, body: json!({ "ok": true, "id": id }) },
+                ),
                 None => Ok(()),
             }
         }
@@ -2501,28 +2538,22 @@ where
                 "a terminal attach was refused",
             );
             match reply_to {
-                Some(ask) => {
-                    send(
-                        socket,
-                        ServerMessage::Reply {
-                            reply_to: ask,
-                            body: json!({ "ok": false, "why": why }),
-                        },
-                    )
-                    .await
-                }
-                None => {
-                    send(
-                        socket,
-                        ServerMessage::Error {
-                            what: "terminal_view".to_owned(),
-                            why,
-                            seat: Some(seat),
-                            dispatch_id: None,
-                        },
-                    )
-                    .await
-                }
+                Some(ask) => send(
+                    socket,
+                    ServerMessage::Reply {
+                        reply_to: ask,
+                        body: json!({ "ok": false, "why": why }),
+                    },
+                ),
+                None => send(
+                    socket,
+                    ServerMessage::Error {
+                        what: "terminal_view".to_owned(),
+                        why,
+                        seat: Some(seat),
+                        dispatch_id: None,
+                    },
+                ),
             }
         }
     }
@@ -2557,7 +2588,7 @@ where
     match client {
         ClientMessage::SettingsEdit { fingerprint, edits, id } => {
             match state.surface.save_settings(&fingerprint, &edits) {
-                Ok(()) => send(socket, ServerMessage::SettingsSaved { id }).await?,
+                Ok(()) => send(socket, ServerMessage::SettingsSaved { id })?,
                 Err(error) => {
                     let (reason, message, key_path) = match error {
                         forge_workspace::SettingsSaveError::Stale => {
@@ -2575,8 +2606,7 @@ where
                             (SettingsRefusal::Io, message, None)
                         }
                     };
-                    send(socket, ServerMessage::SettingsRefused { reason, message, id, key_path })
-                        .await?;
+                    send(socket, ServerMessage::SettingsRefused { reason, message, id, key_path })?;
                 }
             }
             Ok(())
@@ -2738,8 +2768,7 @@ where
                             seat,
                             dispatch_id: None,
                         },
-                    )
-                    .await?;
+                    )?;
                     Ok(())
                 }
             }
@@ -2790,7 +2819,6 @@ where
                             dispatch_id,
                         },
                     )
-                    .await
                 }
                 // Refused BEFORE dispatch, because a command that both acted
                 // and answered nothing is the case a client cannot tell from
@@ -2805,7 +2833,6 @@ where
                             dispatch_id,
                         },
                     )
-                    .await
                 }
                 (None, false) => {
                     dispatched(me, &command);
@@ -2827,8 +2854,7 @@ where
                                 seq: None,
                                 span: 1,
                             },
-                        )
-                        .await;
+                        );
                     }
                     match state.surface.dispatch(command) {
                         Ok(()) => {
@@ -2849,7 +2875,7 @@ where
                             Ok(())
                         }
                         Err(refusal) => {
-                            send(socket, dispatch_refusal(&refusal, dispatch_id)).await
+                            send(socket, dispatch_refusal(&refusal, dispatch_id))
                         }
                     }
                 }
@@ -2878,8 +2904,7 @@ where
                         seat: Some(conversation.clone()),
                         dispatch_id: None,
                     },
-                )
-                .await;
+                );
             };
             // Paging walks nothing: the walk belongs to the seat's hold and
             // its loop now, so a page reads the store the way every other read
@@ -2917,8 +2942,7 @@ where
                         seat: Some(conversation.clone()),
                         dispatch_id: None,
                     },
-                )
-                .await;
+                );
             };
             let seat = conversation.clone();
             // **A cursor at or below the window's floor is a page the
@@ -2957,8 +2981,7 @@ where
                                     cursor: page.cursor,
                                     cron_names,
                                 },
-                            )
-                            .await;
+                            );
                         }
                         BelowFloor::Refused => {
                             return send(
@@ -2973,8 +2996,7 @@ where
                                     seat: Some(seat),
                                     dispatch_id: None,
                                 },
-                            )
-                            .await;
+                            );
                         }
                         BelowFloor::Empty => {
                             tracing::debug!(
@@ -2994,8 +3016,7 @@ where
                         cursor: None,
                         cron_names: std::collections::BTreeMap::new(),
                     },
-                )
-                .await;
+                );
             }
             let opening = before.clone();
             let floor = held.lock().dropped();
@@ -3061,8 +3082,7 @@ where
                             seat: Some(seat.clone()),
                             dispatch_id: None,
                         },
-                    )
-                    .await;
+                    );
                 }
             };
             let cron_names = cron_names_off_loop(state, &seat, &page.turns).await;
@@ -3075,7 +3095,6 @@ where
                     cron_names,
                 },
             )
-            .await
         }
         // One stretch of a seat's own stream, for a client that read a gap in
         // the numbers.
@@ -3089,8 +3108,7 @@ where
                         seat: Some(slot),
                         dispatch_id: None,
                     },
-                )
-                .await;
+                );
             };
             // **The numbers belong to an occupant.** A seat whose occupant has
             // changed started counting again from one, so a repair across the
@@ -3107,8 +3125,7 @@ where
                         seat: Some(slot),
                         dispatch_id: None,
                     },
-                )
-                .await;
+                );
             }
             let frames = match state.surface.seat_oldest_kept_seq(&slot) {
                 // The window still holds the range's front, so it holds all of
@@ -3134,7 +3151,7 @@ where
                 // The window has shed it, so the transcript answers.
                 _ => transcript_frames(state, &slot, &cwd, from, to).await,
             };
-            send(socket, ServerMessage::SeatFrames { slot, epoch, frames }).await
+            send(socket, ServerMessage::SeatFrames { slot, epoch, frames })
         }
         ClientMessage::DocumentRead { session, path, reviewable } => {
             // A file off disk takes as long as it takes, so the read runs in
@@ -3148,7 +3165,7 @@ where
             })
             .await
             .unwrap_or_else(|join| Err(join.to_string()));
-            send(socket, document_answer(&state.surface, &session, outcome)).await
+            send(socket, document_answer(&state.surface, &session, outcome))
         }
         ClientMessage::CommitDiff { session, sha } => {
             // The same seat resolution the session record takes, so a
@@ -3162,8 +3179,7 @@ where
                         seat: Some(session),
                         dispatch_id: None,
                     },
-                )
-                .await;
+                );
             };
             // A `sha` git cannot read answers the scan's own `scan_failed`
             // layer, not an error: a read that could not run is not a read
@@ -3177,7 +3193,6 @@ where
                     truncated: content.truncated,
                 },
             )
-            .await
         }
         ClientMessage::FileContent { session, path, sha } => {
             // The seat resolution the document read takes, so a file reads
@@ -3190,7 +3205,7 @@ where
                 Ok(read) => FileContentWire::Read { lines: read.lines, truncated: read.truncated },
                 Err(why) => FileContentWire::Failed { why },
             };
-            send(socket, ServerMessage::FileContent { session, path, sha, content }).await
+            send(socket, ServerMessage::FileContent { session, path, sha, content })
         }
         ClientMessage::BrowserView { seat, tab, reply_to } => {
             attach_view(socket, state, viewing, me, seat, reply_to, tab, None).await
@@ -3199,7 +3214,7 @@ where
             attach_view(socket, state, viewing, me, seat, reply_to, None, Some(target)).await
         }
         ClientMessage::TerminalView { seat, id, cols, rows, reply_to } => {
-            attach_terminal(socket, state, terminal, me, seat, id, cols, rows, reply_to).await
+            attach_terminal(socket, state, terminal, me, seat, id, cols, rows, reply_to)
         }
         ClientMessage::TerminalDetach => {
             // **A lower is an implicit release.** Going back to chat gives the
@@ -3216,18 +3231,15 @@ where
         ClientMessage::TerminalResize { seat, id, cols, rows } => {
             match state.surface.terminal_resize(&seat, id, cols, rows) {
                 Ok(()) => Ok(()),
-                Err(why) => {
-                    send(
-                        socket,
-                        ServerMessage::Error {
-                            what: "terminal_resize".to_owned(),
-                            why,
-                            seat: Some(seat),
-                            dispatch_id: None,
-                        },
-                    )
-                    .await
-                }
+                Err(why) => send(
+                    socket,
+                    ServerMessage::Error {
+                        what: "terminal_resize".to_owned(),
+                        why,
+                        seat: Some(seat),
+                        dispatch_id: None,
+                    },
+                ),
             }
         }
         ClientMessage::TerminalPause { paused } => {
@@ -3239,7 +3251,7 @@ where
                     // the screen is now and continues from there.
                     let (repaint, seq) = viewing.entry.terminal.repaint_and_seq();
                     viewing.last_seq = seq.saturating_sub(1);
-                    send_terminal_view(socket, viewing, &repaint).await?;
+                    send_terminal_view(socket, viewing, &repaint)?;
                 }
             }
             Ok(())
@@ -3261,8 +3273,7 @@ where
                         seat: Some(seat),
                         dispatch_id: None,
                     },
-                )
-                .await;
+                );
             }
             if take {
                 // **A parked hand-off does not close the take.** A park opens
@@ -3280,8 +3291,7 @@ where
                             seat: Some(seat),
                             dispatch_id: None,
                         },
-                    )
-                    .await;
+                    );
                 }
                 // **The connection now owns the role**, so a socket that dies
                 // without lowering gives the keyboard back.
@@ -3302,18 +3312,15 @@ where
                     terminal.viewing = None;
                     Ok(())
                 }
-                Err(why) => {
-                    send(
-                        socket,
-                        ServerMessage::Error {
-                            what: "terminal_close".to_owned(),
-                            why,
-                            seat: Some(seat),
-                            dispatch_id: None,
-                        },
-                    )
-                    .await
-                }
+                Err(why) => send(
+                    socket,
+                    ServerMessage::Error {
+                        what: "terminal_close".to_owned(),
+                        why,
+                        seat: Some(seat),
+                        dispatch_id: None,
+                    },
+                ),
             }
         }
         ClientMessage::BrowserDetach => {
@@ -3354,8 +3361,7 @@ where
                         seat: None,
                         dispatch_id: None,
                     },
-                )
-                .await;
+                );
             };
             match host.input(&viewing.key, viewing.tab, me, seq, &event).await {
                 Ok(()) => Ok(()),
@@ -3389,7 +3395,6 @@ where
                             dispatch_id: None,
                         },
                     )
-                    .await
                 }
             }
         }
@@ -3414,8 +3419,7 @@ where
                         seat: None,
                         dispatch_id: None,
                     },
-                )
-                .await;
+                );
             }
             let files = files
                 .into_iter()
@@ -3437,24 +3441,20 @@ where
                             seat: None,
                             dispatch_id: None,
                         },
-                    )
-                    .await;
+                    );
                 }
             };
             match host.answer_files(&viewing.key, viewing.tab, id, files).await {
                 Ok(()) => Ok(()),
-                Err(why) => {
-                    send(
-                        socket,
-                        ServerMessage::Error {
-                            what: "browser_file_answer".to_owned(),
-                            why,
-                            seat: None,
-                            dispatch_id: None,
-                        },
-                    )
-                    .await
-                }
+                Err(why) => send(
+                    socket,
+                    ServerMessage::Error {
+                        what: "browser_file_answer".to_owned(),
+                        why,
+                        seat: None,
+                        dispatch_id: None,
+                    },
+                ),
             }
         }
         ClientMessage::BrowserControl { take } => {
@@ -3480,8 +3480,7 @@ where
                         seat: None,
                         dispatch_id: None,
                     },
-                )
-                .await;
+                );
             };
             let (key, tab) = (viewing.key.clone(), viewing.tab);
             let outcome = if take {
@@ -3528,7 +3527,6 @@ where
                             dispatch_id: None,
                         },
                     )
-                    .await
                 }
             }
         }
@@ -3539,30 +3537,24 @@ where
             };
             let (key, id, tab) = (viewing.key.clone(), viewing.id, viewing.tab);
             match host.nav(&key, tab, me, back).await {
-                Ok(nav) => {
-                    send(
-                        socket,
-                        ServerMessage::BrowserNavState {
-                            id,
-                            tab,
-                            can_back: nav.can_back,
-                            can_forward: nav.can_forward,
-                        },
-                    )
-                    .await
-                }
-                Err(why) => {
-                    send(
-                        socket,
-                        ServerMessage::Error {
-                            what: "browser_nav".to_owned(),
-                            why,
-                            seat: None,
-                            dispatch_id: None,
-                        },
-                    )
-                    .await
-                }
+                Ok(nav) => send(
+                    socket,
+                    ServerMessage::BrowserNavState {
+                        id,
+                        tab,
+                        can_back: nav.can_back,
+                        can_forward: nav.can_forward,
+                    },
+                ),
+                Err(why) => send(
+                    socket,
+                    ServerMessage::Error {
+                        what: "browser_nav".to_owned(),
+                        why,
+                        seat: None,
+                        dispatch_id: None,
+                    },
+                ),
             }
         }
         ClientMessage::BrowserTabs { seat, reply_to } => {
@@ -3571,7 +3563,7 @@ where
             // here on, so the strip costs one read rather than a poll.
             let Some(host) = state.browser_host.as_ref() else {
                 let why = "this server has no browser to list".to_owned();
-                return answer_ask(socket, reply_to, "browser_tabs", Err(why)).await;
+                return answer_ask(socket, reply_to, "browser_tabs", Err(why));
             };
             match host.tabs(&seat).await {
                 Ok(list) => {
@@ -3589,9 +3581,9 @@ where
                             );
                         }
                     }
-                    answer_ask(socket, reply_to, "browser_tabs", Ok(json!({ "tabs": list }))).await
+                    answer_ask(socket, reply_to, "browser_tabs", Ok(json!({ "tabs": list })))
                 }
-                Err(why) => answer_ask(socket, reply_to, "browser_tabs", Err(why)).await,
+                Err(why) => answer_ask(socket, reply_to, "browser_tabs", Err(why)),
             }
         }
         ClientMessage::BrowserResize { width, height, scale } => {
@@ -3665,7 +3657,7 @@ where
                 if let Subject::Session(slot) = &what {
                     holds.give_back(slot);
                 }
-                send(socket, released_subscribe(&what)).await?;
+                send(socket, released_subscribe(&what))?;
             }
             // **An ask queued for this subject is withdrawn with it**, and
             // answered in its turn by the drain: the page that wanted it has
@@ -3693,7 +3685,7 @@ where
         // core.** Any inbound frame is proof the peer is reading, so this
         // costs the workspace nothing; the reply is what lets a client with
         // no other traffic tell a live link from a half-open one.
-        ClientMessage::Ping => send(socket, ServerMessage::Pong).await,
+        ClientMessage::Ping => send(socket, ServerMessage::Pong),
     }
 }
 
@@ -3780,8 +3772,7 @@ where
     if spent && watching.subjects.iter().any(|held| matches!(held, Subject::Home)) {
         match encode_subject(state, &Subject::Home).await {
             Ok(home) => {
-                send(socket, ServerMessage::Snapshot { subject: Subject::Home, data: home })
-                    .await?;
+                send(socket, ServerMessage::Snapshot { subject: Subject::Home, data: home })?;
             }
             Err(error) => tracing::debug!(
                 event_name = "home_refresh_failed",
@@ -4135,15 +4126,19 @@ const COMPRESSED_MIN_BYTES: usize = 64 * 1024;
 /// queued in is the order the socket writes them: the queue is what keeps the
 /// wire order while the two halves run independently.
 enum Write {
-    /// A frame to hand the sink. `written` is answered once the frame is on
-    /// the wire - written and flushed - which is the keepalive's whole
-    /// question: a ping the peer cannot see yet owes it nothing.
-    Frame(Message, Option<oneshot::Sender<()>>),
-    /// Flush what the frames before it handed the sink. `flushed` is a
-    /// test's own wait for a point in the queue, answered when it is reached.
+    /// A frame written and flushed as ONE bounded write: the whole-frame
+    /// paths - an answer, a snapshot, a browser or terminal frame, the
+    /// keepalive's ping. `written` is answered once the frame is on the
+    /// wire, which is the keepalive's whole question: a ping the peer
+    /// cannot see yet owes it nothing.
+    Send(Message, Option<oneshot::Sender<()>>),
+    /// One frame handed to the sink without a flush: the batching path's
+    /// feeds, each bounded on its own, as `batch::feed` always was.
+    Feed(Message),
+    /// Flush what the feeds before it handed the sink. `flushed` is a
+    /// test's own wait for a point in the queue, answered when it is
+    /// reached.
     Flush(Option<oneshot::Sender<()>>),
-    /// Close the socket and end the writer.
-    Close,
 }
 
 /// The write half of a connection, owned by a task of its own.
@@ -4178,25 +4173,19 @@ impl Writer {
             let mut sink = sink;
             let mut failure = None;
             while let Some(write) = rx.recv().await {
-                // **Each entry is its own bounded write.** A feed the sink's
+                // **Each entry is its own bounded write.** A frame the sink's
                 // buffer will not take, and a flush a stopped reader never
                 // completes, both end the connection at the bound rather than
                 // holding it. `flushed` separates the two, because only a
                 // completed flush is a write the watchdog can call progress.
                 let (result, flushed) = match write {
-                    // **A frame something waits on is flushed before its
-                    // completion answers.** "Written" is the peer can see it,
-                    // which is what the keepalive's deadline rests on; every
-                    // other frame is only handed to the sink, and the flush
-                    // the read half queued behind it puts it on the wire.
-                    Write::Frame(frame, written) => {
-                        let waited = written.is_some();
+                    // **One whole send is one bound**, which is what the read
+                    // half wrapped before the split: `sink.send` is the frame
+                    // and its flush, so a peer is judged on the pair rather
+                    // than on each half separately.
+                    Write::Send(frame, written) => {
                         let result = write_within(WRITE_BOUND, async {
-                            if waited {
-                                sink.send(frame).await.map_err(anyhow::Error::from)
-                            } else {
-                                sink.feed(frame).await.map_err(anyhow::Error::from)
-                            }
+                            sink.send(frame).await.map_err(anyhow::Error::from)
                         })
                         .await;
                         if result.is_ok()
@@ -4204,8 +4193,18 @@ impl Writer {
                         {
                             let _ = written.send(());
                         }
-                        (result, waited)
+                        (result, true)
                     }
+                    // A batch's feeds are bounded one at a time, as they
+                    // always were: the batch's own flush below is the bound
+                    // its deadline lands on.
+                    Write::Feed(frame) => (
+                        write_within(WRITE_BOUND, async {
+                            sink.feed(frame).await.map_err(anyhow::Error::from)
+                        })
+                        .await,
+                        false,
+                    ),
                     Write::Flush(flushed) => {
                         let result = write_within(WRITE_BOUND, async {
                             sink.flush().await.map_err(anyhow::Error::from)
@@ -4218,13 +4217,6 @@ impl Writer {
                         }
                         (result, true)
                     }
-                    Write::Close => (
-                        write_within(WRITE_BOUND, async {
-                            sink.close().await.map_err(anyhow::Error::from)
-                        })
-                        .await,
-                        false,
-                    ),
                 };
                 pending.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                 match result {
@@ -4268,7 +4260,20 @@ impl Writer {
     async fn stop(&mut self) {
         let Some(task) = self.task.take() else { return };
         task.abort();
-        let _ = task.await;
+        // **A panic here is forge's bug, not a silence.** The abort is
+        // expected and answers as a cancellation; anything else is the
+        // writer task unwinding after the read half was already gone, and it
+        // is the only record that panic gets.
+        if let Err(error) = task.await
+            && !error.is_cancelled()
+        {
+            tracing::debug!(
+                target: "forge_server::transport",
+                event_name = "connection_writer_lost",
+                %error,
+                "the connection's writer task ended on a panic after the read half was gone",
+            );
+        }
     }
 }
 
@@ -4280,7 +4285,7 @@ impl Writer {
 /// the socket; the one encoder fact the write path needs from the upgrade
 /// still rides the Sink: whether the client declared it can inflate a
 /// compressed frame.
-struct ClientSocket<S> {
+pub(crate) struct ClientSocket<S> {
     read: SplitStream<S>,
     writer: Writer,
     deflate: bool,
@@ -4310,12 +4315,19 @@ impl<S> ClientSocket<S> {
         self.progress.note_showing(seat);
     }
 
+    /// Queue one whole frame - written and flushed under one bound. **Every
+    /// answer path and every viewer frame comes through here**, so a frame's
+    /// write is judged as the base judged it.
+    pub(crate) fn write(&self, frame: Message) {
+        self.writer.enqueue(Write::Send(frame, None));
+    }
+
     /// Queue a keepalive ping and answer its completion when the writer
     /// reports it written. **The read half never waits for this send**: a ping
     /// behind a stalled frame must not hold the read loop, and the read half
     /// stamps the keepalive when the completion arrives.
     fn ping(&self, written: oneshot::Sender<()>) {
-        self.writer.enqueue(Write::Frame(
+        self.writer.enqueue(Write::Send(
             Message::Ping(tokio_tungstenite::tungstenite::Bytes::new()),
             Some(written),
         ));
@@ -4347,8 +4359,16 @@ where
                 std::task::Poll::Ready(Ok(Some(error))) => {
                     return std::task::Poll::Ready(Some(Err(error)));
                 }
-                std::task::Poll::Ready(Ok(None) | Err(_)) => {
+                // **A record that went missing is not a clean close.** The
+                // writer sends `Some` for a failure and `None` for a queue
+                // that closed after the read half ended; a dropped sender
+                // means the task panicked, which is forge's bug and must not
+                // be reported as the client leaving.
+                std::task::Poll::Ready(Ok(None)) => {
                     return std::task::Poll::Ready(None);
+                }
+                std::task::Poll::Ready(Err(_)) => {
+                    return std::task::Poll::Ready(Some(Err(anyhow::Error::new(WriterLost))));
                 }
                 std::task::Poll::Pending => self.writer.done = Some(done),
             }
@@ -4396,7 +4416,7 @@ where
             }
             other => other,
         };
-        this.writer.enqueue(Write::Frame(item, None));
+        this.writer.enqueue(Write::Feed(item));
         Ok(())
     }
 
@@ -4404,10 +4424,9 @@ where
         self: std::pin::Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
-        // **The flush is queued, never waited for.** `SinkExt::send` is a
-        // frame plus a flush, and the pair leaves the read half the way it
-        // arrived: a bulk frame's flush is the writer's to complete, and the
-        // read half stays free to answer the peer meanwhile.
+        // **The flush is queued, never waited for.** The batching path feeds
+        // its frames and then flushes once, and that flush is the writer's to
+        // complete while the read half stays free to answer the peer.
         self.get_mut().writer.enqueue(Write::Flush(None));
         std::task::Poll::Ready(Ok(()))
     }
@@ -4416,7 +4435,10 @@ where
         self: std::pin::Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
-        self.get_mut().writer.enqueue(Write::Close);
+        // **Nothing closes this socket through the Sink.** A connection ends
+        // by its read half stopping and the writer being aborted, which drops
+        // the socket half; a close frame was never part of forge's wire, so
+        // there is nothing to hand over here.
         std::task::Poll::Ready(Ok(()))
     }
 }
@@ -4472,27 +4494,28 @@ fn gzipped(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
     encoder.finish()
 }
 
-async fn send<S>(socket: &mut ClientSocket<S>, message: ServerMessage) -> anyhow::Result<()>
+fn send<S>(socket: &mut ClientSocket<S>, message: impl serde::Serialize) -> anyhow::Result<()>
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
 {
-    send_frame(socket, message).await.map(|_| ())
+    send_frame(socket, message).map(|_| ())
 }
 
 /// Write an already-encoded frame. The settings document is encoded once per
 /// reload and shared, so a connection writes its bytes rather than building
 /// the frame again.
-async fn send_text<S>(socket: &mut ClientSocket<S>, text: &str) -> anyhow::Result<()>
+fn send_text<S>(socket: &mut ClientSocket<S>, text: &str) -> anyhow::Result<()>
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
 {
     let frame = frame_for(socket, text);
-    socket.send(frame).await.map_err(anyhow::Error::from)
+    socket.write(frame);
+    Ok(())
 }
 
 /// Answer one strip ask: through the reply it carried, or as the error frame
 /// when it carried none.
-async fn answer_ask<S>(
+fn answer_ask<S>(
     socket: &mut ClientSocket<S>,
     reply_to: Option<u64>,
     what: &str,
@@ -4506,29 +4529,23 @@ where
             if let Some(map) = body.as_object_mut() {
                 map.insert("ok".to_owned(), json!(true));
             }
-            send(socket, ServerMessage::Reply { reply_to: id, body }).await
+            send(socket, ServerMessage::Reply { reply_to: id, body })
         }
-        (Some(id), Err(why)) => {
-            send(
-                socket,
-                ServerMessage::Reply { reply_to: id, body: json!({ "ok": false, "why": why }) },
-            )
-            .await
-        }
+        (Some(id), Err(why)) => send(
+            socket,
+            ServerMessage::Reply { reply_to: id, body: json!({ "ok": false, "why": why }) },
+        ),
         (None, Ok(_)) => Ok(()),
-        (None, Err(why)) => {
-            send(
-                socket,
-                ServerMessage::Error { what: what.to_owned(), why, seat: None, dispatch_id: None },
-            )
-            .await
-        }
+        (None, Err(why)) => send(
+            socket,
+            ServerMessage::Error { what: what.to_owned(), why, seat: None, dispatch_id: None },
+        ),
     }
 }
 
 /// Answer a refused attach: through the client's reply when it sent one, and
 /// as the protocol's error frame otherwise.
-async fn refuse_attach<S>(
+fn refuse_attach<S>(
     socket: &mut ClientSocket<S>,
     reply_to: Option<u64>,
     why: &str,
@@ -4538,25 +4555,19 @@ where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
 {
     match reply_to {
-        Some(reply_to) => {
-            send(
-                socket,
-                ServerMessage::Reply { reply_to, body: json!({ "ok": false, "why": why }) },
-            )
-            .await
-        }
-        None => {
-            send(
-                socket,
-                ServerMessage::Error {
-                    what: "browser_view".to_owned(),
-                    why: why.to_owned(),
-                    seat: Some(seat),
-                    dispatch_id: None,
-                },
-            )
-            .await
-        }
+        Some(reply_to) => send(
+            socket,
+            ServerMessage::Reply { reply_to, body: json!({ "ok": false, "why": why }) },
+        ),
+        None => send(
+            socket,
+            ServerMessage::Error {
+                what: "browser_view".to_owned(),
+                why: why.to_owned(),
+                seat: Some(seat),
+                dispatch_id: None,
+            },
+        ),
     }
 }
 
@@ -4565,9 +4576,9 @@ where
 /// **Only the open path reports a size** (#2374), and a return every other
 /// caller would drop is noise in thirty of them - so the size is answered
 /// here and the plain write wraps it.
-async fn send_frame<S>(
+fn send_frame<S>(
     socket: &mut ClientSocket<S>,
-    message: ServerMessage,
+    message: impl serde::Serialize,
 ) -> anyhow::Result<usize>
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
@@ -4575,7 +4586,7 @@ where
     let text = serde_json::to_string(&message)?;
     let frame = frame_for(socket, &text);
     let bytes = frame_bytes(&frame);
-    socket.send(frame).await.map_err(anyhow::Error::from)?;
+    socket.write(frame);
     Ok(bytes)
 }
 
@@ -4622,12 +4633,14 @@ impl WriteClock for SystemClock {
 ///
 /// **The open's own line still places its remainder** (#2506): `open_ms` ends
 /// when this returns, so the serialisation and compression are inside it -
-/// a multi-MB record is the read half's own cost. The frame's transfer is the
-/// writer's now and is not part of the open, and `waited` is what a slow peer
+/// a multi-MB record is the read half's own cost. **The frame's transfer is
+/// no longer the read half's to time**: `write_ms` is the handoff to the
+/// writer, and the socket's share of the write is server-unattributed (its
+/// own measurement is a later cut, `5396444e`). `waited` is what a slow peer
 /// leaves behind here: another write still ahead of this one.
-async fn send_frame_timed<S, C>(
+fn send_frame_timed<S, C>(
     socket: &mut ClientSocket<S>,
-    message: ServerMessage,
+    message: impl serde::Serialize,
     clock: &C,
 ) -> anyhow::Result<FrameWrite>
 where
@@ -4644,7 +4657,7 @@ where
     let bytes = frame_bytes(&frame);
     let waited = socket.writer.outstanding() > 0;
     let at = clock.start(&frame);
-    socket.send(frame).await.map_err(anyhow::Error::from)?;
+    socket.write(frame);
     Ok(FrameWrite {
         bytes,
         prep_ms,
@@ -5752,7 +5765,7 @@ mod tests {
         // A ping ON THE WIRE is what starts the clock, and the writer's
         // completion is what tells the beat that.
         let at = tokio::time::Instant::now();
-        keepalive.stamp(at);
+        keepalive.stamp_if_unheard(keepalive.generation(), at);
         assert_eq!(
             keepalive.beat(at + Duration::from_secs(30), dead),
             Beat::Wait,
@@ -6252,7 +6265,7 @@ mod tests {
         let dead = Duration::from_secs(60);
         let keepalive = Keepalive::default();
         let at = tokio::time::Instant::now();
-        keepalive.stamp(at);
+        keepalive.stamp_if_unheard(keepalive.generation(), at);
 
         keepalive.heard();
 
@@ -6454,15 +6467,25 @@ mod tests {
 
     /// **A ping behind a stalled frame is not reaped, and its deadline starts
     /// when the writer reports it written.** The beat keeps running on the
-    /// read half while the write is in flight, so the ping is queued at 15 s
-    /// and waits behind the frame until 50 s; a deadline taken at the queue
-    /// would have cut a peer that was reading again the moment the frame
-    /// landed.
+    /// read half while the write is in flight, so the ping is queued with
+    /// the frame still holding the socket; a deadline taken at the queue
+    /// would have cut a live peer before the frame ever landed.
+    ///
+    /// **The heartbeat is scaled** so the early-deadline window fits under
+    /// the write bound: the gate opens after the queue's deadline would have
+    /// passed and before the writer's own bound.
     #[tokio::test(start_paused = true)]
     async fn a_ping_behind_a_stalled_frame_is_stamped_only_when_written() {
+        let every = Duration::from_secs(1);
+        let dead = Duration::from_secs(4);
         let fleet =
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
-        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+        let state =
+            Arc::new(TransportState::for_workspace(&fleet.workspace()).with_heartbeat(Heartbeat {
+                every,
+                dead,
+                wedge: WRITE_BOUND * 10,
+            }));
         let (to_server, inbound) = mpsc::unbounded_channel();
         let (held, first_flush) = oneshot::channel();
         let gate = Gate::default();
@@ -6502,21 +6525,20 @@ mod tests {
             .expect("the message goes");
         first_flush.await.expect("the subscribe's answer reached the socket");
 
-        // The beats run while the write is stuck: 15, 30 and 45 seconds.
-        // **Each advance is followed by scheduler turns**: `advance` moves the
-        // clock without yielding, so beats left unpolled would collapse into
-        // one tick when the read half next ran.
-        for _ in 0..3 {
-            advance_and_settle(HEARTBEAT_EVERY).await;
-        }
+        // One beat while the write is stuck: the ping is queued behind it.
+        advance_and_settle(every).await;
         assert_eq!(
             fed.lock().expect("the frame log").iter().filter(|frame| is_ping(frame)).count(),
             0,
             "the ping waits in the queue while the frame in flight holds the socket",
         );
 
-        // At 50 s the peer reads again: the frame, then the ping, land.
-        advance_and_settle(Duration::from_secs(5)).await;
+        // **Past the deadline a queue-time stamp would have armed**, with the
+        // frame still in flight: the connection must still be up.
+        advance_and_settle(dead + every).await;
+        assert!(!driven.is_finished(), "a ping queued behind a stalled frame reaped its peer");
+
+        // The peer reads again: the frame, then the ping, land.
         gate.open();
         until(
             || fed.lock().expect("the frame log").iter().any(is_ping),
@@ -6524,14 +6546,12 @@ mod tests {
         )
         .await;
 
-        // **The stamp is the ping's write, not its queue.** A deadline taken
-        // at 15 s would have been reaped by the beat at 75 s; the wire's
-        // deadline at 50 s is still inside its bound here.
-        advance_and_settle(Duration::from_secs(30)).await;
-        assert!(!driven.is_finished(), "a ping queued behind a stalled frame reaped its peer");
+        // The stamp is the ping's write: inside its bound here.
+        advance_and_settle(Duration::from_secs(3)).await;
+        assert!(!driven.is_finished(), "a ping on the wire is owed its whole bound");
 
         // And with no answer it is reaped eventually, on the wire's clock.
-        advance_and_settle(HEARTBEAT_DEAD).await;
+        advance_and_settle(dead + every).await;
         let ended = tokio::time::timeout(WRITE_BOUND * 2, driven)
             .await
             .expect("the unanswered ping was reaped eventually")
@@ -6543,6 +6563,107 @@ mod tests {
                 .is_some(),
             "the ending names the unanswered ping",
         );
+    }
+
+    /// **A peer that answers the ping while the read half is held in a
+    /// handler is not reaped.** The Pong and the writer's completion can both
+    /// be ready on the pass that returns from the handler, and the biased
+    /// select reads the Pong first; a stamp taken then would arm a deadline
+    /// over an answer and end a live streaming client a bound later, with a
+    /// record that says it never answered.
+    #[tokio::test(start_paused = true)]
+    async fn a_pong_that_lands_before_the_completion_is_not_stamped_over() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let host = Arc::new(StalledDetach::default());
+        // The refusal's own detach must answer, or the read half stays in it.
+        host.detach_answers.store(true, Ordering::Relaxed);
+        fleet.workspace().install_browser_host(
+            Arc::clone(&host) as Arc<dyn forge_workspace::browser::BrowserHost>
+        );
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+        let (to_server, inbound) = mpsc::unbounded_channel();
+        let (held, first_flush) = oneshot::channel();
+        let gate = Gate::default();
+        let fed = Arc::new(Mutex::new(Vec::new()));
+        let mut socket = ClientSocket::new(
+            Gated { inbound, fed: Arc::clone(&fed), gate: gate.clone(), held: Some(held) },
+            false,
+            Arc::new(Progress::new()),
+        );
+        let settings = crate::transport::settings_channel();
+        let driven = tokio::spawn({
+            let state = Arc::clone(&state);
+            async move {
+                let receiver = settings.subscribe();
+                drive(
+                    &mut socket,
+                    &state,
+                    attached_from(),
+                    receiver,
+                    None,
+                    &mut ConnectionLife::new(mint_connection_id()),
+                )
+                .await
+            }
+        });
+
+        // A subscribe whose answer is the frame in flight.
+        to_server
+            .send(Message::Text(
+                serde_json::to_string(&ClientMessage::Subscribe {
+                    what: Subject::Usage,
+                    answering: false,
+                    review: false,
+                })
+                .expect("the subscribe encodes")
+                .into(),
+            ))
+            .expect("the message goes");
+        first_flush.await.expect("the subscribe's answer reached the socket");
+
+        // The beat queues a ping behind that frame.
+        advance_and_settle(HEARTBEAT_EVERY).await;
+
+        // The read half parks in an attach: the await the race needs. A
+        // branch never fires while another is being driven.
+        to_server
+            .send(Message::Text(
+                serde_json::to_string(&ClientMessage::BrowserView {
+                    seat: lead(),
+                    tab: None,
+                    reply_to: None,
+                })
+                .expect("the view encodes")
+                .into(),
+            ))
+            .expect("the message goes");
+        until(|| host.attach_entered.load(Ordering::Relaxed), "the attach parked").await;
+
+        // The peer reads again while the handler is still parked: the frame
+        // and then the ping land, and the peer answers the ping. Both the
+        // answer and the completion are waiting when the handler returns.
+        gate.open();
+        until(
+            || fed.lock().expect("the frame log").iter().any(is_ping),
+            "the queued ping crossed once the frame did",
+        )
+        .await;
+        to_server
+            .send(Message::Pong(tokio_tungstenite::tungstenite::Bytes::new()))
+            .expect("the pong goes");
+        host.released.notify_one();
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+
+        // **Past the bound a stamp would have armed.** A ping the peer
+        // answered owes nothing, so the connection is still up.
+        advance_and_settle(HEARTBEAT_DEAD).await;
+        assert!(!driven.is_finished(), "an answered ping was stamped and reaped a live client");
+
+        drop(to_server);
+        let _ = driven.await;
     }
 
     /// **A writer's failure ends the read half and releases what it held.**
@@ -6581,7 +6702,11 @@ mod tests {
 
         subscribed(&to_server, &slot);
         stuck.await.expect("the seat's snapshot reached the socket");
-        assert_eq!(state.surface.held_seat_count(&slot), 1, "the subscribe took the seat's hold");
+        assert_eq!(
+            fleet.workspace().held_seat_count(&slot),
+            1,
+            "the subscribe took the seat's hold"
+        );
 
         let ended = tokio::time::timeout(WRITE_BOUND * 2, driven)
             .await
@@ -6593,7 +6718,7 @@ mod tests {
             "the read half ends on the writer's own error: {ended:?}",
         );
         assert_eq!(
-            state.surface.held_seat_count(&slot),
+            fleet.workspace().held_seat_count(&slot),
             0,
             "the hold went back with the read half",
         );
@@ -6913,6 +7038,238 @@ mod tests {
     /// a peer that stops reading while the next ping waits behind a full
     /// buffer leaves no other write in the loop to bound, so an unbounded ping
     /// holds the role for ever.
+    /// A peer that stopped reading, with a witness for its own drop: the
+    /// socket half the writer owns, which a stopped writer must let go.
+    struct StuckWithDrop {
+        inbound: mpsc::UnboundedReceiver<Message>,
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+        writing: Option<oneshot::Sender<()>>,
+    }
+
+    impl futures_util::Stream for StuckWithDrop {
+        type Item = Result<Message, axum::Error>;
+        fn poll_next(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            self.inbound.poll_recv(cx).map(|said| said.map(Ok))
+        }
+    }
+
+    impl Drop for StuckWithDrop {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::Relaxed);
+        }
+    }
+
+    impl futures_util::Sink<Message> for StuckWithDrop {
+        type Error = axum::Error;
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            if let Some(writing) = self.writing.take() {
+                let _ = writing.send(());
+            }
+            std::task::Poll::Pending
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// A sink that panics inside the writer task: forge's own bug, which the
+    /// read half must report as one rather than as the peer leaving.
+    struct Panics;
+
+    impl futures_util::Stream for Panics {
+        type Item = Result<Message, axum::Error>;
+        fn poll_next(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    impl futures_util::Sink<Message> for Panics {
+        type Error = axum::Error;
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            panic!("the writer sunk a frame")
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// **A writer that died without a record is an error, not a clean
+    /// close.** A panic drops the writer's `done` sender, and the read half
+    /// must say so: a forge bug reported as the client leaving is invisible.
+    #[tokio::test]
+    async fn a_writer_that_panics_ends_the_read_half_as_an_error() {
+        let mut socket = ClientSocket::new(Panics, false, Arc::new(Progress::new()));
+        socket.write(Message::Text("a frame".into()));
+
+        let seen = tokio::time::timeout(Duration::from_secs(5), socket.next())
+            .await
+            .expect("the read half ends rather than waiting on a dead writer");
+        let error = seen
+            .expect("the stream yields the writer's ending")
+            .expect_err("a panicked writer is not a clean close");
+        assert!(
+            error.downcast_ref::<WriterLost>().is_some(),
+            "the ending names the missing record: {error:?}",
+        );
+    }
+
+    /// **A connection's end aborts its writer; it does not leave it
+    /// detached writing to nobody.** The sink's drop is the witness, and the
+    /// clock is never advanced: a writer left detached would only die on its
+    /// own bound, long after the connection it belonged to is gone.
+    #[tokio::test(start_paused = true)]
+    async fn a_stopped_writer_is_aborted_and_lets_its_socket_half_go() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+        let (to_server, inbound) = mpsc::unbounded_channel();
+        let (writing, stuck) = oneshot::channel();
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let progress = Arc::new(Progress::new());
+        let settings = crate::transport::settings_channel();
+        let driven = tokio::spawn({
+            let state = Arc::clone(&state);
+            let dropped = Arc::clone(&dropped);
+            let progress = Arc::clone(&progress);
+            async move {
+                let receiver = settings.subscribe();
+                let mut socket = ClientSocket::new(
+                    StuckWithDrop { inbound, dropped, writing: Some(writing) },
+                    false,
+                    Arc::clone(&progress),
+                );
+                supervise(
+                    &mut socket,
+                    &state,
+                    attached_from(),
+                    mint_connection_id(),
+                    receiver,
+                    None,
+                    &progress,
+                )
+                .await
+            }
+        });
+
+        to_server
+            .send(Message::Text(
+                serde_json::to_string(&ClientMessage::Subscribe {
+                    what: Subject::Usage,
+                    answering: false,
+                    review: false,
+                })
+                .expect("the subscribe encodes")
+                .into(),
+            ))
+            .expect("the message goes");
+        stuck.await.expect("the writer reached the flush it cannot complete");
+
+        // The read half ends and the writer goes with it, with no clock
+        // advance: only an aborted writer drops the half it owns.
+        drop(to_server);
+        until(|| driven.is_finished(), "the connection ended").await;
+        assert!(
+            dropped.load(Ordering::Relaxed),
+            "the writer was left detached with its socket half",
+        );
+    }
+
+    /// A sink whose feed takes most of the bound and whose flush takes more
+    /// than the rest: together they outlast one bound, each is inside one.
+    struct SlowBoth {
+        fed: std::pin::Pin<Box<tokio::time::Sleep>>,
+        flushed: std::pin::Pin<Box<tokio::time::Sleep>>,
+    }
+
+    impl futures_util::Sink<Message> for SlowBoth {
+        type Error = axum::Error;
+        fn poll_ready(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::future::Future::poll(self.fed.as_mut(), cx).map(|()| Ok(()))
+        }
+        fn start_send(self: std::pin::Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::future::Future::poll(self.flushed.as_mut(), cx).map(|()| Ok(()))
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// **One whole send is one bound.** The base wrapped `SinkExt::send` -
+    /// the feed and its flush - in a single `write_within`; splitting them
+    /// into two bounded entries would give a frame twice the bound, past the
+    /// 65 s margin the browser's probe deadline is sized against. Here each
+    /// half finishes inside a bound and together they do not.
+    #[tokio::test(start_paused = true)]
+    async fn a_whole_send_is_bounded_once() {
+        let writer = Writer::new(
+            SlowBoth {
+                fed: Box::pin(tokio::time::sleep(Duration::from_secs(50))),
+                flushed: Box::pin(tokio::time::sleep(Duration::from_secs(70))),
+            },
+            Arc::new(Progress::new()),
+        );
+        let mut writer = writer;
+        writer.enqueue(Write::Send(Message::Text("a frame".into()), None));
+
+        let failure = tokio::time::timeout(WRITE_BOUND * 2, wait_for_writer(&mut writer))
+            .await
+            .expect("the send ends at its own bound rather than never")
+            .expect("a send that outlasts one bound is not a clean end");
+        assert!(
+            failure.downcast_ref::<WriteStalled>().is_some(),
+            "one whole send is judged on one bound: {failure:?}",
+        );
+    }
+
     /// **The bound is the writer's, on both halves of a write.** A flush a
     /// stopped reader never completes is a peer that stopped reading
     /// mid-frame; a sink whose buffer is full is the same peer one step
@@ -6923,7 +7280,7 @@ mod tests {
         let (_from_test, inbound) = mpsc::unbounded_channel();
         let mut writer =
             Writer::new(StoppedReading { inbound, writing: None }, Arc::new(Progress::new()));
-        writer.enqueue(Write::Frame(Message::Text("a frame".into()), None));
+        writer.enqueue(Write::Feed(Message::Text("a frame".into())));
         writer.enqueue(Write::Flush(None));
 
         let failure = tokio::time::timeout(WRITE_BOUND * 2, wait_for_writer(&mut writer))
@@ -6942,7 +7299,7 @@ mod tests {
     async fn a_frame_the_sink_cannot_take_ends_the_writer_at_the_write_bound() {
         let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut writer = Writer::new(HeldSink { ready }, Arc::new(Progress::new()));
-        writer.enqueue(Write::Frame(Message::Text("a frame".into()), None));
+        writer.enqueue(Write::Feed(Message::Text("a frame".into())));
 
         let failure = tokio::time::timeout(WRITE_BOUND * 2, wait_for_writer(&mut writer))
             .await
@@ -6997,8 +7354,7 @@ mod tests {
         let clock = FakeClock { starts: std::cell::RefCell::new(Vec::new()), base: Instant::now() };
 
         let mut socket = ClientSocket::new(NullSink, false, Arc::new(Progress::new()));
-        let write =
-            send_frame_timed(&mut socket, a_frame(), &clock).await.expect("the write lands");
+        let write = send_frame_timed(&mut socket, a_frame(), &clock).expect("the write lands");
         assert!(!write.waited, "nothing was ahead of this frame");
         assert_eq!(write.bytes, bytes, "the record carries the frame's own size");
         assert_eq!(write.write_ms, 1000.0, "the record's elapsed is the clock's, exactly");
@@ -7024,7 +7380,7 @@ mod tests {
         let clock = FakeClock { starts: std::cell::RefCell::new(Vec::new()), base: Instant::now() };
         let mut socket = ClientSocket::new(NullSink, true, Arc::new(Progress::new()));
 
-        let write = send_frame_timed(&mut socket, large, &clock).await.expect("the write lands");
+        let write = send_frame_timed(&mut socket, large, &clock).expect("the write lands");
         assert!(
             write.bytes < text / 4,
             "the record carries the compressed size, not the text's: {} of {text}",
@@ -7037,8 +7393,7 @@ mod tests {
         );
 
         let small = serde_json::to_string(&a_frame()).expect("the frame encodes").len();
-        let write =
-            send_frame_timed(&mut socket, a_frame(), &clock).await.expect("the write lands");
+        let write = send_frame_timed(&mut socket, a_frame(), &clock).expect("the write lands");
         assert_eq!(write.bytes, small, "a frame under the threshold stays the text frame it was");
     }
 
@@ -7103,8 +7458,7 @@ mod tests {
         socket.send(Message::Text("{\"kind\":\"bulk\"}".into())).await.expect("the frame queues");
         first_flush.await.expect("the writer reached the flush it cannot complete");
 
-        let write =
-            send_frame_timed(&mut socket, a_frame(), &clock).await.expect("the write lands");
+        let write = send_frame_timed(&mut socket, a_frame(), &clock).expect("the write lands");
         assert!(write.waited, "a write handed over behind one in flight says so");
         assert_eq!(write.bytes, bytes, "the record carries the frame's own size");
         assert_eq!(write.write_ms, 1000.0, "the record's elapsed is the clock's, exactly");
@@ -9391,6 +9745,13 @@ mod tests {
         /// Set once an attach has parked, so the test knows the connection is
         /// wedged in it.
         attach_entered: std::sync::atomic::AtomicBool,
+        /// Lets a test release a parked attach. Nothing notifies it in the
+        /// wedge tests, so a park there stands for ever.
+        released: tokio::sync::Notify,
+        /// Whether a detach answers instead of parking. The wedge tests need
+        /// it to park; a test that releases an attach needs the refusal's own
+        /// detach to return so the read half comes back.
+        detach_answers: std::sync::atomic::AtomicBool,
     }
 
     #[async_trait::async_trait]
@@ -9411,11 +9772,15 @@ mod tests {
             _tab: Option<u16>,
         ) -> Result<BrowserAttachment, String> {
             self.attach_entered.store(true, Ordering::Relaxed);
-            std::future::pending::<Result<BrowserAttachment, String>>().await
+            self.released.notified().await;
+            Err("no fleet here".to_owned())
         }
 
         async fn detach(&self, _viewer: u64) {
             self.detaches.fetch_add(1, Ordering::Relaxed);
+            if self.detach_answers.load(Ordering::Relaxed) {
+                return;
+            }
             // A host whose driver is gone never answers, and the connection
             // must not wait on it for ever.
             std::future::pending::<()>().await;

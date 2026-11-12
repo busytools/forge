@@ -391,11 +391,11 @@ export const LIVENESS_EVERY_MS = 15_000;
  * **A page sees whole messages only, so this must tolerate the server's own
  * single-write bound.** The server ends a connection whose write takes longer
  * than 60 s (`crates/forge-server/src/transport.rs`), and while it writes a
- * frame - a 3.5 MB seat, measured at 31.6 s to a slow client - it reads no
- * ping and its pong queues behind that frame. A 10 s deadline here would close
- * a live socket mid-frame, redial, and re-ask the same record for ever. The
- * shell's transport counts bytes instead and keeps the tight bound; a browser
- * has no byte-level event to count.
+ * frame - a 3.5 MB seat, measured at 31.6 s to a slow client - its pong
+ * queues behind that frame, however early the probe is read. A 10 s deadline
+ * here would close a live socket mid-frame, redial, and re-ask the same
+ * record for ever. The shell's transport counts bytes instead and keeps the
+ * tight bound; a browser has no byte-level event to count.
  *
  * The expiry closes the socket, which is the existing drop path: the status
  * moves to `connecting` and the retry is scheduled. Worst-case detection is
