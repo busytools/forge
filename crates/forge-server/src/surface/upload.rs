@@ -620,12 +620,17 @@ impl Uploads {
     /// this process is writing is never taken (it was touched a moment ago).
     pub fn sweep_orphans(&self, now: SystemTime) {
         let Ok(root) = self.root.as_ref() else { return };
-        let registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
-        let held: std::collections::HashSet<&Path> = registry
-            .values()
-            .flat_map(|upload| upload.files.iter())
-            .map(|file| file.partial.as_path())
-            .collect();
+        // **The set is copied out and the lock dropped before the walk**: the
+        // sweep visits the whole inbox, and holding the registry across it
+        // would block every chunk and begin for as long as the tree takes.
+        let held: std::collections::HashSet<PathBuf> = {
+            let registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
+            registry
+                .values()
+                .flat_map(|upload| upload.files.iter())
+                .map(|file| file.partial.clone())
+                .collect()
+        };
         let mut removed = 0_usize;
         remove_orphans(root, now, &held, &mut removed);
         if removed > 0 {
@@ -647,7 +652,7 @@ impl Uploads {
 fn remove_orphans(
     dir: &Path,
     now: SystemTime,
-    held: &std::collections::HashSet<&Path>,
+    held: &std::collections::HashSet<PathBuf>,
     removed: &mut usize,
 ) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
@@ -665,7 +670,7 @@ fn remove_orphans(
         if !is_partial {
             continue;
         }
-        if held.contains(path.as_path()) {
+        if held.contains(&path) {
             continue;
         }
         let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) else {
