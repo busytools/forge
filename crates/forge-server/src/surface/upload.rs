@@ -388,7 +388,8 @@ fn create(
         }
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&partial) {
             Ok(handle) => return Ok((final_path, partial, handle)),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            // Another attempt's own create won the name: try the next suffix.
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => {
                 return Err(format!(
                     "the partial for {} could not be created: {error}",
@@ -428,12 +429,22 @@ fn timestamp() -> String {
     )
 }
 
-/// An id no other held upload carries, from the OS's entropy: **unguessable
-/// matters**, because the id is all a resume names.
+/// The bits an upload id keeps.
+///
+/// **53, not 64.** The id crosses the reply as JSON and a phone's page holds
+/// it in a JavaScript number, which keeps every integer up to 2^53 and
+/// silently rounds past that - so a 64-bit id would come back changed on a
+/// retry and the resume would find nothing. 53 bits of OS entropy is far
+/// past guessing for a window an hour long.
+const ID_MASK: u64 = (1 << 53) - 1;
+
+/// An id no other held upload carries, from the OS's entropy:
+/// **unguessable matters**, because the id is all a resume names.
 fn mint_id(registry: &HashMap<u64, Upload>) -> Result<u64, String> {
     for _ in 0..8 {
         let id =
             getrandom::u64().map_err(|error| format!("no entropy for an upload id: {error}"))?;
+        let id = id & ID_MASK;
         if id != 0 && !registry.contains_key(&id) {
             return Ok(id);
         }
@@ -462,9 +473,10 @@ mod tests {
     }
 
     fn feed(uploads: &Uploads, id: u64, index: u16, bytes: &[u8]) {
-        for (offset, chunk) in bytes.chunks(4).enumerate() {
+        for (chunk_index, chunk) in bytes.chunks(4).enumerate() {
+            let offset = u32::try_from(chunk_index * 4).expect("this test's own offsets");
             uploads
-                .chunk(id, index, (offset * 4) as u32, chunk)
+                .chunk(id, index, offset, chunk)
                 .expect("a chunk at the offset the server expects");
         }
     }
@@ -566,6 +578,17 @@ mod tests {
         assert!(why.contains("unknown or expired"), "{why}");
     }
 
+    /// **An upload id fits a JavaScript number.** The phone's page holds it in
+    /// one, and a wider id would come back rounded on a retry, so the resume
+    /// would find nothing.
+    #[test]
+    fn an_upload_id_fits_a_javascript_number() {
+        let (_dir, uploads) = uploads();
+        let began = uploads.begin(&seat(), &[decl("a.bin", 0)]).expect("begins");
+        assert!(began.upload_id <= (1 << 53) - 1, "{}", began.upload_id);
+        assert_ne!(began.upload_id, 0);
+    }
+
     /// **An abandoned upload is swept after the grace window, partials and
     /// all**, and a resume past it starts over.
     #[test]
@@ -581,7 +604,9 @@ mod tests {
         {
             let mut registry = uploads.registry.lock().unwrap();
             let upload = registry.get_mut(&began.upload_id).unwrap();
-            upload.touched = Instant::now() - GRACE - Duration::from_secs(1);
+            upload.touched = Instant::now()
+                .checked_sub(GRACE + Duration::from_secs(1))
+                .expect("this test's own clock");
         }
         uploads.sweep();
         assert!(!partial.exists(), "the partial went with the entry");
@@ -672,6 +697,11 @@ mod tests {
         let long = format!("{}.jpeg", "a".repeat(400));
         let name = sanitised_name(&long);
         assert!(name.len() <= NAME_CAP, "{} bytes", name.len());
-        assert!(name.ends_with(".jpeg"), "{name}");
+        assert!(
+            std::path::Path::new(&name)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("jpeg")),
+            "{name}",
+        );
     }
 }
