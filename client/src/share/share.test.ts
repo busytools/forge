@@ -274,7 +274,10 @@ describe('the share sheet', () => {
     const upload = vi.fn(() => Promise.resolve({ paths: ['/inbox/photo.jpg'] }));
     const { connection, dispatched } = stub();
     let fail = true;
-    let release: (() => void) | null = null;
+    // **A no-op until the dispatch takes it**: TypeScript cannot see an
+    // assignment made inside the promise executor, so a plain callable keeps
+    // the release callable without a narrowing it would reject.
+    let release: () => void = () => {};
     const flaky = {
       ...connection,
       dispatch: (command: unknown, at?: SessionSlot) => {
@@ -300,7 +303,7 @@ describe('the share sheet', () => {
     // is in flight, so the last attempt's line and bar stay gone.
     expect(lines().some((line) => line.includes('Uploading'))).toBe(false);
     expect(lines().some((line) => line.includes('Sending the message'))).toBe(true);
-    release?.();
+    release();
     await vi.waitFor(() => {
       flushSync();
       expect(lines().some((line) => line.includes('Sent to'))).toBe(true);
