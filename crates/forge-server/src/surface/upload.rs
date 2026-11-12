@@ -33,7 +33,9 @@
 //! part of a chunk and then fail (a full disk, an I/O error); the registry
 //! seeks before every write so the next one lands at the offset it names, and
 //! it records the first failure to answer it verbatim at the end rather than
-//! reporting a byte count.
+//! reporting a byte count. **A later write that succeeds clears it**: a disk
+//! that was full and is not any more is a retry that can finish, not an
+//! upload poisoned for its whole grace window.
 
 use std::collections::HashMap;
 use std::io::{Seek, SeekFrom, Write};
@@ -144,8 +146,9 @@ struct Upload {
     /// When the upload last moved a byte or was resumed, which is what the
     /// grace window measures from.
     touched: Instant,
-    /// The first write failure this upload met, answered verbatim at the end
-    /// rather than counted as bytes that never landed.
+    /// The last write failure this upload met, answered verbatim at the end
+    /// rather than counted as bytes that never landed. Cleared by a write
+    /// that succeeds, so a retry over a transient failure can finish.
     write_error: Option<String>,
 }
 
@@ -249,12 +252,12 @@ impl Uploads {
             .sum();
         if registry.len() >= MAX_LIVE_SHARES {
             return Err(format!(
-                "the server holds {MAX_LIVE_SHARES} live uploads; finish or drop one first",
+                "the server holds {MAX_LIVE_SHARES} live uploads; finish one first, or wait for an abandoned one to expire",
             ));
         }
         if live_files + files.len() > MAX_LIVE_FILES {
             return Err(format!(
-                "the server holds {MAX_LIVE_FILES} live partial files; finish or drop one first",
+                "the server holds {MAX_LIVE_FILES} live partial files; finish one first, or wait for an abandoned one to expire",
             ));
         }
         let claimed = live_bytes
@@ -262,7 +265,7 @@ impl Uploads {
             .ok_or_else(|| "the server's held bytes cannot be added up".to_owned())?;
         if claimed > MAX_LIVE_BYTES {
             return Err(format!(
-                "the server holds {MAX_LIVE_BYTES} live upload bytes; finish or drop one first",
+                "the server holds {MAX_LIVE_BYTES} live upload bytes; finish one first, or wait for an abandoned one to expire",
             ));
         }
         let upload_id = mint_id(&registry)?;
@@ -406,6 +409,7 @@ impl Uploads {
         }
         file.received = end;
         upload.touched = Instant::now();
+        upload.write_error = None;
         Ok(())
     }
 
@@ -444,8 +448,14 @@ impl Uploads {
     /// starts over instead of retrying onto files that already landed. A
     /// crash between the links leaves the landed finals unreferenced and the
     /// client's retry lands the share again under a suffixed name.
+    ///
+    /// **A partial that does not hold its bytes is not retryable**: no later
+    /// chunk can make it whole, so the entry is dropped and the answer says
+    /// "unknown or expired", which is what makes the client begin again
+    /// instead of retrying against it until the grace window ends.
     pub fn end(&self, seat: &SessionSlot, upload_id: u64) -> Result<Ended, String> {
         let mut registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut unrecoverable: Option<String> = None;
         {
             let upload = registry.get_mut(&upload_id).ok_or_else(unknown)?;
             if &upload.seat != seat {
@@ -471,15 +481,17 @@ impl Uploads {
                 match held {
                     Ok(len) if len == file.declared => {}
                     Ok(len) => {
-                        return Err(format!(
+                        unrecoverable = Some(format!(
                             "file {index}'s partial holds {len} bytes, not the {} it declared",
                             file.declared,
                         ));
+                        break;
                     }
                     Err(error) => {
-                        return Err(format!(
+                        unrecoverable = Some(format!(
                             "file {index}'s partial could not be measured: {error}",
                         ));
+                        break;
                     }
                 }
                 if let Some(handle) = file.handle.as_mut() {
@@ -488,6 +500,20 @@ impl Uploads {
                     })?;
                 }
             }
+        }
+        if let Some(why) = unrecoverable {
+            let Some(upload) = registry.remove(&upload_id) else { return Err(unknown()) };
+            tracing::warn!(
+                event_name = "upload_partial_mismatch",
+                seat = %upload.seat.display(),
+                %why,
+                "a shared file's partial does not hold its bytes; the upload is dropped",
+            );
+            for file in upload.files {
+                drop(file.handle);
+                let _ = std::fs::remove_file(&file.partial);
+            }
+            return Err(unknown());
         }
         let Some(upload) = registry.remove(&upload_id) else { return Err(unknown()) };
         let mut paths = Vec::with_capacity(upload.files.len());
@@ -1266,10 +1292,81 @@ mod tests {
         assert!(ended.contains("could not be written"), "{ended}");
     }
 
-    /// **The end checks the file, not only the counter**: a partial that was
-    /// truncated or grown under the registry is refused rather than renamed.
+    /// **A write that succeeds after a failure clears it**, so a retry over a
+    /// disk that was full and is not any more finishes the upload instead of
+    /// being refused at the end for a failure the retry already repaired.
     #[test]
-    fn an_end_whose_partial_does_not_hold_its_bytes_is_refused() {
+    fn a_write_that_succeeds_after_a_failure_clears_it() {
+        struct Recovering {
+            content: Vec<u8>,
+            position: u64,
+            failed: bool,
+        }
+        impl Recovering {
+            fn write_at(&mut self, buf: &[u8]) {
+                let at = self.position as usize;
+                let end = at + buf.len();
+                if self.content.len() < end {
+                    self.content.resize(end, 0);
+                }
+                self.content[at..end].copy_from_slice(buf);
+                self.position = end as u64;
+            }
+        }
+        impl Write for Recovering {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if !self.failed {
+                    self.failed = true;
+                    self.write_at(&buf[..1]);
+                    return Err(std::io::Error::other("a full disk"));
+                }
+                self.write_at(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl Seek for Recovering {
+            fn seek(&mut self, to: SeekFrom) -> std::io::Result<u64> {
+                if let SeekFrom::Start(at) = to {
+                    self.position = at;
+                }
+                Ok(self.position)
+            }
+        }
+        impl Partial for Recovering {
+            fn sync(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+
+            fn len(&mut self) -> std::io::Result<u64> {
+                Ok(self.content.len() as u64)
+            }
+        }
+
+        let (_dir, uploads) = uploads();
+        let began = begin(&uploads, &[decl("a.bin", 4)]).expect("begins");
+        {
+            let mut registry = uploads.registry.lock().unwrap();
+            let upload = registry.get_mut(&began.upload_id).unwrap();
+            upload.files[0].handle =
+                Some(Box::new(Recovering { content: Vec::new(), position: 0, failed: false }));
+        }
+        chunk(&uploads, began.upload_id, 0, 0, b"abcd").expect_err("the first write fails");
+        chunk(&uploads, began.upload_id, 0, 0, b"abcd").expect("the retry lands");
+        uploads.end(&seat(), began.upload_id).expect("the upload ends");
+    }
+
+    /// **The end checks the file, not only the counter**: a partial that was
+    /// truncated or grown under the registry is refused rather than linked.
+    ///
+    /// **And it is not retried**: no later chunk can bring the file back to
+    /// its declared size, so the entry and its partials go and the answer is
+    /// the one that makes the client begin again.
+    #[test]
+    fn an_end_whose_partial_does_not_hold_its_bytes_drops_the_upload() {
         let (_dir, uploads) = uploads();
         let began = begin(&uploads, &[decl("a.bin", 4)]).expect("begins");
         feed(&uploads, began.upload_id, 0, b"abcd");
@@ -1284,7 +1381,9 @@ mod tests {
             .expect("this test's own partial");
         let why =
             uploads.end(&seat(), began.upload_id).expect_err("the file does not hold its bytes");
-        assert!(why.contains("holds 0 bytes"), "{why}");
+        assert!(why.contains("unknown or expired"), "{why}");
+        assert!(uploads.resume(&seat(), began.upload_id, 1).is_err(), "the entry was kept");
+        assert!(!partial.exists(), "the partial went with the entry");
     }
 
     /// **A rename that fails leaves no half a share**: the finals already
