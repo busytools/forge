@@ -5,24 +5,37 @@
 //! that drops mid-upload leaves it (and its partials) for a grace window and
 //! a reconnected client's `file_upload_resume` continues from the offsets the
 //! server already holds. A restart loses the registry, so a resume for an id
-//! it never minted is refused and the client starts over.
+//! it never minted is refused and the client starts over - and the sweep
+//! removes the partials a restart orphaned, by their age on disk.
 //!
 //! Partials carry a `.partial` suffix and are renamed only when the upload
 //! ends, so a half-written file never appears as a shared one. Final files
 //! are kept until the person or the agent deletes them: nothing sweeps the
 //! inbox.
 //!
+//! **Two sets of bounds.** One share carries at most [`MAX_UPLOAD_BYTES`] over
+//! [`MAX_FILES`] files; the process holds at most [`MAX_LIVE_SHARES`] live
+//! shares, [`MAX_LIVE_FILES`] live partial files and [`MAX_LIVE_BYTES`] of
+//! declared bytes at once, refused at begin. A per-share cap alone lets one
+//! client repeat a share at message rate into permanent inbox files.
+//!
 //! **Every operation here is blocking I/O**, so the transport runs each one
 //! on a blocking thread rather than on the connection's loop. The registry's
 //! lock is held across a write, which serialises one server's uploads by
 //! design: the offset check is what makes a duplicate harmless and a gap a
 //! refusal, and both need the received count to be the truth at the write.
+//!
+//! **A write failure is remembered, not swallowed.** `write_all` can write
+//! part of a chunk and then fail (a full disk, an I/O error); the registry
+//! seeks before every write so the next one lands at the offset it names, and
+//! it records the first failure to answer it verbatim at the end rather than
+//! reporting a byte count.
 
 use std::collections::HashMap;
-use std::io::Write as _;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use forge_primitives::SessionSlot;
 use forge_workspace::FileDecl;
@@ -32,10 +45,22 @@ use serde::Serialize;
 /// own check is a courtesy, and this is the wall.
 pub const MAX_UPLOAD_BYTES: u64 = 200 * 1024 * 1024;
 
-/// How many files one share may name. **A guard rather than a product
-/// limit**: the byte cap binds the ordinary case, and a client naming a
-/// million empty files would otherwise have a million partials created.
+/// How many files one share may name. **A product limit of its own**, beyond
+/// the spec's byte cap: the byte cap binds the ordinary case, and a client
+/// naming a million empty files would otherwise create a million partials.
 pub const MAX_FILES: usize = 256;
+
+/// How many shares the process holds at once, across every seat and
+/// connection. A bound on the registry rather than on one share.
+pub const MAX_LIVE_SHARES: usize = 8;
+
+/// How many partial files the process holds at once. A share of empty files
+/// is the case the per-share byte cap does not bind.
+pub const MAX_LIVE_FILES: usize = 1024;
+
+/// How many declared bytes the process holds at once. Bounds the disk a
+/// client can claim before sending a byte.
+pub const MAX_LIVE_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// How long a dropped upload's entry and partials are kept. Long enough for
 /// a phone that lost its network to reconnect and resume, and short enough
@@ -45,6 +70,10 @@ pub const GRACE: Duration = Duration::from_secs(60 * 60);
 /// A cache name's own cap, in bytes so a unicode name cannot cross the
 /// filesystem's length bound when the timestamp prefix is added.
 const NAME_CAP: usize = 180;
+
+/// A seat's org or project name's own cap. They are path components and
+/// prompt-visible, so they are printable and bounded.
+const COMPONENT_CAP: usize = 64;
 
 /// What a begun upload answers: the id its chunks name, and the absolute
 /// paths the files will land at.
@@ -68,16 +97,43 @@ pub struct Ended {
     pub paths: Vec<String>,
 }
 
+/// One partial file's handle, as the registry writes it.
+///
+/// A trait rather than a bare `File` so a test can make a write fail partway
+/// and pin what the registry remembers and answers at the end.
+trait Partial: Write + Seek + Send {
+    fn sync(&mut self) -> std::io::Result<()>;
+    fn len(&mut self) -> std::io::Result<u64>;
+}
+
+impl Partial for std::fs::File {
+    fn sync(&mut self) -> std::io::Result<()> {
+        self.sync_all()
+    }
+
+    fn len(&mut self) -> std::io::Result<u64> {
+        self.metadata().map(|meta| meta.len())
+    }
+}
+
 /// One upload's files and where they will land.
 struct Upload {
     /// The seat this upload belongs to. **Bound to it**: a resume or an end
     /// naming another seat is refused exactly as an unknown id is, so one
     /// person's upload is never written into another's project.
     seat: SessionSlot,
+    /// The connection that began or last resumed this upload. **A chunk is
+    /// bound to it too**: the id is unguessable, but an id alone is not an
+    /// authorisation - a resume re-binds the upload to the connection that
+    /// reconnected, and a chunk from any other connection is refused.
+    connection: u64,
     files: Vec<FileState>,
     /// When the upload last moved a byte or was resumed, which is what the
     /// grace window measures from.
     touched: Instant,
+    /// The first write failure this upload met, answered verbatim at the end
+    /// rather than counted as bytes that never landed.
+    write_error: Option<String>,
 }
 
 struct FileState {
@@ -85,7 +141,10 @@ struct FileState {
     received: u64,
     partial: PathBuf,
     final_path: PathBuf,
-    handle: std::fs::File,
+    /// Opened on the file's first chunk, never at begin: a share names up to
+    /// [`MAX_FILES`] files, and holding a handle per file from begin to end
+    /// would spend the process's descriptor budget on nothing.
+    handle: Option<Box<dyn Partial>>,
 }
 
 /// Every upload this server holds.
@@ -106,13 +165,17 @@ impl Uploads {
         }
     }
 
-    /// Begin one upload: validate the share, create a partial per file and
-    /// mint the id its chunks name.
+    /// Begin one upload: validate the share against both sets of bounds,
+    /// reserve a partial per file and mint the id its chunks name.
     ///
-    /// **The whole share is validated before anything is written**: a bad
-    /// name, an over-cap total or a seat that cannot name a directory is a
-    /// refusal with no file on disk.
-    pub fn begin(&self, seat: &SessionSlot, files: &[FileDecl]) -> Result<Began, String> {
+    /// **The whole share is validated before anything is written**, and a
+    /// write that could not complete leaves nothing behind.
+    pub fn begin(
+        &self,
+        seat: &SessionSlot,
+        files: &[FileDecl],
+        connection: u64,
+    ) -> Result<Began, String> {
         self.sweep();
         let root = self.root.as_ref().map_err(Clone::clone)?;
         if files.is_empty() {
@@ -121,7 +184,22 @@ impl Uploads {
         if files.len() > MAX_FILES {
             return Err(format!("one share carries at most {MAX_FILES} files"));
         }
-        let total: u64 = files.iter().map(|file| file.size).sum();
+        let mut total: u64 = 0;
+        for file in files {
+            // **One file cannot be wider than the share**, and a declared
+            // size that cannot be added is refused rather than wrapped: two
+            // 2^63 declarations sum to 0 in a release build.
+            if file.size > MAX_UPLOAD_BYTES {
+                return Err(format!(
+                    "{} declares {} bytes; one file carries at most {MAX_UPLOAD_BYTES}",
+                    sanitised_name(&file.name),
+                    file.size,
+                ));
+            }
+            total = total.checked_add(file.size).ok_or_else(|| {
+                format!("the share's declared sizes cannot be added up at {}", file.size)
+            })?;
+        }
         if total > MAX_UPLOAD_BYTES {
             return Err(format!(
                 "the share is {total} bytes; one share carries at most {MAX_UPLOAD_BYTES}",
@@ -132,38 +210,73 @@ impl Uploads {
         let project = component(seat.project()).ok_or_else(|| {
             format!("the seat's project {:?} is not a directory name", seat.project())
         })?;
+
+        let mut registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
+        // **The process-wide bounds, checked against every held upload**:
+        // the per-share caps bound one share, and these bound the process.
+        let live_files: usize = registry.values().map(|upload| upload.files.len()).sum();
+        let live_bytes: u64 = registry
+            .values()
+            .flat_map(|upload| upload.files.iter())
+            .map(|file| file.declared)
+            .sum();
+        if registry.len() >= MAX_LIVE_SHARES {
+            return Err(format!(
+                "the server holds {MAX_LIVE_SHARES} live uploads; finish or drop one first",
+            ));
+        }
+        if live_files + files.len() > MAX_LIVE_FILES {
+            return Err(format!(
+                "the server holds {MAX_LIVE_FILES} live partial files; finish or drop one first",
+            ));
+        }
+        let claimed = live_bytes
+            .checked_add(total)
+            .ok_or_else(|| "the server's held bytes cannot be added up".to_owned())?;
+        if claimed > MAX_LIVE_BYTES {
+            return Err(format!(
+                "the server holds {MAX_LIVE_BYTES} live upload bytes; finish or drop one first",
+            ));
+        }
+        let upload_id = mint_id(&registry)?;
         let dir = root.join(org).join(project);
         std::fs::create_dir_all(&dir).map_err(|error| {
             format!("the inbox at {} could not be created: {error}", dir.display())
         })?;
-        let stamp = timestamp();
+        let stamp = timestamp(
+            time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc()),
+        );
         let mut made: Vec<FileState> = Vec::with_capacity(files.len());
         for file in files {
-            match create(&dir, &stamp, &sanitised_name(&file.name)) {
-                Ok((final_path, partial, handle)) => made.push(FileState {
+            match reserve(&dir, &stamp, &sanitised_name(&file.name), upload_id) {
+                Ok((final_path, partial)) => made.push(FileState {
                     declared: file.size,
                     received: 0,
                     partial,
                     final_path,
-                    handle,
+                    handle: None,
                 }),
                 Err(why) => {
-                    // A share that could not be created whole leaves nothing
+                    // A share that could not be reserved whole leaves nothing
                     // behind: the partials already made go with the refusal.
                     for state in made {
-                        let FileState { handle, partial, .. } = state;
-                        drop(handle);
-                        let _ = std::fs::remove_file(partial);
+                        let _ = std::fs::remove_file(state.partial);
                     }
                     return Err(why);
                 }
             }
         }
-        let mut registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
-        let upload_id = mint_id(&registry)?;
         let paths = made.iter().map(|state| state.final_path.display().to_string()).collect();
-        registry
-            .insert(upload_id, Upload { seat: seat.clone(), files: made, touched: Instant::now() });
+        registry.insert(
+            upload_id,
+            Upload {
+                seat: seat.clone(),
+                connection,
+                files: made,
+                touched: Instant::now(),
+                write_error: None,
+            },
+        );
         Ok(Began { upload_id, paths })
     }
 
@@ -173,9 +286,13 @@ impl Uploads {
     /// has is a duplicate and is ignored, one ahead of the received count is
     /// a gap and is refused (the socket is ordered, so a gap is a client
     /// bug), and the bytes that arrive are checked against the declared size
-    /// rather than trusted.
+    /// rather than trusted. **The write seeks first**: a failed write can
+    /// leave a partial's file position past the bytes the registry counted,
+    /// and appending at that position would strand the difference in the
+    /// file while the counter still passed the end check.
     pub fn chunk(
         &self,
+        connection: u64,
         upload_id: u64,
         file_index: u16,
         offset: u32,
@@ -184,6 +301,9 @@ impl Uploads {
         let mut registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
         let upload =
             registry.get_mut(&upload_id).ok_or_else(|| format!("no upload {upload_id} is held"))?;
+        if upload.connection != connection {
+            return Err(format!("upload {upload_id} belongs to another connection"));
+        }
         let index = usize::from(file_index);
         let file = upload
             .files
@@ -207,23 +327,66 @@ impl Uploads {
                 file.declared,
             ));
         }
-        file.handle
-            .write_all(bytes)
-            .map_err(|error| format!("file {file_index} could not be written: {error}"))?;
+        if file.handle.is_none() {
+            match std::fs::OpenOptions::new().write(true).open(&file.partial) {
+                Ok(handle) => file.handle = Some(Box::new(handle)),
+                Err(error) => {
+                    let why = format!(
+                        "{} could not be opened for writing: {error}",
+                        file.partial.display(),
+                    );
+                    upload.write_error.get_or_insert_with(|| why.clone());
+                    tracing::warn!(
+                        event_name = "upload_open_failed",
+                        seat = %upload.seat.display(),
+                        partial = %file.partial.display(),
+                        %error,
+                        "a shared file's partial could not be opened for writing",
+                    );
+                    return Err(why);
+                }
+            }
+        }
+        let Some(handle) = file.handle.as_mut() else { return Err("no handle".to_owned()) };
+        if let Err(error) =
+            handle.seek(SeekFrom::Start(offset)).and_then(|_| handle.write_all(bytes))
+        {
+            // **The first failure is kept for the end**, so the client is
+            // told what went wrong rather than a byte count; the file
+            // position is left wherever the failed write stopped, and the
+            // next chunk's seek is what puts it back on the offset.
+            let why = format!("file {file_index} could not be written: {error}");
+            upload.write_error.get_or_insert_with(|| why.clone());
+            tracing::warn!(
+                event_name = "upload_write_failed",
+                seat = %upload.seat.display(),
+                partial = %file.partial.display(),
+                %error,
+                "a chunk of a shared file could not be written",
+            );
+            return Err(why);
+        }
         file.received = end;
         upload.touched = Instant::now();
         Ok(())
     }
 
     /// The offsets a held upload already has, or the refusal that tells a
-    /// client to begin again.
-    pub fn resume(&self, seat: &SessionSlot, upload_id: u64) -> Result<Resumed, String> {
+    /// client to begin again. **The resume re-binds the upload to the asking
+    /// connection**: a client that dropped reconnects under a new id.
+    pub fn resume(
+        &self,
+        seat: &SessionSlot,
+        upload_id: u64,
+        connection: u64,
+    ) -> Result<Resumed, String> {
         self.sweep();
         let mut registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
         let upload = registry
             .get_mut(&upload_id)
             .filter(|upload| &upload.seat == seat)
             .ok_or_else(unknown)?;
+        upload.connection = connection;
         upload.touched = Instant::now();
         Ok(Resumed {
             paths: upload
@@ -237,25 +400,53 @@ impl Uploads {
 
     /// Finish an upload: every file must have arrived whole, and the partials
     /// are then renamed into place together with the answer.
+    ///
+    /// **A failure leaves no half a share.** A rename that fails removes the
+    /// finals already renamed and the partials still waiting, so the client
+    /// starts over instead of retrying onto files that already landed.
     pub fn end(&self, seat: &SessionSlot, upload_id: u64) -> Result<Ended, String> {
         let mut registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
         {
-            let upload = registry
-                .get(&upload_id)
-                .filter(|upload| &upload.seat == seat)
-                .ok_or_else(unknown)?;
-            for (index, file) in upload.files.iter().enumerate() {
+            let upload = registry.get_mut(&upload_id).ok_or_else(unknown)?;
+            if &upload.seat != seat {
+                return Err(unknown());
+            }
+            if let Some(why) = &upload.write_error {
+                return Err(why.clone());
+            }
+            for (index, file) in upload.files.iter_mut().enumerate() {
                 if file.received != file.declared {
                     return Err(format!(
                         "file {index} received {} of its {} declared bytes",
                         file.received, file.declared,
                     ));
                 }
-            }
-            for file in &upload.files {
-                file.handle.sync_all().map_err(|error| {
-                    format!("{} could not be flushed: {error}", file.final_path.display())
-                })?;
+                // **The counter is checked against the file**, not only
+                // itself: a write the registry never saw fail (a disk that
+                // lied) would pass the count and fail the reader.
+                let held = match file.handle.as_mut() {
+                    Some(handle) => handle.len(),
+                    None => std::fs::metadata(&file.partial).map(|meta| meta.len()),
+                };
+                match held {
+                    Ok(len) if len == file.declared => {}
+                    Ok(len) => {
+                        return Err(format!(
+                            "file {index}'s partial holds {len} bytes, not the {} it declared",
+                            file.declared,
+                        ));
+                    }
+                    Err(error) => {
+                        return Err(format!(
+                            "file {index}'s partial could not be measured: {error}",
+                        ));
+                    }
+                }
+                if let Some(handle) = file.handle.as_mut() {
+                    handle.sync().map_err(|error| {
+                        format!("{} could not be flushed: {error}", file.final_path.display())
+                    })?;
+                }
             }
         }
         let Some(upload) = registry.remove(&upload_id) else { return Err(unknown()) };
@@ -266,16 +457,24 @@ impl Uploads {
             // The handle must be closed before the rename: a file open for
             // writing on some platforms cannot be moved.
             drop(handle);
-            if let Err(error) = std::fs::rename(&partial, &final_path) {
-                let why =
-                    format!("{} could not be moved into place: {error}", final_path.display());
-                let _ = std::fs::remove_file(&partial);
-                for rest in files {
-                    let FileState { handle, partial, .. } = rest;
-                    drop(handle);
-                    let _ = std::fs::remove_file(partial);
+            // **A final that is there is somebody else's file**: a hard link
+            // refuses it where a rename would replace it.
+            match std::fs::hard_link(&partial, &final_path) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&partial);
                 }
-                return Err(why);
+                Err(error) => {
+                    let shown = final_path.display();
+                    let why = format!("{shown} could not be moved into place: {error}");
+                    let _ = std::fs::remove_file(&partial);
+                    for rest in files {
+                        let _ = std::fs::remove_file(rest.partial);
+                    }
+                    for landed in &paths {
+                        let _ = std::fs::remove_file(landed);
+                    }
+                    return Err(why);
+                }
             }
             paths.push(final_path.display().to_string());
         }
@@ -294,15 +493,71 @@ impl Uploads {
         for id in expired {
             let Some(upload) = registry.remove(&id) else { continue };
             for file in upload.files {
-                let FileState { handle, partial, .. } = file;
-                drop(handle);
-                let _ = std::fs::remove_file(&partial);
+                drop(file.handle);
+                let _ = std::fs::remove_file(&file.partial);
             }
             tracing::debug!(
                 event_name = "upload_expired",
                 upload_id = id,
                 "a dropped file upload passed its grace window; its partials were removed",
             );
+        }
+    }
+
+    /// Remove the partials no live upload holds.
+    ///
+    /// **The registry is memory, so a restart orphans its partials**: on the
+    /// next boot nothing knows the entries that made them, and this is the
+    /// only thing that deletes them. The age is the file's own, so a partial
+    /// this process is writing is never taken (it was touched a moment ago).
+    pub fn sweep_orphans(&self, now: SystemTime) {
+        let Ok(root) = self.root.as_ref() else { return };
+        let registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
+        let held: std::collections::HashSet<&Path> = registry
+            .values()
+            .flat_map(|upload| upload.files.iter())
+            .map(|file| file.partial.as_path())
+            .collect();
+        let mut removed = 0_usize;
+        remove_orphans(root, now, &held, &mut removed);
+        if removed > 0 {
+            tracing::debug!(
+                event_name = "upload_orphans_swept",
+                removed,
+                "partials no live upload held were removed after their grace window",
+            );
+        }
+    }
+}
+
+/// Walk the inbox tree and delete `*.partial` files older than [`GRACE`] that
+/// no live upload holds.
+fn remove_orphans(
+    dir: &Path,
+    now: SystemTime,
+    held: &std::collections::HashSet<&Path>,
+    removed: &mut usize,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(kind) = entry.file_type() else { continue };
+        if kind.is_dir() {
+            remove_orphans(&path, now, held, removed);
+            continue;
+        }
+        if path.extension().and_then(|extension| extension.to_str()) != Some("partial") {
+            continue;
+        }
+        if held.contains(path.as_path()) {
+            continue;
+        }
+        let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) else {
+            continue;
+        };
+        if now.duration_since(modified).is_ok_and(|age| age > GRACE) {
+            let _ = std::fs::remove_file(&path);
+            *removed += 1;
         }
     }
 }
@@ -321,7 +576,10 @@ fn component(name: &str) -> Option<String> {
     if name.is_empty() || name == "." || name == ".." {
         return None;
     }
-    if name.contains(['/', '\\', '\0']) {
+    if name.chars().any(|character| character.is_control() || character == '\0') {
+        return None;
+    }
+    if name.contains(['/', '\\']) || name.len() > COMPONENT_CAP {
         return None;
     }
     Some(name.to_owned())
@@ -329,6 +587,10 @@ fn component(name: &str) -> Option<String> {
 
 /// A display name made safe for the inbox: no path, no control characters,
 /// never `.` or `..`, and capped so the timestamped name fits the filesystem.
+///
+/// **A name is sanitised, not refused**: a provider's display name is not a
+/// promise, and a share a person asked for should land under the closest name
+/// it can have.
 fn sanitised_name(display: &str) -> String {
     let last = display.rsplit(['/', '\\']).next().unwrap_or(display);
     let cleaned: String =
@@ -361,17 +623,18 @@ fn sanitised_name(display: &str) -> String {
     }
 }
 
-/// Create one file's partial, answering its final path, its partial and the
-/// handle.
+/// Reserve one file's partial, answering its final path and its partial.
 ///
-/// **A collision is a name that already exists as a final file or a
-/// partial**: the share gets a suffix rather than overwriting someone's
-/// earlier file.
-fn create(
+/// **The name is reserved, not the handle**: an empty partial is created and
+/// closed, so two shares cannot choose one name, and the descriptor budget is
+/// not spent until a chunk arrives. The partial carries the upload id, so one
+/// share's partial can never collide with another share's final file.
+fn reserve(
     dir: &Path,
     stamp: &str,
     name: &str,
-) -> Result<(PathBuf, PathBuf, std::fs::File), String> {
+    upload_id: u64,
+) -> Result<(PathBuf, PathBuf), String> {
     for attempt in 0..1000 {
         let candidate = if attempt == 0 {
             format!("{stamp}-{name}")
@@ -380,14 +643,15 @@ fn create(
             suffixed(stamp, name, attempt + 1)
         };
         let final_path = dir.join(&candidate);
-        let mut partial_name = final_path.clone().into_os_string();
-        partial_name.push(".partial");
-        let partial = PathBuf::from(partial_name);
+        let partial = dir.join(format!("{candidate}.{upload_id}.partial"));
         if final_path.exists() || partial.exists() {
             continue;
         }
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&partial) {
-            Ok(handle) => return Ok((final_path, partial, handle)),
+            Ok(handle) => {
+                drop(handle);
+                return Ok((final_path, partial));
+            }
             // Another attempt's own create won the name: try the next suffix.
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => {
@@ -414,10 +678,9 @@ fn suffixed(stamp: &str, name: &str, attempt: u32) -> String {
 /// The stamp a share's names carry, in local time: `YYYYMMDD-HHMMSS`.
 ///
 /// Local rather than UTC because a person reads the inbox by when they
-/// shared the file; a machine with no local offset falls back to UTC rather
-/// than refusing the upload.
-fn timestamp() -> String {
-    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+/// shared the file; the stamp is the clock's, passed in so a test can pin
+/// the shape rather than read it off the wall.
+fn timestamp(now: time::OffsetDateTime) -> String {
     format!(
         "{:04}{:02}{:02}-{:02}{:02}{:02}",
         now.year(),
@@ -472,11 +735,24 @@ mod tests {
         (dir, uploads)
     }
 
+    fn begin(uploads: &Uploads, files: &[FileDecl]) -> Result<Began, String> {
+        uploads.begin(&seat(), files, 1)
+    }
+
+    fn chunk(
+        uploads: &Uploads,
+        id: u64,
+        index: u16,
+        offset: u32,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        uploads.chunk(1, id, index, offset, bytes)
+    }
+
     fn feed(uploads: &Uploads, id: u64, index: u16, bytes: &[u8]) {
-        for (chunk_index, chunk) in bytes.chunks(4).enumerate() {
+        for (chunk_index, chunk_bytes) in bytes.chunks(4).enumerate() {
             let offset = u32::try_from(chunk_index * 4).expect("this test's own offsets");
-            uploads
-                .chunk(id, index, offset, chunk)
+            chunk(uploads, id, index, offset, chunk_bytes)
                 .expect("a chunk at the offset the server expects");
         }
     }
@@ -487,7 +763,7 @@ mod tests {
     #[test]
     fn an_upload_lands_under_its_org_and_project() {
         let (dir, uploads) = uploads();
-        let began = uploads.begin(&seat(), &[decl("photo.jpg", 5)]).expect("a valid share begins");
+        let began = begin(&uploads, &[decl("photo.jpg", 5)]).expect("a valid share begins");
         feed(&uploads, began.upload_id, 0, b"hello");
         let paths = uploads.end(&seat(), began.upload_id).expect("the upload ends").paths;
         assert_eq!(paths.len(), 1);
@@ -499,7 +775,19 @@ mod tests {
             "the display name rides behind the stamp: {}",
             path.display(),
         );
-        assert!(!path.with_extension("jpg.partial").exists(), "no partial is left behind");
+        assert!(
+            !dir.path()
+                .join("inbox")
+                .join("Busytools")
+                .join("forge")
+                .join(format!(
+                    "{}.{}.partial",
+                    path.file_name().unwrap().to_string_lossy(),
+                    began.upload_id
+                ))
+                .exists(),
+            "no partial is left behind",
+        );
     }
 
     /// **A partial is not a shared file.** Until the end answers, the bytes on
@@ -507,7 +795,7 @@ mod tests {
     #[test]
     fn a_partial_is_renamed_only_at_the_end() {
         let (_dir, uploads) = uploads();
-        let began = uploads.begin(&seat(), &[decl("notes.txt", 4)]).expect("begins");
+        let began = begin(&uploads, &[decl("notes.txt", 4)]).expect("begins");
         let final_path = PathBuf::from(&began.paths[0]);
         assert!(!final_path.exists(), "nothing has landed yet");
         feed(&uploads, began.upload_id, 0, b"text");
@@ -522,11 +810,11 @@ mod tests {
     #[test]
     fn a_duplicate_chunk_is_ignored_and_the_rest_lands() {
         let (_dir, uploads) = uploads();
-        let began = uploads.begin(&seat(), &[decl("a.bin", 6)]).expect("begins");
-        uploads.chunk(began.upload_id, 0, 0, b"abc").expect("the first chunk");
+        let began = begin(&uploads, &[decl("a.bin", 6)]).expect("begins");
+        chunk(&uploads, began.upload_id, 0, 0, b"abc").expect("the first chunk");
         // The retry re-sends the same bytes and continues.
-        uploads.chunk(began.upload_id, 0, 0, b"abc").expect("a duplicate is ignored");
-        uploads.chunk(began.upload_id, 0, 3, b"def").expect("the rest lands");
+        chunk(&uploads, began.upload_id, 0, 0, b"abc").expect("a duplicate is ignored");
+        chunk(&uploads, began.upload_id, 0, 3, b"def").expect("the rest lands");
         let paths = uploads.end(&seat(), began.upload_id).expect("ends").paths;
         assert_eq!(std::fs::read(&paths[0]).unwrap(), b"abcdef");
     }
@@ -536,10 +824,10 @@ mod tests {
     #[test]
     fn a_gap_is_refused() {
         let (_dir, uploads) = uploads();
-        let began = uploads.begin(&seat(), &[decl("a.bin", 6)]).expect("begins");
-        uploads.chunk(began.upload_id, 0, 0, b"abc").expect("the first chunk");
-        assert!(uploads.chunk(began.upload_id, 0, 5, b"x").is_err(), "a gap is refused");
-        uploads.chunk(began.upload_id, 0, 3, b"def").expect("the rest lands");
+        let began = begin(&uploads, &[decl("a.bin", 6)]).expect("begins");
+        chunk(&uploads, began.upload_id, 0, 0, b"abc").expect("the first chunk");
+        assert!(chunk(&uploads, began.upload_id, 0, 5, b"x").is_err(), "a gap is refused");
+        chunk(&uploads, began.upload_id, 0, 3, b"def").expect("the rest lands");
         let paths = uploads.end(&seat(), began.upload_id).expect("ends").paths;
         assert_eq!(std::fs::read(&paths[0]).unwrap(), b"abcdef", "the gap's byte never landed");
     }
@@ -549,10 +837,10 @@ mod tests {
     #[test]
     fn a_short_file_refuses_the_end_and_keeps_the_upload() {
         let (_dir, uploads) = uploads();
-        let began = uploads.begin(&seat(), &[decl("a.bin", 6)]).expect("begins");
-        uploads.chunk(began.upload_id, 0, 0, b"abc").expect("the first chunk");
+        let began = begin(&uploads, &[decl("a.bin", 6)]).expect("begins");
+        chunk(&uploads, began.upload_id, 0, 0, b"abc").expect("the first chunk");
         assert!(uploads.end(&seat(), began.upload_id).is_err(), "half a file does not end");
-        let resumed = uploads.resume(&seat(), began.upload_id).expect("the upload is kept");
+        let resumed = uploads.resume(&seat(), began.upload_id, 1).expect("the upload is kept");
         assert_eq!(resumed.received, vec![3]);
     }
 
@@ -560,13 +848,30 @@ mod tests {
     #[test]
     fn a_resume_answers_the_offsets_and_refuses_another_seat() {
         let (_dir, uploads) = uploads();
-        let began = uploads.begin(&seat(), &[decl("a.bin", 4), decl("b.bin", 4)]).expect("begins");
-        uploads.chunk(began.upload_id, 0, 0, b"ab").expect("half of the first");
-        let resumed = uploads.resume(&seat(), began.upload_id).expect("the seat that began it");
+        let began = begin(&uploads, &[decl("a.bin", 4), decl("b.bin", 4)]).expect("begins");
+        chunk(&uploads, began.upload_id, 0, 0, b"ab").expect("half of the first");
+        let resumed = uploads.resume(&seat(), began.upload_id, 1).expect("the seat that began it");
         assert_eq!(resumed.received, vec![2, 0]);
         let other = SessionSlot::worker("Busytools", "forge", "w1");
-        assert!(uploads.resume(&other, began.upload_id).is_err(), "another seat is refused");
+        assert!(uploads.resume(&other, began.upload_id, 1).is_err(), "another seat is refused");
         assert!(uploads.end(&other, began.upload_id).is_err(), "and cannot end it");
+    }
+
+    /// **A chunk from another connection is refused.** The id is unguessable,
+    /// but the id alone is not an authorisation; a resume re-binds the
+    /// upload to the connection that reconnected.
+    #[test]
+    fn a_chunk_is_bound_to_the_connection_that_began_or_resumed_it() {
+        let (_dir, uploads) = uploads();
+        let began = begin(&uploads, &[decl("a.bin", 4)]).expect("begins");
+        assert!(
+            uploads.chunk(2, began.upload_id, 0, 0, b"ab").is_err(),
+            "another connection's chunk is refused",
+        );
+        uploads.resume(&seat(), began.upload_id, 2).expect("the reconnected client resumes");
+        uploads
+            .chunk(2, began.upload_id, 0, 0, b"ab")
+            .expect("and its chunks land after the resume");
     }
 
     /// A resume for an id the server never minted is refused in words that
@@ -574,8 +879,15 @@ mod tests {
     #[test]
     fn a_resume_for_an_unknown_upload_is_refused() {
         let (_dir, uploads) = uploads();
-        let why = uploads.resume(&seat(), 999).expect_err("nothing is held");
+        let why = uploads.resume(&seat(), 999, 1).expect_err("nothing is held");
         assert!(why.contains("unknown or expired"), "{why}");
+    }
+
+    /// A chunk for an id the server never minted is refused, not written.
+    #[test]
+    fn a_chunk_outside_a_begin_is_refused() {
+        let (_dir, uploads) = uploads();
+        assert!(chunk(&uploads, 999, 0, 0, b"ab").is_err());
     }
 
     /// **An upload id fits a JavaScript number.** The phone's page holds it in
@@ -584,18 +896,19 @@ mod tests {
     #[test]
     fn an_upload_id_fits_a_javascript_number() {
         let (_dir, uploads) = uploads();
-        let began = uploads.begin(&seat(), &[decl("a.bin", 0)]).expect("begins");
+        let began = begin(&uploads, &[decl("a.bin", 0)]).expect("begins");
         assert!(began.upload_id < (1 << 53), "{}", began.upload_id);
         assert_ne!(began.upload_id, 0);
     }
 
     /// **An abandoned upload is swept after the grace window, partials and
-    /// all**, and a resume past it starts over.
+    /// all**, and a resume past it starts over. **The resume's own sweep is
+    /// what takes it**: the test never calls sweep itself.
     #[test]
-    fn an_expired_upload_is_swept_with_its_partials() {
+    fn an_expired_upload_is_swept_with_its_partials_by_the_next_resume() {
         let (_dir, uploads) = uploads();
-        let began = uploads.begin(&seat(), &[decl("a.bin", 4)]).expect("begins");
-        uploads.chunk(began.upload_id, 0, 0, b"ab").expect("half");
+        let began = begin(&uploads, &[decl("a.bin", 4)]).expect("begins");
+        chunk(&uploads, began.upload_id, 0, 0, b"ab").expect("half");
         let partial = {
             let registry = uploads.registry.lock().unwrap();
             registry[&began.upload_id].files[0].partial.clone()
@@ -608,9 +921,35 @@ mod tests {
                 .checked_sub(GRACE + Duration::from_secs(1))
                 .expect("this test's own clock");
         }
-        uploads.sweep();
+        let why = uploads.resume(&seat(), began.upload_id, 1).expect_err("the resume sweeps it");
+        assert!(why.contains("unknown or expired"), "{why}");
         assert!(!partial.exists(), "the partial went with the entry");
-        assert!(uploads.resume(&seat(), began.upload_id).is_err());
+    }
+
+    /// **A restart orphans its partials**, and the sweep takes them by their
+    /// own age on disk: a fresh partial is left alone, an expired one goes.
+    #[test]
+    fn an_orphaned_partial_is_swept_by_its_age() {
+        let (dir, uploads) = uploads();
+        let project = dir.path().join("inbox").join("Busytools").join("forge");
+        std::fs::create_dir_all(&project).expect("the inbox");
+        let stale = project.join("20260101-000000-old.png.7.partial");
+        let fresh = project.join("20260101-000000-new.png.8.partial");
+        for path in [&stale, &fresh] {
+            std::fs::write(path, b"x").expect("this test's own partial");
+        }
+        let old = SystemTime::now()
+            .checked_sub(GRACE + Duration::from_secs(1))
+            .expect("this test's own clock");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&stale)
+            .expect("the stale partial")
+            .set_modified(old)
+            .expect("this test's own partial");
+        uploads.sweep_orphans(SystemTime::now());
+        assert!(!stale.exists(), "an expired orphan was left behind");
+        assert!(fresh.exists(), "a fresh partial was taken");
     }
 
     /// **The name is sanitised, never a path**: a shared file cannot choose
@@ -618,8 +957,7 @@ mod tests {
     #[test]
     fn a_name_that_is_a_path_lands_as_its_last_segment() {
         let (_dir, uploads) = uploads();
-        let began = uploads
-            .begin(&seat(), &[decl("../../etc/passwd", 1)])
+        let began = begin(&uploads, &[decl("../../etc/passwd", 1)])
             .expect("a path-shaped name is sanitised rather than refused");
         assert!(began.paths[0].ends_with("-passwd"), "{}", began.paths[0]);
         assert!(!began.paths[0].contains(".."), "{}", began.paths[0]);
@@ -629,7 +967,7 @@ mod tests {
     #[test]
     fn a_nameless_share_lands_as_a_file() {
         let (_dir, uploads) = uploads();
-        let began = uploads.begin(&seat(), &[decl("..", 0)]).expect("begins");
+        let began = begin(&uploads, &[decl("..", 0)]).expect("begins");
         assert!(began.paths[0].ends_with("-file"), "{}", began.paths[0]);
     }
 
@@ -637,8 +975,7 @@ mod tests {
     #[test]
     fn a_collision_gets_a_suffix() {
         let (_dir, uploads) = uploads();
-        let began =
-            uploads.begin(&seat(), &[decl("photo.jpg", 1), decl("photo.jpg", 1)]).expect("begins");
+        let began = begin(&uploads, &[decl("photo.jpg", 1), decl("photo.jpg", 1)]).expect("begins");
         assert_ne!(began.paths[0], began.paths[1]);
         assert!(began.paths[1].contains("-2"), "{}", began.paths[1]);
     }
@@ -647,47 +984,111 @@ mod tests {
     #[test]
     fn an_over_cap_share_is_refused() {
         let (dir, uploads) = uploads();
-        let why = uploads
-            .begin(&seat(), &[decl("big.bin", MAX_UPLOAD_BYTES + 1)])
-            .expect_err("over the cap");
+        let why =
+            begin(&uploads, &[decl("big.bin", MAX_UPLOAD_BYTES + 1)]).expect_err("over the cap");
         assert!(why.contains("at most"), "{why}");
         assert!(!dir.path().join("inbox").exists(), "nothing was created");
     }
 
+    /// **A declared size wider than the whole share is refused before any
+    /// sum is taken**, so two 2^63 declarations can never wrap the byte wall
+    /// to zero in a release build.
+    #[test]
+    fn a_declared_size_wider_than_a_share_is_refused() {
+        let (_dir, uploads) = uploads();
+        let why =
+            begin(&uploads, &[decl("a.bin", 1 << 62), decl("b.bin", 1 << 62)]).expect_err("2^62");
+        assert!(why.contains("one file carries at most"), "{why}");
+    }
+
+    /// **The process-wide bounds bind where the per-share ones do not**: a
+    /// stream of small shares fills the registry and the next is refused.
+    #[test]
+    fn the_live_share_cap_refuses_the_next_begin() {
+        let (_dir, uploads) = uploads();
+        for index in 0..MAX_LIVE_SHARES {
+            begin(&uploads, &[decl(&format!("a{index}.bin"), 1)]).expect("a live share");
+        }
+        let why = begin(&uploads, &[decl("one-more.bin", 1)]).expect_err("the registry is full");
+        assert!(why.contains("live uploads"), "{why}");
+    }
+
+    /// The live file cap binds a stream of empty-file shares, which the byte
+    /// cap cannot: four shares fill it, and one more file is refused.
+    #[test]
+    fn the_live_file_cap_refuses_a_share_of_empties() {
+        let (_dir, uploads) = uploads();
+        let many: Vec<FileDecl> =
+            (0..MAX_FILES).map(|index| decl(&format!("e{index}.bin"), 0)).collect();
+        for _ in 0..(MAX_LIVE_FILES / MAX_FILES) {
+            begin(&uploads, &many).expect("a live share of empties");
+        }
+        let why = begin(&uploads, &[decl("one-more.bin", 0)]).expect_err("the file cap holds");
+        assert!(why.contains("live partial files"), "{why}");
+    }
+
+    /// A share with no files is refused in its own words.
+    #[test]
+    fn an_empty_share_is_refused() {
+        let (_dir, uploads) = uploads();
+        let why = begin(&uploads, &[]).expect_err("no files");
+        assert!(why.contains("no files"), "{why}");
+    }
+
+    /// **The 257th file is refused where the live-file cap would not bind
+    /// it**: a share at the per-share limit is legal, and one past it is
+    /// refused in its own words before anything is written.
+    #[test]
+    fn a_share_past_the_file_cap_is_refused() {
+        let (_dir, uploads) = uploads();
+        let at_limit: Vec<FileDecl> =
+            (0..MAX_FILES).map(|index| decl(&format!("e{index}.bin"), 0)).collect();
+        assert!(begin(&uploads, &at_limit).is_ok(), "a share at the limit is legal");
+        let past_limit: Vec<FileDecl> =
+            (0..=MAX_FILES).map(|index| decl(&format!("p{index}.bin"), 0)).collect();
+        let why = begin(&uploads, &past_limit).expect_err("one file past the limit");
+        assert!(why.contains("at most 256 files"), "{why}");
+    }
+
     /// A seat whose org or project cannot be a directory name is refused
-    /// rather than written somewhere else.
+    /// rather than written somewhere else, and a control character or an
+    /// unbounded name is not a directory name either.
     #[test]
     fn a_seat_that_cannot_name_a_directory_is_refused() {
         let (_dir, uploads) = uploads();
-        let odd = SessionSlot::lead("../org", "forge");
-        assert!(uploads.begin(&odd, &[decl("a.bin", 1)]).is_err());
-        let odd = SessionSlot::lead("Busytools", "..");
-        assert!(uploads.begin(&odd, &[decl("a.bin", 1)]).is_err());
+        for (org, project) in [
+            ("../org", "forge"),
+            ("Busytools", ".."),
+            ("Busy\u{7}tools", "forge"),
+            ("Busytools", &"p".repeat(COMPONENT_CAP + 1)),
+        ] {
+            let odd = SessionSlot::lead(org, project);
+            assert!(uploads.begin(&odd, &[decl("a.bin", 1)], 1).is_err(), "{org}/{project}");
+        }
     }
 
     /// A chunk past the declared size is refused, even before the end check.
     #[test]
     fn a_chunk_past_the_declared_size_is_refused() {
         let (_dir, uploads) = uploads();
-        let began = uploads.begin(&seat(), &[decl("a.bin", 2)]).expect("begins");
-        assert!(uploads.chunk(began.upload_id, 0, 0, b"abc").is_err());
+        let began = begin(&uploads, &[decl("a.bin", 2)]).expect("begins");
+        assert!(chunk(&uploads, began.upload_id, 0, 0, b"abc").is_err());
     }
 
     /// An upload with no app-support base is refused in the boot's words.
     #[test]
     fn an_unresolved_app_support_base_is_said_rather_than_substituted() {
         let uploads = Uploads::new(Err("no resolvable data dir".to_owned()));
-        let why = uploads.begin(&seat(), &[decl("a.bin", 1)]).expect_err("no base");
+        let why = uploads.begin(&seat(), &[decl("a.bin", 1)], 1).expect_err("no base");
         assert_eq!(why, "no resolvable data dir");
     }
 
-    /// **The stamp is the local clock, in one shape**: a reader sorts the
-    /// inbox by it, so the length is fixed even when a field is small.
+    /// **The stamp is the clock it is given**, in one shape: a reader sorts
+    /// the inbox by it, so the length and the field order are pinned.
     #[test]
-    fn the_stamp_is_a_sortable_local_time() {
-        let stamp = timestamp();
-        assert_eq!(stamp.len(), 15, "{stamp}");
-        assert_eq!(&stamp[8..9], "-", "{stamp}");
+    fn the_stamp_is_the_clock_it_is_given() {
+        let at = time::macros::datetime!(2026-11-12 09:07:05 UTC);
+        assert_eq!(timestamp(at), "20261112-090705");
     }
 
     /// A long name keeps its extension and stays inside the filesystem's
@@ -703,5 +1104,105 @@ mod tests {
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("jpeg")),
             "{name}",
         );
+    }
+
+    /// **A write that fails is remembered and answered at the end**, not
+    /// counted as bytes that landed. The fake handle fails after writing a
+    /// byte, the way a full disk does.
+    #[test]
+    fn a_failed_write_is_answered_at_the_end() {
+        struct Failing {
+            position: u64,
+            declared: u64,
+        }
+        impl Write for Failing {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                let take = buf.len().min(1);
+                self.position += take as u64;
+                if take == 0 {
+                    return Err(std::io::Error::other("a full disk"));
+                }
+                Err(std::io::Error::other("a full disk after a byte"))
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl Seek for Failing {
+            fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+                if let SeekFrom::Start(at) = position {
+                    self.position = at;
+                }
+                Ok(self.position)
+            }
+        }
+        impl Partial for Failing {
+            fn sync(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+
+            fn len(&mut self) -> std::io::Result<u64> {
+                Ok(self.declared)
+            }
+        }
+
+        let (_dir, uploads) = uploads();
+        let began = begin(&uploads, &[decl("a.bin", 4)]).expect("begins");
+        {
+            let mut registry = uploads.registry.lock().unwrap();
+            let upload = registry.get_mut(&began.upload_id).unwrap();
+            upload.files[0].handle = Some(Box::new(Failing { position: 0, declared: 4 }));
+        }
+        let why = chunk(&uploads, began.upload_id, 0, 0, b"abcd").expect_err("the write fails");
+        assert!(why.contains("could not be written"), "{why}");
+        let ended = uploads.end(&seat(), began.upload_id).expect_err("the end answers the failure");
+        assert!(ended.contains("could not be written"), "{ended}");
+    }
+
+    /// **The end checks the file, not only the counter**: a partial that was
+    /// truncated or grown under the registry is refused rather than renamed.
+    #[test]
+    fn an_end_whose_partial_does_not_hold_its_bytes_is_refused() {
+        let (_dir, uploads) = uploads();
+        let began = begin(&uploads, &[decl("a.bin", 4)]).expect("begins");
+        feed(&uploads, began.upload_id, 0, b"abcd");
+        let partial = {
+            let registry = uploads.registry.lock().unwrap();
+            registry[&began.upload_id].files[0].partial.clone()
+        };
+        std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&partial)
+            .expect("this test's own partial");
+        let why =
+            uploads.end(&seat(), began.upload_id).expect_err("the file does not hold its bytes");
+        assert!(why.contains("holds 0 bytes"), "{why}");
+    }
+
+    /// **A rename that fails leaves no half a share**: the finals already
+    /// renamed are removed with the partials still waiting, and the client
+    /// starts over rather than retrying onto them.
+    #[test]
+    fn a_failed_rename_removes_what_already_landed() {
+        let (dir, uploads) = uploads();
+        let began = begin(&uploads, &[decl("a.bin", 1), decl("b.bin", 1)]).expect("begins");
+        feed(&uploads, began.upload_id, 0, b"a");
+        feed(&uploads, began.upload_id, 1, b"b");
+        // The second final is a directory, so its hard link cannot be made.
+        let second = PathBuf::from(&began.paths[1]);
+        std::fs::create_dir_all(&second).expect("this test's own directory");
+        let why = uploads.end(&seat(), began.upload_id).expect_err("the second rename fails");
+        assert!(why.contains("could not be moved into place"), "{why}");
+        assert!(!PathBuf::from(&began.paths[0]).exists(), "the first final was left behind");
+        let project = dir.path().join("inbox").join("Busytools").join("forge");
+        let leftovers = std::fs::read_dir(project)
+            .expect("the inbox")
+            .flatten()
+            .filter(|entry| entry.path().to_string_lossy().ends_with(".partial"))
+            .count();
+        assert_eq!(leftovers, 0, "a partial was left behind");
+        assert!(uploads.resume(&seat(), began.upload_id, 1).is_err(), "nothing is held");
     }
 }

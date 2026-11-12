@@ -529,10 +529,15 @@ async fn sweep_uploads(uploads: std::sync::Weak<crate::surface::upload::Uploads>
     let mut tick = tokio::time::interval(UPLOAD_SWEEP_EVERY);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // The first tick is immediate; the grace window has not turned on a
-    // registry younger than a second.
+    // registry younger than a second. The orphan scan runs first there, so a
+    // restart's partials are removed before any new upload begins.
     tick.tick().await;
     while let Some(uploads) = uploads.upgrade() {
-        let _ = tokio::task::spawn_blocking(move || uploads.sweep()).await;
+        let _ = tokio::task::spawn_blocking(move || {
+            uploads.sweep();
+            uploads.sweep_orphans(std::time::SystemTime::now());
+        })
+        .await;
         tick.tick().await;
     }
 }
@@ -816,5 +821,41 @@ mod tests {
             "the book says the two bounds match, so the mechanisms measure a dead peer on one \
              scale",
         );
+    }
+
+    /// **The inbox is swept on its own clock, not only when a client
+    /// arrives.** The task's first tick is immediate, so a restart's orphaned
+    /// partials go before any new upload begins, and the task ends with the
+    /// surface it sweeps rather than outliving it.
+    #[tokio::test]
+    async fn the_sweep_task_takes_a_restarts_orphans_at_boot_and_ends_with_the_surface() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let project = dir.path().join("inbox").join("Busytools").join("forge");
+        std::fs::create_dir_all(&project).expect("the inbox");
+        let stale = project.join("20260101-000000-old.png.7.partial");
+        std::fs::write(&stale, b"x").expect("this test's own partial");
+        let old = std::time::SystemTime::now()
+            .checked_sub(crate::surface::upload::GRACE + std::time::Duration::from_secs(1))
+            .expect("this test's own clock");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&stale)
+            .expect("the stale partial")
+            .set_modified(old)
+            .expect("this test's own partial");
+        let uploads = Arc::new(crate::surface::upload::Uploads::new(Ok(dir.path().to_path_buf())));
+        let task = tokio::spawn(sweep_uploads(Arc::downgrade(&uploads)));
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while stale.exists() {
+            assert!(tokio::time::Instant::now() < deadline, "the boot sweep never ran");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        drop(uploads);
+        tokio::time::pause();
+        tokio::time::advance(UPLOAD_SWEEP_EVERY).await;
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(10), task).await;
+        assert!(matches!(ended, Ok(Ok(()))), "the task ends with the surface");
     }
 }

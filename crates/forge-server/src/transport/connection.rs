@@ -2303,7 +2303,7 @@ where
             // must not carry it. The loop is sequential, so awaiting it here
             // also keeps the chunks of one upload in the order they arrived.
             if let FrameRoute::FileChunk { upload_id, file_index, offset, bytes } = route {
-                write_file_chunk(state, upload_id, file_index, offset, bytes).await;
+                write_file_chunk(state, me, upload_id, file_index, offset, bytes).await;
                 return Ok(());
             }
             take_frame(&state.surface, dictate, &mut viewers.terminal, me, route);
@@ -2828,7 +2828,7 @@ where
                     // own, and the chunks that feed them are binary frames
                     // this connection writes before the workspace could ever
                     // see a command.
-                    if let Some(body) = upload_answer(state, &command).await {
+                    if let Some(body) = upload_answer(state, &command, me).await {
                         return send(socket, ServerMessage::Reply { reply_to: to, body });
                     }
                     dispatch_answering(state, command, to, &reads.reply);
@@ -4061,15 +4061,17 @@ fn frame_route(bytes: &[u8], dictate: &Streaming) -> FrameRoute {
 /// on. Awaiting the write here is what keeps one upload's chunks in order.
 async fn write_file_chunk(
     state: &TransportState,
+    me: u64,
     upload_id: u64,
     file_index: u16,
     offset: u32,
     bytes: Vec<u8>,
 ) {
     let uploads = Arc::clone(state.surface.uploads());
-    let written =
-        tokio::task::spawn_blocking(move || uploads.chunk(upload_id, file_index, offset, &bytes))
-            .await;
+    let written = tokio::task::spawn_blocking(move || {
+        uploads.chunk(me, upload_id, file_index, offset, &bytes)
+    })
+    .await;
     match written {
         Ok(Ok(())) => {}
         Ok(Err(why)) => tracing::debug!(
@@ -5362,18 +5364,22 @@ fn encode<T: serde::Serialize>(value: T) -> Result<serde_json::Value, String> {
 /// **The workspace has no part in an upload**: the registry, the partials
 /// and the inbox write are the socket's, because the chunks that follow are
 /// binary frames it alone sees. `None` is a command this is not about.
-async fn upload_answer(state: &TransportState, command: &Command) -> Option<serde_json::Value> {
+async fn upload_answer(
+    state: &TransportState,
+    command: &Command,
+    me: u64,
+) -> Option<serde_json::Value> {
     let uploads = Arc::clone(state.surface.uploads());
     let answer = match command {
         Command::FileUploadBegin { key, files } => {
             let key = key.clone();
             let files = files.clone();
-            blocking(move || uploads.begin(&key, &files).and_then(encode)).await
+            blocking(move || uploads.begin(&key, &files, me).and_then(encode)).await
         }
         Command::FileUploadResume { key, upload_id } => {
             let key = key.clone();
             let upload_id = *upload_id;
-            blocking(move || uploads.resume(&key, upload_id).and_then(encode)).await
+            blocking(move || uploads.resume(&key, upload_id, me).and_then(encode)).await
         }
         Command::FileUploadEnd { key, upload_id } => {
             let key = key.clone();

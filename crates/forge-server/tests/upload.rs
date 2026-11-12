@@ -224,3 +224,69 @@ async fn an_over_cap_share_is_refused() {
     assert!(why.contains("at most"), "{why}");
     assert!(!inbox(dir.path()).exists(), "nothing was created");
 }
+
+/// **Two files cross one upload, each at its own index**, and the end answers
+/// both paths: a driver or server that keyed every chunk to file 0 would land
+/// the second file's bytes in the first.
+#[tokio::test]
+async fn two_files_cross_one_upload_at_their_own_indices() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let url = serve_in(dir.path()).await;
+    let mut socket = dial(&url).await;
+
+    let began = command(
+        &mut socket,
+        1,
+        json!({
+            "file_upload_begin": {
+                "key": serde_json::from_str::<Value>(SEAT).unwrap(),
+                "files": [{ "name": "a.bin", "size": 3 }, { "name": "b.bin", "size": 3 }],
+            }
+        }),
+    )
+    .await;
+    let upload_id = began.get("upload_id").and_then(Value::as_u64).expect("an id");
+    let paths = began.get("paths").and_then(Value::as_array).expect("the paths");
+    assert_eq!(paths.len(), 2);
+
+    socket.send(chunk_frame(upload_id, 0, 0, b"abc")).await.expect("the first file");
+    socket.send(chunk_frame(upload_id, 1, 0, b"def")).await.expect("the second file");
+
+    let ended = command(
+        &mut socket,
+        2,
+        json!({ "file_upload_end": { "key": serde_json::from_str::<Value>(SEAT).unwrap(), "upload_id": upload_id } }),
+    )
+    .await;
+    let ended_paths = ended.get("paths").and_then(Value::as_array).expect("the paths");
+    assert_eq!(ended_paths.len(), 2);
+    let first = PathBuf::from(ended_paths[0].as_str().expect("a path"));
+    let second = PathBuf::from(ended_paths[1].as_str().expect("a path"));
+    assert_eq!(std::fs::read(&first).expect("the first file landed"), b"abc");
+    assert_eq!(std::fs::read(&second).expect("the second file landed"), b"def");
+}
+
+/// **A chunk outside a begin is refused and the connection survives**: a
+/// binary frame has no reply channel, so the record is the only sign, and the
+/// next command on the same socket is answered.
+#[tokio::test]
+async fn a_chunk_outside_a_begin_is_refused_and_the_socket_survives() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let url = serve_in(dir.path()).await;
+    let mut socket = dial(&url).await;
+
+    socket.send(chunk_frame(9_999, 0, 0, b"stray")).await.expect("a stray chunk goes");
+
+    let began = command(
+        &mut socket,
+        1,
+        json!({
+            "file_upload_begin": {
+                "key": serde_json::from_str::<Value>(SEAT).unwrap(),
+                "files": [{ "name": "a.bin", "size": 1 }],
+            }
+        }),
+    )
+    .await;
+    assert!(began.get("upload_id").is_some(), "the connection still answers: {began}");
+}
