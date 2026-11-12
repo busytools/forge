@@ -2150,6 +2150,17 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
             }],
         }),
     );
+    // **A resume and an end are written by hand too**: each names its upload
+    // by `upload_id`, and a rename here would leave the shell's literal
+    // writing a key nothing reads.
+    sampled.insert(
+        "FileUploadResume".to_owned(),
+        sample(Command::FileUploadResume { key: seat.clone(), upload_id: 7 }),
+    );
+    sampled.insert(
+        "FileUploadEnd".to_owned(),
+        sample(Command::FileUploadEnd { key: seat.clone(), upload_id: 7 }),
+    );
     sampled
 }
 

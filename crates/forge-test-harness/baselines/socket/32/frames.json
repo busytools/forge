@@ -1694,6 +1694,34 @@
         "project"
       ]
     },
+    "FileUploadEnd": {
+      "": [
+        "file_upload_end"
+      ],
+      "/file_upload_end": [
+        "key",
+        "upload_id"
+      ],
+      "/file_upload_end/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
+    "FileUploadResume": {
+      "": [
+        "file_upload_resume"
+      ],
+      "/file_upload_resume": [
+        "key",
+        "upload_id"
+      ],
+      "/file_upload_resume/key": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
     "MarketplaceAdd": {
       "": [
         "marketplace_add"
