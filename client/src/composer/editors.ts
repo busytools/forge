@@ -32,6 +32,7 @@ export const EDITORS = [
   'palette',
   'board',
   'settings',
+  'share',
   'nowhere',
 ] as const;
 
@@ -79,6 +80,7 @@ export function focusOf(where: Where): Editor {
     case 'bar':
     case 'feedback':
     case 'settings':
+    case 'share':
       // The composer is this table's one caller and never names these: they are
       // boxes that exist, not boxes this table routes to. The send-back box is
       // focused by the dock that draws it, and a landing reads it by name.
@@ -122,5 +124,11 @@ export function activeEditor(): Editor | null {
  */
 export function caretTakesDictation(): boolean {
   const named = activeEditor();
-  return named === 'composer' || named === 'dock' || named === 'feedback' || named === 'bar';
+  return (
+    named === 'composer' ||
+    named === 'dock' ||
+    named === 'feedback' ||
+    named === 'bar' ||
+    named === 'share'
+  );
 }

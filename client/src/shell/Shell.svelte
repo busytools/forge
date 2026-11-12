@@ -25,6 +25,7 @@
     watchNotificationClicks,
   } from '../notify';
   import { rememberBoot } from '../composer/landing';
+  import { launchShare, watchShares } from '../share/pending';
   import { noteSeatClick, setPerfSocket } from '../perf';
   import { skewMessage, subjectKey, type Skew } from '../protocol';
   import { currentRoute, goTo, hrefFor, parseRoute, shownSeat, type Route } from '../routes';
@@ -66,6 +67,8 @@
   let connection = $state.raw<Connection | null>(null);
   /** The terminal link's listeners for the connection it was made for. */
   let stopTerminal: (() => void) | null = null;
+  /** The share listener, once it is registered. */
+  let stopShares: (() => void) | null = null;
   let connectionStatus = $state<ConnectionStatus>('connecting');
   /**
    * What the live connection's greeting said this client's protocol does not
@@ -102,6 +105,12 @@
     // the home does, and a check the reader has to revisit the home for is a
     // check that is not made.
     void watchUpdate();
+    // A share into an app that is already running opens the sheet over
+    // whatever the reader was on; the listener goes with the shell.
+    void watchShares().then((stop) => {
+      if (destroyed) stop();
+      else stopShares = stop;
+    });
   });
 
   // The connection is the shell's: left open past it, it reconnects to a forge
@@ -112,6 +121,7 @@
     destroyed = true;
     uninstallBrowser();
     stopTerminal?.();
+    stopShares?.();
     setPerfSocket(null);
     connection?.close();
   });
@@ -129,7 +139,11 @@
     // page existed**, so it is asked for rather than waited on as an event.
     // A launch that cannot read it is still a launch: the ask answers `None`
     // for that, and for every launch no tap opened.
-    const target = await launchSeat();
+    //
+    // **A share that launched the app is asked for the same way**, and it
+    // outranks the tap: the person shared a file into forge, which is the
+    // page they are waiting for.
+    const [target, share] = await Promise.all([launchSeat(), launchShare()]);
     // What a connection taken while this is in flight is measured against.
     const held = connection;
     // The parameter first, then the memory: both are this launch's target.
@@ -150,7 +164,11 @@
     }
     failure = launched.failure;
     if (launched.connected) take(launched.connected);
-    if (target !== null) {
+    if (share) {
+      // **A share outranks both**: the person handed forge a file and the
+      // sheet is where it goes.
+      goTo({ name: 'share' });
+    } else if (target !== null) {
       // **The target a tap named outranks the home the launch would land
       // on**: the person asked for it, and the launch's own route is only a
       // guess. A wait opens its board, an ask its seat.

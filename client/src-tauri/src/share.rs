@@ -58,13 +58,14 @@ pub(crate) struct Shared {
 
 /// One upload's progress, as the sheet draws it.
 ///
-/// `resume` comes first and says which of the two the upload is doing;
-/// `progress` follows once per frame with the bytes of one file that have
-/// crossed.
+/// `begin` comes first: the upload's id, which a retry needs to resume it,
+/// whether the server still held the previous attempt, and the offsets it
+/// already has. `progress` follows once per frame with the bytes of one file
+/// that have crossed.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum ShareProgress {
-    Resume { resumed: bool, received: Vec<u64> },
+    Begin { upload_id: u64, resumed: bool, received: Vec<u64> },
     Progress { file: usize, sent: u64, total: u64 },
 }
 
@@ -141,7 +142,11 @@ async fn upload(
     } else {
         (begin(&socket, &seat, &files).await?, vec![0; files.len()], false)
     };
-    let _ = channel.send(ShareProgress::Resume { resumed, received: received.clone() });
+    let _ = channel.send(ShareProgress::Begin {
+        upload_id: id,
+        resumed,
+        received: received.clone(),
+    });
     for (index, file) in files.iter().enumerate() {
         let start = received.get(index).copied().unwrap_or(0);
         send_file(&socket, channel, id, index, file, start).await?;

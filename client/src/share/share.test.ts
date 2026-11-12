@@ -1,0 +1,300 @@
+// @vitest-environment jsdom
+import { flushSync, mount, unmount } from 'svelte';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import type { Connection } from '../socket';
+import { Stores } from '../stores';
+import type { Subject } from '../protocol';
+import type { SessionSlot } from '../wire/types';
+import Share from './Share.svelte';
+import { shareOf, worthOpening } from './pending';
+import {
+  MAX_SHARE_BYTES,
+  composePrompt,
+  sizeLabel,
+  type ShareProgress,
+  type SharedFile,
+  type UploadFn,
+} from './upload';
+
+const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
+const WORKER: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'w1' };
+
+let app: Record<string, unknown> | null = null;
+
+afterEach(async () => {
+  if (app !== null) await unmount(app);
+  app = null;
+  document.body.innerHTML = '';
+});
+
+/** A connection that records what it was told and holds no record. */
+function stub() {
+  const dispatched: { command: unknown; at?: SessionSlot }[] = [];
+  const stores = new Stores();
+  const connection = {
+    dispatch: (command: unknown, at?: SessionSlot) => {
+      dispatched.push(at === undefined ? { command } : { command, at });
+      return Promise.resolve(null);
+    },
+    subscribe: (what: Subject) => stores.open(what),
+    release: () => {},
+    refresh: () => true,
+    relist: () => {},
+    declare: () => {},
+    onMessage: () => () => {},
+    settings: () => null,
+    status: () => 'open',
+    onStatus: () => () => {},
+  } as unknown as Connection;
+  return { connection, dispatched };
+}
+
+const FILES: SharedFile[] = [
+  { path: '/cache/share/1/photo.jpg', name: 'photo.jpg', size: 10, mime: 'image/jpeg' },
+];
+
+function draw(
+  over: {
+    connection?: Connection;
+    files?: SharedFile[];
+    error?: string | null;
+    preselect?: SessionSlot | null;
+    upload?: UploadFn;
+  } = {},
+) {
+  const { connection, dispatched } = stub();
+  app = mount(Share, {
+    target: document.body,
+    props: {
+      connection: over.connection ?? connection,
+      seats: [LEAD, WORKER],
+      shared: { files: over.files ?? FILES, error: over.error ?? null },
+      preselect: over.preselect ?? null,
+      onclose: () => {},
+      upload: over.upload ?? (() => Promise.resolve({ paths: ['/inbox/photo.jpg'] })),
+    },
+  });
+  flushSync();
+  return { dispatched };
+}
+
+const picker = () => document.querySelector<HTMLSelectElement>('.seat select');
+const sendButton = () =>
+  [...document.querySelectorAll<HTMLButtonElement>('button')].find(
+    (button) => button.textContent?.trim() === 'send',
+  ) ?? null;
+const retryButton = () =>
+  [...document.querySelectorAll<HTMLButtonElement>('button')].find(
+    (button) => button.textContent?.trim() === 'retry',
+  ) ?? null;
+const lines = () =>
+  [...document.querySelectorAll<HTMLElement>('.line')].map((line) => line.textContent ?? '');
+
+describe('the share sheet', () => {
+  it('preselects the seat the reader was last on', () => {
+    draw({ preselect: WORKER });
+    expect(picker()?.value).toBe([WORKER.org, WORKER.project, WORKER.label].join('\u0000'));
+    expect(picker()?.selectedOptions[0]?.textContent).toBe('proj \u{b7} w1');
+  });
+
+  it('opens on the first seat when there is no last one', () => {
+    draw();
+    expect(picker()?.value).toBe([LEAD.org, LEAD.project, LEAD.label].join('\u0000'));
+  });
+
+  it('draws the resume line and the progress the upload reports', () => {
+    let report: (progress: ShareProgress) => void = () => {};
+    const upload = vi.fn(
+      (
+        _seat: SessionSlot,
+        _files: unknown,
+        _id: number | null,
+        onProgress: (p: ShareProgress) => void,
+      ) => {
+        report = onProgress;
+        return new Promise<{ paths: string[] }>(() => {});
+      },
+    );
+    draw({ upload });
+    sendButton()?.click();
+    flushSync();
+    report({ kind: 'begin', upload_id: 7, resumed: true, received: [0] });
+    report({ kind: 'progress', file: 0, sent: 5, total: 10 });
+    flushSync();
+    expect(lines().some((line) => line.includes("resuming from the server's offsets"))).toBe(true);
+    expect(lines().some((line) => line.includes('50%'))).toBe(true);
+  });
+
+  it('says when it is starting over', () => {
+    let report: (progress: ShareProgress) => void = () => {};
+    const upload = vi.fn(
+      (
+        _seat: SessionSlot,
+        _files: unknown,
+        _id: number | null,
+        onProgress: (p: ShareProgress) => void,
+      ) => {
+        report = onProgress;
+        return new Promise<{ paths: string[] }>(() => {});
+      },
+    );
+    draw({ upload });
+    sendButton()?.click();
+    flushSync();
+    report({ kind: 'begin', upload_id: 7, resumed: false, received: [0] });
+    flushSync();
+    expect(lines().some((line) => line.includes('starting over from the first byte'))).toBe(true);
+  });
+
+  it('draws the reason and a retry when the upload fails', async () => {
+    const upload = vi.fn(() => Promise.reject(new Error('the socket is not open')));
+    draw({ upload });
+    sendButton()?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+    expect(lines().some((line) => line.includes('the socket is not open'))).toBe(true);
+    expect(retryButton()).not.toBeNull();
+  });
+
+  it('retries a held upload from its own id', async () => {
+    const ids: (number | null)[] = [];
+    let attempt = 0;
+    const upload = vi.fn(
+      (
+        _seat: SessionSlot,
+        _files: unknown,
+        id: number | null,
+        onProgress: (p: ShareProgress) => void,
+      ) => {
+        ids.push(id);
+        attempt += 1;
+        if (attempt === 1) {
+          onProgress({ kind: 'begin', upload_id: 42, resumed: false, received: [0] });
+          return Promise.reject(new Error('the connection dropped'));
+        }
+        return Promise.resolve({ paths: ['/inbox/photo.jpg'] });
+      },
+    );
+    draw({ upload });
+    sendButton()?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+    retryButton()?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+    expect(ids).toEqual([null, 42]);
+  });
+
+  it('sends no prompt until the upload has answered its paths', async () => {
+    let settle: (answer: { paths: string[] }) => void = () => {};
+    const upload = vi.fn(
+      () =>
+        new Promise<{ paths: string[] }>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    const { dispatched } = draw({ upload });
+    sendButton()?.click();
+    flushSync();
+    expect(dispatched).toHaveLength(0);
+    settle({ paths: ['/inbox/photo.jpg'] });
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+    expect(dispatched).toHaveLength(1);
+    const command = dispatched[0]?.command as Record<string, Record<string, unknown>>;
+    expect(command['prompt_under']?.['text']).toBe('file: /inbox/photo.jpg');
+    expect(dispatched[0]?.at).toEqual(LEAD);
+  });
+
+  it('retries only the prompt when the upload already landed', async () => {
+    const upload = vi.fn(() => Promise.resolve({ paths: ['/inbox/photo.jpg'] }));
+    const { connection, dispatched } = stub();
+    let fail = true;
+    const flaky = {
+      ...connection,
+      dispatch: (command: unknown, at?: SessionSlot) => {
+        if (fail) {
+          fail = false;
+          return Promise.reject(new Error('the connection is down'));
+        }
+        dispatched.push(at === undefined ? { command } : { command, at });
+        return Promise.resolve(null);
+      },
+    } as unknown as Connection;
+    draw({ connection: flaky, upload });
+    sendButton()?.click();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(lines().some((line) => line.includes('the files are uploaded'))).toBe(true);
+    });
+    retryButton()?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    flushSync();
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(dispatched).toHaveLength(1);
+  });
+
+  it('names the limit and sends nothing over it', () => {
+    draw({
+      files: [{ path: '/cache/big.bin', name: 'big.bin', size: MAX_SHARE_BYTES + 1, mime: null }],
+    });
+    expect(document.querySelector('.total')?.textContent).toContain('at most');
+    expect(sendButton()?.disabled).toBe(true);
+  });
+
+  it('draws the reason a share carried no files', () => {
+    draw({ files: [], error: 'the provider refused it' });
+    expect(lines().some((line) => line.includes('the provider refused it'))).toBe(true);
+    expect(sendButton()).toBeNull();
+  });
+});
+
+describe('the share prompt', () => {
+  it('is the words, a blank line, then one file line per path', () => {
+    expect(composePrompt('look at these', ['/a.jpg', '/b.pdf'])).toBe(
+      'look at these\n\nfile: /a.jpg\nfile: /b.pdf',
+    );
+  });
+
+  it('leaves the file lines alone when there are no words', () => {
+    expect(composePrompt('   ', ['/a.jpg'])).toBe('file: /a.jpg');
+  });
+});
+
+describe('a share payload', () => {
+  it('narrows to the files it carries', () => {
+    const shared = shareOf({
+      files: [{ path: '/cache/1/a.jpg', name: 'a.jpg', size: 4, mime: 'image/jpeg' }],
+      error: null,
+    });
+    expect(shared?.files).toEqual([
+      { path: '/cache/1/a.jpg', name: 'a.jpg', size: 4, mime: 'image/jpeg' },
+    ]);
+    expect(shared?.error).toBeNull();
+  });
+
+  it('drops a row that is not a file', () => {
+    const shared = shareOf({ files: [{ name: 'no path' }, { path: '/a', name: 'a' }] });
+    expect(shared?.files).toHaveLength(1);
+  });
+
+  it('is not a share worth opening when it names nothing', () => {
+    expect(worthOpening({ files: [], error: null })).toBe(false);
+    expect(worthOpening({ files: [], error: 'refused' })).toBe(true);
+    expect(shareOf({ nothing: true })).toBeNull();
+  });
+});
+
+describe('a size label', () => {
+  it('uses the units the limit is stated in', () => {
+    expect(sizeLabel(512)).toBe('512 B');
+    expect(sizeLabel(2048)).toBe('2.0 KB');
+    expect(sizeLabel(5 * 1024 * 1024)).toBe('5.0 MB');
+  });
+});
