@@ -532,10 +532,7 @@ mod tests {
         let mut bytes = vec![Kind::FileChunk.tag()];
         bytes.extend(std::iter::repeat_n(0u8, FILE_CHUNK_HEADER_BYTES - HEADER_BYTES));
         bytes.extend(std::iter::repeat_n(0u8, MAX_FILE_CHUNK_BYTES + 1));
-        assert_eq!(
-            decode(&bytes),
-            Err(Refusal::OversizedFileChunk(MAX_FILE_CHUNK_BYTES + 1)),
-        );
+        assert_eq!(decode(&bytes), Err(Refusal::OversizedFileChunk(MAX_FILE_CHUNK_BYTES + 1)),);
     }
 
     /// **A full 64 KiB chunk is the frame a client actually sends**, and the
