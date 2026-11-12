@@ -808,7 +808,7 @@ naming another seat is refused exactly as an unknown id is.
 **`file_upload_end {key, upload_id}`** - finish the upload. Every file is
 checked against the size it declared; one that arrived short refuses the end
 and leaves the upload held, so a retry can finish it. On success the partials
-are renamed into place together and the reply carries `{paths}`.
+are linked into place together and the reply carries `{paths}`.
 
 **The inbox** is
 `<app-support>/inbox/<org>/<project>/<YYYYMMDD-HHMMSS>-<name>`, where
@@ -817,11 +817,13 @@ org and project choose the directory; the label does not, because a project's
 agents share its inbox. The name is the shared file's display name sanitised
 - no path, no control characters, never `.` or `..`, capped - and a collision
 gets a suffix. **Files are kept until the person or the agent deletes them**:
-nothing sweeps the inbox. Partials carry `.<upload-id>.partial` and are linked
-into place only when the upload ends, so a half-written file never appears as
-a shared one and one share's partial cannot collide with another's final name;
-a dropped upload's entry and partials are kept for one hour and then swept,
-and a resume past that window starts over.
+nothing sweeps the inbox. Partials carry
+`.forge-upload-<upload-id>-<file-index>.partial` - a shape only the server
+makes - and are linked into place only when the upload ends, so a half-written
+file never appears as a shared one, one share's partial cannot collide with
+another's, and a landed file whose display name ends in `.partial` is never
+swept as half an upload; a dropped upload's entry and partials are kept for
+one hour and then swept, and a resume past that window starts over.
 
 **Two sets of bounds.** One share carries at most 200 MB over 256 files, and its
 declared sizes are added with checked arithmetic so a wrapped sum cannot slip
@@ -829,8 +831,8 @@ past the wall. The process holds at most eight live uploads, 1,024 live partial
 files and 1 GiB of declared bytes at once, refused at begin; a partial's handle
 is opened on that file's first chunk rather than at begin, so a share of many
 empty files does not spend the descriptor budget. A restart loses the registry,
-so the sweep also takes the `.<upload-id>.partial` files it orphaned by their
-age on disk.
+so the sweep also takes the `.forge-upload-<upload-id>-<file-index>.partial`
+files it orphaned by their age on disk.
 
 **Binary messages are frames, and a frame's first byte says which kind.** A
 client that captures sends one dictation frame per 20 ms of speech:

@@ -35,9 +35,11 @@ agent reads the files with its own tools.
 machine-local app-support directory. The seat's org and project choose the directory; the label
 does not, because a project's agents share its inbox. The name is the shared file's display name
 sanitised, and a collision gets a suffix. **Files are kept until the person or the agent deletes
-them** - nothing sweeps the inbox - and a partial carries `.<upload-id>.partial` until the upload
-ends, so half-written bytes never appear as a shared file and one share's partial cannot collide
-with another's final name. The final name is linked into place only where nothing holds it.
+them** - nothing sweeps the inbox - and a partial is
+`.forge-upload-<upload-id>-<file-index>.partial` until the upload ends: a name only the server
+makes, so half-written bytes never appear as a shared file, one share's partial cannot collide
+with another's final name, and a shared file whose own name ends in `.partial` is never mistaken
+for one. The final name is linked into place only where nothing holds it.
 
 **The bounds are the server's and the app's alike**: one share carries at most 200 MB over 256
 files, and the app checks the published sizes and then the bytes that land against the same wall.

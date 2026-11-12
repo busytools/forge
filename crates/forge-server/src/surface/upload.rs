@@ -8,7 +8,11 @@
 //! it never minted is refused and the client starts over - and the sweep
 //! removes the partials a restart orphaned, by their age on disk.
 //!
-//! Partials carry a `.partial` suffix and are renamed only when the upload
+//! **A partial's name is a shape only the server makes**: hidden, carrying
+//! the upload id and the file's index, so a shared file - whatever its
+//! display name - can never be mistaken for a half-written one, and the
+//! sweep can key on that shape rather than on a suffix a person's file might
+//! carry too. The final file is hard-linked into place only when the upload
 //! ends, so a half-written file never appears as a shared one. Final files
 //! are kept until the person or the agent deletes them: nothing sweeps the
 //! inbox.
@@ -70,6 +74,15 @@ pub const GRACE: Duration = Duration::from_secs(60 * 60);
 /// A cache name's own cap, in bytes so a unicode name cannot cross the
 /// filesystem's length bound when the timestamp prefix is added.
 const NAME_CAP: usize = 180;
+
+/// What every partial's name begins with. **A shape only the server makes**:
+/// final files always carry the timestamp prefix, so a name beginning with
+/// this dot can never be one, and the orphan sweep keys on it rather than on
+/// an extension a person's own file might end with.
+const PARTIAL_PREFIX: &str = ".forge-upload-";
+
+/// What every partial's name ends with.
+const PARTIAL_SUFFIX: &str = ".partial";
 
 /// A seat's org or project name's own cap. They are path components and
 /// prompt-visible, so they are printable and bounded.
@@ -246,16 +259,24 @@ impl Uploads {
         let stamp = timestamp(
             time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc()),
         );
+        // **Every final this begin has reserved so far**: a later file of the
+        // same display name must not be handed an earlier one's name, because
+        // no final exists on disk yet to refuse it.
+        let mut reserved: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
         let mut made: Vec<FileState> = Vec::with_capacity(files.len());
-        for file in files {
-            match reserve(&dir, &stamp, &sanitised_name(&file.name), upload_id) {
-                Ok((final_path, partial)) => made.push(FileState {
-                    declared: file.size,
-                    received: 0,
-                    partial,
-                    final_path,
-                    handle: None,
-                }),
+        for (index, file) in files.iter().enumerate() {
+            match reserve(&dir, &stamp, &sanitised_name(&file.name), upload_id, index, &reserved)
+            {
+                Ok((final_path, partial)) => {
+                    reserved.insert(final_path.clone());
+                    made.push(FileState {
+                        declared: file.size,
+                        received: 0,
+                        partial,
+                        final_path,
+                        handle: None,
+                    });
+                }
                 Err(why) => {
                     // A share that could not be reserved whole leaves nothing
                     // behind: the partials already made go with the refusal.
@@ -399,11 +420,13 @@ impl Uploads {
     }
 
     /// Finish an upload: every file must have arrived whole, and the partials
-    /// are then renamed into place together with the answer.
+    /// are then linked into place together with the answer.
     ///
-    /// **A failure leaves no half a share.** A rename that fails removes the
-    /// finals already renamed and the partials still waiting, so the client
-    /// starts over instead of retrying onto files that already landed.
+    /// **A failure leaves no half a share.** A link that fails removes the
+    /// finals already landed and the partials still waiting, so the client
+    /// starts over instead of retrying onto files that already landed. A
+    /// crash between the links leaves the landed finals unreferenced and the
+    /// client's retry lands the share again under a suffixed name.
     pub fn end(&self, seat: &SessionSlot, upload_id: u64) -> Result<Ended, String> {
         let mut registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
         {
@@ -454,7 +477,7 @@ impl Uploads {
         let mut files = upload.files.into_iter();
         for file in files.by_ref() {
             let FileState { handle, partial, final_path, .. } = file;
-            // The handle must be closed before the rename: a file open for
+            // The handle must be closed before the link: a file open for
             // writing on some platforms cannot be moved.
             drop(handle);
             // **A final that is there is somebody else's file**: a hard link
@@ -530,8 +553,12 @@ impl Uploads {
     }
 }
 
-/// Walk the inbox tree and delete `*.partial` files older than [`GRACE`] that
-/// no live upload holds.
+/// Walk the inbox tree and delete partial files older than [`GRACE`] that no
+/// live upload holds.
+///
+/// **The match is the server's own name shape, never an extension**: a shared
+/// file whose display name ends in `.partial` is a landed file and is kept,
+/// exactly like every other final in the inbox.
 fn remove_orphans(
     dir: &Path,
     now: SystemTime,
@@ -546,7 +573,11 @@ fn remove_orphans(
             remove_orphans(&path, now, held, removed);
             continue;
         }
-        if path.extension().and_then(|extension| extension.to_str()) != Some("partial") {
+        let is_partial = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(PARTIAL_PREFIX) && name.ends_with(PARTIAL_SUFFIX));
+        if !is_partial {
             continue;
         }
         if held.contains(path.as_path()) {
@@ -623,18 +654,23 @@ fn sanitised_name(display: &str) -> String {
     }
 }
 
-/// Reserve one file's partial, answering its final path and its partial.
+/// Reserve one file's final name, answering it and the partial that will
+/// become it.
 ///
 /// **The name is reserved, not the handle**: an empty partial is created and
-/// closed, so two shares cannot choose one name, and the descriptor budget is
-/// not spent until a chunk arrives. The partial carries the upload id, so one
-/// share's partial can never collide with another share's final file.
+/// closed, so nothing else claims it, and the descriptor budget is not spent
+/// until a chunk arrives. The partial is named by the upload and the file's
+/// index alone - a shape only the server makes - so no shared file can be
+/// mistaken for one, and two shares' partials can never collide.
 fn reserve(
     dir: &Path,
     stamp: &str,
     name: &str,
     upload_id: u64,
+    file_index: usize,
+    reserved: &std::collections::HashSet<PathBuf>,
 ) -> Result<(PathBuf, PathBuf), String> {
+    let partial = dir.join(partial_name(upload_id, file_index));
     for attempt in 0..1000 {
         let candidate = if attempt == 0 {
             format!("{stamp}-{name}")
@@ -643,8 +679,9 @@ fn reserve(
             suffixed(stamp, name, attempt + 1)
         };
         let final_path = dir.join(&candidate);
-        let partial = dir.join(format!("{candidate}.{upload_id}.partial"));
-        if final_path.exists() || partial.exists() {
+        // **A name a live upload already holds is taken too**: its final is
+        // not on disk yet, so only the caller's reservation set can refuse it.
+        if final_path.exists() || reserved.contains(&final_path) {
             continue;
         }
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&partial) {
@@ -652,8 +689,15 @@ fn reserve(
                 drop(handle);
                 return Ok((final_path, partial));
             }
-            // Another attempt's own create won the name: try the next suffix.
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            // The partial's name is this upload's alone, so an existing one
+            // is a stale file from another process that minted the same id;
+            // it is refused rather than adopted.
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(format!(
+                    "{} already exists and is not this upload's",
+                    partial.display(),
+                ));
+            }
             Err(error) => {
                 return Err(format!(
                     "the partial for {} could not be created: {error}",
@@ -663,6 +707,11 @@ fn reserve(
         }
     }
     Err(format!("no free name for {name} in {}", dir.display()))
+}
+
+/// The partial a file at `file_index` writes into.
+fn partial_name(upload_id: u64, file_index: usize) -> String {
+    format!("{PARTIAL_PREFIX}{upload_id}-{file_index}{PARTIAL_SUFFIX}")
 }
 
 /// One name with its suffix before the extension: `a.jpg` -> `a-2.jpg`.
@@ -775,25 +824,25 @@ mod tests {
             "the display name rides behind the stamp: {}",
             path.display(),
         );
-        assert!(
-            !dir.path()
-                .join("inbox")
-                .join("Busytools")
-                .join("forge")
-                .join(format!(
-                    "{}.{}.partial",
-                    path.file_name().unwrap().to_string_lossy(),
-                    began.upload_id
-                ))
-                .exists(),
-            "no partial is left behind",
-        );
+        let project = dir.path().join("inbox").join("Busytools").join("forge");
+        let leftovers = std::fs::read_dir(&project)
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .path()
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(PARTIAL_PREFIX))
+            })
+            .count();
+        assert_eq!(leftovers, 0, "no partial is left behind");
     }
 
     /// **A partial is not a shared file.** Until the end answers, the bytes on
     /// disk carry the suffix and the final path does not exist.
     #[test]
-    fn a_partial_is_renamed_only_at_the_end() {
+    fn a_partial_is_linked_only_at_the_end() {
         let (_dir, uploads) = uploads();
         let began = begin(&uploads, &[decl("notes.txt", 4)]).expect("begins");
         let final_path = PathBuf::from(&began.paths[0]);
@@ -933,8 +982,8 @@ mod tests {
         let (dir, uploads) = uploads();
         let project = dir.path().join("inbox").join("Busytools").join("forge");
         std::fs::create_dir_all(&project).expect("the inbox");
-        let stale = project.join("20260101-000000-old.png.7.partial");
-        let fresh = project.join("20260101-000000-new.png.8.partial");
+        let stale = project.join(partial_name(7, 0));
+        let fresh = project.join(partial_name(8, 0));
         for path in [&stale, &fresh] {
             std::fs::write(path, b"x").expect("this test's own partial");
         }
@@ -950,6 +999,30 @@ mod tests {
         uploads.sweep_orphans(SystemTime::now());
         assert!(!stale.exists(), "an expired orphan was left behind");
         assert!(fresh.exists(), "a fresh partial was taken");
+    }
+
+    /// **A landed file whose display name ends in `.partial` is a shared
+    /// file, not half an upload.** The sweep keys on the server's own name
+    /// shape, so a person's `notes.partial` is kept like every other final -
+    /// an extension is not a promise about who wrote the file.
+    #[test]
+    fn a_landed_file_named_like_a_partial_survives_the_sweep() {
+        let (dir, uploads) = uploads();
+        let project = dir.path().join("inbox").join("Busytools").join("forge");
+        std::fs::create_dir_all(&project).expect("the inbox");
+        let landed = project.join("20260101-000000-notes.partial");
+        std::fs::write(&landed, b"x").expect("this test's own file");
+        let old = SystemTime::now()
+            .checked_sub(GRACE + Duration::from_secs(1))
+            .expect("this test's own clock");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&landed)
+            .expect("this test's own file")
+            .set_modified(old)
+            .expect("this test's own file");
+        uploads.sweep_orphans(SystemTime::now());
+        assert!(landed.exists(), "a landed file was swept as if it were a partial");
     }
 
     /// **The name is sanitised, never a path**: a shared file cannot choose
@@ -1185,7 +1258,7 @@ mod tests {
     /// renamed are removed with the partials still waiting, and the client
     /// starts over rather than retrying onto them.
     #[test]
-    fn a_failed_rename_removes_what_already_landed() {
+    fn a_failed_move_removes_what_already_landed() {
         let (dir, uploads) = uploads();
         let began = begin(&uploads, &[decl("a.bin", 1), decl("b.bin", 1)]).expect("begins");
         feed(&uploads, began.upload_id, 0, b"a");
@@ -1193,7 +1266,7 @@ mod tests {
         // The second final is a directory, so its hard link cannot be made.
         let second = PathBuf::from(&began.paths[1]);
         std::fs::create_dir_all(&second).expect("this test's own directory");
-        let why = uploads.end(&seat(), began.upload_id).expect_err("the second rename fails");
+        let why = uploads.end(&seat(), began.upload_id).expect_err("the second move fails");
         assert!(why.contains("could not be moved into place"), "{why}");
         assert!(!PathBuf::from(&began.paths[0]).exists(), "the first final was left behind");
         let project = dir.path().join("inbox").join("Busytools").join("forge");
