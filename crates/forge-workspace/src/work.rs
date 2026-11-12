@@ -456,6 +456,13 @@ impl HeldSeats {
         self.lock().get(slot).map(|entry| Arc::clone(&entry.pass_done))
     }
 
+    /// How many holders a seat has. A test's read of the one fact a release
+    /// changes; production reads no hold count.
+    #[cfg(any(test, feature = "testing"))]
+    fn count(&self, slot: &SessionSlot) -> usize {
+        self.lock().get(slot).map_or(0, |held| held.count)
+    }
+
     /// Give a hold back. The last hold stops the loop and drops the entry; a
     /// read still in flight keeps its gate alive through [`Self::gates`], so
     /// a re-hold before it finishes shares it rather than racing a second.
@@ -568,6 +575,14 @@ impl Workspace {
     /// Stop showing `slot`. The last hold stops its loop and its watch.
     pub fn release_seat(&self, slot: &SessionSlot) {
         self.held_work_seats.release(slot);
+    }
+
+    /// How many holders `slot` has. Test-only: the hold a connection takes
+    /// and gives back is invisible from anywhere else, and a leaked one has
+    /// to be catchable from the transport's own tests.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn held_seat_count(&self, slot: &SessionSlot) -> usize {
+        self.held_work_seats.count(slot)
     }
 
     /// The seat's scan, when one has been taken.

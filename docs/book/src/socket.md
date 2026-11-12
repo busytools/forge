@@ -39,9 +39,9 @@ names: `shell` for the Tauri webview's own origins (the desktop app dials
 from `tauri://localhost`, the Android app from `http://tauri.localhost`),
 `web` for any other allowed page origin, and `native` for a client that sent
 no origin. The connection id on that record follows the connection through
-`connection_wedged`, `connection_write_stalled` and `connection_ended`,
-which carry the peer and the seat on screen (`<none>` when the client had
-shown nothing). The kind is what says which client-side perf log to ask
+`connection_wedged`, `connection_write_stalled`, `connection_writer_lost` and
+`connection_ended`, which carry the peer and the seat on screen (`<none>`
+when the client had shown nothing). The kind is what says which client-side perf log to ask
 for: a shell's `forge-perf.log` is in its app log directory on the host
 that dialed, a web page's is forge's own `forge-perf-web.log` beside
 `forge.log`, and a native client has no page log.
@@ -75,10 +75,13 @@ deadline: about 80 seconds.
 **The answer is a byte, and the deadlines differ by what each side can see.**
 The shell's transport counts bytes under the socket and calls the link dead 10
 seconds after a probe that drew none. A
-browser is handed whole messages only, so its deadline is the write bound
-above plus a margin (65 seconds): while the server spends up to 60 seconds
-writing one frame it cannot answer a probe, and a tighter deadline would
-close a live socket mid-frame and redial into the same record for ever.
+browser is handed whole messages only, so its deadline is the 60 s write
+bound plus a margin (65 seconds). **The connection is one task reading and
+one writing**: a read half that serves what the client asks, and a write half
+that owns the socket. So a probe is read and answered while a frame is being
+written - but **the pong is a frame like any other**, and it queues behind
+the frame in flight. The browser's margin still covers the write bound.
+
 **The frame is application-level rather than a WebSocket control frame**,
 because a browser page cannot send a Ping through its WebSocket API - one
 mechanism serves the desktop, the phone and the web build alike, and the
@@ -87,23 +90,29 @@ server answers it with `pong` and no workspace involvement at all.
 **One frame write is bounded too.** The server ends a connection when a
 single write takes longer than 60 seconds: a peer that stopped reading
 holds that write open while answering no ping, and TCP can take minutes to
-report the socket gone. A frame that was partly written cannot be resumed,
-so the connection is torn down rather than the frame retried. The bound
-sits above the slowest frame measured - a 3.5 MB snapshot to a slow
-client, 31.6 s - and matches the ping's dead bound.
+report the socket gone. The write runs on the write half, the task that owns
+the socket, so the read half goes on serving commands while it runs. A frame
+that was partly written cannot be resumed, so the connection is torn down
+rather than the frame retried. The bound sits above the slowest frame
+measured - a 3.5 MB snapshot to a slow client, 31.6 s - and matches the
+ping's dead bound.
 
-**A connection whose own loop stops is ended as well.** The ping is a branch
-in the connection's loop, so it cannot see that loop parked in an await: a
-subsystem that never answers leaves the socket open with no ping, no reap and
-no error, which is how one freeze went unnoticed for 26.7 minutes. A watchdog
-outside the connection's future, in the same task, samples its progress and
-ends the connection after four write bounds without one, then runs the same
-teardown a clean close does. **Progress is a completed write**, stamped where
-every frame is flushed rather than once per loop turn, because one turn can
-issue several bounded writes. Four write bounds also clear the unbounded
-snapshot encode the loop performs between writes, so a legitimate long
-operation cannot trip it and a healthy connection is never reaped into a
-redial loop.
+**A connection whose own read half stops is ended as well.** The ping is a
+branch in the read half's loop, so it cannot see that loop parked in an
+await: a subsystem that never answers leaves the socket open with no ping, no
+reap and no error, which is how one freeze went unnoticed for 26.7 minutes. A
+watchdog outside the connection's future, in the same task, samples its
+progress and ends the connection after four write bounds without one, then
+runs the same teardown a clean close does. **Progress is a completed write**,
+stamped by the writer on every flush rather than once per loop turn, because
+one turn can issue several bounded writes. **A ping counts as sent only when
+the writer reports it written and no frame has arrived since it was queued**,
+not when the read half queues it: a ping behind a bulk frame owes the peer
+nothing until it is on the wire, and a ping the peer already answered owes
+nothing at all - so the deadline starts at the write, and only for a ping
+still unanswered. Four write bounds also clear the unbounded snapshot
+encode the loop performs between writes, so a legitimate long operation
+cannot trip it and a healthy connection is never reaped into a redial loop.
 
 ## The greeting
 

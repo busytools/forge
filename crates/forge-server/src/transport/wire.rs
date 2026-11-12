@@ -1886,9 +1886,11 @@ pub const SUBSCRIBE_TURNS: u32 = 20;
 /// work that did not name itself; the seed is the transcript read only a
 /// cold seat pays, and the conversation total excludes it. The frame's own
 /// record, `frame_write`, carries `prep_ms` (the record serialised and
-/// compressed into the bytes) and `write_ms` (the socket's share) - both
-/// inside `open_ms`, and split out of what the record's own reads would
-/// otherwise have to explain.
+/// compressed into the bytes) and `write_ms` (the handoff to the connection's
+/// writer) - both inside `open_ms`, and split out of what the record's own
+/// reads would otherwise have to explain. **The frame's transfer is no longer
+/// server-attributed**: the writer owns the socket, so `write_ms` is the
+/// handoff rather than the socket's share.
 #[derive(Debug, Default)]
 pub struct OpenTimings {
     pub seed_ms: f64,
