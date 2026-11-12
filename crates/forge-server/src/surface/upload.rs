@@ -589,6 +589,13 @@ impl Uploads {
         Ok(Ended { paths })
     }
 
+    /// The seat a held upload belongs to, for a record about it that has no
+    /// connection left to name one.
+    pub fn seat_of(&self, upload_id: u64) -> Option<String> {
+        let registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
+        registry.get(&upload_id).map(|upload| upload.seat.display())
+    }
+
     /// Remove every upload past its grace window, and its partials with it.
     pub fn sweep(&self) {
         let now = Instant::now();

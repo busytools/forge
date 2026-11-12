@@ -4068,6 +4068,10 @@ async fn write_file_chunk(
     bytes: Vec<u8>,
 ) {
     let uploads = Arc::clone(state.surface.uploads());
+    // **The seat is read after the panic, not before**: the writer that died
+    // may have held the registry, and the record still has to name whose
+    // upload it was for a reader to act on it.
+    let named = Arc::clone(&uploads);
     let written = tokio::task::spawn_blocking(move || {
         uploads.chunk(me, upload_id, file_index, offset, &bytes)
     })
@@ -4081,12 +4085,17 @@ async fn write_file_chunk(
             %why,
             "a file chunk was not written",
         ),
-        Err(error) => tracing::warn!(
-            event_name = "file_chunk_write_panicked",
-            upload_id,
-            %error,
-            "the blocking upload writer ended without answering",
-        ),
+        Err(error) => {
+            let seat = named.seat_of(upload_id).unwrap_or_else(|| "<unknown>".to_owned());
+            tracing::warn!(
+                event_name = "file_chunk_write_panicked",
+                upload_id,
+                file_index,
+                seat = %seat,
+                %error,
+                "the blocking upload writer ended without answering",
+            );
+        }
     }
 }
 
