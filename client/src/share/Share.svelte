@@ -548,9 +548,42 @@
     overflow-wrap: anywhere;
   }
 
+  /* The field is the composer's, whose own styling lives in the composer's
+     scoped block; on this page it is the sheet's box that dresses it. */
+  .box :global(textarea) {
+    width: 100%;
+    min-height: 64px;
+    padding: 4px 2px;
+    border: 0;
+    outline: none;
+    resize: none;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    line-height: 1.5;
+  }
+
+  .box :global(textarea::placeholder) {
+    color: var(--dim);
+  }
+
+  /* The UA fills a button; the sheet draws its pills on the box's ground. */
   button.chip {
     min-height: 44px;
     padding: 0 16px;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  button.chip.add {
+    color: var(--accent);
+    border-color: rgba(244, 118, 0, 0.45);
+  }
+
+  button.chip[disabled] {
+    color: var(--dim);
+    border-color: var(--line);
+    cursor: default;
   }
 
   @media (pointer: coarse) {
