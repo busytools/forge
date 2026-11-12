@@ -142,11 +142,8 @@ async fn upload(
     } else {
         (begin(&socket, &seat, &files).await?, vec![0; files.len()], false)
     };
-    let _ = channel.send(ShareProgress::Begin {
-        upload_id: id,
-        resumed,
-        received: received.clone(),
-    });
+    let _ =
+        channel.send(ShareProgress::Begin { upload_id: id, resumed, received: received.clone() });
     for (index, file) in files.iter().enumerate() {
         let start = received.get(index).copied().unwrap_or(0);
         send_file(&socket, channel, id, index, file, start).await?;
