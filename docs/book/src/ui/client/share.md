@@ -6,9 +6,9 @@ it through the same history every page uses. The drawing it is held against is
 [web-share.html](./web-share.html), beside this page.
 
 **Android is the only intake in this cut.** The share sheet lists forge for `ACTION_SEND` and
-`ACTION_SEND_MULTIPLE`; the desktop app and the web client draw no door to this page. The route
-is still addressable by URL there, where with no Android share behind it the sheet draws "this
-share carried no files" and cannot upload.
+`ACTION_SEND_MULTIPLE`; the desktop app and the web client draw no door to this page. The page
+itself is still reachable by URL on those clients, where with no Android share behind it the
+sheet draws "this share carried no files" and cannot upload.
 
 ## What it draws
 
