@@ -6,10 +6,11 @@ src/ui/client/document.md 3494
 src/ui/client/extensions.md 1780
 src/ui/client/files.md 1917
 src/ui/client/home.md 3093
-src/ui/client/index.md 723
+src/ui/client/index.md 728
 src/ui/client/models.md 4497
 src/ui/client/queue.md 813
 src/ui/client/review.md 5423
 src/ui/client/session.md 6411
 src/ui/client/settings.md 3185
+src/ui/client/share.md 667
 src/ui/client/terminal.md 1653

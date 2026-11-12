@@ -29,6 +29,7 @@ each with the drawing it is held against beside it.
 - [A document](./ui/client/document.md)
 - [The browser surface](./ui/client/browser.md)
 - [The terminal surface](./ui/client/terminal.md)
+- [The share sheet](./ui/client/share.md)
 
 # Contributor
 
