@@ -31,9 +31,8 @@
 
 use axum::extract::ws::Message;
 use forge_primitives::browser::{BrowserAudio, BrowserFrame};
-use futures_util::SinkExt as _;
 
-use super::{WRITE_BOUND, write_within};
+use super::connection::ClientSocket;
 
 /// The rate every dictation frame's samples are at. Pinned against the
 /// dictation crate's own constant by a test rather than imported: the wire's
@@ -99,8 +98,9 @@ impl Kind {
 /// below is the only implementation now.
 #[async_trait::async_trait]
 pub trait FrameTransport: Send {
-    /// Deliver one encoded frame to this viewer. `Err` is a connection that
-    /// is gone, and the caller ends it.
+    /// Deliver one encoded frame to this viewer. **The socket transport
+    /// queues it and answers `Ok`**: a connection that is gone surfaces
+    /// through the connection's read half, which ends it.
     async fn deliver(&mut self, frame: &BrowserFrame) -> anyhow::Result<()>;
 
     /// Deliver one packet of the page's audio to this viewer.
@@ -112,39 +112,32 @@ pub trait FrameTransport: Send {
 }
 
 /// The socket's own transport: one tagged binary message per frame.
+///
+/// **Each frame is one whole write on the connection's writer** - written
+/// and flushed under a single bound, as the socket wrote it before the read
+/// half and the write half were split.
 pub struct SocketFrames<'a, S> {
-    pub socket: &'a mut S,
+    pub(crate) socket: &'a mut ClientSocket<S>,
 }
 
 #[async_trait::async_trait]
-impl<S> FrameTransport for SocketFrames<'_, S>
-where
-    S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
-{
+impl<S: Send> FrameTransport for SocketFrames<'_, S> {
     async fn deliver(&mut self, frame: &BrowserFrame) -> anyhow::Result<()> {
         let mut bytes = Vec::with_capacity(HEADER_BYTES + frame.encoded.len());
         bytes.push(Kind::BrowserFrame.tag());
         bytes.extend_from_slice(&frame.encoded);
-        write_within(WRITE_BOUND, async {
-            self.socket.send(Message::Binary(bytes.into())).await.map_err(anyhow::Error::from)
-        })
-        .await
+        self.socket.write(Message::Binary(bytes.into()));
+        Ok(())
     }
 
     async fn deliver_audio(&mut self, audio: &BrowserAudio) -> anyhow::Result<()> {
-        let bytes = audio_bytes(audio);
-        write_within(WRITE_BOUND, async {
-            self.socket.send(Message::Binary(bytes.into())).await.map_err(anyhow::Error::from)
-        })
-        .await
+        self.socket.write(Message::Binary(audio_bytes(audio).into()));
+        Ok(())
     }
 
     async fn deliver_terminal(&mut self, id: u16, seq: u32, bytes: &[u8]) -> anyhow::Result<()> {
-        let frame = terminal_output_bytes(id, seq, bytes);
-        write_within(WRITE_BOUND, async {
-            self.socket.send(Message::Binary(frame.into())).await.map_err(anyhow::Error::from)
-        })
-        .await
+        self.socket.write(Message::Binary(terminal_output_bytes(id, seq, bytes).into()));
+        Ok(())
     }
 }
 
