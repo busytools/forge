@@ -1590,8 +1590,8 @@ mod tests {
         assert!(!partial.exists(), "the partial went with the entry");
     }
 
-    /// **A rename that fails leaves no half a share**: the finals already
-    /// renamed are removed with the partials still waiting, and the client
+    /// **A move that fails leaves no half a share**: the finals already
+    /// landed are removed with the partials still waiting, and the client
     /// starts over rather than retrying onto them.
     #[test]
     fn a_failed_move_removes_what_already_landed() {
