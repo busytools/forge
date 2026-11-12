@@ -982,10 +982,14 @@ fn variant_of(command: &Value) -> Option<&str> {
 }
 
 /// The bound this dispatch gets: the shipping bound, except a despawn, whose
-/// removal can outlast it.
+/// removal can outlast it, and an upload's end, which flushes and renames
+/// every file of a share before it answers - a 200 MB share on a phone's
+/// storage is seconds, and a timeout there makes a retry start over and write
+/// the files again.
 fn reply_bound_for(command: &Value, bound: Duration) -> Option<Duration> {
     match variant_of(command) {
         Some("despawn_worker") => None,
+        Some("file_upload_end") => Some(Duration::from_secs(120)),
         _ => Some(bound),
     }
 }
