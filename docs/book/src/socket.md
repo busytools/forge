@@ -76,9 +76,11 @@ deadline: about 80 seconds.
 The shell's transport counts bytes under the socket and calls the link dead 10
 seconds after a probe that drew none. A
 browser is handed whole messages only, so its deadline is the write bound
-above plus a margin (65 seconds): while the server spends up to 60 seconds
-writing one frame it cannot answer a probe, and a tighter deadline would
-close a live socket mid-frame and redial into the same record for ever.
+above plus a margin (65 seconds). **A probe is answered while a frame is
+being written**: the connection reads on one task and writes on another, so a
+slow frame no longer holds a probe's answer behind it. The browser's margin
+is its own client-side bound and stays as it is.
+
 **The frame is application-level rather than a WebSocket control frame**,
 because a browser page cannot send a Ping through its WebSocket API - one
 mechanism serves the desktop, the phone and the web build alike, and the
@@ -87,23 +89,27 @@ server answers it with `pong` and no workspace involvement at all.
 **One frame write is bounded too.** The server ends a connection when a
 single write takes longer than 60 seconds: a peer that stopped reading
 holds that write open while answering no ping, and TCP can take minutes to
-report the socket gone. A frame that was partly written cannot be resumed,
-so the connection is torn down rather than the frame retried. The bound
-sits above the slowest frame measured - a 3.5 MB snapshot to a slow
-client, 31.6 s - and matches the ping's dead bound.
+report the socket gone. The write is the connection's write half, a task of
+its own, so the read half goes on serving commands while it runs. A frame
+that was partly written cannot be resumed, so the connection is torn down
+rather than the frame retried. The bound sits above the slowest frame
+measured - a 3.5 MB snapshot to a slow client, 31.6 s - and matches the
+ping's dead bound.
 
-**A connection whose own loop stops is ended as well.** The ping is a branch
-in the connection's loop, so it cannot see that loop parked in an await: a
-subsystem that never answers leaves the socket open with no ping, no reap and
-no error, which is how one freeze went unnoticed for 26.7 minutes. A watchdog
-outside the connection's future, in the same task, samples its progress and
-ends the connection after four write bounds without one, then runs the same
-teardown a clean close does. **Progress is a completed write**, stamped where
-every frame is flushed rather than once per loop turn, because one turn can
-issue several bounded writes. Four write bounds also clear the unbounded
-snapshot encode the loop performs between writes, so a legitimate long
-operation cannot trip it and a healthy connection is never reaped into a
-redial loop.
+**A connection whose own read half stops is ended as well.** The ping is a
+branch in the read half's loop, so it cannot see that loop parked in an
+await: a subsystem that never answers leaves the socket open with no ping, no
+reap and no error, which is how one freeze went unnoticed for 26.7 minutes. A
+watchdog outside the connection's future, in the same task, samples its
+progress and ends the connection after four write bounds without one, then
+runs the same teardown a clean close does. **Progress is a completed write**,
+stamped by the writer on every flush rather than once per loop turn, because
+one turn can issue several bounded writes. **A ping counts as sent only when
+the writer reports it written**, not when the read half queues it: a ping
+behind a bulk frame owes the peer nothing until it is on the wire, and the
+deadline starts there. Four write bounds also clear the unbounded snapshot
+encode the loop performs between writes, so a legitimate long operation
+cannot trip it and a healthy connection is never reaped into a redial loop.
 
 ## The greeting
 
