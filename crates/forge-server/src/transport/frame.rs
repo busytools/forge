@@ -273,14 +273,17 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, Refusal> {
             })
         }
         Kind::FileChunk => {
-            if payload.len() > MAX_FILE_CHUNK_BYTES {
-                return Err(Refusal::OversizedFileChunk(payload.len()));
-            }
             let Some((header, bytes)) =
                 payload.split_at_checked(FILE_CHUNK_HEADER_BYTES - HEADER_BYTES)
             else {
                 return Err(Refusal::ShortFileChunk(payload.len()));
             };
+            // **The cap is the chunk's BYTES, not the payload**: the header is
+            // part of every full 64 KiB chunk, and measuring the whole
+            // payload refused exactly the chunks a client sends.
+            if bytes.len() > MAX_FILE_CHUNK_BYTES {
+                return Err(Refusal::OversizedFileChunk(bytes.len()));
+            }
             Ok(Frame::FileChunk {
                 upload_id: u64::from_le_bytes([
                     header[0], header[1], header[2], header[3], header[4], header[5], header[6],
@@ -527,11 +530,29 @@ mod tests {
     #[test]
     fn an_oversized_file_chunk_is_refused_with_its_length() {
         let mut bytes = vec![Kind::FileChunk.tag()];
-        bytes.extend(std::iter::repeat_n(0u8, FILE_CHUNK_HEADER_BYTES));
-        bytes.extend(std::iter::repeat_n(0u8, MAX_FILE_CHUNK_BYTES));
+        bytes.extend(std::iter::repeat_n(0u8, FILE_CHUNK_HEADER_BYTES - HEADER_BYTES));
+        bytes.extend(std::iter::repeat_n(0u8, MAX_FILE_CHUNK_BYTES + 1));
         assert_eq!(
             decode(&bytes),
-            Err(Refusal::OversizedFileChunk(FILE_CHUNK_HEADER_BYTES + MAX_FILE_CHUNK_BYTES)),
+            Err(Refusal::OversizedFileChunk(MAX_FILE_CHUNK_BYTES + 1)),
+        );
+    }
+
+    /// **A full 64 KiB chunk is the frame a client actually sends**, and the
+    /// cap is the chunk's bytes rather than the whole payload: measuring the
+    /// payload refused every full chunk, which is how a share reached its end
+    /// with nothing received (found driving the phone look, 2026-11-12).
+    #[test]
+    fn a_full_file_chunk_is_accepted() {
+        let mut bytes = vec![Kind::FileChunk.tag()];
+        bytes.extend_from_slice(&7_u64.to_le_bytes());
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        bytes.extend(std::iter::repeat_n(0xAB_u8, MAX_FILE_CHUNK_BYTES));
+        let frame = decode(&bytes).expect("a full chunk is a frame this server takes");
+        assert!(
+            matches!(frame, Frame::FileChunk { bytes, .. } if bytes.len() == MAX_FILE_CHUNK_BYTES),
+            "the chunk's bytes are what the cap bounds",
         );
     }
 
