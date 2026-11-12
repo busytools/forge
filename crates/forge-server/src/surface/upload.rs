@@ -453,13 +453,24 @@ impl Uploads {
     /// chunk can make it whole, so the entry is dropped and the answer says
     /// "unknown or expired", which is what makes the client begin again
     /// instead of retrying against it until the grace window ends.
-    pub fn end(&self, seat: &SessionSlot, upload_id: u64) -> Result<Ended, String> {
+    pub fn end(
+        &self,
+        seat: &SessionSlot,
+        connection: u64,
+        upload_id: u64,
+    ) -> Result<Ended, String> {
         let mut registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
         let mut unrecoverable: Option<String> = None;
         {
             let upload = registry.get_mut(&upload_id).ok_or_else(unknown)?;
             if &upload.seat != seat {
                 return Err(unknown());
+            }
+            // **An end is bound to the connection's upload like a chunk is**:
+            // a resume re-binds both, so the connection a dropped client left
+            // behind cannot land the upload the reconnected one is finishing.
+            if upload.connection != connection {
+                return Err(format!("upload {upload_id} belongs to another connection"));
             }
             if let Some(why) = &upload.write_error {
                 return Err(why.clone());
@@ -841,6 +852,11 @@ mod tests {
         uploads.chunk(1, id, index, offset, bytes)
     }
 
+    /// An end from the connection the helper's begins use.
+    fn end(uploads: &Uploads, id: u64) -> Result<Ended, String> {
+        uploads.end(&seat(), 1, id)
+    }
+
     fn feed(uploads: &Uploads, id: u64, index: u16, bytes: &[u8]) {
         for (chunk_index, chunk_bytes) in bytes.chunks(4).enumerate() {
             let offset = u32::try_from(chunk_index * 4).expect("this test's own offsets");
@@ -857,7 +873,7 @@ mod tests {
         let (dir, uploads) = uploads();
         let began = begin(&uploads, &[decl("photo.jpg", 5)]).expect("a valid share begins");
         feed(&uploads, began.upload_id, 0, b"hello");
-        let paths = uploads.end(&seat(), began.upload_id).expect("the upload ends").paths;
+        let paths = end(&uploads, began.upload_id).expect("the upload ends").paths;
         assert_eq!(paths.len(), 1);
         let path = PathBuf::from(&paths[0]);
         assert!(path.starts_with(dir.path().join("inbox").join("Busytools").join("forge")));
@@ -892,7 +908,7 @@ mod tests {
         assert!(!final_path.exists(), "nothing has landed yet");
         feed(&uploads, began.upload_id, 0, b"text");
         assert!(!final_path.exists(), "the bytes are still in the partial");
-        uploads.end(&seat(), began.upload_id).expect("ends");
+        end(&uploads, began.upload_id).expect("ends");
         assert!(final_path.exists());
     }
 
@@ -907,7 +923,7 @@ mod tests {
         // The retry re-sends the same bytes and continues.
         chunk(&uploads, began.upload_id, 0, 0, b"abc").expect("a duplicate is ignored");
         chunk(&uploads, began.upload_id, 0, 3, b"def").expect("the rest lands");
-        let paths = uploads.end(&seat(), began.upload_id).expect("ends").paths;
+        let paths = end(&uploads, began.upload_id).expect("ends").paths;
         assert_eq!(std::fs::read(&paths[0]).unwrap(), b"abcdef");
     }
 
@@ -920,7 +936,7 @@ mod tests {
         chunk(&uploads, began.upload_id, 0, 0, b"abc").expect("the first chunk");
         assert!(chunk(&uploads, began.upload_id, 0, 5, b"x").is_err(), "a gap is refused");
         chunk(&uploads, began.upload_id, 0, 3, b"def").expect("the rest lands");
-        let paths = uploads.end(&seat(), began.upload_id).expect("ends").paths;
+        let paths = end(&uploads, began.upload_id).expect("ends").paths;
         assert_eq!(std::fs::read(&paths[0]).unwrap(), b"abcdef", "the gap's byte never landed");
     }
 
@@ -931,7 +947,7 @@ mod tests {
         let (_dir, uploads) = uploads();
         let began = begin(&uploads, &[decl("a.bin", 6)]).expect("begins");
         chunk(&uploads, began.upload_id, 0, 0, b"abc").expect("the first chunk");
-        assert!(uploads.end(&seat(), began.upload_id).is_err(), "half a file does not end");
+        assert!(end(&uploads, began.upload_id).is_err(), "half a file does not end");
         let resumed = uploads.resume(&seat(), began.upload_id, 1).expect("the upload is kept");
         assert_eq!(resumed.received, vec![3]);
     }
@@ -946,24 +962,40 @@ mod tests {
         assert_eq!(resumed.received, vec![2, 0]);
         let other = SessionSlot::worker("Busytools", "forge", "w1");
         assert!(uploads.resume(&other, began.upload_id, 1).is_err(), "another seat is refused");
-        assert!(uploads.end(&other, began.upload_id).is_err(), "and cannot end it");
+        assert!(uploads.end(&other, 1, began.upload_id).is_err(), "and cannot end it");
     }
 
-    /// **A chunk from another connection is refused.** The id is unguessable,
-    /// but the id alone is not an authorisation; a resume re-binds the
-    /// upload to the connection that reconnected.
+    /// **A chunk or an end from another connection is refused.** The id is
+    /// unguessable, but the id alone is not an authorisation; a resume
+    /// re-binds the upload to the connection that reconnected, and the
+    /// connection it left behind can neither write nor land it.
     #[test]
-    fn a_chunk_is_bound_to_the_connection_that_began_or_resumed_it() {
+    fn a_chunk_and_an_end_are_bound_to_the_connection_that_began_or_resumed_it() {
         let (_dir, uploads) = uploads();
         let began = begin(&uploads, &[decl("a.bin", 4)]).expect("begins");
         assert!(
             uploads.chunk(2, began.upload_id, 0, 0, b"ab").is_err(),
             "another connection's chunk is refused",
         );
+        assert!(
+            uploads.end(&seat(), 2, began.upload_id).is_err(),
+            "another connection cannot end it",
+        );
         uploads.resume(&seat(), began.upload_id, 2).expect("the reconnected client resumes");
         uploads
             .chunk(2, began.upload_id, 0, 0, b"ab")
             .expect("and its chunks land after the resume");
+        assert!(
+            uploads.chunk(1, began.upload_id, 0, 2, b"cd").is_err(),
+            "the connection the drop left behind cannot write",
+        );
+        assert!(
+            uploads.end(&seat(), 1, began.upload_id).is_err(),
+            "and cannot land the upload the reconnect now owns",
+        );
+        uploads.chunk(2, began.upload_id, 0, 2, b"cd").expect("the owner finishes the file");
+        let paths = uploads.end(&seat(), 2, began.upload_id).expect("the owner ends it").paths;
+        assert_eq!(std::fs::read(&paths[0]).unwrap(), b"abcd");
     }
 
     /// A resume for an id the server never minted is refused in words that
@@ -1288,7 +1320,7 @@ mod tests {
         }
         let why = chunk(&uploads, began.upload_id, 0, 0, b"abcd").expect_err("the write fails");
         assert!(why.contains("could not be written"), "{why}");
-        let ended = uploads.end(&seat(), began.upload_id).expect_err("the end answers the failure");
+        let ended = end(&uploads, began.upload_id).expect_err("the end answers the failure");
         assert!(ended.contains("could not be written"), "{ended}");
     }
 
@@ -1356,7 +1388,7 @@ mod tests {
         }
         chunk(&uploads, began.upload_id, 0, 0, b"abcd").expect_err("the first write fails");
         chunk(&uploads, began.upload_id, 0, 0, b"abcd").expect("the retry lands");
-        uploads.end(&seat(), began.upload_id).expect("the upload ends");
+        end(&uploads, began.upload_id).expect("the upload ends");
     }
 
     /// **The end checks the file, not only the counter**: a partial that was
@@ -1380,7 +1412,7 @@ mod tests {
             .open(&partial)
             .expect("this test's own partial");
         let why =
-            uploads.end(&seat(), began.upload_id).expect_err("the file does not hold its bytes");
+            end(&uploads, began.upload_id).expect_err("the file does not hold its bytes");
         assert!(why.contains("unknown or expired"), "{why}");
         assert!(uploads.resume(&seat(), began.upload_id, 1).is_err(), "the entry was kept");
         assert!(!partial.exists(), "the partial went with the entry");
@@ -1398,7 +1430,7 @@ mod tests {
         // The second final is a directory, so its hard link cannot be made.
         let second = PathBuf::from(&began.paths[1]);
         std::fs::create_dir_all(&second).expect("this test's own directory");
-        let why = uploads.end(&seat(), began.upload_id).expect_err("the second move fails");
+        let why = end(&uploads, began.upload_id).expect_err("the second move fails");
         assert!(why.contains("could not be moved into place"), "{why}");
         assert!(!PathBuf::from(&began.paths[0]).exists(), "the first final was left behind");
         let project = dir.path().join("inbox").join("Busytools").join("forge");

@@ -803,12 +803,17 @@ file, so a client re-sends from those offsets. An id the server does not hold
 - a restart took the registry, or the one-hour grace window passed - is
 refused in words, which is what tells a client to begin again from the first
 byte. **The id is bound to the seat it was begun for**: a resume or an end
-naming another seat is refused exactly as an unknown id is.
+naming another seat is refused exactly as an unknown id is. **And it is bound
+to a connection**: a resume re-binds the upload to the connection that
+reconnected, and a chunk or an end from any other connection is refused, so
+the socket a drop left behind cannot write or land the upload.
 
 **`file_upload_end {key, upload_id}`** - finish the upload. Every file is
 checked against the size it declared; one that arrived short refuses the end
-and leaves the upload held, so a retry can finish it. On success the partials
-are linked into place together and the reply carries `{paths}`.
+and leaves the upload held, so a retry can finish it. Only the connection the
+upload is bound to may end it, the one that began it or last resumed it. On
+success the partials are linked into place together and the reply carries
+`{paths}`.
 
 **The inbox** is
 `<app-support>/inbox/<org>/<project>/<YYYYMMDD-HHMMSS>-<name>`, where

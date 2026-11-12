@@ -5384,7 +5384,7 @@ async fn upload_answer(
         Command::FileUploadEnd { key, upload_id } => {
             let key = key.clone();
             let upload_id = *upload_id;
-            blocking(move || uploads.end(&key, upload_id).and_then(encode)).await
+            blocking(move || uploads.end(&key, me, upload_id).and_then(encode)).await
         }
         _ => return None,
     };
