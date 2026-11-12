@@ -434,7 +434,7 @@ impl TransportState {
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(publish_settings(documents, settings.clone()));
         }
-        Self {
+        let state = Self {
             surface: Arc::new(ViewSurface::new(Arc::clone(workspace))),
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(conversation::Conversations::new()),
@@ -445,7 +445,15 @@ impl TransportState {
             settings,
             browser_host: workspace.browser_host(),
             heartbeat: Heartbeat::default(),
+        };
+        // **The inbox's only cleaner.** A dropped upload's partials are
+        // removed once its hour is up even when no new upload ever begins, so
+        // the registry sweeps on a clock rather than on the next client's
+        // arrival. The weak handle lets the task go with the state.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(sweep_uploads(Arc::downgrade(&state.surface.uploads())));
         }
+        state
     }
 
     /// [`TransportState::for_workspace`] with the keepalive shortened, so a
@@ -497,6 +505,28 @@ async fn publish_settings(
         if settings.borrow().as_deref() != Some(encoded.as_ref()) {
             settings.send_replace(Some(encoded));
         }
+    }
+}
+
+/// How often the shared-file inbox is swept for uploads past their grace
+/// window. Ten minutes against an hour's window: a partial is removed at most
+/// ten minutes after it expires, and the sweep costs a lock and a map walk.
+const UPLOAD_SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Remove expired uploads on a clock, so an abandoned share's partials do not
+/// wait for the next client to arrive.
+///
+/// The registry's own lock is held across file removal, so the sweep runs on a
+/// blocking thread; the task ends with the surface it sweeps.
+async fn sweep_uploads(uploads: std::sync::Weak<crate::surface::upload::Uploads>) {
+    let mut tick = tokio::time::interval(UPLOAD_SWEEP_EVERY);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // The first tick is immediate; the grace window has not turned on a
+    // registry younger than a second.
+    tick.tick().await;
+    while let Some(uploads) = uploads.upgrade() {
+        let _ = tokio::task::spawn_blocking(move || uploads.sweep()).await;
+        tick.tick().await;
     }
 }
 
