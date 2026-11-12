@@ -794,8 +794,8 @@ where `size` is the bytes the client copied and `mime` is the provider's type
 when it had one. The answer rides the reply: `{upload_id, paths}`, the id the
 chunks name and the absolute paths the files will land at. **The whole share
 is validated before anything is written** - a total past 200 MB, more than
-256 files, or a seat whose org or project cannot be a directory name is a
-refusal in the core's own words and creates nothing.
+256 files, an empty file, or a seat whose org or project cannot be a
+directory name is a refusal in the core's own words and creates nothing.
 
 **`file_upload_resume {key, upload_id}`** - continue an upload the server
 still holds. The answer is `{paths, received}`, the bytes it already has per
@@ -835,7 +835,9 @@ declared sizes are added with checked arithmetic so a wrapped sum cannot slip
 past the wall. The process holds at most eight live uploads, 1,024 live partial
 files and 1 GiB of declared bytes at once, refused at begin; a partial's handle
 is opened on that file's first chunk rather than at begin, so a share of many
-empty files does not spend the descriptor budget. A restart loses the registry,
+small files does not spend the descriptor budget. **Begins are paced to one a
+second across the process**, because every landed file is permanent and the
+live caps bound one moment rather than a rate. A restart loses the registry,
 so the sweep also takes the `.forge-upload-<upload-id>-<file-index>.partial`
 files it orphaned by their age on disk.
 

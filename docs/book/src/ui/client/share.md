@@ -42,10 +42,12 @@ with another's final name, and a shared file whose own name ends in `.partial` i
 for one. The final name is linked into place only where nothing holds it.
 
 **The bounds are the server's and the app's alike**: one share carries at most 200 MB over 256
-files, and the app checks the published sizes and then the bytes that land against the same wall.
-The server also holds at most eight live uploads, 1,024 live partial files and 1 GiB of declared
-bytes at once, refusing a begin past any of them. A restart loses the registry, so the sweep takes
-the partials it orphaned by their age on disk as well as the entries it still holds.
+files, every file carries at least one byte, and the app checks the published sizes and then the
+bytes that land against the same wall. The server also holds at most eight live uploads, 1,024
+live partial files and 1 GiB of declared bytes at once, refusing a begin past any of them, and
+paces begins to one a second because every landed file is permanent. A restart loses the
+registry, so the sweep takes the partials it orphaned by their age on disk as well as the entries
+it still holds.
 
 ## The intake
 

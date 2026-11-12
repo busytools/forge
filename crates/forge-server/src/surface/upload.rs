@@ -73,6 +73,12 @@ pub const MAX_LIVE_BYTES: u64 = 1024 * 1024 * 1024;
 /// that an abandoned share does not sit on the disk for ever.
 pub const GRACE: Duration = Duration::from_secs(60 * 60);
 
+/// How fast begins are accepted, across every connection. **Every landed file
+/// is permanent**, so the live caps bound one moment and this bounds the rate:
+/// without it a client could create inodes at message rate for as long as it
+/// stayed connected, whatever the live caps said.
+const BEGIN_INTERVAL: Duration = Duration::from_secs(1);
+
 /// A cache name's own cap, in bytes so a unicode name cannot cross the
 /// filesystem's length bound when the timestamp prefix is added.
 const NAME_CAP: usize = 180;
@@ -170,6 +176,8 @@ pub struct Uploads {
     /// rather than substituted.
     root: Result<PathBuf, String>,
     registry: Mutex<HashMap<u64, Upload>>,
+    /// When a begin was last accepted, which is what the pace reads.
+    begun_at: Mutex<Option<Instant>>,
 }
 
 impl Uploads {
@@ -178,6 +186,7 @@ impl Uploads {
         Self {
             root: app_support.map(|base| base.join("inbox")),
             registry: Mutex::new(HashMap::new()),
+            begun_at: Mutex::new(None),
         }
     }
 
@@ -192,9 +201,22 @@ impl Uploads {
         files: &[FileDecl],
         connection: u64,
     ) -> Result<Began, String> {
+        // **Begins are paced**: every landed file is permanent, so the rate a
+        // client can create them is a bound the live caps do not give. The
+        // window moves only when a begin succeeds, so a refused one costs the
+        // next nothing.
+        let mut begun_at = self.begun_at.lock().unwrap_or_else(PoisonError::into_inner);
+        if begun_at.is_some_and(|at| at.elapsed() < BEGIN_INTERVAL) {
+            return Err(format!(
+                "begins arrive faster than one a second; wait {} ms and try again",
+                BEGIN_INTERVAL.as_millis(),
+            ));
+        }
         let now =
             time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
-        self.begin_at(seat, files, connection, now)
+        let began = self.begin_at(seat, files, connection, now)?;
+        *begun_at = Some(Instant::now());
+        Ok(began)
     }
 
     /// Begin one upload at the clock it is given, so a test can pin the names
@@ -216,6 +238,15 @@ impl Uploads {
         }
         let mut total: u64 = 0;
         for file in files {
+            // **An empty file gives an agent nothing**, and a share of them
+            // is the cheapest way to spend permanent inbox inodes, so it is
+            // refused before anything is created.
+            if file.size == 0 {
+                return Err(format!(
+                    "{} is empty; a shared file carries at least one byte",
+                    sanitised_name(&file.name),
+                ));
+            }
             // **One file cannot be wider than the share**, and a declared
             // size that cannot be added is refused rather than wrapped: two
             // 2^63 declarations sum to 0 in a release build.
@@ -839,6 +870,9 @@ mod tests {
     }
 
     fn begin(uploads: &Uploads, files: &[FileDecl]) -> Result<Began, String> {
+        // **The helper is not the pace's subject**: each call is a separate
+        // begin from the test's point of view, and the pace has its own test.
+        *uploads.begun_at.lock().unwrap_or_else(PoisonError::into_inner) = None;
         uploads.begin(&seat(), files, 1)
     }
 
@@ -1020,7 +1054,7 @@ mod tests {
     #[test]
     fn an_upload_id_fits_a_javascript_number() {
         let (_dir, uploads) = uploads();
-        let began = begin(&uploads, &[decl("a.bin", 0)]).expect("begins");
+        let began = begin(&uploads, &[decl("a.bin", 1)]).expect("begins");
         assert!(began.upload_id < (1 << 53), "{}", began.upload_id);
         assert_ne!(began.upload_id, 0);
     }
@@ -1115,7 +1149,7 @@ mod tests {
     #[test]
     fn a_nameless_share_lands_as_a_file() {
         let (_dir, uploads) = uploads();
-        let began = begin(&uploads, &[decl("..", 0)]).expect("begins");
+        let began = begin(&uploads, &[decl("..", 1)]).expect("begins");
         assert!(began.paths[0].ends_with("-file"), "{}", began.paths[0]);
     }
 
@@ -1177,18 +1211,60 @@ mod tests {
         assert!(why.contains("live uploads"), "{why}");
     }
 
-    /// The live file cap binds a stream of empty-file shares, which the byte
+    /// The live file cap binds a stream of tiny-file shares, which the byte
     /// cap cannot: four shares fill it, and one more file is refused.
     #[test]
-    fn the_live_file_cap_refuses_a_share_of_empties() {
+    fn the_live_file_cap_refuses_a_share_of_tiny_files() {
         let (_dir, uploads) = uploads();
         let many: Vec<FileDecl> =
-            (0..MAX_FILES).map(|index| decl(&format!("e{index}.bin"), 0)).collect();
+            (0..MAX_FILES).map(|index| decl(&format!("e{index}.bin"), 1)).collect();
         for _ in 0..(MAX_LIVE_FILES / MAX_FILES) {
-            begin(&uploads, &many).expect("a live share of empties");
+            begin(&uploads, &many).expect("a live share of tiny files");
         }
-        let why = begin(&uploads, &[decl("one-more.bin", 0)]).expect_err("the file cap holds");
+        let why = begin(&uploads, &[decl("one-more.bin", 1)]).expect_err("the file cap holds");
         assert!(why.contains("live partial files"), "{why}");
+    }
+
+    /// **The live byte wall binds where the share and file caps do not**: the
+    /// declared bytes are counted, so a client cannot claim the disk before
+    /// sending a byte.
+    #[test]
+    fn the_live_byte_cap_refuses_a_share_that_would_cross_it() {
+        let (_dir, uploads) = uploads();
+        let each = MAX_UPLOAD_BYTES;
+        let fits = (MAX_LIVE_BYTES / each) as usize;
+        for index in 0..fits {
+            begin(&uploads, &[decl(&format!("a{index}.bin"), each)]).expect("a live share");
+        }
+        let why = begin(&uploads, &[decl("one-more.bin", each)]).expect_err("the byte wall holds");
+        assert!(why.contains("live upload bytes"), "{why}");
+    }
+
+    /// **An empty file is refused before anything is created**: it gives an
+    /// agent nothing, and a share of them is the cheapest way to spend
+    /// permanent inbox inodes.
+    #[test]
+    fn an_empty_file_is_refused() {
+        let (dir, uploads) = uploads();
+        let why = begin(&uploads, &[decl("empty.txt", 0)]).expect_err("an empty file");
+        assert!(why.contains("at least one byte"), "{why}");
+        assert!(!dir.path().join("inbox").exists(), "nothing was created");
+    }
+
+    /// **Begins are paced**: every landed file is permanent, so the rate they
+    /// can be created at is a bound of its own. A refused begin does not move
+    /// the window, and the window opens again after the interval.
+    #[test]
+    fn a_second_begin_in_the_same_second_is_refused() {
+        let (_dir, uploads) = uploads();
+        uploads.begin(&seat(), &[decl("a.bin", 1)], 1).expect("the first begin");
+        let why = uploads
+            .begin(&seat(), &[decl("b.bin", 1)], 1)
+            .expect_err("the second begin is paced");
+        assert!(why.contains("faster than one a second"), "{why}");
+        *uploads.begun_at.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(Instant::now() - BEGIN_INTERVAL - Duration::from_millis(1));
+        uploads.begin(&seat(), &[decl("c.bin", 1)], 1).expect("the window opened again");
     }
 
     /// A share with no files is refused in its own words.
@@ -1206,10 +1282,10 @@ mod tests {
     fn a_share_past_the_file_cap_is_refused() {
         let (_dir, uploads) = uploads();
         let at_limit: Vec<FileDecl> =
-            (0..MAX_FILES).map(|index| decl(&format!("e{index}.bin"), 0)).collect();
+            (0..MAX_FILES).map(|index| decl(&format!("e{index}.bin"), 1)).collect();
         assert!(begin(&uploads, &at_limit).is_ok(), "a share at the limit is legal");
         let past_limit: Vec<FileDecl> =
-            (0..=MAX_FILES).map(|index| decl(&format!("p{index}.bin"), 0)).collect();
+            (0..=MAX_FILES).map(|index| decl(&format!("p{index}.bin"), 1)).collect();
         let why = begin(&uploads, &past_limit).expect_err("one file past the limit");
         assert!(why.contains("at most 256 files"), "{why}");
     }
