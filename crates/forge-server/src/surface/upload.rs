@@ -585,7 +585,7 @@ mod tests {
     fn an_upload_id_fits_a_javascript_number() {
         let (_dir, uploads) = uploads();
         let began = uploads.begin(&seat(), &[decl("a.bin", 0)]).expect("begins");
-        assert!(began.upload_id <= (1 << 53) - 1, "{}", began.upload_id);
+        assert!(began.upload_id < (1 << 53), "{}", began.upload_id);
         assert_ne!(began.upload_id, 0);
     }
 
