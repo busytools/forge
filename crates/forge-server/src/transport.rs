@@ -832,7 +832,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         let project = dir.path().join("inbox").join("Busytools").join("forge");
         std::fs::create_dir_all(&project).expect("the inbox");
-        let stale = project.join("20260101-000000-old.png.7.partial");
+        // **The server's own partial name shape**, which is what the sweep
+        // keys on: a landed file whose display name ends in `.partial` is
+        // never taken.
+        let stale = project.join(".forge-upload-7-0.partial");
         std::fs::write(&stale, b"x").expect("this test's own partial");
         let old = std::time::SystemTime::now()
             .checked_sub(crate::surface::upload::GRACE + std::time::Duration::from_secs(1))

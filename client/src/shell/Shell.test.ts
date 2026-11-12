@@ -544,11 +544,14 @@ describe('the shell at launch', () => {
     const seen = order.join(', ');
     const listened = order.indexOf('listen:client://share');
     const asked = order.indexOf('client_share_take');
-    expect(listened, `the page never listened for a warm share; calls: ${seen}`).toBeGreaterThanOrEqual(
-      0,
-    );
+    expect(
+      listened,
+      `the page never listened for a warm share; calls: ${seen}`,
+    ).toBeGreaterThanOrEqual(0);
     expect(asked, `the launch never asked for its share; calls: ${seen}`).toBeGreaterThanOrEqual(0);
-    expect(listened, `the launch asked before the listener was up; calls: ${seen}`).toBeLessThan(asked);
+    expect(listened, `the launch asked before the listener was up; calls: ${seen}`).toBeLessThan(
+      asked,
+    );
   });
 
   /**

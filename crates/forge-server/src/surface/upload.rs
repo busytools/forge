@@ -316,8 +316,7 @@ impl Uploads {
             .collect();
         let mut made: Vec<FileState> = Vec::with_capacity(files.len());
         for (index, file) in files.iter().enumerate() {
-            match reserve(&dir, &stamp, &sanitised_name(&file.name), upload_id, index, &reserved)
-            {
+            match reserve(&dir, &stamp, &sanitised_name(&file.name), upload_id, index, &reserved) {
                 Ok((final_path, partial)) => {
                     reserved.insert(final_path.clone());
                     made.push(FileState {
@@ -530,9 +529,8 @@ impl Uploads {
                         break;
                     }
                     Err(error) => {
-                        unrecoverable = Some(format!(
-                            "file {index}'s partial could not be measured: {error}",
-                        ));
+                        unrecoverable =
+                            Some(format!("file {index}'s partial could not be measured: {error}"));
                         break;
                     }
                 }
@@ -1264,7 +1262,7 @@ mod tests {
     fn the_live_byte_cap_refuses_a_share_that_would_cross_it() {
         let (_dir, uploads) = uploads();
         let each = MAX_UPLOAD_BYTES;
-        let fits = (MAX_LIVE_BYTES / each) as usize;
+        let fits = usize::try_from(MAX_LIVE_BYTES / each).expect("this test's own share count");
         for index in 0..fits {
             begin(&uploads, &[decl(&format!("a{index}.bin"), each)]).expect("a live share");
         }
@@ -1290,12 +1288,11 @@ mod tests {
     fn a_second_begin_in_the_same_second_is_refused() {
         let (_dir, uploads) = uploads();
         uploads.begin(&seat(), &[decl("a.bin", 1)], 1).expect("the first begin");
-        let why = uploads
-            .begin(&seat(), &[decl("b.bin", 1)], 1)
-            .expect_err("the second begin is paced");
+        let why =
+            uploads.begin(&seat(), &[decl("b.bin", 1)], 1).expect_err("the second begin is paced");
         assert!(why.contains("faster than one a second"), "{why}");
         *uploads.begun_at.lock().unwrap_or_else(PoisonError::into_inner) =
-            Some(Instant::now() - BEGIN_INTERVAL - Duration::from_millis(1));
+            Instant::now().checked_sub(BEGIN_INTERVAL + Duration::from_millis(1));
         uploads.begin(&seat(), &[decl("c.bin", 1)], 1).expect("the window opened again");
     }
 
@@ -1444,7 +1441,7 @@ mod tests {
         }
         impl Recovering {
             fn write_at(&mut self, buf: &[u8]) {
-                let at = self.position as usize;
+                let at = usize::try_from(self.position).expect("this test's own offset");
                 let end = at + buf.len();
                 if self.content.len() < end {
                     self.content.resize(end, 0);
@@ -1512,7 +1509,7 @@ mod tests {
         }
         impl Write for Recording {
             fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                let at = self.position as usize;
+                let at = usize::try_from(self.position).expect("this test's own offset");
                 let end = at + buf.len();
                 if self.content.len() < end {
                     self.content.resize(end, 0);
@@ -1583,8 +1580,7 @@ mod tests {
             .truncate(true)
             .open(&partial)
             .expect("this test's own partial");
-        let why =
-            end(&uploads, began.upload_id).expect_err("the file does not hold its bytes");
+        let why = end(&uploads, began.upload_id).expect_err("the file does not hold its bytes");
         assert!(why.contains("unknown or expired"), "{why}");
         assert!(uploads.resume(&seat(), began.upload_id, 1).is_err(), "the entry was kept");
         assert!(!partial.exists(), "the partial went with the entry");
