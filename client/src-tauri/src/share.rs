@@ -213,7 +213,7 @@ where
     }
     if total > MAX_TOTAL {
         return Err(format!(
-            "the share is {} MiB; one share carries at most {} MiB",
+            "the share is {} MB; one share carries at most {} MB",
             total / (1024 * 1024),
             MAX_TOTAL / (1024 * 1024),
         ));
@@ -243,6 +243,17 @@ where
         send_file(socket, progress, id, index, file, start).await?;
     }
     let paths = end(socket, &seat, id).await?;
+    // **One path per file.** An end that answers a different number names
+    // files the prompt would not carry, or misses ones it would; the prompt is
+    // the whole delivery, so the count is checked before it is built.
+    if paths.len() != files.len() {
+        let files_word = if files.len() == 1 { "file" } else { "files" };
+        return Err(format!(
+            "the server answered {} paths for {} {files_word}",
+            paths.len(),
+            files.len(),
+        ));
+    }
     Ok(json!({ "paths": paths }))
 }
 
@@ -377,14 +388,19 @@ fn answer(value: Option<Value>) -> Result<Value, String> {
     }
 }
 
-/// A JSON array of strings, or the refusal that one member is not a string.
+/// A JSON array of strings, or the refusal that names what was answered
+/// instead.
 ///
 /// **A non-string is not dropped**: a path the server answered and this side
 /// silently discarded is a file the prompt would not name, which reads as a
-/// share that lost one.
+/// share that lost one. **An answer with no list at all is not an empty one**:
+/// an end that named no paths did not land the share, so treating it as a
+/// successful zero-path upload is the same loss in a quieter form.
 #[cfg(any(target_os = "android", test))]
 fn strings(value: Option<&Value>) -> Result<Vec<String>, String> {
-    let Some(rows) = value.and_then(Value::as_array) else { return Ok(Vec::new()) };
+    let rows = value
+        .and_then(Value::as_array)
+        .ok_or_else(|| "the server's answer named no paths".to_owned())?;
     let mut paths = Vec::with_capacity(rows.len());
     for row in rows {
         match row.as_str() {
@@ -506,7 +522,7 @@ mod tests {
             vec!["a".to_owned(), "b".to_owned()]
         );
         assert!(strings(Some(&json!(["a", 1]))).is_err(), "a non-string is refused");
-        assert!(strings(None).expect("no list is no paths").is_empty());
+        assert!(strings(None).is_err(), "an answer with no paths is refused");
     }
 
     use crate::socket::tests::{Stub, connected, stub};
@@ -608,6 +624,32 @@ mod tests {
             ),
             "and how much of the file has crossed: {progress:?}",
         );
+    }
+
+    /// **An end that answers the wrong number of paths is refused**: the
+    /// prompt names the paths, so one missing or extra is a share that lies
+    /// about what it sent.
+    #[tokio::test]
+    async fn an_end_that_answers_the_wrong_number_of_paths_is_refused() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let file = share_of(dir.path(), "photo.jpg", b"hi");
+        let mut stub = stub().await;
+        let (socket, _events) = connected(&stub).await;
+        let calling = tokio::spawn({
+            let socket = socket.clone();
+            let files = vec![file];
+            async move {
+                let mut progress = Vec::new();
+                upload(&socket, &mut |update| progress.push(update), seat(), files, None).await
+            }
+        });
+        let begin = next_command(&mut stub, "file_upload_begin").await;
+        reply(&stub, &begin, &json!({ "upload_id": 7, "paths": ["/inbox/photo.jpg"] }));
+        let _frame = stub.binary.recv().await.expect("the file's chunk");
+        let end = next_command(&mut stub, "file_upload_end").await;
+        reply(&stub, &end, &json!({ "paths": ["/inbox/a.jpg", "/inbox/b.jpg"] }));
+        let why = calling.await.expect("the call task").expect_err("two paths for one file");
+        assert!(why.contains("2 paths for 1 file"), "{why}");
     }
 
     /// **A retry continues from the server's offset.** The held upload says it
