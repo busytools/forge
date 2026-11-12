@@ -274,6 +274,7 @@ describe('the share sheet', () => {
     const upload = vi.fn(() => Promise.resolve({ paths: ['/inbox/photo.jpg'] }));
     const { connection, dispatched } = stub();
     let fail = true;
+    let release: (() => void) | null = null;
     const flaky = {
       ...connection,
       dispatch: (command: unknown, at?: SessionSlot) => {
@@ -282,7 +283,9 @@ describe('the share sheet', () => {
           return Promise.reject(new Error('the connection is down'));
         }
         dispatched.push(at === undefined ? { command } : { command, at });
-        return Promise.resolve(null);
+        return new Promise<void>((resolve) => {
+          release = resolve;
+        });
       },
     } as unknown as Connection;
     draw({ connection: flaky, upload });
@@ -292,9 +295,16 @@ describe('the share sheet', () => {
       expect(lines().some((line) => line.includes('the files are uploaded'))).toBe(true);
     });
     retryButton()?.click();
-    await Promise.resolve();
-    await Promise.resolve();
     flushSync();
+    // **The landed upload is not drawn as uploading again**: only the message
+    // is in flight, so the last attempt's line and bar stay gone.
+    expect(lines().some((line) => line.includes('Uploading'))).toBe(false);
+    expect(lines().some((line) => line.includes('Sending the message'))).toBe(true);
+    release?.();
+    await vi.waitFor(() => {
+      flushSync();
+      expect(lines().some((line) => line.includes('Sent to'))).toBe(true);
+    });
     expect(upload).toHaveBeenCalledTimes(1);
     expect(dispatched).toHaveLength(1);
   });

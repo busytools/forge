@@ -361,7 +361,12 @@
       {/if}
     </div>
 
-    {#if phase === 'uploading'}
+    {#if phase === 'uploading' && paths.length > 0}
+      <!-- **The upload already landed**: a retry after it is the message
+           alone, so the last attempt's line and bar must not be drawn as if
+           the files were going again. -->
+      <p class="line">Sending the message...</p>
+    {:else if phase === 'uploading'}
       <p class="line" id="share-uploading">
         {#if progress === null}
           Uploading {shared.files.length === 1 ? 'the file' : 'the files'}...
