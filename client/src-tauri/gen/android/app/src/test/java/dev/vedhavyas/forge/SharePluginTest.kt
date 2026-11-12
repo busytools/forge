@@ -7,15 +7,17 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 
 /**
  * The share intake's own rules, pinned off the device.
  *
- * **What counts as a share, and what a copied file is called**, are the two
- * places a wrong answer is silent on a phone: a share that reads as none
- * opens an empty sheet, and a name that keeps a separator writes outside the
- * cache directory. Both are pure functions for that reason.
+ * **What counts as a share, what a copied file is called and whether a reload
+ * re-answers a share** are the places a wrong answer is silent on a phone: a
+ * share that reads as none opens an empty sheet, a name that keeps a
+ * separator writes outside the cache directory, and a reload that re-answers
+ * prompts a share twice. They are pure functions for that reason.
  */
 class SharePluginTest {
   @Test
@@ -45,8 +47,16 @@ class SharePluginTest {
   }
 
   @Test
-  fun aShareWithNoStreamHasNoToken() {
-    assertNull(SharePlugin.shareToken(Intent.ACTION_SEND, "image/png", emptyList()))
+  fun aShareWithNoStreamStillHasAToken() {
+    // **A SEND that carried no stream is still a share this app takes**: the
+    // token is what lets the sheet say it carried no file instead of opening
+    // on nothing. Only an intent that is not a share has none.
+    assertEquals(
+      Intent.ACTION_SEND + "\u0000" + "image/png" + "\u0000",
+      SharePlugin.shareToken(Intent.ACTION_SEND, "image/png", emptyList()),
+    )
+    assertNull(SharePlugin.shareToken(Intent.ACTION_MAIN, "image/png", listOf("content://a")))
+    assertNull(SharePlugin.shareToken(null, null, emptyList()))
   }
 
   @Test
@@ -63,6 +73,18 @@ class SharePluginTest {
   }
 
   @Test
+  fun aTokenAlreadyAnsweredIsNotAnsweredAgain() {
+    // **The guard the reload test cannot see**: a token equal to the answered
+    // one resolves empty, so a page reload does not copy and open the sheet a
+    // second time. Mutating this to `token != null` reddens the test.
+    assertTrue(SharePlugin.shouldAnswer("a", null))
+    assertTrue(SharePlugin.shouldAnswer("b", "a"))
+    assertTrue(!SharePlugin.shouldAnswer("a", "a"))
+    assertTrue(!SharePlugin.shouldAnswer(null, null))
+    assertTrue(!SharePlugin.shouldAnswer(null, "a"))
+  }
+
+  @Test
   fun aDisplayNameIsNeverAPath() {
     assertEquals("photo.jpg", SharePlugin.cacheName("../../photo.jpg"))
     assertEquals("photo.jpg", SharePlugin.cacheName("DCIM/Camera/photo.jpg"))
@@ -74,21 +96,22 @@ class SharePluginTest {
   }
 
   @Test
-  fun aLongDisplayNameIsCapped() {
-    val name = SharePlugin.cacheName("a".repeat(400))
-    assertEquals(120, name.length)
+  fun aLongDisplayNameIsCappedInBytes() {
+    assertEquals(120, SharePlugin.cacheName("a".repeat(400)).length)
+    // **The cap is bytes, not characters**: an astral character is four bytes
+    // and two UTF-16 units, so 120 bytes holds 30 of them - 60 UTF-16 units.
+    val astral = SharePlugin.cacheName("📷".repeat(200))
+    assertEquals(60, astral.length)
+    assertEquals(30, astral.codePointCount(0, astral.length))
+    assertEquals(120, astral.toByteArray(Charsets.UTF_8).size)
   }
 
   @Test
   fun aCopyReportsTheBytesThatLandedAndNotTheProvidersClaim() {
-    val dir = File.createTempFile("share", "test").let { file ->
-      file.delete()
-      file.mkdirs()
-      file
-    }
+    val dir = tempDir()
     try {
       val copied =
-        SharePlugin.copyInto(dir, "note.txt", "text/plain") {
+        SharePlugin.copyInto(dir, "note.txt", "text/plain", BUDGET) {
           ByteArrayInputStream("hello".toByteArray())
         }
       assertEquals("note.txt", copied.name)
@@ -101,19 +124,36 @@ class SharePluginTest {
   }
 
   @Test
-  fun twoFilesOfOneNameCopyToTwoPaths() {
-    val dir = File.createTempFile("share", "test").let { file ->
-      file.delete()
-      file.mkdirs()
-      file
+  fun aCopyOverItsBudgetIsRefusedAndLeavesNothing() {
+    // **A provider that under-reports its length cannot get past the cap**:
+    // the bytes are counted as they are written, and a copy over its budget
+    // is refused with the partial deleted rather than left in the cache.
+    val dir = tempDir()
+    try {
+      try {
+        SharePlugin.copyInto(dir, "big.bin", null, 4) {
+          ByteArrayInputStream("hello".toByteArray())
+        }
+        fail("a copy over its budget must be refused")
+      } catch (error: IllegalStateException) {
+        assertTrue(error.message!!.contains("larger than 200 MB"))
+      }
+      assertEquals(0, dir.listFiles()?.size ?: 0)
+    } finally {
+      dir.deleteRecursively()
     }
+  }
+
+  @Test
+  fun twoFilesOfOneNameCopyToTwoPaths() {
+    val dir = tempDir()
     try {
       val first =
-        SharePlugin.copyInto(dir, "photo.jpg", "image/jpeg") {
+        SharePlugin.copyInto(dir, "photo.jpg", "image/jpeg", BUDGET) {
           ByteArrayInputStream("one".toByteArray())
         }
       val second =
-        SharePlugin.copyInto(dir, "photo.jpg", "image/jpeg") {
+        SharePlugin.copyInto(dir, "photo.jpg", "image/jpeg", BUDGET) {
           ByteArrayInputStream("two".toByteArray())
         }
       assertNotEquals(first.path, second.path)
@@ -123,5 +163,16 @@ class SharePluginTest {
     } finally {
       dir.deleteRecursively()
     }
+  }
+
+  private fun tempDir(): File =
+    File.createTempFile("share", "test").let { file ->
+      file.delete()
+      file.mkdirs()
+      file
+    }
+
+  private companion object {
+    const val BUDGET = 200L * 1024 * 1024
   }
 }
