@@ -597,6 +597,15 @@ enum Outbound {
         replied: Option<oneshot::Sender<Result<Value, String>>>,
     },
     Binary(Vec<u8>),
+    /// One binary frame whose caller waits for the write.
+    ///
+    /// **The share upload's flow control.** The queue is unbounded, so a
+    /// driver that only posted frames would hold a whole share in memory on
+    /// a phone; waiting on each write paces the upload to the link.
+    BinaryAck {
+        bytes: Vec<u8>,
+        sent: oneshot::Sender<Result<(), String>>,
+    },
     /// Probe the link now, rather than waiting out the quiet: the page's
     /// half of a return from the background, where the socket may have died
     /// while the page slept. Queued with everything else, so it goes out in
@@ -783,6 +792,16 @@ impl Socket {
     /// One dictation frame: a take's audio, best-effort.
     pub fn send_binary(&self, bytes: Vec<u8>) {
         let _ = self.tx.send(Outbound::Binary(bytes));
+    }
+
+    /// One binary frame the caller waits for, for an upload that paces
+    /// itself on the link rather than queueing a whole file.
+    pub async fn send_binary_ack(&self, bytes: Vec<u8>) -> Result<(), String> {
+        let (sent, sent_rx) = oneshot::channel();
+        self.tx
+            .send(Outbound::BinaryAck { bytes, sent })
+            .map_err(|_| "the socket is closed".to_owned())?;
+        sent_rx.await.map_err(|_| "the socket dropped before writing".to_owned())?
     }
 
     /// Attach this connection to a seat's browser tab as a viewer, and wait
@@ -1027,7 +1046,9 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
             held.retain(|h| h.key != key);
             false
         }
-        Outbound::Dispatch { sent, .. } => {
+        // An upload frame over a down socket fails by name rather than
+        // waiting out a write that has nowhere to go.
+        Outbound::Dispatch { sent, .. } | Outbound::BinaryAck { sent, .. } => {
             let _ = sent.send(Err("the socket is not open".to_owned()));
             false
         }
@@ -1737,6 +1758,14 @@ async fn run(
                                     "socket_frame_not_sent: {why}"
                                 );
                             }
+                        }
+                        Outbound::BinaryAck { bytes, sent } => {
+                            let ok = writer.send(Message::Binary(bytes.into())).await.is_ok();
+                            let _ = sent.send(if ok {
+                                Ok(())
+                            } else {
+                                Err("the socket is open but the frame did not go".to_owned())
+                            });
                         }
                         // **A probe the page asked for**, on a return from
                         // the background: the socket may have died while the
