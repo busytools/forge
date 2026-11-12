@@ -12,6 +12,7 @@ import { rereadHome } from '../home/live';
 import { noteSeatClick } from '../perf';
 import { PROTOCOL_VERSION, subjectKey, type Subject } from '../protocol';
 import { closeSeat, closingSeat } from '../session/close';
+import { pendingShare } from '../share/pending';
 import { MAX_RETRY_MS, RETRY_MS, type Connection } from '../socket';
 import { fontStack } from '../theme';
 import { watchUpdate } from '../update/state';
@@ -53,6 +54,25 @@ vi.mock('../home/live', async (importOriginal) => {
   return { ...real, rereadHome: vi.fn() };
 });
 
+/**
+ * The launch's share, wrapped so a test can name the share the launch came
+ * from without the shell's Android half behind it.
+ *
+ * **The real one is the default**, so every other case keeps the launch it
+ * had; the substitution is for the cases that need a share on the desktop
+ * transport the stub forge speaks.
+ */
+const { launchShareMock, realLaunchShare } = vi.hoisted(() => ({
+  launchShareMock: vi.fn<() => Promise<boolean>>(() => Promise.resolve(false)),
+  realLaunchShare: { current: null as null | (() => Promise<boolean>) },
+}));
+
+vi.mock('../share/pending', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../share/pending')>();
+  realLaunchShare.current = real.launchShare;
+  return { ...real, launchShare: launchShareMock };
+});
+
 const mockRereadHome = vi.mocked(rereadHome);
 
 /**
@@ -62,13 +82,41 @@ const mockRereadHome = vi.mocked(rereadHome);
  * every other command answers nothing - which is what a shell-less page would
  * have got anyway.
  */
-const { invokeMock } = vi.hoisted(() => ({
+const { invokeMock, order } = vi.hoisted(() => ({
+  /** Every shell command and event listen, in the order the page made them. */
+  order: [] as string[],
   invokeMock: vi.fn((_command: string, _args?: unknown): Promise<unknown> => Promise.resolve(null)),
 }));
 
 vi.mock('@tauri-apps/api/core', async (importOriginal) => {
   const real = await importOriginal<typeof import('@tauri-apps/api/core')>();
-  return { ...real, invoke: invokeMock };
+  return {
+    ...real,
+    invoke: (...args: [string, unknown?]) => {
+      order.push(args[0]);
+      // **The arity is kept**: a one-argument command has to stay one
+      // argument for the assertions that name its call.
+      return invokeMock(...args);
+    },
+  };
+});
+
+/**
+ * The event API, recorded in the same order.
+ *
+ * **The package's own `invoke` bypasses the mock above** - it imports its
+ * sibling `./core.js` by relative path - so the listen call is recorded here
+ * where a test can see it, before the real listener is registered.
+ */
+vi.mock('@tauri-apps/api/event', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@tauri-apps/api/event')>();
+  return {
+    ...real,
+    listen: (...args: Parameters<typeof real.listen>) => {
+      order.push(`listen:${args[0]}`);
+      return real.listen(...args);
+    },
+  };
 });
 
 /**
@@ -377,10 +425,13 @@ function appliedFont(): string {
 
 beforeEach(() => {
   Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: Socket });
+  order.length = 0;
   mockWatchUpdate.mockClear();
   mockRereadHome.mockReset();
   invokeMock.mockReset();
   invokeMock.mockResolvedValue(null);
+  launchShareMock.mockReset();
+  launchShareMock.mockImplementation(() => realLaunchShare.current?.() ?? Promise.resolve(false));
 });
 
 afterEach(async () => {
@@ -391,6 +442,7 @@ afterEach(async () => {
   // which is what unlistens through them.
   Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
   Reflect.deleteProperty(window, '__TAURI_EVENT_PLUGIN_INTERNALS__');
+  pendingShare.set(null);
   localStorage.clear();
   history.replaceState(null, '', '/');
 });
@@ -443,6 +495,59 @@ describe('the shell at launch', () => {
     );
 
     expect(invokeMock, 'the launch never asked for a seat').toHaveBeenCalledWith('client_tap_seat');
+  });
+
+  /**
+   * **A share that launched the app survives the door.** A cold-start share
+   * lands on `/share`, which draws the door when the launch cannot connect;
+   * the person's connect is what makes the sheet drawable, and a connect that
+   * moved to the home would hide the files they shared behind a Back.
+   */
+  it('stays on the share sheet when a connect follows a cold-start share', async () => {
+    launchShareMock.mockImplementation(() => {
+      pendingShare.set({
+        files: [{ path: '/cache/share/1/a.jpg', name: 'a.jpg', size: 1, mime: null }],
+        error: null,
+      });
+      return Promise.resolve(true);
+    });
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/share', null);
+
+    submit(forge.address);
+    await until(() => forge.homeReads() >= 1, 'the connect to take');
+    await until(
+      () => location.pathname === '/share' && drawn().includes('a.jpg'),
+      'the sheet to draw the share the launch came from',
+    );
+  });
+
+  /**
+   * **The share listener is up before the launch asks for its share.** A warm
+   * share can arrive while `client_share_take` is in flight, and the page's
+   * `listen` is its only door; asking first leaves a window where the shell
+   * triggers a share into a channel the page is not reading.
+   */
+  it('registers the share listener before it asks for the launch share', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: { transformCallback: () => 1, invoke: () => Promise.resolve(null) },
+      configurable: true,
+    });
+    Object.defineProperty(window, '__TAURI_EVENT_PLUGIN_INTERNALS__', {
+      value: { unregisterListener: () => undefined },
+      configurable: true,
+    });
+    await openAt('/', null);
+
+    const seen = order.join(', ');
+    const listened = order.indexOf('listen:client://share');
+    const asked = order.indexOf('client_share_take');
+    expect(listened, `the page never listened for a warm share; calls: ${seen}`).toBeGreaterThanOrEqual(
+      0,
+    );
+    expect(asked, `the launch never asked for its share; calls: ${seen}`).toBeGreaterThanOrEqual(0);
+    expect(listened, `the launch asked before the listener was up; calls: ${seen}`).toBeLessThan(asked);
   });
 
   /**

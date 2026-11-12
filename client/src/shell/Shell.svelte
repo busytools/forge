@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte';
+  import { get } from 'svelte/store';
 
   import { observeAttention, pageWatched } from '../attention';
   import Sprite from '../components/Sprite.svelte';
@@ -25,7 +26,7 @@
     watchNotificationClicks,
   } from '../notify';
   import { rememberBoot } from '../composer/landing';
-  import { launchShare, watchShares } from '../share/pending';
+  import { launchShare, pendingShare, watchShares } from '../share/pending';
   import { noteSeatClick, setPerfSocket } from '../perf';
   import { skewMessage, subjectKey, type Skew } from '../protocol';
   import { currentRoute, goTo, hrefFor, parseRoute, shownSeat, type Route } from '../routes';
@@ -100,17 +101,29 @@
     if (onDoor && remembered === null && named === null) {
       history.replaceState(null, '', hrefFor({ name: 'connect' }));
     }
-    void open();
+    // **The share listener goes up before the launch's share is asked for.**
+    // A warm share can arrive while `client_share_take` is in flight, and its
+    // only door into the page is this listener; asking first would leave the
+    // window this closes open. A listener that cannot be registered is said
+    // rather than swallowed, and does not hold the launch.
+    void (async () => {
+      let stop = () => {};
+      try {
+        stop = await watchShares();
+      } catch (why) {
+        console.warn('the share listener could not be registered', why);
+      }
+      if (destroyed) {
+        stop();
+        return;
+      }
+      stopShares = stop;
+      await open();
+    })();
     // Once per launch, whatever route it opened on - the notice draws wherever
     // the home does, and a check the reader has to revisit the home for is a
     // check that is not made.
     void watchUpdate();
-    // A share into an app that is already running opens the sheet over
-    // whatever the reader was on; the listener goes with the shell.
-    void watchShares().then((stop) => {
-      if (destroyed) stop();
-      else stopShares = stop;
-    });
   });
 
   // The connection is the shell's: left open past it, it reconnects to a forge
@@ -500,6 +513,16 @@
 
   function connect(connected: Extract<Attempt, { ok: true }>) {
     if (!take(connected)) return;
+    // **A share outranks the home here too.** A cold-start share lands on
+    // `/share`, which draws the door when the launch could not connect; the
+    // person's connect is what makes the sheet drawable, and moving them home
+    // would hide the files they shared behind a Back.
+    if (get(pendingShare) !== null) {
+      // The door was drawn on `/share` itself, so a push would put a second
+      // entry of the same page behind the reader.
+      if (get(currentRoute).name !== 'share') go({ name: 'share' });
+      return;
+    }
     go({ name: 'home' });
   }
 

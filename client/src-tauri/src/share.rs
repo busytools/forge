@@ -462,7 +462,12 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 #[cfg(target_os = "android")]
 fn push(app: &tauri::AppHandle, shared: &Shared) {
     use tauri::Emitter as _;
-    let _ = app.emit("client://share", shared);
+    // **A share the page never hears is a share lost to a ship it already
+    // made**: the emit failing is said rather than discarded, because the
+    // only other trace is the sheet that never opened.
+    if let Err(why) = app.emit("client://share", shared) {
+        tauri_plugin_log::log::warn!("a warm share was not delivered to the page: {why}");
+    }
 }
 
 #[cfg(test)]

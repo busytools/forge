@@ -84,8 +84,11 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
     val token = shareToken(intent.action, intent.type, streams) ?: return
     answer(token, streams) { answerPayload ->
       activity.runOnUiThread {
-        // **A page that has not registered its listener yet gets the share
+        // **A share that arrives before the shell's channel is up is
         // buffered** rather than dropped; its first ask answers it.
+        // `hasListener` reports the shell's channel, not the page's own
+        // `listen`; the page registers that before it asks for the launch's
+        // share, so a warm share cannot slip between the two.
         if (hasListener("share")) trigger("share", answerPayload) else buffer(answerPayload)
       }
     }
