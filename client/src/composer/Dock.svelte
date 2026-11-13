@@ -2045,7 +2045,9 @@
       {#if feedbackOpen}
         <!-- The send-back's words, on the card the draft is drawn on: the
              reader says what is wrong where they read what would go out. -->
-        <div class="sendback">
+        <!-- **The row goes live with its take**, so the mic beside the card
+             reads the same orange every other bar's does (issue #2968). -->
+        <div class="sendback" class:on={take !== null && tookFrom === 'feedback'}>
           {#if take !== null && tookFrom === 'feedback'}
             <!-- The take's card draws where the words will land, so a reader
                  who pressed the send-back mic sees their recording where the

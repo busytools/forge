@@ -12166,6 +12166,10 @@ describe('dictation in the send-back box', () => {
     expect(beside?.getAttribute('aria-label'), 'and says what its next press does').toBe(
       'stop dictating',
     );
+    expect(
+      document.querySelector('.dock .sendback')?.classList.contains('on'),
+      'the row is live, which is what turns the mic orange',
+    ).toBe(true);
 
     const stops = mic.held.stops;
     const close = document.querySelector('.dock .sendback .tc .x');
