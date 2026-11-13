@@ -821,7 +821,7 @@ impl PopupGate {
             parts.downloads.clone(),
             Arc::clone(&parts.loaded),
             Arc::clone(self),
-            FocusState::new(tab),
+            FocusState::new(),
             popup,
         )
     }
@@ -2414,7 +2414,6 @@ const FOCUS_COALESCE: Duration = Duration::from_millis(50);
 /// loop must not become a stream of them: the first answer starts a
 /// [`FOCUS_COALESCE`] window, and what is held at its end is what goes out.
 struct FocusState {
-    tab: u16,
     inner: Mutex<FocusInner>,
 }
 
@@ -2445,8 +2444,8 @@ impl FocusInner {
 }
 
 impl FocusState {
-    fn new(tab: u16) -> Arc<Self> {
-        Arc::new(Self { tab, inner: Mutex::new(FocusInner::default()) })
+    fn new() -> Arc<Self> {
+        Arc::new(Self { inner: Mutex::new(FocusInner::default()) })
     }
 
     /// Serve one frame's report, answering whether a line is now owed.
@@ -2457,23 +2456,42 @@ impl FocusState {
     }
 
     /// Report one frame's answer, scheduling the line a change is owed.
-    fn report(self: &Arc<Self>, frame: &str, editable: bool) {
+    ///
+    /// **`tab` is the client's own**, the same number every other handler on
+    /// it files events under - a popup's client answers for the popup.
+    fn report(self: &Arc<Self>, tab: u16, frame: &str, editable: bool) {
         if self.settle(frame, editable) {
-            self.schedule();
+            self.schedule(tab);
         }
     }
 
     /// **A new document and a dead renderer both leave no focused node.**
     /// Every frame's answer goes, so a stale `true` from a frame that no
     /// longer exists cannot keep the phone's keyboard up.
-    fn reset(self: &Arc<Self>) {
+    fn reset(self: &Arc<Self>, tab: u16) {
         let due = {
             let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
             inner.frames.clear();
             inner.settle()
         };
         if due {
-            self.schedule();
+            self.schedule(tab);
+        }
+    }
+
+    /// **One frame's page went** - it navigated, or the frame was removed. A
+    /// subframe that held an editable field leaves no focused node behind,
+    /// and `settle` is `any`: keeping its `true` would pin the phone's
+    /// keyboard over a page with no field until the main frame loaded, and a
+    /// page that churns iframes would grow the map.
+    fn forget(self: &Arc<Self>, tab: u16, frame: &str) {
+        let due = {
+            let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+            inner.frames.remove(frame);
+            inner.settle()
+        };
+        if due {
+            self.schedule(tab);
         }
     }
 
@@ -2481,28 +2499,31 @@ impl FocusState {
     ///
     /// **A plain thread, not a CEF task**: the line is a stdout write, which
     /// needs nothing of CEF's message loop or its UI thread.
-    fn schedule(self: &Arc<Self>) {
+    fn schedule(self: &Arc<Self>, tab: u16) {
         let state = Arc::clone(self);
         std::thread::spawn(move || {
             std::thread::sleep(FOCUS_COALESCE);
-            state.flush();
+            state.flush(tab);
         });
     }
 
     /// Write the held answer unless it is the one already said.
-    fn flush(&self) {
-        let value = {
-            let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-            inner.scheduled = false;
-            if inner.current == inner.emitted {
-                None
-            } else {
-                inner.emitted = inner.current;
-                Some(inner.current)
-            }
-        };
-        if let Some(editable) = value {
-            crate::control::emit(&crate::control::HostEvent::Focus { tab: self.tab, editable });
+    ///
+    /// **The line is written under the same lock that records it.** Two
+    /// flushes whose windows close together can otherwise emit in the
+    /// opposite order to the values they recorded, and the older answer
+    /// lands last - the tab then reads wrong until the next real change.
+    /// `emit` takes only the stdout lock, and nothing takes stdout and then
+    /// this lock, so the order is safe.
+    fn flush(&self, tab: u16) {
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        inner.scheduled = false;
+        if inner.current != inner.emitted {
+            inner.emitted = inner.current;
+            crate::control::emit(&crate::control::HostEvent::Focus {
+                tab,
+                editable: inner.current,
+            });
         }
     }
 }
@@ -2529,13 +2550,24 @@ cef::wrap_load_handler! {
             frame: Option<&mut Frame>,
             _transition_type: TransitionType,
         ) {
+            if frame.as_ref().is_some_and(|frame| frame.is_main() != 1)
+                && let Some(frame) = frame
+            {
+                // **A subframe's new document is its old one gone.** That
+                // frame's answer cannot outlive it, or a login/payment frame
+                // that held a field would pin the phone's keyboard over the
+                // next page.
+                let frame = CefString::from(&frame.identifier()).to_string();
+                self.focus.forget(self.tab, &frame);
+                return;
+            }
             if frame.is_some_and(|frame| frame.is_main() == 1) {
                 self.loaded.store(true, Ordering::Release);
                 // **A new document has no focused node yet.** Every frame's
                 // answer goes - a subframe is gone with the document too -
                 // and the phone's keyboard drops even if a renderer's own
                 // report races the commit.
-                self.focus.reset();
+                self.focus.reset(self.tab);
                 // **A main-frame navigation is a new document on this tab.**
                 // An opener's handles die with the old one; a bridged popup
                 // is told which bridge it is again, because a cross-site
@@ -2568,6 +2600,25 @@ cef::wrap_load_handler! {
             host.set_focus(1);
             host.set_windowless_frame_rate(60);
             host.was_resized();
+        }
+    }
+}
+
+cef::wrap_frame_handler! {
+    struct HostFrameHandler {
+        tab: u16,
+        // **A frame's death withdraws that frame's answer.** The identifier
+        // is the key `on_process_message_received` files reports under, so a
+        // subframe that navigated or was removed gives it back here even
+        // when no load start reaches this host.
+        focus: Arc<FocusState>,
+    }
+
+    impl FrameHandler {
+        fn on_frame_destroyed(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>) {
+            let Some(frame) = frame else { return };
+            let frame = CefString::from(&frame.identifier()).to_string();
+            self.focus.forget(self.tab, &frame);
         }
     }
 }
@@ -2728,6 +2779,12 @@ cef::wrap_client! {
             ))
         }
 
+        /// **A frame's death is a focus answer to withdraw.** A subframe
+        /// that navigated or was removed must not leave its `true` behind.
+        fn frame_handler(&self) -> Option<FrameHandler> {
+            Some(HostFrameHandler::new(self.tab, Arc::clone(&self.focus)))
+        }
+
         /// **A page's bridge call.** The tab this client belongs to is the
         /// sender: the browser process never trusts an id the page names for
         /// the other side.
@@ -2758,7 +2815,7 @@ cef::wrap_client! {
                     .as_ref()
                     .map(|frame| CefString::from(&frame.identifier()).to_string())
                     .unwrap_or_default();
-                self.focus.report(&frame, editable);
+                self.focus.report(self.tab, &frame, editable);
                 return 1;
             }
             // **The bridge is the main frame's.** A subframe has no native
@@ -2832,7 +2889,12 @@ cef::wrap_request_handler! {
         popups: Arc<PopupGate>,
         // **A renderer that dies with a field focused leaves no focused node
         // behind**, so its tab's answer is reset rather than left `true`
-        // over a dead page.
+        // over a dead page. **The drop is deliberately whole-tab**: the
+        // browser cannot name which of the tab's frames lived in the dead
+        // renderer, so a live main frame's `true` drops too when a
+        // cross-origin iframe's renderer dies. The keyboard closes and a
+        // re-tap raises it again; keeping a stale `true` over a page whose
+        // field may be gone is the worse trade.
         focus: Arc<FocusState>,
     }
 
@@ -2845,7 +2907,7 @@ cef::wrap_request_handler! {
             _error_string: Option<&CefString>,
         ) {
             self.popups.bridge_renderer_gone(self.tab);
-            self.focus.reset();
+            self.focus.reset(self.tab);
         }
     }
 }
@@ -3426,7 +3488,7 @@ mod tests {
     /// while the iframe's field holds the keyboard.
     #[test]
     fn focus_settles_per_frame_in_either_order() {
-        let focus = super::FocusState::new(1);
+        let focus = super::FocusState::new();
         assert!(!focus.settle("main", false), "no frame has an editable node");
         assert!(focus.settle("iframe", true), "an iframe's field is text entry");
         assert!(answer(&focus), "and the tab follows its frame");
@@ -3435,7 +3497,7 @@ mod tests {
 
         // **The other arrival order**: the iframe's report overtakes the
         // parent's blur, and the parent's `false` must not undo it.
-        let overtaken = super::FocusState::new(1);
+        let overtaken = super::FocusState::new();
         assert!(overtaken.settle("iframe", true), "the iframe's answer lands first");
         assert!(
             !overtaken.settle("main", false),
@@ -3450,16 +3512,16 @@ mod tests {
     /// and a superseded one must not raise it.
     #[test]
     fn a_reset_clears_every_frame_and_holds_the_drop() {
-        let focus = super::FocusState::new(1);
+        let focus = super::FocusState::new();
         assert!(focus.settle("main", true), "the first answer owes a line");
         assert!(!focus.settle("iframe", true), "a second frame inside the window is not");
-        focus.reset();
+        focus.reset(1);
         {
             let inner = focus.inner.lock().unwrap_or_else(super::PoisonError::into_inner);
             assert!(inner.frames.is_empty(), "every frame's answer went");
             assert!(!inner.current, "and the tab answers false");
         }
-        focus.flush();
+        focus.flush(1);
         {
             let inner = focus.inner.lock().unwrap_or_else(super::PoisonError::into_inner);
             assert!(!inner.emitted, "the superseded true never went out");
@@ -3467,42 +3529,92 @@ mod tests {
         }
 
         // **When the `true` HAS gone out, the reset owes the drop.**
-        let emitted = super::FocusState::new(1);
+        let emitted = super::FocusState::new();
         assert!(emitted.settle("main", true));
-        emitted.flush();
+        emitted.flush(1);
         assert!(
             emitted.inner.lock().unwrap_or_else(super::PoisonError::into_inner).emitted,
             "the editable answer went out",
         );
-        emitted.reset();
+        emitted.reset(1);
         assert!(
             emitted.inner.lock().unwrap_or_else(super::PoisonError::into_inner).scheduled,
             "the drop is on its way",
         );
-        emitted.flush();
+        emitted.flush(1);
         assert!(
             !emitted.inner.lock().unwrap_or_else(super::PoisonError::into_inner).emitted,
             "and it is what the next line says",
         );
     }
 
+    /// **A frame's death withdraws only that frame's answer.** A subframe
+    /// that navigated cannot pin the keyboard over the next page, and the
+    /// tab drops only when no remaining frame holds an editable node.
+    #[test]
+    fn a_forgotten_frame_drops_its_answer() {
+        let focus = super::FocusState::new();
+        assert!(focus.settle("main", true), "the first answer owes a line");
+        assert!(!focus.settle("iframe", true), "a second frame inside the window is not");
+        focus.flush(1);
+        focus.forget(1, "iframe");
+        assert!(answer(&focus), "the main frame still holds focus");
+        focus.forget(1, "main");
+        assert!(!answer(&focus), "and with no frame left, the tab drops");
+    }
+
     /// **A burst is coalesced to one line, and the last answer still goes.**
     /// A page that focuses in a loop must not wake a viewer per toggle.
     #[test]
     fn a_focus_burst_is_coalesced_to_its_final_answer() {
-        let focus = super::FocusState::new(1);
+        let focus = super::FocusState::new();
         assert!(!focus.settle("main", false), "nothing changed");
         assert!(focus.settle("main", true), "the first change owes a line");
         assert!(!focus.settle("main", false), "a toggle inside the window is held");
         assert!(!focus.settle("main", true), "and so is the next one");
 
         // The window closes with the last answer held, and writes it.
-        focus.flush();
+        focus.flush(1);
         assert!(
             focus.inner.lock().unwrap_or_else(super::PoisonError::into_inner).emitted,
             "the held answer is what went out",
         );
         assert!(focus.settle("main", false), "a change after the window owes the next line");
+    }
+
+    /// **The window is a real hold, and `report` drives it.** The burst
+    /// tests above call `settle`/`flush` directly; this goes through the
+    /// path the renderer's messages take, so a zero window or a broken
+    /// schedule is a failure rather than a silent loss of coalescing.
+    #[test]
+    fn a_report_burst_lands_its_last_answer_once() {
+        assert!(
+            super::FOCUS_COALESCE >= std::time::Duration::from_millis(10),
+            "the coalescing window must be a real hold, not zero",
+        );
+        let focus = super::FocusState::new();
+        focus.report(1, "main", true);
+        focus.report(1, "main", false);
+        focus.report(1, "main", true);
+        {
+            let inner = focus.inner.lock().unwrap_or_else(super::PoisonError::into_inner);
+            assert!(inner.scheduled, "the burst schedules its one line");
+            assert!(inner.current, "and holds the last answer");
+        }
+        // The trailing line is the held answer, and nothing is left pending.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let (emitted, scheduled) = {
+                let inner = focus.inner.lock().unwrap_or_else(super::PoisonError::into_inner);
+                (inner.emitted, inner.scheduled)
+            };
+            if emitted && !scheduled {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "the burst never flushed");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(focus.settle("main", false), "a later change owes the next line");
     }
 
     /// **Every view of one tab is handed that tab's render handler.** CEF
@@ -3529,7 +3641,7 @@ mod tests {
             crate::download::handler(std::path::Path::new("/tmp"), 1),
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
             popups,
-            super::FocusState::new(1),
+            super::FocusState::new(),
             None,
         );
         let view = client.render_handler().expect("a handler for the page");
