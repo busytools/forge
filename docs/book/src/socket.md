@@ -965,9 +965,9 @@ above, so nothing is opened on the server; the take registers as the message
 is dispatched, so the frame that follows on the same ordered connection
 always finds it. `options` is the axes that client's panel was showing, and
 `surface` names the page whose own capture began the take (`composer`,
-`review`, `files`, `doc`), so the record can hand the landed words back to
-that page and no other. A server-side take records from forge's machine, and
-its axes are the session's stored overrides.
+`review`, `files`, `doc`, `share`), so the record can hand the landed words
+back to that page and no other. A server-side take records from forge's
+machine, and its axes are the session's stored overrides.
 
 **A take belongs to the connection that started it.** Every `dictate_*`
 update about it - the start, the levels, the phases, the end - goes back to
@@ -978,9 +978,10 @@ naming the reason, and only the refused connection hears it. A connection
 that goes away drops its take rather than submitting it - its reader is
 gone, so nothing more is transcribed and nothing lands anywhere. What does
 land sits in the box that began the take while the page that holds it is
-there. On the review, files and document pages a re-hand for a box the page
-no longer holds is dropped rather than placed in another box; the composer
-is the exception, and re-places its own carried landing after a remount.
+there. On the review, files, document and share pages a re-hand for a box
+the page no longer holds is dropped rather than placed in another box; the
+composer is the exception, and re-places its own carried landing after a
+remount.
 Pressing enter sends the words as an ordinary prompt every view then sees.
 
 **`voice_mode {key, on, explicit}`** - a client turns voice on or off for the
