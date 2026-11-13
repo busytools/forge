@@ -730,6 +730,30 @@ describe('the canvas viewer', () => {
     expect(document.activeElement, 'the refocus is the fine pointer one').toBe(input);
   });
 
+  /// **A fine pointer's effect stops at the role.** Its branch returns
+  /// before the page's answer, so `editable: false` - the normal report
+  /// after a button click or an attach to a page with no field - must not
+  /// blur the field the mouse just took. Deleting that return lets the
+  /// coarse follow path run and the keys stop reaching the page.
+  it("keeps a fine pointer's field when the answer turns non-editable", async () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: query === '(pointer: fine)' }));
+    const { connection } = stubConnection();
+    const target = open(connection);
+    surface.viewer = 7;
+    surface.controller = 7;
+    surface.editable = true;
+    flushSync();
+    const input = target.querySelector<HTMLInputElement>('.surface-ime');
+    if (input === null) throw new Error('no keyboard field');
+    await vi.waitFor(() =>
+      expect(document.activeElement, 'the field takes the keyboard').toBe(input),
+    );
+
+    surface.editable = false;
+    flushSync();
+    expect(document.activeElement, 'a fine pointer follows the role, not the page').toBe(input);
+  });
+
   /// **An unknown answer leaves the field alone.** `null` is a v32 server
   /// that cannot report focus; the effect must neither raise nor drop the
   /// keyboard on it, or a phone on that pairing loses what the tap path
