@@ -428,6 +428,103 @@ fn header_value_is(headers: &HeaderMap, name: &str, value: &str) -> bool {
     headers.get(name).and_then(|v| v.to_str().ok()).is_some_and(|v| v.eq_ignore_ascii_case(value))
 }
 
+/// How deep a cause chain is walked before it is declared pathological.
+/// Real chains from reqwest + hyper are a handful of layers; a custom
+/// `source()` that never ends must not turn a log site into a hang.
+const MAX_ERROR_CHAIN_DEPTH: usize = 16;
+
+/// The whole cause chain of a failed send on one line, `top -> ... -> root`.
+///
+/// reqwest's own `Display` is the top layer only - "error sending request
+/// for url (...)" - and every actionable fact (DNS, connect, TLS, reset,
+/// EMFILE) sits in a `source()` below it, so the top alone cannot tell the
+/// failures apart.
+fn describe_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut parts = vec![error.to_string()];
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let text = cause.to_string();
+        if parts.len() >= MAX_ERROR_CHAIN_DEPTH || parts.last().is_some_and(|last| *last == text) {
+            break;
+        }
+        parts.push(text);
+        source = cause.source();
+    }
+    parts.join(" -> ")
+}
+
+/// The transport-level shape of a failed forward send.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForwardFailureKind {
+    Dns,
+    Connect,
+    Tls,
+    Reset,
+    Closed,
+    Timeout,
+    Fd,
+    Other,
+}
+
+impl ForwardFailureKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Dns => "dns",
+            Self::Connect => "connect",
+            Self::Tls => "tls",
+            Self::Reset => "reset",
+            Self::Closed => "closed",
+            Self::Timeout => "timeout",
+            Self::Fd => "fd",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Read the transport failure's kind out of the whole chain.
+///
+/// String matching rather than downcasts: the layer that carries the cause
+/// is a different crate's error type on every reqwest release, and its
+/// words are the only stable part. Precedence runs most specific first -
+/// EMFILE is a connect failure by position but its own problem by cause,
+/// and both "connection reset by peer" and "connection closed" contain
+/// "connect".
+fn classify_forward_failure(error: &(dyn std::error::Error + 'static)) -> ForwardFailureKind {
+    const NEEDLES: &[(ForwardFailureKind, &[&str])] = &[
+        (ForwardFailureKind::Fd, &["too many open files", "os error 24", "emfile"]),
+        (
+            ForwardFailureKind::Dns,
+            &[
+                "dns",
+                "lookup address",
+                "name or service not known",
+                "name resolution",
+                "nodename nor servname",
+            ],
+        ),
+        (ForwardFailureKind::Tls, &["tls", "ssl", "certificate"]),
+        (ForwardFailureKind::Timeout, &["timed out", "timeout"]),
+        (ForwardFailureKind::Reset, &["reset"]),
+        (ForwardFailureKind::Closed, &["closed", "broken pipe", "eof"]),
+        (ForwardFailureKind::Connect, &["connect", "refused", "unreachable", "network is down"]),
+    ];
+    let mut layers = Vec::new();
+    let mut source = Some(error);
+    while let Some(cause) = source {
+        layers.push(cause.to_string().to_ascii_lowercase());
+        if layers.len() >= MAX_ERROR_CHAIN_DEPTH {
+            break;
+        }
+        source = cause.source();
+    }
+    for (kind, needles) in NEEDLES {
+        if layers.iter().any(|layer| needles.iter().any(|needle| layer.contains(needle))) {
+            return *kind;
+        }
+    }
+    ForwardFailureKind::Other
+}
+
 #[async_trait::async_trait]
 impl RouteHandler for Gateway {
     async fn route(&self, request: Request<Bytes>) -> hyper::Response<StreamBody> {
@@ -510,9 +607,10 @@ impl RouteHandler for Gateway {
         outbound_headers.remove(CONTENT_LENGTH);
         outbound_headers.remove(hyper::header::TRANSFER_ENCODING);
 
+        let send_started = std::time::Instant::now();
         let upstream_response = match self
             .client
-            .post(url)
+            .post(url.as_str())
             .headers(outbound_headers)
             .header(hyper::header::AUTHORIZATION, format!("Bearer {credential}"))
             .body(spliced)
@@ -521,6 +619,26 @@ impl RouteHandler for Gateway {
         {
             Ok(response) => response,
             Err(error) => {
+                // The CLI's retry loop has no cause to act on: its frame
+                // carries this body and nothing else. The chain is the only
+                // place DNS, connect, TLS, reset and EMFILE differ, and this
+                // is forge's own problem rather than the session's, so it
+                // logs at warn with everything a reader needs to act.
+                let kind = classify_forward_failure(&error);
+                let chain = describe_error_chain(&error);
+                tracing::warn!(
+                    target: "forge_gateway::forward",
+                    event_name = "gateway_forward_failed",
+                    account = %account.0,
+                    org = %org,
+                    project = %project,
+                    session = %session,
+                    upstream = %url,
+                    kind = kind.as_str(),
+                    elapsed_ms = send_started.elapsed().as_millis(),
+                    error_chain = %chain,
+                    "the forward's upstream send failed; the 502 the CLI retries carries no cause",
+                );
                 return text_response(
                     StatusCode::BAD_GATEWAY,
                     format!("upstream request failed: {error}"),
@@ -2001,5 +2119,107 @@ mod tests {
             Some(crate::rotation::reset_instant(reset_at)),
             "the published end is the one the reader sleeps to",
         );
+    }
+
+    /// A synthetic error with a hand-picked cause, so the chain walker and
+    /// the classifier are exercised on shapes reqwest's own errors cannot
+    /// be built into.
+    #[derive(Debug)]
+    struct Chained {
+        message: &'static str,
+        source: Option<Box<Chained>>,
+    }
+
+    impl std::fmt::Display for Chained {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.message)
+        }
+    }
+
+    impl std::error::Error for Chained {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.source.as_ref().map(|source| source.as_ref() as &(dyn std::error::Error + 'static))
+        }
+    }
+
+    fn chained(top: &'static str, root: &'static str) -> Chained {
+        Chained { message: top, source: Some(Box::new(Chained { message: root, source: None })) }
+    }
+
+    /// reqwest's own `Display` is the top layer only; the cause a reader
+    /// needs (DNS, connect, TLS, reset, EMFILE) sits below it, so the whole
+    /// walk has to cross in one line.
+    #[test]
+    fn the_chain_describer_names_every_cause() {
+        let flat = Chained { message: "request failed", source: None };
+        assert_eq!(
+            describe_error_chain(&flat),
+            "request failed",
+            "a flat error is its own whole chain",
+        );
+
+        let nested = Chained {
+            message: "error sending request for url (https://openrouter.ai/api/v1/messages)",
+            source: Some(Box::new(Chained {
+                message: "client error (Connect)",
+                source: Some(Box::new(Chained {
+                    message: "tcp connect error: Connection refused",
+                    source: None,
+                })),
+            })),
+        };
+        assert_eq!(
+            describe_error_chain(&nested),
+            "error sending request for url (https://openrouter.ai/api/v1/messages) -> client \
+             error (Connect) -> tcp connect error: Connection refused",
+            "every layer crosses, top first and root last",
+        );
+    }
+
+    /// The kind has to come off the chain, not the top: every reqwest
+    /// transport failure reads the same at the top and differs only at its
+    /// root.
+    #[test]
+    fn the_classifier_reads_the_kind_off_the_chain() {
+        let cases = [
+            (
+                chained(
+                    "error sending request",
+                    "dns error: failed to lookup address information: nodename nor servname \
+                     provided, or not known",
+                ),
+                ForwardFailureKind::Dns,
+            ),
+            (
+                chained("error sending request", "tcp connect error: Connection refused"),
+                ForwardFailureKind::Connect,
+            ),
+            (chained("error sending request", "tls handshake eof"), ForwardFailureKind::Tls),
+            (
+                chained("error sending request", "connection reset by peer"),
+                ForwardFailureKind::Reset,
+            ),
+            (
+                chained("error sending request", "connection closed before message completed"),
+                ForwardFailureKind::Closed,
+            ),
+            (chained("error sending request", "operation timed out"), ForwardFailureKind::Timeout),
+            (
+                chained("error sending request", "Too many open files (os error 24)"),
+                ForwardFailureKind::Fd,
+            ),
+            (
+                Chained { message: "something else entirely", source: None },
+                ForwardFailureKind::Other,
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(
+                classify_forward_failure(&error),
+                expected,
+                "chain '{}' classifies as {expected:?}",
+                describe_error_chain(&error),
+            );
+        }
     }
 }
