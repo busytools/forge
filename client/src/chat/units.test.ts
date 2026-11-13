@@ -2033,11 +2033,15 @@ describe('one turn folded into the units a view draws', () => {
   });
 
   it('folds the turn hooks into the work as one row, where they fired', () => {
-    // The captured row verbatim, less the synthetic parent id the fixture
-    // carries (crates/forge-test-harness/baselines/sdk/2.1.280/real_session_sample.jsonl).
-    // The two names are the wire's own - the message renames the Rust fields on
-    // the way out - so a fold reading `actions`/`hook_infos` draws nothing on a
-    // real session, which is what the chip did until it read these.
+    // The capture is the SHAPE here, not the count: the fields and their names
+    // are taken from
+    // crates/forge-test-harness/baselines/sdk/2.1.280/real_session_sample.jsonl
+    // (less the synthetic parent id), where that row carries `hookCount: 1` and
+    // one info. The three hooks are a deliberate widening, so a fold that
+    // emitted one row per INFO draws extra rows and fails this test. The two
+    // names are the wire's own - the message renames the Rust fields on the way
+    // out - so a fold reading `actions`/`hook_infos` draws nothing on a real
+    // session.
     const units = fold([call('read', 0), stopHook(3), call('read', 1)]);
     expect(kinds(units), 'the hooks ride the turn work rather than a unit of their own').toEqual([
       'leaves',
