@@ -4485,6 +4485,9 @@ impl Profile {
         };
         let tab = current.or(boot)?;
         let (owner, open) = {
+            // **The profile's lock order is `editable_focus` < `tabs` <
+            // `dialogs`** (see `host_gone`): this site is the `tabs` <
+            // `dialogs` link.
             let tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
             // **An unadopted boot tab has no owner yet**: the seat making the
             // adopting call is the one it will belong to.
@@ -4880,6 +4883,8 @@ impl Profile {
         // **The lock comes first, and the generation is read under it**: a
         // check outside the lock could pass, the host could go and clear, and
         // this line would then write a dead host's answer after the clear.
+        // **This site fixes the first link of the profile's lock order,
+        // `editable_focus` < `tabs` < `dialogs`**: see `host_gone`.
         let changed = {
             let mut focus = self.editable_focus.lock().unwrap_or_else(PoisonError::into_inner);
             if generation != self.host_generation.load(Ordering::Acquire) {
@@ -5583,15 +5588,24 @@ impl Profile {
             // the new generation and is dropped. **A line between them would
             // reopen the race**, since a reader could then pass on the old
             // generation after the clear, so the bump and both maps stay
-            // under one lock in this order (#2763 review; `editable_focus`
-            // takes the same shape as `dialogs`).
+            // under one lock in this order (#2763 review).
+            //
+            // **The order is one total order across the profile's
+            // synchronous locks: `editable_focus` < `tabs` < `dialogs`.**
+            // `note_focus` takes `editable_focus` then `tabs` (its
+            // `was_closed` guard) and `dialog_refusal` takes `tabs` then
+            // `dialogs`, so this site must take `editable_focus` before
+            // `dialogs`: a dialog-held tab, a browser call on it and a dying
+            // host with a focus line queued otherwise put three threads each
+            // holding one and waiting on the next, and the profile wedges
+            // until forge restarts. **No test can pin a lock order**; this
+            // comment and review are the guard.
             //
             // **The test pins the reader half only, and states why**: a test
             // that stubbed these two steps would be testing the stub, and
-            // there is no clean way to stage a point between them. This order
-            // is kept by this comment and by review.
-            let mut dialogs = self.dialogs.lock().unwrap_or_else(PoisonError::into_inner);
+            // there is no clean way to stage a point between them.
             let mut focus = self.editable_focus.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut dialogs = self.dialogs.lock().unwrap_or_else(PoisonError::into_inner);
             self.host_generation.fetch_add(1, Ordering::AcqRel);
             dialogs.clear();
             focus.clear();
