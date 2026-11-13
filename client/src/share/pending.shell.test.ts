@@ -194,4 +194,35 @@ describe('the readiness announcement', () => {
       vi.useRealTimers();
     }
   });
+
+  /**
+   * **A failure after the cap is still said**: the race has already settled,
+   * so without the catch on the announcement's own promise the rejection
+   * would go unobserved in the webview.
+   */
+  it('warns when a late announcement failure arrives after the cap', async () => {
+    globals['__TAURI_INTERNALS__'] = {};
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      let fail: (why: unknown) => void = () => {};
+      invoke.mockImplementation(
+        () =>
+          new Promise((_resolve, reject) => {
+            fail = reject;
+          }),
+      );
+      const started = readyForShares();
+      await vi.advanceTimersByTimeAsync(2000);
+      await expect(started).resolves.toBeUndefined();
+      fail('the plugin is not there');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(warn).toHaveBeenCalledWith(
+        'the share intake was not told the page is listening',
+        'the plugin is not there',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

@@ -567,10 +567,17 @@ describe('the shell at launch', () => {
     });
     goTo({ name: 'share' }, { force: true });
 
+    // **The boot landing must not push a second entry**: the sheet is already
+    // on screen, and a second `/share` would make the first Back a no-op.
+    const pushed = vi.spyOn(history, 'pushState');
     forge.greet();
     await opening;
     await until(() => forge.homeReads() >= 1, 'the launch to take the connection');
     expect(location.pathname, 'the boot landing moved off the sheet').toBe('/share');
+    expect(
+      pushed.mock.calls.filter(([, , url]) => String(url).startsWith('/share')).length,
+      'the boot landing pushed a second /share entry',
+    ).toBe(0);
     expect(get(pendingShare), 'the boot landing cleared the share').not.toBeNull();
   });
 
