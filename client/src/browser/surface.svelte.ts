@@ -101,7 +101,7 @@ interface Surface {
    * **Whether the page's focused node is editable**, from the server's
    * `browser_view`. The phone's soft keyboard follows it - up while a text
    * field holds focus, down when one does not - so a tap on a button raises
-   * nothing. Always false on a fine pointer, where the keyboard is physical.
+   * nothing. Unused on a fine pointer, where the keyboard is physical.
    */
   editable: boolean;
   /**
@@ -733,9 +733,9 @@ function viewed(state: Record<string, unknown>): void {
   surface.tab = typeof state['tab'] === 'number' ? state['tab'] : surface.tab;
   surface.viewer = typeof state['viewer'] === 'number' ? state['viewer'] : null;
   surface.controller = typeof state['controller'] === 'number' ? state['controller'] : null;
-  // **The page's own answer, never a guess**, and an older server's frame
-  // carrying no field is the keyboard this client raised before it learned
-  // to follow focus: `false` keeps a phone from raising it on a tap.
+  // **The page's own answer, never a guess.** A frame without the field is a
+  // peer older than it, and reads as no editable focus; the protocol gate is
+  // what refuses that pairing.
   surface.editable = state['editable'] === true;
   // **The server resolves the name**, so a null request reads as the seat's
   // own profile.
