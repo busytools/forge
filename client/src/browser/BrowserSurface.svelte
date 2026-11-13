@@ -266,9 +266,12 @@
   function takeKeyboard(): void {
     imeEl?.focus({ preventScroll: true });
     // **The browser clears the focus its own gesture handling did not set**;
-    // the next frame puts it back (measured on the dev stack).
+    // the next frame puts it back (measured on the dev stack). **A drop that
+    // lands in between is the page's answer and outranks this frame**, so
+    // the refocus re-reads the editable state before it raises the keyboard
+    // again.
     const refocus = (): void => {
-      if (holdsControl() && document.activeElement !== imeEl) {
+      if (surface.editable !== false && holdsControl() && document.activeElement !== imeEl) {
         imeEl?.focus({ preventScroll: true });
       }
     };
@@ -363,7 +366,11 @@
         // the phone dismissed its keyboard, that tap is the only way back
         // to typing. A button, a link or empty page reports `false`, so this
         // is not the every-tap keyboard the defect was.
-        if (surface.editable) takeKeyboard();
+        //
+        // **`null` is a server older than the answer**, and the only way to
+        // type into its pages is this tap: the field has nothing to follow,
+        // so the old every-tap behaviour stands.
+        if (surface.editable !== false) takeKeyboard();
         // A tap is the page's click: one press and its release at the point.
         const { x, y } = point(event);
         const gesture: BrowserInputEvent = {
@@ -490,6 +497,10 @@
   // browser host's answer, never a guess at a canvas - and this raises the
   // field while it is true and drops it when it turns false, so a tap on a
   // button never opens the keyboard.
+  //
+  // **`null` is a server older than the answer**, which has no focus to
+  // follow: the tap path is the only way to type there, so this effect
+  // leaves the field alone rather than guessing either way.
   $effect(() => {
     if (!painting) return;
     if (!holdsControl()) {
@@ -500,8 +511,8 @@
       imeEl?.focus({ preventScroll: true });
       return;
     }
-    if (surface.editable) takeKeyboard();
-    else imeEl?.blur();
+    if (surface.editable === true) takeKeyboard();
+    else if (surface.editable === false) imeEl?.blur();
   });
 
   function wheel(event: WheelEvent): void {

@@ -311,10 +311,20 @@ pub mod wire;
 /// upload would end against an upload it never fed; the two halves move
 /// together. `baselines/socket/32/` is the record a v32 server emitted.
 ///
+/// **v33 is a bump for the browser keyboard's focus answer.** `browser_view`
+/// gains `editable`, and the same change removes the client's
+/// raise-the-keyboard-on-every-tap fallback for the clients that read it: a
+/// v33 client against a v32 server reads no field, and a phone that follows
+/// focus alone would never type into the in-app browser again. The client
+/// keeps the old every-tap behaviour when the field is absent, so the skewed
+/// pairing still works - but the greeting's skew notice is what names it, and
+/// the halves should not ship apart. `baselines/socket/32/` is the record a
+/// v32 server emitted.
+///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 32;
+pub const PROTOCOL_VERSION: u32 = 33;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, how long it may stay silent before it is reaped, and how long

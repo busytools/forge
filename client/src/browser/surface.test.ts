@@ -92,7 +92,7 @@ beforeEach(() => {
   surface.tabs = null;
   surface.attachedProfile = null;
   surface.nav = { can_back: false, can_forward: false };
-  surface.editable = false;
+  surface.editable = null;
 });
 
 /** The link's own push handlers, captured as the surface installs its steps. */
@@ -252,22 +252,38 @@ describe('the browser surface', () => {
   it('carries whether the page holds an editable focus, and clears it', async () => {
     const seat = { org: 'Busytools', project: 'forge', label: 'lead' };
     const push = await pushes();
+    // **A new open starts with no answer**: the previous surface's `true`
+    // must not survive into the attach that replaces it.
+    surface.editable = true;
     show.mockResolvedValue({ profile: 'hunt', tab: 2 });
     expect(await openSurface('hunt', seat, 2)).toBeNull();
+    expect(surface.editable, 'the previous answer does not survive the open').toBeNull();
 
     push.view({ id: 3, tab: 2, profile: 'hunt', editable: true });
     expect(surface.editable, 'the page says a text field has focus').toBe(true);
     push.view({ id: 3, tab: 2, profile: 'hunt', editable: false });
     expect(surface.editable, 'and says when focus leaves it').toBe(false);
 
+    // **A v32 server sends no answer at all.** Carried as `null`, not
+    // `false`: the tap path has to keep working for a server that cannot
+    // report focus, and `false` would leave the phone unable to type.
+    push.view({ id: 3, tab: 2, profile: 'hunt' });
+    expect(surface.editable, 'a frame without the field is an older server').toBeNull();
+
     push.view({ id: 3, tab: 2, profile: 'hunt', editable: true });
     show.mockResolvedValueOnce({ profile: 'hunt', tab: 3 });
     expect(await selectTab(3)).toBeNull();
-    expect(surface.editable, 'a move to another page starts with no keyboard').toBe(false);
+    expect(surface.editable, 'a move to another page starts with no answer').toBeNull();
 
     push.view({ id: 3, tab: 3, profile: 'hunt', editable: true });
+    // **A dead page keeps no raised keyboard**, whatever it said before it
+    // stopped.
+    push.failed({ id: 3, tab: 3, reason: 'the browser host exited' });
+    expect(surface.phase, 'the page stopped').toBe('failed');
+    expect(surface.editable, 'and the keyboard it held drops').toBe(false);
+
     await closeSurface();
-    expect(surface.editable, 'and a closed surface keeps none').toBe(false);
+    expect(surface.editable, 'and a closed surface keeps none').toBeNull();
   });
 
   /// **A pick out of a failed surface makes it live again.** Attaching used

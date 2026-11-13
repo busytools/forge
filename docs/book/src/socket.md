@@ -1140,13 +1140,16 @@ content_hash, threads, reviews}`** - in answer to `document_read`: the
   "truncated": bool}` for a read, `{"state": "failed", "why": ...}` for one
   that could not run. There is no `error` arm.
 - **`reply {reply_to, body}`** - in answer to a command that asked for one.
-- **`browser_view {id, profile, tab, controller, viewers, viewer}`** - one
-  tab's viewer state: the wire id the binary frames carry, the profile's
-  key, the tab's number, the controller's viewer id when one holds the role
-  on that tab, how many clients are attached, and **this connection's own
-  viewer id** - the number `controller` names when the bar is this client's
-  to draw a release on. Sent on attach and whenever either changes, so every
-  viewer draws the same truth about who is driving.
+- **`browser_view {id, profile, tab, controller, viewers, viewer, editable}`**
+  - one tab's viewer state: the wire id the binary frames carry, the
+  profile's key, the tab's number, the controller's viewer id when one holds
+  the role on that tab, how many clients are attached, **this connection's
+  own viewer id** - the number `controller` names when the bar is this
+  client's to draw a release on - and whether the page's focused node is
+  editable, which the phone's soft keyboard follows. Sent on attach and
+  whenever one of them changes, so every viewer draws the same truth about
+  who is driving. **A v32 server sends no `editable`**, and a client carries
+  its absence as an answer it does not have rather than as `false`.
 - **`browser_nav_state {id, tab, can_back, can_forward}`** - where the viewed
   tab's history sits: what the takeover bar's arrows may do. Sent on attach,
   in answer to a move, and whenever the PAGE navigates on its own - a link

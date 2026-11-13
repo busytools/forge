@@ -114,7 +114,7 @@ beforeEach(() => {
   surface.controller = null;
   surface.attachedProfile = null;
   surface.profile = null;
-  surface.editable = false;
+  surface.editable = null;
   perf.input.mockClear();
   perf.paint.mockClear();
   vi.mocked(keptFrame).mockReset();
@@ -687,9 +687,10 @@ describe('the canvas viewer', () => {
     });
   });
 
-  /// **A mouse that takes control can type at once**, and a finger's keyboard
-  /// stays a tap away: raising it on the role would interrupt the swipe that
-  /// came with it.
+  /// **A mouse that takes control can type at once.** A fine pointer's
+  /// keyboard is physical, so the field simply follows the role; a finger's
+  /// keyboard follows the page's focus instead, and the tests above pin
+  /// that.
   it('gives the keyboard to a fine pointer that takes control', async () => {
     vi.stubGlobal('matchMedia', (query: string) => ({ matches: query === '(pointer: fine)' }));
     const { connection } = stubConnection();
@@ -743,6 +744,8 @@ describe('the canvas viewer', () => {
   /// tap that focused no text field leaves the keyboard down.
   it('a tap on the page alone does not raise the keyboard', () => {
     coarse();
+    // A v33 server's answer: no editable node holds focus.
+    surface.editable = false;
     surface.viewer = 7;
     surface.controller = 7;
     const { connection, events } = stubConnection();
@@ -758,6 +761,47 @@ describe('the canvas viewer', () => {
       { kind: 'mouse', action: 'release' },
     ]);
     expect(document.activeElement, 'nothing editable focused, no keyboard').not.toBe(ime);
+  });
+
+  /// **A v32 server has no focus answer, so the tap is still the way in.**
+  /// The answer is carried as `null` there, and the old every-tap behaviour
+  /// is what keeps a phone on that pairing able to type at all.
+  it('raises the keyboard on a tap when the server sends no focus answer', () => {
+    coarse();
+    expect(surface.editable, 'nothing has answered yet').toBeNull();
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection } = stubConnection();
+    const target = open(connection);
+    const ime = target.querySelector('input.surface-ime');
+    const canvas = target.querySelector('canvas');
+    if (ime === null || canvas === null) throw new Error('no canvas or keyboard field');
+
+    canvas.dispatchEvent(finger('pointerdown', 10, 20));
+    canvas.dispatchEvent(finger('pointerup', 10, 20));
+    expect(document.activeElement, 'the old tap path still types').toBe(ime);
+  });
+
+  /// **A drop that lands inside the refocus frame wins.** `takeKeyboard`
+  /// schedules one more focus a frame later; if the page answered
+  /// non-editable in between, that frame must not raise the keyboard back.
+  it('does not refocus after a drop that lands in the same frame', async () => {
+    vi.stubGlobal('requestAnimationFrame', (fn: () => void) => setTimeout(fn, 0));
+    coarse();
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection } = stubConnection();
+    const target = open(connection);
+    const ime = target.querySelector<HTMLInputElement>('.surface-ime');
+    if (ime === null) throw new Error('no keyboard field');
+
+    surface.editable = true;
+    flushSync(); // the effect focuses, and schedules its refocus frame
+    surface.editable = false;
+    flushSync(); // the page's own answer blurs it
+    expect(document.activeElement, 'the drop blurred the field').not.toBe(ime);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(document.activeElement, 'the queued frame does not raise it back').not.toBe(ime);
   });
 
   /// **A tap on the field that already holds focus is the way back to the
@@ -1096,6 +1140,8 @@ describe('the canvas viewer', () => {
   /// a button, a link or empty page leaves the keyboard down.
   it('raises the keyboard on neither a swipe nor a bare tap', () => {
     coarse();
+    // A v33 server's answer: no editable node holds focus.
+    surface.editable = false;
     surface.viewer = 7;
     surface.controller = 7;
     const { connection } = stubConnection();
