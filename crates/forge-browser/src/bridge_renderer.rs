@@ -127,7 +127,7 @@ cef::wrap_render_process_handler! {
         ) {
             let Some(frame) = frame else { return };
             let editable = node.is_some_and(|node| node.is_editable() == 1);
-            send(&frame, FOCUS, &[if editable { "1" } else { "0" }.to_owned()]);
+            send(frame, FOCUS, &[if editable { "1" } else { "0" }.to_owned()]);
         }
 
         fn on_process_message_received(
