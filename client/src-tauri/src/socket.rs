@@ -982,7 +982,7 @@ fn variant_of(command: &Value) -> Option<&str> {
 }
 
 /// The bound this dispatch gets: the shipping bound, except a despawn, whose
-/// removal can outlast it, and an upload's end, which flushes and renames
+/// removal can outlast it, and an upload's end, which flushes and links
 /// every file of a share before it answers - a 200 MB share on a phone's
 /// storage is seconds, and a timeout there makes a retry start over and write
 /// the files again.
@@ -3993,7 +3993,7 @@ pub(crate) mod tests {
     }
 
     /// **An upload's end outlives the shipping bound.** The end flushes and
-    /// renames every file of a share before it answers, so a 200 MB share on a
+    /// links every file of a share before it answers, so a 200 MB share on a
     /// phone's storage takes seconds; a timeout there would make the sheet's
     /// retry start over and write the files again. Everything else keeps the
     /// shipping bound, and a despawn stays unbounded.

@@ -982,7 +982,7 @@ pub enum Command {
         upload_id: u64,
     },
     /// Finish an upload: every file is checked against its declared size, the
-    /// partials are renamed into place, and the reply carries the paths.
+    /// partials are linked into place, and the reply carries the paths.
     /// Answered by the transport, as [`Self::FileUploadBegin`] is.
     FileUploadEnd {
         key: SessionSlot,

@@ -96,7 +96,7 @@ fn inbox(root: &Path) -> PathBuf {
 }
 
 /// **A share lands whole over the socket**: begin answers an id and a path,
-/// the chunks write the bytes, and the end renames the partial into place.
+/// the chunks write the bytes, and the end links the partial into place.
 #[tokio::test]
 async fn a_share_lands_whole_over_the_socket() {
     let dir = tempfile::tempdir().expect("a temp dir");
