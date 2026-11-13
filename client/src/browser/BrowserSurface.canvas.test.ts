@@ -760,6 +760,41 @@ describe('the canvas viewer', () => {
     expect(document.activeElement, 'nothing editable focused, no keyboard').not.toBe(ime);
   });
 
+  /// **A tap on the field that already holds focus is the way back to the
+  /// keyboard.** The host reports focus *changes*, so the field a person
+  /// typed in and then dismissed the keyboard over reports nothing when it
+  /// is tapped again - and without this the phone could not type into it a
+  /// second time.
+  it('raises the keyboard again for a tap while a field already holds focus', async () => {
+    coarse();
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection } = stubConnection();
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    const ime = target.querySelector<HTMLInputElement>('.surface-ime');
+    if (canvas === null || ime === null) throw new Error('no canvas or keyboard field');
+
+    surface.editable = true;
+    flushSync();
+    await vi.waitFor(() => expect(document.activeElement).toBe(ime));
+    // **The follow path's refocus frame has landed.** Left queued, it fires
+    // after the dismiss below and refocuses by itself, which would pass this
+    // test with the tap path broken.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // The phone's own dismiss: the keyboard is gone and the page still
+    // holds the field, so no focus change is coming.
+    ime.blur();
+    expect(document.activeElement, 'the keyboard was dismissed').not.toBe(ime);
+
+    canvas.dispatchEvent(finger('pointerdown', 10, 20));
+    canvas.dispatchEvent(finger('pointerup', 10, 20));
+    await vi.waitFor(() =>
+      expect(document.activeElement, 'the same field takes the keyboard back').toBe(ime),
+    );
+  });
+
   /// **A non-editable focus drops the keyboard**: the person tapped away from
   /// the field, or the page cleared it.
   it('drops the keyboard when the page loses its editable focus', async () => {

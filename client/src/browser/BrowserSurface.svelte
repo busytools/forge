@@ -357,6 +357,13 @@
         // node is editable, and the field follows that - so tapping a
         // button, a link or empty page raises nothing.
         //
+        // **An editable node that already holds focus still needs this
+        // tap.** The host reports changes, so a field that never lost the
+        // page's focus reports nothing when it is tapped again - and after
+        // the phone dismissed its keyboard, that tap is the only way back
+        // to typing. A button, a link or empty page reports `false`, so this
+        // is not the every-tap keyboard the defect was.
+        if (surface.editable) takeKeyboard();
         // A tap is the page's click: one press and its release at the point.
         const { x, y } = point(event);
         const gesture: BrowserInputEvent = {
