@@ -349,7 +349,12 @@ their place to reopen.
 **A following column glides to the foot.** Every append - a row, a card,
 the reader's own message - lands the measured bottom over a short ease of
 about 160ms, a streamed line and a row that measures taller included, with
-the glide repeated until the content settles. A first pin, a switch's or a
+the glide repeated until the content settles. **The ease settles on the foot
+the column has when it arrives, not the one it set out for**: the composer
+under the column takes room for a prompt and gives it back when the prompt is
+answered, and a row can correct itself shorter, so a tween still running when
+the end moves lands on the end that is there - a following reader is never
+left reading as parked on their own last pixel. A first pin, a switch's or a
 return's, lands at once, and so does an entry's settle until the list has
 measured the rows already in the element. The circle's jump lands at once as
 well. `prefers-reduced-motion: reduce` makes every landing instant.
