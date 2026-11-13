@@ -2066,14 +2066,18 @@
                 feedbackEl = el;
               }}
             />
-            {#if dictation && dictate !== null}
-              <DictateControl
-                {dictate}
-                onpress={() => {
-                  onmic('feedback');
-                }}
-              />
-            {/if}
+          {/if}
+          <!-- **The mic stays beside the card.** A take started from this box
+               is finished by the control that started it, so the card is not
+               the whole row here either - the same rule the share sheet
+               follows (issue #2968). -->
+          {#if dictation && dictate !== null}
+            <DictateControl
+              {dictate}
+              onpress={() => {
+                onmic('feedback');
+              }}
+            />
           {/if}
           <button class="btn" disabled={feedback.trim() === ''} onclick={sendBack}>Send back</button
           >

@@ -85,7 +85,21 @@ function draw(
   return { dispatched };
 }
 
-const picker = () => document.querySelector<HTMLSelectElement>('.seat select');
+/** The seat picker's trigger, which names the chosen seat. */
+const picker = () => document.querySelector<HTMLButtonElement>('.pick');
+
+/** Choose a seat through the page-drawn sheet. */
+function pick(label: string): void {
+  picker()?.click();
+  flushSync();
+  const row = [...document.querySelectorAll<HTMLElement>('.opt')].find((option) =>
+    option.textContent?.includes(label),
+  );
+  if (row === undefined) throw new Error(`the sheet offers no seat named ${label}`);
+  row.click();
+  flushSync();
+}
+
 const sendButton = () =>
   [...document.querySelectorAll<HTMLButtonElement>('button')].find(
     (button) => button.textContent?.trim() === 'send',
@@ -100,13 +114,12 @@ const lines = () =>
 describe('the share sheet', () => {
   it('preselects the seat the reader was last on', () => {
     draw({ preselect: WORKER });
-    expect(picker()?.value).toBe([WORKER.org, WORKER.project, WORKER.label].join('\u0000'));
-    expect(picker()?.selectedOptions[0]?.textContent).toBe('proj \u{b7} w1');
+    expect(picker()?.textContent).toContain('proj \u{b7} w1');
   });
 
   it('opens on the first seat when there is no last one', () => {
     draw();
-    expect(picker()?.value).toBe([LEAD.org, LEAD.project, LEAD.label].join('\u0000'));
+    expect(picker()?.textContent).toContain('proj');
   });
 
   it('sends to the seat the picker was moved to', async () => {
@@ -114,11 +127,7 @@ describe('the share sheet', () => {
       Promise.resolve({ paths: ['/inbox/photo.jpg'] }),
     );
     const { dispatched } = draw({ upload });
-    const select = picker();
-    if (select === null) throw new Error('the seat picker is not on the page');
-    select.value = [WORKER.org, WORKER.project, WORKER.label].join('\u0000');
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-    flushSync();
+    pick('proj \u{b7} w1');
 
     sendButton()?.click();
     await vi.waitFor(() => {

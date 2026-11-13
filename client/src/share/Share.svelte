@@ -14,6 +14,8 @@
    */
   import { untrack } from 'svelte';
 
+  import Picker from '../components/Picker.svelte';
+  import type { PickOption } from '../components/picker';
   import {
     Dictation,
     openCapture,
@@ -93,6 +95,15 @@
   );
   const picked = $derived(seats.find((slot) => seatKey(slot) === pickedKey) ?? null);
   const seatId = $derived(picked === null ? '' : seatKey(picked));
+
+  /** Every seat the picker offers, named as the sheet names one. */
+  const seatOptions = $derived<PickOption[]>(
+    seats.map((slot) => ({
+      value: seatKey(slot),
+      label: seatLabel(slot),
+      note: slot.label === 'lead' ? 'lead' : 'worker',
+    })),
+  );
 
   let text = $state('');
   let phase = $state<'idle' | 'uploading' | 'failed' | 'done'>('idle');
@@ -191,6 +202,9 @@
       dictate.take === null &&
       !dictate.opening,
   );
+
+  /** A choice is frozen once an upload or a take is under way. */
+  const pickerLocked = $derived(phase !== 'idle' || dictate.take !== null);
 
   // A landed take puts its words at the end of the box, once - the same rule
   // every surface that dictates follows.
@@ -308,20 +322,18 @@
       </p>
     </section>
 
-    <label class="seat">
-      <span class="lab">to</span>
-      <select
-        value={pickedKey ?? ''}
-        disabled={phase !== 'idle' || dictate.take !== null}
-        onchange={(event) => {
-          pickedKey = event.currentTarget.value;
+    <div class="seatpick">
+      <Picker
+        label="to"
+        title="choose a seat"
+        options={seatOptions}
+        value={pickedKey}
+        disabled={pickerLocked}
+        onchange={(next: string) => {
+          pickedKey = next;
         }}
-      >
-        {#each seats as slot (seatKey(slot))}
-          <option value={seatKey(slot)}>{seatLabel(slot)}</option>
-        {/each}
-      </select>
-    </label>
+      />
+    </div>
 
     <div class="box">
       {#if dictate.take !== null || dictate.opening}
@@ -332,6 +344,18 @@
           oncancel={() => dictate.act('cancel')}
           spread
         />
+        <!-- **The card is not the whole row.** The mic that started the take
+             is the one that finishes it, and it stays beside the card the way
+             the composer's stays beside its own - the same orange live state,
+             drawn by `.share-page .acts.on .mic`. -->
+        <div class="acts" class:on={dictate.take !== null || dictate.opening}>
+          {#if offered}
+            <DictateControl {dictate} />
+          {/if}
+          <button class="chip add" type="button" disabled={!canSend} onclick={() => void send()}>
+            send
+          </button>
+        </div>
       {:else}
         <Field
           editor="share"
@@ -482,30 +506,9 @@
     color: var(--bad);
   }
 
-  .seat {
-    display: flex;
-    align-items: center;
-    gap: 10px;
+  /* The picker is the shared control; the page spaces it only. */
+  .seatpick {
     margin-bottom: 14px;
-  }
-
-  .seat .lab {
-    color: var(--dim);
-    font-family: var(--mono);
-    font-size: 12.5px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-  }
-
-  .seat select {
-    min-height: 44px;
-    min-width: 220px;
-    padding: 0 12px;
-    border: 1px solid var(--ctl);
-    border-radius: 9px;
-    background: var(--s2);
-    color: var(--text);
-    font: inherit;
   }
 
   .box {
@@ -602,8 +605,7 @@
   }
 
   @media (pointer: coarse) {
-    button.chip,
-    .seat select {
+    button.chip {
       min-height: 44px;
     }
   }
