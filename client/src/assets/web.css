@@ -3610,9 +3610,9 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   background: none; color: var(--accent); display: grid; place-items: center; cursor: pointer; }
 .sendb:hover { border-color: var(--accent); color: var(--hot); }
 .dock .qrow.on .mic { color: var(--hot); }
-/* **Every bar's row goes live with its take.** The share sheet's acts row and
-   the dock's send-back box both draw the same control beside the card, so both
-   wear the same orange (issue #2968). */
+/* The share sheet's acts row and the dock's send-back box both draw the mic
+   beside their take card, so both go live and wear the same orange while the
+   take runs (issue #2968). The takeover bar's row is not one of these. */
 .share-page .acts.on .mic,
 .dock .sendback.on .mic { color: var(--hot); }
 /* A refusal is a row of its own, in the tone of a thing gone wrong. */

@@ -278,6 +278,30 @@ describe('the picker', () => {
     expect(document.activeElement, 'Shift+Tab from the container goes to the last').toBe(cancel);
   });
 
+  /**
+   * **Focus outside the dialog is out of bounds.** A WebKit click on the grab
+   * bar or the title leaves the body holding focus; the next Tab must come
+   * back into the sheet rather than walking the page behind the veil.
+   */
+  it('pulls the keyboard back in when focus is outside the sheet', () => {
+    mountPicker();
+    press(trigger());
+    const dialog = sheet();
+    if (dialog === null) throw new Error('the sheet did not open');
+    const first = dialog.querySelector<HTMLElement>('.pickopt');
+    const cancel = dialog.querySelector<HTMLElement>('.cancel');
+    if (first === undefined || cancel === null) throw new Error('the sheet lost its stops');
+
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement, 'focus is outside the sheet').toBe(document.body);
+    pressTab(document.body);
+    expect(document.activeElement, 'Tab comes back to the first stop').toBe(first);
+
+    (document.activeElement as HTMLElement | null)?.blur();
+    pressTab(document.body, true);
+    expect(document.activeElement, 'Shift+Tab comes back to the last stop').toBe(cancel);
+  });
+
   /** An empty roster still puts the keyboard in the dialog, never behind it. */
   it('focuses the sheet itself when the roster is empty', () => {
     mountPicker({ options: [], value: null });
@@ -315,6 +339,32 @@ describe('the picker', () => {
       await until(() => sheet() === null, 'the double press to settle');
       expect(back, 'the second press is not another back').toHaveBeenCalledTimes(1);
       expect(marked(), 'and the entry is consumed once').toBe(false);
+    } finally {
+      back.mockRestore();
+    }
+  });
+
+  /**
+   * **A close already in flight owns the pop.** The entry still reads as
+   * current until the queued pop lands, so teardown must not issue a second
+   * back and traverse past the share page.
+   */
+  it('does not back twice when the page unmounts while a close settles', async () => {
+    mountPicker();
+    press(trigger());
+    const cancel = document.querySelector<HTMLButtonElement>('.cancel');
+    if (cancel === null) throw new Error('the sheet drew no cancel row');
+
+    const back = vi.spyOn(history, 'back');
+    try {
+      cancel.click();
+      flushSync();
+      if (app === null) throw new Error('nothing mounted');
+      await unmount(app);
+      app = null;
+      flushSync();
+      expect(back, 'teardown does not back a second time').toHaveBeenCalledTimes(1);
+      await until(() => !marked(), 'the queued pop to land');
     } finally {
       back.mockRestore();
     }

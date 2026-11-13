@@ -69,7 +69,6 @@
 
   function openSheet(): void {
     if (disabled || open || closing) return;
-    closing = false;
     history.pushState({ ...heldState(), [entry]: true }, '', location.href);
     open = true;
   }
@@ -101,7 +100,10 @@
   // open sheet; this component's popstate listener goes with it, and the entry
   // it took would swallow the next Back. Pop that entry on the way out.
   onDestroy(() => {
-    if (!open) return;
+    // **A close already in flight owns the pop.** The entry still reads as
+    // current until the queued pop lands, so a second back here would
+    // traverse past the share page.
+    if (!open || closing) return;
     if (heldState()[entry] === true) {
       history.back();
       return;
@@ -109,10 +111,12 @@
     // **Buried under a route push, the entry cannot be popped now** without
     // stepping off the page above it. Drop it on the pop that lands on it
     // instead - the same one-step-behind close the session rail uses - so a
-    // dead picker entry never eats a Back.
+    // dead picker entry never eats a Back. **The listener stays until that
+    // pop**: one that landed elsewhere has not reached the entry yet.
     const drop = (): void => {
+      if (heldState()[entry] !== true) return;
       removeEventListener('popstate', drop);
-      if (heldState()[entry] === true) history.back();
+      history.back();
     };
     addEventListener('popstate', drop);
   });
@@ -160,10 +164,14 @@
       const last = focusable[focusable.length - 1];
       if (first === undefined || last === undefined) return;
       const at = document.activeElement;
-      // The sheet's own container is the boundary: first for Shift+Tab and
-      // last for Tab, so the keyboard cannot leave the dialog either way.
-      const atStart = at === sheet || at === first;
-      const atEnd = at === sheet || at === last;
+      // **Anything outside the sheet is out of bounds**, the container
+      // included: a WebKit click on the grab bar drops focus to the body, and
+      // the next Tab must come back in rather than walk the page behind the
+      // veil. The container is also its first stop for Shift+Tab and its
+      // last for Tab, so the dialog holds the keyboard either way.
+      const outside = !(at instanceof Node) || !sheet.contains(at);
+      const atStart = outside || at === sheet || at === first;
+      const atEnd = outside || at === sheet || at === last;
       if (event.shiftKey && atStart) {
         event.preventDefault();
         last.focus();
