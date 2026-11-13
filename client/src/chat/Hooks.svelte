@@ -11,9 +11,11 @@
    * errors the CLI reported against the batch.
    *
    * **The batch is a tool row, not a line of its own.** It is work the turn
-   * ran, so it draws with the shape every call and hook row draws - the hook
-   * glyph, the title, the chevron - and takes its place in the turn's tool
-   * list where it fired rather than standing above the work (Ved, 2026-11-13).
+   * ran, so it takes the tool row's shape: a glyph, the title, the chevron.
+   * The glyph is the hook's, the one the other two hook rows wear; a call
+   * wears its family's instead. The row takes its place in the turn's rows
+   * where its frame arrived rather than standing above the work
+   * (Ved, 2026-11-13).
    *
    * The frame sends none of these when no hook fired, so a row on the page
    * always has something behind it.

@@ -321,7 +321,7 @@ pub enum Message {
         /// carries the command string + its duration in ms.
         hook_infos: Vec<StopHookInfo>,
         /// Errors the hook batch reported, empty when nothing failed.
-        /// Wire field is `hookErrors`; the client's hooks chip draws
+        /// Wire field is `hookErrors`; the client's hook batch row draws
         /// these against the batch rather than against one entry.
         hook_errors: Vec<String>,
         /// Whether any hook produced output. Wire field is
@@ -3163,7 +3163,7 @@ mod tests_message_extras {
     #[test]
     fn stop_hook_summary_errors_cross_the_crate() {
         // The CLI sends `hookErrors` on every stop_hook_summary row, empty
-        // when nothing failed, and the client's hooks chip draws them - so the
+        // when nothing failed, and the client's hook batch row draws them - so the
         // key has to survive decode and re-encode. This row is a real failing
         // one, the ralph-wiggum plugin's directory gone.
         let raw = json!({
