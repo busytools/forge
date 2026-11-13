@@ -84,13 +84,15 @@ class SharePluginTest {
     assertTrue(!SharePlugin.shouldAnswer(null, "a"))
   }
 
-  /// **A page reload is not a second share**: the launch number is unchanged,
-  /// so the token matches the one this process already answered.
+  /// **A page reload is not a second share**: two asks of the same launch
+  /// produce the same token, so the answered one suppresses the reload.
   @Test
   fun aPageReloadIsNotASecondShare() {
-    val token =
+    val asked = SharePlugin.shareToken(LAUNCH, Intent.ACTION_SEND, "image/png", listOf("content://a"))
+    val reload =
       SharePlugin.shareToken(LAUNCH, Intent.ACTION_SEND, "image/png", listOf("content://a"))
-    assertTrue(!SharePlugin.shouldAnswer(token, token))
+    assertEquals(asked, reload)
+    assertTrue(!SharePlugin.shouldAnswer(reload, asked))
   }
 
   /// **A new activity launch with the same files is a new share**: the launch

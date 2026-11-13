@@ -176,4 +176,22 @@ describe('the readiness announcement', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     await expect(readyForShares()).resolves.toBeUndefined();
   });
+
+  /**
+   * **A hung intake must not hold the launch**: the announcement gives up at
+   * its cap and the page opens anyway, leaving any warm share buffered for
+   * the next ask.
+   */
+  it('gives up on a hung announcement after its cap', async () => {
+    globals['__TAURI_INTERNALS__'] = {};
+    vi.useFakeTimers();
+    try {
+      invoke.mockImplementation(() => new Promise(() => {}));
+      const started = readyForShares();
+      await vi.advanceTimersByTimeAsync(2000);
+      await expect(started).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

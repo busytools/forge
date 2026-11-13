@@ -84,7 +84,7 @@ const mockRereadHome = vi.mocked(rereadHome);
  * every other command answers nothing - which is what a shell-less page would
  * have got anyway.
  */
-const { invokeMock, order, listenHold, readyHold } = vi.hoisted(() => ({
+const { invokeMock, order, listenHold, readyHold, listenFailure } = vi.hoisted(() => ({
   /** Every shell command and event listen, in the order the page made them. */
   order: [] as string[],
   invokeMock: vi.fn((_command: string, _args?: unknown): Promise<unknown> => Promise.resolve(null)),
@@ -99,6 +99,8 @@ const { invokeMock, order, listenHold, readyHold } = vi.hoisted(() => ({
   listenHold: { current: null as null | { promise: Promise<void>; release: () => void } },
   /** The same hold for the readiness announcement, so its await is pinned too. */
   readyHold: { current: null as null | { promise: Promise<void>; release: () => void } },
+  /** When set, the event listen refuses, as a shell with no listener does. */
+  listenFailure: { current: false },
 }));
 
 vi.mock('@tauri-apps/api/core', async (importOriginal) => {
@@ -129,6 +131,9 @@ vi.mock('@tauri-apps/api/event', async (importOriginal) => {
     ...real,
     listen: (...args: Parameters<typeof real.listen>) => {
       order.push(`listen:${args[0]}`);
+      if (listenFailure.current) {
+        return Promise.reject(new Error('the share listener could not be registered'));
+      }
       const registered = real.listen(...args);
       const hold = listenHold.current;
       return hold === null ? registered : hold.promise.then(() => registered);
@@ -567,6 +572,59 @@ describe('the shell at launch', () => {
     await until(() => forge.homeReads() >= 1, 'the launch to take the connection');
     expect(location.pathname, 'the boot landing moved off the sheet').toBe('/share');
     expect(get(pendingShare), 'the boot landing cleared the share').not.toBeNull();
+  });
+
+  /**
+   * **A route move while the boot is held does not clear the launch's share.**
+   * The clear is on the way OUT of the sheet, so a route the launch itself is
+   * still deciding must not drop files that have not been drawn yet.
+   */
+  it('keeps the launch share through a route move while the boot is held', async () => {
+    launchShareMock.mockImplementation(() => {
+      pendingShare.set({
+        files: [{ path: '/cache/share/1/a.jpg', name: 'a.jpg', size: 1, mime: null }],
+        error: null,
+        empty: false,
+      });
+      return Promise.resolve(true);
+    });
+    const forge = await stubForge({ mark: null, theme: null, font: null }, 'held');
+    forges.push(forge);
+    const opening = openAt('/', forge.address);
+    await until(() => get(pendingShare) !== null, 'the launch share');
+
+    // A notification (or any other move) lands while the socket is greeting.
+    goTo({ name: 'home' });
+    forge.greet();
+    await opening;
+    await until(() => forge.homeReads() >= 1, 'the launch to take the connection');
+    expect(get(pendingShare), 'a route move during boot cleared the launch share').not.toBeNull();
+  });
+
+  /**
+   * **A listener that could not be registered is not announced as ready.**
+   * The announcement flips the intake's latch, and flipping it with no
+   * listener is the swallow the latch exists to prevent.
+   */
+  it('does not announce readiness when the listener could not be registered', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: { transformCallback: () => 1, invoke: () => Promise.resolve(null) },
+      configurable: true,
+    });
+    Object.defineProperty(window, '__TAURI_EVENT_PLUGIN_INTERNALS__', {
+      value: { unregisterListener: () => undefined },
+      configurable: true,
+    });
+    listenFailure.current = true;
+    try {
+      await openAt('/', null);
+      expect(order, 'the page never tried to listen').toContain('listen:client://share');
+      expect(order, 'the intake was told the page is listening without a listener').not.toContain(
+        'client_share_ready',
+      );
+    } finally {
+      listenFailure.current = false;
+    }
   });
 
   /**
