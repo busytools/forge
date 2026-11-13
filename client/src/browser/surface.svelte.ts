@@ -98,6 +98,13 @@ interface Surface {
   /** The viewer that holds the controller role; `null` when nobody does. */
   controller: number | null;
   /**
+   * **Whether the page's focused node is editable**, from the server's
+   * `browser_view`. The phone's soft keyboard follows it - up while a text
+   * field holds focus, down when one does not - so a tap on a button raises
+   * nothing. Always false on a fine pointer, where the keyboard is physical.
+   */
+  editable: boolean;
+  /**
    * The dock's bar height, which the page area starts under.
    *
    * **The bar is DOM and the page is a native layer above the webview**, so
@@ -119,6 +126,7 @@ export const surface: Surface = $state({
   nav: { can_back: false, can_forward: false },
   viewer: null,
   controller: null,
+  editable: false,
   barHeight: 38,
 });
 
@@ -279,6 +287,9 @@ export async function openSurface(
     surface.attachedProfile = null;
     surface.viewer = null;
     surface.controller = null;
+    // **A new open starts with no editable focus**: the attach's own
+    // `browser_view` carries the page's current answer.
+    surface.editable = false;
     // The link's install is the normal one; this retries it after a listener
     // that was refused then, so a rejected fetch cannot cost the page its
     // subscriptions for life. Idempotent, and started before the show so the
@@ -348,6 +359,10 @@ export async function selectTab(tab: number | null): Promise<string | null> {
   openingFailure = null;
   settledFailure = null;
   picking = true;
+  // **A pick is a move to another page, and the phone's keyboard belongs to
+  // the page it was raised for.** The new attach's own answer arrives with
+  // the surface it lands on.
+  surface.editable = false;
   let answer: Awaited<ReturnType<typeof showBrowser>>;
   try {
     answer = await showBrowser(surface.profile, surface.seat, tab);
@@ -456,6 +471,7 @@ export async function closeSurface(
   surface.attachedProfile = null;
   surface.viewer = null;
   surface.controller = null;
+  surface.editable = false;
   popHistory();
   return null;
 }
@@ -614,6 +630,9 @@ function markFailed(why: string): void {
   surface.reason = why;
   // There is no page left to move: the arrows go back to disabled.
   surface.nav = { can_back: false, can_forward: false };
+  // **A page that stopped has no focused field**, so the keyboard it held
+  // drops with it.
+  surface.editable = false;
   // The shell's surface is gone with the host; the page's keeps the sentence
   // up until the person answers the hand-off.
   void hideBrowser(surface.profile);
@@ -714,6 +733,10 @@ function viewed(state: Record<string, unknown>): void {
   surface.tab = typeof state['tab'] === 'number' ? state['tab'] : surface.tab;
   surface.viewer = typeof state['viewer'] === 'number' ? state['viewer'] : null;
   surface.controller = typeof state['controller'] === 'number' ? state['controller'] : null;
+  // **The page's own answer, never a guess**, and an older server's frame
+  // carrying no field is the keyboard this client raised before it learned
+  // to follow focus: `false` keeps a phone from raising it on a tap.
+  surface.editable = state['editable'] === true;
   // **The server resolves the name**, so a null request reads as the seat's
   // own profile.
   if (typeof state['profile'] === 'string') surface.attachedProfile = state['profile'];

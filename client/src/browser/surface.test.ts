@@ -92,6 +92,7 @@ beforeEach(() => {
   surface.tabs = null;
   surface.attachedProfile = null;
   surface.nav = { can_back: false, can_forward: false };
+  surface.editable = false;
 });
 
 /** The link's own push handlers, captured as the surface installs its steps. */
@@ -241,6 +242,32 @@ describe('the browser surface', () => {
     expect(await selectTab(3)).toBeNull();
     expect(show).toHaveBeenLastCalledWith('hunt', seat, 3);
     expect(surface.tab).toBe(3);
+  });
+
+  /// **The keyboard's state is the server's push, never a guess.** The phone
+  /// raises its keyboard while the page's focused node is editable, so that
+  /// answer has to reach the store from `browser_view` - and clear with the
+  /// surface, or a page that held a text field leaves its keyboard up on the
+  /// page that replaced it.
+  it('carries whether the page holds an editable focus, and clears it', async () => {
+    const seat = { org: 'Busytools', project: 'forge', label: 'lead' };
+    const push = await pushes();
+    show.mockResolvedValue({ profile: 'hunt', tab: 2 });
+    expect(await openSurface('hunt', seat, 2)).toBeNull();
+
+    push.view({ id: 3, tab: 2, profile: 'hunt', editable: true });
+    expect(surface.editable, 'the page says a text field has focus').toBe(true);
+    push.view({ id: 3, tab: 2, profile: 'hunt', editable: false });
+    expect(surface.editable, 'and says when focus leaves it').toBe(false);
+
+    push.view({ id: 3, tab: 2, profile: 'hunt', editable: true });
+    show.mockResolvedValueOnce({ profile: 'hunt', tab: 3 });
+    expect(await selectTab(3)).toBeNull();
+    expect(surface.editable, 'a move to another page starts with no keyboard').toBe(false);
+
+    push.view({ id: 3, tab: 3, profile: 'hunt', editable: true });
+    await closeSurface();
+    expect(surface.editable, 'and a closed surface keeps none').toBe(false);
   });
 
   /// **A pick out of a failed surface makes it live again.** Attaching used

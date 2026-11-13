@@ -256,9 +256,12 @@
   let composedText: string | null = null;
 
   /**
-   * **The keyboard belongs to the page while this surface holds the role.**
-   * The canvas is not focusable, so a click on it moves focus to the body and
-   * every key is lost until the role changes - measured on the web.
+   * **The field takes the keyboard for the page.** The canvas is not
+   * focusable, so a click on it moves focus to the body and every key is
+   * lost until something else takes focus - measured on the web. On a fine
+   * pointer this is the click's own doing; on the phone it follows the
+   * page's focused node, which is why a tap that focuses no text field never
+   * calls it.
    */
   function takeKeyboard(): void {
     imeEl?.focus({ preventScroll: true });
@@ -349,11 +352,11 @@
       const tapped = !touch.moved;
       touch = null;
       if (tapped && holdsControl()) {
-        // **The tap is also how the keyboard gets the field**: a phone opens
-        // its keyboard on a real control's focus, and the canvas is not one.
-        // A swipe does not focus it - the keyboard's resize would cancel the
-        // swipe it interrupted.
-        takeKeyboard();
+        // **A tap is only a click.** Whether the keyboard rises is the
+        // page's answer, not the tap's: the host reports when the focused
+        // node is editable, and the field follows that - so tapping a
+        // button, a link or empty page raises nothing.
+        //
         // A tap is the page's click: one press and its release at the point.
         const { x, y } = point(event);
         const gesture: BrowserInputEvent = {
@@ -392,9 +395,9 @@
    * **The phone's keyboard types into the page.** The canvas has no fields of
    * its own, so a hidden field takes the keyboard and the IME; printable text
    * crosses whole, and the named keys (Enter, Backspace, Tab, the arrows)
-   * cross as key events. **A tap on the page focuses it**; taking control
-   * alone does not, so a swipe is never interrupted by the keyboard's
-   * resize, and a watcher never gets a keyboard over a page it cannot drive.
+   * cross as key events. **The page's own focus is what raises it** - an
+   * editable node, reported by the host - so a tap on a button never does,
+   * and a watcher never gets a keyboard over a page it cannot drive.
    */
   function keydown(event: KeyboardEvent): void {
     if (!holdsControl() || event.isComposing) return;
@@ -471,9 +474,15 @@
   }
 
   // **A watcher never keeps the keyboard.** A surface that loses control
-  // gives the field up. **A mouse that takes control can type at once**; a
-  // finger's keyboard stays a tap away, because raising it on the role would
-  // interrupt the swipe that came with it.
+  // gives the field up. **A mouse that takes control can type at once**: a
+  // fine pointer's keyboard is physical, so the field simply follows the
+  // role as it always did.
+  //
+  // **A finger's keyboard follows the page's focus instead.** The server's
+  // `browser_view` says whether the page's focused node is editable - the
+  // browser host's answer, never a guess at a canvas - and this raises the
+  // field while it is true and drops it when it turns false, so a tap on a
+  // button never opens the keyboard.
   $effect(() => {
     if (!painting) return;
     if (!holdsControl()) {
@@ -482,7 +491,10 @@
     }
     if (typeof matchMedia !== 'undefined' && matchMedia('(pointer: fine)').matches) {
       imeEl?.focus({ preventScroll: true });
+      return;
     }
+    if (surface.editable) takeKeyboard();
+    else imeEl?.blur();
   });
 
   function wheel(event: WheelEvent): void {
@@ -593,9 +605,10 @@
         onpointercancel={cancel}
         onwheel={wheel}
       ></canvas>
-      <!-- The phone's keyboard and IME: invisible, but a tap on the page
-           focuses it, so its keys and composed text reach the page through
-           the same input vocabulary the desktop overlay uses. -->
+      <!-- The phone's keyboard and IME: invisible, and focused while the
+           page's own focused node is editable, so its keys and composed text
+           reach the page through the same input vocabulary the desktop
+           overlay uses. -->
       <input
         class="surface-ime"
         bind:this={imeEl}
