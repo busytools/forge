@@ -131,7 +131,9 @@ vi.mock('@tauri-apps/api/event', async (importOriginal) => {
     ...real,
     listen: (...args: Parameters<typeof real.listen>) => {
       order.push(`listen:${args[0]}`);
-      if (listenFailure.current) {
+      // **Only the share listener fails**: the notification path has its own
+      // guard, and rejecting every listen would hand it an unhandled refusal.
+      if (listenFailure.current && args[0] === 'client://share') {
         return Promise.reject(new Error('the share listener could not be registered'));
       }
       const registered = real.listen(...args);
