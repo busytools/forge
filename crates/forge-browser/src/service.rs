@@ -5588,7 +5588,7 @@ impl Profile {
             // the new generation and is dropped. **A line between them would
             // reopen the race**, since a reader could then pass on the old
             // generation after the clear, so the bump and both maps stay
-            // under one lock in this order (#2763 review).
+            // under both locks in this order (#2763 review).
             //
             // **The order is one total order across the profile's
             // synchronous locks: `editable_focus` < `tabs` < `dialogs`.**

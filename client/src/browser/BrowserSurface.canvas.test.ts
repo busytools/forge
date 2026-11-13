@@ -809,9 +809,11 @@ describe('the canvas viewer', () => {
     );
   });
 
-  /// **A tap is only a click.** On the phone this used to raise the keyboard
-  /// whatever was under the finger; now the page's own focus decides, and a
-  /// tap that focused no text field leaves the keyboard down.
+  /// **With no field holding focus, a tap is only a click.** On the phone
+  /// this used to raise the keyboard whatever was under the finger; now the
+  /// page's answer decides, and a tap with no editable focus leaves the
+  /// keyboard down (a tap while a field still holds focus raises it for the
+  /// beat).
   it('a tap on the page alone does not raise the keyboard', () => {
     coarse();
     // A v33 server's answer: no editable node holds focus.
@@ -1206,8 +1208,9 @@ describe('the canvas viewer', () => {
 
   /// **Neither a swipe nor a bare tap raises the keyboard.** A swipe never
   /// did - its keyboard resize would cancel the swipe it interrupted - and a
-  /// tap no longer does either: the page's own focus is the only source, so
-  /// a button, a link or empty page leaves the keyboard down.
+  /// tap no longer does either with no field holding focus: the page's
+  /// answer decides, so a button, a link or empty page leaves the keyboard
+  /// down (a tap while a field still holds focus raises it for the beat).
   it('raises the keyboard on neither a swipe nor a bare tap', () => {
     coarse();
     // A v33 server's answer: no editable node holds focus.

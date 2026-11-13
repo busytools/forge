@@ -101,10 +101,10 @@ interface Surface {
    * **Whether the page's focused node is editable**, from the server's
    * `browser_view`. The phone's soft keyboard follows it - up while a text
    * field holds focus, down when one does not - so a tap on a button raises
-   * nothing. **`null` is a server older than the field**: nothing can follow
-   * focus, so the tap path keeps the old every-tap behaviour rather than
-   * leaving the phone unable to type. Unused on a fine pointer, where the
-   * keyboard is physical.
+   * nothing unless a field still holds focus. **`null` is a server older
+   * than the field**: nothing can follow focus, so the tap path keeps the
+   * old every-tap behaviour rather than leaving the phone unable to type.
+   * Unused on a fine pointer, where the keyboard is physical.
    */
   editable: boolean | null;
   /**

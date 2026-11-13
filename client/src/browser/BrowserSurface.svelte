@@ -363,7 +363,8 @@
         // **A tap is only a click.** Whether the keyboard rises is the
         // page's answer, not the tap's: the host reports when the focused
         // node is editable, and the field follows that - so tapping a
-        // button, a link or empty page raises nothing.
+        // button, a link or empty page raises nothing unless a field still
+        // holds focus (that tap's raise is the next paragraph).
         //
         // **An editable node that already holds focus still needs this
         // tap.** The host reports changes, so a field that never lost the
