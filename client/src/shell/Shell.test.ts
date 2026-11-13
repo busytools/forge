@@ -544,6 +544,32 @@ describe('the shell at launch', () => {
   });
 
   /**
+   * **A share that arrives while the app is still booting keeps the reader on
+   * the sheet.** The launch's own route is a guess; the warm share's listener
+   * has already moved the reader to `/share`, and the boot landing it
+   * afterwards must not move them off the file they just shared.
+   */
+  it('keeps a share that arrived while the launch was booting', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null }, 'held');
+    forges.push(forge);
+    const opening = openAt('/', forge.address);
+    await until(() => forge.live() >= 1, 'the launch to dial');
+
+    pendingShare.set({
+      files: [{ path: '/cache/share/1/a.jpg', name: 'a.jpg', size: 1, mime: null }],
+      error: null,
+      empty: false,
+    });
+    goTo({ name: 'share' }, { force: true });
+
+    forge.greet();
+    await opening;
+    await until(() => forge.homeReads() >= 1, 'the launch to take the connection');
+    expect(location.pathname, 'the boot landing moved off the sheet').toBe('/share');
+    expect(get(pendingShare), 'the boot landing cleared the share').not.toBeNull();
+  });
+
+  /**
    * **Leaving the sheet drops the share.** `pendingShare` is the sheet's
    * input, not a history: a delivered share left behind is reopened by the
    * next connect, at idle, with Send enabled - one tap duplicating the upload

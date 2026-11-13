@@ -204,8 +204,9 @@
       // sheet is where it goes. **A warm share that arrived while the boot
       // was in flight is a share too**: its listener already moved the
       // reader to `/share`, and the launch's own route guess must not move
-      // them off the file they just shared.
-      goTo({ name: 'share' });
+      // them off the file they just shared. A push onto the sheet the reader
+      // is already on would leave a second entry of the same page behind them.
+      if (get(currentRoute).name !== 'share') goTo({ name: 'share' });
     } else if (target !== null) {
       // **The target a tap named outranks the home the launch would land
       // on**: the person asked for it, and the launch's own route is only a

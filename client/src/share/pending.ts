@@ -158,11 +158,20 @@ export async function readyForShares(): Promise<void> {
     // two-line plugin command; if it has not answered in two seconds the
     // page launches anyway and every warm share waits in the intake's buffer
     // for the next ask, which is the safe side of a missing announcement.
-    const announced = invoke('client_share_ready');
-    const capped = new Promise<void>((resolve) => {
-      setTimeout(resolve, READY_CAP_MS);
+    // **A late failure is still said**: the race below has already settled by
+    // then, so the warning rides the promise rather than the await.
+    const announced = invoke('client_share_ready').catch((why: unknown) => {
+      console.warn('the share intake was not told the page is listening', why);
     });
-    await Promise.race([announced, capped]);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const capped = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, READY_CAP_MS);
+    });
+    try {
+      await Promise.race([announced, capped]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   } catch (why) {
     console.warn('the share intake was not told the page is listening', why);
   }

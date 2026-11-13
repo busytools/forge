@@ -72,6 +72,13 @@ pub(crate) struct Shared {
     pub error: Option<String>,
     #[serde(default)]
     pub empty: bool,
+    /// The delivery number a pushed answer carries, echoed by the page's
+    /// acknowledgement. **It must survive this struct**: the channel parses
+    /// the Kotlin answer into `Shared` and re-emits it, and a field dropped
+    /// here is a field the page never sees - which is how the acknowledgement
+    /// went silent once.
+    #[serde(default)]
+    pub seq: Option<u64>,
 }
 
 /// One upload's progress, as the sheet draws it.
@@ -508,10 +515,15 @@ pub fn init() -> tauri::plugin::TauriPlugin<tauri::Wry> {
             let handle = api.register_android_plugin("dev.vedhavyas.forge", "SharePlugin")?;
             let shown = app.clone();
             let channel = tauri::ipc::Channel::new(move |body| {
-                if let tauri::ipc::InvokeResponseBody::Json(payload) = body
-                    && let Ok(shared) = serde_json::from_str::<Shared>(&payload)
-                {
-                    push(&shown, &shared);
+                if let tauri::ipc::InvokeResponseBody::Json(payload) = body {
+                    match serde_json::from_str::<Shared>(&payload) {
+                        Ok(shared) => push(&shown, &shared),
+                        // **An answer the shell cannot read is said**: the
+                        // only other trace is the sheet that never opened.
+                        Err(why) => {
+                            tauri_plugin_log::log::warn!("a warm share could not be read: {why}");
+                        }
+                    }
                 }
                 Ok(())
             });
@@ -585,6 +597,24 @@ mod tests {
             Err("that upload is unknown or expired".to_owned()),
         );
         assert!(answer(None).is_err(), "no answer is not success");
+    }
+
+    /// **The delivery number survives the channel's own parse.** The shell
+    /// parses the Kotlin answer into `Shared` and re-emits it, so a field the
+    /// struct does not carry is a field the page never sees - and the page's
+    /// acknowledgement is built on this one.
+    #[test]
+    fn a_pushed_answer_keeps_its_delivery_number() {
+        let parsed: Shared =
+            serde_json::from_str(r#"{"files":[],"error":null,"empty":false,"seq":4}"#)
+                .expect("the Kotlin answer parses");
+        assert_eq!(parsed.seq, Some(4));
+        let emitted = serde_json::to_value(&parsed).expect("the answer serialises");
+        assert_eq!(
+            emitted["seq"],
+            json!(4),
+            "the page cannot acknowledge a delivery it never received the number of",
+        );
     }
 
     /// **A paths list is strings, or it is refused**: a member this side

@@ -90,8 +90,13 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
   init {
     // **A build that wrote the answered token to disk leaves it behind**, and
     // "this process only" has to hold on an upgrade too: one clear at startup
-    // finishes the move off SharedPreferences.
-    activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
+    // finishes the move off SharedPreferences. **Once per process**, so a
+    // later key under that name is not wiped by a plugin reconstructed for a
+    // re-created activity.
+    if (!prefsCleared) {
+      prefsCleared = true
+      activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
+    }
   }
 
   @Command
@@ -127,6 +132,14 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun ready(invoke: Invoke) {
     pageReady = true
+    // **Every share buffered before the announcement is pushed now, in arrival
+    // order**: the launch does not wait past its readiness cap, so the
+    // announcement can land after the page's ask already found an empty
+    // buffer - and a later share would otherwise wait for the next launch.
+    val waiting = synchronized(lock) { pending.toList() }
+    if (waiting.isNotEmpty()) {
+      activity.runOnUiThread { waiting.forEach { trigger("share", it.answer) } }
+    }
     invoke.resolve()
   }
 
@@ -136,19 +149,17 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
    * **The mark follows an acknowledgement, never a fire-and-forget push**: a
    * trigger into a webview with no listener (a page reload, a re-created
    * activity) is dropped silently by Tauri, so marking there would lose the
-   * share for good. The buffered answer stays until this arrives or the next
+   * share for good. The answer stays buffered until this arrives or the next
    * ask drains it.
    */
   @Command
   fun ack(invoke: Invoke) {
     val args = invoke.parseArgs(AckArgs::class.java)
     synchronized(lock) {
-      val token = pendingToken
-      if (pendingSeq == args.seq && token != null) {
-        markAnswered(token)
-        pending = null
-        pendingToken = null
-        pendingSeq = 0
+      val index = pending.indexOfFirst { it.seq == args.seq }
+      if (index >= 0) {
+        markAnswered(pending[index].token)
+        pending.removeAt(index)
       }
     }
     invoke.resolve()
@@ -325,28 +336,26 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
   /**
    * Hold one share's answer until the page takes it or acknowledges it.
    *
-   * **One slot is enough for a person's own pace**, and a replacement is said
-   * rather than swallowed: two shares inside one round trip would otherwise
-   * lose the first with no trace.
+   * **A small queue, because two shares can arrive inside one round trip**:
+   * a single slot would silently lose the first. Past the cap the oldest goes
+   * and the loss is logged - the buffer bounds memory for a page that never
+   * comes back, and a person's own pace never reaches it.
    */
   private fun buffer(answer: JSObject, token: String, seq: Long) {
     synchronized(lock) {
-      if (pending != null) Log.w(TAG, "a buffered share was replaced before the page took it")
-      pending = answer
-      pendingToken = token
-      pendingSeq = seq
+      pending.addLast(Buffered(answer, token, seq))
+      while (pending.size > MAX_BUFFERED) {
+        pending.removeFirst()
+        Log.w(TAG, "a buffered share was dropped before the page took it")
+      }
     }
   }
 
-  /** The buffered share, with the token a take marks delivered. */
+  /** The oldest buffered share, with the token a take marks delivered. */
   private fun takeBuffered(): Pair<JSObject, String>? {
     synchronized(lock) {
-      val answer = pending
-      val token = pendingToken
-      pending = null
-      pendingToken = null
-      pendingSeq = 0
-      return if (answer !== null && token !== null) Pair(answer, token) else null
+      val first = pending.removeFirstOrNull() ?: return null
+      return Pair(first.answer, first.token)
     }
   }
 
@@ -355,6 +364,9 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
 
     /** The preferences a build before the in-process token wrote to. */
     private const val PREFS = "forge-share"
+
+    /** Whether the pre-move preferences were cleared for this process. */
+    @Volatile private var prefsCleared = false
 
     /** How long a copied share is kept before the next one drops it. */
     private const val KEEP = 24L * 60 * 60 * 1000
@@ -388,12 +400,15 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
       return landed + copied
     }
 
-    /** The stashed share a page had no listener for, and its delivery token. */
-    private var pending: JSObject? = null
-    private var pendingToken: String? = null
+    /** One share held until the page takes or acknowledges it. */
+    private data class Buffered(val answer: JSObject, val token: String, val seq: Long)
 
-    /** The sequence number the buffered answer carries, which its ack names. */
-    private var pendingSeq: Long = 0
+    /** The shares a page has not taken yet, oldest first. */
+    private val pending = ArrayDeque<Buffered>()
+
+    /** How many buffered shares are held for a page that never asks. */
+    private const val MAX_BUFFERED = 8
+
     private var nextSeq: Long = 1
     private val lock = Any()
 
