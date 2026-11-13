@@ -60,12 +60,13 @@ cache paths, and the shell reads those bytes.
 into a running app arrives as an event and opens the sheet over whatever the reader was on. Both
 answer the same payload: a share that carried no file is drawn as its neutral line, one that could
 not be read is drawn with the intake's reason, and neither opens on an empty form. **A share that
-arrives before the page announces its listener is buffered** and answered by the page's first ask,
-and the answered share is remembered for this process only: a reload does not prompt twice, while
-a share that re-delivers a launch intent after a process restart prompts again rather than a
-genuine re-share being lost. **A second share while the sheet is open replaces it**: the sheet is
-keyed on the share, so it draws the new files' idle form rather than the last share's sent state,
-and the page is already on its route rather than a second history entry.
+arrives before the page announces its listener is buffered** and delivered when the announcement
+lands or the page asks, whichever comes first; the answered share is remembered for this process
+only, so a reload does not prompt twice while a share that re-delivers a launch intent after a
+process restart prompts again rather than a genuine re-share being lost. **A second share while
+the sheet is open replaces it**: the sheet is keyed on the share, so it draws the new files' idle
+form rather than the last share's sent state, and the page is already on its route rather than a
+second history entry.
 
 ## The states
 
