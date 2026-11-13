@@ -4865,22 +4865,35 @@ impl Profile {
 
     /// Record whether a tab's focused node is editable and tell its viewers.
     ///
-    /// **The host reports real transitions only**, but a line can still name a
-    /// tab this profile has lost: a watch is created on the first publish, so
-    /// a tombstone for a closed tab would keep a sender alive for the life of
-    /// the profile. A tab that is not there is a no-op.
-    fn note_focus(&self, tab: u16, editable: bool) {
-        {
-            let tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
-            if tabs.owner(tab).is_none() {
-                return;
-            }
-        }
+    /// **A line from a host that has gone is dropped**: a successor numbers
+    /// its tabs from one again, so a stale answer would raise the phone's
+    /// keyboard over the successor's blank page (#2763's order).
+    ///
+    /// **The answer is kept even before the tab is adopted.** A popup's or
+    /// the boot tab's page can hold a focused field before the pairing pass
+    /// has a row for it, and the host reports transitions only - dropping
+    /// that answer would leave the tab settled false for good. Only the
+    /// publish waits for the tab; `forget_tab` removes the entry when the
+    /// number goes, so the map stays bounded.
+    fn note_focus(&self, generation: u64, tab: u16, editable: bool) {
+        // **The lock comes first, and the generation is read under it**: a
+        // check outside the lock could pass, the host could go and clear, and
+        // this line would then write a dead host's answer after the clear.
         let changed = {
             let mut focus = self.editable_focus.lock().unwrap_or_else(PoisonError::into_inner);
+            if generation != self.host_generation.load(Ordering::Acquire) {
+                return;
+            }
             focus.insert(tab, editable) != Some(editable)
         };
-        if changed {
+        if !changed {
+            return;
+        }
+        let adopted = {
+            let tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            tabs.owner(tab).is_some()
+        };
+        if adopted {
             self.publish_view(tab);
         }
     }
@@ -5484,7 +5497,7 @@ impl Profile {
                             "the page's focused node changed"
                         );
                         if let Some(profile) = profile.upgrade() {
-                            profile.note_focus(tab, editable);
+                            profile.note_focus(generation, tab, editable);
                         }
                     }
                     HostEvent::Download { tab, name, path, size } => {
@@ -5556,20 +5569,24 @@ impl Profile {
         // **A birth or reconcile already in flight must not write its events
         // back** over the empty list this death just made.
         {
-            // **The bump and the clear are one step to a dialog line**, which
-            // reads the generation under this same lock: either it inserts
-            // before both (and is cleared) or it reads the new generation and
-            // is dropped. **A line between them would reopen the race**, since
-            // a reader could then pass on the old generation after the clear,
-            // so the two stay under one lock in this order (#2763 review).
+            // **The bump and the clears are one step to the lines that read
+            // these maps**, which read the generation under their own lock:
+            // either a line inserts before both (and is cleared) or it reads
+            // the new generation and is dropped. **A line between them would
+            // reopen the race**, since a reader could then pass on the old
+            // generation after the clear, so the bump and both maps stay
+            // under one lock in this order (#2763 review; `editable_focus`
+            // takes the same shape as `dialogs`).
             //
             // **The test pins the reader half only, and states why**: a test
             // that stubbed these two steps would be testing the stub, and
             // there is no clean way to stage a point between them. This order
             // is kept by this comment and by review.
             let mut dialogs = self.dialogs.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut focus = self.editable_focus.lock().unwrap_or_else(PoisonError::into_inner);
             self.host_generation.fetch_add(1, Ordering::AcqRel);
             dialogs.clear();
+            focus.clear();
         }
         // **The dead host's frames and history go with its numbers.** A kept
         // frame would paint the old page onto the successor's tab, and a kept
@@ -10484,6 +10501,21 @@ mod tests {
     /// wakes on the flip, a viewer that attaches afterwards reads the same
     /// answer, and a repeated answer wakes nobody - the keyboard follows
     /// changes, not the host's heartbeat.
+    ///
+    /// **An answer for a tab nobody has adopted is kept, not dropped**: a
+    /// popup's page can hold a focused field before the pairing pass has a
+    /// row for it, and the host reports transitions only. The first publish
+    /// after adoption carries it.
+    ///
+    /// **A line from a host that has gone is refused**: a successor numbers
+    /// its tabs from one again, so the old host's true is not its tab 1's.
+    ///
+    /// **This drives `note_focus`, not the host-event arm.** The arm's whole
+    /// part is destructuring one `HostEvent::Focus` into this call, and there
+    /// is no seam that feeds a line through the loop without a real host, so
+    /// that one line is covered by reading it, not by this test. The carrier
+    /// above it - CEF's callback to the host's line - is pinned live by
+    /// `forge-browser`'s `focus_live`.
     #[tokio::test]
     async fn a_focus_change_reaches_live_viewers_and_a_fresh_read() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -10493,31 +10525,57 @@ mod tests {
         service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
         service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
         let profile = service.find("TestOrg/default").await.expect("the profile");
+        let generation = profile.host_generation.load(Ordering::Acquire);
 
         let mut live = profile.view_for(1).subscribe();
-        profile.note_focus(1, true);
+        profile.note_focus(generation, 1, true);
         live.changed().await.expect("the live viewer is woken");
         assert!(live.borrow_and_update().editable, "the live viewer sees the flip");
 
         let fresh = profile.view_for(1).subscribe();
         assert!(fresh.borrow().editable, "a fresh read carries the same answer");
 
-        profile.note_focus(1, false);
+        profile.note_focus(generation, 1, false);
         live.changed().await.expect("the drop is a change too");
         assert!(!live.borrow_and_update().editable, "and the live viewer sees it");
-        profile.note_focus(1, false);
+        profile.note_focus(generation, 1, false);
         assert!(
             !live.has_changed().expect("the sender is alive"),
             "a repeated answer wakes nobody",
         );
 
-        // **A line for a closed tab mints nothing.** A watch created for one
-        // would keep a sender, and the tab's number, alive for the profile's
-        // life.
-        profile.note_focus(9, true);
+        // **An unadopted tab's answer waits for its row.** No watch is
+        // minted for a number the profile does not have, but the answer is
+        // kept, and the first publish carries it.
+        profile.note_focus(generation, 9, true);
         assert!(
             profile.views.lock().unwrap_or_else(PoisonError::into_inner).get(&9).is_none(),
             "no state is minted for a tab this profile does not have",
+        );
+        assert_eq!(
+            profile.editable_focus.lock().unwrap_or_else(PoisonError::into_inner).get(&9).copied(),
+            Some(true),
+            "but the answer is kept for the adoption",
+        );
+        profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .adopt(9, seat.clone(), "T9", "", "about:blank")
+            .expect("tab 9");
+        profile.publish_view(9);
+        assert!(
+            profile.view_for(9).subscribe().borrow().editable,
+            "the adopted tab carries the answer it had",
+        );
+
+        // **A dead host's answer is refused.** The successor starts at tab
+        // 1, so the old host's true must not raise its keyboard.
+        profile.host_gone();
+        profile.note_focus(generation, 1, true);
+        assert!(
+            profile.editable_focus.lock().unwrap_or_else(PoisonError::into_inner).get(&1).is_none(),
+            "an old generation's line wrote into the successor's map",
         );
     }
 
