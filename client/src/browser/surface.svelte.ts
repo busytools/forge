@@ -363,9 +363,10 @@ export async function selectTab(tab: number | null): Promise<string | null> {
   settledFailure = null;
   picking = true;
   // **A pick is a move to another page, and the phone's keyboard belongs to
-  // the page it was raised for.** The new attach's own answer arrives with
-  // the surface it lands on.
-  surface.editable = null;
+  // the page it was raised for.** `false` rather than `null` so the effect
+  // drops the old page's keyboard now; the new attach's own answer arrives
+  // with the surface it lands on.
+  surface.editable = false;
   let answer: Awaited<ReturnType<typeof showBrowser>>;
   try {
     answer = await showBrowser(surface.profile, surface.seat, tab);

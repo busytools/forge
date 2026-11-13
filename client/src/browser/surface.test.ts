@@ -273,7 +273,7 @@ describe('the browser surface', () => {
     push.view({ id: 3, tab: 2, profile: 'hunt', editable: true });
     show.mockResolvedValueOnce({ profile: 'hunt', tab: 3 });
     expect(await selectTab(3)).toBeNull();
-    expect(surface.editable, 'a move to another page starts with no answer').toBeNull();
+    expect(surface.editable, "a move drops the old page's keyboard").toBe(false);
 
     push.view({ id: 3, tab: 3, profile: 'hunt', editable: true });
     // **A dead page keeps no raised keyboard**, whatever it said before it

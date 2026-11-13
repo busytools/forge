@@ -705,6 +705,52 @@ describe('the canvas viewer', () => {
     );
   });
 
+  /// **A fine pointer's refocus must not follow the page's focus answer.**
+  /// On the web and the desktop a click on a button or empty page reports
+  /// `editable: false` - the normal state - and the queued refocus is what
+  /// keeps the keys on the page after the browser clears them. Gating it on
+  /// the page's answer left the field blurred and the page unable to type
+  /// until an editable field was clicked.
+  it('keeps a fine pointer on the page whatever the focus answer says', async () => {
+    vi.stubGlobal('requestAnimationFrame', (fn: () => void) => setTimeout(fn, 0));
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: query === '(pointer: fine)' }));
+    surface.editable = false;
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection } = stubConnection();
+    const target = open(connection);
+    const input = target.querySelector<HTMLInputElement>('.surface-ime');
+    const canvas = target.querySelector('canvas');
+    if (input === null || canvas === null) throw new Error('no canvas or keyboard field');
+
+    canvas.dispatchEvent(new MouseEvent('pointerdown', { clientX: 4, clientY: 6, bubbles: true }));
+    // The WebView's own handling of the press, which runs after the handler.
+    input.blur();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(document.activeElement, 'the refocus is the fine pointer one').toBe(input);
+  });
+
+  /// **An unknown answer leaves the field alone.** `null` is a v32 server
+  /// that cannot report focus; the effect must neither raise nor drop the
+  /// keyboard on it, or a phone on that pairing loses what the tap path
+  /// raised.
+  it('leaves the field alone when the focus answer is unknown', async () => {
+    coarse();
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection } = stubConnection();
+    const target = open(connection);
+    const ime = target.querySelector<HTMLInputElement>('.surface-ime');
+    if (ime === null) throw new Error('no keyboard field');
+
+    surface.editable = true;
+    flushSync();
+    await vi.waitFor(() => expect(document.activeElement).toBe(ime));
+    surface.editable = null;
+    flushSync();
+    expect(document.activeElement, 'an unknown answer neither raises nor drops').toBe(ime);
+  });
+
   /** A pointer event of the kind a finger sends. */
   function finger(type: string, x: number, y: number): Event {
     const event = new MouseEvent(type, { clientX: x, clientY: y, bubbles: true });

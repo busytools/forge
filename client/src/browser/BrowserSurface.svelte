@@ -266,12 +266,16 @@
   function takeKeyboard(): void {
     imeEl?.focus({ preventScroll: true });
     // **The browser clears the focus its own gesture handling did not set**;
-    // the next frame puts it back (measured on the dev stack). **A drop that
-    // lands in between is the page's answer and outranks this frame**, so
-    // the refocus re-reads the editable state before it raises the keyboard
-    // again.
+    // the next frame puts it back (measured on the dev stack). **On a coarse
+    // pointer a drop that lands in between is the page's answer and outranks
+    // this frame**, so the refocus re-reads the editable state there; a fine
+    // pointer's keyboard is physical and its refocus must run whatever the
+    // page's focus answer says - a click on a button reports `false`, which
+    // is the normal state on the web and the desktop.
+    const fine = typeof matchMedia !== 'undefined' && matchMedia('(pointer: fine)').matches;
     const refocus = (): void => {
-      if (surface.editable !== false && holdsControl() && document.activeElement !== imeEl) {
+      const follows = fine || surface.editable !== false;
+      if (follows && holdsControl() && document.activeElement !== imeEl) {
         imeEl?.focus({ preventScroll: true });
       }
     };
