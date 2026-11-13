@@ -3502,7 +3502,7 @@ mod tests {
             focus.inner.lock().unwrap_or_else(super::PoisonError::into_inner).emitted,
             "the held answer is what went out",
         );
-        assert!(focus.settle("main", false), "a change after the window owes the next line",);
+        assert!(focus.settle("main", false), "a change after the window owes the next line");
     }
 
     /// **Every view of one tab is handed that tab's render handler.** CEF
