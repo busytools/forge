@@ -1764,7 +1764,7 @@ checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
 name = "forge-agent"
-version = "1.2.7"
+version = "1.2.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1796,7 +1796,7 @@ dependencies = [
 
 [[package]]
 name = "forge-browser"
-version = "1.2.7"
+version = "1.2.8"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1828,7 +1828,7 @@ dependencies = [
 
 [[package]]
 name = "forge-capture"
-version = "1.2.7"
+version = "1.2.8"
 dependencies = [
  "cpal",
  "rubato",
@@ -1839,7 +1839,7 @@ dependencies = [
 
 [[package]]
 name = "forge-dictate"
-version = "1.2.7"
+version = "1.2.8"
 dependencies = [
  "dirs",
  "encoding_rs",
@@ -1865,7 +1865,7 @@ dependencies = [
 
 [[package]]
 name = "forge-gateway"
-version = "1.2.7"
+version = "1.2.8"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1883,11 +1883,12 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
 name = "forge-mcp"
-version = "1.2.7"
+version = "1.2.8"
 dependencies = [
  "base64 0.23.1",
  "futures",
@@ -1897,7 +1898,7 @@ dependencies = [
 
 [[package]]
 name = "forge-primitives"
-version = "1.2.7"
+version = "1.2.8"
 dependencies = [
  "base64 0.23.1",
  "serde",
@@ -1910,7 +1911,7 @@ dependencies = [
 
 [[package]]
 name = "forge-sdk"
-version = "1.2.7"
+version = "1.2.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1933,7 +1934,7 @@ dependencies = [
 
 [[package]]
 name = "forge-server"
-version = "1.2.7"
+version = "1.2.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1971,7 +1972,7 @@ dependencies = [
 
 [[package]]
 name = "forge-supervise"
-version = "1.2.7"
+version = "1.2.8"
 dependencies = [
  "tokio",
  "tokio-util",
@@ -1980,7 +1981,7 @@ dependencies = [
 
 [[package]]
 name = "forge-system-one"
-version = "1.2.7"
+version = "1.2.8"
 dependencies = [
  "axum",
  "reqwest",
@@ -1993,7 +1994,7 @@ dependencies = [
 
 [[package]]
 name = "forge-terminal"
-version = "1.2.7"
+version = "1.2.8"
 dependencies = [
  "alacritty_terminal",
  "parking_lot",
@@ -2007,7 +2008,7 @@ dependencies = [
 
 [[package]]
 name = "forge-test-harness"
-version = "1.2.7"
+version = "1.2.8"
 dependencies = [
  "async-trait",
  "forge-dictate",
@@ -2026,7 +2027,7 @@ dependencies = [
 
 [[package]]
 name = "forge-tools"
-version = "1.2.7"
+version = "1.2.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2064,7 +2065,7 @@ dependencies = [
 
 [[package]]
 name = "forge-tts"
-version = "1.2.7"
+version = "1.2.8"
 dependencies = [
  "hex",
  "kokoro-en",
@@ -2080,7 +2081,7 @@ dependencies = [
 
 [[package]]
 name = "forge-workspace"
-version = "1.2.7"
+version = "1.2.8"
 dependencies = [
  "anyhow",
  "async-trait",
