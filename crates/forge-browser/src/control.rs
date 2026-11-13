@@ -48,10 +48,11 @@ pub enum HostEvent {
     /// and by nothing until one of those.
     JsDialog { tab: u16, dialog: String, message: String, state: JsDialogState },
     /// **The tab's focused DOM node changed, and whether it is editable.**
-    /// The phone's soft keyboard follows this answer: it rises while an
-    /// editable node holds focus and drops when one does not, so a tap on a
-    /// button raises nothing. A tab's first answer is `editable: false`, and
-    /// the host reports only real transitions.
+    /// The phone's soft keyboard follows this answer: the client raises it
+    /// while an editable node holds focus and drops it when one does not.
+    /// **A tab with no line yet is read as `false`** by the service, and the
+    /// host reports only real transitions - so a page that autofocuses a
+    /// field reports `true` first.
     Focus { tab: u16, editable: bool },
     /// A download finished on the server: the tab it started from, the file's
     /// name, its path beside the profile, and how many bytes it holds.

@@ -259,9 +259,10 @@
    * **The field takes the keyboard for the page.** The canvas is not
    * focusable, so a click on it moves focus to the body and every key is
    * lost until something else takes focus - measured on the web. On a fine
-   * pointer this is the click's own doing; on the phone it follows the
-   * page's focused node, which is why a tap that focuses no text field never
-   * calls it.
+   * pointer this is the click's own doing; on the phone the effect raises it
+   * only for an editable answer, while a tap raises it whenever the page's
+   * last answer is editable - a field that still holds focus - which is why
+   * a button tap can raise it for the beat before the page's report drops it.
    */
   function takeKeyboard(): void {
     imeEl?.focus({ preventScroll: true });
@@ -413,9 +414,10 @@
    * **The phone's keyboard types into the page.** The canvas has no fields of
    * its own, so a hidden field takes the keyboard and the IME; printable text
    * crosses whole, and the named keys (Enter, Backspace, Tab, the arrows)
-   * cross as key events. **The page's own focus is what raises it** - an
-   * editable node, reported by the host - so a tap on a button never does,
-   * and a watcher never gets a keyboard over a page it cannot drive.
+   * cross as key events. **The page's own focus is what raises it on its
+   * own** - an editable node, reported by the host; a tap raises it while
+   * the page's last answer is editable, and a watcher never gets a keyboard
+   * over a page it cannot drive.
    */
   function keydown(event: KeyboardEvent): void {
     if (!holdsControl() || event.isComposing) return;
@@ -499,8 +501,10 @@
   // **A finger's keyboard follows the page's focus instead.** The server's
   // `browser_view` says whether the page's focused node is editable - the
   // browser host's answer, never a guess at a canvas - and this raises the
-  // field while it is true and drops it when it turns false, so a tap on a
-  // button never opens the keyboard.
+  // field while it is true and drops it when it turns false, so the effect
+  // never opens the keyboard for a non-editable node. **A tap is the other
+  // hand**: it raises the keyboard while a field's focus still stands, and
+  // the page's next report drops it (the button-tap beat).
   //
   // **`null` is a server older than the answer**, which has no focus to
   // follow: the tap path is the only way to type there, so this effect

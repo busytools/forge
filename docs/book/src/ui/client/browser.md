@@ -30,7 +30,7 @@ tap is a press and its release, and a one-finger swipe is a wheel. **The
 phone's keyboard follows the page's focus, not the tap alone**: the host reports
 the page's focused node and whether it is editable, and the keyboard rises
 while a text field holds focus and drops when one does not - so a tap on a
-button, a link or empty page raises nothing. **A second tap on a field that
+button, a link or empty page raises nothing on its own. **A second tap on a field that
 still holds focus is the way back after a dismiss**, because no focus change
 is coming to raise it again; **a tap that lands elsewhere while a field
 holds focus raises the keyboard for the beat the page's report takes to
