@@ -587,6 +587,20 @@ function clamped(at: number, total = TOTAL, height = VIEWPORT): void {
 }
 
 /**
+ * Put a hand heard under real timers behind the faked clock's own window.
+ *
+ * The column reads a hand with `performance.now()`, and faking time starts
+ * that clock at the fake clock's own origin - which can sit behind a stamp
+ * taken under real timers, so the hand would read as recent forever and a
+ * machine move after it as the reader's. Advancing past the stamp's own value
+ * makes it stale whatever the two origins are. Called with `performance.now()`
+ * read just before the clocks were faked.
+ */
+function expireHand(stampedAt: number): void {
+  vi.advanceTimersByTime(stampedAt + 1000);
+}
+
+/**
  * A column on a seat with two turns, left where the landing put it.
  *
  * The list only mounts once there is something to draw, so the page has to
@@ -1279,15 +1293,22 @@ describe('whether the column follows the newest end', () => {
     // follower: there is no returning hand behind it.
     const server = stub();
     await draw(server);
-    // The setup's own move carries no hand: a wheel's token would still be
-    // live when the machine move below arrives, and the case would read that
-    // move as the reader's - the very thing it is testing is absent.
-    readerAt(0, false);
+    readerAt(0);
     await settle();
     clear();
 
-    // No wheel, no touch, no key: the column itself moved.
-    list()?.scrolledTo(FOOT - 20, TOTAL, VIEWPORT);
+    // No wheel, no touch, no key: the column itself moved. **The hand that
+    // parked the reader has to be stale for that to be true** - the window is
+    // a time, not a one-shot - so the clock steps past it before the move.
+    const parked = performance.now();
+    vi.useFakeTimers();
+    try {
+      expireHand(parked);
+      list()?.scrolledTo(FOOT - 20, TOTAL, VIEWPORT);
+      flushSync();
+    } finally {
+      vi.useRealTimers();
+    }
     await settle();
 
     expect(following(server), 'a layout move does not re-arm the follow').toBe(false);
@@ -1711,7 +1732,8 @@ describe('whether the column follows the newest end', () => {
     document
       .querySelector('.conv')
       ?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' }));
-    readerAt(FOOT - 2);
+    // The key is the hand; the reader model adds none.
+    readerAt(FOOT - 2, false);
     server.frame();
     await settle();
 
@@ -1760,7 +1782,8 @@ describe('whether the column follows the newest end', () => {
     document
       .querySelector('.conv')
       ?.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', shiftKey: true }));
-    readerAt(FOOT - 2);
+    // The key is the hand; the reader model adds none.
+    readerAt(FOOT - 2, false);
     server.frame();
     await settle();
 
@@ -1777,7 +1800,8 @@ describe('whether the column follows the newest end', () => {
     clear();
 
     document.querySelector('.conv')?.dispatchEvent(new Event('touchstart'));
-    readerAt(FOOT - 2);
+    // The touch is the hand; the reader model adds none.
+    readerAt(FOOT - 2, false);
     server.frame();
     await settle();
 
@@ -1792,7 +1816,8 @@ describe('whether the column follows the newest end', () => {
     clear();
 
     document.querySelector('.conv')?.dispatchEvent(new Event('touchmove'));
-    readerAt(FOOT - 2);
+    // The moving touch is the hand; the reader model adds none.
+    readerAt(FOOT - 2, false);
     server.frame();
     await settle();
 
@@ -3265,15 +3290,23 @@ describe('whether the column follows the newest end', () => {
     // re-arm here, and the reader is carried back by whatever arrived.
     const server = stub();
     await draw(server);
-    // No hand on the park: a live token would make the clamp event below read
-    // as the reader's and re-arm the follow this case says must stay off.
-    readerAt(620, false);
+    readerAt(620);
     await settle();
     clear();
 
-    const shorter = TOTAL - 200;
-    setElement(shorter, VIEWPORT);
-    list()?.scrolledTo(shorter - VIEWPORT, shorter, VIEWPORT);
+    // **The clamping event is the layout's, which means the hand that parked
+    // them is stale**: its window closes before a correction lands.
+    const parked = performance.now();
+    vi.useFakeTimers();
+    try {
+      expireHand(parked);
+      const shorter = TOTAL - 200;
+      setElement(shorter, VIEWPORT);
+      list()?.scrolledTo(shorter - VIEWPORT, shorter, VIEWPORT);
+      flushSync();
+    } finally {
+      vi.useRealTimers();
+    }
     await settle();
     clear();
 
@@ -3292,15 +3325,22 @@ describe('whether the column follows the newest end', () => {
     // frame pins them back to a foot they never asked for.
     const server = stub();
     await draw(server);
-    // No hand on the park: a live token would make the clamp's landing at the
-    // foot the reader's and re-arm the follow this case keeps off.
-    readerAt(FOOT - 60, false);
+    readerAt(FOOT - 60);
     await settle();
     clear();
 
+    // **The clamp is the column's, so the hand that parked them is stale.**
     const roomier = VIEWPORT + 100;
-    setElement(TOTAL, roomier);
-    list()?.scrolledTo(TOTAL - roomier, TOTAL, roomier);
+    const parked = performance.now();
+    vi.useFakeTimers();
+    try {
+      expireHand(parked);
+      setElement(TOTAL, roomier);
+      list()?.scrolledTo(TOTAL - roomier, TOTAL, roomier);
+      flushSync();
+    } finally {
+      vi.useRealTimers();
+    }
     await settle();
     clear();
 
@@ -3378,12 +3418,16 @@ describe('whether the column follows the newest end', () => {
     // later room-gain clamp for the life of the seat re-arms.
     const server = stub();
     await draw(server);
-    readerAt(FOOT - 100, false);
+    readerAt(FOOT - 100);
     await settle();
     clear();
 
+    const parked = performance.now();
     vi.useFakeTimers();
     try {
+      // The hand that parked the reader is long past its window before the
+      // aimed gesture below is the only hand left.
+      expireHand(parked);
       document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 }));
       vi.advanceTimersByTime(300);
 
