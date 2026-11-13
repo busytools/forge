@@ -124,8 +124,10 @@ describe('the salvage copies', () => {
     // strokes it with. 240 after the settings page's drawing landed, which
     // declares the palette's eighteen like the home does. 265 after the
     // terminal surface's drawing landed, which declares twenty-five: the
-    // palette's seventeen, plus the eight ANSI colours its screen draws.
-    expect(compared, 'the sweep no longer reaches the same tokens').toBe(265);
+    // palette's seventeen, plus the eight ANSI colours its screen draws. 282
+    // after the share sheet's drawing landed, which declares the palette's
+    // seventeen.
+    expect(compared, 'the sweep no longer reaches the same tokens').toBe(282);
   });
 
   /**
@@ -210,8 +212,9 @@ describe('the salvage copies', () => {
     // unreferenced home drawings having gone with theirs. 28, the files
     // page's drawing declaring both. 30, the browser surface's drawing
     // declaring both. 32, the settings page's drawing declaring both. 34,
-    // the terminal surface's drawing declaring both.
-    expect(compared, 'the sweep no longer reaches every stack').toBe(34);
+    // the terminal surface's drawing declaring both. 36, the share sheet's
+    // drawing declaring both.
+    expect(compared, 'the sweep no longer reaches every stack').toBe(36);
   });
 });
 

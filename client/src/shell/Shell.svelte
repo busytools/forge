@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte';
+  import { get } from 'svelte/store';
 
   import { observeAttention, pageWatched } from '../attention';
   import Sprite from '../components/Sprite.svelte';
@@ -25,6 +26,7 @@
     watchNotificationClicks,
   } from '../notify';
   import { rememberBoot } from '../composer/landing';
+  import { launchShare, pendingShare, readyForShares, watchShares } from '../share/pending';
   import { noteSeatClick, setPerfSocket } from '../perf';
   import { skewMessage, subjectKey, type Skew } from '../protocol';
   import { currentRoute, goTo, hrefFor, parseRoute, shownSeat, type Route } from '../routes';
@@ -58,6 +60,18 @@
   // would drop the fields an address cannot carry.
   currentRoute.set(onDoor ? { name: 'connect' } : opened);
   const route = $derived($currentRoute);
+  // **A share is delivered once**: leaving the sheet drops it, so a later
+  // connect (or any other move back to `/share`) cannot resurrect a share
+  // the reader is done with. The clear is on the way OUT, not on every route
+  // that is not `share` - the launch sets the store before `boot()` finishes,
+  // and a notification or a connect in that window moves the route while the
+  // shared files are still the ones about to be drawn.
+  let shown: Route['name'] | null = null;
+  $effect(() => {
+    const name = $currentRoute.name;
+    if (shown === 'share' && name !== 'share') pendingShare.set(null);
+    shown = name;
+  });
   let settings = $state<ClientSettings>(DEFAULT_SETTINGS);
   let address = $state(named ?? remembered ?? DEFAULT_ADDRESS);
   let home = $state<HomeRead>({ wire: null, refused: null, failed: null, report: null });
@@ -66,6 +80,8 @@
   let connection = $state.raw<Connection | null>(null);
   /** The terminal link's listeners for the connection it was made for. */
   let stopTerminal: (() => void) | null = null;
+  /** The share listener, once it is registered. */
+  let stopShares: (() => void) | null = null;
   let connectionStatus = $state<ConnectionStatus>('connecting');
   /**
    * What the live connection's greeting said this client's protocol does not
@@ -97,7 +113,35 @@
     if (onDoor && remembered === null && named === null) {
       history.replaceState(null, '', hrefFor({ name: 'connect' }));
     }
-    void open();
+    // **The share listener goes up before the launch's share is asked for.**
+    // A warm share can arrive while `client_share_take` is in flight, and its
+    // only door into the page is this listener; asking first would leave the
+    // window this closes open. A listener that cannot be registered is said
+    // rather than swallowed, and does not hold the launch.
+    void (async () => {
+      let stop = () => {};
+      let listening = false;
+      try {
+        stop = await watchShares();
+        listening = true;
+      } catch (why) {
+        console.warn('the share listener could not be registered', why);
+      }
+      if (destroyed) {
+        stop();
+        return;
+      }
+      stopShares = stop;
+      // **The page's listener is what a warm share is pushed to, so it is
+      // announced before the launch's share is asked for**: the Kotlin half
+      // buffers a share until this arrives rather than emitting it into a
+      // webview that has no listener yet. **Only a listener that is up may be
+      // announced** - announcing without one arms the very swallow this
+      // exists to prevent, and a listener that failed leaves the share
+      // buffered for the next ask instead.
+      if (listening) await readyForShares();
+      await open();
+    })();
     // Once per launch, whatever route it opened on - the notice draws wherever
     // the home does, and a check the reader has to revisit the home for is a
     // check that is not made.
@@ -112,6 +156,7 @@
     destroyed = true;
     uninstallBrowser();
     stopTerminal?.();
+    stopShares?.();
     setPerfSocket(null);
     connection?.close();
   });
@@ -129,7 +174,11 @@
     // page existed**, so it is asked for rather than waited on as an event.
     // A launch that cannot read it is still a launch: the ask answers `None`
     // for that, and for every launch no tap opened.
-    const target = await launchSeat();
+    //
+    // **A share that launched the app is asked for the same way**, and it
+    // outranks the tap: the person shared a file into forge, which is the
+    // page they are waiting for.
+    const [target, share] = await Promise.all([launchSeat(), launchShare()]);
     // What a connection taken while this is in flight is measured against.
     const held = connection;
     // The parameter first, then the memory: both are this launch's target.
@@ -150,7 +199,15 @@
     }
     failure = launched.failure;
     if (launched.connected) take(launched.connected);
-    if (target !== null) {
+    if (share || get(pendingShare) !== null) {
+      // **A share outranks both**: the person handed forge a file and the
+      // sheet is where it goes. **A warm share that arrived while the boot
+      // was in flight is a share too**: its listener already moved the
+      // reader to `/share`, and the launch's own route guess must not move
+      // them off the file they just shared. A push onto the sheet the reader
+      // is already on would leave a second entry of the same page behind them.
+      if (get(currentRoute).name !== 'share') goTo({ name: 'share' });
+    } else if (target !== null) {
       // **The target a tap named outranks the home the launch would land
       // on**: the person asked for it, and the launch's own route is only a
       // guess. A wait opens its board, an ask its seat.
@@ -482,6 +539,16 @@
 
   function connect(connected: Extract<Attempt, { ok: true }>) {
     if (!take(connected)) return;
+    // **A share outranks the home here too.** A cold-start share lands on
+    // `/share`, which draws the door when the launch could not connect; the
+    // person's connect is what makes the sheet drawable, and moving them home
+    // would hide the files they shared behind a Back.
+    if (get(pendingShare) !== null) {
+      // The door was drawn on `/share` itself, so a push would put a second
+      // entry of the same page behind the reader.
+      if (get(currentRoute).name !== 'share') go({ name: 'share' });
+      return;
+    }
     go({ name: 'home' });
   }
 

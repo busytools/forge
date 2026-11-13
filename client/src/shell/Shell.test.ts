@@ -2,16 +2,19 @@
 import { createRequire } from 'node:module';
 
 import { flushSync, mount, unmount } from 'svelte';
+import { get } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AddressInfo, RawData, WebSocket } from 'ws';
 
 import { DEFAULT_ADDRESS } from '../connect/attempt';
 import { rememberedAddress, rememberAddress, serverParameter } from '../connect/remembered';
 import { homeWire } from '../dev/fixture.data';
+import { goTo } from '../routes';
 import { rereadHome } from '../home/live';
 import { noteSeatClick } from '../perf';
 import { PROTOCOL_VERSION, subjectKey, type Subject } from '../protocol';
 import { closeSeat, closingSeat } from '../session/close';
+import { pendingShare } from '../share/pending';
 import { MAX_RETRY_MS, RETRY_MS, type Connection } from '../socket';
 import { fontStack } from '../theme';
 import { watchUpdate } from '../update/state';
@@ -53,6 +56,25 @@ vi.mock('../home/live', async (importOriginal) => {
   return { ...real, rereadHome: vi.fn() };
 });
 
+/**
+ * The launch's share, wrapped so a test can name the share the launch came
+ * from without the shell's Android half behind it.
+ *
+ * **The real one is the default**, so every other case keeps the launch it
+ * had; the substitution is for the cases that need a share on the desktop
+ * transport the stub forge speaks.
+ */
+const { launchShareMock, realLaunchShare } = vi.hoisted(() => ({
+  launchShareMock: vi.fn<() => Promise<boolean>>(() => Promise.resolve(false)),
+  realLaunchShare: { current: null as null | (() => Promise<boolean>) },
+}));
+
+vi.mock('../share/pending', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../share/pending')>();
+  realLaunchShare.current = real.launchShare;
+  return { ...real, launchShare: launchShareMock };
+});
+
 const mockRereadHome = vi.mocked(rereadHome);
 
 /**
@@ -62,13 +84,63 @@ const mockRereadHome = vi.mocked(rereadHome);
  * every other command answers nothing - which is what a shell-less page would
  * have got anyway.
  */
-const { invokeMock } = vi.hoisted(() => ({
+const { invokeMock, order, listenHold, readyHold, listenFailure } = vi.hoisted(() => ({
+  /** Every shell command and event listen, in the order the page made them. */
+  order: [] as string[],
   invokeMock: vi.fn((_command: string, _args?: unknown): Promise<unknown> => Promise.resolve(null)),
+  /**
+   * When set, the event listen resolves only after the test releases it.
+   *
+   * **This is what pins the `await`**: with the mock resolving at its own
+   * pace, the launch's ordering passes even when the shell does not await
+   * the listener, because both mocks resolve in import order. A held listen
+   * makes the launch wait where the real event chunk does.
+   */
+  listenHold: { current: null as null | { promise: Promise<void>; release: () => void } },
+  /** The same hold for the readiness announcement, so its await is pinned too. */
+  readyHold: { current: null as null | { promise: Promise<void>; release: () => void } },
+  /** When set, the event listen refuses, as a shell with no listener does. */
+  listenFailure: { current: false },
 }));
 
 vi.mock('@tauri-apps/api/core', async (importOriginal) => {
   const real = await importOriginal<typeof import('@tauri-apps/api/core')>();
-  return { ...real, invoke: invokeMock };
+  return {
+    ...real,
+    invoke: (...args: [string, unknown?]) => {
+      order.push(args[0]);
+      // **The arity is kept**: a one-argument command has to stay one
+      // argument for the assertions that name its call.
+      const answered = invokeMock(...args);
+      const hold = args[0] === 'client_share_ready' ? readyHold.current : null;
+      return hold === null ? answered : hold.promise.then(() => answered);
+    },
+  };
+});
+
+/**
+ * The event API, recorded in the same order.
+ *
+ * **The package's own `invoke` bypasses the mock above** - it imports its
+ * sibling `./core.js` by relative path - so the listen call is recorded here
+ * where a test can see it, before the real listener is registered.
+ */
+vi.mock('@tauri-apps/api/event', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@tauri-apps/api/event')>();
+  return {
+    ...real,
+    listen: (...args: Parameters<typeof real.listen>) => {
+      order.push(`listen:${args[0]}`);
+      // **Only the share listener fails**: the notification path has its own
+      // guard, and rejecting every listen would hand it an unhandled refusal.
+      if (listenFailure.current && args[0] === 'client://share') {
+        return Promise.reject(new Error('the share listener could not be registered'));
+      }
+      const registered = real.listen(...args);
+      const hold = listenHold.current;
+      return hold === null ? registered : hold.promise.then(() => registered);
+    },
+  };
 });
 
 /**
@@ -377,10 +449,15 @@ function appliedFont(): string {
 
 beforeEach(() => {
   Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: Socket });
+  order.length = 0;
+  listenHold.current = null;
+  readyHold.current = null;
   mockWatchUpdate.mockClear();
   mockRereadHome.mockReset();
   invokeMock.mockReset();
   invokeMock.mockResolvedValue(null);
+  launchShareMock.mockReset();
+  launchShareMock.mockImplementation(() => realLaunchShare.current?.() ?? Promise.resolve(false));
 });
 
 afterEach(async () => {
@@ -391,6 +468,7 @@ afterEach(async () => {
   // which is what unlistens through them.
   Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
   Reflect.deleteProperty(window, '__TAURI_EVENT_PLUGIN_INTERNALS__');
+  pendingShare.set(null);
   localStorage.clear();
   history.replaceState(null, '', '/');
 });
@@ -443,6 +521,230 @@ describe('the shell at launch', () => {
     );
 
     expect(invokeMock, 'the launch never asked for a seat').toHaveBeenCalledWith('client_tap_seat');
+  });
+
+  /**
+   * **A share that launched the app survives the door.** A cold-start share
+   * lands on `/share`, which draws the door when the launch cannot connect;
+   * the person's connect is what makes the sheet drawable, and a connect that
+   * moved to the home would hide the files they shared behind a Back.
+   */
+  it('stays on the share sheet when a connect follows a cold-start share', async () => {
+    launchShareMock.mockImplementation(() => {
+      pendingShare.set({
+        files: [{ path: '/cache/share/1/a.jpg', name: 'a.jpg', size: 1, mime: null }],
+        error: null,
+        empty: false,
+      });
+      return Promise.resolve(true);
+    });
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/share', null);
+
+    submit(forge.address);
+    await until(() => forge.homeReads() >= 1, 'the connect to take');
+    await until(
+      () => location.pathname === '/share' && drawn().includes('a.jpg'),
+      'the sheet to draw the share the launch came from',
+    );
+  });
+
+  /**
+   * **A share that arrives while the app is still booting keeps the reader on
+   * the sheet.** The launch's own route is a guess; the warm share's listener
+   * has already moved the reader to `/share`, and the boot landing it
+   * afterwards must not move them off the file they just shared.
+   */
+  it('keeps a share that arrived while the launch was booting', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null }, 'held');
+    forges.push(forge);
+    const opening = openAt('/', forge.address);
+    await until(() => forge.live() >= 1, 'the launch to dial');
+
+    pendingShare.set({
+      files: [{ path: '/cache/share/1/a.jpg', name: 'a.jpg', size: 1, mime: null }],
+      error: null,
+      empty: false,
+    });
+    goTo({ name: 'share' }, { force: true });
+
+    // **The boot landing must not push a second entry**: the sheet is already
+    // on screen, and a second `/share` would make the first Back a no-op.
+    const pushed = vi.spyOn(history, 'pushState');
+    forge.greet();
+    await opening;
+    await until(() => forge.homeReads() >= 1, 'the launch to take the connection');
+    expect(location.pathname, 'the boot landing moved off the sheet').toBe('/share');
+    expect(
+      pushed.mock.calls.filter(([, , url]) => String(url).startsWith('/share')).length,
+      'the boot landing pushed a second /share entry',
+    ).toBe(0);
+    expect(get(pendingShare), 'the boot landing cleared the share').not.toBeNull();
+  });
+
+  /**
+   * **A route move while the boot is held does not clear the launch's share.**
+   * The clear is on the way OUT of the sheet, so a route the launch itself is
+   * still deciding must not drop files that have not been drawn yet.
+   */
+  it('keeps the launch share through a route move while the boot is held', async () => {
+    launchShareMock.mockImplementation(() => {
+      pendingShare.set({
+        files: [{ path: '/cache/share/1/a.jpg', name: 'a.jpg', size: 1, mime: null }],
+        error: null,
+        empty: false,
+      });
+      return Promise.resolve(true);
+    });
+    const forge = await stubForge({ mark: null, theme: null, font: null }, 'held');
+    forges.push(forge);
+    const opening = openAt('/', forge.address);
+    await until(() => get(pendingShare) !== null, 'the launch share');
+
+    // A notification (or any other move) lands while the socket is greeting.
+    goTo({ name: 'home' });
+    forge.greet();
+    await opening;
+    await until(() => forge.homeReads() >= 1, 'the launch to take the connection');
+    expect(get(pendingShare), 'a route move during boot cleared the launch share').not.toBeNull();
+  });
+
+  /**
+   * **A listener that could not be registered is not announced as ready.**
+   * The announcement flips the intake's latch, and flipping it with no
+   * listener is the swallow the latch exists to prevent.
+   */
+  it('does not announce readiness when the listener could not be registered', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: { transformCallback: () => 1, invoke: () => Promise.resolve(null) },
+      configurable: true,
+    });
+    Object.defineProperty(window, '__TAURI_EVENT_PLUGIN_INTERNALS__', {
+      value: { unregisterListener: () => undefined },
+      configurable: true,
+    });
+    listenFailure.current = true;
+    try {
+      await openAt('/', null);
+      expect(order, 'the page never tried to listen').toContain('listen:client://share');
+      expect(order, 'the intake was told the page is listening without a listener').not.toContain(
+        'client_share_ready',
+      );
+    } finally {
+      listenFailure.current = false;
+    }
+  });
+
+  /**
+   * **Leaving the sheet drops the share.** `pendingShare` is the sheet's
+   * input, not a history: a delivered share left behind is reopened by the
+   * next connect, at idle, with Send enabled - one tap duplicating the upload
+   * and the prompt.
+   */
+  it('drops a share when the sheet is left, so a connect cannot reopen it', async () => {
+    launchShareMock.mockImplementation(() => {
+      pendingShare.set({
+        files: [{ path: '/cache/share/1/a.jpg', name: 'a.jpg', size: 1, mime: null }],
+        error: null,
+        empty: false,
+      });
+      return Promise.resolve(true);
+    });
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/share', null);
+    await until(() => get(pendingShare) !== null, 'the share the launch came from');
+
+    goTo({ name: 'home' });
+    await until(() => get(pendingShare) === null, 'leaving the sheet to drop the share');
+
+    submit(forge.address);
+    await until(() => forge.homeReads() >= 1, 'the connect to take');
+    await until(() => location.pathname === '/', 'the connect to land home');
+    expect(location.pathname, 'a connect after the sheet was left reopened it').toBe('/');
+  });
+
+  /**
+   * **The share listener is up before the launch asks for its share.** A warm
+   * share can arrive while `client_share_take` is in flight, and the page's
+   * `listen` is its only door; asking first leaves a window where the shell
+   * triggers a share into a channel the page is not reading.
+   *
+   * **The listen is held open while the launch runs**: `await` is the fix,
+   * so the assertion is that the take has not happened while the listener
+   * promise is still pending.
+   */
+  it('registers the share listener before it asks for the launch share', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: { transformCallback: () => 1, invoke: () => Promise.resolve(null) },
+      configurable: true,
+    });
+    Object.defineProperty(window, '__TAURI_EVENT_PLUGIN_INTERNALS__', {
+      value: { unregisterListener: () => undefined },
+      configurable: true,
+    });
+    let release: () => void = () => {};
+    listenHold.current = {
+      promise: new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+      release: () => release(),
+    };
+    let announce: () => void = () => {};
+    readyHold.current = {
+      promise: new Promise<void>((resolve) => {
+        announce = resolve;
+      }),
+      release: () => announce(),
+    };
+    try {
+      const opening = openAt('/', null);
+      await until(
+        () => order.includes('listen:client://share'),
+        'the page to ask for the share listener',
+      );
+      expect(
+        order,
+        `the launch asked for its share while the listener was still registering; calls: ${order.join(', ')}`,
+      ).not.toContain('client_share_take');
+      listenHold.current.release();
+      await until(() => order.includes('client_share_ready'), 'the page to announce its listener');
+      expect(
+        order,
+        `the launch asked for its share before the intake was told; calls: ${order.join(', ')}`,
+      ).not.toContain('client_share_take');
+      readyHold.current.release();
+      await opening;
+      await until(
+        () => order.includes('client_share_take'),
+        'the launch to ask for its share once the listener was up',
+      );
+
+      const seen = order.join(', ');
+      const listened = order.indexOf('listen:client://share');
+      const ready = order.indexOf('client_share_ready');
+      const asked = order.indexOf('client_share_take');
+      expect(
+        listened,
+        `the page never listened for a warm share; calls: ${seen}`,
+      ).toBeGreaterThanOrEqual(0);
+      expect(ready, `the page never announced its listener; calls: ${seen}`).toBeGreaterThanOrEqual(
+        0,
+      );
+      expect(asked, `the launch never asked for its share; calls: ${seen}`).toBeGreaterThanOrEqual(
+        0,
+      );
+      expect(listened, `the launch asked before the listener was up; calls: ${seen}`).toBeLessThan(
+        ready,
+      );
+      expect(ready, `the launch asked before the intake was told; calls: ${seen}`).toBeLessThan(
+        asked,
+      );
+    } finally {
+      listenHold.current = null;
+      readyHold.current = null;
+    }
   });
 
   /**

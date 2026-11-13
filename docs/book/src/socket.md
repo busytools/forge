@@ -122,7 +122,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 29,
+  "version": 32,
   "forge_version": "1.1.25 · abc1234",
   "forge_version_short": "1.1.25+abc1234",
   "settings": {
@@ -392,8 +392,8 @@ variant's own name rather than on `kind`:
 }
 ```
 
-A command's variant is its name around its field bag - `Command` has 70
-variants, 63 of them struct variants; the seven unit variants,
+A command's variant is its name around its field bag - `Command` has 73
+variants, 66 of them struct variants; the seven unit variants,
 `dictate_catalogue_check`, `dictate_bench_stop`, `voice_bench_start`,
 `voice_bench_stop`, `plugin_update_all`, `plugin_check_updates` and
 `vault_lock`, cross as the name alone. An update is the same
@@ -788,12 +788,65 @@ lines the ceiling reaches, flagged `truncated`, rather than refusing.
 `why`, because a page draws that as the absence of a control rather than as
 a broken file.
 
+**`file_upload_begin {key, files}`** - begin one share's upload into the
+seat's project inbox. `files` is one entry per file: `{name, size, mime}`,
+where `size` is the bytes the client copied and `mime` is the provider's type
+when it had one. The answer rides the reply: `{upload_id, paths}`, the id the
+chunks name and the absolute paths the files will land at. **The whole share
+is validated before anything is written** - a total past 200 MB, more than
+256 files, an empty file, or a seat whose org or project cannot be a
+directory name is a refusal in the core's own words and creates nothing.
+
+**`file_upload_resume {key, upload_id}`** - continue an upload the server
+still holds. The answer is `{paths, received}`, the bytes it already has per
+file, so a client re-sends from those offsets. An id the server does not hold
+- a restart took the registry, or the one-hour grace window passed - is
+refused in words, which is what tells a client to begin again from the first
+byte. **The id is bound to the seat it was begun for**: a resume or an end
+naming another seat is refused exactly as an unknown id is. **And it is bound
+to a connection**: a resume re-binds the upload to the connection that
+reconnected, and a chunk or an end from any other connection is refused, so
+the socket a drop left behind cannot write or land the upload.
+
+**`file_upload_end {key, upload_id}`** - finish the upload. Every file is
+checked against the size it declared; one that arrived short refuses the end
+and leaves the upload held, so a retry can finish it. Only the connection the
+upload is bound to may end it, the one that began it or last resumed it. On
+success the partials are linked into place together and the reply carries
+`{paths}`.
+
+**The inbox** is
+`<app-support>/inbox/<org>/<project>/<YYYYMMDD-HHMMSS>-<name>`, where
+`<app-support>` is forge's machine-local app-support directory. The seat's
+org and project choose the directory; the label does not, because a project's
+agents share its inbox. The name is the shared file's display name sanitised
+- no path, no control characters, never `.` or `..`, capped - and a collision
+gets a suffix. **Files are kept until the person or the agent deletes them**:
+nothing sweeps the inbox. Partials carry
+`.forge-upload-<upload-id>-<file-index>.partial` - a shape only the server
+makes - and are linked into place only when the upload ends, so a half-written
+file never appears as a shared one, one share's partial cannot collide with
+another's, and a landed file whose display name ends in `.partial` is never
+swept as half an upload; a dropped upload's entry and partials are kept for
+one hour and then swept, and a resume past that window starts over.
+
+**Two sets of bounds.** One share carries at most 200 MB over 256 files, and its
+declared sizes are added with checked arithmetic so a wrapped sum cannot slip
+past the wall. The process holds at most eight live uploads, 1,024 live partial
+files and 1 GiB of declared bytes at once, refused at begin; a partial's handle
+is opened on that file's first chunk rather than at begin, so a share of many
+small files does not spend the descriptor budget. **Begins are paced to one a
+second across the process**, because every landed file is permanent and the
+live caps bound one moment rather than a rate. A restart loses the registry,
+so the sweep also takes the `.forge-upload-<upload-id>-<file-index>.partial`
+files it orphaned by their age on disk.
+
 **Binary messages are frames, and a frame's first byte says which kind.** A
 client that captures sends one dictation frame per 20 ms of speech:
 
 | bytes | field   | value                                                                       |
 | ----- | ------- | --------------------------------------------------------------------------- |
-| 1     | kind    | `0` = dictation; `1` = browser frame; `2` = browser audio; `4` = terminal output; `5` = terminal input |
+| 1     | kind    | `0` = dictation; `1` = browser frame; `2` = browser audio; `4` = terminal output; `5` = terminal input; `6` = file chunk |
 | rest  | samples | i16 little-endian, mono, 16 kHz (kind `0`)                                  |
 
 **A terminal output frame (kind `4`) is the server's**: a little-endian `u16`
@@ -804,6 +857,25 @@ resume after a pause is answered the same way** - the frames it missed are
 not replayed.
 **A terminal input frame (kind `5`) is a client's**: the same id and then the
 keystrokes. Both are refused from the wrong direction, as a browser frame is.
+
+**A file chunk (kind `6`) is a client's**: a little-endian `u64` upload id, a
+`u16` file index, a `u32` offset, then the bytes, up to 64 KiB of payload -
+a bound of its own rather than the dictation frame's 16 KiB.
+
+| bytes | field   | value                                             |
+| ----- | ------- | ------------------------------------------------- |
+| 1     | kind    | `6` = file chunk                                  |
+| 8     | upload  | the upload's id, little-endian u64                |
+| 2     | file    | the file's index in the share, little-endian u16  |
+| 4     | offset  | where the bytes belong, little-endian u32         |
+| rest  | bytes   | the file's own bytes, up to 64 KiB                |
+
+**The offset is what makes a retry safe.** A chunk whose offset is behind the
+bytes the server already holds is a duplicate and is ignored; one ahead of
+them is a gap and is refused, because the socket is ordered. The server
+writes at the offset it expects and checks the bytes against the size the
+upload declared, so a client's word about a file is never taken for the
+file.
 
 A dictation frame carries no seat. It addresses the take its own CONNECTION
 started: one connection streams one take at a time and its messages are
@@ -878,12 +950,14 @@ never asked never meets a frame it cannot read.
 path before the frames behind it are delivered, so a compressed snapshot and
 the updates that follow it keep the sequence the server wrote.
 
-**A binary frame from a client is audio or it is not a frame this server
-takes.** The browser frames and the page's sound are the server's alone, so
-one arriving from a client is refused by its kind tag; nothing is waiting on
-it and no ask is failed by it. A refused frame is answered by nothing - a
-binary frame has no reply channel - so the debug record is what makes it
-legible.
+**A binary frame from a client is audio, a terminal's keystrokes or a file
+chunk, or it is not a frame this server takes.** The browser frames and the
+page's sound are the server's alone, so one arriving from a client is refused
+by its kind tag; nothing is waiting on it and no ask is failed by it. A
+refused frame is answered by nothing - a binary frame has no reply channel -
+so the debug record is what makes it legible. **A refused file chunk is the
+same**: an unknown upload, a gap or bytes past the declared size writes a
+debug record, and the upload's own end reply is what the client acts on.
 
 **`dictate_stream {key, options, surface}`** - begin a take the CLIENT
 captures. The connection that sends it feeds the audio as the binary frames
@@ -891,9 +965,9 @@ above, so nothing is opened on the server; the take registers as the message
 is dispatched, so the frame that follows on the same ordered connection
 always finds it. `options` is the axes that client's panel was showing, and
 `surface` names the page whose own capture began the take (`composer`,
-`review`, `files`, `doc`), so the record can hand the landed words back to
-that page and no other. A server-side take records from forge's machine, and
-its axes are the session's stored overrides.
+`review`, `files`, `doc`, `share`), so the record can hand the landed words
+back to that page and no other. A server-side take records from forge's
+machine, and its axes are the session's stored overrides.
 
 **A take belongs to the connection that started it.** Every `dictate_*`
 update about it - the start, the levels, the phases, the end - goes back to
@@ -904,9 +978,10 @@ naming the reason, and only the refused connection hears it. A connection
 that goes away drops its take rather than submitting it - its reader is
 gone, so nothing more is transcribed and nothing lands anywhere. What does
 land sits in the box that began the take while the page that holds it is
-there. On the review, files and document pages a re-hand for a box the page
-no longer holds is dropped rather than placed in another box; the composer
-is the exception, and re-places its own carried landing after a remount.
+there. On the review, files, document and share pages a re-hand for a box
+the page no longer holds is dropped rather than placed in another box; the
+composer is the exception, and re-places its own carried landing after a
+remount.
 Pressing enter sends the words as an ordinary prompt every view then sees.
 
 **`voice_mode {key, on, explicit}`** - a client turns voice on or off for the

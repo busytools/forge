@@ -22,6 +22,8 @@
   import Settings from '../settings/Settings.svelte';
   import { lastSeat, shownSeat, titleFor, type Route } from '../routes';
   import Session from '../session/Session.svelte';
+  import Share from '../share/Share.svelte';
+  import { pendingShare } from '../share/pending';
   import type { Connection } from '../socket';
   import type { ClientSettings } from '../wire/types';
 
@@ -125,6 +127,12 @@
    */
   function boardAct(command: Record<string, Record<string, unknown>>): void {
     void connection?.dispatch(command);
+  }
+
+  /** Close the share sheet: back the way the reader came, or home from a deep link. */
+  function closeShare(): void {
+    if (history.length > 1) history.back();
+    else location.assign('/');
   }
 
   // The tab's name follows what is on screen: forge at the home, the seat's
@@ -296,6 +304,40 @@
          tree follows the seat - a worker's worktree, the lead's checkout -
          and its states belong to it. -->
     <Files {connection} slot={route.slot} dictation={dictate} />
+  {:else}
+    <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
+  {/if}
+{:else if route.name === 'share'}
+  {#if connection !== null && home.wire !== null}
+    <!-- The share sheet: the files another app handed forge, the seat they go
+         to, and the words that ride with them. Its seat list is the roster's,
+         and its own read of the picked seat is the page's. **Keyed on the
+         share**: a second share while the sheet is open is a new sheet, not
+         the last one's sent state over new files. -->
+    {#key $pendingShare}
+      <Share
+        {connection}
+        seats={home.wire.agents.map((agent) => agent.slot)}
+        shared={$pendingShare ?? { files: [], error: null, empty: false }}
+        {dictate}
+        preselect={$lastSeat}
+        onclose={closeShare}
+      />
+    {/key}
+  {:else if home.refused}
+    <!-- A refused home read is an answer, not a silence: the sheet says
+         why rather than waiting on a fleet that will never arrive. -->
+    <main class="wrap">
+      <p class="pending">This forge would not answer for the home: {home.refused}</p>
+    </main>
+  {:else if home.failed}
+    <!-- The read landed and this client could not draw it: the sheet's own
+         state, not an endless wait on a fleet it cannot read. -->
+    <main class="wrap">
+      <p class="pending">This forge sent a home this client could not read: {home.failed}</p>
+    </main>
+  {:else if connected}
+    <main class="wrap"><p class="pending">Reading the fleet...</p></main>
   {:else}
     <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
   {/if}

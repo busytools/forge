@@ -53,6 +53,12 @@ export type Route =
    *  dropped on what was read. A sub-path of the seat, because the tree
    *  follows the seat - a worker's own worktree, the lead's checkout. */
   | { name: 'files'; slot: SessionSlot }
+  /**
+   * The share sheet: the files another app shared with forge, waiting for a
+   * seat and a send. A page of its own rather than an overlay, so the
+   * hardware Back closes it through the same history every page uses.
+   */
+  | { name: 'share' }
   /** A development route: the home drawn from the fixture, with no server. */
   | { name: 'fixture' }
   | { name: 'notFound' };
@@ -95,6 +101,7 @@ export function parseRoute(path: string): Route {
   if (segments.length === 1 && segments[0] === 'models') return { name: 'models' };
   if (segments.length === 1 && segments[0] === 'extensions') return { name: 'extensions' };
   if (segments.length === 1 && segments[0] === 'settings') return { name: 'settings' };
+  if (segments.length === 1 && segments[0] === 'share') return { name: 'share' };
   if (segments.length === 1 && segments[0] === 'fixture') return { name: 'fixture' };
   if (segments.length === 3 && segments[0] === 'board') {
     const [, org, project] = segments as [string, string, string];
@@ -149,6 +156,8 @@ export function hrefFor(route: Route): string {
       return '/extensions';
     case 'settings':
       return '/settings';
+    case 'share':
+      return '/share';
     case 'fixture':
       return '/fixture';
     case 'board':
@@ -192,6 +201,7 @@ export function titleFor(route: Route): string {
   if (route.name === 'models') return 'forge \u{b7} models';
   if (route.name === 'extensions') return 'forge \u{b7} extensions';
   if (route.name === 'settings') return 'forge \u{b7} settings';
+  if (route.name === 'share') return 'forge \u{b7} share';
   if (route.name === 'board') return `forge \u{b7} ${route.project}`;
   if (route.name === 'review') {
     const { project, label } = route.slot;

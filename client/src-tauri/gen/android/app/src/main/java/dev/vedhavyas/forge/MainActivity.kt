@@ -40,11 +40,11 @@ class MainActivity : TauriActivity() {
      * How many activity launches this process has seen.
      *
      * **A page reload and an activity the platform re-creates are different**:
-     * the launch seat belongs to one activity launch, so the shell needs to
-     * tell them apart. Zero is the not-yet-a-launch sentinel, which the shell
-     * reads as already answered; [onCreate] makes the first launch one.
+     * the launch seat and the share token belong to one activity launch, so
+     * the shell needs to tell them apart. Zero is the not-yet-a-launch
+     * sentinel; [onCreate] makes the first launch one.
      */
-    internal var launches = 0
+    @Volatile internal var launches = 0
 
     /**
      * The newest intent this process's activity was given.

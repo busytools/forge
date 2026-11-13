@@ -374,6 +374,7 @@ census!(Command,
         CloseSession struct, UpsertReviewThread struct, DeleteReviewThread struct,
         SubmitReview struct,
         VoiceMode struct, VoicePreview struct,
+        FileUploadBegin struct, FileUploadResume struct, FileUploadEnd struct,
     ],
     command_census, COMMAND_VARIANTS);
 
@@ -2134,6 +2135,32 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
             respond: None,
         }),
     );
+    // **The share's begin**, which the shell writes by hand: the seat, the
+    // files, and each file's own `name`/`size`/`mime`. A rename here would
+    // leave the shell's literal writing a key nothing reads, with both sides'
+    // suites green.
+    sampled.insert(
+        "FileUploadBegin".to_owned(),
+        sample(Command::FileUploadBegin {
+            key: seat.clone(),
+            files: vec![forge_workspace::FileDecl {
+                name: "photo.jpg".to_owned(),
+                size: 5,
+                mime: Some("image/jpeg".to_owned()),
+            }],
+        }),
+    );
+    // **A resume and an end are written by hand too**: each names its upload
+    // by `upload_id`, and a rename here would leave the shell's literal
+    // writing a key nothing reads.
+    sampled.insert(
+        "FileUploadResume".to_owned(),
+        sample(Command::FileUploadResume { key: seat.clone(), upload_id: 7 }),
+    );
+    sampled.insert(
+        "FileUploadEnd".to_owned(),
+        sample(Command::FileUploadEnd { key: seat.clone(), upload_id: 7 }),
+    );
     sampled
 }
 
@@ -2146,7 +2173,9 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
 /// order for an image's id, together. The server only decodes, so the fixtures
 /// run that way.
 fn binary_frame_record() -> Value {
-    use forge_server::transport::frame::{self, HEADER_BYTES, MAX_PAYLOAD_BYTES};
+    use forge_server::transport::frame::{
+        self, FILE_CHUNK_HEADER_BYTES, HEADER_BYTES, MAX_FILE_CHUNK_BYTES, MAX_PAYLOAD_BYTES,
+    };
 
     // The dictation fixture: one of each interesting sample, little-endian
     // i16 on the wire. A big-endian read of these bytes, or a /32767 scale,
@@ -2162,6 +2191,7 @@ fn binary_frame_record() -> Value {
         frame::Kind::BrowserAudio,
         frame::Kind::TerminalOutput,
         frame::Kind::TerminalInput,
+        frame::Kind::FileChunk,
     ]
     .into_iter()
     .map(|kind| {
@@ -2171,6 +2201,7 @@ fn binary_frame_record() -> Value {
             frame::Kind::BrowserAudio => "BrowserAudio",
             frame::Kind::TerminalOutput => "TerminalOutput",
             frame::Kind::TerminalInput => "TerminalInput",
+            frame::Kind::FileChunk => "FileChunk",
         };
         json!({ "name": name, "tag": kind.tag() })
     })
@@ -2224,9 +2255,28 @@ fn binary_frame_record() -> Value {
         server_audio.extend_from_slice(&sample.to_le_bytes());
     }
 
+    // **A file chunk is a client's**, and the offset is what the server
+    // writes at: a field that moved here is a file with a hole rather than
+    // an error, so the exact bytes are pinned.
+    let mut file_chunk = vec![frame::Kind::FileChunk.tag()];
+    file_chunk.extend_from_slice(&7u64.to_le_bytes()); // upload
+    file_chunk.extend_from_slice(&2u16.to_le_bytes()); // file
+    file_chunk.extend_from_slice(&12u32.to_le_bytes()); // offset
+    file_chunk.extend_from_slice(b"hi");
+    assert_eq!(
+        frame::decode(&file_chunk).expect("the recorded fixture is a frame this server takes"),
+        frame::Frame::FileChunk { upload_id: 7, file_index: 2, offset: 12, bytes: b"hi".to_vec() },
+        "the recorded fixture's bytes must decode to the chunk they carry"
+    );
+    // A chunk with no header is refused rather than read as an empty one.
+    let short_chunk = vec![frame::Kind::FileChunk.tag(), 1, 2, 3];
+    assert_eq!(frame::decode(&short_chunk), Err(frame::Refusal::ShortFileChunk(3)));
+
     json!({
         "header_bytes": HEADER_BYTES,
         "max_payload_bytes": MAX_PAYLOAD_BYTES,
+        "file_chunk_header_bytes": FILE_CHUNK_HEADER_BYTES,
+        "max_file_chunk_bytes": MAX_FILE_CHUNK_BYTES,
         "kinds": kinds,
         "fixtures": {
             "dictation": { "hex": hex_of(&dictation), "samples": samples },
@@ -2255,6 +2305,17 @@ fn binary_frame_record() -> Value {
                     "profile": 5, "tab": 2, "seq": 9, "sample_rate": 48_000,
                     "channels": 2, "samples": [1, -1, 0],
                 },
+            },
+            // 1 tag byte, then the upload, the file and the offset, then the
+            // bytes.
+            "file_chunk": {
+                "hex": hex_of(&file_chunk),
+                "header_bytes": FILE_CHUNK_HEADER_BYTES,
+                "fields": { "upload_id": 7, "file_index": 2, "offset": 12, "bytes": "hi" },
+            },
+            "file_chunk_short": {
+                "hex": hex_of(&short_chunk),
+                "refusal": frame::Refusal::ShortFileChunk(3).reason(),
             },
         },
     })

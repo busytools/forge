@@ -395,9 +395,9 @@ interface DictationWiring {
   /** The seat showing, which is the one a take is addressed to. */
   seat: () => SessionSlot;
   /**
-   * Which surface this page is - `composer`, `review`, `files`, `doc`. The
-   * take names it, so the record's re-hand of the words reaches the surface
-   * that began them and no other.
+   * Which surface this page is - `composer`, `review`, `files`, `doc`,
+   * `share`. The take names it, so the record's re-hand of the words reaches
+   * the surface that began them and no other.
    */
   surface: Surface;
   /** Whether the seat's record already shows a take this page did not start. */

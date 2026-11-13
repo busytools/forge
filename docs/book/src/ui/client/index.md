@@ -28,6 +28,7 @@ place.
 | A document | [document.md](./document.md) | `web-document.html` |
 | The browser surface | [browser.md](./browser.md) | `web-browser.html` |
 | The terminal surface | [terminal.md](./terminal.md) | `web-terminal.html` |
+| The share sheet | [share.md](./share.md) | `web-share.html` |
 
 `web-session.html` declares six sections and the client's plan owned four
 of them; their pages are [session.md](./session.md) and

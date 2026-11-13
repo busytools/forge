@@ -45,6 +45,7 @@ pub mod micstate;
 pub mod notify;
 pub mod perf;
 pub mod records;
+mod share;
 pub mod socket;
 pub mod terminal;
 
@@ -699,6 +700,10 @@ pub fn run() -> u8 {
             biometric::biometric_store,
             biometric::biometric_release,
             biometric::biometric_remove,
+            share::client_share_take,
+            share::client_share_ready,
+            share::client_share_ack,
+            share::client_share_upload,
             perf::client_perf
         ]);
     // iOS lands here too, and it registers nothing: the update commands are
@@ -718,6 +723,7 @@ pub fn run() -> u8 {
         .plugin(tauri_plugin_notification::init())
         .plugin(android::init())
         .plugin(android::init_file_names())
+        .plugin(share::init())
         .plugin(micstate::init())
         .plugin(biometric::android::init())
         .plugin(launch::init())
@@ -773,6 +779,10 @@ pub fn run() -> u8 {
             biometric::biometric_store,
             biometric::biometric_release,
             biometric::biometric_remove,
+            share::client_share_take,
+            share::client_share_ready,
+            share::client_share_ack,
+            share::client_share_upload,
             perf::client_perf
         ]);
 
@@ -958,6 +968,8 @@ async fn install_update(app: tauri::AppHandle) -> Result<String, String> {
 const ANDROID_UPDATE_PLUGIN: &str = "androidupdate";
 #[cfg(any(test, target_os = "android"))]
 const ANDROID_FILE_NAME_PLUGIN: &str = "androidfilenames";
+#[cfg(any(test, target_os = "android"))]
+const ANDROID_SHARE_PLUGIN: &str = "androidshare";
 
 /// The names the app manifest strips from the notification plugin's own
 /// manifest. A `tools:node="remove"` naming a component the plugin no longer
@@ -1204,7 +1216,7 @@ fn record(log_file: Option<&std::path::Path>, line: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ANDROID_FILE_NAME_PLUGIN, ANDROID_UPDATE_PLUGIN, attention};
+    use super::{ANDROID_FILE_NAME_PLUGIN, ANDROID_SHARE_PLUGIN, ANDROID_UPDATE_PLUGIN, attention};
 
     /// **A blur is the moment the rule must look again**, and no frame
     /// carries it. A gain of focus asks the same review; an event that says
@@ -1247,10 +1259,13 @@ mod tests {
     /// the update check dispatched into the file-name plugin and failed.
     #[test]
     fn every_android_plugin_class_keeps_a_name_of_its_own() {
-        assert_ne!(
-            ANDROID_UPDATE_PLUGIN, ANDROID_FILE_NAME_PLUGIN,
-            "two Android plugin classes share one tauri plugin name again"
-        );
+        let names = [ANDROID_UPDATE_PLUGIN, ANDROID_FILE_NAME_PLUGIN, ANDROID_SHARE_PLUGIN];
+        for (at, name) in names.iter().enumerate() {
+            assert!(
+                !names[at + 1..].contains(name),
+                "two Android plugin classes share the tauri plugin name {name}",
+            );
+        }
     }
 
     /// **The shipped logger, built.** The tests' capture keeps by [`keeps`] on

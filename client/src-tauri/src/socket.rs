@@ -597,6 +597,15 @@ enum Outbound {
         replied: Option<oneshot::Sender<Result<Value, String>>>,
     },
     Binary(Vec<u8>),
+    /// One binary frame whose caller waits for the write.
+    ///
+    /// **The share upload's flow control.** The queue is unbounded, so a
+    /// driver that only posted frames would hold a whole share in memory on
+    /// a phone; waiting on each write paces the upload to the link.
+    BinaryAck {
+        bytes: Vec<u8>,
+        sent: oneshot::Sender<Result<(), String>>,
+    },
     /// Probe the link now, rather than waiting out the quiet: the page's
     /// half of a return from the background, where the socket may have died
     /// while the page slept. Queued with everything else, so it goes out in
@@ -785,6 +794,16 @@ impl Socket {
         let _ = self.tx.send(Outbound::Binary(bytes));
     }
 
+    /// One binary frame the caller waits for, for an upload that paces
+    /// itself on the link rather than queueing a whole file.
+    pub async fn send_binary_ack(&self, bytes: Vec<u8>) -> Result<(), String> {
+        let (sent, sent_rx) = oneshot::channel();
+        self.tx
+            .send(Outbound::BinaryAck { bytes, sent })
+            .map_err(|_| "the socket is closed".to_owned())?;
+        sent_rx.await.map_err(|_| "the socket dropped before writing".to_owned())?
+    }
+
     /// Attach this connection to a seat's browser tab as a viewer, and wait
     /// for the server's answer: the profile and tab it actually attached, or
     /// the sentence the surface draws. **A raise that named no tab was
@@ -963,10 +982,14 @@ fn variant_of(command: &Value) -> Option<&str> {
 }
 
 /// The bound this dispatch gets: the shipping bound, except a despawn, whose
-/// removal can outlast it.
+/// removal can outlast it, and an upload's end, which flushes and links
+/// every file of a share before it answers - a 200 MB share on a phone's
+/// storage is seconds, and a timeout there makes a retry start over and write
+/// the files again.
 fn reply_bound_for(command: &Value, bound: Duration) -> Option<Duration> {
     match variant_of(command) {
         Some("despawn_worker") => None,
+        Some("file_upload_end") => Some(Duration::from_secs(120)),
         _ => Some(bound),
     }
 }
@@ -1027,7 +1050,9 @@ fn apply_offline(next: Outbound, held: &mut Vec<Held>, awaiting: &mut Vec<String
             held.retain(|h| h.key != key);
             false
         }
-        Outbound::Dispatch { sent, .. } => {
+        // An upload frame over a down socket fails by name rather than
+        // waiting out a write that has nowhere to go.
+        Outbound::Dispatch { sent, .. } | Outbound::BinaryAck { sent, .. } => {
             let _ = sent.send(Err("the socket is not open".to_owned()));
             false
         }
@@ -1738,6 +1763,14 @@ async fn run(
                                 );
                             }
                         }
+                        Outbound::BinaryAck { bytes, sent } => {
+                            let ok = writer.send(Message::Binary(bytes.into())).await.is_ok();
+                            let _ = sent.send(if ok {
+                                Ok(())
+                            } else {
+                                Err("the socket is open but the frame did not go".to_owned())
+                            });
+                        }
                         // **A probe the page asked for**, on a return from
                         // the background: the socket may have died while the
                         // page slept and its own timer with it.
@@ -2257,6 +2290,10 @@ pub(crate) mod tests {
     pub(crate) struct Stub {
         pub(crate) url: String,
         pub(crate) heard: mpsc::UnboundedReceiver<Value>,
+        /// Every binary frame a connection sent, in order: the share
+        /// upload's chunks are binary, and a stub that dropped them could not
+        /// tell a driver that sent none from one that sent the wrong bytes.
+        pub(crate) binary: mpsc::UnboundedReceiver<Vec<u8>>,
         pub(crate) say: tokio::sync::broadcast::Sender<Value>,
         pub(crate) kill: tokio::sync::broadcast::Sender<()>,
         /// Every text frame a connection sent, broadcast so a helper can
@@ -2304,6 +2341,7 @@ pub(crate) mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("a port");
         let addr = listener.local_addr().expect("the bound address");
         let (heard_tx, heard) = mpsc::unbounded_channel();
+        let (binary_tx, binary) = mpsc::unbounded_channel();
         let (say, keep) = tokio::sync::broadcast::channel::<Value>(64);
         let (kill, kill_keep) = tokio::sync::broadcast::channel(8);
         let (spoken, spoken_keep) = tokio::sync::broadcast::channel::<Value>(64);
@@ -2325,6 +2363,7 @@ pub(crate) mod tests {
                     let _ = held.set_linger(Some(Duration::ZERO));
                 }
                 let heard_tx = heard_tx.clone();
+                let binary_tx = binary_tx.clone();
                 let spoken = spoken_for_task.clone();
                 let uris = std::sync::Arc::clone(&uris_for_task);
                 let heads = std::sync::Arc::clone(&heads_for_task);
@@ -2378,6 +2417,13 @@ pub(crate) mod tests {
                                         let _ = heard_tx.send(value);
                                     }
                                 }
+                                // A binary frame is kept as its bytes: the
+                                // share upload's chunks are the only ones a
+                                // test drives, and they are read by offset.
+                                Some(Ok(Message::Binary(bytes))) => {
+                                    let _ = binary_tx.send(bytes.to_vec());
+                                }
+                                Some(Ok(_)) => {}
                                 _ => break,
                             },
                             pushed = said.recv() => match pushed {
@@ -2400,6 +2446,7 @@ pub(crate) mod tests {
         Stub {
             url: format!("ws://{addr}/socket"),
             heard,
+            binary,
             say,
             kill,
             spoken,
@@ -2502,7 +2549,7 @@ pub(crate) mod tests {
 
     /// Open a socket and wait until the connection is really up, so a test's
     /// first send is not folded into the disconnected wait.
-    async fn connected(stub: &Stub) -> (Socket, mpsc::UnboundedReceiver<SocketEvent>) {
+    pub(crate) async fn connected(stub: &Stub) -> (Socket, mpsc::UnboundedReceiver<SocketEvent>) {
         let (socket, mut rx) = opened(stub);
         loop {
             if let SocketEvent::Status(Status::Open) = next_event(&mut rx).await {
@@ -3943,6 +3990,22 @@ pub(crate) mod tests {
                 "the second ask re-snapshotted the counter, so the first answer stopped counting",
             );
         }
+    }
+
+    /// **An upload's end outlives the shipping bound.** The end flushes and
+    /// links every file of a share before it answers, so a 200 MB share on a
+    /// phone's storage takes seconds; a timeout there would make the sheet's
+    /// retry start over and write the files again. Everything else keeps the
+    /// shipping bound, and a despawn stays unbounded.
+    #[test]
+    fn an_uploads_end_gets_the_long_bound_and_nothing_else_does() {
+        let bound = Duration::from_secs(30);
+        let end = json!({ "file_upload_end": { "key": {}, "upload_id": 1 } });
+        assert_eq!(reply_bound_for(&end, bound), Some(Duration::from_secs(120)));
+        let begin = json!({ "file_upload_begin": { "key": {}, "files": [] } });
+        assert_eq!(reply_bound_for(&begin, bound), Some(bound));
+        let despawn = json!({ "despawn_worker": {} });
+        assert_eq!(reply_bound_for(&despawn, bound), None);
     }
 
     /// **The shipping liveness pair is the value the book states.** What the

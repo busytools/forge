@@ -304,10 +304,17 @@ pub mod wire;
 /// enum and field names rather than values, so it does not itself evidence
 /// the widened kind.
 ///
+/// **v32 adds the shared-file upload.** The app-level `file_upload_begin`,
+/// `file_upload_resume` and `file_upload_end` commands, and the `6` binary
+/// frame kind a share's chunks cross as. A v31 server refuses the kind and
+/// drops every chunk (a binary frame answers nothing), so a v31 client's
+/// upload would end against an upload it never fed; the two halves move
+/// together. `baselines/socket/32/` is the record a v32 server emitted.
+///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 31;
+pub const PROTOCOL_VERSION: u32 = 32;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, how long it may stay silent before it is reaped, and how long
@@ -434,7 +441,7 @@ impl TransportState {
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(publish_settings(documents, settings.clone()));
         }
-        Self {
+        let state = Self {
             surface: Arc::new(ViewSurface::new(Arc::clone(workspace))),
             work: Arc::new(WorkCache::new()),
             conversations: Arc::new(conversation::Conversations::new()),
@@ -445,7 +452,15 @@ impl TransportState {
             settings,
             browser_host: workspace.browser_host(),
             heartbeat: Heartbeat::default(),
+        };
+        // **The inbox's only cleaner.** A dropped upload's partials are
+        // removed once its hour is up even when no new upload ever begins, so
+        // the registry sweeps on a clock rather than on the next client's
+        // arrival. The weak handle lets the task go with the state.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(sweep_uploads(Arc::downgrade(state.surface.uploads())));
         }
+        state
     }
 
     /// [`TransportState::for_workspace`] with the keepalive shortened, so a
@@ -497,6 +512,33 @@ async fn publish_settings(
         if settings.borrow().as_deref() != Some(encoded.as_ref()) {
             settings.send_replace(Some(encoded));
         }
+    }
+}
+
+/// How often the shared-file inbox is swept for uploads past their grace
+/// window. Ten minutes against an hour's window: a partial is removed at most
+/// ten minutes after it expires, and the sweep costs a lock and a map walk.
+const UPLOAD_SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Remove expired uploads on a clock, so an abandoned share's partials do not
+/// wait for the next client to arrive.
+///
+/// The registry's own lock is held across file removal, so the sweep runs on a
+/// blocking thread; the task ends with the surface it sweeps.
+async fn sweep_uploads(uploads: std::sync::Weak<crate::surface::upload::Uploads>) {
+    let mut tick = tokio::time::interval(UPLOAD_SWEEP_EVERY);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // The first tick is immediate; the grace window has not turned on a
+    // registry younger than a second. The orphan scan runs first there, so a
+    // restart's partials are removed before any new upload begins.
+    tick.tick().await;
+    while let Some(uploads) = uploads.upgrade() {
+        let _ = tokio::task::spawn_blocking(move || {
+            uploads.sweep();
+            uploads.sweep_orphans(std::time::SystemTime::now());
+        })
+        .await;
+        tick.tick().await;
     }
 }
 
@@ -779,5 +821,44 @@ mod tests {
             "the book says the two bounds match, so the mechanisms measure a dead peer on one \
              scale",
         );
+    }
+
+    /// **The inbox is swept on its own clock, not only when a client
+    /// arrives.** The task's first tick is immediate, so a restart's orphaned
+    /// partials go before any new upload begins, and the task ends with the
+    /// surface it sweeps rather than outliving it.
+    #[tokio::test]
+    async fn the_sweep_task_takes_a_restarts_orphans_at_boot_and_ends_with_the_surface() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let project = dir.path().join("inbox").join("Busytools").join("forge");
+        std::fs::create_dir_all(&project).expect("the inbox");
+        // **The server's own partial name shape**, which is what the sweep
+        // keys on: a landed file whose display name ends in `.partial` is
+        // never taken.
+        let stale = project.join(".forge-upload-7-0.partial");
+        std::fs::write(&stale, b"x").expect("this test's own partial");
+        let old = std::time::SystemTime::now()
+            .checked_sub(crate::surface::upload::GRACE + std::time::Duration::from_secs(1))
+            .expect("this test's own clock");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&stale)
+            .expect("the stale partial")
+            .set_modified(old)
+            .expect("this test's own partial");
+        let uploads = Arc::new(crate::surface::upload::Uploads::new(Ok(dir.path().to_path_buf())));
+        let task = tokio::spawn(sweep_uploads(Arc::downgrade(&uploads)));
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while stale.exists() {
+            assert!(tokio::time::Instant::now() < deadline, "the boot sweep never ran");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        drop(uploads);
+        tokio::time::pause();
+        tokio::time::advance(UPLOAD_SWEEP_EVERY).await;
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(10), task).await;
+        assert!(matches!(ended, Ok(Ok(()))), "the task ends with the surface");
     }
 }

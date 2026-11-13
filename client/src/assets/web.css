@@ -5620,3 +5620,11 @@ details[open] > summary .arw { opacity: 1; }
   .doc-page .doc-block { padding-left: 3rem; }
   .doc-page .doc-add { width: 44px; height: 44px; left: 0; top: 0.1rem; }
 }
+
+/* ---------- the share sheet ---------- */
+
+/* The page a share opens: the files another app handed forge, the seat they
+   go to, and the words that ride with them. A measure of its own, because a
+   share is one short form rather than a page of content; everything inside
+   it is the component's own scoped rules. */
+.share-page { max-width: 720px; }

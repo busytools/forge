@@ -121,7 +121,7 @@ pub use handoff::{
     ShippedSkill, SkillInstall, install_skill, shipped_skills, skill_dir, skill_path,
 };
 pub use protocol::{
-    Command, DictateOutcome, DispatchError, NoticeSeverity, PromptSource, SessionUpdate,
+    Command, DictateOutcome, DispatchError, FileDecl, NoticeSeverity, PromptSource, SessionUpdate,
     TurnErrorClass,
 };
 pub use target::{ProjectKey, SessionSlot, SessionTarget};

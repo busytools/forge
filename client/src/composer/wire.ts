@@ -41,7 +41,7 @@ export interface Take {
  * and the record hands back. A closed set, because a value this client does
  * not know is one no surface can own.
  */
-const SURFACES = ['composer', 'review', 'files', 'doc'] as const;
+const SURFACES = ['composer', 'review', 'files', 'doc', 'share'] as const;
 export type Surface = (typeof SURFACES)[number];
 
 /**

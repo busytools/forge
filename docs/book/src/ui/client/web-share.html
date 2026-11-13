@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>forge &middot; the share sheet - every state</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130;
+    --line:#222a3c; --ctl:#516590;
+    --text:#c9d1d9; --muted:#8f98a8; --dim:#788294;
+    --accent:#f47600; --hot:#ffb058; --ok:#82c76b; --bad:#e0683e; --warn:#c9a13b;
+    --blue:#61a0e0; --teal:#4ec9c9; --violet:#b79ae0;
+    --ui: "Fira Code", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "Fira Code", ui-monospace, Menlo, monospace;
+    --fs-prose: 15.5px; --fs-data: 14px; --fs-label: 12.5px; --r: 12px;
+  }
+  body { background:
+      radial-gradient(1200px 560px at 6% -14%, rgba(244,118,0,.09), transparent 58%),
+      radial-gradient(900px 480px at 98% 108%, rgba(91,156,248,.06), transparent 60%),
+      var(--bg);
+    background-attachment: fixed; color: var(--text); font-family: var(--ui);
+    font-size: var(--fs-prose); line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  .page { max-width: 1120px; margin: 0 auto; padding: 30px 22px 90px; }
+  h1 { font-size: 18px; font-weight: 500; margin-bottom: 6px; }
+  .sub { color: var(--dim); max-width: 96ch; margin-bottom: 8px; }
+  h2 { font-size: var(--fs-prose); font-weight: 500; margin: 44px 0 10px; }
+  .mono { font-family: var(--mono); } .dim { color: var(--dim); }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(460px, 1fr)); gap: 18px; }
+  .tile { border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+    background: linear-gradient(180deg, rgba(13,17,26,.65), rgba(4,5,10,.4)); padding: 12px 14px 14px; }
+  .tcap { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); margin-bottom: 10px; }
+  .tcap b { color: var(--text); font-weight: 400; }
+  .tnote { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); margin-top: 9px; }
+
+  /* The sheet: a page of its own, not an overlay, so Back closes it through
+     the same history every page uses. One measure, a file list, a seat, a
+     box, and one line about what the upload is doing. */
+  .share { max-width: 640px; }
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 14px;
+    margin-bottom: 16px; }
+  .top h1 { margin: 0; }
+  .chip { font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+    background: transparent; border: 1px solid var(--line); border-radius: 999px;
+    padding: 7px 13px; cursor: pointer; min-height: 34px; }
+  .chip.add { color: var(--accent); border-color: rgba(244,118,0,.45); }
+  .chip[disabled] { color: var(--dim); border-color: var(--line); cursor: default; }
+
+  .files { border: 1px solid var(--line); border-radius: 10px; background: var(--s1);
+    padding: 10px 14px; margin-bottom: 14px; }
+  .file { display: flex; align-items: baseline; justify-content: space-between; gap: 14px;
+    padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 14px; }
+  .file:last-of-type { border-bottom: 0; }
+  .file .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file .sz, .total { color: var(--dim); font-family: var(--mono); font-size: var(--fs-label); flex: none; }
+  .file.current .nm { color: var(--accent); }
+  .total { margin-top: 8px; }
+  .total.over { color: var(--bad); }
+
+  .seat { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .seat .lab { color: var(--dim); font-family: var(--mono); font-size: var(--fs-label);
+    text-transform: uppercase; letter-spacing: .08em; }
+  .seat .pick { min-height: 44px; min-width: 220px; padding: 0 12px; border: 1px solid var(--ctl);
+    border-radius: 9px; background: var(--s2); color: var(--text); font: inherit;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .seat .pick .cv { color: var(--dim); }
+
+  .box { border: 1px solid var(--ctl); border-radius: 12px; background: var(--s1); padding: 10px; }
+  .box .field { min-height: 64px; color: var(--dim); font-size: var(--fs-prose); }
+  .acts { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 8px; }
+  .mic { width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--line);
+    display: grid; place-items: center; color: var(--muted); font-size: 16px; }
+
+  .line { margin: 10px 0 0; font-size: 13.5px; }
+  .line.bad { color: var(--bad); }
+  .line.ok { color: var(--ok); }
+  .line.dim { color: var(--dim); }
+  .path { margin: 4px 0 0; color: var(--muted); font-family: var(--mono);
+    font-size: var(--fs-label); overflow-wrap: anywhere; }
+
+  .bar { height: 4px; margin-top: 8px; border-radius: 2px; background: var(--s3); overflow: hidden; }
+  .bar .fill { height: 100%; background: var(--accent); }
+
+  .take { display: flex; align-items: center; gap: 10px; padding: 6px 2px;
+    font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); }
+  .take .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>the share sheet</h1>
+  <p class="sub">The page a share opens: the files another app handed forge, the seat they go to,
+    and the words that ride with them. One page of its own - the hardware Back closes it through
+    the same history every page uses. Every control is a 44px target on a finger, nothing exists
+    only on hover, and the box carries the composer's own dictation.</p>
+
+  <h2>the states it is drawn in</h2>
+  <div class="grid">
+
+    <div class="tile">
+      <div class="tcap">Idle - <b>the last seat preselected</b></div>
+      <div class="share">
+        <div class="top"><h1>share to a seat</h1><span class="chip">close</span></div>
+        <div class="files">
+          <div class="file"><span class="nm">IMG_2041.jpg</span><span class="sz">3.2 MB</span></div>
+          <div class="file"><span class="nm">invoice.pdf</span><span class="sz">184.0 KB</span></div>
+          <p class="total">3.4 MB of 200.0 MB</p>
+        </div>
+        <div class="seat"><span class="lab">to</span>
+          <span class="pick"><span>forge &#183; w1</span><span class="cv">&#9662;</span></span></div>
+        <div class="box">
+          <div class="field">say something about the files</div>
+          <div class="acts"><span class="mic">&#9673;</span><span class="chip add">send</span></div>
+        </div>
+      </div>
+      <div class="tnote">the picker opens on the seat the reader was last on, and on the roster's
+        first seat when there is no last one; the mic is the composer's own control</div>
+    </div>
+
+    <div class="tile">
+      <div class="tcap">Uploading - <b>resuming a held upload</b></div>
+      <div class="share">
+        <div class="top"><h1>share to a seat</h1><span class="chip">close</span></div>
+        <div class="files">
+          <div class="file current"><span class="nm">IMG_2041.jpg</span><span class="sz">3.2 MB</span></div>
+          <div class="file"><span class="nm">invoice.pdf</span><span class="sz">184.0 KB</span></div>
+          <p class="total">3.4 MB of 200.0 MB</p>
+        </div>
+        <div class="seat"><span class="lab">to</span>
+          <span class="pick"><span>forge &#183; w1</span><span class="cv">&#9662;</span></span></div>
+        <div class="box">
+          <div class="field">look at these</div>
+          <div class="acts"><span class="mic">&#9673;</span><span class="chip add" disabled>send</span></div>
+        </div>
+        <p class="line">Uploading IMG_2041.jpg - 62%</p>
+        <div class="bar"><div class="fill" style="width:62%"></div></div>
+        <p class="line dim">resuming from the server's offsets</p>
+      </div>
+      <div class="tnote">the upload comes first and the prompt second: nothing is sent until the
+        server has answered the paths it wrote</div>
+    </div>
+
+    <div class="tile">
+      <div class="tcap">Uploading - <b>the server no longer holds it</b></div>
+      <div class="share">
+        <div class="top"><h1>share to a seat</h1><span class="chip">close</span></div>
+        <div class="files">
+          <div class="file current"><span class="nm">IMG_2041.jpg</span><span class="sz">3.2 MB</span></div>
+          <p class="total">3.2 MB of 200.0 MB</p>
+        </div>
+        <div class="seat"><span class="lab">to</span>
+          <span class="pick"><span>forge &#183; w1</span><span class="cv">&#9662;</span></span></div>
+        <div class="box"><div class="field">look at these</div>
+          <div class="acts"><span class="mic">&#9673;</span><span class="chip add" disabled>send</span></div></div>
+        <p class="line">Uploading IMG_2041.jpg - 4%</p>
+        <div class="bar"><div class="fill" style="width:4%"></div></div>
+        <p class="line dim">starting over from the first byte</p>
+      </div>
+      <div class="tnote">a restart or the one-hour window took the upload; the sheet says which
+        of the two it is doing rather than starting over silently</div>
+    </div>
+
+    <div class="tile">
+      <div class="tcap">Failed - <b>the reason and a retry</b></div>
+      <div class="share">
+        <div class="top"><h1>share to a seat</h1><span class="chip">close</span></div>
+        <div class="files">
+          <div class="file"><span class="nm">IMG_2041.jpg</span><span class="sz">3.2 MB</span></div>
+        </div>
+        <div class="box"><div class="field">look at these</div>
+          <div class="acts"><span class="mic">&#9673;</span><span class="chip add" disabled>send</span></div></div>
+        <p class="line bad">the socket is not open</p>
+        <span class="chip">retry</span>
+      </div>
+      <div class="tnote">a retry continues from the server's offsets while it still holds the
+        upload, and starts over when it does not</div>
+    </div>
+
+    <div class="tile">
+      <div class="tcap">Done - <b>the paths the prompt names</b></div>
+      <div class="share">
+        <div class="top"><h1>share to a seat</h1><span class="chip">close</span></div>
+        <div class="files">
+          <div class="file"><span class="nm">IMG_2041.jpg</span><span class="sz">3.2 MB</span></div>
+          <p class="total">3.2 MB of 200.0 MB</p>
+        </div>
+        <div class="seat"><span class="lab">to</span>
+          <span class="pick"><span>forge &#183; w1</span><span class="cv">&#9662;</span></span></div>
+        <div class="box"><div class="field">look at these</div>
+          <div class="acts"><span class="mic">&#9673;</span><span class="chip add" disabled>send</span></div></div>
+        <p class="line ok">Sent to forge &#183; w1</p>
+        <p class="path">/Users/me/Library/Application Support/forge/inbox/Busytools/forge/20261112-154059-IMG_2041.jpg</p>
+        <span class="chip">done</span>
+      </div>
+      <div class="tnote">the agent receives an ordinary user message: the words, a blank line,
+        then one <span class="mono">file: &lt;path&gt;</span> line per file</div>
+    </div>
+
+    <div class="tile">
+      <div class="tcap">Over the cap - <b>nothing is sent</b></div>
+      <div class="share">
+        <div class="top"><h1>share to a seat</h1><span class="chip">close</span></div>
+        <div class="files">
+          <div class="file"><span class="nm">holiday.mov</span><span class="sz">412.0 MB</span></div>
+          <p class="total over">412.0 MB of 200.0 MB
+            <span class="over"> - one share carries at most 200.0 MB</span></p>
+        </div>
+        <div class="seat"><span class="lab">to</span>
+          <span class="pick"><span>forge &#183; w1</span><span class="cv">&#9662;</span></span></div>
+        <div class="box"><div class="field">say something about the files</div>
+          <div class="acts"><span class="mic">&#9673;</span><span class="chip add" disabled>send</span></div></div>
+      </div>
+      <div class="tnote">the limit is enforced on both sides: the sheet refuses before the first
+        byte, and the server refuses a begin past the same cap in its own words</div>
+    </div>
+
+    <div class="tile">
+      <div class="tcap">A share with no files - <b>the neutral state</b></div>
+      <div class="share">
+        <div class="top"><h1>share to a seat</h1><span class="chip">close</span></div>
+        <p class="line">This share carried no files.</p>
+      </div>
+      <div class="tnote">a SEND that carried no stream, or the route visited with no share behind
+        it, is said neutrally: nothing failed, so nothing is drawn as a failure</div>
+    </div>
+
+    <div class="tile">
+      <div class="tcap">A share that could not be read</div>
+      <div class="share">
+        <div class="top"><h1>share to a seat</h1><span class="chip">close</span></div>
+        <p class="line bad">The share could not be read: the provider refused it</p>
+      </div>
+      <div class="tnote">the Kotlin half copies each content URI into the app's cache; a copy that
+        fails is said, not drawn as an empty share</div>
+    </div>
+
+    <div class="tile">
+      <div class="tcap">No seat - <b>nothing to send to</b></div>
+      <div class="share">
+        <div class="top"><h1>share to a seat</h1><span class="chip">close</span></div>
+        <p class="line">No seat is running to send to.</p>
+      </div>
+      <div class="tnote">a roster with no seats is said instead of the files, the picker and the
+        box; the page itself is only mounted once a fleet read has answered</div>
+    </div>
+
+    <div class="tile">
+      <div class="tcap">Dictating - <b>the take's card in the field's place</b></div>
+      <div class="share">
+        <div class="top"><h1>share to a seat</h1><span class="chip">close</span></div>
+        <div class="files">
+          <div class="file"><span class="nm">IMG_2041.jpg</span><span class="sz">3.2 MB</span></div>
+        </div>
+        <div class="box">
+          <div class="take"><span class="dot"></span><span>recording &#183; 4s</span>
+            <span style="margin-left:auto">&#9632; stop</span></div>
+        </div>
+      </div>
+      <div class="tnote">one take, one landing: the words land at the end of the box, the same
+        <span class="mono">DictateControl</span> every box in this client wears</div>
+    </div>
+
+  </div>
+</div>
+</body>
+</html>

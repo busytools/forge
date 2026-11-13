@@ -3055,6 +3055,9 @@ pub(crate) fn execute_command_via_handle(
         | Command::DictateUninstall { .. }
         | Command::SetReviewThreadStatus { .. }
         | Command::CloseSession { .. }
+        | Command::FileUploadBegin { .. }
+        | Command::FileUploadResume { .. }
+        | Command::FileUploadEnd { .. }
         | Command::UpsertReviewThread { .. }
         | Command::DeleteReviewThread { .. }
         | Command::SubmitReview { .. }
