@@ -430,8 +430,28 @@ fn header_value_is(headers: &HeaderMap, name: &str, value: &str) -> bool {
 
 /// How deep a cause chain is walked before it is declared pathological.
 /// Real chains from reqwest + hyper are a handful of layers; a custom
-/// `source()` that never ends must not turn a log site into a hang.
+/// `source()` that returns itself must not turn a log site into a hang.
 const MAX_ERROR_CHAIN_DEPTH: usize = 16;
+
+/// The chain's layers, top first. The bound counts layers visited, not
+/// layers kept, so a self-referential `source()` terminates even when every
+/// layer renders the same text.
+fn error_chain<'a>(
+    error: &'a (dyn std::error::Error + 'static),
+) -> (Vec<&'a (dyn std::error::Error + 'static)>, bool) {
+    let mut layers = vec![error];
+    let mut source = error.source();
+    let mut truncated = false;
+    while let Some(cause) = source {
+        if layers.len() >= MAX_ERROR_CHAIN_DEPTH {
+            truncated = true;
+            break;
+        }
+        layers.push(cause);
+        source = cause.source();
+    }
+    (layers, truncated)
+}
 
 /// The whole cause chain of a failed send on one line, `top -> ... -> root`.
 ///
@@ -440,15 +460,21 @@ const MAX_ERROR_CHAIN_DEPTH: usize = 16;
 /// EMFILE) sits in a `source()` below it, so the top alone cannot tell the
 /// failures apart.
 fn describe_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
-    let mut parts = vec![error.to_string()];
-    let mut source = error.source();
-    while let Some(cause) = source {
-        let text = cause.to_string();
-        if parts.len() >= MAX_ERROR_CHAIN_DEPTH || parts.last().is_some_and(|last| *last == text) {
-            break;
+    let (layers, truncated) = error_chain(error);
+    let mut parts: Vec<String> = Vec::new();
+    for layer in layers {
+        let text = layer.to_string();
+        // A transparent wrapper renders its cause's text; keeping one copy
+        // and walking past it is what still reaches the root.
+        if parts.last().is_some_and(|last| *last == text) {
+            continue;
         }
         parts.push(text);
-        source = cause.source();
+    }
+    // Without the marker a capped chain ends mid-walk and its last line
+    // reads as the root.
+    if truncated {
+        parts.push(format!("... (truncated at {MAX_ERROR_CHAIN_DEPTH} layers)"));
     }
     parts.join(" -> ")
 }
@@ -484,11 +510,16 @@ impl ForwardFailureKind {
 /// Read the transport failure's kind out of the whole chain.
 ///
 /// String matching rather than downcasts: the layer that carries the cause
-/// is a different crate's error type on every reqwest release, and its
-/// words are the only stable part. Precedence runs most specific first -
-/// EMFILE is a connect failure by position but its own problem by cause,
-/// and both "connection reset by peer" and "connection closed" contain
-/// "connect".
+/// is a different crate's error type on every reqwest release, and matching
+/// words keeps one mechanism for the kinds reqwest has no predicate for
+/// (tls, reset, closed, fd). Precedence runs most specific first - EMFILE is
+/// a connect failure by position but its own problem by cause, and both
+/// "connection reset by peer" and "connection closed" contain "connect".
+///
+/// The top layer is skipped when a cause sits below it: reqwest's top
+/// `Display` embeds the request URL, so a host carrying "ssl" or "dns"
+/// would otherwise decide the kind. A flat error has no wrapper, so its own
+/// text is still read.
 fn classify_forward_failure(error: &(dyn std::error::Error + 'static)) -> ForwardFailureKind {
     const NEEDLES: &[(ForwardFailureKind, &[&str])] = &[
         (ForwardFailureKind::Fd, &["too many open files", "os error 24", "emfile"]),
@@ -508,17 +539,12 @@ fn classify_forward_failure(error: &(dyn std::error::Error + 'static)) -> Forwar
         (ForwardFailureKind::Closed, &["closed", "broken pipe", "eof"]),
         (ForwardFailureKind::Connect, &["connect", "refused", "unreachable", "network is down"]),
     ];
-    let mut layers = Vec::new();
-    let mut source = Some(error);
-    while let Some(cause) = source {
-        layers.push(cause.to_string().to_ascii_lowercase());
-        if layers.len() >= MAX_ERROR_CHAIN_DEPTH {
-            break;
-        }
-        source = cause.source();
-    }
+    let (layers, _) = error_chain(error);
+    let layers: Vec<String> =
+        layers.iter().map(|layer| layer.to_string().to_ascii_lowercase()).collect();
+    let candidates = if layers.len() > 1 { &layers[1..] } else { &layers[..] };
     for (kind, needles) in NEEDLES {
-        if layers.iter().any(|layer| needles.iter().any(|needle| layer.contains(needle))) {
+        if candidates.iter().any(|layer| needles.iter().any(|needle| layer.contains(needle))) {
             return *kind;
         }
     }
@@ -633,6 +659,7 @@ impl RouteHandler for Gateway {
                     org = %org,
                     project = %project,
                     session = %session,
+                    model = %model,
                     upstream = %url,
                     kind = kind.as_str(),
                     elapsed_ms = send_started.elapsed().as_millis(),
@@ -2142,8 +2169,30 @@ mod tests {
         }
     }
 
-    fn chained(top: &'static str, root: &'static str) -> Chained {
-        Chained { message: top, source: Some(Box::new(Chained { message: root, source: None })) }
+    fn chain(messages: &[&'static str]) -> Chained {
+        let mut messages = messages.to_vec();
+        let mut error =
+            Chained { message: messages.pop().expect("a chain has a root layer"), source: None };
+        while let Some(message) = messages.pop() {
+            error = Chained { message, source: Some(Box::new(error)) };
+        }
+        error
+    }
+
+    /// A `source()` that returns itself, the shape the depth cap exists for.
+    #[derive(Debug)]
+    struct Loops;
+
+    impl std::fmt::Display for Loops {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("loops forever")
+        }
+    }
+
+    impl std::error::Error for Loops {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(self)
+        }
     }
 
     /// reqwest's own `Display` is the top layer only; the cause a reader
@@ -2158,16 +2207,11 @@ mod tests {
             "a flat error is its own whole chain",
         );
 
-        let nested = Chained {
-            message: "error sending request for url (https://openrouter.ai/api/v1/messages)",
-            source: Some(Box::new(Chained {
-                message: "client error (Connect)",
-                source: Some(Box::new(Chained {
-                    message: "tcp connect error: Connection refused",
-                    source: None,
-                })),
-            })),
-        };
+        let nested = chain(&[
+            "error sending request for url (https://openrouter.ai/api/v1/messages)",
+            "client error (Connect)",
+            "tcp connect error: Connection refused",
+        ]);
         assert_eq!(
             describe_error_chain(&nested),
             "error sending request for url (https://openrouter.ai/api/v1/messages) -> client \
@@ -2176,37 +2220,118 @@ mod tests {
         );
     }
 
-    /// The kind has to come off the chain, not the top: every reqwest
-    /// transport failure reads the same at the top and differs only at its
-    /// root.
+    /// A wrapper whose Display delegates to its cause renders the same text
+    /// twice; the walk has to pass it and still reach the root.
+    #[test]
+    fn the_chain_describer_passes_a_repeated_layer() {
+        assert_eq!(
+            describe_error_chain(&chain(&["same text", "same text", "the root"])),
+            "same text -> the root",
+            "the repeat is skipped, the root below it is not lost",
+        );
+    }
+
+    /// A capped chain says so, so its last line cannot read as the root -
+    /// and a source that returns itself terminates.
+    #[test]
+    fn the_chain_walk_is_bounded_and_says_so() {
+        let messages: [&str; 20] = [
+            "layer 0", "layer 1", "layer 2", "layer 3", "layer 4", "layer 5", "layer 6", "layer 7",
+            "layer 8", "layer 9", "layer 10", "layer 11", "layer 12", "layer 13", "layer 14",
+            "layer 15", "layer 16", "layer 17", "layer 18", "layer 19",
+        ];
+        let described = describe_error_chain(&chain(&messages));
+        assert!(
+            described.ends_with("... (truncated at 16 layers)"),
+            "a capped chain carries the marker: {described}",
+        );
+        assert_eq!(
+            described.split(" -> ").count(),
+            MAX_ERROR_CHAIN_DEPTH + 1,
+            "the walk keeps the cap and adds the marker: {described}",
+        );
+
+        let looped = describe_error_chain(&Loops);
+        assert!(
+            looped.ends_with("... (truncated at 16 layers)"),
+            "a self-referential source terminates at the cap: {looped}",
+        );
+    }
+
+    /// The kind has to come off the chain, not the top, and every real
+    /// reqwest connect-phase error carries a `client error (Connect)`
+    /// wrapper above its cause - so each case here holds a "connect" token
+    /// above its own kind, pinning the precedence and not just the needles.
     #[test]
     fn the_classifier_reads_the_kind_off_the_chain() {
         let cases = [
             (
-                chained(
-                    "error sending request",
+                chain(&[
+                    "error sending request for url (https://openrouter.ai/api/v1/messages)",
+                    "client error (Connect)",
                     "dns error: failed to lookup address information: nodename nor servname \
                      provided, or not known",
-                ),
+                ]),
                 ForwardFailureKind::Dns,
             ),
             (
-                chained("error sending request", "tcp connect error: Connection refused"),
+                chain(&[
+                    "error sending request",
+                    "client error (Connect)",
+                    "tcp connect error: Connection refused",
+                ]),
                 ForwardFailureKind::Connect,
             ),
-            (chained("error sending request", "tls handshake eof"), ForwardFailureKind::Tls),
             (
-                chained("error sending request", "connection reset by peer"),
+                chain(&["error sending request", "client error (Connect)", "tls handshake eof"]),
+                ForwardFailureKind::Tls,
+            ),
+            (
+                chain(&[
+                    "error sending request",
+                    "client error (Connect)",
+                    "connection reset by peer",
+                ]),
                 ForwardFailureKind::Reset,
             ),
             (
-                chained("error sending request", "connection closed before message completed"),
+                chain(&[
+                    "error sending request",
+                    "client error (Connect)",
+                    "connection closed before message completed",
+                ]),
                 ForwardFailureKind::Closed,
             ),
-            (chained("error sending request", "operation timed out"), ForwardFailureKind::Timeout),
             (
-                chained("error sending request", "Too many open files (os error 24)"),
+                chain(&["error sending request", "client error (Connect)", "operation timed out"]),
+                ForwardFailureKind::Timeout,
+            ),
+            (
+                chain(&[
+                    "error sending request",
+                    "client error (Connect)",
+                    "tcp connect error: Too many open files (os error 24)",
+                ]),
                 ForwardFailureKind::Fd,
+            ),
+            (
+                // The only matching token is upper case: the classifier has
+                // to fold before it compares.
+                chain(&[
+                    "error sending request",
+                    "client error (Connect)",
+                    "TLS handshake failure",
+                ]),
+                ForwardFailureKind::Tls,
+            ),
+            (
+                // reqwest's top Display embeds the request URL; a host
+                // carrying a kind word there must not decide the kind.
+                chain(&[
+                    "error sending request for url (https://ssl-proxy.internal/v1/messages)",
+                    "tcp connect error: Connection refused",
+                ]),
+                ForwardFailureKind::Connect,
             ),
             (
                 Chained { message: "something else entirely", source: None },
@@ -2220,6 +2345,138 @@ mod tests {
                 "chain '{}' classifies as {expected:?}",
                 describe_error_chain(&error),
             );
+        }
+    }
+
+    /// A needle below the cap is never reached, so the classifier is
+    /// bounded by the same walk the describer uses.
+    #[test]
+    fn the_classifier_does_not_read_past_the_cap() {
+        let mut messages: [&str; 20] = [
+            "layer 0", "layer 1", "layer 2", "layer 3", "layer 4", "layer 5", "layer 6", "layer 7",
+            "layer 8", "layer 9", "layer 10", "layer 11", "layer 12", "layer 13", "layer 14",
+            "layer 15", "layer 16", "layer 17", "layer 18", "layer 19",
+        ];
+        messages[17] = "connection reset by peer";
+        assert_eq!(
+            classify_forward_failure(&chain(&messages)),
+            ForwardFailureKind::Other,
+            "the needle past the cap is not read",
+        );
+    }
+
+    #[test]
+    fn every_kind_names_itself() {
+        for (kind, name) in [
+            (ForwardFailureKind::Dns, "dns"),
+            (ForwardFailureKind::Connect, "connect"),
+            (ForwardFailureKind::Tls, "tls"),
+            (ForwardFailureKind::Reset, "reset"),
+            (ForwardFailureKind::Closed, "closed"),
+            (ForwardFailureKind::Timeout, "timeout"),
+            (ForwardFailureKind::Fd, "fd"),
+            (ForwardFailureKind::Other, "other"),
+        ] {
+            assert_eq!(kind.as_str(), name);
+        }
+    }
+
+    /// Every record a site emitted while the capture was installed, as
+    /// (level, target, `name=value` fields).
+    #[derive(Clone, Default)]
+    struct Caught(Arc<std::sync::Mutex<Vec<(tracing::Level, &'static str, String)>>>);
+
+    #[derive(Default)]
+    struct Fields(String);
+
+    impl tracing::field::Visit for Fields {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if !self.0.is_empty() {
+                self.0.push(' ');
+            }
+            let _ = std::fmt::write(&mut self.0, format_args!("{}={value:?}", field.name()));
+        }
+
+        fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+            self.record_debug(field, &value);
+        }
+
+        fn record_u128(&mut self, field: &tracing::field::Field, value: u128) {
+            self.record_debug(field, &value);
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Caught {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = Fields::default();
+            event.record(&mut fields);
+            self.0.lock().expect("capture").push((
+                *event.metadata().level(),
+                event.metadata().target(),
+                fields.0,
+            ));
+        }
+    }
+
+    /// The line this change exists for: the 502 body carries no cause, so
+    /// the record is the only place it survives. Deleting the warn block,
+    /// demoting its level or dropping a field must fail here.
+    #[tokio::test]
+    async fn a_failed_forward_is_recorded_with_its_cause_chain() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let harness = harness(Duration::ZERO).await;
+        // A port the probe bound and dropped: the forward's connect is
+        // refused for real, through reqwest's own error chain.
+        let dead_port = free_port().await;
+        let dead_env = HashMap::from([
+            ("ANTHROPIC_BASE_URL".to_owned(), format!("http://127.0.0.1:{dead_port}")),
+            ("ANTHROPIC_AUTH_TOKEN".to_owned(), "real-openrouter-key".to_owned()),
+            ("ANTHROPIC_API_KEY".to_owned(), String::new()),
+        ]);
+        harness.gateway.pool.replace_accounts(&[forge_primitives::account::LoadedAccount {
+            display_name: "OpenRouter".to_owned(),
+            provider: forge_primitives::account::Provider::Openrouter,
+            base_url: None,
+            models: vec!["glm-5.3-flash".to_owned()],
+            model_aliases: std::collections::HashMap::new(),
+            model_slugs: std::collections::HashMap::new(),
+            env: dead_env,
+        }]);
+
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::Registry::default().with(caught.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let response = post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = response.text().await.expect("a 502 body");
+        assert!(body.starts_with("upstream request failed: "), "the 502 body is unchanged: {body}");
+
+        let caught = caught.0.lock().expect("capture").clone();
+        let ours: Vec<_> =
+            caught.iter().filter(|(_, target, _)| *target == "forge_gateway::forward").collect();
+        assert_eq!(ours.len(), 1, "one failed forward emits one record: {caught:?}");
+        let (level, _, fields) = &ours[0];
+        assert_eq!(*level, tracing::Level::WARN, "the line claims forge's own problem: {fields}");
+        for needle in [
+            "event_name=\"gateway_forward_failed\"",
+            "account=OpenRouter",
+            "org=Busytools",
+            "project=forge",
+            "session=session-1",
+            "model=glm-5.3-flash",
+            "upstream=http://127.0.0.1:",
+            "kind=\"connect\"",
+            "elapsed_ms=",
+            "error_chain=",
+            " -> ",
+            "Connection refused",
+        ] {
+            assert!(fields.contains(needle), "{needle} missing from {fields}");
         }
     }
 }
