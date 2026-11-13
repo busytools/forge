@@ -1,11 +1,14 @@
 package dev.vedhavyas.forge
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.util.Log
 import androidx.core.content.IntentCompat
 import app.tauri.annotation.Command
+import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSArray
@@ -26,6 +29,13 @@ internal data class SharedFile(
   val size: Long,
   val mime: String?,
 )
+
+/** The delivery the page acknowledges: the sequence number it was handed. */
+@InvokeArg
+// Field for field with `AckShare` in the shell's `share` module.
+class AckArgs {
+  var seq: Long = 0
+}
 
 /**
  * The share sheet's intake: the files another app shared with forge.
@@ -53,6 +63,11 @@ internal data class SharedFile(
  * including one that re-delivers a launch intent after a process restart -
  * answers again. A duplicate sheet is visible and dismissable; a swallowed
  * share is not, and Android cannot tell the two apart across a process.
+ *
+ * **The buffer, its acknowledgement and the intent plumbing are device-only.**
+ * `SharePluginTest` pins the pure rules - what counts as a share, the token,
+ * the copy budget - and the delivery path itself is exercised on a device,
+ * where an intent and a webview exist to exercise it.
  */
 @TauriPlugin
 class SharePlugin(private val activity: Activity) : Plugin(activity) {
@@ -72,22 +87,34 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
    */
   @Volatile private var pageReady = false
 
+  init {
+    // **A build that wrote the answered token to disk leaves it behind**, and
+    // "this process only" has to hold on an upgrade too: one clear at startup
+    // finishes the move off SharedPreferences.
+    activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
+  }
+
   @Command
   fun take(invoke: Invoke) {
-    // **A share buffered while no page listened is this ask's answer**: a
-    // warm share that arrived before the listener registered is not lost.
-    takeBuffered()?.let {
-      invoke.resolveObject(it)
+    // **A share buffered while the page had no listener is this ask's
+    // answer**: a warm share that arrived before the listener registered is
+    // not lost, and taking it is what marks it delivered.
+    takeBuffered()?.let { (answer, token) ->
+      markAnswered(token)
+      invoke.resolveObject(answer)
       return
     }
     val intent = MainActivity.newest
     val streams = streamsOf(intent)
-    val token = shareToken(intent?.action, intent?.type, streams)
+    val token = shareToken(MainActivity.launches, intent?.action, intent?.type, streams)
     if (token == null || !shouldAnswer(token, answered)) {
       invoke.resolveObject(payload(emptyList(), null))
       return
     }
-    answer(token, streams, invoke::resolveObject)
+    answer(streams) { answerPayload ->
+      markAnswered(token)
+      invoke.resolveObject(answerPayload)
+    }
   }
 
   /**
@@ -104,6 +131,30 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   /**
+   * The page received the share it was pushed, so the delivery is proven.
+   *
+   * **The mark follows an acknowledgement, never a fire-and-forget push**: a
+   * trigger into a webview with no listener (a page reload, a re-created
+   * activity) is dropped silently by Tauri, so marking there would lose the
+   * share for good. The buffered answer stays until this arrives or the next
+   * ask drains it.
+   */
+  @Command
+  fun ack(invoke: Invoke) {
+    val args = invoke.parseArgs(AckArgs::class.java)
+    synchronized(lock) {
+      val token = pendingToken
+      if (pendingSeq == args.seq && token != null) {
+        markAnswered(token)
+        pending = null
+        pendingToken = null
+        pendingSeq = 0
+      }
+    }
+    invoke.resolve()
+  }
+
+  /**
    * A share into an app that is already running.
    *
    * **The intent is answered here rather than left for the page's ask**: the
@@ -113,43 +164,35 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
     val streams = streamsOf(intent)
-    val token = shareToken(intent.action, intent.type, streams) ?: return
-    answer(token, streams) { answerPayload ->
+    val token = shareToken(MainActivity.launches, intent.action, intent.type, streams) ?: return
+    val seq = nextSeq()
+    answer(streams) { answerPayload ->
+      answerPayload.put("seq", seq)
       activity.runOnUiThread {
-        // **A share that arrives before the page announces its listener is
-        // buffered** rather than emitted into a webview that would drop it;
-        // the page's first ask drains the buffer. Both paths mark it
-        // answered, because both are deliveries this process guarantees.
-        if (pageReady && hasListener("share")) {
-          trigger("share", answerPayload)
-        } else {
-          buffer(answerPayload)
-        }
-        markAnswered(token)
+        // **The answer is held until the page takes or acknowledges it.** A
+        // push into a webview with no listener is dropped silently, so the
+        // buffer is what makes a lost push recoverable by the next ask; the
+        // page's acknowledgement marks a delivered one.
+        buffer(answerPayload, token, seq)
+        if (pageReady) trigger("share", answerPayload)
       }
     }
   }
 
   /** Answer one share: an empty SEND is said, and the rest are copied. */
-  private fun answer(
-    token: String,
-    streams: List<String>,
-    done: (JSObject) -> Unit,
-  ) {
+  private fun answer(streams: List<String>, done: (JSObject) -> Unit) {
     if (streams.isEmpty()) {
       // **A SEND that carries no stream is a share of nothing, not a
       // failure**: the payload says so with its own flag, so the sheet draws
       // its neutral "carried no files" rather than an error it did not meet.
       done(payload(emptyList(), null, empty = true))
-      markAnswered(token)
       return
     }
     if (streams.size > MAX_FILES) {
       done(payload(emptyList(), "one share carries at most $MAX_FILES files"))
-      markAnswered(token)
       return
     }
-    copy(token, streams, done)
+    copy(streams, done)
   }
 
   /**
@@ -159,17 +202,14 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
    * timer answers the timeout even while the copy thread is blocked, and the
    * first answer wins.
    */
-  private fun copy(token: String, streams: List<String>, done: (JSObject) -> Unit) {
+  private fun copy(streams: List<String>, done: (JSObject) -> Unit) {
     val delivered = AtomicBoolean(false)
     val finish: (List<SharedFile>, String?) -> Unit = { files, error ->
       if (delivered.compareAndSet(false, true)) {
-        activity.runOnUiThread {
-          done(payload(files, error))
-          // **The mark follows the delivery, never precedes it**: a process
-          // that dies mid-copy never showed the share, so the next start must
-          // answer it rather than treat it as already sent.
-          markAnswered(token)
-        }
+        // **The door that asked marks the delivery, not this copy**: an ask
+        // resolves it to the page, an event buffers and triggers it, and only
+        // the page's acknowledgement proves the pushed one arrived.
+        activity.runOnUiThread { done(payload(files, error)) }
       }
     }
     val running = AtomicReference<Future<*>?>(null)
@@ -282,19 +322,40 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
     answered = token
   }
 
-  private fun buffer(answer: JSObject) {
-    synchronized(lock) { pending = answer }
+  /**
+   * Hold one share's answer until the page takes it or acknowledges it.
+   *
+   * **One slot is enough for a person's own pace**, and a replacement is said
+   * rather than swallowed: two shares inside one round trip would otherwise
+   * lose the first with no trace.
+   */
+  private fun buffer(answer: JSObject, token: String, seq: Long) {
+    synchronized(lock) {
+      if (pending != null) Log.w(TAG, "a buffered share was replaced before the page took it")
+      pending = answer
+      pendingToken = token
+      pendingSeq = seq
+    }
   }
 
-  private fun takeBuffered(): JSObject? {
+  /** The buffered share, with the token a take marks delivered. */
+  private fun takeBuffered(): Pair<JSObject, String>? {
     synchronized(lock) {
       val answer = pending
+      val token = pendingToken
       pending = null
-      return answer
+      pendingToken = null
+      pendingSeq = 0
+      return if (answer !== null && token !== null) Pair(answer, token) else null
     }
   }
 
   companion object {
+    private const val TAG = "SharePlugin"
+
+    /** The preferences a build before the in-process token wrote to. */
+    private const val PREFS = "forge-share"
+
     /** How long a copied share is kept before the next one drops it. */
     private const val KEEP = 24L * 60 * 60 * 1000
 
@@ -327,9 +388,22 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
       return landed + copied
     }
 
-    /** The stashed share a page had no listener for. */
+    /** The stashed share a page had no listener for, and its delivery token. */
     private var pending: JSObject? = null
+    private var pendingToken: String? = null
+
+    /** The sequence number the buffered answer carries, which its ack names. */
+    private var pendingSeq: Long = 0
+    private var nextSeq: Long = 1
     private val lock = Any()
+
+    /** The next delivery's sequence number, so an ack names the one it took. */
+    private fun nextSeq(): Long =
+      synchronized(lock) {
+        val seq = nextSeq
+        nextSeq += 1
+        seq
+      }
 
     /** The share this process last answered; cleared by a new process. */
     @Volatile private var answered: String? = null
@@ -378,21 +452,28 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
       }
 
     /**
-     * What one share carried, which is its identity within a process.
+     * What identifies one launch-door delivery of a share.
      *
-     * **Only the launch-ask door compares this**: a warm share always
-     * answers, so a second share of the same file is never swallowed. The
-     * token is deliberately content-only - the launch and process stamps
-     * cannot survive a restart, and a comparison across one is exactly what
-     * lost a genuine re-share before.
+     * **A reload is not a second share, and a new activity launch is.** The
+     * launch number is in the token, so a page reload inside one launch
+     * matches the answered token, while a share that opens a fresh activity
+     * (the launch count moves) answers again even for the same files. The
+     * process stamp is deliberately absent: it cannot survive a restart, and
+     * comparing across one is what lost a genuine re-share before - after a
+     * restart the answered token is empty, so everything answers.
      *
      * **A SEND with no stream still has a token**: it is a share this app
      * takes, it carried no file, and the sheet says so rather than the app
      * opening on nothing.
      */
-    internal fun shareToken(action: String?, type: String?, streams: List<String>): String? {
+    internal fun shareToken(
+      launch: Int,
+      action: String?,
+      type: String?,
+      streams: List<String>,
+    ): String? {
       if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return null
-      return listOf(action ?: "", type ?: "", streams.joinToString("\u0000"))
+      return listOf(launch.toString(), action ?: "", type ?: "", streams.joinToString("\u0000"))
         .joinToString("\u0000")
     }
 

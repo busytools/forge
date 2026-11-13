@@ -702,6 +702,7 @@ pub fn run() -> u8 {
             biometric::biometric_remove,
             share::client_share_take,
             share::client_share_ready,
+            share::client_share_ack,
             share::client_share_upload,
             perf::client_perf
         ]);
@@ -780,6 +781,7 @@ pub fn run() -> u8 {
             biometric::biometric_remove,
             share::client_share_take,
             share::client_share_ready,
+            share::client_share_ack,
             share::client_share_upload,
             perf::client_perf
         ]);

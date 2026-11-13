@@ -199,6 +199,18 @@
     if (seat === null) return;
     const words = landing.place(seatId, composer.notice, composer.take?.generation ?? null);
     if (words === null) return;
+    // **A carried notice is the record re-handing words to a box this sheet
+    // no longer holds**: the share that began the take is gone, and the next
+    // share is a fresh sheet for other files, so the words are dropped
+    // rather than guessed into its box - the same rule every page that
+    // dictates follows.
+    if (
+      composer.take === null &&
+      composer.notice?.kind === 'landed' &&
+      composer.notice.carried === true
+    ) {
+      return;
+    }
     text = joined(text, words);
     landing.placed(composer.notice);
     field?.focus();

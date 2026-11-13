@@ -19,6 +19,9 @@ import type { Shared } from './upload';
 /** The files a share handed this app, or `null` when none is waiting. */
 export const pendingShare = writable<Shared | null>(null);
 
+/** How long the launch waits for the intake's readiness answer, at most. */
+const READY_CAP_MS = 2000;
+
 /** A payload as a share, or `null` when it names no share at all. */
 export function shareOf(value: unknown): Shared | null {
   if (typeof value !== 'object' || value === null) return null;
@@ -94,6 +97,11 @@ export async function watchShares(): Promise<() => void> {
   if (!canHost()) return () => {};
   const { listen } = await import('@tauri-apps/api/event');
   return listen<unknown>('client://share', (event) => {
+    // **Received is what the intake needs to know**, whether or not the sheet
+    // opens: the payload reached this page, so the intake may stop holding it
+    // for the next ask.
+    const seq = seqOf(event.payload);
+    if (seq !== null) void ackShare(seq);
     const shared = shareOf(event.payload);
     if (shared === null || !worthOpening(shared)) return;
     pendingShare.set(shared);
@@ -106,6 +114,31 @@ export async function watchShares(): Promise<() => void> {
     // held move would swallow the share into a store no page draws.
     goTo({ name: 'share' }, { force: true });
   });
+}
+
+/** The delivery number a pushed share carries, or `null` when it names none. */
+function seqOf(value: unknown): number | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const held = value as Record<string, unknown>;
+  const seq = held['seq'];
+  return typeof seq === 'number' && Number.isFinite(seq) ? seq : null;
+}
+
+/**
+ * Tell the shell's share intake the pushed share arrived.
+ *
+ * **A push is not proof of receipt**: the shell drops an emit into a page with
+ * no listener, so the intake holds the share until this arrives. Best-effort;
+ * an ack that cannot be sent leaves the share to the next ask, which shows it
+ * again rather than losing it.
+ */
+async function ackShare(seq: number): Promise<void> {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('client_share_ack', { seq });
+  } catch (why) {
+    console.warn('the share intake was not told the push arrived', why);
+  }
 }
 
 /**
@@ -121,7 +154,15 @@ export async function readyForShares(): Promise<void> {
   if (!canHost()) return;
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('client_share_ready');
+    // **A hung intake must not hold the launch.** The announcement is a
+    // two-line plugin command; if it has not answered in two seconds the
+    // page launches anyway and every warm share waits in the intake's buffer
+    // for the next ask, which is the safe side of a missing announcement.
+    const announced = invoke('client_share_ready');
+    const capped = new Promise<void>((resolve) => {
+      setTimeout(resolve, READY_CAP_MS);
+    });
+    await Promise.race([announced, capped]);
   } catch (why) {
     console.warn('the share intake was not told the page is listening', why);
   }

@@ -137,6 +137,28 @@ pub async fn client_share_ready(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+/// Acknowledge the share the page just received, so its delivery is proven.
+///
+/// **A push is not proof of receipt**: Tauri drops an emit into a webview with
+/// no listener, so the Kotlin half keeps the share buffered until the page's
+/// own listener says it arrived. A dropped push then reaches the page through
+/// its next ask instead of being marked delivered and lost.
+#[tauri::command]
+pub async fn client_share_ack(app: tauri::AppHandle, seq: u64) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let reader = app
+            .try_state::<Arc<Reader>>()
+            .ok_or_else(|| "the share plugin is not there".to_owned())?;
+        return reader.ack(seq).await;
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, seq);
+        Ok(())
+    }
+}
+
 /// Upload one share to a seat's inbox, answering the absolute paths the
 /// server wrote.
 ///
@@ -452,6 +474,21 @@ impl Reader {
     async fn ready(&self) -> Result<(), String> {
         self.0.run_mobile_plugin_async::<()>("ready", ()).await.map_err(|why| why.to_string())
     }
+
+    async fn ack(&self, seq: u64) -> Result<(), String> {
+        self.0
+            .run_mobile_plugin_async::<()>("ack", AckShare { seq })
+            .await
+            .map_err(|why| why.to_string())
+    }
+}
+
+/// The delivery one acknowledgement names, field for field with `AckArgs` in
+/// the Kotlin plugin.
+#[cfg(target_os = "android")]
+#[derive(serde::Serialize)]
+struct AckShare {
+    seq: u64,
 }
 
 /// The listener the Kotlin half reports a share into a running app through.

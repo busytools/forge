@@ -62,9 +62,15 @@
   const route = $derived($currentRoute);
   // **A share is delivered once**: leaving the sheet drops it, so a later
   // connect (or any other move back to `/share`) cannot resurrect a share
-  // that was already sent. The store is the sheet's input, not a history.
+  // the reader is done with. The clear is on the way OUT, not on every route
+  // that is not `share` - the launch sets the store before `boot()` finishes,
+  // and a notification or a connect in that window moves the route while the
+  // shared files are still the ones about to be drawn.
+  let shown: Route['name'] | null = null;
   $effect(() => {
-    if ($currentRoute.name !== 'share') pendingShare.set(null);
+    const name = $currentRoute.name;
+    if (shown === 'share' && name !== 'share') pendingShare.set(null);
+    shown = name;
   });
   let settings = $state<ClientSettings>(DEFAULT_SETTINGS);
   let address = $state(named ?? remembered ?? DEFAULT_ADDRESS);
@@ -114,8 +120,10 @@
     // rather than swallowed, and does not hold the launch.
     void (async () => {
       let stop = () => {};
+      let listening = false;
       try {
         stop = await watchShares();
+        listening = true;
       } catch (why) {
         console.warn('the share listener could not be registered', why);
       }
@@ -127,8 +135,11 @@
       // **The page's listener is what a warm share is pushed to, so it is
       // announced before the launch's share is asked for**: the Kotlin half
       // buffers a share until this arrives rather than emitting it into a
-      // webview that has no listener yet.
-      await readyForShares();
+      // webview that has no listener yet. **Only a listener that is up may be
+      // announced** - announcing without one arms the very swallow this
+      // exists to prevent, and a listener that failed leaves the share
+      // buffered for the next ask instead.
+      if (listening) await readyForShares();
       await open();
     })();
     // Once per launch, whatever route it opened on - the notice draws wherever
@@ -188,9 +199,12 @@
     }
     failure = launched.failure;
     if (launched.connected) take(launched.connected);
-    if (share) {
+    if (share || get(pendingShare) !== null) {
       // **A share outranks both**: the person handed forge a file and the
-      // sheet is where it goes.
+      // sheet is where it goes. **A warm share that arrived while the boot
+      // was in flight is a share too**: its listener already moved the
+      // reader to `/share`, and the launch's own route guess must not move
+      // them off the file they just shared.
       goTo({ name: 'share' });
     } else if (target !== null) {
       // **The target a tap named outranks the home the launch would land

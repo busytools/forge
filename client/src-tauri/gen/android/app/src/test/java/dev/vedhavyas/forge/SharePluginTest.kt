@@ -52,23 +52,23 @@ class SharePluginTest {
     // token is what lets the sheet say it carried no file instead of opening
     // on nothing. Only an intent that is not a share has none.
     assertEquals(
-      listOf(Intent.ACTION_SEND, "image/png", "").joinToString("\u0000"),
-      SharePlugin.shareToken(Intent.ACTION_SEND, "image/png", emptyList()),
+      listOf(LAUNCH.toString(), Intent.ACTION_SEND, "image/png", "").joinToString("\u0000"),
+      SharePlugin.shareToken(LAUNCH, Intent.ACTION_SEND, "image/png", emptyList()),
     )
-    assertNull(SharePlugin.shareToken(Intent.ACTION_MAIN, "image/png", listOf("content://a")))
-    assertNull(SharePlugin.shareToken(null, null, emptyList()))
+    assertNull(SharePlugin.shareToken(LAUNCH, Intent.ACTION_MAIN, "image/png", listOf("content://a")))
+    assertNull(SharePlugin.shareToken(LAUNCH, null, null, emptyList()))
   }
 
   @Test
   fun oneShareKeepsOneTokenAndAnotherShareDoesNot() {
-    val first = SharePlugin.shareToken(Intent.ACTION_SEND, "image/png", listOf("content://a"))
+    val first = SharePlugin.shareToken(LAUNCH, Intent.ACTION_SEND, "image/png", listOf("content://a"))
     assertEquals(
       first,
-      SharePlugin.shareToken(Intent.ACTION_SEND, "image/png", listOf("content://a")),
+      SharePlugin.shareToken(LAUNCH, Intent.ACTION_SEND, "image/png", listOf("content://a")),
     )
     assertNotEquals(
       first,
-      SharePlugin.shareToken(Intent.ACTION_SEND, "image/png", listOf("content://b")),
+      SharePlugin.shareToken(LAUNCH, Intent.ACTION_SEND, "image/png", listOf("content://b")),
     )
   }
 
@@ -84,21 +84,36 @@ class SharePluginTest {
     assertTrue(!SharePlugin.shouldAnswer(null, "a"))
   }
 
-  /// **A page reload is not a second share**: the token is unchanged, so it
-  /// matches the one this process already answered.
+  /// **A page reload is not a second share**: the launch number is unchanged,
+  /// so the token matches the one this process already answered.
   @Test
   fun aPageReloadIsNotASecondShare() {
-    val token = SharePlugin.shareToken(Intent.ACTION_SEND, "image/png", listOf("content://a"))
+    val token =
+      SharePlugin.shareToken(LAUNCH, Intent.ACTION_SEND, "image/png", listOf("content://a"))
     assertTrue(!SharePlugin.shouldAnswer(token, token))
   }
 
-  /// **Across a process the answered token is gone, so the same share
-  /// answers again.** That is the direction: a duplicate sheet is visible and
-  /// dismissable, while a genuine re-share suppressed as a re-delivery is
-  /// lost with no trace. Android cannot tell the two apart across a restart.
+  /// **A new activity launch with the same files is a new share**: the launch
+  /// number moved, so the token differs even though the content does not.
+  /// This is what tells a re-share from a reload inside one launch.
   @Test
-  fun aReShareAfterAProcessRestartIsAnsweredAgain() {
-    val token = SharePlugin.shareToken(Intent.ACTION_SEND, "image/png", listOf("content://a"))
+  fun aNewLaunchWithTheSameFilesIsAnsweredAgain() {
+    val first = SharePlugin.shareToken(LAUNCH, Intent.ACTION_SEND, "image/png", listOf("content://a"))
+    val second =
+      SharePlugin.shareToken(LAUNCH + 1, Intent.ACTION_SEND, "image/png", listOf("content://a"))
+    assertNotEquals(first, second)
+    assertTrue(SharePlugin.shouldAnswer(second, first))
+  }
+
+  /// **A token with no mark is answered**: the mark is a process static and
+  /// is not persisted, so a process that starts with the launch intent still
+  /// in its task answers the share again. That is the direction - a duplicate
+  /// sheet is visible and dismissable, while a genuine re-share suppressed as
+  /// a re-delivery is lost with no trace.
+  @Test
+  fun aShareWithNoAnsweredMarkIsAnswered() {
+    val token =
+      SharePlugin.shareToken(LAUNCH, Intent.ACTION_SEND, "image/png", listOf("content://a"))
     assertTrue(SharePlugin.shouldAnswer(token, null))
   }
 
@@ -232,5 +247,8 @@ class SharePluginTest {
 
   private companion object {
     const val BUDGET = 200L * 1024 * 1024
+
+    /** The activity launch number a token carries in the tests. */
+    const val LAUNCH = 1
   }
 }

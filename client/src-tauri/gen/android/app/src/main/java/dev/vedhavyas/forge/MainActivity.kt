@@ -44,7 +44,7 @@ class MainActivity : TauriActivity() {
      * tell them apart. Zero is the not-yet-a-launch sentinel, which the shell
      * reads as already answered; [onCreate] makes the first launch one.
      */
-    internal var launches = 0
+    @Volatile internal var launches = 0
 
     /**
      * The newest intent this process's activity was given.

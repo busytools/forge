@@ -84,7 +84,7 @@ const mockRereadHome = vi.mocked(rereadHome);
  * every other command answers nothing - which is what a shell-less page would
  * have got anyway.
  */
-const { invokeMock, order, listenHold } = vi.hoisted(() => ({
+const { invokeMock, order, listenHold, readyHold } = vi.hoisted(() => ({
   /** Every shell command and event listen, in the order the page made them. */
   order: [] as string[],
   invokeMock: vi.fn((_command: string, _args?: unknown): Promise<unknown> => Promise.resolve(null)),
@@ -97,6 +97,8 @@ const { invokeMock, order, listenHold } = vi.hoisted(() => ({
    * makes the launch wait where the real event chunk does.
    */
   listenHold: { current: null as null | { promise: Promise<void>; release: () => void } },
+  /** The same hold for the readiness announcement, so its await is pinned too. */
+  readyHold: { current: null as null | { promise: Promise<void>; release: () => void } },
 }));
 
 vi.mock('@tauri-apps/api/core', async (importOriginal) => {
@@ -107,7 +109,9 @@ vi.mock('@tauri-apps/api/core', async (importOriginal) => {
       order.push(args[0]);
       // **The arity is kept**: a one-argument command has to stay one
       // argument for the assertions that name its call.
-      return invokeMock(...args);
+      const answered = invokeMock(...args);
+      const hold = args[0] === 'client_share_ready' ? readyHold.current : null;
+      return hold === null ? answered : hold.promise.then(() => answered);
     },
   };
 });
@@ -440,6 +444,7 @@ beforeEach(() => {
   Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: Socket });
   order.length = 0;
   listenHold.current = null;
+  readyHold.current = null;
   mockWatchUpdate.mockClear();
   mockRereadHome.mockReset();
   invokeMock.mockReset();
@@ -593,6 +598,13 @@ describe('the shell at launch', () => {
       }),
       release: () => release(),
     };
+    let announce: () => void = () => {};
+    readyHold.current = {
+      promise: new Promise<void>((resolve) => {
+        announce = resolve;
+      }),
+      release: () => announce(),
+    };
     try {
       const opening = openAt('/', null);
       await until(
@@ -604,6 +616,12 @@ describe('the shell at launch', () => {
         `the launch asked for its share while the listener was still registering; calls: ${order.join(', ')}`,
       ).not.toContain('client_share_take');
       listenHold.current.release();
+      await until(() => order.includes('client_share_ready'), 'the page to announce its listener');
+      expect(
+        order,
+        `the launch asked for its share before the intake was told; calls: ${order.join(', ')}`,
+      ).not.toContain('client_share_take');
+      readyHold.current.release();
       await opening;
       await until(
         () => order.includes('client_share_take'),
@@ -632,6 +650,7 @@ describe('the shell at launch', () => {
       );
     } finally {
       listenHold.current = null;
+      readyHold.current = null;
     }
   });
 
