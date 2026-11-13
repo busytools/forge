@@ -850,10 +850,10 @@ pub enum Command {
         key: SessionSlot,
         options: crate::dictate::DictateAxes,
         /// The surface whose own capture began this take - `composer`,
-        /// `review`, `files`, `doc` - carried so the landed words reach the
-        /// surface that began them and no other. Absent from a client older
-        /// than the field, which is the one case every surface reads as "the
-        /// old rules decide", as it did before.
+        /// `review`, `files`, `doc`, `share` - carried so the landed words
+        /// reach the surface that began them and no other. Absent from a
+        /// client older than the field, which is the one case every surface
+        /// reads as "the old rules decide", as it did before.
         ///
         /// **Read as an opaque name, never validated.** The vocabulary is the
         /// client's own, and under forge's trust model a client that misnames
