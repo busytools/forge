@@ -114,12 +114,14 @@ const lines = () =>
 describe('the share sheet', () => {
   it('preselects the seat the reader was last on', () => {
     draw({ preselect: WORKER });
-    expect(picker()?.textContent).toContain('proj \u{b7} w1');
+    // **The exact name, because both seats share `proj`**: a substring check
+    // passes for either seat and pins nothing.
+    expect(picker()?.getAttribute('aria-label')).toBe('to: proj \u{b7} w1');
   });
 
   it('opens on the first seat when there is no last one', () => {
     draw();
-    expect(picker()?.textContent).toContain('proj');
+    expect(picker()?.getAttribute('aria-label')).toBe('to: proj');
   });
 
   it('sends to the seat the picker was moved to', async () => {
