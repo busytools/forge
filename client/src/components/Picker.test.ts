@@ -5,7 +5,7 @@
  */
 
 import { flushSync, mount, unmount } from 'svelte';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import Picker from './Picker.svelte';
 import type { PickOption } from './picker';
@@ -61,6 +61,13 @@ function press(element: HTMLElement | null): void {
   element.click();
   flushSync();
 }
+
+beforeEach(() => {
+  // **A clean entry per case.** jsdom keeps one history across a file, and a
+  // case that leaves the sheet open pops its entry asynchronously on unmount;
+  // without this the next case can inherit a mark and read it as its own.
+  history.replaceState(null, '', location.href);
+});
 
 afterEach(async () => {
   if (app !== null) await unmount(app);
@@ -161,6 +168,14 @@ describe('the picker', () => {
     await until(() => sheet() === null, 'cancel to close the sheet');
     expect(sheet(), 'cancel closed the sheet').toBeNull();
     expect(document.activeElement, 'and the keyboard went back to the trigger').toBe(trigger());
+    // **The entry is consumed, not stranded.** A close that only set the
+    // state would leave the entry on top and swallow the reader's next Back.
+    const held: unknown = history.state;
+    const state = typeof held === 'object' && held !== null ? held : {};
+    expect(
+      Object.keys(state).some((key) => key.startsWith('forgePicker')),
+      'the cancelled sheet popped its own history entry',
+    ).toBe(false);
   });
 
   /**
