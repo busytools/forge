@@ -4874,7 +4874,8 @@ impl Profile {
     /// has a row for it, and the host reports transitions only - dropping
     /// that answer would leave the tab settled false for good. Only the
     /// publish waits for the tab; `forget_tab` removes the entry when the
-    /// number goes, so the map stays bounded.
+    /// number goes, and an ended number is refused, so the map holds only
+    /// live and not-yet-paired tabs.
     fn note_focus(&self, generation: u64, tab: u16, editable: bool) {
         // **The lock comes first, and the generation is read under it**: a
         // check outside the lock could pass, the host could go and clear, and
@@ -4882,6 +4883,13 @@ impl Profile {
         let changed = {
             let mut focus = self.editable_focus.lock().unwrap_or_else(PoisonError::into_inner);
             if generation != self.host_generation.load(Ordering::Acquire) {
+                return;
+            }
+            // **A number the registry has ended is gone for good.** A
+            // coalesced line can outlive its tab's close; writing it back
+            // would re-open an entry `forget_tab` removed and let the map
+            // grow one retired number at a time.
+            if self.tabs.lock().unwrap_or_else(PoisonError::into_inner).was_closed(tab) {
                 return;
             }
             focus.insert(tab, editable) != Some(editable)
@@ -10567,6 +10575,26 @@ mod tests {
         assert!(
             profile.view_for(9).subscribe().borrow().editable,
             "the adopted tab carries the answer it had",
+        );
+
+        // **A number the registry has ended is refused.** A coalesced line
+        // can outlive the close that removed its entry; writing it back
+        // would leave the map growing one retired number at a time.
+        profile
+            .tabs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .close(9)
+            .expect("tab 9 was open");
+        profile.forget_tab(9);
+        assert!(
+            profile.editable_focus.lock().unwrap_or_else(PoisonError::into_inner).get(&9).is_none(),
+            "the close removed the answer",
+        );
+        profile.note_focus(generation, 9, true);
+        assert!(
+            profile.editable_focus.lock().unwrap_or_else(PoisonError::into_inner).get(&9).is_none(),
+            "a line for a closed tab re-opened its answer",
         );
 
         // **A dead host's answer is refused.** The successor starts at tab
