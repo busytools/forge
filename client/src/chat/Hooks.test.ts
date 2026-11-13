@@ -51,12 +51,15 @@ const rulesIn = (sheet: string): { selectors: string[]; body: string }[] =>
     body,
   }));
 
+/** The classes a tool row's own box can wear. */
+const ROW_BOX_CLASSES = ['leaf', 'hookgroup', 'hookbatch'];
+
 /**
- * Whether a selector's last compound is the shared leaf box itself - bare
- * `.leaf`, `details.leaf`, or a row that wears it - rather than something
+ * Whether a selector's last compound is a tool row's own box - the shared
+ * `details.leaf`, or one of the hook classes it wears - rather than something
  * inside the box or a name that merely starts the same.
  */
-function leafBox(selector: string): boolean {
+function rowBox(selector: string): boolean {
   const bare = selector
     .trim()
     .replace(/::?[\w-]+(?:\([^)]*\))?/g, '')
@@ -66,7 +69,7 @@ function leafBox(selector: string): boolean {
     .replace(/^[a-z]+/i, '')
     .split('.')
     .filter(Boolean)
-    .includes('leaf');
+    .some((name) => ROW_BOX_CLASSES.includes(name));
 }
 
 /**
@@ -128,10 +131,12 @@ describe('the hook batch a turn carries', () => {
    * shape, so a row gated on its rows would drop the batch silently.
    */
   it('draws a count-only batch, which carries no rows to open', () => {
-    const closed = render(Hooks, { props: { batch: batch(1, []) } }).body;
-    expect(summaryOf(closed), 'the count still reads').toContain('hook summary \u{b7} 1 action<');
-    expect(closed, 'with the passing tone').toContain('class="ic gl ok"');
-    expect(closed, 'and no body to open').not.toContain('class="body"');
+    // Drawn OPEN: the guard under test is the body's own condition, and a
+    // closed row would carry no body whatever that condition said.
+    const open = render(Hooks, { props: { batch: batch(1, []), open: true } }).body;
+    expect(summaryOf(open), 'the count still reads').toContain('hook summary \u{b7} 1 action<');
+    expect(open, 'with the passing tone').toContain('class="ic gl ok"');
+    expect(open, 'and no body, empty or otherwise, on the open row').not.toContain('class="body"');
   });
 
   it('counts one hook in the singular', () => {
@@ -220,11 +225,12 @@ describe('the hook batch a turn carries', () => {
 
   /**
    * **A row draws its body under its summary, not beside it.** The batch wears
-   * the shared `details.leaf` box, and jsdom performs no layout, so the sheets'
-   * own rules are what there is to read: a row-laying `display` on that box
-   * draws every leaf's summary and body side by side with the rest green.
+   * the shared `details.leaf` box plus its own hook classes, and jsdom performs
+   * no layout, so the sheets' own rules are what there is to read: a
+   * row-laying `display` on any of those boxes draws every row's summary and
+   * body side by side with the rest green.
    */
-  it('keeps the shared leaf box stacked, in both sheets', () => {
+  it('keeps a row box stacked, in both sheets', () => {
     for (const [where, sheet] of SHEETS) {
       // The scan's denominator: a rule extraction that read nothing would make
       // every sheet look clean, so each sheet has to parse and to reach the box.
@@ -242,7 +248,7 @@ describe('the hook batch a turn carries', () => {
 
     const laying = SHEETS.flatMap(([where, sheet]) =>
       rulesIn(sheet)
-        .filter((rule) => rule.selectors.some(leafBox))
+        .filter((rule) => rule.selectors.some(rowBox))
         .flatMap((rule) =>
           [...rule.body.matchAll(/display\s*:\s*([^;]+)/g)]
             .map(([, value = '']) => value.trim())
@@ -251,25 +257,25 @@ describe('the hook batch a turn carries', () => {
         ),
     );
 
-    expect(laying, `the shared leaf box lays its children in a row: ${laying.join(', ')}`).toEqual(
-      [],
-    );
+    expect(laying, `a row box lays its children in a row: ${laying.join(', ')}`).toEqual([]);
   });
 
   /**
    * The classifier's spellings, named directly: a predicate that lost the
-   * `details.leaf` form, or one that matched anything containing `leaf`, would
-   * report both sheets clean without reading the box.
+   * `details.leaf` form, or one that missed the hook classes the same box
+   * wears, would report both sheets clean without reading the box.
    */
-  it('names the leaf box and nothing inside or beside it', () => {
-    expect(leafBox('.leaf'), 'the bare box').toBe(true);
-    expect(leafBox('details.leaf'), 'the box with its element named').toBe(true);
-    expect(leafBox('details.leaf.hookrow'), 'a row wearing the box').toBe(true);
-    expect(leafBox('.conv details.leaf'), 'the box reached through an ancestor').toBe(true);
-    expect(leafBox('details.leaf > summary'), 'the row inside the box').toBe(false);
-    expect(leafBox('.leaf .tn'), 'a rule for something inside it').toBe(false);
-    expect(leafBox('.leaves'), 'the list around it').toBe(false);
-    expect(leafBox('.leafy'), 'a name that merely starts the same').toBe(false);
+  it('names a row box and nothing inside or beside it', () => {
+    expect(rowBox('.leaf'), 'the shared box').toBe(true);
+    expect(rowBox('details.leaf'), 'the box with its element named').toBe(true);
+    expect(rowBox('details.leaf.hookrow'), 'a row wearing the box').toBe(true);
+    expect(rowBox('.hookbatch'), 'the batch class on the box').toBe(true);
+    expect(rowBox('details.hookgroup'), 'the group class on the box').toBe(true);
+    expect(rowBox('.conv details.leaf'), 'the box reached through an ancestor').toBe(true);
+    expect(rowBox('details.leaf > summary'), 'the row inside the box').toBe(false);
+    expect(rowBox('.leaf .tn'), 'a rule for something inside it').toBe(false);
+    expect(rowBox('.leaves'), 'the list around it').toBe(false);
+    expect(rowBox('.leafy'), 'a name that merely starts the same').toBe(false);
   });
 
   /**
@@ -281,11 +287,11 @@ describe('the hook batch a turn carries', () => {
     const drawn = batches();
     expect(
       drawn.length,
-      'the book draws the closed, open and failed shapes',
-    ).toBeGreaterThanOrEqual(3);
+      'the book draws all four samples inside the leaves lists',
+    ).toBeGreaterThanOrEqual(4);
 
-    const closed = drawn.find((row) => !row.includes(' open>')) ?? '';
-    expect(closed, 'the book draws the row closed').not.toBe('');
+    const closed = drawn.find((row) => !row.includes(' open>') && row.includes('3 actions')) ?? '';
+    expect(closed, 'the book draws the closed three-action sample').not.toBe('');
     const closedSummary = summaryOf(closed);
     expect(closedSummary, 'the hook glyph').toContain('#i-hook');
     expect(closedSummary, 'the shared chevron').toContain('class="ic arw"');
