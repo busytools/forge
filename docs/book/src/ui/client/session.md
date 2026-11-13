@@ -361,6 +361,17 @@ at once, and so does an entry's settle until the list has measured the rows
 already in the element. The circle's jump lands at once as well.
 `prefers-reduced-motion: reduce` makes every landing instant.
 
+**A layout move is not the reader leaving.** The column's own corrections -
+a row measured shorter, the composer taking room for a prompt and giving it
+back - can carry a reader a few tens of pixels away from the foot with no
+hand behind the move. That is the column moving under them, not them
+scrolling away, so the follow survives it: a following column lands the foot
+again rather than switch the follow off and draw the way back over an end it
+never left. Only the reader's own hand - a wheel, a touch, a key, a press on
+the scrollbar - stops the follow on a move whose layout changed with it;
+where the layout did not change, a small nudge stays the column's and a real
+move is the reader's.
+
 **The column's top edge says when it is fetching.** An older page is
 asked for as the reader nears the top and answered a moment later;
 while it is in flight the wheel has nothing left to scroll, so a small
