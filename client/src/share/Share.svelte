@@ -204,7 +204,7 @@
   );
 
   /** A choice is frozen once an upload or a take is under way. */
-  const pickerLocked = $derived(phase !== 'idle' || dictate.take !== null);
+  const pickerLocked = $derived(phase !== 'idle' || dictate.take !== null || dictate.opening);
 
   // A landed take puts its words at the end of the box, once - the same rule
   // every surface that dictates follows.
@@ -294,6 +294,20 @@
   }
 </script>
 
+<!-- **One action row, not two.** The field and a take's card are the same row,
+     so the mic and the send are drawn once and reused; `live` is what turns
+     the mic orange while the take runs (rule 21). -->
+{#snippet actsRow(live: boolean)}
+  <div class="acts" class:on={live}>
+    {#if offered}
+      <DictateControl {dictate} />
+    {/if}
+    <button class="chip add" type="button" disabled={!canSend} onclick={() => void send()}>
+      send
+    </button>
+  </div>
+{/snippet}
+
 <main class="wrap share-page">
   <header class="top">
     <h1>share to a seat</h1>
@@ -345,17 +359,10 @@
           spread
         />
         <!-- **The card is not the whole row.** The mic that started the take
-             is the one that finishes it, and it stays beside the card the way
-             the composer's stays beside its own - the same orange live state,
+             is the one that finishes it, drawn beside the card as the
+             composer draws it beside its own - the same orange live state,
              drawn by `.share-page .acts.on .mic`. -->
-        <div class="acts" class:on={dictate.take !== null || dictate.opening}>
-          {#if offered}
-            <DictateControl {dictate} />
-          {/if}
-          <button class="chip add" type="button" disabled={!canSend} onclick={() => void send()}>
-            send
-          </button>
-        </div>
+        {@render actsRow(true)}
       {:else}
         <Field
           editor="share"
@@ -367,14 +374,7 @@
             field = el;
           }}
         />
-        <div class="acts">
-          {#if offered}
-            <DictateControl {dictate} />
-          {/if}
-          <button class="chip add" type="button" disabled={!canSend} onclick={() => void send()}>
-            send
-          </button>
-        </div>
+        {@render actsRow(false)}
       {/if}
       {#if line !== null}
         <p class="line {line.tone}">{line.text}</p>

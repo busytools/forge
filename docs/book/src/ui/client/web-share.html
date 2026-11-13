@@ -65,10 +65,15 @@
   .seat { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
   .seat .lab { color: var(--dim); font-family: var(--mono); font-size: var(--fs-label);
     text-transform: uppercase; letter-spacing: .08em; }
-  .seat .pick { min-height: 44px; min-width: 220px; padding: 0 12px; border: 1px solid var(--ctl);
-    border-radius: 9px; background: var(--s2); color: var(--text); font: inherit;
-    display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  .seat .pick .cv { color: var(--dim); }
+  .seat .pick { flex: 1; min-width: 0; min-height: 44px; padding: 0 14px;
+    border: 1px solid var(--ctl); border-radius: 9px; background: var(--s2);
+    color: var(--text); font: inherit; display: flex; align-items: center;
+    justify-content: space-between; gap: 10px; }
+  /* The build's chevron is the 15px house icon, 21px in from the trigger's
+     edge (14px padding + 6px margin + the border); the drawing keeps its
+     text glyph in a box that size. */
+  .seat .pick .cv { flex: none; width: 15px; height: 15px; display: grid;
+    place-items: center; margin-right: 6px; color: var(--muted); line-height: 1; }
 
   .box { border: 1px solid var(--ctl); border-radius: 12px; background: var(--s1); padding: 10px; }
   .box .field { min-height: 64px; color: var(--dim); font-size: var(--fs-prose); }
@@ -113,7 +118,7 @@
     box-shadow: 0 -18px 50px rgba(0,0,0,.55); }
   .grab { width: 42px; height: 4px; border-radius: 2px; background: var(--ctl);
     margin: 0 auto 10px; }
-  .sheet h2 { margin: 0; padding: 4px 18px 10px; font-size: 13px; font-weight: 600;
+  .sheet h2 { margin: 0; padding: 4px 18px 10px; font-size: 13px; font-weight: 500;
     color: var(--muted); font-family: var(--mono); letter-spacing: .06em;
     text-transform: uppercase; }
   .opt { display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 0 18px;

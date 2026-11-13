@@ -19,6 +19,8 @@
    * It reads the theme's tokens only, so the next page that needs a choice
    * takes this component rather than copying it (rule 21).
    */
+  import { onDestroy } from 'svelte';
+
   import Chevron from './Chevron.svelte';
   import Icon from './Icon.svelte';
   import type { PickOption } from './picker';
@@ -31,7 +33,7 @@
     title = 'choose one',
     disabled = false,
   }: {
-    /** The visible label beside the trigger, and the trigger's accessible name. */
+    /** The visible label beside the trigger; the trigger's name adds the seat. */
     label: string;
     options: PickOption[];
     value: string | null;
@@ -50,6 +52,8 @@
   let sheet = $state<HTMLElement | null>(null);
 
   const current = $derived(options.find((option) => option.value === value) ?? null);
+  /** What the trigger says it is: the field's label and the seat it holds. */
+  const name = $derived(`${label}: ${current?.label ?? 'none'}`);
 
   /** The current entry's state, as an object this component can read. */
   function heldState(): Record<string, unknown> {
@@ -83,6 +87,13 @@
     close();
   }
 
+  // **A remount strands nothing.** A second share replaces the page under an
+  // open sheet; this component's popstate listener goes with it, and the entry
+  // it took would swallow the next Back. Pop that entry on the way out.
+  onDestroy(() => {
+    if (open && heldState()[entry] === true) history.back();
+  });
+
   // The hardware Back, and every other move through history, lands here.
   $effect(() => {
     const restore = (): void => {
@@ -98,8 +109,8 @@
   // element is the one that places the keyboard.
   $effect(() => {
     if (!open || sheet === null) return;
-    const marked = sheet.querySelector<HTMLElement>('.opt[aria-current="true"]');
-    const first = sheet.querySelector<HTMLElement>('.opt');
+    const marked = sheet.querySelector<HTMLElement>('.pickopt[aria-current="true"]');
+    const first = sheet.querySelector<HTMLElement>('.pickopt');
     (marked ?? first)?.focus();
   });
 
@@ -135,7 +146,7 @@
     {disabled}
     aria-haspopup="dialog"
     aria-expanded={open}
-    aria-label={label}
+    aria-label={name}
     onclick={openSheet}
   >
     <span class="who">{current?.label ?? 'none'}</span>
@@ -158,23 +169,29 @@
   >
     <div class="grab" aria-hidden="true"></div>
     <h2>{title}</h2>
-    {#each options as option (option.value)}
-      <button
-        class="opt"
-        class:current={option.value === value}
-        type="button"
-        aria-current={option.value === value ? 'true' : undefined}
-        onclick={() => choose(option.value)}
-      >
-        <span class="who">{option.label}</span>
-        {#if option.note !== undefined}<span class="note">{option.note}</span>{/if}
-        {#if option.value === value}<Icon
-            name="check"
-            class="tick"
-            label="the current choice"
-          />{/if}
-      </button>
-    {/each}
+    <!-- **The rows are the part that scrolls.** The sheet is bounded by the
+         viewport, with the grab bar, the title and cancel pinned, so a roster
+         longer than the screen keeps its way out and its heading instead of
+         pushing them off the top (the dock's `.opts` is the same shape). -->
+    <div class="opts">
+      {#each options as option (option.value)}
+        <button
+          class="pickopt"
+          class:current={option.value === value}
+          type="button"
+          aria-current={option.value === value ? 'true' : undefined}
+          onclick={() => choose(option.value)}
+        >
+          <span class="who">{option.label}</span>
+          {#if option.note !== undefined}<span class="note">{option.note}</span>{/if}
+          {#if option.value === value}<Icon
+              name="check"
+              class="tick"
+              label="the current choice"
+            />{/if}
+        </button>
+      {/each}
+    </div>
     <button class="cancel" type="button" onclick={close}>cancel</button>
   </div>
 {/if}
@@ -239,7 +256,8 @@
     position: fixed;
     inset: 0;
     z-index: 30;
-    background: rgba(2, 3, 7, 0.62);
+    /* The theme's own ground, not a palette value of its own (rule 21). */
+    background: color-mix(in srgb, var(--bg) 62%, transparent);
   }
 
   .sheet {
@@ -250,14 +268,16 @@
     z-index: 31;
     display: flex;
     flex-direction: column;
+    max-height: min(78dvh, 640px);
     background: var(--s2);
     border-top: 1px solid var(--ctl);
     border-radius: 18px 18px 0 0;
-    padding: 10px 0 16px;
+    padding: 10px 0 calc(16px + var(--safe-bottom));
     box-shadow: 0 -18px 50px rgba(0, 0, 0, 0.55);
   }
 
   .grab {
+    flex: none;
     width: 42px;
     height: 4px;
     border-radius: 2px;
@@ -266,6 +286,7 @@
   }
 
   .sheet h2 {
+    flex: none;
     margin: 0;
     padding: 4px 18px 10px;
     font-size: 13px;
@@ -276,8 +297,20 @@
     text-transform: uppercase;
   }
 
-  .opt {
+  .opts {
+    flex: 0 1 auto;
+    min-height: 0;
     display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  /* **Not `.opt`**: that class is the dock's, and its global rule would round
+     every row and the current row's band with the dock's own radius. */
+  .pickopt {
+    display: flex;
+    flex: none;
     align-items: center;
     gap: 12px;
     min-height: 48px;
@@ -290,11 +323,11 @@
     cursor: pointer;
   }
 
-  .opt.current {
+  .pickopt.current {
     background: var(--sel);
   }
 
-  .opt .who {
+  .pickopt .who {
     flex: 1;
     min-width: 0;
     overflow: hidden;
@@ -302,18 +335,19 @@
     white-space: nowrap;
   }
 
-  .opt .note {
+  .pickopt .note {
     color: var(--dim);
     font-family: var(--mono);
     font-size: 11.5px;
   }
 
-  .opt :global(.tick) {
+  .pickopt :global(.tick) {
     flex: none;
     color: var(--accent);
   }
 
   .cancel {
+    flex: none;
     min-height: 44px;
     margin: 10px 18px 0;
     border: 1px solid var(--line);

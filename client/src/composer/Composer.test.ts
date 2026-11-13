@@ -12159,6 +12159,14 @@ describe('dictation in the send-back box', () => {
       'the foot says nothing about the draft while the card holds the send-back row',
     ).toBeNull();
 
+    // **The mic that started the take stays beside the card**, as it does on
+    // every other row a take runs in; the card is not the whole row.
+    const beside = document.querySelector('.dock .sendback .mic');
+    expect(beside, 'the send-back row keeps the mic beside the card').not.toBeNull();
+    expect(beside?.getAttribute('aria-label'), 'and says what its next press does').toBe(
+      'stop dictating',
+    );
+
     const stops = mic.held.stops;
     const close = document.querySelector('.dock .sendback .tc .x');
     if (!(close instanceof HTMLElement)) throw new Error('the take card drew no way out');
@@ -12169,6 +12177,40 @@ describe('dictation in the send-back box', () => {
       dictate_stop: { key: SLOT, submit: false },
     });
     expect(mic.held.stops, 'and the microphone is let go of on this side too').toBe(stops + 1);
+  });
+
+  /** **The mic beside the card is the finish.** A press there submits the take
+   *  exactly as the composer's own mic does; without it the card's x is the
+   *  only way out and the words are lost. */
+  it('finishes the take from the mic beside the send-back card', async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = open({
+        dictation: true,
+        record: record({ pending_asks: [slackDraftAsk()] }),
+      });
+
+      action('Send back with feedback').click();
+      flushSync();
+      const button = document.querySelector('.dock .sendback .mic');
+      if (!(button instanceof HTMLElement)) throw new Error('the send-back box drew no mic');
+      button.click();
+      await opened();
+      showTake(harness);
+
+      const beside = document.querySelector('.dock .sendback .mic');
+      expect(beside, 'the take runs with the mic still on its row').not.toBeNull();
+      expect(beside?.getAttribute('aria-label')).toBe('stop dictating');
+
+      if (!(beside instanceof HTMLElement)) throw new Error('no mic to finish with');
+      beside.click();
+      settle();
+      expect(harness.sent.at(-1)?.command, 'the second press submits the take').toMatchObject({
+        dictate_stop: { key: SLOT, submit: true },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   /**

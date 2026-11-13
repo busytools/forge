@@ -92,7 +92,7 @@ const picker = () => document.querySelector<HTMLButtonElement>('.pick');
 function pick(label: string): void {
   picker()?.click();
   flushSync();
-  const row = [...document.querySelectorAll<HTMLElement>('.opt')].find((option) =>
+  const row = [...document.querySelectorAll<HTMLElement>('.pickopt')].find((option) =>
     option.textContent?.includes(label),
   );
   if (row === undefined) throw new Error(`the sheet offers no seat named ${label}`);

@@ -185,9 +185,9 @@ describe('the share seat picker', () => {
     trigger?.click();
     flushSync();
     expect(document.querySelector('.sheet'), 'the picker opened its sheet').not.toBeNull();
-    expect(document.querySelector('.opt[aria-current="true"]')?.textContent).toContain('forge');
+    expect(document.querySelector('.pickopt[aria-current="true"]')?.textContent).toContain('forge');
 
-    const rows = [...document.querySelectorAll<HTMLElement>('.opt')];
+    const rows = [...document.querySelectorAll<HTMLElement>('.pickopt')];
     rows[1]?.click();
     flushSync();
     expect(document.querySelector<HTMLButtonElement>('.pick')?.textContent).toContain('busymail');
@@ -233,6 +233,10 @@ describe('the share take', () => {
     expect(
       document.querySelector<HTMLButtonElement>('.pick')?.disabled,
       'the seat cannot change under a running take',
+    ).toBe(true);
+    expect(
+      document.querySelector<HTMLButtonElement>('.acts .chip.add')?.disabled,
+      'and the send chip is frozen while the take runs',
     ).toBe(true);
 
     if (finish === null) throw new Error('no mic to finish with');

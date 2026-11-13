@@ -25,10 +25,12 @@ sheet draws "this share carried no files" and cannot upload.
 The seat row is the shared `Picker`, not a native `<select>`: a button with the
 house chevron and room beside it, opening a bottom sheet the page draws. The
 sheet lists every seat, marks the current one with a tick and `aria-current`,
-and carries a cancel row. It takes a history entry, so the hardware Back closes
-it, Escape closes it on a keyboard, and the keyboard moves to the current row
-on opening and back to the trigger on close. The choice is frozen while an
-upload or a take runs, like every other control on the form.
+and carries a cancel row; a roster longer than the screen scrolls between its
+pinned grab bar and title, with cancel pinned below. It takes a history entry,
+so the hardware Back closes it, Escape closes it on a keyboard, and the
+keyboard moves to the current row on opening and back to the trigger on close.
+The picker and the send are frozen while an upload or a take runs; the message
+box stays as it is otherwise.
 
 **The upload comes first and the prompt second.** The agent is messaged only after the server has
 answered the paths it wrote, so a failed upload sends nothing. A retry continues from the offsets

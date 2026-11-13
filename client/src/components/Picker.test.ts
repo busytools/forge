@@ -69,10 +69,13 @@ afterEach(async () => {
 });
 
 describe('the picker', () => {
-  it('draws the current choice on its trigger', () => {
+  it('draws the current choice on its trigger, and names it too', () => {
     mountPicker();
     expect(trigger().textContent).toContain('busymail \u{b7} growth');
-    expect(trigger().getAttribute('aria-label'), 'the label is the accessible name').toBe('to');
+    expect(
+      trigger().getAttribute('aria-label'),
+      'the name carries the field and the seat, not the field alone',
+    ).toBe('to: busymail \u{b7} growth');
     expect(trigger().getAttribute('aria-haspopup')).toBe('dialog');
     expect(sheet(), 'the sheet starts closed').toBeNull();
   });
@@ -86,7 +89,7 @@ describe('the picker', () => {
     expect(dialog?.getAttribute('aria-modal')).toBe('true');
     expect(dialog?.textContent).toContain('choose a seat');
 
-    const marked = dialog?.querySelector('.opt[aria-current="true"]');
+    const marked = dialog?.querySelector('.pickopt[aria-current="true"]');
     expect(marked?.textContent, 'the current seat is the marked row').toContain(
       'busymail \u{b7} growth',
     );
@@ -97,7 +100,7 @@ describe('the picker', () => {
   it('answers the choice and hands the keyboard back to the trigger', async () => {
     const { chosen } = mountPicker();
     press(trigger());
-    const rows = [...document.querySelectorAll<HTMLElement>('.opt')];
+    const rows = [...document.querySelectorAll<HTMLElement>('.pickopt')];
     press(rows[2] ?? null);
 
     expect(chosen).toEqual(['c']);
@@ -106,14 +109,26 @@ describe('the picker', () => {
     expect(document.activeElement, 'the keyboard returned to the trigger').toBe(trigger());
   });
 
-  it("keeps the hardware Back's own door: a pop closes it", () => {
+  /**
+   * **The hardware Back is the entry, not a synthetic event.** Opening must
+   * push one, and Back must consume it; a test that dispatches popstate
+   * itself would pass with the push or the back branch deleted.
+   */
+  it("keeps the hardware Back's own door: a real pop closes it", async () => {
     mountPicker();
     press(trigger());
     expect(sheet()).not.toBeNull();
+    // The entry's own state is the check jsdom can answer: this picker marked
+    // the history entry it pushed.
+    const held: unknown = history.state;
+    const state = typeof held === 'object' && held !== null ? held : {};
+    expect(
+      Object.keys(state).some((key) => key.startsWith('forgePicker')),
+      "opening took a history entry carrying this picker's mark",
+    ).toBe(true);
 
-    // Android's Back is a pop: the entry this picker took is consumed.
-    window.dispatchEvent(new PopStateEvent('popstate'));
-    flushSync();
+    history.back();
+    await until(() => sheet() === null, 'the hardware Back to close the sheet');
     expect(sheet(), 'the pop closed the sheet').toBeNull();
     expect(document.activeElement).toBe(trigger());
   });
@@ -132,6 +147,48 @@ describe('the picker', () => {
     veil?.click();
     await until(() => sheet() === null, 'the veil to close the sheet');
     expect(sheet(), 'the veil closed the sheet').toBeNull();
+  });
+
+  /** The cancel row is the sheet's own door, beside Escape and the veil. */
+  it('closes from the cancel row, and hands the keyboard back', async () => {
+    mountPicker();
+    press(trigger());
+
+    const cancel = document.querySelector<HTMLButtonElement>('.cancel');
+    expect(cancel, 'the sheet draws a cancel row').not.toBeNull();
+    press(cancel);
+
+    await until(() => sheet() === null, 'cancel to close the sheet');
+    expect(sheet(), 'cancel closed the sheet').toBeNull();
+    expect(document.activeElement, 'and the keyboard went back to the trigger').toBe(trigger());
+  });
+
+  /**
+   * **A long roster scrolls inside the sheet.** The grab bar, the title and
+   * cancel stay pinned; only the rows move, so the way out cannot be pushed
+   * off a phone screen by a fleet's worth of seats.
+   */
+  it('bounds a long list to a scrolling rows region between pinned ends', () => {
+    const many: PickOption[] = Array.from({ length: 20 }, (_, at) => ({
+      value: `s${String(at)}`,
+      label: `seat ${String(at)}`,
+    }));
+    mountPicker({ options: many, value: 's0' });
+    press(trigger());
+
+    const opts = document.querySelector<HTMLElement>('.opts');
+    expect(opts, 'the rows live in their own region').not.toBeNull();
+    expect(opts?.querySelectorAll('.pickopt').length, 'every seat is offered').toBe(20);
+    expect(opts?.contains(document.querySelector('.sheet h2')), 'the title is pinned outside').toBe(
+      false,
+    );
+    expect(opts?.contains(document.querySelector('.cancel')), 'cancel is pinned outside').toBe(
+      false,
+    );
+    expect(
+      document.activeElement?.textContent,
+      'the keyboard still lands on the current row',
+    ).toContain('seat 0');
   });
 
   it('closes on Escape', async () => {
