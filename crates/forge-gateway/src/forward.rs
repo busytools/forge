@@ -2334,6 +2334,12 @@ mod tests {
                 ForwardFailureKind::Connect,
             ),
             (
+                // A flat error has no wrapper to skip, so its own text is
+                // still evidence.
+                Chained { message: "tcp connect error: Connection refused", source: None },
+                ForwardFailureKind::Connect,
+            ),
+            (
                 Chained { message: "something else entirely", source: None },
                 ForwardFailureKind::Other,
             ),
@@ -2381,10 +2387,12 @@ mod tests {
         }
     }
 
-    /// Every record a site emitted while the capture was installed, as
-    /// (level, target, `name=value` fields).
+    /// One captured record: level, target, and `name=value` fields.
+    type CaughtRecord = (tracing::Level, &'static str, String);
+
+    /// Every record a site emitted while the capture was installed.
     #[derive(Clone, Default)]
-    struct Caught(Arc<std::sync::Mutex<Vec<(tracing::Level, &'static str, String)>>>);
+    struct Caught(Arc<std::sync::Mutex<Vec<CaughtRecord>>>);
 
     #[derive(Default)]
     struct Fields(String);
@@ -2395,14 +2403,6 @@ mod tests {
                 self.0.push(' ');
             }
             let _ = std::fmt::write(&mut self.0, format_args!("{}={value:?}", field.name()));
-        }
-
-        fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-            self.record_debug(field, &value);
-        }
-
-        fn record_u128(&mut self, field: &tracing::field::Field, value: u128) {
-            self.record_debug(field, &value);
         }
     }
 
@@ -2433,8 +2433,9 @@ mod tests {
         // A port the probe bound and dropped: the forward's connect is
         // refused for real, through reqwest's own error chain.
         let dead_port = free_port().await;
+        let dead_upstream = format!("http://127.0.0.1:{dead_port}");
         let dead_env = HashMap::from([
-            ("ANTHROPIC_BASE_URL".to_owned(), format!("http://127.0.0.1:{dead_port}")),
+            ("ANTHROPIC_BASE_URL".to_owned(), dead_upstream.clone()),
             ("ANTHROPIC_AUTH_TOKEN".to_owned(), "real-openrouter-key".to_owned()),
             ("ANTHROPIC_API_KEY".to_owned(), String::new()),
         ]);
@@ -2469,7 +2470,7 @@ mod tests {
             "project=forge",
             "session=session-1",
             "model=glm-5.3-flash",
-            "upstream=http://127.0.0.1:",
+            &format!("upstream={dead_upstream}/v1/messages?beta=true"),
             "kind=\"connect\"",
             "elapsed_ms=",
             "error_chain=",
@@ -2478,5 +2479,9 @@ mod tests {
         ] {
             assert!(fields.contains(needle), "{needle} missing from {fields}");
         }
+        assert!(
+            !fields.contains("real-openrouter-key"),
+            "the record must never carry the credential: {fields}",
+        );
     }
 }
