@@ -2047,6 +2047,31 @@ describe('one turn folded into the units a view draws', () => {
     expect(fold([hook(0)]), 'a frame reporting none draws nothing').toHaveLength(0);
   });
 
+  it('folds a batch that counted actions but carried no rows', () => {
+    // A real shape on the wire: `hookCount` above zero with empty
+    // `hookInfos`/`hookErrors` (real_session_sample.jsonl, and what
+    // `scan.rs` tolerates). A fold that gated the row on its INFOS would drop
+    // the batch silently, so the count alone has to draw it.
+    const counted: Record<string, unknown> = {
+      type: 'system',
+      subtype: 'stop_hook_summary',
+      hookCount: 1,
+      hookInfos: [],
+      hookErrors: [],
+      uuid: 'uuid_8',
+    };
+
+    const units = fold([counted]);
+    expect(kinds(units), 'the batch rides the turn work').toEqual(['leaves']);
+    const rows = rowsOf(units[0]);
+    expect(
+      rows.map((row) => row.tag),
+      'one row, from the count alone',
+    ).toEqual(['hookbatch']);
+    expect(rows[0]?.tag === 'hookbatch' ? rows[0].actions : null).toBe(1);
+    expect(rows[0]?.tag === 'hookbatch' ? rows[0].infos : null).toEqual([]);
+  });
+
   it('reads the errors a failed hook summary carries', () => {
     // The captured row from a session transcript, where the ralph-wiggum
     // plugin's directory was gone: one hook, one error. The wire's own keys,

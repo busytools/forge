@@ -30,6 +30,44 @@ const summaryOf = (body: string): string =>
   body.slice(body.indexOf('<summary'), body.indexOf('</summary>'));
 
 const PAGE = readFileSync(repoPath('docs/book/src/ui/client/web-session.html'), 'utf8');
+const SHEET = readFileSync(new URL('../assets/web.css', import.meta.url), 'utf8');
+
+/** The book page's own copy of the rules it draws with. */
+const BOOK = /<style>([\s\S]*?)<\/style>/.exec(PAGE)?.[1] ?? '';
+
+/** Both sheets that draw the row: the app's own, and the book's copy of it. */
+const SHEETS: [string, string][] = [
+  ['web.css', SHEET],
+  ['the book drawing', BOOK],
+];
+
+/** The values of `display` that lay a box's own children out in one row. */
+const ROW_DISPLAYS = ['flex', 'inline-flex', 'grid', 'inline-grid'];
+
+/** Every `selector { declarations }` rule in a sheet, its selector list kept whole. */
+const rulesIn = (sheet: string): { selectors: string[]; body: string }[] =>
+  [...sheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selectors = '', body = '']) => ({
+    selectors: selectors.split(','),
+    body,
+  }));
+
+/**
+ * Whether a selector's last compound is the shared leaf box itself - bare
+ * `.leaf`, `details.leaf`, or a row that wears it - rather than something
+ * inside the box or a name that merely starts the same.
+ */
+function leafBox(selector: string): boolean {
+  const bare = selector
+    .trim()
+    .replace(/::?[\w-]+(?:\([^)]*\))?/g, '')
+    .replace(/\[[^\]]*\]/g, '');
+  const last = bare.split(/[\s>+~]+/).pop() ?? '';
+  return last
+    .replace(/^[a-z]+/i, '')
+    .split('.')
+    .filter(Boolean)
+    .includes('leaf');
+}
 
 /**
  * Every `<div class="leaves">` block the drawing holds, nested divs included.
@@ -83,6 +121,17 @@ describe('the hook batch a turn carries', () => {
 
     const open = draw(batch(1));
     expect(open, 'and the commands are drawn onto the open').toContain('echo fixture-stop-hook-ok');
+  });
+
+  /**
+   * `hookCount > 0` with empty `hookInfos` and `hookErrors` is a real wire
+   * shape, so a row gated on its rows would drop the batch silently.
+   */
+  it('draws a count-only batch, which carries no rows to open', () => {
+    const closed = render(Hooks, { props: { batch: batch(1, []) } }).body;
+    expect(summaryOf(closed), 'the count still reads').toContain('hook summary \u{b7} 1 action<');
+    expect(closed, 'with the passing tone').toContain('class="ic gl ok"');
+    expect(closed, 'and no body to open').not.toContain('class="body"');
   });
 
   it('counts one hook in the singular', () => {
@@ -170,6 +219,60 @@ describe('the hook batch a turn carries', () => {
   });
 
   /**
+   * **A row draws its body under its summary, not beside it.** The batch wears
+   * the shared `details.leaf` box, and jsdom performs no layout, so the sheets'
+   * own rules are what there is to read: a row-laying `display` on that box
+   * draws every leaf's summary and body side by side with the rest green.
+   */
+  it('keeps the shared leaf box stacked, in both sheets', () => {
+    for (const [where, sheet] of SHEETS) {
+      // The scan's denominator: a rule extraction that read nothing would make
+      // every sheet look clean, so each sheet has to parse and to reach the box.
+      expect(
+        rulesIn(sheet).length,
+        `${where}'s rules parsed, rather than reading nothing`,
+      ).toBeGreaterThan(0);
+      expect(
+        rulesIn(sheet).some((rule) =>
+          rule.selectors.some((selector) => /(^|[\s>+~])details\.leaf\b/.test(selector.trim())),
+        ),
+        `${where} reaches the shared leaf box, so its silence means something`,
+      ).toBe(true);
+    }
+
+    const laying = SHEETS.flatMap(([where, sheet]) =>
+      rulesIn(sheet)
+        .filter((rule) => rule.selectors.some(leafBox))
+        .flatMap((rule) =>
+          [...rule.body.matchAll(/display\s*:\s*([^;]+)/g)]
+            .map(([, value = '']) => value.trim())
+            .filter((value) => ROW_DISPLAYS.includes(value))
+            .map((value) => `${where}: display: ${value}`),
+        ),
+    );
+
+    expect(laying, `the shared leaf box lays its children in a row: ${laying.join(', ')}`).toEqual(
+      [],
+    );
+  });
+
+  /**
+   * The classifier's spellings, named directly: a predicate that lost the
+   * `details.leaf` form, or one that matched anything containing `leaf`, would
+   * report both sheets clean without reading the box.
+   */
+  it('names the leaf box and nothing inside or beside it', () => {
+    expect(leafBox('.leaf'), 'the bare box').toBe(true);
+    expect(leafBox('details.leaf'), 'the box with its element named').toBe(true);
+    expect(leafBox('details.leaf.hookrow'), 'a row wearing the box').toBe(true);
+    expect(leafBox('.conv details.leaf'), 'the box reached through an ancestor').toBe(true);
+    expect(leafBox('details.leaf > summary'), 'the row inside the box').toBe(false);
+    expect(leafBox('.leaf .tn'), 'a rule for something inside it').toBe(false);
+    expect(leafBox('.leaves'), 'the list around it').toBe(false);
+    expect(leafBox('.leafy'), 'a name that merely starts the same').toBe(false);
+  });
+
+  /**
    * The book's page is the drawing the surface is judged by, and the row moved
    * into the tool list: a sample left under the turn as a line of its own would
    * draw the shape this cut removed.
@@ -204,16 +307,17 @@ describe('the hook batch a turn carries', () => {
   /**
    * The failed half the row exists for, and a page drawing only the passing row
    * is the same one-state blind spot the open drawing was added to close. What
-   * holds is the SHAPE: the failure tone on the closed row and the count, so the
-   * failure shows without opening it, and the error as a row under the hooks.
+   * holds is the SHAPE: the failure tone and the count ride the summary - which
+   * is what the closed row shows - and the error draws as a row under the
+   * hooks, in the body the page draws open here.
    */
-  it('draws the failed batch in the book, its state on the closed summary', () => {
+  it('draws the failed batch in the book, its state on the summary', () => {
     const failed =
       batches().find(
         (row) =>
           row.includes('gl err') && /hook summary &#183; \d+ actions? &#183; \d+ errors?/.test(row),
       ) ?? '';
-    expect(failed, 'the book draws the failed batch open').not.toBe('');
+    expect(failed, 'the book draws the failed batch').not.toBe('');
 
     const summary = summaryOf(failed);
     expect(summary, 'the failure tone on the hook glyph').toContain('class="ic gl err"');
