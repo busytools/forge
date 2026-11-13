@@ -318,8 +318,8 @@ pub mod wire;
 /// focus alone would never type into the in-app browser again. The client
 /// keeps the old every-tap behaviour when the field is absent, so the skewed
 /// pairing still works - but the greeting's skew notice is what names it, and
-/// the halves should not ship apart. `baselines/socket/32/` is the record a
-/// v32 server emitted.
+/// the halves should not ship apart. `baselines/socket/33/` is the record a
+/// v33 server emitted.
 ///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it

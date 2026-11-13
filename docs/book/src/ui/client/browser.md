@@ -27,7 +27,7 @@ in a portrait phone is scaled to fit with the takeover's own background above
 and below it, and taking control lays the page out at the phone's shape, so
 the bands fall away. **A finger drives the page the way a mouse does**: a
 tap is a press and its release, and a one-finger swipe is a wheel. **The
-phone's keyboard follows the page's focus, not the tap**: the host reports
+phone's keyboard follows the page's focus, not the tap alone**: the host reports
 the page's focused node and whether it is editable, and the keyboard rises
 while a text field holds focus and drops when one does not - so a tap on a
 button, a link or empty page raises nothing. **A second tap on a field that
