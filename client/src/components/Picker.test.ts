@@ -402,8 +402,11 @@ describe('the picker', () => {
     await unmount(app);
     app = null;
 
+    // **The traversal, not the state, is the event.** The current entry has
+    // no mark already, so a mark-only wait passes before the pop lands; the
+    // base entry's null state is what says the drop actually ran.
     history.back();
-    await until(() => !marked(), 'the buried entry to be dropped by the pop onto it');
+    await until(() => history.state === null, 'the buried entry to be traversed past');
     expect(marked(), 'the buried entry did not eat a Back').toBe(false);
   });
 

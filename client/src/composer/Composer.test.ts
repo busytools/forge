@@ -12138,6 +12138,10 @@ describe('dictation in the send-back box', () => {
 
     action('Send back with feedback').click();
     flushSync();
+    expect(
+      document.querySelector('.dock .sendback')?.classList.contains('on'),
+      'the idle send-back row is not live',
+    ).toBe(false);
 
     const button = document.querySelector('.dock .sendback .mic');
     if (!(button instanceof HTMLElement)) throw new Error('the send-back box drew no mic');
@@ -12181,6 +12185,34 @@ describe('dictation in the send-back box', () => {
       dictate_stop: { key: SLOT, submit: false },
     });
     expect(mic.held.stops, 'and the microphone is let go of on this side too').toBe(stops + 1);
+  });
+
+  /**
+   * **Only the send-back take lights the row.** A take begun from the
+   * composer's own mic while the box is open must leave the send-back mic
+   * dim: the origin is the guard, not the mere presence of a take. (A key
+   * press with the caret in the send-back field is the box's own take, so it
+   * does light the row - that path is the plan's.)
+   */
+  it('leaves the send-back row dark for a composer take', async () => {
+    const harness = open({ dictation: true, record: record({ pending_asks: [slackDraftAsk()] }) });
+    action('Send back with feedback').click();
+    flushSync();
+    const row = (): Element | null => document.querySelector('.dock .sendback');
+    expect(row(), 'the send-back box is open').not.toBeNull();
+    expect(row()?.classList.contains('on'), 'the idle row is not live').toBe(false);
+
+    // The key with the caret nowhere in a box: this take's origin is the
+    // composer, not the send-back field, so the send-back row stays dark.
+    action('Post').focus();
+    key('ControlRight', 'keydown');
+    await opened();
+    key('ControlRight', 'keyup');
+    showTake(harness);
+    flushSync();
+
+    expect(row()?.classList.contains('on'), 'a composer take does not light it').toBe(false);
+    endTake(harness, SLOT);
   });
 
   /** **The mic beside the card is the finish.** A press there submits the take
