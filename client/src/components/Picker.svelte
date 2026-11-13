@@ -48,6 +48,12 @@
   const entry = `forgePicker${String(pickers++)}`;
 
   let open = $state(false);
+  /**
+   * Whether a close's pop is in flight. **A second close press is not another
+   * pop**: the entry is already on its way out, and a second back would
+   * traverse past the share page with the payload gone.
+   */
+  let closing = $state(false);
   let trigger = $state<HTMLButtonElement | null>(null);
   let sheet = $state<HTMLElement | null>(null);
 
@@ -62,14 +68,17 @@
   }
 
   function openSheet(): void {
-    if (disabled || open) return;
+    if (disabled || open || closing) return;
+    closing = false;
     history.pushState({ ...heldState(), [entry]: true }, '', location.href);
     open = true;
   }
 
   /** Close through the entry when it is on top, so Back and this are one path. */
   function close(): void {
+    if (!open || closing) return;
     if (heldState()[entry] === true) {
+      closing = true;
       history.back();
       return;
     }
@@ -78,6 +87,7 @@
 
   /** The close itself: no history, the state and the keyboard. */
   function closed(): void {
+    closing = false;
     open = false;
     trigger?.focus();
   }
@@ -91,7 +101,20 @@
   // open sheet; this component's popstate listener goes with it, and the entry
   // it took would swallow the next Back. Pop that entry on the way out.
   onDestroy(() => {
-    if (open && heldState()[entry] === true) history.back();
+    if (!open) return;
+    if (heldState()[entry] === true) {
+      history.back();
+      return;
+    }
+    // **Buried under a route push, the entry cannot be popped now** without
+    // stepping off the page above it. Drop it on the pop that lands on it
+    // instead - the same one-step-behind close the session rail uses - so a
+    // dead picker entry never eats a Back.
+    const drop = (): void => {
+      removeEventListener('popstate', drop);
+      if (heldState()[entry] === true) history.back();
+    };
+    addEventListener('popstate', drop);
   });
 
   // The hardware Back, and every other move through history, lands here.
@@ -105,36 +128,53 @@
 
   // **The keyboard starts on the answer already given**, or on the first row
   // when nothing is picked, so a reader can press Enter twice without
-  // hunting. Read through `sheet`, so the run that first sees the bound
-  // element is the one that places the keyboard.
+  // hunting. **An empty roster still puts the keyboard in the sheet itself**,
+  // rather than leaving it on the trigger behind the veil. Read through
+  // `sheet`, so the run that first sees the bound element is the one that
+  // places the keyboard.
   $effect(() => {
     if (!open || sheet === null) return;
     const marked = sheet.querySelector<HTMLElement>('.pickopt[aria-current="true"]');
     const first = sheet.querySelector<HTMLElement>('.pickopt');
-    (marked ?? first)?.focus();
+    (marked ?? first ?? sheet).focus();
   });
 
-  function key(event: KeyboardEvent): void {
-    if (event.key === 'Escape') {
-      event.preventDefault();
-      close();
-      return;
-    }
-    if (event.key !== 'Tab' || sheet === null) return;
-    const focusable = [
-      ...sheet.querySelectorAll<HTMLElement>('button, [href], input, select, textarea'),
-    ].filter((element) => !element.hasAttribute('disabled'));
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (first === undefined || last === undefined) return;
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
+  // **The keys belong to the window, not the sheet.** Chrome focuses the
+  // sheet's own container when the reader clicks its grab bar, and WebKit
+  // drops focus to the body; from either place a listener on the sheet hears
+  // nothing, Shift+Tab walks onto the trigger behind the veil, and Escape
+  // closes nothing (ConfirmDialog keeps its keys the same way).
+  $effect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (!open) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        close();
+        return;
+      }
+      if (event.key !== 'Tab' || sheet === null) return;
+      const focusable = [
+        ...sheet.querySelectorAll<HTMLElement>('button, [href], input, select, textarea'),
+      ].filter((element) => !element.hasAttribute('disabled'));
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (first === undefined || last === undefined) return;
+      const at = document.activeElement;
+      // The sheet's own container is the boundary: first for Shift+Tab and
+      // last for Tab, so the keyboard cannot leave the dialog either way.
+      const atStart = at === sheet || at === first;
+      const atEnd = at === sheet || at === last;
+      if (event.shiftKey && atStart) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && atEnd) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  });
 </script>
 
 <div class="picker">
@@ -165,7 +205,6 @@
     aria-label={title}
     tabindex="-1"
     bind:this={sheet}
-    onkeydown={key}
   >
     <div class="grab" aria-hidden="true"></div>
     <h2>{title}</h2>
