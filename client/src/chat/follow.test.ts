@@ -3672,10 +3672,12 @@ describe('a return to the seat the reader left', () => {
    * Following, the reader answers a prompt in the dock: the card takes the
    * column's room and the answer gives it back, with the browser carrying
    * them onto the foot the room leaves. The return then lands them at the
-   * newest, still following - the answered ask left nothing behind for the
-   * restore to reopen.
+   * newest, still following. There was no place to begin with - a following
+   * reader captures no anchor - so what this pins is that the answer's room
+   * change did not make one: nothing about the round trip may park a column
+   * that was at the end before it.
    */
-  it('answers an ask while following, and lands at the newest on the return', async () => {
+  it('a prompt answered while following lands at the newest on the return', async () => {
     const server = stub();
     clear();
     clearObservers();
@@ -3714,7 +3716,7 @@ describe('a return to the seat the reader left', () => {
   });
 
   /** The other half: a parked reader's place survives the same round trip. */
-  it('answers an ask while parked, and keeps the place on the return', async () => {
+  it('a prompt answered while parked keeps the place on the return', async () => {
     const server = stub();
     await parked(server);
 
@@ -5010,14 +5012,18 @@ describe('the motion of a following column', () => {
       ).toBeGreaterThan(FOOT);
       expect(element.offset, 'precondition: and the glide has not arrived').toBeLessThan(dropped);
 
-      // The reader answers: the dock gives the room back, the browser clamps
-      // the reader onto the foot it now leaves, and the observer sees the
-      // column change size.
+      // The reader answers: the dock gives the room back and the browser
+      // clamps the reader onto the foot it now leaves. **The clamp is the
+      // element's size change alone, and the observer's report comes after
+      // the glide has had its frames**: a report before them starts a fresh
+      // glide whose completion is the one under test only by accident, and a
+      // scroll event of the test's own making is read as a foreign move that
+      // stops the tween before its completion ever runs. This is the shape
+      // the phone delivers, and it is what fails without the fix.
       setElement(TOTAL, VIEWPORT);
-      list()?.scrolledTo(TOTAL - VIEWPORT, TOTAL, VIEWPORT);
+      for (let at = 0; at < 12; at += 1) await hand.pump(16);
       resized();
       await hand.pump(16);
-      for (let at = 0; at < 12; at += 1) await hand.pump(16);
 
       // The turn carries on, and the next message must carry the reader.
       clear();
@@ -5034,6 +5040,58 @@ describe('the motion of a following column', () => {
         pinned().filter((pin) => pin.landed === Math.floor(TOTAL + 120) - VIEWPORT),
         'the answered ask left the column not following',
       ).not.toEqual([]);
+    } finally {
+      hand.stop();
+    }
+  });
+
+  it("keeps a glide's landing at the end the list has measured, not the element's", async () => {
+    // **The retained half of the landing's condition.** Where the list lags
+    // the element - the browser counts a row the measurement has not caught
+    // up with - the pin holds at the measured end by design, and the
+    // completion must call that a landing at the foot. Judged against the
+    // element's own end alone, it reads as short: the same park-at-the-foot
+    // with the way back drawn, on the #1710 path rather than a room change.
+    const server = stub();
+    await draw(server);
+    layOut(40);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    vi.stubGlobal('matchMedia', () => ({ matches: false }));
+    const hand = clock();
+    try {
+      // A growth starts the glide toward the end the list measured.
+      setElement(TOTAL + 200, VIEWPORT);
+      reported.size = TOTAL + 200;
+      server.forged('one');
+      await hand.pump(0);
+      await hand.pump(16);
+
+      // Mid-glide the element runs ahead of the measurement, and no report
+      // is delivered: the tween keeps its target and completes on the end
+      // the list has, while the element's own end is further down.
+      setElement(TOTAL + 400, VIEWPORT);
+      for (let at = 0; at < 12; at += 1) await hand.pump(16);
+      expect(following(server), 'the landing at the measured end switched the follow off').toBe(
+        true,
+      );
+      expect(
+        document.querySelector('button.follow'),
+        'a following reader was parked on the end the list had measured',
+      ).toBeNull();
+
+      // The measurement catches up, and the next message must carry them.
+      clear();
+      setElement(TOTAL + 520, VIEWPORT);
+      reported.size = TOTAL + 520;
+      server.frame();
+      resized();
+      for (let at = 0; at < 12; at += 1) await hand.pump(16);
+      expect(pinned().at(-1)?.landed, 'the column did not follow the next message').toBe(
+        Math.floor(TOTAL + 520) - VIEWPORT,
+      );
     } finally {
       hand.stop();
     }
@@ -5110,11 +5168,16 @@ describe('the motion of a following column', () => {
       await hand.pump(0);
       await hand.pump(16);
       expect(element.offset, 'precondition: the glide is in flight').toBeGreaterThan(FOOT);
+      expect(element.offset, 'precondition: and it has not arrived').toBeLessThan(
+        Math.floor(TOTAL + 200) - VIEWPORT,
+      );
 
       // A row above corrects itself shorter while the glide is running: the
       // foot comes up under it, and the browser clamps the tween's frames to
-      // the foot it leaves. The column's own size report is the one a browser
-      // drops under load; the row's report is the redundancy that lands it.
+      // the foot it leaves. **No size report is delivered here at all** - the
+      // case is the notification a browser drops under load - so the
+      // completion is the only thing that can read this landing, which is
+      // what the test is for.
       setElement(TOTAL - 200, VIEWPORT);
       reported.size = TOTAL - 200;
       for (let at = 0; at < 12; at += 1) await hand.pump(16);
@@ -5171,19 +5234,74 @@ describe('the motion of a following column', () => {
 
     expect(element.offset, 'the circle glided instead of jumping').toBe(FOOT);
   });
+
+  it('a send-armed glide takes the foot and leaves the place behind', async () => {
+    // **The completion owns the two writes the instant landing makes**: the
+    // foot the reader now holds, and the place they give up by reaching it.
+    // A parked reader's own send is the only glide that starts from a place,
+    // so it is the shape both land in: the landing's `at` is what clears the
+    // anchor and the place, and its `footHeld` is what keeps the column
+    // pinnable once the send's own arm is spent.
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+    layOut(40);
+    readerAt(50);
+    await settle();
+    expect(following(server), 'precondition: the reader is parked').toBe(false);
+    const seat = subjectKey({ session: LEAD });
+    expect(places.of(seat), 'precondition: the parked reader holds a place').toBeDefined();
+    clear();
+
+    vi.stubGlobal('matchMedia', () => ({ matches: false }));
+    const hand = clock();
+    try {
+      server.prompt();
+      for (let at = 0; at < 14; at += 1) await hand.pump(16);
+      expect(element.offset, 'precondition: the send landed the foot').toBe(FOOT);
+      expect(places.of(seat), 'the landing at the foot left the place standing').toBeUndefined();
+
+      // The foot branch's own `following(true)` gives the send's arm back, so
+      // from here only the landing's `footHeld` can pin.
+      list()?.scrolledTo(FOOT, TOTAL, VIEWPORT);
+      await hand.pump(16);
+      clear();
+      setElement(TOTAL + 120, VIEWPORT);
+      setModel(TOTAL + 120);
+      server.frame();
+      resized();
+      for (let at = 0; at < 12; at += 1) await hand.pump(16);
+      expect(pinned().at(-1)?.landed, 'the completed landing left the column unpinnable').toBe(
+        Math.floor(TOTAL + 120) - VIEWPORT,
+      );
+    } finally {
+      hand.stop();
+    }
+  });
 });
 
 /**
- * **An answered ask is the column's room moving, not the reader moving.**
+ * **An answered ask reaches the column as its room moving, not as a reader
+ * moving.**
  *
  * The dock sits under the conversation, so a prompt's card takes the column's
  * room and answering it gives the room back: the foot drops, comes back up,
  * and the browser clamps a reader at the end onto the foot the room leaves.
- * None of that is the reader leaving the column, so neither state may break -
- * a following reader still follows, and a parked reader's row does not move
- * (#2970).
+ * That room round trip is what every case below models - the element's
+ * viewport and content height, nothing of the dock or the answer's dispatch,
+ * which are their own surfaces' tests. None of it is the reader leaving the
+ * column, so neither state may break: a following reader still follows, and
+ * a parked reader's row does not move (#2970).
  */
-describe('an ask answered under the column', () => {
+describe('a prompt answered under the column', () => {
   /** A column with three spoken turns, left where the landing put it. */
   async function drawn(server: ReturnType<typeof stub>): Promise<void> {
     clear();
@@ -5220,7 +5338,7 @@ describe('an ask answered under the column', () => {
     await settle();
   }
 
-  it('keeps a following reader at the newest end', async () => {
+  it("keeps a following reader at the newest end through the card's room round trip", async () => {
     const server = stub();
     await drawn(server);
     readerAt(FOOT);
@@ -5250,7 +5368,7 @@ describe('an ask answered under the column', () => {
     });
   });
 
-  it('keeps a parked reader on their row, with the way back drawn', async () => {
+  it("keeps a parked reader on their row through the card's room round trip", async () => {
     const server = stub();
     await drawn(server);
     readerAt(50);
@@ -5270,7 +5388,7 @@ describe('an ask answered under the column', () => {
     ).not.toBeNull();
   });
 
-  it('follows again when the way back is pressed after an answer', async () => {
+  it("follows again when the way back is pressed after the card's room round trip", async () => {
     const server = stub();
     await drawn(server);
     readerAt(50);
