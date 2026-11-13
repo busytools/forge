@@ -38,8 +38,9 @@ const EVENT: &str = "forge.bridge.event";
 /// This side's report of the focused node: `1` when it is editable, `0` when
 /// it is not (or focus left the page). **The browser process owns the tab**,
 /// so the answer crosses as a process message and becomes the host's line
-/// there.
-const FOCUS: &str = "forge.bridge.focus";
+/// there. **One name for both halves**: the browser process matches on this
+/// same const, so a rename cannot split sender from reader.
+pub(crate) const FOCUS: &str = "forge.bridge.focus";
 
 /// The page shim, evaluated into every main frame.
 const SHIM: &str = include_str!("bridge.js");
