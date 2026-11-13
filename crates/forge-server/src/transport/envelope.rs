@@ -618,15 +618,17 @@ pub enum ServerMessage {
         reply_to: u64,
         body: serde_json::Value,
     },
-    /// One tab's viewer state: which viewer controls it, and how many are
-    /// attached.
+    /// One tab's viewer state: which viewer controls it, how many are
+    /// attached, and whether the page's focused node is editable.
     ///
-    /// Sent on attach and whenever either changes, so every viewer draws the
-    /// same truth about who is driving. `id` is the profile's wire id, the
+    /// Sent on attach and whenever one of them changes, so every viewer draws
+    /// the same truth about who is driving. `id` is the profile's wire id, the
     /// same one the binary frames carry; `tab` is the tab this state is for;
     /// and `viewer` is THIS connection's own - the number `controller` names
     /// when this viewer holds the role, so a bar can say "Take control"
-    /// rather than guessing.
+    /// rather than guessing. **`editable` is the phone's keyboard**: it rises
+    /// while the page's focused node is one a person can type into, and drops
+    /// when focus leaves it.
     BrowserView {
         id: u16,
         profile: String,
@@ -634,6 +636,7 @@ pub enum ServerMessage {
         controller: Option<u64>,
         viewers: u32,
         viewer: u64,
+        editable: bool,
     },
     /// One terminal's screen, as a VT stream a client can draw, and where the
     /// byte stream continues from.
@@ -1032,10 +1035,11 @@ mod tests {
             controller: Some(9),
             viewers: 2,
             viewer: 9,
+            editable: true,
         };
         let json = serde_json::to_string(&view).expect("encode");
         assert!(json.contains("\"kind\":\"browser_view\""), "{json}");
-        let ServerMessage::BrowserView { id, tab, controller, viewers, viewer, .. } =
+        let ServerMessage::BrowserView { id, tab, controller, viewers, viewer, editable, .. } =
             serde_json::from_str(&json).expect("decode")
         else {
             panic!("{json} decoded into another message")
@@ -1045,6 +1049,7 @@ mod tests {
         assert_eq!(controller, Some(9), "who holds the role");
         assert_eq!(viewers, 2, "and how many are attached");
         assert_eq!(viewer, 9, "and this connection's own number");
+        assert!(editable, "and whether the page's focused node takes typing");
 
         let input = ClientMessage::BrowserInput {
             seq: 4,

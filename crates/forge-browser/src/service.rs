@@ -683,6 +683,7 @@ impl BrowserService {
             dialogs: Mutex::new(HashMap::new()),
             boot: Mutex::new(None),
             focused: Mutex::new(None),
+            editable_focus: Mutex::new(HashMap::new()),
             controls: Mutex::new(HashMap::new()),
             viewers: Mutex::new(HashMap::new()),
             views: Mutex::new(HashMap::new()),
@@ -3888,6 +3889,11 @@ pub struct Profile {
     /// The tab the driver's current page is, so a chooser and the history
     /// watch read the right one.
     focused: Mutex<Option<u16>>,
+    /// Each tab's focused node: whether it is editable. **The host's answer,
+    /// kept here so a fresh attach carries it**: a page that attaches while a
+    /// text field already has focus must raise its keyboard, not wait for the
+    /// next focus change.
+    editable_focus: Mutex<HashMap<u16, bool>>,
     /// Each tab's controller: its viewer id, and the last input sequence it
     /// sent.
     controls: Mutex<HashMap<u16, (u64, u64)>>,
@@ -4543,6 +4549,7 @@ impl Profile {
         self.views.lock().unwrap_or_else(PoisonError::into_inner).remove(&tab);
         self.nav.lock().unwrap_or_else(PoisonError::into_inner).remove(&tab);
         self.frames.lock().unwrap_or_else(PoisonError::into_inner).remove(&tab);
+        self.editable_focus.lock().unwrap_or_else(PoisonError::into_inner).remove(&tab);
     }
 
     /// **A chooser outliving the person who could answer it is cancelled.**
@@ -4834,8 +4841,8 @@ impl Profile {
         }
     }
 
-    /// Republish one tab's viewer state: its controller and how many are
-    /// attached to it.
+    /// Republish one tab's viewer state: its controller, how many are
+    /// attached to it, and whether its page's focused node is editable.
     fn publish_view(&self, tab: u16) {
         let controller = self.controller(tab);
         let viewers = u32::try_from(
@@ -4846,7 +4853,36 @@ impl Profile {
                 .map_or(0, HashSet::len),
         )
         .unwrap_or(u32::MAX);
-        self.view_for(tab).send_replace(BrowserViewState { controller, viewers });
+        let editable = self
+            .editable_focus
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&tab)
+            .copied()
+            .unwrap_or(false);
+        self.view_for(tab).send_replace(BrowserViewState { controller, viewers, editable });
+    }
+
+    /// Record whether a tab's focused node is editable and tell its viewers.
+    ///
+    /// **The host reports real transitions only**, but a line can still name a
+    /// tab this profile has lost: a watch is created on the first publish, so
+    /// a tombstone for a closed tab would keep a sender alive for the life of
+    /// the profile. A tab that is not there is a no-op.
+    fn note_focus(&self, tab: u16, editable: bool) {
+        {
+            let tabs = self.tabs.lock().unwrap_or_else(PoisonError::into_inner);
+            if tabs.owner(tab).is_none() {
+                return;
+            }
+        }
+        let changed = {
+            let mut focus = self.editable_focus.lock().unwrap_or_else(PoisonError::into_inner);
+            focus.insert(tab, editable) != Some(editable)
+        };
+        if changed {
+            self.publish_view(tab);
+        }
     }
 
     /// A registry name for one per-driver or per-install member. **The
@@ -5434,6 +5470,22 @@ impl Profile {
                             state = ?state,
                             "a page's JavaScript dialog ({message})"
                         );
+                    }
+                    HostEvent::Focus { tab, editable } => {
+                        // **The phone's keyboard follows the page's focus,
+                        // not its taps.** The answer rides the tab's viewer
+                        // state, so the live push and a late attach's fresh
+                        // read carry it alike.
+                        tracing::debug!(
+                            event_name = "browser_focus_changed",
+                            profile = %key,
+                            tab,
+                            editable,
+                            "the page's focused node changed"
+                        );
+                        if let Some(profile) = profile.upgrade() {
+                            profile.note_focus(tab, editable);
+                        }
                     }
                     HostEvent::Download { tab, name, path, size } => {
                         let download = read_download(&dir, tab, &name, &path, size);
@@ -10426,6 +10478,47 @@ mod tests {
 
         let why = service.nav(&profile.key, tab, 8, true).await.expect_err("a watcher is refused");
         assert!(why.contains("not the browser's controller"), "{why}");
+    }
+
+    /// **The host's focus answer is the tab's own state**: a live viewer
+    /// wakes on the flip, a viewer that attaches afterwards reads the same
+    /// answer, and a repeated answer wakes nobody - the keyboard follows
+    /// changes, not the host's heartbeat.
+    #[tokio::test]
+    async fn a_focus_change_reaches_live_viewers_and_a_fresh_read() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let root = dir.path().join("browser");
+        let service = BrowserService::at(root.clone(), root.join("stack"));
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        service.install_fake(&seat, FakeDriver::with_blank("T1")).await;
+        service.call(&seat, "browser_snapshot", json!({})).await.expect("the tab is adopted");
+        let profile = service.find("TestOrg/default").await.expect("the profile");
+
+        let mut live = profile.view_for(1).subscribe();
+        profile.note_focus(1, true);
+        live.changed().await.expect("the live viewer is woken");
+        assert!(live.borrow_and_update().editable, "the live viewer sees the flip");
+
+        let fresh = profile.view_for(1).subscribe();
+        assert!(fresh.borrow().editable, "a fresh read carries the same answer");
+
+        profile.note_focus(1, false);
+        live.changed().await.expect("the drop is a change too");
+        assert!(!live.borrow_and_update().editable, "and the live viewer sees it");
+        profile.note_focus(1, false);
+        assert!(
+            !live.has_changed().expect("the sender is alive"),
+            "a repeated answer wakes nobody",
+        );
+
+        // **A line for a closed tab mints nothing.** A watch created for one
+        // would keep a sender, and the tab's number, alive for the profile's
+        // life.
+        profile.note_focus(9, true);
+        assert!(
+            profile.views.lock().unwrap_or_else(PoisonError::into_inner).get(&9).is_none(),
+            "no state is minted for a tab this profile does not have",
+        );
     }
 
     /// **A hand-off opens by page**, so the number it was minted with cannot

@@ -1717,6 +1717,7 @@ where
                                 controller: state.controller,
                                 viewers: state.viewers,
                                 viewer: me,
+                                editable: state.editable,
                             },
                         )?;
                     }
@@ -2417,6 +2418,7 @@ where
                     controller: now.controller,
                     viewers: now.viewers,
                     viewer: me,
+                    editable: now.editable,
                 },
             )?;
             if let Some(frame) = kept {

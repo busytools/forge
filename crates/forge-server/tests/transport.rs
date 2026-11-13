@@ -10759,6 +10759,8 @@ struct StubBrowser {
     view: tokio::sync::watch::Sender<forge_primitives::browser::BrowserViewState>,
     failures: tokio::sync::watch::Sender<Option<String>>,
     controller: Mutex<Option<u64>>,
+    /// Whether the stubbed page's focused node is editable.
+    editable: std::sync::atomic::AtomicBool,
     viewers: Mutex<std::collections::HashSet<u64>>,
     inputs: Mutex<Vec<(u64, u64)>>,
     resizes: Mutex<Vec<Resize>>,
@@ -10804,6 +10806,7 @@ impl StubBrowser {
             .0,
             failures: tokio::sync::watch::channel(None).0,
             controller: Mutex::new(None),
+            editable: std::sync::atomic::AtomicBool::new(false),
             viewers: Mutex::new(std::collections::HashSet::new()),
             inputs: Mutex::new(Vec::new()),
             resizes: Mutex::new(Vec::new()),
@@ -10841,7 +10844,12 @@ impl StubBrowser {
         let controller = *self.controller.lock().expect("the stub's controller");
         let viewers =
             u32::try_from(self.viewers.lock().expect("the stub's viewers").len()).unwrap_or(0);
-        self.view.send_replace(forge_primitives::browser::BrowserViewState { controller, viewers });
+        let editable = self.editable.load(std::sync::atomic::Ordering::Acquire);
+        self.view.send_replace(forge_primitives::browser::BrowserViewState {
+            controller,
+            viewers,
+            editable,
+        });
     }
 }
 
@@ -11333,6 +11341,38 @@ async fn lowering_detaches_the_viewer_and_releases_its_role() {
         panic!("the re-attach answers with the state")
     };
     assert_eq!((again, viewers, controller), (id, 1, None), "one viewer, and the role free");
+}
+
+/// **Whether the page's focused node is editable rides the attach, and a
+/// change is pushed.** The phone's keyboard follows this answer, so a fresh
+/// attach must carry the focus the page already holds rather than wait for
+/// the next change - and a change after the attach must reach the viewer.
+#[tokio::test]
+async fn an_attach_carries_the_pages_focus_and_follows_its_changes() {
+    let fleet = Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+    let stub = StubBrowser::new();
+    stub.editable.store(true, std::sync::atomic::Ordering::Release);
+    stub.publish();
+    fleet
+        .workspace()
+        .install_browser_host(Arc::clone(&stub) as Arc<dyn forge_workspace::browser::BrowserHost>);
+    let (url, _state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    let mut socket = connect(&url).await;
+
+    send(&mut socket, ClientMessage::BrowserView { seat: lead_seat(), tab: None, reply_to: None })
+        .await;
+    let ServerMessage::BrowserView { editable, .. } = next_server(&mut socket).await else {
+        panic!("an attach is answered with the viewer state")
+    };
+    let _ = next_server(&mut socket).await; // the nav state behind it
+    assert!(editable, "a fresh attach carries the page's focus");
+
+    stub.editable.store(false, std::sync::atomic::Ordering::Release);
+    stub.publish();
+    let ServerMessage::BrowserView { editable, .. } = next_server(&mut socket).await else {
+        panic!("a change is pushed to the viewer")
+    };
+    assert!(!editable, "and the change reaches it");
 }
 
 /// **The controller's surface size reaches the browser it is watching.** The
@@ -12334,7 +12374,7 @@ async fn the_viewer_wire_attaches_relays_frames_and_guards_input() {
         ClientMessage::BrowserView { seat: lead_seat(), tab: None, reply_to: Some(42) },
     )
     .await;
-    let ServerMessage::BrowserView { id, profile, tab, controller, viewers, viewer } =
+    let ServerMessage::BrowserView { id, profile, tab, controller, viewers, viewer, editable } =
         next_server(&mut socket).await
     else {
         panic!("an attach is answered with the viewer state")
@@ -12344,6 +12384,7 @@ async fn the_viewer_wire_attaches_relays_frames_and_guards_input() {
     assert_eq!(tab, 2, "the tab the attach resolved");
     assert_eq!(controller, None, "a surface starts controller-less");
     assert_eq!(viewers, 1);
+    assert!(!editable, "a page with no focused field starts with the keyboard down");
     assert!(viewer > 0, "and this connection's own number, which a take makes the controller");
     let ServerMessage::BrowserNavState { id: nav_id, .. } = next_server(&mut socket).await else {
         panic!("the attach is followed by the page's history")

@@ -821,6 +821,7 @@ impl PopupGate {
             parts.downloads.clone(),
             Arc::clone(&parts.loaded),
             Arc::clone(self),
+            Arc::new(FocusState::default()),
             popup,
         )
     }
@@ -2393,6 +2394,32 @@ fn keep_awake() {
     std::mem::forget(activity);
 }
 
+/// **What the host last told the server about a tab's focused node.**
+///
+/// A page focuses and blurs its nodes many times while a person types, and
+/// the phone raises and drops its keyboard on each line: only a real
+/// transition is worth one. The answer starts `false`, which is what a client
+/// assumes until it hears otherwise.
+#[derive(Default)]
+struct FocusState(AtomicBool);
+
+impl FocusState {
+    /// Whether `editable` is a new answer. **The swap is the compare**: two
+    /// renderers of one tab (a cross-origin iframe and its page) race their
+    /// reports through one instance, and a read-then-write could report one
+    /// transition twice.
+    fn transition(&self, editable: bool) -> bool {
+        self.0.swap(editable, Ordering::AcqRel) != editable
+    }
+
+    /// Report `editable` when it differs from the last answer.
+    fn report(&self, tab: u16, editable: bool) {
+        if self.transition(editable) {
+            crate::control::emit(&crate::control::HostEvent::Focus { tab, editable });
+        }
+    }
+}
+
 cef::wrap_load_handler! {
     struct HostLoadHandler {
         // **The popup bootstrap's one signal.** A popup that has started a
@@ -2402,6 +2429,10 @@ cef::wrap_load_handler! {
         loaded: Arc<AtomicBool>,
         tab: u16,
         popups: Arc<PopupGate>,
+        // The tab's focused-node answer, shared with its client: **a new
+        // document holds no editable node**, so a navigation drops the
+        // phone's keyboard even when the renderer reports nothing.
+        focus: Arc<FocusState>,
     }
 
     impl LoadHandler {
@@ -2413,6 +2444,11 @@ cef::wrap_load_handler! {
         ) {
             if frame.is_some_and(|frame| frame.is_main() == 1) {
                 self.loaded.store(true, Ordering::Release);
+                // **A new document has no focused node yet.** The phone's
+                // keyboard follows this answer, and a page that navigated
+                // out from under a person's text field owes them the drop
+                // even if the renderer's own report races the commit.
+                self.focus.report(self.tab, false);
                 // **A main-frame navigation is a new document on this tab.**
                 // An opener's handles die with the old one; a bridged popup
                 // is told which bridge it is again, because a cross-site
@@ -2564,6 +2600,10 @@ cef::wrap_client! {
         loaded: Arc<AtomicBool>,
         // A page's `window.open` becomes a tab of this profile here.
         popups: Arc<PopupGate>,
+        // **The tab's focused-node answer.** The renderer reports from its
+        // own process, the load handler reports a navigation, and both land
+        // here so one tab's answer is deduped in one place.
+        focus: Arc<FocusState>,
         // Set on a popup's own client: the tab CEF is creating for it.
         popup: Option<AdmittedPopup>,
     }
@@ -2597,6 +2637,7 @@ cef::wrap_client! {
                 Arc::clone(&self.loaded),
                 self.tab,
                 Arc::clone(&self.popups),
+                Arc::clone(&self.focus),
             ))
         }
 
@@ -2611,6 +2652,18 @@ cef::wrap_client! {
             message: Option<&mut ProcessMessage>,
         ) -> i32 {
             let Some(message) = message else { return 0 };
+            let name = CefString::from(&message.name()).to_string();
+            // **A focused node is any frame's.** The main-frame rule below
+            // is the opener bridge's trust boundary, and a cross-origin
+            // iframe's text field takes the phone's keyboard just the same -
+            // so this answer is taken before the gate, and the tab it names
+            // is this client's own.
+            if name == "forge.bridge.focus" {
+                let Some(args) = message.argument_list() else { return 1 };
+                let editable = CefString::from(&args.string(0)).to_string() == "1";
+                self.focus.report(self.tab, editable);
+                return 1;
+            }
             // **The bridge is the main frame's.** A subframe has no native
             // object, so a message from one is a renderer that reached past
             // its own document; it is refused here rather than routed as the
@@ -2625,7 +2678,6 @@ cef::wrap_client! {
                 }
                 return 1;
             }
-            let name = CefString::from(&message.name()).to_string();
             let Some(args) = message.argument_list() else { return 1 };
             let string = |at: usize| CefString::from(&args.string(at)).to_string();
             match name.as_str() {
@@ -3256,6 +3308,20 @@ mod tests {
         assert_eq!(fallback.frames, std::path::Path::new("/p/cef/frames.sock"));
     }
 
+    /// **Only a real transition is a line.** The phone raises or drops its
+    /// keyboard on every Focus line, so a repeated answer - two renderers of
+    /// one tab, a load start over a page already blurred - must not send
+    /// one.
+    #[test]
+    fn a_focus_answer_reports_only_a_change() {
+        let focus = super::FocusState::default();
+        assert!(!focus.transition(false), "nothing is focused yet");
+        assert!(focus.transition(true), "an editable node takes focus");
+        assert!(!focus.transition(true), "a second editable node is not a change");
+        assert!(focus.transition(false), "focus leaving is a change");
+        assert!(!focus.transition(false), "and a repeated drop is not");
+    }
+
     /// **Every view of one tab is handed that tab's render handler.** CEF
     /// asks the client for one per view and a popup is its own view, so a
     /// handler built per call kept the popup's bounds in one instance and
@@ -3280,6 +3346,7 @@ mod tests {
             crate::download::handler(std::path::Path::new("/tmp"), 1),
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
             popups,
+            Arc::new(super::FocusState::default()),
             None,
         );
         let view = client.render_handler().expect("a handler for the page");

@@ -357,6 +357,7 @@
     "BrowserView": {
       "": [
         "controller",
+        "editable",
         "id",
         "kind",
         "profile",
