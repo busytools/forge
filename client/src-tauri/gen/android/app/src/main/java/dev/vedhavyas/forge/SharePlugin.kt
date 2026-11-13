@@ -1,7 +1,6 @@
 package dev.vedhavyas.forge
 
 import android.app.Activity
-import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -48,9 +47,12 @@ internal data class SharedFile(
  * A cold start's share is the activity's launch intent and the page asks for
  * it; a share into a running app arrives as a new intent and is pushed as an
  * event. Both answer the same payload, so the page has one reader. **A share
- * that arrives before the page listens is buffered**, and the answered token
- * is kept across a process restart, so a re-delivered launch intent is not
- * prompted twice - while a genuine re-share of the same files still is.
+ * that arrives before the page announces its listener is buffered** and
+ * answered by the page's first ask, and **the answered token lives for this
+ * process only**: a reload does not prompt twice, while a genuine re-share -
+ * including one that re-delivers a launch intent after a process restart -
+ * answers again. A duplicate sheet is visible and dismissable; a swallowed
+ * share is not, and Android cannot tell the two apart across a process.
  */
 @TauriPlugin
 class SharePlugin(private val activity: Activity) : Plugin(activity) {
@@ -59,6 +61,16 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
 
   /** The copy timers, alone, so a stuck copy cannot hold the thread a timeout needs. */
   private val timers = Executors.newSingleThreadScheduledExecutor()
+
+  /**
+   * Whether the page's own listener is registered.
+   *
+   * **`hasListener` reports the shell's channel, not the page's `listen`**:
+   * the channel is registered at plugin setup, long before the page's first
+   * draw, so a trigger that trusts it races the page and drops the share.
+   * The page announces this after its listener is up.
+   */
+  @Volatile private var pageReady = false
 
   @Command
   fun take(invoke: Invoke) {
@@ -70,12 +82,25 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
     }
     val intent = MainActivity.newest
     val streams = streamsOf(intent)
-    val token = shareToken(MainActivity.launches, process, intent?.action, intent?.type, streams)
-    if (token == null || !shouldAnswer(token, answeredToken(), MainActivity.restored)) {
+    val token = shareToken(intent?.action, intent?.type, streams)
+    if (token == null || !shouldAnswer(token, answered)) {
       invoke.resolveObject(payload(emptyList(), null))
       return
     }
     answer(token, streams, invoke::resolveObject)
+  }
+
+  /**
+   * The page's listener is registered, so a warm share may be pushed.
+   *
+   * **The page says this after `watchShares()` resolves**, and only then may
+   * `onNewIntent` trigger; a share delivered before it is buffered instead of
+   * emitted into a webview with no listener, which Tauri drops silently.
+   */
+  @Command
+  fun ready(invoke: Invoke) {
+    pageReady = true
+    invoke.resolve()
   }
 
   /**
@@ -88,16 +113,19 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
     val streams = streamsOf(intent)
-    val token =
-      shareToken(MainActivity.launches, process, intent.action, intent.type, streams) ?: return
+    val token = shareToken(intent.action, intent.type, streams) ?: return
     answer(token, streams) { answerPayload ->
       activity.runOnUiThread {
-        // **A share that arrives before the shell's channel is up is
-        // buffered** rather than dropped; its first ask answers it.
-        // `hasListener` reports the shell's channel, not the page's own
-        // `listen`; the page registers that before it asks for the launch's
-        // share, so a warm share cannot slip between the two.
-        if (hasListener("share")) trigger("share", answerPayload) else buffer(answerPayload)
+        // **A share that arrives before the page announces its listener is
+        // buffered** rather than emitted into a webview that would drop it;
+        // the page's first ask drains the buffer. Both paths mark it
+        // answered, because both are deliveries this process guarantees.
+        if (pageReady && hasListener("share")) {
+          trigger("share", answerPayload)
+        } else {
+          buffer(answerPayload)
+        }
+        markAnswered(token)
       }
     }
   }
@@ -246,19 +274,12 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
     return dir
   }
 
-  /** The share this app last answered, from this process or before it. */
-  private fun answeredToken(): String? =
-    answered ?: activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(ANSWERED, null)
-
+  /** Remember this process answered the share, so a reload does not. */
   private fun markAnswered(token: String) {
+    // **The mark dies with the process on purpose**: across a restart Android
+    // cannot tell a re-delivered launch intent from a genuine re-share of the
+    // same file, and the recoverable mistake is a duplicate sheet.
     answered = token
-    // **A process death must not re-prompt a share it already sent**: the
-    // launch intent outlives the process, so the token does too.
-    activity
-      .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-      .edit()
-      .putString(ANSWERED, token)
-      .apply()
   }
 
   private fun buffer(answer: JSObject) {
@@ -289,20 +310,6 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
     /** How long one share's copy may run before the sheet is told it stalled. */
     private const val COPY_TIMEOUT_SECONDS = 60L
 
-    private const val PREFS = "forge-share"
-    private const val ANSWERED = "answered"
-
-    /**
-     * When this process first loaded the plugin, which is what tells one
-     * process's answered share from the next one's.
-     *
-     * **The launch counter starts over at one in every process**, so content
-     * plus launch cannot separate a re-share after a restart from the first
-     * launch's; this stamp can, and a page reload inside one process keeps it
-     * unchanged.
-     */
-    private val process = System.currentTimeMillis()
-
     internal const val TOO_LARGE = "the share is larger than 200 MB"
     internal const val COPY_TIMEOUT = "the share took too long to copy"
     internal const val STALLED = "the share's provider stopped before the file ended"
@@ -324,7 +331,7 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
     private var pending: JSObject? = null
     private val lock = Any()
 
-    /** The share this process last answered, as the fast path over [`PREFS`]. */
+    /** The share this process last answered; cleared by a new process. */
     @Volatile private var answered: String? = null
 
     /**
@@ -371,61 +378,34 @@ class SharePlugin(private val activity: Activity) : Plugin(activity) {
       }
 
     /**
-     * What identifies one share, so a reload can tell it from a new one.
+     * What one share carried, which is its identity within a process.
      *
-     * **The content alone is not the identity.** A page reload inside one
-     * launch must not re-answer, so the launch number is part of the token;
-     * and a genuine re-share of the same files after the process ended has
-     * the same content and a launch number that starts over at one, so the
-     * process stamp is too. [restored] is what then tells a re-delivered
-     * launch intent from a new share.
+     * **Only the launch-ask door compares this**: a warm share always
+     * answers, so a second share of the same file is never swallowed. The
+     * token is deliberately content-only - the launch and process stamps
+     * cannot survive a restart, and a comparison across one is exactly what
+     * lost a genuine re-share before.
      *
      * **A SEND with no stream still has a token**: it is a share this app
      * takes, it carried no file, and the sheet says so rather than the app
      * opening on nothing.
      */
-    internal fun shareToken(
-      launch: Int,
-      process: Long,
-      action: String?,
-      type: String?,
-      streams: List<String>,
-    ): String? {
+    internal fun shareToken(action: String?, type: String?, streams: List<String>): String? {
       if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return null
-      return listOf(
-          process.toString(),
-          launch.toString(),
-          action ?: "",
-          type ?: "",
-          streams.joinToString("\u0000"),
-        )
+      return listOf(action ?: "", type ?: "", streams.joinToString("\u0000"))
         .joinToString("\u0000")
-    }
-
-    /** A token without its process and launch stamps: what the share carried. */
-    internal fun contentOf(token: String): String {
-      val first = token.indexOf('\u0000')
-      if (first < 0) return ""
-      val second = token.indexOf('\u0000', first + 1)
-      return if (second < 0) "" else token.substring(second + 1)
     }
 
     /**
      * Whether this ask should answer the share.
      *
      * **A reload is not a second share**: the token is compared with the one
-     * already answered. **A restored activity re-delivers the launch intent
-     * it already answered**, and neither the launch number nor the process
-     * stamp survives that restart, so a restored ask compares the content
-     * instead - while a fresh launch with the same files is a new share and
-     * answers again.
+     * this process already answered. Nothing else is suppressed - across a
+     * process the answered token is gone, so a re-delivered launch intent
+     * prompts again rather than a genuine re-share being lost.
      */
-    internal fun shouldAnswer(token: String?, answered: String?, restored: Boolean = false): Boolean {
-      if (token == null) return false
-      if (token == answered) return false
-      if (restored && answered != null && contentOf(token) == contentOf(answered)) return false
-      return true
-    }
+    internal fun shouldAnswer(token: String?, answered: String?): Boolean =
+      token != null && token != answered
 
     /** A display name made safe for the cache, and never a path. */
     internal fun cacheName(display: String?): String {

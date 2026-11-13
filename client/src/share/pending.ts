@@ -107,3 +107,22 @@ export async function watchShares(): Promise<() => void> {
     goTo({ name: 'share' }, { force: true });
   });
 }
+
+/**
+ * Tell the shell's share intake this page's listener is registered.
+ *
+ * **The shell's channel is not this listener**: it is up at plugin setup and
+ * a push into a webview with no `listen` is dropped silently, so the Kotlin
+ * half buffers a warm share until this arrives. Best-effort: a host without
+ * the Android plugin answers nothing, and a share already buffered is
+ * answered by the launch ask either way.
+ */
+export async function readyForShares(): Promise<void> {
+  if (!canHost()) return;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('client_share_ready');
+  } catch (why) {
+    console.warn('the share intake was not told the page is listening', why);
+  }
+}

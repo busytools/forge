@@ -115,13 +115,35 @@ pub async fn client_share_take(app: tauri::AppHandle) -> Result<Shared, String> 
     }
 }
 
+/// Tell the Kotlin half the page's own share listener is registered.
+///
+/// **A warm share is only pushed once the page says this.** The shell's
+/// channel is registered at plugin setup, long before the page's `listen`,
+/// and a trigger into a webview with no listener is dropped silently - so the
+/// Kotlin half buffers until this arrives rather than trusting the channel.
+#[tauri::command]
+pub async fn client_share_ready(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let reader = app
+            .try_state::<Arc<Reader>>()
+            .ok_or_else(|| "the share plugin is not there".to_owned())?;
+        return reader.ready().await;
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Ok(())
+    }
+}
+
 /// Upload one share to a seat's inbox, answering the absolute paths the
 /// server wrote.
 ///
 /// `upload_id` is the previous attempt's, when there was one: the shell asks
 /// the server whether it still holds that upload and continues from its
 /// offsets, or begins a new one. The answer's `paths` are what the prompt
-/// names, and they are only answered once the server has renamed every
+/// names, and they are only answered once the server has linked every
 /// partial into place.
 #[tauri::command]
 pub async fn client_share_upload(
@@ -425,6 +447,10 @@ pub struct Reader(tauri::plugin::PluginHandle<tauri::Wry>);
 impl Reader {
     async fn take(&self) -> Result<Shared, String> {
         self.0.run_mobile_plugin_async("take", ()).await.map_err(|why| why.to_string())
+    }
+
+    async fn ready(&self) -> Result<(), String> {
+        self.0.run_mobile_plugin_async::<()>("ready", ()).await.map_err(|why| why.to_string())
     }
 }
 

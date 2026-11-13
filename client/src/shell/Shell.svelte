@@ -26,7 +26,7 @@
     watchNotificationClicks,
   } from '../notify';
   import { rememberBoot } from '../composer/landing';
-  import { launchShare, pendingShare, watchShares } from '../share/pending';
+  import { launchShare, pendingShare, readyForShares, watchShares } from '../share/pending';
   import { noteSeatClick, setPerfSocket } from '../perf';
   import { skewMessage, subjectKey, type Skew } from '../protocol';
   import { currentRoute, goTo, hrefFor, parseRoute, shownSeat, type Route } from '../routes';
@@ -60,6 +60,12 @@
   // would drop the fields an address cannot carry.
   currentRoute.set(onDoor ? { name: 'connect' } : opened);
   const route = $derived($currentRoute);
+  // **A share is delivered once**: leaving the sheet drops it, so a later
+  // connect (or any other move back to `/share`) cannot resurrect a share
+  // that was already sent. The store is the sheet's input, not a history.
+  $effect(() => {
+    if ($currentRoute.name !== 'share') pendingShare.set(null);
+  });
   let settings = $state<ClientSettings>(DEFAULT_SETTINGS);
   let address = $state(named ?? remembered ?? DEFAULT_ADDRESS);
   let home = $state<HomeRead>({ wire: null, refused: null, failed: null, report: null });
@@ -118,6 +124,11 @@
         return;
       }
       stopShares = stop;
+      // **The page's listener is what a warm share is pushed to, so it is
+      // announced before the launch's share is asked for**: the Kotlin half
+      // buffers a share until this arrives rather than emitting it into a
+      // webview that has no listener yet.
+      await readyForShares();
       await open();
     })();
     // Once per launch, whatever route it opened on - the notice draws wherever

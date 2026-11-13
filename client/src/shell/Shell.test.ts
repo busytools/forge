@@ -2,12 +2,14 @@
 import { createRequire } from 'node:module';
 
 import { flushSync, mount, unmount } from 'svelte';
+import { get } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AddressInfo, RawData, WebSocket } from 'ws';
 
 import { DEFAULT_ADDRESS } from '../connect/attempt';
 import { rememberedAddress, rememberAddress, serverParameter } from '../connect/remembered';
 import { homeWire } from '../dev/fixture.data';
+import { goTo } from '../routes';
 import { rereadHome } from '../home/live';
 import { noteSeatClick } from '../perf';
 import { PROTOCOL_VERSION, subjectKey, type Subject } from '../protocol';
@@ -82,10 +84,19 @@ const mockRereadHome = vi.mocked(rereadHome);
  * every other command answers nothing - which is what a shell-less page would
  * have got anyway.
  */
-const { invokeMock, order } = vi.hoisted(() => ({
+const { invokeMock, order, listenHold } = vi.hoisted(() => ({
   /** Every shell command and event listen, in the order the page made them. */
   order: [] as string[],
   invokeMock: vi.fn((_command: string, _args?: unknown): Promise<unknown> => Promise.resolve(null)),
+  /**
+   * When set, the event listen resolves only after the test releases it.
+   *
+   * **This is what pins the `await`**: with the mock resolving at its own
+   * pace, the launch's ordering passes even when the shell does not await
+   * the listener, because both mocks resolve in import order. A held listen
+   * makes the launch wait where the real event chunk does.
+   */
+  listenHold: { current: null as null | { promise: Promise<void>; release: () => void } },
 }));
 
 vi.mock('@tauri-apps/api/core', async (importOriginal) => {
@@ -114,7 +125,9 @@ vi.mock('@tauri-apps/api/event', async (importOriginal) => {
     ...real,
     listen: (...args: Parameters<typeof real.listen>) => {
       order.push(`listen:${args[0]}`);
-      return real.listen(...args);
+      const registered = real.listen(...args);
+      const hold = listenHold.current;
+      return hold === null ? registered : hold.promise.then(() => registered);
     },
   };
 });
@@ -426,6 +439,7 @@ function appliedFont(): string {
 beforeEach(() => {
   Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: Socket });
   order.length = 0;
+  listenHold.current = null;
   mockWatchUpdate.mockClear();
   mockRereadHome.mockReset();
   invokeMock.mockReset();
@@ -525,10 +539,43 @@ describe('the shell at launch', () => {
   });
 
   /**
+   * **Leaving the sheet drops the share.** `pendingShare` is the sheet's
+   * input, not a history: a delivered share left behind is reopened by the
+   * next connect, at idle, with Send enabled - one tap duplicating the upload
+   * and the prompt.
+   */
+  it('drops a share when the sheet is left, so a connect cannot reopen it', async () => {
+    launchShareMock.mockImplementation(() => {
+      pendingShare.set({
+        files: [{ path: '/cache/share/1/a.jpg', name: 'a.jpg', size: 1, mime: null }],
+        error: null,
+        empty: false,
+      });
+      return Promise.resolve(true);
+    });
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/share', null);
+    await until(() => get(pendingShare) !== null, 'the share the launch came from');
+
+    goTo({ name: 'home' });
+    await until(() => get(pendingShare) === null, 'leaving the sheet to drop the share');
+
+    submit(forge.address);
+    await until(() => forge.homeReads() >= 1, 'the connect to take');
+    await until(() => location.pathname === '/', 'the connect to land home');
+    expect(location.pathname, 'a connect after the sheet was left reopened it').toBe('/');
+  });
+
+  /**
    * **The share listener is up before the launch asks for its share.** A warm
    * share can arrive while `client_share_take` is in flight, and the page's
    * `listen` is its only door; asking first leaves a window where the shell
    * triggers a share into a channel the page is not reading.
+   *
+   * **The listen is held open while the launch runs**: `await` is the fix,
+   * so the assertion is that the take has not happened while the listener
+   * promise is still pending.
    */
   it('registers the share listener before it asks for the launch share', async () => {
     Object.defineProperty(window, '__TAURI_INTERNALS__', {
@@ -539,19 +586,53 @@ describe('the shell at launch', () => {
       value: { unregisterListener: () => undefined },
       configurable: true,
     });
-    await openAt('/', null);
+    let release: () => void = () => {};
+    listenHold.current = {
+      promise: new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+      release: () => release(),
+    };
+    try {
+      const opening = openAt('/', null);
+      await until(
+        () => order.includes('listen:client://share'),
+        'the page to ask for the share listener',
+      );
+      expect(
+        order,
+        `the launch asked for its share while the listener was still registering; calls: ${order.join(', ')}`,
+      ).not.toContain('client_share_take');
+      listenHold.current.release();
+      await opening;
+      await until(
+        () => order.includes('client_share_take'),
+        'the launch to ask for its share once the listener was up',
+      );
 
-    const seen = order.join(', ');
-    const listened = order.indexOf('listen:client://share');
-    const asked = order.indexOf('client_share_take');
-    expect(
-      listened,
-      `the page never listened for a warm share; calls: ${seen}`,
-    ).toBeGreaterThanOrEqual(0);
-    expect(asked, `the launch never asked for its share; calls: ${seen}`).toBeGreaterThanOrEqual(0);
-    expect(listened, `the launch asked before the listener was up; calls: ${seen}`).toBeLessThan(
-      asked,
-    );
+      const seen = order.join(', ');
+      const listened = order.indexOf('listen:client://share');
+      const ready = order.indexOf('client_share_ready');
+      const asked = order.indexOf('client_share_take');
+      expect(
+        listened,
+        `the page never listened for a warm share; calls: ${seen}`,
+      ).toBeGreaterThanOrEqual(0);
+      expect(ready, `the page never announced its listener; calls: ${seen}`).toBeGreaterThanOrEqual(
+        0,
+      );
+      expect(asked, `the launch never asked for its share; calls: ${seen}`).toBeGreaterThanOrEqual(
+        0,
+      );
+      expect(listened, `the launch asked before the listener was up; calls: ${seen}`).toBeLessThan(
+        ready,
+      );
+      expect(ready, `the launch asked before the intake was told; calls: ${seen}`).toBeLessThan(
+        asked,
+      );
+    } finally {
+      listenHold.current = null;
+    }
   });
 
   /**
