@@ -243,7 +243,7 @@ describe('the hook run row', () => {
    * **A bare class name reaches further than the row it was written for.**
    * Drawn as `.kind`, the thinking row inherited the family-tree disclosure's
    * 3px margins, and every class this row has worn since has been split out
-   * of that trap. The row's own box is one letter from the chip's `.hooks`,
+   * of that trap. The row's own box is one letter from the family's own name,
    * which is why `.hook` is not it.
    *
    * **Bare is what this reads**: a rule for the same name under another
@@ -275,7 +275,10 @@ describe('the hook run row', () => {
         `${what} spells the row's own state class, so its silence means something`,
       ).toMatch(/details\.hookrow > summary \.ev/);
     }
-    expect(bareRules(SHEET, 'hooks'), 'where the name it must not take is taken').not.toEqual([]);
+    expect(
+      bareRules(SHEET, 'leaves'),
+      'a bare rule the scan finds, so its silence about the row means something',
+    ).not.toEqual([]);
   });
 
   /**
@@ -548,8 +551,8 @@ function sheets(): Array<[string, string]> {
 
 /**
  * Every class the row draws with, which is what a bare rule would reach. `hook`
- * is not among them: it is the name the row must NOT take, one letter from the
- * chip's `.hooks`, and is checked as the collision rather than as a wearer.
+ * is not among them: it is the family's own name, one letter from the row's,
+ * and is checked as the collision rather than as a wearer.
  */
 const WORN = ['hookrow', 'ev'];
 

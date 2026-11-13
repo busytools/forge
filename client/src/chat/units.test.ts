@@ -2007,7 +2007,7 @@ describe('one turn folded into the units a view draws', () => {
     });
   });
 
-  it('draws the turn hooks after the run they followed, and nothing when none fired', () => {
+  it('folds the turn hooks into the work as one row, where they fired', () => {
     // The captured row verbatim, less the synthetic parent id the fixture
     // carries (crates/forge-test-harness/baselines/sdk/2.1.280/real_session_sample.jsonl).
     // The two names are the wire's own - the message renames the Rust fields on
@@ -2029,12 +2029,19 @@ describe('one turn folded into the units a view draws', () => {
       uuid: 'uuid_7',
     });
 
-    const units = fold([call('read', 0), hook(1)]);
-    expect(kinds(units), 'the chip follows the run it came after').toEqual(['leaves', 'hooks']);
-    const chip = units[1];
-    expect(chip?.kind === 'hooks' ? chip.actions : null).toBe(1);
+    const units = fold([call('read', 0), hook(1), call('read', 1)]);
+    expect(kinds(units), 'the hooks ride the turn work rather than a unit of their own').toEqual([
+      'leaves',
+    ]);
+    const rows = rowsOf(units[0]);
     expect(
-      chip?.kind === 'hooks' ? chip.infos : [],
+      rows.map((row) => row.tag),
+      'the batch in frame order, between the calls',
+    ).toEqual(['call', 'hookbatch', 'call']);
+    const batch = rows[1];
+    expect(batch?.tag === 'hookbatch' ? batch.actions : null).toBe(1);
+    expect(
+      batch?.tag === 'hookbatch' ? batch.infos : [],
       'the command and the duration the captured row carries',
     ).toEqual([{ command: 'echo fixture-stop-hook-ok', durationMs: 3 }]);
     expect(fold([hook(0)]), 'a frame reporting none draws nothing').toHaveLength(0);
@@ -2068,15 +2075,16 @@ describe('one turn folded into the units a view draws', () => {
     };
 
     const units = fold([failed]);
-    const chip = units[0];
+    const batch = rowsOf(units[0])[0];
     expect(
-      chip?.kind === 'hooks' ? chip.errors : [],
+      batch?.tag === 'hookbatch' ? batch.errors : [],
       'the error the captured row carries, as its own list beside the infos',
     ).toEqual([error]);
 
     const clean = fold([{ ...failed, hookErrors: [] }]);
+    const cleanBatch = rowsOf(clean[0])[0];
     expect(
-      clean[0]?.kind === 'hooks' ? clean[0].errors : null,
+      cleanBatch?.tag === 'hookbatch' ? cleanBatch.errors : null,
       'and a summary that carries none reads as none',
     ).toEqual([]);
   });

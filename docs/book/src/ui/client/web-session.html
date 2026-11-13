@@ -1027,17 +1027,6 @@
   /* The continuation summary under the facts, as prose rather than the body's
      own line. */
   .cpoint .cpbody .sum { margin-top: 10px; }
-  /* Stacked: a flex here draws the hook rows beside the summary, not under it. */
-  .hooks { margin: 4px 0;
-    font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); cursor: pointer; }
-  .hooks > summary { list-style: none; display: flex; align-items: center; gap: 8px; }
-  .hooks > summary::-webkit-details-marker { display: none; }
-  .hooks:hover { color: var(--muted); }
-  details.hooks > summary .arw { color: var(--dim); }
-  details.hooks[open] > summary .arw { color: var(--accent); }
-  /* A failed summary's mark takes the bad tone rather than the chip's DIM. */
-  details.hooks > summary .st.err { color: var(--bad); }
-
   /* A hook's own run draws as a tool row: the glyph says the kind, the mark says
      how the run exited, and the state reads beside the name. The lifecycle
      frames the CLI sends while one hook runs fold to a row per run rather than a
@@ -2923,12 +2912,17 @@ Contains simple_expansion</div>
               </div>
             </div>
           </details>
-        </div>
 
-        <details class="hooks">
-          <summary><span>hook summary &#183; 3 actions</span>
-            <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-        </details>
+          <!-- The turn's own stop hooks: one row of the tool list, at the
+               point it fired, drawn as every call row is - the hook glyph, the
+               title and the chevron. Closed here, which is what a reader
+               meets. -->
+          <details class="leaf hookgroup hookbatch">
+            <summary><svg class="ic gl ok"><use href="#i-hook"/></svg>
+              <span class="tn">hook summary &#183; 3 actions</span>
+              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          </details>
+        </div>
 
         <details class="turninfo">
           <summary>
@@ -2995,39 +2989,44 @@ Contains simple_expansion</div>
 
       <div class="mine">
         <div class="prose">
-          <p>And the hooks chip open, since the rows it holds are a view of their own.</p>
+          <p>And the hook batch open, since the rows it holds are a view of their own.</p>
         </div>
       </div>
 
       <div class="work">
-        <details class="hooks" open>
-          <summary><span>hook summary &#183; 3 actions</span>
-            <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="body">
-            <div class="term">cargo fmt --check &#183; 412ms</div>
-            <div class="term">cargo clippy --all-targets &#183; 890ms</div>
-            <div class="term">git status --short &#183; 6ms</div>
-          </div>
-        </details>
+        <div class="leaves">
+          <details class="leaf hookgroup hookbatch" open>
+            <summary><svg class="ic gl ok"><use href="#i-hook"/></svg>
+              <span class="tn">hook summary &#183; 3 actions</span>
+              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="term">cargo fmt --check &#183; 412ms</div>
+              <div class="term">cargo clippy --all-targets &#183; 890ms</div>
+              <div class="term">git status --short &#183; 6ms</div>
+            </div>
+          </details>
+        </div>
       </div>
 
       <div class="mine">
         <div class="prose">
-          <p>And a chip whose hooks failed: the mark and the count ride the closed chip, and each error draws under the hooks.</p>
+          <p>And a batch whose hooks failed: the glyph takes the failure tone and the count rides the label, so the state reads closed, and each error draws under the hooks.</p>
         </div>
       </div>
 
       <div class="work">
-        <details class="hooks" open>
-          <summary>
-            <svg class="ic st err"><use href="#i-x"/></svg>
-            <span>hook summary &#183; 1 action &#183; 1 error</span>
-            <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          <div class="body">
-            <div class="term">${CLAUDE_PLUGIN_ROOT}/hooks/stop-hook.sh &#183; 0ms</div>
-            <div class="term"><span class="fail">JSON validation failed</span></div>
-          </div>
-        </details>
+        <div class="leaves">
+          <details class="leaf hookgroup hookbatch" open>
+            <summary>
+              <svg class="ic gl err"><use href="#i-hook"/></svg>
+              <span class="tn">hook summary &#183; 1 action &#183; 1 error</span>
+              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            <div class="body">
+              <div class="term">${CLAUDE_PLUGIN_ROOT}/hooks/stop-hook.sh &#183; 0ms</div>
+              <div class="term"><span class="fail">JSON validation failed</span></div>
+            </div>
+          </details>
+        </div>
       </div>
 
       <!-- The same row opened, since the body is the half a reader has to
@@ -3373,10 +3372,13 @@ branch main, nothing to commit</div>
         </div>
 
         <div class="beat" data-beat="6">
-          <details class="hooks">
-            <summary><span>hook summary &#183; 2 actions</span>
-              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          </details>
+          <div class="leaves">
+            <details class="leaf hookgroup hookbatch">
+              <summary><svg class="ic gl ok"><use href="#i-hook"/></svg>
+                <span class="tn">hook summary &#183; 2 actions</span>
+                <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+            </details>
+          </div>
         </div>
       </div>
     </div>

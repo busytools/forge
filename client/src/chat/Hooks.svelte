@@ -4,30 +4,30 @@
   import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
   import { duration } from './numbers';
-  import type { HookInfo } from './units';
+  import type { HookBatchLeaf } from './units';
 
   /**
    * What a turn's hooks did: the count, one row per hook behind it, and the
    * errors the CLI reported against the batch.
    *
-   * The frame sends none of these when no hook fired, so a chip on the page
+   * **The batch is a tool row, not a line of its own.** It is work the turn
+   * ran, so it draws with the shape every call and hook row draws - the hook
+   * glyph, the title, the chevron - and takes its place in the turn's tool
+   * list where it fired rather than standing above the work (Ved, 2026-11-13).
+   *
+   * The frame sends none of these when no hook fired, so a row on the page
    * always has something behind it.
    */
-  let {
-    actions,
-    infos,
-    errors,
-    open = false,
-  }: { actions: number; infos: HookInfo[]; errors: string[]; open?: boolean } = $props();
+  let { batch, open = false }: { batch: HookBatchLeaf; open?: boolean } = $props();
 
-  /** Whether the chip is open; a closed one carries its summary and nothing else. */
+  /** Whether the row is open; a closed one carries its summary and nothing else. */
   let opened = $state(untrack(() => open));
 
-  /** The summary's own words, errors counted on the closed chip too. */
+  /** The summary's own words, errors counted on the closed row too. */
   const label = $derived(
-    `hook summary \u{b7} ${actions} ${actions === 1 ? 'action' : 'actions'}` +
-      (errors.length > 0
-        ? ` \u{b7} ${errors.length} ${errors.length === 1 ? 'error' : 'errors'}`
+    `hook summary \u{b7} ${batch.actions} ${batch.actions === 1 ? 'action' : 'actions'}` +
+      (batch.errors.length > 0
+        ? ` \u{b7} ${batch.errors.length} ${batch.errors.length === 1 ? 'error' : 'errors'}`
         : ''),
   );
 
@@ -43,22 +43,22 @@
   }
 </script>
 
-<details class="hooks" bind:open={opened}>
+<details class="leaf hookgroup hookbatch" bind:open={opened}>
   <summary>
-    {#if errors.length > 0}
-      <Icon name="x" class="st err" />
-    {/if}
-    <span>{label}</span>
+    <!-- A batch only arrives once its hooks have settled, so the passing tone
+         is true unless the CLI reported an error against it. -->
+    <Icon name="hook" class={`gl${batch.errors.length > 0 ? ' err' : ' ok'}`} />
+    <span class="tn">{label}</span>
     <Chevron />
   </summary>
-  {#if opened && (infos.length > 0 || errors.length > 0)}
+  {#if opened && (batch.infos.length > 0 || batch.errors.length > 0)}
     <div class="body">
-      {#each infos as info, at (at)}
+      {#each batch.infos as info, at (at)}
         <div class="term">
           {info.command}{#if info.durationMs !== undefined}{' \u{b7} '}{took(info.durationMs)}{/if}
         </div>
       {/each}
-      {#each errors as error, at (at)}
+      {#each batch.errors as error, at (at)}
         <div class="term"><span class="fail">{error}</span></div>
       {/each}
     </div>

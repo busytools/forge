@@ -2573,16 +2573,6 @@ details.cpoint[open] > summary .arw { color: var(--accent); }
 /* The continuation summary under the facts, as prose rather than the body's
    own line. */
 .cpoint .cpbody .sum { margin-top: 10px; }
-/* Stacked: a flex here draws the hook rows beside the summary, not under it. */
-.hooks { margin: 4px 0;
-  font-family: var(--mono); font-size: var(--fs-base); color: var(--dim); cursor: pointer; }
-.hooks > summary { list-style: none; display: flex; align-items: center; gap: 8px; }
-.hooks > summary::-webkit-details-marker { display: none; }
-.hooks:hover { color: var(--muted); }
-details.hooks > summary .arw { color: var(--dim); }
-details.hooks[open] > summary .arw { color: var(--accent); }
-/* A failed summary's mark takes the bad tone rather than the chip's DIM. */
-details.hooks > summary .st.err { color: var(--bad); }
 /* A hook's own run draws as a tool row: the glyph says the kind, the mark says
    how the run exited, and the state reads beside the name. The lifecycle
    frames the CLI sends while one hook runs fold to a row per run rather than a

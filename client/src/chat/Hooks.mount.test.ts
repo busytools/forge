@@ -6,20 +6,20 @@ import Hooks from './Hooks.svelte';
 import type { HookInfo } from './units';
 
 /**
- * The chip's own open, as MOUNTED DOM.
+ * The row's own open, as MOUNTED DOM.
  *
- * **A closed chip carries its summary and nothing else, and only a mount can
+ * **A closed row carries its summary and nothing else, and only a mount can
  * show the reader's own open**: SSR pins neither `bind:open` nor the prop's
- * default, so the chip is mounted closed (the production default) and then
+ * default, so the row is mounted closed (the production default) and then
  * opened the way a reader opens it.
  */
 const ONE: HookInfo[] = [{ command: 'echo fixture-stop-hook-ok', durationMs: 3 }];
 
-describe('the hook chip, mounted', () => {
+describe('the hook batch row, mounted', () => {
   it("draws its hooks onto the reader's open, and holds nothing while closed", () => {
     const app = mount(Hooks, {
       target: document.body,
-      props: { actions: 1, infos: ONE, errors: [] },
+      props: { batch: { key: 'uuid_7#hookbatch', actions: 1, infos: ONE, errors: [] } },
     });
     try {
       flushSync();
@@ -27,10 +27,10 @@ describe('the hook chip, mounted', () => {
         'echo fixture-stop-hook-ok',
       );
 
-      const chip = document.querySelector('details');
-      if (!(chip instanceof HTMLDetailsElement)) throw new Error('the chip drew no details');
-      chip.open = true;
-      chip.dispatchEvent(new Event('toggle'));
+      const row = document.querySelector('details');
+      if (!(row instanceof HTMLDetailsElement)) throw new Error('the row drew no details');
+      row.open = true;
+      row.dispatchEvent(new Event('toggle'));
       flushSync();
       expect(document.querySelector('.term')?.textContent ?? '', 'the hooks draw').toContain(
         'echo fixture-stop-hook-ok',

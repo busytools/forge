@@ -341,6 +341,24 @@ export interface HookGroupLeaf {
 }
 
 /**
+ * What one turn's stop hooks did, as a row of the turn's work.
+ *
+ * **The frame carries no per-hook run**, only the commands and how many errors
+ * the batch reported - and the errors name no hook - so the row holds the
+ * counts and the lists rather than folding them onto runs. It arrives once the
+ * batch has settled, so the row lands where it fired: among the calls around it
+ * rather than as a line of its own.
+ */
+export interface HookBatchLeaf {
+  /** The frame the batch arrived on, which is what the row is keyed by. */
+  key: string;
+  actions: number;
+  infos: HookInfo[];
+  /** The errors the CLI reported against the batch, which name no hook. */
+  errors: string[];
+}
+
+/**
  * One row of a turn's work, in the order it arrived.
  *
  * Every row a stretch draws - a call, a peer card, a thought, a hook run, a
@@ -353,6 +371,7 @@ export type WorkRow =
   | ({ tag: 'thought' } & ThoughtLeaf)
   | ({ tag: 'hook' } & HookLeaf)
   | ({ tag: 'hookgroup' } & HookGroupLeaf)
+  | ({ tag: 'hookbatch' } & HookBatchLeaf)
   | ({ tag: 'inbound' } & InboundLeaf)
   | ({ tag: 'nudge' } & NudgeLeaf)
   | ({ tag: 'procedure' } & ProcedureLeaf);
@@ -489,7 +508,6 @@ export type Unit =
    * without wearing an attribution it never had.
    */
   | { kind: 'skill'; key: string; name: string; body: string }
-  | { kind: 'hooks'; key: string; actions: number; infos: HookInfo[]; errors: string[] }
   /**
    * Where the conversation was cut and the transcript replaced.
    *
@@ -2572,13 +2590,16 @@ export function fold(
       if (frame.subtype === 'stop_hook_summary') {
         // The wire's own names, not the Rust fields they stand for: the
         // message renames both on the way out (`hookCount`, `hookInfos`), so a
-        // read of `actions`/`hook_infos` is always undefined and the chip has
+        // read of `actions`/`hook_infos` is always undefined and the row has
         // never drawn on a real session.
         const actions = typeof frame.hookCount === 'number' ? frame.hookCount : 0;
         if (actions > 0) {
-          push({
-            kind: 'hooks',
-            key: typeof frame.uuid === 'string' ? frame.uuid : `hooks-${at}`,
+          // A row of the turn's work rather than a unit of its own: the batch
+          // is work the turn did, so it lands among the calls it fired between
+          // - the rule the hook rows beside it already follow.
+          pending.push({
+            tag: 'hookbatch',
+            key: keyOf(at, frame, 'hookbatch'),
             actions,
             infos: (Array.isArray(frame.hookInfos) ? frame.hookInfos : []).map((info) => ({
               command: str(info, 'command') ?? '',
