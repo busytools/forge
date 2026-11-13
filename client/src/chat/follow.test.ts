@@ -3666,6 +3666,79 @@ describe('a return to the seat the reader left', () => {
     ).not.toBeNull();
   });
 
+  /**
+   * **An ask answered before the reader leaves is not a place.**
+   *
+   * Following, the reader answers a prompt in the dock: the card takes the
+   * column's room and the answer gives it back, with the browser carrying
+   * them onto the foot the room leaves. The return then lands them at the
+   * newest, still following - the answered ask left nothing behind for the
+   * restore to reopen.
+   */
+  it('answers an ask while following, and lands at the newest on the return', async () => {
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+    layOut(40);
+    readerAt(FOOT);
+    await settle();
+    expect(following(server), 'precondition: the reader is following').toBe(true);
+
+    setElement(TOTAL, VIEWPORT - 200);
+    resized();
+    await settle();
+    setElement(TOTAL, VIEWPORT);
+    list()?.scrolledTo(TOTAL - VIEWPORT, TOTAL, VIEWPORT);
+    resized();
+    await settle();
+
+    await ontoDocument();
+    returned(server);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the return did not land at the newest').toBe(FOOT);
+    expect(following(server), 'the return left the follow off').toBe(true);
+    expect(
+      document.querySelector('button.follow'),
+      'a following reader was handed the way back',
+    ).toBeNull();
+  });
+
+  /** The other half: a parked reader's place survives the same round trip. */
+  it('answers an ask while parked, and keeps the place on the return', async () => {
+    const server = stub();
+    await parked(server);
+
+    setElement(TOTAL, VIEWPORT - 200);
+    resized();
+    await settle();
+    setElement(TOTAL, VIEWPORT);
+    resized();
+    await settle();
+    expect(element.offset, 'precondition: the parked reader held their row').toBe(PLACE);
+
+    await ontoDocument();
+    returned(server);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the return lost the parked place').toBe(PLACE);
+    expect(following(server), 'the return armed the follow under a parked reader').toBe(false);
+    expect(
+      document.querySelector('button.follow'),
+      'the returned reader is away from the foot, and the way back says so',
+    ).not.toBeNull();
+  });
+
   it('leaves a restore in flight alone when the layout moves the reader short', async () => {
     // **A restore in flight is not a foot for the pin to land.** The mount
     // re-arms the hold while `restoring` still names the row to place, and a
@@ -4900,6 +4973,72 @@ describe('the motion of a following column', () => {
     }
   });
 
+  it('keeps following when the dock gives the column its room back mid-glide', async () => {
+    // **An answered ask is a room change, and the foot moves with it.** The
+    // composer collapses when the prompt is answered and the column takes the
+    // room, so the foot comes up and the browser clamps the reader onto it. A
+    // following column has to still be following after that: answering is not
+    // the reader leaving, and the next message must carry them.
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+    layOut(40);
+    expect(element.offset, 'precondition: the landing is at the foot').toBe(FOOT);
+    clear();
+
+    vi.stubGlobal('matchMedia', () => ({ matches: false }));
+    const hand = clock();
+    try {
+      // The ask arrives: the dock takes 200px of the column, the foot drops,
+      // and the observer follows it down by gliding to the risen end.
+      setElement(TOTAL, VIEWPORT - 200);
+      resized();
+      await hand.pump(0);
+      await hand.pump(16);
+      const dropped = Math.floor(TOTAL) - (VIEWPORT - 200);
+      expect(
+        element.offset,
+        'precondition: the column is gliding toward the foot the dock left',
+      ).toBeGreaterThan(FOOT);
+      expect(element.offset, 'precondition: and the glide has not arrived').toBeLessThan(dropped);
+
+      // The reader answers: the dock gives the room back, the browser clamps
+      // the reader onto the foot it now leaves, and the observer sees the
+      // column change size.
+      setElement(TOTAL, VIEWPORT);
+      list()?.scrolledTo(TOTAL - VIEWPORT, TOTAL, VIEWPORT);
+      resized();
+      await hand.pump(16);
+      for (let at = 0; at < 12; at += 1) await hand.pump(16);
+
+      // The turn carries on, and the next message must carry the reader.
+      clear();
+      setElement(TOTAL + 120, VIEWPORT);
+      setModel(TOTAL + 120);
+      server.frame();
+      resized();
+      for (let at = 0; at < 12; at += 1) await hand.pump(16);
+      expect(following(server), 'the answered ask left the follow off').toBe(true);
+      expect(element.offset, 'the answered ask did not carry the reader').toBe(
+        Math.floor(TOTAL + 120) - VIEWPORT,
+      );
+      expect(
+        pinned().filter((pin) => pin.landed === Math.floor(TOTAL + 120) - VIEWPORT),
+        'the answered ask left the column not following',
+      ).not.toEqual([]);
+    } finally {
+      hand.stop();
+    }
+  });
+
   it('disarms when a small up-scroll stops a glide mid-stream', async () => {
     // **A gesture that stops a glide leaves the reader where it reached.**
     // `placed` is the offset the disarm compares against; a stale foot from
@@ -4945,6 +5084,62 @@ describe('the motion of a following column', () => {
     }
   });
 
+  it('keeps following when the column shrinks under a glide', async () => {
+    // **The foot a glide aimed at is not the foot it lands on.** A row that
+    // corrects itself shorter while the tween is running takes the end away
+    // with it, and the browser clamps every remaining frame to the foot that
+    // leaves. Judged against the end it aimed at, that landing reads as short
+    // of the foot: the reader is parked on the very last pixel, the way back
+    // is drawn over a column that is at the end, and nothing pins again. An
+    // answered ask is this shape - the dock's card collapsing moves the foot
+    // in one breath - which is where a following column was seen to stop
+    // following (#2970).
+    const server = stub();
+    await draw(server);
+    layOut(40);
+    expect(element.offset, 'precondition: the landing is at the foot').toBe(FOOT);
+    clear();
+
+    vi.stubGlobal('matchMedia', () => ({ matches: false }));
+    const hand = clock();
+    try {
+      // A growth starts the glide toward the foot it moved.
+      setElement(TOTAL + 200, VIEWPORT);
+      reported.size = TOTAL + 200;
+      server.forged('one');
+      await hand.pump(0);
+      await hand.pump(16);
+      expect(element.offset, 'precondition: the glide is in flight').toBeGreaterThan(FOOT);
+
+      // A row above corrects itself shorter while the glide is running: the
+      // foot comes up under it, and the browser clamps the tween's frames to
+      // the foot it leaves. The column's own size report is the one a browser
+      // drops under load; the row's report is the redundancy that lands it.
+      setElement(TOTAL - 200, VIEWPORT);
+      reported.size = TOTAL - 200;
+      for (let at = 0; at < 12; at += 1) await hand.pump(16);
+
+      expect(following(server), 'the shrink switched the follow off').toBe(true);
+      expect(
+        document.querySelector('button.follow'),
+        'the shrink parked a following reader at the foot',
+      ).toBeNull();
+
+      // The next message must carry them.
+      clear();
+      setElement(TOTAL - 80, VIEWPORT);
+      reported.size = TOTAL - 80;
+      server.forged('two');
+      resized(40);
+      for (let at = 0; at < 12; at += 1) await hand.pump(16);
+      expect(pinned().at(-1)?.landed, 'the column did not follow the next message').toBe(
+        Math.floor(TOTAL - 80) - VIEWPORT,
+      );
+    } finally {
+      hand.stop();
+    }
+  });
+
   it('lands at once when the reader asked for less motion', async () => {
     // The suite's own preference is `reduce`, and the landing is one write.
     const server = stub();
@@ -4975,6 +5170,133 @@ describe('the motion of a following column', () => {
     flushSync();
 
     expect(element.offset, 'the circle glided instead of jumping').toBe(FOOT);
+  });
+});
+
+/**
+ * **An answered ask is the column's room moving, not the reader moving.**
+ *
+ * The dock sits under the conversation, so a prompt's card takes the column's
+ * room and answering it gives the room back: the foot drops, comes back up,
+ * and the browser clamps a reader at the end onto the foot the room leaves.
+ * None of that is the reader leaving the column, so neither state may break -
+ * a following reader still follows, and a parked reader's row does not move
+ * (#2970).
+ */
+describe('an ask answered under the column', () => {
+  /** A column with three spoken turns, left where the landing put it. */
+  async function drawn(server: ReturnType<typeof stub>): Promise<void> {
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+    layOut(40);
+  }
+
+  /** The prompt's card arrives and takes 200px of the column. */
+  async function cardRises(): Promise<void> {
+    setElement(TOTAL, VIEWPORT - 200);
+    resized();
+    await settle();
+  }
+
+  /**
+   * The reader answers, and the dock gives the room back.
+   *
+   * `clamped` is the browser's own move: a reader at the end is standing past
+   * the foot the shorter room leaves, and the browser carries them onto it. A
+   * reader parked further up is beyond that reach and does not move.
+   */
+  async function cardFalls(clamped: boolean): Promise<void> {
+    setElement(TOTAL, VIEWPORT);
+    if (clamped) list()?.scrolledTo(TOTAL - VIEWPORT, TOTAL, VIEWPORT);
+    resized();
+    await settle();
+  }
+
+  it('keeps a following reader at the newest end', async () => {
+    const server = stub();
+    await drawn(server);
+    readerAt(FOOT);
+    await settle();
+    expect(following(server), 'precondition: the reader is following').toBe(true);
+    clear();
+
+    await cardRises();
+    await cardFalls(true);
+
+    expect(following(server), 'the answered ask switched the follow off').toBe(true);
+    expect(
+      document.querySelector('button.follow'),
+      'the answered ask parked a following reader',
+    ).toBeNull();
+
+    // The turn carries on: the next message must carry the reader.
+    clear();
+    setElement(TOTAL + 120, VIEWPORT);
+    setModel(TOTAL + 120);
+    server.frame();
+    resized();
+    await settle();
+    expect(pinned().at(-1), 'the answered ask left the column not following').toEqual({
+      asked: Math.floor(TOTAL + 120),
+      landed: Math.floor(TOTAL + 120) - VIEWPORT,
+    });
+  });
+
+  it('keeps a parked reader on their row, with the way back drawn', async () => {
+    const server = stub();
+    await drawn(server);
+    readerAt(50);
+    await settle();
+    expect(following(server), 'precondition: the reader is parked').toBe(false);
+    const at = element.offset;
+    clear();
+
+    await cardRises();
+    await cardFalls(false);
+
+    expect(element.offset, 'the answered ask moved the parked reader').toBe(at);
+    expect(following(server), 'the answered ask armed the follow').toBe(false);
+    expect(
+      document.querySelector('button.follow'),
+      'a parked reader is still owed the way back',
+    ).not.toBeNull();
+  });
+
+  it('follows again when the way back is pressed after an answer', async () => {
+    const server = stub();
+    await drawn(server);
+    readerAt(50);
+    await settle();
+    await cardRises();
+    await cardFalls(false);
+    clear();
+
+    document
+      .querySelector('button.follow')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+    await settle();
+
+    expect(following(server), 'the way back resumes the follow').toBe(true);
+    expect(element.offset, 'and lands the reader at the foot').toBe(FOOT);
+
+    clear();
+    setElement(TOTAL + 120, VIEWPORT);
+    setModel(TOTAL + 120);
+    server.frame();
+    resized();
+    await settle();
+    expect(pinned().at(-1)?.landed, 'and the next message carries them').toBe(
+      Math.floor(TOTAL + 120) - VIEWPORT,
+    );
   });
 });
 

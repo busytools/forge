@@ -730,7 +730,17 @@
         glideTarget = null;
         const landed = box.scrollTop;
         placed = landed;
-        const at = landed >= reachable - FOOT_QUANTUM;
+        // **The end this landing answers to is the one it can reach NOW.**
+        // A glide runs for a few frames and the column can move under it: a
+        // row corrects itself shorter, and the browser clamps the tween's
+        // frames to the foot that leaves. Read against the end the glide was
+        // aimed at, that landing is short of a foot that no longer exists -
+        // so a following reader standing on the very last pixel is parked
+        // there, and nothing pins again until their own hand or the way back.
+        // `reachable` still bounds the landing where the list lags the
+        // element (the pin holds at the measured end by design).
+        const max = box.scrollHeight - box.clientHeight;
+        const at = landed >= Math.min(reachable, max) - FOOT_QUANTUM;
         // **Only a write that moved comes back as an event.** A tween whose
         // last frame lands on the value the frame before it already wrote
         // must not arm the token: no echo is coming, and the next event would
