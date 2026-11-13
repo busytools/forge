@@ -1041,23 +1041,23 @@ mod tests {
             uploads.chunk(2, began.upload_id, 0, 0, b"ab").is_err(),
             "another connection's chunk is refused",
         );
+        // **The file is whole before this end**: a short file would be
+        // refused for its byte count, so only the binding can refuse it and
+        // deleting the check reddens this assertion.
+        chunk(&uploads, began.upload_id, 0, 0, b"abcd").expect("the owner sends the whole file");
         assert!(
             uploads.end(&seat(), 2, began.upload_id).is_err(),
             "another connection cannot end it",
         );
         uploads.resume(&seat(), began.upload_id, 2).expect("the reconnected client resumes");
-        uploads
-            .chunk(2, began.upload_id, 0, 0, b"ab")
-            .expect("and its chunks land after the resume");
         assert!(
-            uploads.chunk(1, began.upload_id, 0, 2, b"cd").is_err(),
+            uploads.chunk(1, began.upload_id, 0, 0, b"abcd").is_err(),
             "the connection the drop left behind cannot write",
         );
         assert!(
             uploads.end(&seat(), 1, began.upload_id).is_err(),
             "and cannot land the upload the reconnect now owns",
         );
-        uploads.chunk(2, began.upload_id, 0, 2, b"cd").expect("the owner finishes the file");
         let paths = uploads.end(&seat(), 2, began.upload_id).expect("the owner ends it").paths;
         assert_eq!(std::fs::read(&paths[0]).unwrap(), b"abcd");
     }
