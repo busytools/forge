@@ -545,9 +545,9 @@ fn classify_forward_failure(error: &(dyn std::error::Error + 'static)) -> Forwar
         (ForwardFailureKind::Reset, &["reset"]),
         (ForwardFailureKind::Closed, &["closed", "broken pipe", "eof"]),
         (ForwardFailureKind::Connect, &["connect", "refused", "unreachable", "network is down"]),
-        // Last, because the h2 wrapper shares its layer with the more
-        // specific words above it ("http2 error: connection closed",
-        // REFUSED_STREAM rendering as "refused"), and those keep their kind.
+        // Last, because h2's own words sit beside causes the kinds above
+        // already answer for: a peer close below the wrapper stays
+        // "closed", and REFUSED_STREAM's "refused" stays "connect".
         (ForwardFailureKind::Http2, &["http2 error", "stream error", "unspecific protocol error"]),
     ];
     let (layers, _) = error_chain(error);
@@ -2360,8 +2360,10 @@ mod tests {
 
     /// The kind has to come off the chain, not the top, and every real
     /// reqwest connect-phase error carries a `client error (Connect)`
-    /// wrapper above its cause - so each case here holds a "connect" token
-    /// above its own kind, pinning the precedence and not just the needles.
+    /// wrapper above its cause - so each connect-phase case here holds a
+    /// "connect" token above its own kind, pinning the precedence and not
+    /// just the needles. The send-phase cases below it open with `client
+    /// error (SendRequest)` instead.
     #[test]
     fn the_classifier_reads_the_kind_off_the_chain() {
         let cases = [
@@ -2435,7 +2437,7 @@ mod tests {
             ),
             (
                 // The measured shape behind every gateway_forward_failed
-                // record of 2026-11-14: a peer RST_STREAM after 10-48 s.
+                // record of 2026-11-14: a peer RST_STREAM.
                 chain(&[
                     "error sending request for url \
                      (https://openrouter.ai/api/v1/messages?beta=true)",
@@ -2446,15 +2448,38 @@ mod tests {
                 ForwardFailureKind::Http2,
             ),
             (
-                // A peer that closes the stream stays "closed": the h2
-                // wrapper carries its own needle in the same layer, so this
-                // pins the precedence, not just the kind's existence.
+                // A peer that closes the stream stays "closed". hyper sends
+                // the h2 cause as its own source layer, so this pins both
+                // the precedence and the search below the wrapper.
                 chain(&[
                     "error sending request for url (https://openrouter.ai/api/v1/messages)",
                     "client error (SendRequest)",
-                    "http2 error: connection closed",
+                    "http2 error",
+                    "connection closed because of a broken pipe",
                 ]),
                 ForwardFailureKind::Closed,
+            ),
+            (
+                // The wrapper is not required for the h2 kind: the cause
+                // layer's own words are enough.
+                chain(&[
+                    "error sending request for url (https://openrouter.ai/api/v1/messages)",
+                    "client error (SendRequest)",
+                    "stream error received: unspecific protocol error detected",
+                ]),
+                ForwardFailureKind::Http2,
+            ),
+            (
+                // REFUSED_STREAM's cause layer carries "refused", which is
+                // connect by precedence; the h2 kind sitting last is what
+                // keeps that answer.
+                chain(&[
+                    "error sending request for url (https://openrouter.ai/api/v1/messages)",
+                    "client error (SendRequest)",
+                    "http2 error",
+                    "refused stream before processing any application logic",
+                ]),
+                ForwardFailureKind::Connect,
             ),
             (
                 // A flat error has no wrapper to skip, so its own text is
