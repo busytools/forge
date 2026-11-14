@@ -26,10 +26,17 @@ shell lays a native view. **The canvas keeps the picture's shape**: a wide page
 in a portrait phone is scaled to fit with the takeover's own background above
 and below it, and taking control lays the page out at the phone's shape, so
 the bands fall away. **A finger drives the page the way a mouse does**: a
-tap is a press and its release, a one-finger swipe is a wheel, and a tap on
-the page raises the phone's keyboard - its named keys, inserted text and IME
-compositions cross as the same key and text events the desktop overlay
-sends. **The bar wraps on a finger's screen**: a hand-off's row is wider than
+tap is a press and its release, and a one-finger swipe is a wheel. **The
+phone's keyboard follows the page's focus, not the tap alone**: the host reports
+the page's focused node and whether it is editable, and the keyboard rises
+while a text field holds focus and drops when one does not - so a tap on a
+button, a link or empty page raises nothing on its own. **A second tap on a field that
+still holds focus is the way back after a dismiss**, because no focus change
+is coming to raise it again; **a tap that lands elsewhere while a field
+holds focus raises the keyboard for the beat the page's report takes to
+arrive**, which is the only thing that can tell the field from the button.
+Its named keys, inserted text and IME compositions cross as the same key and
+text events the desktop overlay sends. **The bar wraps on a finger's screen**: a hand-off's row is wider than
 a portrait phone, so its actions take a line of their own and **Done**,
 **send feedback** and **Not now** stay reachable at 393 and 430 points.
 **The web page is the same client with no shell at all**: its takeover is a

@@ -47,6 +47,13 @@ pub enum HostEvent {
     /// arrives, or by `closed` when the page takes the dialog away itself,
     /// and by nothing until one of those.
     JsDialog { tab: u16, dialog: String, message: String, state: JsDialogState },
+    /// **The tab's focused DOM node changed, and whether it is editable.**
+    /// The phone's soft keyboard follows this answer: the client raises it
+    /// while an editable node holds focus and drops it when one does not.
+    /// **A tab with no line yet is read as `false`** by the service, and the
+    /// host reports only real transitions - so a page that autofocuses a
+    /// field reports `true` first.
+    Focus { tab: u16, editable: bool },
     /// A download finished on the server: the tab it started from, the file's
     /// name, its path beside the profile, and how many bytes it holds.
     Download { tab: u16, name: String, path: String, size: u64 },
@@ -113,6 +120,24 @@ mod tests {
             .contains("\"answered\""),
             "the state is spelled in the line",
         );
+    }
+
+    /// **The line names the tab and the answer**, because the keyboard
+    /// belongs to one tab's page: a focus change on a tab nobody is looking
+    /// at must not raise a keyboard, and the answer the server routes is the
+    /// one that decides whether an editable node holds the keyboard.
+    #[test]
+    fn a_focus_change_round_trips_its_line() {
+        for editable in [true, false] {
+            let event = HostEvent::Focus { tab: 2, editable };
+            let line = serde_json::to_string(&event).expect("a line");
+            assert!(line.contains("focus"), "the server matches the kind: {line}");
+            assert!(
+                line.contains(&format!("\"editable\":{editable}")),
+                "the answer is in the line: {line}"
+            );
+            assert_eq!(parse(&line), Some(event));
+        }
     }
 
     /// **A tab's birth and end are named on the control line**, with the tab

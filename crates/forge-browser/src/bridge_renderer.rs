@@ -35,6 +35,13 @@ const ASSIGN: &str = "forge.bridge.assign";
 const ASSIGNED: &str = "forge.bridge.assigned";
 const EVENT: &str = "forge.bridge.event";
 
+/// This side's report of the focused node: `1` when it is editable, `0` when
+/// it is not (or focus left the page). **The browser process owns the tab**,
+/// so the answer crosses as a process message and becomes the host's line
+/// there. **One name for both halves**: the browser process matches on this
+/// same const, so a rename cannot split sender from reader.
+pub(crate) const FOCUS: &str = "forge.bridge.focus";
+
 /// The page shim, evaluated into every main frame.
 const SHIM: &str = include_str!("bridge.js");
 
@@ -105,6 +112,23 @@ cef::wrap_render_process_handler! {
                 // remembered there.
                 send(frame, ASSIGNED, &[]);
             }
+        }
+
+        /// **The page's focused node is the phone's keyboard.** CEF reports
+        /// every DOM focus change here, in the render process, because this
+        /// is where the node and its editability exist; the browser process
+        /// owns the tab and the server line. **A node of `None` is focus
+        /// leaving the page**, and a subframe's report is the tab's too: a
+        /// cross-origin iframe's text field takes the keyboard just the same.
+        fn on_focused_node_changed(
+            &self,
+            _browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            node: Option<&mut Domnode>,
+        ) {
+            let Some(frame) = frame else { return };
+            let editable = node.is_some_and(|node| node.is_editable() == 1);
+            send(frame, FOCUS, &[if editable { "1" } else { "0" }.to_owned()]);
         }
 
         fn on_process_message_received(
