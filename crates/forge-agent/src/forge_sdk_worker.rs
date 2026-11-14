@@ -189,10 +189,10 @@ hand-off. The document opens in their own viewer, \
 and the review they leave comes \
 back to this session when it has the `review` MCP family; without that \
 family the review is your lead's to read, and the hand-off answer names \
-the scope for it. A document hand-off is one door to the user a \
-worker session may open, and a spoken update to a seat the person chose \
-to listen to is the other: hand the document off, then tell your lead it \
-is waiting. A path in chat is not a hand-off, and neither is a link. Any \
+the scope for it. A worker's own work reaches the user through a \
+document hand-off or a spoken update to a seat the person chose to \
+listen to: hand the document off, then tell your lead it is waiting. A \
+path in chat is not a hand-off, and neither is a link. Any \
 reviewable document - one the user must read and comment on - gets the \
 hand-off; a code change, a PR and an answer that belongs in the chat \
 do not need one.\n\
@@ -4258,10 +4258,10 @@ mod tests {
     /// a document, not as a path in chat: the hand-off opens it in their
     /// viewer and returns the review to the session that delivered it when
     /// that session has the `review` family, and to its lead otherwise.
-    /// The worker door is pinned because the routing rule above tells a
-    /// worker not to address the user, and a worker reading only that
-    /// sends the spec through its lead instead - the behaviour this rule
-    /// exists to stop. The boundary is pinned because without it the rule
+    /// The worker's own output route is pinned because the routing rule
+    /// above tells a worker not to address the user, and a worker reading
+    /// only that sends the spec through its lead instead - the behaviour
+    /// this rule exists to stop. The boundary is pinned because without it the rule
     /// reads as covering code changes and PRs, which stay where they are.
     #[test]
     fn the_conduct_block_carries_the_document_hand_off_rule() {
@@ -4289,11 +4289,11 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "A document hand-off is one door to the user a worker session may open, and a \
-                 spoken update to a seat the person chose to listen to is the other: hand the \
-                 document off, then tell your lead it is waiting"
+                "A worker's own work reaches the user through a document hand-off or a spoken \
+                 update to a seat the person chose to listen to: hand the document off, then \
+                 tell your lead it is waiting"
             ),
-            "the two worker doors reconcile the rule with the routing rule above it",
+            "the worker's own output routes reconcile the rule with the routing rule above it",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
