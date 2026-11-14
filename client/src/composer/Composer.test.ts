@@ -12,6 +12,14 @@ import { surface as terminalSurface } from '../terminal/surface.svelte';
 import vaultAnswerFrames from './vault-answer-frames.json';
 
 /**
+ * **The shell's clipboard, mockable so the landing's shell path is exercised
+ * here.** A Composer case that only stubs `navigator.clipboard` cannot see
+ * the path the desktop takes.
+ */
+const { pluginWrite } = vi.hoisted(() => ({ pluginWrite: vi.fn() }));
+vi.mock('@tauri-apps/plugin-clipboard-manager', () => ({ writeText: pluginWrite }));
+
+/**
  * The shell's own door, mock-able so both halves of Open's claim are testable
  * here: outside the shell the real one answers a reason, which only ever
  * proved the could-not line.
@@ -186,6 +194,13 @@ function writeFeedback(text: string): void {
   flushSync();
 }
 
+/** Pretend this page runs inside the shell, so the plugin path is taken. */
+function inShell(on: boolean): void {
+  const held = window as unknown as Record<string, unknown>;
+  if (on) held['__TAURI_INTERNALS__'] = {};
+  else delete held['__TAURI_INTERNALS__'];
+}
+
 /** The clipboard jsdom does not carry, where a case wants one. */
 function clipboard(write: (text: string) => Promise<void>): ReturnType<typeof vi.fn> {
   const stub = vi.fn(write);
@@ -295,9 +310,13 @@ afterEach(() => {
   vi.mocked(onModifier).mockClear();
   vi.mocked(onModifierChord).mockClear();
   // A clipboard a case stubbed is jsdom's no longer: the next case's landing
-  // would write into a spy the case before still owns.
+  // would write into a spy the case before still owns. The shell marker is
+  // the same kind of state: left set, it hands the next case's landings to
+  // the plugin path.
   vi.unstubAllGlobals();
   delete (navigator as unknown as { clipboard?: unknown }).clipboard;
+  inShell(false);
+  pluginWrite.mockClear();
   // The terminal surface's refusal outlives a mount too, and a case that
   // leaves one behind would decide the next case's bar.
   terminalSurface.control_reason = null;
@@ -12290,6 +12309,34 @@ describe('dictation in the send-back box', () => {
 
     expect(field().value, 'the words land in the draft').toBe('fix the flaky test');
     expect(write).toHaveBeenCalledWith('fix the flaky test');
+  });
+
+  /**
+   * **The landing takes the shell's plugin, which is the path the desktop
+   * needs and the one it did not have.** A Composer case that only stubs
+   * `navigator.clipboard` stays green when the landing is reverted to the
+   * browser's clipboard, because jsdom reports no shell and both the old code
+   * and the helper then take the same stub.
+   */
+  it("copies the composer's landing through the shell's clipboard plugin", async () => {
+    inShell(true);
+    const browserWrite = clipboard(() => Promise.resolve());
+    const harness = open({ dictation: true });
+    await beginTake(harness);
+    harness.page.record = record({
+      composer: {
+        take: null,
+        notice: { kind: 'landed', text: 'fix the flaky test', truncated: false },
+        machine: null,
+      },
+    });
+    flushSync();
+
+    await vi.waitFor(() => expect(pluginWrite).toHaveBeenCalledWith('fix the flaky test'));
+    expect(
+      browserWrite,
+      'the shell path never touches the browser clipboard',
+    ).not.toHaveBeenCalled();
   });
 
   /**
