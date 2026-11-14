@@ -152,3 +152,99 @@ describe('the share sheet box', () => {
     expect(box().value, "the previous share's words landed in this one").toBe('');
   });
 });
+
+describe('the share seat picker', () => {
+  it('draws the page-drawn picker rather than a native select', () => {
+    mountSheet(fakeConnection().connection);
+    expect(document.querySelector('select'), 'no native select is left').toBeNull();
+
+    const trigger = document.querySelector<HTMLButtonElement>('.pick');
+    expect(trigger, 'the seat row is the shared picker').not.toBeNull();
+    expect(trigger?.textContent).toContain('forge');
+  });
+
+  it('opens the sheet on the picked seat, and a pick moves the seat', () => {
+    const seatB: SessionSlot = { org: 'Busytools', project: 'busymail', label: 'growth' };
+    app = mount(Share, {
+      target: document.body,
+      props: {
+        connection: fakeConnection().connection,
+        seats: [SLOT, seatB],
+        shared: {
+          files: [{ path: '/cache/share/1/photo.jpg', name: 'photo.jpg', size: 10, mime: null }],
+          error: null,
+          empty: false,
+        },
+        dictate: false,
+        onclose: () => {},
+      },
+    });
+    flushSync();
+
+    const trigger = document.querySelector<HTMLButtonElement>('.pick');
+    trigger?.click();
+    flushSync();
+    expect(document.querySelector('.sheet'), 'the picker opened its sheet').not.toBeNull();
+    expect(document.querySelector('.pickopt[aria-current="true"]')?.textContent).toContain('forge');
+
+    const rows = [...document.querySelectorAll<HTMLElement>('.pickopt')];
+    rows[1]?.click();
+    flushSync();
+    expect(document.querySelector<HTMLButtonElement>('.pick')?.textContent).toContain('busymail');
+  });
+});
+
+describe('the share take', () => {
+  /** A press and its release, which is what a click on the mic delivers. */
+  function pressMic(button: HTMLButtonElement): void {
+    button.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    button.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }));
+    button.click();
+  }
+
+  /**
+   * **The card is not the whole row.** A take started on the share page is
+   * finished by the same mic that started it, drawn beside the unchanged
+   * card - the composer's rule, and the defect issue #2968 names.
+   */
+  it('keeps the standard mic beside the unchanged card, and its press finishes', async () => {
+    const fake = fakeConnection();
+    mountSheet(fake.connection, true);
+
+    const start = document.querySelector<HTMLButtonElement>('.acts .mic');
+    if (start === null) throw new Error('the idle box drew no mic');
+    pressMic(start);
+    await vi.waitUntil(() => document.querySelector('.tc') !== null, { timeout: 2_000 });
+    flushSync();
+
+    expect(document.querySelector('.tc'), 'the take card is drawn, as it was').not.toBeNull();
+    expect(
+      document.querySelector('.tc .x'),
+      "the card's own abandon control is unchanged",
+    ).not.toBeNull();
+
+    const finish = document.querySelector<HTMLButtonElement>('.acts .mic');
+    expect(finish, 'the mic stays beside the card').not.toBeNull();
+    expect(finish?.getAttribute('aria-label')).toBe('stop dictating');
+    expect(
+      document.querySelector('.acts')?.classList.contains('on'),
+      'the live row is marked, which is what turns the mic orange',
+    ).toBe(true);
+    expect(
+      document.querySelector<HTMLButtonElement>('.pick')?.disabled,
+      'the seat cannot change under a running take',
+    ).toBe(true);
+    expect(
+      document.querySelector<HTMLButtonElement>('.acts .chip.add')?.disabled,
+      'and the send chip is frozen while the take runs',
+    ).toBe(true);
+
+    if (finish === null) throw new Error('no mic to finish with');
+    pressMic(finish);
+    await vi.waitUntil(() => fake.sent.some((command) => 'dictate_stop' in command), {
+      timeout: 2_000,
+    });
+    const stop = fake.sent.find((command) => 'dictate_stop' in command);
+    expect((stop?.dictate_stop as { submit?: boolean } | undefined)?.submit).toBe(true);
+  });
+});

@@ -15,10 +15,22 @@ sheet draws "this share carried no files" and cannot upload.
 | Part | Shows | Read from |
 |---|---|---|
 | File list | each shared file's display name and size, and the share's total against the 200 MB cap | the shell's share intake |
-| Seat | one seat from the roster, the reader's last seat preselected, the roster's first when there is no last one | the home's `agents` |
+| Seat | one seat from the roster, the reader's last seat preselected, the roster's first when there is no last one, chosen from a sheet the page draws | the home's `agents` |
 | Box | the words that go with the files, with the composer's own dictation control | the reader, and the seat's `composer` notice |
 | Progress | one line naming the file and its percentage, a bar labelled by that line, and - only when the send had a previous upload - whether it is resuming or starting over | the upload's own channel |
 | Ending | the reason and a retry, or the seat it was sent to and the paths the prompt names | the upload's answer, and the prompt's dispatch |
+
+## The seat picker
+
+The seat row is the shared `Picker`, not a native `<select>`: a button with the
+house chevron and room beside it, opening a bottom sheet the page draws. The
+sheet lists every seat, marks the current one with a tick and `aria-current`,
+and carries a cancel row; a roster longer than the screen scrolls between its
+pinned grab bar and title, with cancel pinned below. It takes a history entry,
+so the hardware Back closes it, Escape closes it on a keyboard, and the
+keyboard moves to the current row on opening and back to the trigger on close.
+The picker and the send are frozen while an upload or a take runs; the message
+box stays as it is otherwise.
 
 **The upload comes first and the prompt second.** The agent is messaged only after the server has
 answered the paths it wrote, so a failed upload sends nothing. A retry continues from the offsets
@@ -70,12 +82,14 @@ second history entry.
 
 ## The states
 
-The sheet draws the idle form with its files, seat and box; an upload in flight with the line and
-the bar; a failure with the server's own reason and a retry; the sent ending with the seat and the
-paths; "this share carried no files" for a share that carried none - a SEND with no stream, or the
-route visited with no share behind it; the intake's reason for a share that could not be read; "no
-seat is running to send to" when the roster is empty; and the refused home read when the fleet
-would not answer.
+The sheet draws the idle form with its files, seat and box; the seat picker's open bottom sheet,
+the current seat marked and cancel below the list; an upload in flight with the line and the bar;
+a take running with its unchanged card, the live orange mic and the disabled send; a failure with
+the server's own reason and a retry; the sent ending with the seat and the paths; "this share
+carried no files" for a share that carried none - a SEND with no stream, or the route visited
+with no share behind it; the intake's reason for a share that could not be read; "no seat is
+running to send to" when the roster is empty; and the refused home read when the fleet would not
+answer.
 
 **"Starting over from the first byte" is drawn only after an attempt.** A first send has no
 previous upload to restart, so the sheet does not claim one.
@@ -87,8 +101,16 @@ landing, the same `DictateControl`, `TakeCard` and `Landing` every surface that 
 take is addressed to the picked seat, so the picker is disabled while a take runs; a landed
 take's words go to the end of the box, once.
 
+**A take running on the share page keeps its mic.** The card replaces the field and draws as it
+does everywhere - its dot, clock, wave, counts and abandon cross - and the same `DictateControl`
+stays beside it in the row's live state, so its mic reads orange (`--hot`) and a second press
+finishes the take. The send chip stays beside the mic, disabled while the take runs. The same
+rule holds in every other compose bar: wherever a take can start, the control that started it
+finishes it, and the card is never the whole row.
+
 ## Touch
 
-Every control is a 44px target under `@media (pointer: coarse)`, the seat picker is a native
-select so a finger gets the platform's own chooser, and no affordance exists only on hover. The
-page is pushed onto history, so the hardware Back closes it.
+Every control is a 44px target under `@media (pointer: coarse)`, the seat picker is the page's
+own button and bottom sheet rather than the platform's chooser, the sheet's rows are 48px, and no
+affordance exists only on hover. The page is pushed onto history, so the hardware Back closes it -
+and the picker's sheet takes its own history entry for the same reason.

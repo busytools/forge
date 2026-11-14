@@ -72,6 +72,7 @@ html::-webkit-scrollbar,
 .line textarea::-webkit-scrollbar,
 .dock .notes::-webkit-scrollbar,
 .dock .opts::-webkit-scrollbar,
+.sheet .opts::-webkit-scrollbar,
 .dock .preview::-webkit-scrollbar,
 .dr-body::-webkit-scrollbar {
   width: 8px;
@@ -87,6 +88,7 @@ html::-webkit-scrollbar-track,
 .line textarea::-webkit-scrollbar-track,
 .dock .notes::-webkit-scrollbar-track,
 .dock .opts::-webkit-scrollbar-track,
+.sheet .opts::-webkit-scrollbar-track,
 .dock .preview::-webkit-scrollbar-track,
 .dr-body::-webkit-scrollbar-track {
   background: transparent;
@@ -102,6 +104,7 @@ html::-webkit-scrollbar-corner,
 .line textarea::-webkit-scrollbar-corner,
 .dock .notes::-webkit-scrollbar-corner,
 .dock .opts::-webkit-scrollbar-corner,
+.sheet .opts::-webkit-scrollbar-corner,
 .dock .preview::-webkit-scrollbar-corner,
 .dr-body::-webkit-scrollbar-corner {
   background: transparent;
@@ -117,6 +120,7 @@ html::-webkit-scrollbar-thumb,
 .line textarea::-webkit-scrollbar-thumb,
 .dock .notes::-webkit-scrollbar-thumb,
 .dock .opts::-webkit-scrollbar-thumb,
+.sheet .opts::-webkit-scrollbar-thumb,
 .dock .preview::-webkit-scrollbar-thumb,
 .dr-body::-webkit-scrollbar-thumb {
   background: var(--s3);
@@ -133,6 +137,7 @@ html::-webkit-scrollbar-thumb:hover,
 .line textarea::-webkit-scrollbar-thumb:hover,
 .dock .notes::-webkit-scrollbar-thumb:hover,
 .dock .opts::-webkit-scrollbar-thumb:hover,
+.sheet .opts::-webkit-scrollbar-thumb:hover,
 .dock .preview::-webkit-scrollbar-thumb:hover,
 .dr-body::-webkit-scrollbar-thumb:hover {
   background: var(--line);
@@ -147,6 +152,7 @@ html::-webkit-scrollbar-thumb:active,
 .line textarea::-webkit-scrollbar-thumb:active,
 .dock .notes::-webkit-scrollbar-thumb:active,
 .dock .opts::-webkit-scrollbar-thumb:active,
+.sheet .opts::-webkit-scrollbar-thumb:active,
 .dock .preview::-webkit-scrollbar-thumb:active,
 .dr-body::-webkit-scrollbar-thumb:active {
   background: var(--muted);
@@ -3594,6 +3600,11 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   background: none; color: var(--accent); display: grid; place-items: center; cursor: pointer; }
 .sendb:hover { border-color: var(--accent); color: var(--hot); }
 .dock .qrow.on .mic { color: var(--hot); }
+/* The share sheet's acts row and the dock's send-back box both draw the mic
+   beside their take card, so both go live and wear the same orange while the
+   take runs (issue #2968). The takeover bar's row is not one of these. */
+.share-page .acts.on .mic,
+.dock .sendback.on .mic { color: var(--hot); }
 /* A refusal is a row of its own, in the tone of a thing gone wrong. */
 .dock .refusal { border: 1px solid color-mix(in srgb, var(--bad) 45%, transparent);
   border-radius: 10px; padding: 7px 10px; color: var(--bad); font-size: var(--fs-base); }

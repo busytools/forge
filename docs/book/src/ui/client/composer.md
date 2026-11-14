@@ -69,13 +69,14 @@ says the feedback is on its way, and a refusal replaces that line with its reaso
 
 **The send-back field takes dictation.** It wears the same `DictateControl` as every other text
 box, so a reader can speak the correction rather than type it. While its take runs the take's
-card replaces the field in the send-back row, and the card's own way out abandons the take. A
-take begun there lands its words in the send-back field, not the composer's draft behind the
-card; so does a take begun with the push-to-talk key while the field is open and holds the
-caret, because the key names no box of its own. A take whose field closes before its words land
-keeps them in the composer's draft instead, so nothing spoken is lost. A take that never starts
-says so in the dock's refusal line at its foot, because the box's own notice row is not on
-screen while a prompt holds the slot.
+card replaces the field in the send-back row, and the same `DictateControl` stays beside the
+card - its mic orange and the row live - so a second press finishes the take; the card's own way
+out abandons it. A take begun there lands its words in the send-back field, not the composer's
+draft behind the card; so does a take begun with the push-to-talk key while the field is open and
+holds the caret, because the key names no box of its own. A take whose field closes before its
+words land keeps them in the composer's draft instead, so nothing spoken is lost. A take that
+never starts says so in the dock's refusal line at its foot, because the box's own notice row is
+not on screen while a prompt holds the slot.
 
 **A held configuration write draws like a held post, with both values.** A `settings__set` or
 `settings__unset` call parks every key it would change, what that key holds now and what the

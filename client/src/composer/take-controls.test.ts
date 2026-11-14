@@ -193,4 +193,18 @@ describe('the take row at a phone width under a finger', () => {
       );
     }
   });
+
+  /**
+   * **The live mic's orange is pinned, not just its class.** A row that keeps
+   * `on` but loses the colour rule draws a dim mic while the take runs, so
+   * an assertion message that claims the orange needs the rule behind it.
+   */
+  it('keeps the live mic hot on the words row and the two card rows', () => {
+    expect(rule('.dock .qrow.on .mic'), 'the words row lost its hot mic').toContain(
+      'color: var(--hot)',
+    );
+    expect(SHEET, 'the share row and the send-back row lost their hot mic').toMatch(
+      /\.share-page \.acts\.on \.mic,\s*\.dock \.sendback\.on \.mic \{[^}]*color: var\(--hot\);/,
+    );
+  });
 });

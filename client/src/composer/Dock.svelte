@@ -2045,7 +2045,9 @@
       {#if feedbackOpen}
         <!-- The send-back's words, on the card the draft is drawn on: the
              reader says what is wrong where they read what would go out. -->
-        <div class="sendback">
+        <!-- **The row goes live with its take**, so the mic beside the card
+             reads the same orange every other bar's does (issue #2968). -->
+        <div class="sendback" class:on={take !== null && tookFrom === 'feedback'}>
           {#if take !== null && tookFrom === 'feedback'}
             <!-- The take's card draws where the words will land, so a reader
                  who pressed the send-back mic sees their recording where the
@@ -2066,14 +2068,18 @@
                 feedbackEl = el;
               }}
             />
-            {#if dictation && dictate !== null}
-              <DictateControl
-                {dictate}
-                onpress={() => {
-                  onmic('feedback');
-                }}
-              />
-            {/if}
+          {/if}
+          <!-- **The mic stays beside the card.** A take started from this box
+               is finished by the control that started it, so the card is not
+               the whole row here either - the same rule the share sheet
+               follows (issue #2968). -->
+          {#if dictation && dictate !== null}
+            <DictateControl
+              {dictate}
+              onpress={() => {
+                onmic('feedback');
+              }}
+            />
           {/if}
           <button class="btn" disabled={feedback.trim() === ''} onclick={sendBack}>Send back</button
           >
