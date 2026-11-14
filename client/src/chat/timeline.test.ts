@@ -270,6 +270,29 @@ describe('a dispatch read into its timeline', () => {
     expect(line?.kind === 'hook' && line.text).toBe('hooks ran');
   });
 
+  it('draws a zero-count hook summary rather than dropping it', () => {
+    // Zero is a legal wire value, and the session's own chip hides at zero
+    // because a chip marks something that happened. Here the line is the
+    // frame's only representation, so a zero count still draws as itself
+    // rather than vanishing.
+    const frames = dispatchFrames(
+      [
+        dispatch(),
+        {
+          type: 'system',
+          subtype: 'stop_hook_summary',
+          parent_tool_use_id: 'tu-task',
+          hookCount: 0,
+        },
+      ],
+      'tu-task',
+    );
+
+    const line = frames.lines[0];
+    expect(line?.kind).toBe('hook');
+    expect(line?.kind === 'hook' && line.text).toBe('hooks \u{b7} 0 actions');
+  });
+
   it('keeps a backgrounded child call open rather than settling it on its ack', () => {
     // The session's own rule: a call whose task outlives its turn draws as
     // running however clean the launch ack it was answered with.
