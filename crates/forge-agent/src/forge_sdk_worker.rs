@@ -189,10 +189,12 @@ hand-off. The document opens in their own viewer, \
 and the review they leave comes \
 back to this session when it has the `review` MCP family; without that \
 family the review is your lead's to read, and the hand-off answer names \
-the scope for it. A document hand-off is one door to the user a \
-worker session may open, and a spoken update to a seat the person chose \
-to listen to is the other: hand the document off, then tell your lead it \
-is waiting. A path in chat is not a hand-off, and neither is a link. Any \
+the scope for it. A worker's own work reaches the user directly \
+through a hand-off - `documents__hand_off` for a reviewable document, \
+`browser_hand_off` for a visual artifact - or a spoken update to a seat \
+the person chose to listen to: hand the document off, then tell your \
+lead it is waiting. A path in chat is not a hand-off, and neither is a \
+link. Any \
 reviewable document - one the user must read and comment on - gets the \
 hand-off; a code change, a PR and an answer that belongs in the chat \
 do not need one.\n\
@@ -314,7 +316,12 @@ person would otherwise have to type, and hand off only what only they \
 can do - a password, a `sudo` confirmation, a sign-in: `terminal__open` \
 gives the seat one, `terminal__hand_off` gives them the keyboard, and \
 the session is blind while that card is parked, so read the outcome \
-back with `terminal__read` afterwards. The MCP families a session \
+back with `terminal__read` afterwards. When a diagnosis ends at a step \
+only they can perform - a GUI click on the machine the session runs on, \
+an unlock - hand the seat's terminal over with `terminal__hand_off`. A \
+diagnosis that ends there is not a report that no remote path exists - \
+the session already holds a shell on that machine. A worker hands it \
+over and tells its lead it is waiting. The MCP families a session \
 carries, and the browser and document tools that arrive with it, are how \
 it reaches Slack, Gotify, the vault, the browser, documents, cron, the \
 task board and reviews - use whichever fits instead of a hand-rolled \
@@ -3453,6 +3460,24 @@ mod tests {
             ("hand off only what only they can do", "the hand-off's scope"),
             ("the session is blind while that card is parked", "the blind window"),
             ("`terminal__read`", "the read back after the hand-off"),
+            ("When a diagnosis ends at a step only they can perform", "the trigger's moment"),
+            (
+                "a GUI click on the machine the session runs on, an unlock",
+                "the steps only they can perform",
+            ),
+            (
+                "- hand the seat's terminal over with `terminal__hand_off`",
+                "the obligation, with its lead-in",
+            ),
+            (
+                "A diagnosis that ends there is not a report that no remote path exists",
+                "the conclusion the trigger prevents",
+            ),
+            ("the session already holds a shell on that machine", "why that conclusion is wrong"),
+            (
+                "A worker hands it over and tells its lead it is waiting",
+                "a worker's route through its lead",
+            ),
             (
                 "The MCP families a session carries, and the browser and document tools that \
                  arrive with it, are how it reaches Slack, Gotify, the vault, the browser, \
@@ -4235,10 +4260,10 @@ mod tests {
     /// a document, not as a path in chat: the hand-off opens it in their
     /// viewer and returns the review to the session that delivered it when
     /// that session has the `review` family, and to its lead otherwise.
-    /// The worker door is pinned because the routing rule above tells a
-    /// worker not to address the user, and a worker reading only that
-    /// sends the spec through its lead instead - the behaviour this rule
-    /// exists to stop. The boundary is pinned because without it the rule
+    /// The worker's own output route is pinned because the routing rule
+    /// above tells a worker not to address the user, and a worker reading
+    /// only that sends the spec through its lead instead - the behaviour
+    /// this rule exists to stop. The boundary is pinned because without it the rule
     /// reads as covering code changes and PRs, which stay where they are.
     #[test]
     fn the_conduct_block_carries_the_document_hand_off_rule() {
@@ -4266,11 +4291,12 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "A document hand-off is one door to the user a worker session may open, and a \
-                 spoken update to a seat the person chose to listen to is the other: hand the \
-                 document off, then tell your lead it is waiting"
+                "A worker's own work reaches the user directly through a hand-off - \
+                 `documents__hand_off` for a reviewable document, `browser_hand_off` for a \
+                 visual artifact - or a spoken update to a seat the person chose to listen to: \
+                 hand the document off, then tell your lead it is waiting"
             ),
-            "the two worker doors reconcile the rule with the routing rule above it",
+            "both output tools are named so neither can be dropped silently",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
