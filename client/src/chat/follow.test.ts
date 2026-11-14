@@ -2261,12 +2261,21 @@ describe('whether the column follows the newest end', () => {
     setElement(VIEWPORT, VIEWPORT);
     seat.set(LEAD);
     flushSync();
-    await settle();
+    // **The restore's own passes are drained before the element grows.**
+    // `settle` pumps a fixed count of frames, and a loaded machine pushes the
+    // restore's last pass past them - so the write against the short element
+    // lands after `setElement` below instead of before it, and the case stops
+    // exercising the short write it is named for.
+    await drained();
 
     // The element then measures to its real height.
     setElement(TOTAL, VIEWPORT);
     layOut(40);
-    await settle();
+    // **The growth is the browser's event, not a frame the test can count.**
+    // Deliver it as the ResizeObserver does: without it the place is only
+    // restored if a deferred pass happens to land on the right frame, which
+    // is the order the gate's load changes.
+    resized();
     await settle();
 
     // The short element has nowhere to scroll, so the restore's write lands at
