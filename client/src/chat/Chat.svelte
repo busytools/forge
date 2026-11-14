@@ -634,10 +634,11 @@
    * The sizes the layout was last left in, which tell a reader moving from a
    * layout moving.
    *
-   * Written by every event the handler reads, and by every pin - `land()`,
-   * the glide's completion and `restoreAnchor` - because a pin leaves a
-   * layout the event after it compares against, and its echo may not have
-   * been delivered when the reader's next move arrives.
+   * Written by every event the handler reads, bar a return's own placement -
+   * which skips the comparison - and by every pin - `land()`, the glide's
+   * completion and `restoreAnchor` - because a pin leaves a layout the event
+   * after it compares against, and its echo may not have been delivered when
+   * the reader's next move arrives.
    */
   let lastSeen = { content: 0, room: 0 };
   /** The offset the last pin wrote, so the event it comes back as is not read as the reader's. */

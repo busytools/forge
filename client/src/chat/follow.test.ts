@@ -1459,19 +1459,19 @@ describe('whether the column follows the newest end', () => {
 
   it('keeps a following column its own layout already left short', async () => {
     // **The gate the arm cannot cover.** The follow is on while the column
-    // sits above the foot - an arrival armed it and the reader stayed put -
-    // so `wasFoot` is false and there is no re-land to make; only the
-    // disarm's own layout test keeps the follow on when the next correction
-    // moves them again with no hand. The old slack read the distance as
-    // theirs and switched it off.
+    // sits above the foot - the aimed down-wheel landed short, or a no-hand
+    // move left the reader there with `wasFoot` false - so the arm has no
+    // foot to land; only the disarm's own layout test keeps the follow on
+    // when the next correction moves them again with no hand. The old slack
+    // read the distance as theirs and switched it off.
     const server = stub();
     await draw(server);
     readerAt(FOOT);
     await settle();
     clear();
 
-    // The follow armed with the column away from the foot: the state an
-    // arrival leaves when the reader does not move.
+    // The follow armed with the column away from the foot: the state a down
+    // gesture aimed at the foot leaves when its landing lands short.
     machineAt(FOOT - 100);
     await settle();
     const chat = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }))?.chat;
@@ -1528,7 +1528,7 @@ describe('whether the column follows the newest end', () => {
     // the clamp shape and his own gesture still stuck the arrow.
     const server = stub();
     await draw(server);
-    readerAt(0);
+    machineAt(0);
     await settle();
     clear();
 
@@ -5280,6 +5280,7 @@ describe('the motion of a following column', () => {
     vi.stubGlobal('matchMedia', () => ({ matches: false }));
     const hand = clock();
     try {
+      vi.mocked(noteScrollMove).mockClear();
       // A growth starts the glide toward the end the list measured.
       setElement(TOTAL + 200, VIEWPORT);
       reported.size = TOTAL + 200;
