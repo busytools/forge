@@ -20,11 +20,14 @@
 //!   nothing replayed.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime};
 
 use bytes::Bytes;
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use hyper::body::Frame;
 use hyper::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
 use hyper::{HeaderMap, Method, Request, StatusCode};
@@ -53,8 +56,251 @@ pub const FORWARD_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// connect timeout did before the leg carried any bound at all.
 pub const FORWARD_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long the upstream may take to send its first content byte after
+/// the request is sent. A response that only ever sends SSE comment
+/// keepalives is not answering, and [`FORWARD_IDLE_TIMEOUT`] cannot see
+/// it: that is a per-read bound, and every comment byte resets it.
+pub const FORWARD_FIRST_CONTENT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How long the upstream may go between content bytes once content has
+/// started. Comments are keepalives, not content, so a stream that
+/// degrades to comment-only is cut rather than held open forever.
+pub const FORWARD_CONTENT_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// The error type a streamed body yields.
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// A forwarded body cut because the upstream stopped answering: it sent
+/// no content within the first-content bound, or no content for the
+/// content-idle bound after content had started. The CLI sees a cut body
+/// and its own retry path engages.
+#[derive(Debug, thiserror::Error)]
+enum ForwardStall {
+    #[error(
+        "the upstream sent no content within {bound:?} of the request; only keepalives arrived"
+    )]
+    FirstContent { bound: Duration },
+    #[error(
+        "the upstream sent no content for {bound:?} after content started; only keepalives arrived"
+    )]
+    ContentIdle { bound: Duration },
+}
+
+/// The class of the line a response byte belongs to.
+#[derive(Clone, Copy, Debug)]
+enum LineClass {
+    /// An SSE comment line: it starts with `:` and is a keepalive.
+    Comment,
+    /// A line carrying real response content.
+    Content,
+    /// A blank line, which separates events and carries nothing.
+    Blank,
+}
+
+/// Classifies a response byte stream as content or SSE comment
+/// keepalives without touching the bytes.
+///
+/// At the start of the stream and after every `\n`, a line beginning
+/// with `:` is a comment, a blank line is neither, and any other line is
+/// content. Partial-line state carries across chunk boundaries.
+#[derive(Debug)]
+struct ContentTracker {
+    /// True when the next byte starts a new line.
+    at_line_start: bool,
+    /// The class of the line currently being read.
+    current: Option<LineClass>,
+    content_bytes: u64,
+    keepalive_bytes: u64,
+    total_bytes: u64,
+}
+
+impl ContentTracker {
+    fn new() -> Self {
+        Self {
+            at_line_start: true,
+            current: None,
+            content_bytes: 0,
+            keepalive_bytes: 0,
+            total_bytes: 0,
+        }
+    }
+
+    /// Fold one chunk in and answer whether it carried any content byte.
+    fn observe(&mut self, bytes: &[u8]) -> bool {
+        let mut content_in_chunk = false;
+        for &byte in bytes {
+            self.total_bytes += 1;
+            if self.at_line_start {
+                self.current = Some(if byte == b'\n' {
+                    LineClass::Blank
+                } else if byte == b':' {
+                    LineClass::Comment
+                } else {
+                    LineClass::Content
+                });
+                self.at_line_start = false;
+            }
+            match self.current {
+                Some(LineClass::Content) => {
+                    self.content_bytes += 1;
+                    content_in_chunk = true;
+                }
+                Some(LineClass::Comment) => self.keepalive_bytes += 1,
+                Some(LineClass::Blank) | None => {}
+            }
+            if byte == b'\n' {
+                self.at_line_start = true;
+                self.current = None;
+            }
+        }
+        content_in_chunk
+    }
+}
+
+/// The two bounds a forwarded body is held to.
+#[derive(Clone, Copy, Debug)]
+struct StallBounds {
+    first_content: Duration,
+    content_idle: Duration,
+}
+
+/// Everything a `gateway_forward_stalled` record needs, owned because
+/// the body stream outlives the handler's borrows.
+struct StallContext {
+    account: String,
+    org: String,
+    project: String,
+    session: String,
+    model: String,
+    upstream: String,
+    status: u16,
+    request_id: String,
+    send_started: tokio::time::Instant,
+}
+
+/// A body stream that cuts itself when the upstream stops answering.
+///
+/// The socket's per-read bound cannot see this: a comment byte resets
+/// it, so an upstream that sends `: OPENROUTER PROCESSING` forever never
+/// trips anything. Each poll is raced against the applicable deadline -
+/// first content from the send, then content-to-content once content has
+/// started - and crossing it logs once and ends the body with a
+/// [`ForwardStall`].
+struct StalledStream<S> {
+    inner: S,
+    tracker: ContentTracker,
+    bounds: StallBounds,
+    context: StallContext,
+    first_content_deadline: tokio::time::Instant,
+    last_content_at: tokio::time::Instant,
+    saw_content: bool,
+    deadline: tokio::time::Instant,
+    /// Kept across polls so a deadline still wakes the task when the
+    /// inner stream is silent and produces nothing to poll on.
+    sleep: Pin<Box<tokio::time::Sleep>>,
+    done: bool,
+}
+
+impl<S> StalledStream<S> {
+    fn new(inner: S, bounds: StallBounds, context: StallContext) -> Self {
+        let first_content_deadline = context.send_started + bounds.first_content;
+        Self {
+            inner,
+            tracker: ContentTracker::new(),
+            bounds,
+            context,
+            first_content_deadline,
+            last_content_at: first_content_deadline,
+            saw_content: false,
+            deadline: first_content_deadline,
+            sleep: Box::pin(tokio::time::sleep_until(first_content_deadline)),
+            done: false,
+        }
+    }
+
+    fn emit_stall(&self, phase: &'static str) {
+        let context = &self.context;
+        tracing::warn!(
+            target: "forge_gateway::forward",
+            event_name = "gateway_forward_stalled",
+            account = %context.account,
+            org = %context.org,
+            project = %context.project,
+            session = %context.session,
+            model = %context.model,
+            upstream = %context.upstream,
+            request_id = %context.request_id,
+            status = context.status,
+            phase = phase,
+            elapsed_ms = context.send_started.elapsed().as_millis(),
+            content_bytes = self.tracker.content_bytes,
+            keepalive_bytes = self.tracker.keepalive_bytes,
+            bytes_total = self.tracker.total_bytes,
+            "the forward's upstream opened the response and stopped sending content; the CLI \
+             got a cut response it retries",
+        );
+    }
+}
+
+impl<S> Stream for StalledStream<S>
+where
+    S: Stream<Item = Result<Frame<Bytes>, BoxError>> + Unpin,
+{
+    type Item = Result<Frame<Bytes>, BoxError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.as_mut().get_mut();
+        if this.done {
+            return Poll::Ready(None);
+        }
+        let deadline = if this.saw_content {
+            this.last_content_at + this.bounds.content_idle
+        } else {
+            this.first_content_deadline
+        };
+        if deadline != this.deadline {
+            this.deadline = deadline;
+            this.sleep.as_mut().reset(deadline);
+        }
+        // The inner stream is polled first: a chunk that is already
+        // ready is the upstream answering, even at the deadline.
+        match this.inner.poll_next_unpin(cx) {
+            Poll::Ready(Some(Ok(frame))) => {
+                if let Some(data) = frame.data_ref()
+                    && this.tracker.observe(data)
+                {
+                    this.saw_content = true;
+                    this.last_content_at = tokio::time::Instant::now();
+                }
+                Poll::Ready(Some(Ok(frame)))
+            }
+            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(error))),
+            Poll::Ready(None) => {
+                this.done = true;
+                Poll::Ready(None)
+            }
+            Poll::Pending => match this.sleep.as_mut().poll(cx) {
+                Poll::Ready(()) => {
+                    this.done = true;
+                    let (phase, error) = if this.saw_content {
+                        (
+                            "content-idle",
+                            ForwardStall::ContentIdle { bound: this.bounds.content_idle },
+                        )
+                    } else {
+                        (
+                            "first-content",
+                            ForwardStall::FirstContent { bound: this.bounds.first_content },
+                        )
+                    };
+                    this.emit_stall(phase);
+                    Poll::Ready(Some(Err(Box::new(error) as BoxError)))
+                }
+                Poll::Pending => Poll::Pending,
+            },
+        }
+    }
+}
 
 /// Why a request could not be bound to an account.
 #[derive(Debug)]
@@ -87,6 +333,10 @@ pub struct Gateway {
     /// answers, so a reader outside this crate can announce the change
     /// instead of holding a roster snapshot the clock has moved past.
     rotation_generation: tokio::sync::watch::Sender<u64>,
+    /// How long a response may go without its first content byte.
+    first_content_timeout: Duration,
+    /// How long content may stop once it has started.
+    content_idle_timeout: Duration,
 }
 
 impl Gateway {
@@ -95,6 +345,22 @@ impl Gateway {
     /// outbound path does:
     /// `host.streaming_http_client(FORWARD_CONNECT_TIMEOUT, FORWARD_IDLE_TIMEOUT)`.
     pub fn new(pool: Arc<crate::AccountPool>, client: reqwest::Client) -> Self {
+        Self::with_stall_bounds(
+            pool,
+            client,
+            FORWARD_FIRST_CONTENT_TIMEOUT,
+            FORWARD_CONTENT_IDLE_TIMEOUT,
+        )
+    }
+
+    /// The stall bounds are consts in production; a test drives them
+    /// short through this so a stalled upstream is reachable inside one.
+    fn with_stall_bounds(
+        pool: Arc<crate::AccountPool>,
+        client: reqwest::Client,
+        first_content_timeout: Duration,
+        content_idle_timeout: Duration,
+    ) -> Self {
         Self {
             bindings: Bindings::default(),
             pool,
@@ -102,6 +368,8 @@ impl Gateway {
             org_pins: parking_lot::Mutex::new(HashMap::new()),
             rotation: parking_lot::Mutex::new(RotationState::new()),
             rotation_generation: tokio::sync::watch::channel(0).0,
+            first_content_timeout,
+            content_idle_timeout,
         }
     }
 
@@ -644,7 +912,7 @@ impl RouteHandler for Gateway {
         outbound_headers.remove(CONTENT_LENGTH);
         outbound_headers.remove(hyper::header::TRANSFER_ENCODING);
 
-        let send_started = std::time::Instant::now();
+        let send_started = tokio::time::Instant::now();
         let upstream_response = match self
             .client
             .post(url.as_str())
@@ -716,10 +984,23 @@ impl RouteHandler for Gateway {
         let stream_session = session.to_owned();
         let stream_model = model;
         let stream_url = url;
+        let stall_context = StallContext {
+            account: stream_account.clone(),
+            org: stream_org.clone(),
+            project: stream_project.clone(),
+            session: stream_session.clone(),
+            model: stream_model.clone(),
+            upstream: stream_url.clone(),
+            status: status.as_u16(),
+            request_id: response_headers
+                .get("request-id")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_owned(),
+            send_started,
+        };
         let stream_headers = response_headers;
-        let stream: std::pin::Pin<
-            Box<dyn futures_util::Stream<Item = Result<Frame<Bytes>, BoxError>> + Send + Sync>,
-        > = Box::pin(upstream_response.bytes_stream().map(move |chunk| {
+        let mapped = upstream_response.bytes_stream().map(move |chunk| {
             chunk.map(Frame::data).map_err(|error| {
                 let kind = classify_forward_failure(&error);
                 let chain = describe_error_chain(&error);
@@ -745,7 +1026,16 @@ impl RouteHandler for Gateway {
                 );
                 Box::new(error) as BoxError
             })
-        }));
+        });
+        let stream: Pin<Box<dyn Stream<Item = Result<Frame<Bytes>, BoxError>> + Send + Sync>> =
+            Box::pin(StalledStream::new(
+                Box::pin(mapped),
+                StallBounds {
+                    first_content: self.first_content_timeout,
+                    content_idle: self.content_idle_timeout,
+                },
+                stall_context,
+            ));
         let streamed: StreamBody =
             http_body_util::combinators::BoxBody::new(http_body_util::StreamBody::new(stream));
         match response.body(streamed) {
@@ -789,24 +1079,34 @@ mod tests {
         }
     }
 
-    /// What the stub's body does after its first chunk.
+    /// What the stub's body does after its head.
     #[derive(Clone, Copy, Debug)]
-    enum StubTail {
+    enum StubBody {
         /// The healthy shape: one more chunk after the gap, then the end.
         Complete,
         /// An upstream that dies mid-response: the head and the first
         /// chunk are on the wire, then the body aborts.
         Cut,
+        /// Only SSE comment keepalives, forever: an upstream that opened
+        /// the response and never answers. Comment lines are split across
+        /// chunks so partial-line state is exercised.
+        CommentsForever,
+        /// One real data chunk, then comment keepalives forever.
+        ContentThenCommentsForever,
+        /// Comments interleaved between real deltas, then a clean end.
+        HealthyWithComments,
+        /// A plain JSON body split across a line, no SSE framing.
+        PlainJson,
     }
 
-    /// A stub upstream that records what arrived and streams its
-    /// response in two chunks separated by `chunk_delay`, so a
-    /// buffering gateway is measurable from the client side.
+    /// A stub upstream that records what arrived and streams the body
+    /// [`StubBody`] describes, with chunks separated by `chunk_delay`, so
+    /// a buffering gateway is measurable from the client side.
     struct RecordingUpstream {
         requests: Arc<parking_lot::Mutex<Vec<Recorded>>>,
         chunk_delay: Duration,
-        /// What the body does after its first chunk.
-        tail: StubTail,
+        /// The shape of the body the stub streams back.
+        body: StubBody,
         /// One scripted (status, extra headers) pair per request.
         script: ScriptHandle,
     }
@@ -839,33 +1139,72 @@ mod tests {
                 self.script.lock().pop_front().unwrap_or((StatusCode::OK.as_u16(), Vec::new()));
             let scripted = |name: &str| extra.iter().any(|(n, _)| n.eq_ignore_ascii_case(name));
             let delay = self.chunk_delay;
-            let tail = self.tail;
+            let body = self.body;
             let stream = futures_util::stream::unfold(
-                (0u8, delay),
-                move |state: (u8, Duration)| async move {
-                    type BoxError = Box<dyn std::error::Error + Send + Sync>;
-                    match state.0 {
-                        0 => Some((
-                            Ok::<Frame<Bytes>, BoxError>(Frame::data(Bytes::from_static(
-                                b"event: first\n",
-                            ))),
-                            (1u8, delay),
-                        )),
-                        1 => {
-                            tokio::time::sleep(delay).await;
-                            let frame = match tail {
-                                StubTail::Complete => {
-                                    Ok(Frame::data(Bytes::from_static(b"event: second\n")))
-                                }
-                                StubTail::Cut => Err(Box::new(std::io::Error::new(
-                                    std::io::ErrorKind::ConnectionReset,
-                                    "stub upstream died mid-response",
+                (0usize, delay, body),
+                move |state: (usize, Duration, StubBody)| async move {
+                    let (step, delay, body) = state;
+                    let frame = |bytes: &'static [u8]| {
+                        Ok::<Frame<Bytes>, BoxError>(Frame::data(Bytes::from_static(bytes)))
+                    };
+                    match body {
+                        StubBody::Complete => match step {
+                            0 => Some((frame(b"event: first\n"), (1, delay, body))),
+                            1 => {
+                                tokio::time::sleep(delay).await;
+                                Some((frame(b"event: second\n"), (2, delay, body)))
+                            }
+                            _ => None,
+                        },
+                        StubBody::Cut => match step {
+                            0 => Some((frame(b"event: first\n"), (1, delay, body))),
+                            1 => {
+                                tokio::time::sleep(delay).await;
+                                Some((
+                                    Err(Box::new(std::io::Error::new(
+                                        std::io::ErrorKind::ConnectionReset,
+                                        "stub upstream died mid-response",
+                                    )) as BoxError),
+                                    (2, delay, body),
                                 ))
-                                    as BoxError),
-                            };
-                            Some((frame, (2u8, delay)))
+                            }
+                            _ => None,
+                        },
+                        StubBody::CommentsForever => {
+                            tokio::time::sleep(delay).await;
+                            let bytes: &'static [u8] =
+                                if step % 2 == 0 { b": OPENROUTER " } else { b"PROCESSING\n" };
+                            Some((frame(bytes), (step + 1, delay, body)))
                         }
-                        _ => None,
+                        StubBody::ContentThenCommentsForever => {
+                            if step == 0 {
+                                Some((frame(b"data: hello\n\n"), (1, delay, body)))
+                            } else {
+                                tokio::time::sleep(delay).await;
+                                Some((frame(b": keepalive\n"), (step + 1, delay, body)))
+                            }
+                        }
+                        StubBody::HealthyWithComments => {
+                            if step >= 12 {
+                                None
+                            } else {
+                                tokio::time::sleep(delay).await;
+                                let bytes: &'static [u8] = if step % 2 == 0 {
+                                    b": keepalive\n"
+                                } else {
+                                    b"data: delta\n\n"
+                                };
+                                Some((frame(bytes), (step + 1, delay, body)))
+                            }
+                        }
+                        StubBody::PlainJson => match step {
+                            0 => Some((frame(b"{\"ok\":"), (1, delay, body))),
+                            1 => {
+                                tokio::time::sleep(delay).await;
+                                Some((frame(b"true}"), (2, delay, body)))
+                            }
+                            _ => None,
+                        },
                     }
                 },
             );
@@ -941,25 +1280,63 @@ mod tests {
     /// asserts "no upstream request" is airtight whichever account a
     /// broken selection could have picked.
     async fn harness(chunk_delay: Duration) -> Harness {
-        harness_with(chunk_delay, FORWARD_IDLE_TIMEOUT, StubTail::Complete).await
+        harness_with(
+            chunk_delay,
+            FORWARD_IDLE_TIMEOUT,
+            FORWARD_FIRST_CONTENT_TIMEOUT,
+            FORWARD_CONTENT_IDLE_TIMEOUT,
+            StubBody::Complete,
+        )
+        .await
     }
 
-    /// [`harness`] with the forward leg's idle bound under the test's
-    /// control, so a stalled upstream is reachable inside a test.
+    /// [`harness`] with the forward leg's per-read idle bound under the
+    /// test's control, so a stalled upstream is reachable inside a test.
     async fn harness_with_idle_timeout(chunk_delay: Duration, idle_timeout: Duration) -> Harness {
-        harness_with(chunk_delay, idle_timeout, StubTail::Complete).await
+        harness_with(
+            chunk_delay,
+            idle_timeout,
+            FORWARD_FIRST_CONTENT_TIMEOUT,
+            FORWARD_CONTENT_IDLE_TIMEOUT,
+            StubBody::Complete,
+        )
+        .await
     }
 
     /// [`harness`] with the stub's body shape under the test's control,
-    /// so an upstream that dies mid-response is reachable inside a test.
-    async fn harness_with_tail(chunk_delay: Duration, tail: StubTail) -> Harness {
-        harness_with(chunk_delay, FORWARD_IDLE_TIMEOUT, tail).await
+    /// so an upstream that dies mid-response or only ever sends comments
+    /// is reachable inside a test.
+    async fn harness_with_tail(chunk_delay: Duration, body: StubBody) -> Harness {
+        harness_with(
+            chunk_delay,
+            FORWARD_IDLE_TIMEOUT,
+            FORWARD_FIRST_CONTENT_TIMEOUT,
+            FORWARD_CONTENT_IDLE_TIMEOUT,
+            body,
+        )
+        .await
+    }
+
+    /// [`harness`] with both stall bounds and the body shape under the
+    /// test's control, so an upstream that opens a response and only ever
+    /// sends comments is reachable inside a test.
+    async fn harness_with_stall_bounds(
+        chunk_delay: Duration,
+        idle_timeout: Duration,
+        first_content_timeout: Duration,
+        content_idle_timeout: Duration,
+        body: StubBody,
+    ) -> Harness {
+        harness_with(chunk_delay, idle_timeout, first_content_timeout, content_idle_timeout, body)
+            .await
     }
 
     async fn harness_with(
         chunk_delay: Duration,
         idle_timeout: Duration,
-        tail: StubTail,
+        first_content_timeout: Duration,
+        content_idle_timeout: Duration,
+        body: StubBody,
     ) -> Harness {
         let script: ScriptHandle =
             Arc::new(parking_lot::Mutex::new(std::collections::VecDeque::new()));
@@ -967,7 +1344,7 @@ mod tests {
         let upstream = Arc::new(RecordingUpstream {
             requests: Arc::clone(&requests),
             chunk_delay,
-            tail,
+            body,
             script: Arc::clone(&script),
         });
         let stub_port = free_port().await;
@@ -1016,7 +1393,12 @@ mod tests {
             idle_timeout,
         )
         .expect("the test host builds a client");
-        let gateway = Arc::new(Gateway::new(Arc::clone(&pool), client));
+        let gateway = Arc::new(Gateway::with_stall_bounds(
+            Arc::clone(&pool),
+            client,
+            first_content_timeout,
+            content_idle_timeout,
+        ));
 
         let listener_port = free_port().await;
         let listener = GatewayListener::bind(listener_port).await.expect("gateway bind");
@@ -1357,6 +1739,233 @@ mod tests {
             "the host's bound ended the stream, not the upstream's next chunk; took {:?}",
             started.elapsed(),
         );
+    }
+
+    /// Read a body to its end, answering the bytes read and whether the
+    /// read was cut. A cut is what the CLI's retry path reacts to.
+    async fn read_body(response: &mut reqwest::Response) -> (Vec<u8>, bool) {
+        let mut bytes = Vec::new();
+        loop {
+            match response.chunk().await {
+                Ok(Some(chunk)) => bytes.extend_from_slice(&chunk),
+                Ok(None) => return (bytes, false),
+                Err(_) => return (bytes, true),
+            }
+        }
+    }
+
+    /// Every `forge_gateway::forward` record the capture holds.
+    fn forward_records(caught: &Caught) -> Vec<(tracing::Level, String)> {
+        caught
+            .0
+            .lock()
+            .expect("capture")
+            .iter()
+            .filter(|(_, target, _)| *target == "forge_gateway::forward")
+            .map(|(level, _, fields)| (*level, fields.clone()))
+            .collect()
+    }
+
+    /// One `name=value` field out of a captured record.
+    fn field_u64(fields: &str, name: &str) -> u64 {
+        let marker = format!("{name}=");
+        fields
+            .split(&marker)
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or_else(|| panic!("{name} missing from {fields}"))
+    }
+
+    /// The line this change exists for: an upstream that opens the
+    /// response and then writes only SSE comment keepalives keeps the
+    /// socket's per-read timer alive forever, so nothing else in the leg
+    /// ever sees the stall. The first-content bound cuts it, logs once
+    /// with the phase and the byte counts, and the CLI's body read sees a
+    /// cut it retries.
+    #[tokio::test]
+    async fn a_response_that_only_sends_comments_stalls_at_the_first_content_bound() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let harness = harness_with_stall_bounds(
+            Duration::from_millis(40),
+            Duration::from_secs(5),
+            Duration::from_millis(200),
+            Duration::from_secs(5),
+            StubBody::CommentsForever,
+        )
+        .await;
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::Registry::default().with(caught.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let started = Instant::now();
+        let mut response =
+            post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        assert_eq!(response.status(), StatusCode::OK, "the head reached the CLI before the stall");
+
+        let (_, cut) = tokio::time::timeout(Duration::from_secs(5), read_body(&mut response))
+            .await
+            .expect("the first-content bound ends the stream; an unbounded client never returns");
+        assert!(cut, "the stream is cut, not completed: comments are not an answer");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the bound ended the stream, not the test's own timeout; took {:?}",
+            started.elapsed(),
+        );
+
+        let records = forward_records(&caught);
+        assert_eq!(records.len(), 1, "one stall emits exactly one record: {records:?}");
+        let (level, fields) = &records[0];
+        assert_eq!(*level, tracing::Level::WARN, "the line claims forge's own problem: {fields}");
+        for needle in [
+            "event_name=\"gateway_forward_stalled\"",
+            "account=OpenRouter",
+            "org=Busytools",
+            "project=forge",
+            "session=session-1",
+            "model=glm-5.3-flash",
+            &format!("upstream={}/v1/messages?beta=true", harness.upstream_url),
+            "request_id=req-test",
+            "status=200",
+            "phase=\"first-content\"",
+            "elapsed_ms=",
+            "content_bytes=0",
+            "keepalive_bytes=",
+            "bytes_total=",
+        ] {
+            assert!(fields.contains(needle), "{needle} missing from {fields}");
+        }
+        assert!(
+            field_u64(fields, "keepalive_bytes") > 0,
+            "the comments really did arrive: {fields}",
+        );
+        assert!(!fields.contains("real-openrouter-key"), "no credential in the record: {fields}");
+    }
+
+    /// The other shape: the upstream answered, then degraded to comments.
+    /// Content had started, so the content-idle bound is what cuts it, and
+    /// the record says content was seen.
+    #[tokio::test]
+    async fn a_response_that_degrades_to_comments_after_content_stalls_at_the_content_idle_bound() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let harness = harness_with_stall_bounds(
+            Duration::from_millis(40),
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            Duration::from_millis(200),
+            StubBody::ContentThenCommentsForever,
+        )
+        .await;
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::Registry::default().with(caught.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let mut response =
+            post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let (body, cut) = tokio::time::timeout(Duration::from_secs(5), read_body(&mut response))
+            .await
+            .expect("the content-idle bound ends the stream; an unbounded client never returns");
+        assert!(cut, "the stream is cut once content stops");
+        assert!(
+            body.starts_with(b"data: hello\n\n"),
+            "the real content reached the CLI before the stall: {}",
+            String::from_utf8_lossy(&body),
+        );
+
+        let records = forward_records(&caught);
+        assert_eq!(records.len(), 1, "one stall emits exactly one record: {records:?}");
+        let (level, fields) = &records[0];
+        assert_eq!(*level, tracing::Level::WARN, "the line claims forge's own problem: {fields}");
+        for needle in [
+            "event_name=\"gateway_forward_stalled\"",
+            "account=OpenRouter",
+            "phase=\"content-idle\"",
+            "request_id=req-test",
+            "status=200",
+            "elapsed_ms=",
+            "keepalive_bytes=",
+            "bytes_total=",
+        ] {
+            assert!(fields.contains(needle), "{needle} missing from {fields}");
+        }
+        assert!(field_u64(fields, "content_bytes") > 0, "content had started: {fields}");
+        assert!(field_u64(fields, "keepalive_bytes") > 0, "comments followed: {fields}");
+    }
+
+    /// Comments between real deltas are keepalives, not a stall. The
+    /// first-content bound is tighter than the body's own length, so a
+    /// tracker that misreads content as a keepalive cuts a healthy stream
+    /// here.
+    #[tokio::test]
+    async fn a_healthy_stream_with_interleaved_comments_completes_without_a_stall() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let harness = harness_with_stall_bounds(
+            Duration::from_millis(40),
+            Duration::from_secs(5),
+            Duration::from_millis(200),
+            Duration::from_millis(300),
+            StubBody::HealthyWithComments,
+        )
+        .await;
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::Registry::default().with(caught.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let mut response =
+            post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let (body, cut) = tokio::time::timeout(Duration::from_secs(5), read_body(&mut response))
+            .await
+            .expect("a healthy stream with comments completes");
+        assert!(!cut, "comments between deltas are keepalives, not a stall");
+        let mut expected = Vec::new();
+        for _ in 0..6 {
+            expected.extend_from_slice(b": keepalive\n");
+            expected.extend_from_slice(b"data: delta\n\n");
+        }
+        assert_eq!(body, expected, "every byte, comments included, reaches the CLI unchanged");
+        let records = forward_records(&caught);
+        assert!(records.is_empty(), "a healthy stream emits no forward record: {records:?}");
+    }
+
+    /// A non-streaming body - an upstream's JSON error, say - carries no
+    /// SSE framing at all. Its bytes are content, so the first-content
+    /// bound must not fire on it. The body outlives that bound and its
+    /// line is split across the gap, so a tracker that only counts `data:`
+    /// lines would cut it.
+    #[tokio::test]
+    async fn a_plain_json_body_counts_as_content_and_is_not_stalled() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let harness = harness_with_stall_bounds(
+            Duration::from_millis(300),
+            Duration::from_secs(5),
+            Duration::from_millis(200),
+            Duration::from_secs(5),
+            StubBody::PlainJson,
+        )
+        .await;
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::Registry::default().with(caught.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let mut response =
+            post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let (body, cut) = tokio::time::timeout(Duration::from_secs(5), read_body(&mut response))
+            .await
+            .expect("the plain JSON body completes");
+        assert!(!cut, "a plain JSON body is an answer, not a stall");
+        assert_eq!(String::from_utf8_lossy(&body), r#"{"ok":true}"#);
+        let records = forward_records(&caught);
+        assert!(records.is_empty(), "a plain JSON body emits no stall record: {records:?}");
     }
 
     #[tokio::test]
@@ -2642,7 +3251,7 @@ mod tests {
     async fn a_stream_cut_after_the_headers_is_recorded_with_its_cause_chain() {
         use tracing_subscriber::layer::SubscriberExt;
 
-        let harness = harness_with_tail(Duration::from_millis(50), StubTail::Cut).await;
+        let harness = harness_with_tail(Duration::from_millis(50), StubBody::Cut).await;
         let caught = Caught::default();
         let subscriber = tracing_subscriber::Registry::default().with(caught.clone());
         let _guard = tracing::subscriber::set_default(subscriber);
