@@ -182,14 +182,13 @@ pub struct ClientPerfRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<u32>,
     /// A page `dictate` record: the transition the received frame announced,
-    /// the seat it belongs to, the take's own number, and the phase the
-    /// record's take showed before the frame. **`before` is the field that
-    /// says which frame cleared a take's row too early**, so each one is
-    /// named here or parsed away before the write.
+    /// the take's own number, and the phase the record's take showed before
+    /// the frame. **`before` is the field that says which frame cleared a
+    /// take's row too early**, so each one is named here or parsed away
+    /// before the write. The take's seat rides the log's own `session` key,
+    /// which this struct already names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub slot: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -687,7 +686,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let page = concat!(
             r#"{"schema":"forge-perf/v1","kind":"dictate","run_id":"r","ts_ms":1,"#,
-            r#""phase":"transcribing","slot":"Busytools/forge/lead","generation":7,"#,
+            r#""phase":"transcribing","session":"Busytools/forge/lead","generation":7,"#,
             r#""before":"recording"}"#,
             "\n",
             r#"{"schema":"forge-perf/v1","kind":"frame","run_id":"r","ts_ms":2,"frame":1,"ms":9.5}"#,
@@ -702,10 +701,13 @@ mod tests {
         let lines: Vec<serde_json::Value> =
             text.lines().map(|line| serde_json::from_str(line).expect("a JSON line")).collect();
         assert_eq!(lines[0]["phase"], "transcribing", "the transition survives: {text}");
-        assert_eq!(lines[0]["slot"], "Busytools/forge/lead", "and the seat: {text}");
+        assert_eq!(
+            lines[0]["session"], "Busytools/forge/lead",
+            "and the seat rides the log's own key: {text}"
+        );
         assert_eq!(lines[0]["generation"], 7, "and the take's own number: {text}");
         assert_eq!(lines[0]["before"], "recording", "and the phase before it: {text}");
-        for key in ["phase", "slot", "generation", "before"] {
+        for key in ["phase", "generation", "before"] {
             assert!(
                 lines[1].get(key).is_none(),
                 "a frame carries no dictate field ({key}): {text}"

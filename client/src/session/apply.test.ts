@@ -1275,7 +1275,7 @@ describe('applyUpdate', () => {
 
       const frames = records.filter((record) => record.kind === 'dictate');
       expect(
-        frames.map((record) => [record.phase, record.before, record.generation, record.slot]),
+        frames.map((record) => [record.phase, record.before, record.generation, record.session]),
       ).toEqual([
         ['started', 'none', 7, 'Busytools/forge/lead'],
         ['transcribing', 'recording', 7, 'Busytools/forge/lead'],

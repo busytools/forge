@@ -21,7 +21,7 @@ import { outcomesOf } from '../chat/outcomes';
 import { fold } from '../chat/units';
 import { FALLBACK_FLOOR_DB, fractionOf } from '../composer/meter';
 import { surfaceFrom } from '../composer/wire';
-import { noteDictateFrame } from '../perf';
+import { noteDictateFrame, type TakePhase } from '../perf';
 import { slotOfPayload, SUBSCRIBE_TURNS, type SessionUpdate } from '../protocol';
 import { METER_CELLS } from '../wire/limits';
 import { terminalSummaryFrom } from '../wire/terminal';
@@ -999,10 +999,12 @@ function newTake(floorDb: number, generation: unknown): Record<string, unknown> 
 /**
  * The phase the record's own take shows, as a perf `dictate` record names it:
  * `none` with no take, `transcribing` once its own frame moved it, and
- * `recording` for a take on screen that has not. Mirrors `takePhase` in
- * `composer/dictate.svelte.ts`, which is the row the reader sees.
+ * `recording` for a take on screen that has not. **Not `takePhase` in
+ * `composer/dictate.svelte.ts`**: that one also draws `ready` for this page's
+ * own live capture with no samples, a state this record cannot see - it reads
+ * the record alone.
  */
-function recordedTakePhase(composer: ComposerState): string {
+function recordedTakePhase(composer: ComposerState): TakePhase {
   const take = heldTake(composer);
   if (take === null) return 'none';
   return take['phase'] === 'transcribing' ? 'transcribing' : 'recording';

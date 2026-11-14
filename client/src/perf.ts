@@ -242,6 +242,9 @@ export interface PerfRecord {
    * window OPENED - a window can span a seat switch, so one value cannot
    * say where every frame inside it happened, and the frames carry their
    * own. Null is honest for "the router has not wired a route yet".
+   *
+   * A `dictate` names its take's seat in `session` too, so a seat's records
+   * are collected by one key rather than two.
    */
   surface?: string | null;
   session?: string | null;
@@ -303,8 +306,6 @@ export interface PerfRecord {
    * trace.
    */
   phase?: DictatePhase;
-  /** A `dictate`: the seat the take belongs to, as `seatLabel` names it. */
-  slot?: string;
   /** A `dictate`: the take's own number. Absent on a frame that carried none. */
   generation?: number;
   /**
@@ -312,12 +313,20 @@ export interface PerfRecord {
    * `none` with no take. **This is the field that answers a row that
    * cleared too early**: which frame cleared it, and what it was before.
    */
-  before?: string;
+  before?: TakePhase;
 }
 
 /** The transitions a received dictate frame announces, as a `dictate` record
  *  names them. */
 export type DictatePhase = 'started' | 'transcribing' | 'ended';
+
+/**
+ * The phases a take shows on the record, as `before` names them, and the
+ * `none` a frame finds with no take. **The seat of a `dictate` record rides
+ * the log's own `session` key**, so a reader collecting one seat's records by
+ * `session` finds these beside its frames.
+ */
+export type TakePhase = 'none' | 'recording' | 'transcribing';
 
 interface PerfProbe {
   start(): void;
@@ -383,7 +392,7 @@ interface PerfProbe {
     phase: DictatePhase,
     slot: SessionSlot | null,
     generation: number | null,
-    before: string,
+    before: TakePhase,
   ): void;
 }
 
@@ -1366,7 +1375,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
       phase: DictatePhase,
       slot: SessionSlot | null,
       generation: number | null,
-      before: string,
+      before: TakePhase,
     ): void {
       emit({
         schema: SCHEMA,
@@ -1375,7 +1384,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
         ts_ms: Date.now(),
         phase,
         ...(generation === null ? {} : { generation }),
-        ...(slot === null ? {} : { slot: seatLabel(slot) }),
+        ...(slot === null ? {} : { session: seatLabel(slot) }),
         before,
       });
     },
@@ -1523,7 +1532,7 @@ export function noteDictateFrame(
   phase: DictatePhase,
   slot: SessionSlot | null,
   generation: number | null,
-  before: string,
+  before: TakePhase,
 ): void {
   running?.noteDictateTake(phase, slot, generation, before);
 }
