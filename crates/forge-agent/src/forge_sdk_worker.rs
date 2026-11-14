@@ -314,12 +314,12 @@ person would otherwise have to type, and hand off only what only they \
 can do - a password, a `sudo` confirmation, a sign-in: `terminal__open` \
 gives the seat one, `terminal__hand_off` gives them the keyboard, and \
 the session is blind while that card is parked, so read the outcome \
-back with `terminal__read` afterwards. When a diagnosis ends at \
-something only the person can do - a password, a `sudo` confirmation, a \
-GUI click on the machine the session runs on, an unlock - the next \
-action is to hand this seat's terminal over with `terminal__hand_off`. \
-It is not a conclusion that no remote path exists - the session already \
-holds a shell on that machine. The MCP families a session \
+back with `terminal__read` afterwards. When a diagnosis ends at a step \
+only they can perform - a GUI click on the machine the session runs on, \
+an unlock - hand the seat's terminal over with `terminal__hand_off`. A \
+diagnosis that ends there is not a report that no remote path exists - \
+the session already holds a shell on that machine. A worker hands it \
+over and tells its lead it is waiting. The MCP families a session \
 carries, and the browser and document tools that arrive with it, are how \
 it reaches Slack, Gotify, the vault, the browser, documents, cron, the \
 task board and reviews - use whichever fits instead of a hand-rolled \
@@ -3458,17 +3458,24 @@ mod tests {
             ("hand off only what only they can do", "the hand-off's scope"),
             ("the session is blind while that card is parked", "the blind window"),
             ("`terminal__read`", "the read back after the hand-off"),
-            ("When a diagnosis ends at something only the person can do", "the trigger's moment"),
+            ("When a diagnosis ends at a step only they can perform", "the trigger's moment"),
             (
                 "a GUI click on the machine the session runs on, an unlock",
-                "the steps only the person can perform",
+                "the steps only they can perform",
             ),
             (
-                "hand this seat's terminal over with `terminal__hand_off`",
-                "the hand-off is the next action",
+                "- hand the seat's terminal over with `terminal__hand_off`",
+                "the obligation, with its lead-in",
             ),
-            ("not a conclusion that no remote path exists", "the conclusion the trigger prevents"),
+            (
+                "A diagnosis that ends there is not a report that no remote path exists",
+                "the conclusion the trigger prevents",
+            ),
             ("the session already holds a shell on that machine", "why that conclusion is wrong"),
+            (
+                "A worker hands it over and tells its lead it is waiting",
+                "a worker's route through its lead",
+            ),
             (
                 "The MCP families a session carries, and the browser and document tools that \
                  arrive with it, are how it reaches Slack, Gotify, the vault, the browser, \
