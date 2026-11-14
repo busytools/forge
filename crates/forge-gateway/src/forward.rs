@@ -453,12 +453,15 @@ fn error_chain<'a>(
     (layers, truncated)
 }
 
-/// The whole cause chain of a failed send on one line, `top -> ... -> root`.
+/// The whole cause chain of a failed forward leg on one line,
+/// `top -> ... -> root`.
 ///
-/// reqwest's own `Display` is the top layer only - "error sending request
-/// for url (...)" - and every actionable fact (DNS, connect, TLS, reset,
-/// EMFILE) sits in a `source()` below it, so the top alone cannot tell the
-/// failures apart.
+/// reqwest's own `Display` is the top layer only, and every actionable fact
+/// (DNS, connect, TLS, reset, EMFILE) sits in a `source()` below it, so the
+/// top alone cannot tell the failures apart. The leg's two failure sites
+/// open differently: a failed send starts at "error sending request for url
+/// (...)", while a body that fails after the response started starts at
+/// "error decoding response body".
 fn describe_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
     let (layers, truncated) = error_chain(error);
     let mut parts: Vec<String> = Vec::new();
@@ -479,7 +482,7 @@ fn describe_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
     parts.join(" -> ")
 }
 
-/// The transport-level shape of a failed forward send.
+/// The transport-level shape of a failed forward leg.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ForwardFailureKind {
     Dns,
@@ -516,10 +519,11 @@ impl ForwardFailureKind {
 /// a connect failure by position but its own problem by cause, and both
 /// "connection reset by peer" and "connection closed" contain "connect".
 ///
-/// The top layer is skipped when a cause sits below it: reqwest's top
+/// The top layer is skipped when a cause sits below it: reqwest's send top
 /// `Display` embeds the request URL, so a host carrying "ssl" or "dns"
-/// would otherwise decide the kind. A flat error has no wrapper, so its own
-/// text is still read.
+/// would otherwise decide the kind, and the stream top ("error decoding
+/// response body") names no cause either. A flat error has no wrapper, so
+/// its own text is still read.
 fn classify_forward_failure(error: &(dyn std::error::Error + 'static)) -> ForwardFailureKind {
     const NEEDLES: &[(ForwardFailureKind, &[&str])] = &[
         (ForwardFailureKind::Fd, &["too many open files", "os error 24", "emfile"]),
@@ -693,8 +697,11 @@ impl RouteHandler for Gateway {
         // cut to the CLI - there is no status left to change and nothing
         // left to rewrite. What the CLI retries with is a truncated stream
         // carrying no cause, and the chain is the only place a reset, a
-        // timeout and an upstream that died mid-turn differ, so this arm
-        // logs at warn with everything a reader needs to act.
+        // timeout and an upstream that died mid-turn differ. The leg is
+        // forge's own rather than the session's work, so it logs at warn
+        // with everything a reader needs to act, the provider's request id
+        // included: that id is the correlation key to raise the cut with
+        // the provider.
         let stream_started = std::time::Instant::now();
         let stream_account = account.0;
         let stream_org = org.to_owned();
@@ -702,12 +709,17 @@ impl RouteHandler for Gateway {
         let stream_session = session.to_owned();
         let stream_model = model;
         let stream_url = url;
+        let stream_headers = response_headers;
         let stream: std::pin::Pin<
             Box<dyn futures_util::Stream<Item = Result<Frame<Bytes>, BoxError>> + Send + Sync>,
         > = Box::pin(upstream_response.bytes_stream().map(move |chunk| {
             chunk.map(Frame::data).map_err(|error| {
                 let kind = classify_forward_failure(&error);
                 let chain = describe_error_chain(&error);
+                let request_id = stream_headers
+                    .get("request-id")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default();
                 tracing::warn!(
                     target: "forge_gateway::forward",
                     event_name = "gateway_forward_stream_failed",
@@ -717,9 +729,10 @@ impl RouteHandler for Gateway {
                     session = %stream_session,
                     model = %stream_model,
                     upstream = %stream_url,
+                    request_id = %request_id,
                     status = status.as_u16(),
                     kind = kind.as_str(),
-                    elapsed_ms = stream_started.elapsed().as_millis(),
+                    stream_elapsed_ms = stream_started.elapsed().as_millis(),
                     error_chain = %chain,
                     "the forward's upstream body failed after the response started; the CLI got a cut response",
                 );
@@ -1261,7 +1274,12 @@ mod tests {
 
     #[tokio::test]
     async fn the_response_streams_while_the_upstream_is_still_sending() {
+        use tracing_subscriber::layer::SubscriberExt;
+
         let harness = harness(Duration::from_millis(1000)).await;
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::Registry::default().with(caught.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
         let started = Instant::now();
         let mut response =
             post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
@@ -1280,6 +1298,16 @@ mod tests {
         let second = response.chunk().await.expect("a second chunk").expect("chunk bytes");
         assert!(!second.is_empty());
         assert!(started.elapsed() >= Duration::from_millis(1000), "the tail respects the gap");
+        let end = response.chunk().await.expect("the body ends cleanly");
+        assert!(end.is_none(), "the stub's body completes rather than cutting");
+
+        // A completed stream is not a failure: the other arm's record stays
+        // silent, so a healthy turn's log is uninterrupted by this site.
+        let caught = caught.0.lock().expect("capture").clone();
+        assert!(
+            caught.iter().all(|(_, target, _)| *target != "forge_gateway::forward"),
+            "a healthy forward emits no failure record: {caught:?}",
+        );
     }
 
     /// The connect bound is the tighter inner one, and that ordering is
@@ -2585,15 +2613,25 @@ mod tests {
             "session=session-1",
             "model=glm-5.3-flash",
             &format!("upstream={}/v1/messages?beta=true", harness.upstream_url),
+            "request_id=req-test",
             "status=200",
             "kind=\"closed\"",
-            "elapsed_ms=",
+            "stream_elapsed_ms=",
             "error_chain=",
             " -> ",
             "unexpected EOF during chunk size line",
         ] {
             assert!(fields.contains(needle), "{needle} missing from {fields}");
         }
+        // The clock is the stream's own: the stub holds the body for 50 ms
+        // after its first chunk, so a clock taken at the error site reads 0.
+        let elapsed = fields
+            .split("stream_elapsed_ms=")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|value| value.parse::<u128>().ok())
+            .expect("the record carries the stream's elapsed ms");
+        assert!(elapsed >= 50, "the stream ran for its own 50 ms at least; got {elapsed}");
         assert!(
             !fields.contains("real-openrouter-key"),
             "the record must never carry the credential: {fields}",
