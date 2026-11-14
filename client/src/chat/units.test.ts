@@ -104,6 +104,31 @@ const runsOf = (units: Unit[]): HookLeaf[] =>
 const runOf = (units: Unit[]): HookRun | null => runsOf(units)[0]?.run ?? null;
 
 /**
+ * A `stop_hook_summary` frame carrying `count` hook rows and keyed by `uuid`:
+ * the batch a turn's settled stop hooks report. The two wire names are the
+ * message's own renames (`hookCount`, `hookInfos`), which is what the fold
+ * reads.
+ */
+const stopHook = (count: number, uuid = 'uuid_7'): unknown => ({
+  session_id: 'session_0',
+  type: 'system',
+  subtype: 'stop_hook_summary',
+  hookCount: count,
+  hookInfos: Array.from({ length: count }, (_, n) => ({
+    command: n === 0 ? 'echo fixture-stop-hook-ok' : `echo fixture-stop-hook-${n}`,
+    durationMs: 3 + n,
+  })),
+  hookErrors: [],
+  hookAdditionalContext: [],
+  preventedContinuation: false,
+  stopReason: '',
+  hasOutput: true,
+  level: 'suggestion',
+  toolUseID: '00afa158-9a64-4fae-9c85-4866c0399894',
+  uuid,
+});
+
+/**
  * One hook's run, as the CLI's own capture sends it
  * (`crates/forge-test-harness/baselines/sdk/2.1.280/compact.jsonl`): a start,
  * two progress frames whose output is cumulative, and the response that
@@ -2007,37 +2032,75 @@ describe('one turn folded into the units a view draws', () => {
     });
   });
 
-  it('draws the turn hooks after the run they followed, and nothing when none fired', () => {
-    // The captured row verbatim, less the synthetic parent id the fixture
-    // carries (crates/forge-test-harness/baselines/sdk/2.1.280/real_session_sample.jsonl).
-    // The two names are the wire's own - the message renames the Rust fields on
-    // the way out - so a fold reading `actions`/`hook_infos` draws nothing on a
-    // real session, which is what the chip did until it read these.
-    const hook = (count: number): unknown => ({
-      session_id: 'session_0',
+  it('folds the turn hooks into the work as one row, where they fired', () => {
+    // The capture is the SHAPE here, not the count: the fields and their names
+    // are taken from
+    // crates/forge-test-harness/baselines/sdk/2.1.280/real_session_sample.jsonl
+    // (less the synthetic parent id), where that row carries `hookCount: 1` and
+    // one info. The three hooks are a deliberate widening, so a fold that
+    // emitted one row per INFO draws extra rows and fails this test. The two
+    // names are the wire's own - the message renames the Rust fields on the way
+    // out - so a fold reading `actions`/`hook_infos` draws nothing on a real
+    // session.
+    const units = fold([call('read', 0), stopHook(3), call('read', 1)]);
+    expect(kinds(units), 'the hooks ride the turn work rather than a unit of their own').toEqual([
+      'leaves',
+    ]);
+    const rows = rowsOf(units[0]);
+    expect(
+      rows.map((row) => row.tag),
+      'one batch row, in frame order, between the calls',
+    ).toEqual(['call', 'hookbatch', 'call']);
+    const batch = rows[1];
+    expect(batch?.tag === 'hookbatch' ? batch.actions : null).toBe(3);
+    expect(
+      batch?.tag === 'hookbatch' ? batch.infos : [],
+      'every hook the count names, all three on the one row',
+    ).toEqual([
+      { command: 'echo fixture-stop-hook-ok', durationMs: 3 },
+      { command: 'echo fixture-stop-hook-1', durationMs: 4 },
+      { command: 'echo fixture-stop-hook-2', durationMs: 5 },
+    ]);
+    expect(fold([stopHook(0)]), 'a frame reporting none draws nothing').toHaveLength(0);
+  });
+
+  it('draws one row per stop-hook summary frame', () => {
+    // Two batches in one turn are two rows rather than one merged row: the
+    // row is keyed by its own frame, so the list keeps them apart.
+    const rows = rowsOf(fold([stopHook(1, 'uuid_7'), stopHook(2, 'uuid_8')])[0]).filter(
+      (row) => row.tag === 'hookbatch',
+    );
+    expect(
+      rows.map((row) => row.key),
+      'each batch keeps the key of the frame it arrived on',
+    ).toEqual(['uuid_7#hookbatch', 'uuid_8#hookbatch']);
+  });
+
+  it('folds a batch that counted actions but carried no rows', () => {
+    // A real shape on the wire: `hookCount` above zero with empty
+    // `hookInfos`/`hookErrors`, carried by forge's own page fixture
+    // (`crates/forge-server/src/transport/wire.rs`, the hook summary row in
+    // `every_kind_a_turn_holds_reaches_a_page_stamped`). A fold that gated the
+    // row on its INFOS would drop the batch silently, so the count alone has
+    // to draw it.
+    const counted: Record<string, unknown> = {
       type: 'system',
       subtype: 'stop_hook_summary',
-      hookCount: count,
-      hookInfos: [{ command: 'echo fixture-stop-hook-ok', durationMs: 3 }],
+      hookCount: 1,
+      hookInfos: [],
       hookErrors: [],
-      hookAdditionalContext: [],
-      preventedContinuation: false,
-      stopReason: '',
-      hasOutput: true,
-      level: 'suggestion',
-      toolUseID: '00afa158-9a64-4fae-9c85-4866c0399894',
-      uuid: 'uuid_7',
-    });
+      uuid: 'uuid_8',
+    };
 
-    const units = fold([call('read', 0), hook(1)]);
-    expect(kinds(units), 'the chip follows the run it came after').toEqual(['leaves', 'hooks']);
-    const chip = units[1];
-    expect(chip?.kind === 'hooks' ? chip.actions : null).toBe(1);
+    const units = fold([counted]);
+    expect(kinds(units), 'the batch rides the turn work').toEqual(['leaves']);
+    const rows = rowsOf(units[0]);
     expect(
-      chip?.kind === 'hooks' ? chip.infos : [],
-      'the command and the duration the captured row carries',
-    ).toEqual([{ command: 'echo fixture-stop-hook-ok', durationMs: 3 }]);
-    expect(fold([hook(0)]), 'a frame reporting none draws nothing').toHaveLength(0);
+      rows.map((row) => row.tag),
+      'one row, from the count alone',
+    ).toEqual(['hookbatch']);
+    expect(rows[0]?.tag === 'hookbatch' ? rows[0].actions : null).toBe(1);
+    expect(rows[0]?.tag === 'hookbatch' ? rows[0].infos : null).toEqual([]);
   });
 
   it('reads the errors a failed hook summary carries', () => {
@@ -2068,15 +2131,16 @@ describe('one turn folded into the units a view draws', () => {
     };
 
     const units = fold([failed]);
-    const chip = units[0];
+    const batch = rowsOf(units[0])[0];
     expect(
-      chip?.kind === 'hooks' ? chip.errors : [],
+      batch?.tag === 'hookbatch' ? batch.errors : [],
       'the error the captured row carries, as its own list beside the infos',
     ).toEqual([error]);
 
     const clean = fold([{ ...failed, hookErrors: [] }]);
+    const cleanBatch = rowsOf(clean[0])[0];
     expect(
-      clean[0]?.kind === 'hooks' ? clean[0].errors : null,
+      cleanBatch?.tag === 'hookbatch' ? cleanBatch.errors : null,
       'and a summary that carries none reads as none',
     ).toEqual([]);
   });

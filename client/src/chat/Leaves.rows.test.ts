@@ -354,3 +354,27 @@ describe('the thinking row', () => {
     expect(drawn, 'and code keeps its own face').toContain('<code>');
   });
 });
+
+describe("a turn's hook batch row", () => {
+  /**
+   * **The list is where the row can be dropped.** The batch is a leaves row
+   * rather than a unit of its own, so a list with no arm for it draws nothing -
+   * the silence rule 25 is about - while every other state on the row still
+   * tests green.
+   */
+  it('draws the batch as a tool row, with the glyph every hook row leads with', () => {
+    const drawn = draw([
+      {
+        tag: 'hookbatch',
+        key: 'uuid_7#hookbatch',
+        actions: 2,
+        infos: [{ command: 'cargo fmt --check', durationMs: 412 }],
+        errors: [],
+      },
+    ]);
+
+    expect(drawn, 'the count the row carries').toContain('hook summary \u{b7} 2 actions');
+    expect(drawn, 'the hook family mark').toContain('#i-hook');
+    expect(drawn, 'and the shared disclosure chevron').toContain('class="ic arw"');
+  });
+});

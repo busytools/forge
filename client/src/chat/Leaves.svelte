@@ -1,6 +1,7 @@
 <script lang="ts">
   import Call from './Call.svelte';
   import Hook from './Hook.svelte';
+  import Hooks from './Hooks.svelte';
   import HookGroup from './HookGroup.svelte';
   import Inbound from './Inbound.svelte';
   import { opensByDefault, type ToolLeaf } from './leaves';
@@ -57,6 +58,8 @@
       <Hook run={row.run} />
     {:else if row.tag === 'hookgroup'}
       <HookGroup group={row} />
+    {:else if row.tag === 'hookbatch'}
+      <Hooks batch={row} />
     {:else if row.tag === 'inbound'}
       <Inbound {row} />
     {:else if row.tag === 'thought'}
