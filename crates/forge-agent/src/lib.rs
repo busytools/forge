@@ -47,6 +47,12 @@ pub use forge_primitives::permission::PermissionMode;
 #[cfg(any(test, feature = "testing"))]
 pub use forge_sdk_worker::set_test_sdk_binary;
 
+/// Shorten the bound a bridge control request waits before it answers the CLI
+/// itself, so a test reaches it without waiting half an hour; `None` restores
+/// the shipped bound. Process-wide - see its own doc.
+#[cfg(any(test, feature = "testing"))]
+pub use forge_sdk_worker::set_test_control_request_bound;
+
 /// The messages a session's transcript holds and the compactions it
 /// records. The same read the spawn performs, available for a session that
 /// is already running.

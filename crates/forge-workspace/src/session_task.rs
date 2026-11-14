@@ -978,6 +978,28 @@ impl SessionTask {
                     );
                 }
             }
+            AgentEvent::ControlRequestUnanswered { tool_use_id, .. } => {
+                // **The bridge answered it itself.** No client replied within
+                // the bound, so the CLI already holds its denial; the slot is
+                // dropped here and the resolved frame withdraws the dock,
+                // which would otherwise draw a prompt whose answer can no
+                // longer reach anything.
+                let removed = self.domain.lock().pending_interactions.remove(&tool_use_id);
+                if let Some(pending) = removed {
+                    let question_index = match &pending {
+                        PendingInteractionSlot::Question { request, .. } => {
+                            Some(request.question_index)
+                        }
+                        PendingInteractionSlot::Permission { .. } => None,
+                    };
+                    self.emit(SessionUpdate::PendingInteractionResolved {
+                        key: self.key.clone(),
+                        tool_id: tool_use_id,
+                        question_index,
+                        answered_with: None,
+                    });
+                }
+            }
             AgentEvent::McpOperationError { error, .. } => {
                 self.emit(SessionUpdate::McpOperationError { key: self.key.clone(), error });
             }
@@ -1499,11 +1521,18 @@ impl SessionTask {
                         "RespondPermission expected Permission slot; got different kind. Outcome dropped, slot preserved."
                     );
                 } else {
-                    tracing::warn!(
+                    // **An answer that arrives after the request was settled.**
+                    // The bridge denied it at its bound, or the seat was torn
+                    // down; either way the answer has nowhere to go and the
+                    // CLI already has its denial, so this is not a defect to
+                    // report.
+                    tracing::debug!(
                         target: "forge_workspace::session_task",
+                        event_name = "control_answer_late",
                         slot = %self.key.display(),
                         tool_id = %tool_id,
-                        "RespondPermission found no pending interaction (already responded or expired)"
+                        "RespondPermission found no pending interaction; it was already settled \
+                         and this answer changes nothing",
                     );
                 }
             }
@@ -1543,11 +1572,14 @@ impl SessionTask {
                         "RespondQuestion got non-Question slot. Outcome dropped, slot preserved."
                     );
                 } else {
-                    tracing::warn!(
+                    // As the permission arm's: the request was settled first.
+                    tracing::debug!(
                         target: "forge_workspace::session_task",
+                        event_name = "control_answer_late",
                         slot = %self.key.display(),
                         tool_id = %tool_id,
-                        "RespondQuestion found no pending interaction"
+                        "RespondQuestion found no pending interaction; it was already settled \
+                         and this answer changes nothing",
                     );
                 }
             }
@@ -3977,11 +4009,17 @@ fn spawn_permission_response_forwarder(
     tokio::task::spawn(
         async move {
             let Ok(outcome) = response_rx.await else {
-                tracing::warn!(
+                // **Not a problem to report.** The slot goes either way when
+                // the bridge has already answered the control request itself
+                // (its bound expired), or when the seat is being torn down;
+                // the CLI has its answer from the bridge in both cases.
+                tracing::debug!(
                     target: "forge_workspace::session_task",
+                    event_name = "control_answer_lost",
                     session_id = %session_id,
                     tool_call_id = %tool_call_id,
-                    "permission response channel closed before forwarding"
+                    "the parked answer slot went before an answer arrived; the bridge answered \
+                     the control request itself",
                 );
                 return;
             };
@@ -4035,11 +4073,15 @@ fn spawn_question_response_forwarder(
     tokio::task::spawn(
         async move {
             let Ok(outcome) = response_rx.await else {
-                tracing::warn!(
+                // As the permission forwarder's: the bridge answered the
+                // control request itself, so a closed slot is not a defect.
+                tracing::debug!(
                     target: "forge_workspace::session_task",
+                    event_name = "control_answer_lost",
                     session_id = %session_id,
                     tool_call_id = %tool_call_id,
-                    "question response channel closed before forwarding"
+                    "the parked answer slot went before an answer arrived; the bridge answered \
+                     the control request itself",
                 );
                 return;
             };

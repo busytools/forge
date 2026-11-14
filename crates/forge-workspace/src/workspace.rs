@@ -292,7 +292,9 @@ use forge_gateway::ProviderHost as _;
 use crate::config::{ConfigReload, LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
-use crate::protocol::{Command, DispatchError, NoticeSeverity, PromptSource, SessionUpdate};
+use crate::protocol::{
+    Command, DispatchError, NoticeSeverity, PendingInteractionSlot, PromptSource, SessionUpdate,
+};
 use crate::session_task::SessionTask;
 use crate::spawn;
 use crate::target::{ProjectKey, SessionSlot, SessionTarget};
@@ -3789,6 +3791,7 @@ impl Workspace {
             forge_agent::Agent::spawn(
                 account_dir.clone(),
                 Some(account_key.0.clone()),
+                Some(session_slot.display()),
                 vec![("forge".to_owned(), forge_server)],
                 session_env,
             )
@@ -8821,6 +8824,50 @@ impl Workspace {
     /// How many asks have ever arrived for `slot`, zero when none has.
     pub fn pending_request_seq(&self, slot: &SessionSlot) -> u64 {
         self.pending_seq.lock().get(slot).copied().unwrap_or(0)
+    }
+
+    /// Deny every ask `slot` still holds, and report how many.
+    ///
+    /// **The CLI must never wait on an answer that may never come.** The
+    /// caller has already established that no connection which can answer
+    /// watches the seat any more, so every ask the seat holds is
+    /// unreachable: the child is denied rather than parked on a control
+    /// request until it is killed.
+    ///
+    /// The cancellation is the shape the no-subscriber path uses: the outcome
+    /// goes down the slot's oneshot, whose forwarder hands the bridge its
+    /// denial, and the resolved frame drops the card wherever one was drawn.
+    pub fn release_seat_asks(&self, slot: &SessionSlot) -> usize {
+        let Some(domain) = self.domain_handles.lock().get(slot).cloned() else {
+            return 0;
+        };
+        let held: Vec<(String, PendingInteractionSlot)> =
+            domain.lock().pending_interactions.drain().collect();
+        let mut denied = 0;
+        for (tool_id, pending) in held {
+            denied += 1;
+            match pending {
+                PendingInteractionSlot::Permission { tx, .. } => {
+                    let _ = tx.send(forge_primitives::PermissionOutcome::Cancelled);
+                    let _ = self.update_tx.send(SessionUpdate::PendingInteractionResolved {
+                        key: slot.clone(),
+                        tool_id,
+                        question_index: None,
+                        answered_with: None,
+                    });
+                }
+                PendingInteractionSlot::Question { tx, request, .. } => {
+                    let _ = tx.send(forge_primitives::QuestionOutcome::Cancelled);
+                    let _ = self.update_tx.send(SessionUpdate::PendingInteractionResolved {
+                        key: slot.clone(),
+                        tool_id,
+                        question_index: Some(request.question_index),
+                        answered_with: None,
+                    });
+                }
+            }
+        }
+        denied
     }
 
     /// Record a fatal error, so a view that was not attached when it fired
