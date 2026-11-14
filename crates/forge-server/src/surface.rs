@@ -72,6 +72,45 @@ pub struct ViewSurface {
     /// because an upload outlives the connection that began it: a reconnected
     /// client resumes the same entry.
     uploads: Arc<upload::Uploads>,
+    /// **Which connections can answer each seat's asks right now.**
+    ///
+    /// A pending permission or question is answerable only from a connection
+    /// that declared it can answer AND watches the seat, whichever way the ask
+    /// reached it: the live frame, a subscribe snapshot, or a replay. Counting
+    /// those at release time is what keeps a second answering client's prompt
+    /// alive when the first goes away, and what lets a reconnect inside the
+    /// grace keep its own.
+    answerers: std::sync::Mutex<SeatAnswerers>,
+}
+
+/// The connections that can answer a seat's asks, by seat.
+///
+/// **The transport owns connection identity; this is where the two meet.**
+/// Registration follows the watch, not the ask frame: a connection that
+/// subscribed to a seat while declaring it can answer is counted from that
+/// moment, so an ask it learns from a snapshot or a replay is held by the same
+/// rule as one it hears live.
+#[derive(Default)]
+struct SeatAnswerers(std::collections::HashMap<SessionSlot, std::collections::BTreeSet<u64>>);
+
+impl SeatAnswerers {
+    fn note(&mut self, slot: &SessionSlot, client: u64) {
+        self.0.entry(slot.clone()).or_default().insert(client);
+    }
+
+    fn release(&mut self, slot: &SessionSlot, client: u64) {
+        let Some(held) = self.0.get_mut(slot) else {
+            return;
+        };
+        held.remove(&client);
+        if held.is_empty() {
+            self.0.remove(slot);
+        }
+    }
+
+    fn any_for(&self, slot: &SessionSlot) -> bool {
+        self.0.get(slot).is_some_and(|held| !held.is_empty())
+    }
 }
 
 /// The update the core emits, re-exported: it is the workspace-to-view
@@ -112,6 +151,7 @@ impl ViewSurface {
             #[cfg(any(test, feature = "testing"))]
             usage_gate: std::sync::Mutex::new(None),
             uploads: Arc::new(uploads),
+            answerers: std::sync::Mutex::new(SeatAnswerers::default()),
         }
     }
 
@@ -382,24 +422,37 @@ impl ViewSurface {
         self.workspace.note_client_detached();
     }
 
-    /// Note that a seat's ask under `tool_id` was forwarded to `client`.
+    /// Record that `client` can answer `slot`'s asks.
     ///
-    /// The transport owns connection identity, so it is the only caller: an
-    /// ask is answerable only from the connections its frame reached, and a
-    /// teardown has to know which surfaces it owes an answer for.
-    pub fn note_ask_delivered(&self, slot: &SessionSlot, tool_id: &str, client: u64) {
-        self.workspace.note_ask_delivered(slot, tool_id, client);
+    /// The transport owns connection identity, so it is the only caller, and
+    /// it calls this where a seat becomes watched: a credential is a declared
+    /// answering role plus a live subscription to the seat, not one frame's
+    /// delivery.
+    pub fn note_seat_answerer(&self, slot: &SessionSlot, client: u64) {
+        self.answerers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).note(slot, client);
     }
 
-    /// Answer every ask `client` was the last holder of, and report how many.
+    /// Release `client` from `slot`. Whether anyone is left is read at the
+    /// grace's own end, so a reconnect that lands first is never raced.
+    pub fn release_seat_answerer(&self, slot: &SessionSlot, client: u64) {
+        self.answerers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .release(slot, client);
+    }
+
+    /// Whether any connection can still answer `slot`'s asks.
+    pub fn seat_has_answerer(&self, slot: &SessionSlot) -> bool {
+        self.answerers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).any_for(slot)
+    }
+
+    /// Deny every ask `slot` still holds, and report how many.
     ///
-    /// **The CLI must never wait on an answer that may never come.** A
-    /// connection that ends answers its held asks with a denial, so a turn it
-    /// was the only surface for continues rather than parking the `claude`
-    /// child on a control request forever. An ask a second connection was
-    /// also handed is left to that one.
-    pub fn release_client_asks(&self, client: u64) -> usize {
-        self.workspace.release_client_asks(client)
+    /// **The CLI must never wait on an answer that may never come.** No
+    /// connection that can answer watches the seat any more, so the child is
+    /// denied rather than left parked on a control request forever.
+    pub fn release_seat_asks(&self, slot: &SessionSlot) -> usize {
+        self.workspace.release_seat_asks(slot)
     }
 
     /// The live `[server]` snapshot, read by the socket's origin gate on

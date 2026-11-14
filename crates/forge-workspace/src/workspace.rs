@@ -8826,75 +8826,48 @@ impl Workspace {
         self.pending_seq.lock().get(slot).copied().unwrap_or(0)
     }
 
-    /// Note that `slot`'s ask under `tool_id` was forwarded to `client`.
+    /// Deny every ask `slot` still holds, and report how many.
     ///
-    /// The transport is the only holder of connection identity and so the
-    /// only caller: an ask is answerable only from the surfaces its frame
-    /// reached, so the workspace has to know which those were before a
-    /// connection that ends can be answered for.
-    pub fn note_ask_delivered(&self, slot: &SessionSlot, tool_id: &str, client: u64) {
-        let Some(domain) = self.domain_handles.lock().get(slot).cloned() else {
-            return;
-        };
-        domain.lock().pending_interactions.note_delivered(tool_id, client);
-    }
-
-    /// Answer every ask `client` was the last holder of, and report how many.
-    ///
-    /// **The CLI must never wait on an answer that may never come**: a
-    /// connection that ends takes with it the only dock that could have
-    /// answered, and this is what turns that into a denial rather than a
-    /// control request parked until the child is killed. An ask another
-    /// connection was also handed is left alone - the surface that can still
-    /// answer it is there.
+    /// **The CLI must never wait on an answer that may never come.** The
+    /// caller has already established that no connection which can answer
+    /// watches the seat any more, so every ask the seat holds is
+    /// unreachable: the child is denied rather than parked on a control
+    /// request until it is killed.
     ///
     /// The cancellation is the shape the no-subscriber path uses: the outcome
     /// goes down the slot's oneshot, whose forwarder hands the bridge its
     /// denial, and the resolved frame drops the card wherever one was drawn.
-    pub fn release_client_asks(&self, client: u64) -> usize {
-        let domains: Vec<(SessionSlot, Arc<Mutex<DomainSession>>)> = self
-            .domain_handles
-            .lock()
-            .iter()
-            .map(|(slot, domain)| (slot.clone(), Arc::clone(domain)))
-            .collect();
-        let mut released = 0;
-        for (slot, domain) in domains {
-            let orphaned = domain.lock().pending_interactions.release_client(client);
-            for (tool_id, pending) in orphaned {
-                released += 1;
-                match pending {
-                    PendingInteractionSlot::Permission { tx, .. } => {
-                        let _ = tx.send(forge_primitives::PermissionOutcome::Cancelled);
-                        let _ = self.update_tx.send(SessionUpdate::PendingInteractionResolved {
-                            key: slot.clone(),
-                            tool_id: tool_id.clone(),
-                            question_index: None,
-                            answered_with: None,
-                        });
-                    }
-                    PendingInteractionSlot::Question { tx, request, .. } => {
-                        let _ = tx.send(forge_primitives::QuestionOutcome::Cancelled);
-                        let _ = self.update_tx.send(SessionUpdate::PendingInteractionResolved {
-                            key: slot.clone(),
-                            tool_id: tool_id.clone(),
-                            question_index: Some(request.question_index),
-                            answered_with: None,
-                        });
-                    }
+    pub fn release_seat_asks(&self, slot: &SessionSlot) -> usize {
+        let Some(domain) = self.domain_handles.lock().get(slot).cloned() else {
+            return 0;
+        };
+        let held: Vec<(String, PendingInteractionSlot)> =
+            domain.lock().pending_interactions.drain().collect();
+        let mut denied = 0;
+        for (tool_id, pending) in held {
+            denied += 1;
+            match pending {
+                PendingInteractionSlot::Permission { tx, .. } => {
+                    let _ = tx.send(forge_primitives::PermissionOutcome::Cancelled);
+                    let _ = self.update_tx.send(SessionUpdate::PendingInteractionResolved {
+                        key: slot.clone(),
+                        tool_id,
+                        question_index: None,
+                        answered_with: None,
+                    });
                 }
-                tracing::debug!(
-                    target: "forge_workspace::workspace",
-                    event_name = "ask_released_on_disconnect",
-                    slot = %slot.display(),
-                    tool_id = %tool_id,
-                    client,
-                    "the connection holding this ask went away with no other holder; the CLI is \
-                     denied rather than parked",
-                );
+                PendingInteractionSlot::Question { tx, request, .. } => {
+                    let _ = tx.send(forge_primitives::QuestionOutcome::Cancelled);
+                    let _ = self.update_tx.send(SessionUpdate::PendingInteractionResolved {
+                        key: slot.clone(),
+                        tool_id,
+                        question_index: Some(request.question_index),
+                        answered_with: None,
+                    });
+                }
             }
         }
-        released
+        denied
     }
 
     /// Record a fatal error, so a view that was not attached when it fired

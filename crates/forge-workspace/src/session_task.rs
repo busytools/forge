@@ -871,7 +871,6 @@ impl SessionTask {
                         PendingInteractionSlot::Permission {
                             tx: response_tx,
                             request: Box::new(wire_request.clone()),
-                            delivered_to: Vec::new(),
                         },
                     );
                 }
@@ -932,7 +931,6 @@ impl SessionTask {
                         PendingInteractionSlot::Question {
                             tx: response_tx,
                             request: Box::new(wire_request.clone()),
-                            delivered_to: Vec::new(),
                         },
                     );
                 }
@@ -1523,11 +1521,18 @@ impl SessionTask {
                         "RespondPermission expected Permission slot; got different kind. Outcome dropped, slot preserved."
                     );
                 } else {
-                    tracing::warn!(
+                    // **An answer that arrives after the request was settled.**
+                    // The bridge denied it at its bound, or the seat was torn
+                    // down; either way the answer has nowhere to go and the
+                    // CLI already has its denial, so this is not a defect to
+                    // report.
+                    tracing::debug!(
                         target: "forge_workspace::session_task",
+                        event_name = "control_answer_late",
                         slot = %self.key.display(),
                         tool_id = %tool_id,
-                        "RespondPermission found no pending interaction (already responded or expired)"
+                        "RespondPermission found no pending interaction; it was already settled \
+                         and this answer changes nothing",
                     );
                 }
             }
@@ -1567,11 +1572,14 @@ impl SessionTask {
                         "RespondQuestion got non-Question slot. Outcome dropped, slot preserved."
                     );
                 } else {
-                    tracing::warn!(
+                    // As the permission arm's: the request was settled first.
+                    tracing::debug!(
                         target: "forge_workspace::session_task",
+                        event_name = "control_answer_late",
                         slot = %self.key.display(),
                         tool_id = %tool_id,
-                        "RespondQuestion found no pending interaction"
+                        "RespondQuestion found no pending interaction; it was already settled \
+                         and this answer changes nothing",
                     );
                 }
             }

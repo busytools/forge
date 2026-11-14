@@ -2072,10 +2072,14 @@ pub(crate) fn deliver_permission_response(
     outcome: forge_primitives::PermissionOutcome,
 ) {
     let Some(tx) = pending.lock().remove(tool_call_id) else {
-        tracing::warn!(
+        // **An answer for a request the bridge already answered itself.**
+        // Its bound expired and the CLI was denied, or the seat was torn
+        // down; the late answer changes nothing, so this is not a defect.
+        tracing::debug!(
             target: crate::logging::targets::APP_PERMISSION,
+            event_name = "control_answer_late",
             tool_call_id,
-            "forge_sdk: PermissionResponse for unknown tool_call_id (already drained?)",
+            "forge_sdk: PermissionResponse arrived after the request was settled",
         );
         return;
     };
@@ -2132,10 +2136,12 @@ pub(crate) fn deliver_question_response(
     outcome: forge_primitives::QuestionOutcome,
 ) {
     let Some(tx) = pending.lock().remove(tool_call_id) else {
-        tracing::warn!(
+        // As the permission delivery's: the request was settled first.
+        tracing::debug!(
             target: crate::logging::targets::APP_PERMISSION,
+            event_name = "control_answer_late",
             tool_call_id,
-            "forge_sdk: QuestionResponse for unknown tool_call_id",
+            "forge_sdk: QuestionResponse arrived after the request was settled",
         );
         return;
     };
@@ -2497,7 +2503,10 @@ mod tests {
             )),
             "the workspace is told to drop the dock: {log}",
         );
-        assert!(log.contains("cli_control_request"), "the request names itself: {log}");
+        assert!(
+            log.contains("event_name=\"cli_control_request\""),
+            "the request record names itself, not by accident through its unanswered sibling: {log}",
+        );
         assert!(log.contains("cli_control_answer"), "and its answer pairs with it: {log}");
         assert_eq!(
             log.matches("cli_control_request_unanswered").count(),
@@ -2508,6 +2517,86 @@ mod tests {
             "slot=\"TestOrg/proj/lead\"",
             "kind=\"permission\"",
             "tool=\"Bash\"",
+            "age_ms=",
+            "bound_seconds=",
+        ] {
+            assert!(
+                log.contains(field),
+                "the unanswered record carries {field}, so a reader can act on it: {log}",
+            );
+        }
+    }
+
+    /// **The question half takes the same bound and pairs its records.** An
+    /// `AskUserQuestion` no client answers is denied when the bound expires,
+    /// and exactly one record names the seat, the kind, the tool and how long
+    /// it waited - so a regression removing the question bound cannot ship
+    /// green behind the permission tests.
+    #[tokio::test]
+    async fn an_unanswered_question_is_denied_at_the_bound_with_one_record() {
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(capture.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        super::set_test_control_request_bound(Some(std::time::Duration::from_millis(60)));
+
+        let pending = fresh_pending_questions();
+        let (event_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let decision = super::run_ask_user_question(
+            ctx(
+                "AskUserQuestion",
+                "tu-q-unanswered",
+                serde_json::json!({
+                    "questions": [{
+                        "question": "Which environment?",
+                        "header": "Environment",
+                        "options": [
+                            {"label": "Staging", "description": "staging"},
+                            {"label": "Prod", "description": "prod"},
+                        ],
+                    }],
+                }),
+            ),
+            "sess-1".to_owned(),
+            "TestOrg/proj/lead",
+            &event_tx,
+            &pending,
+        )
+        .await;
+        super::set_test_control_request_bound(None);
+
+        let log = String::from_utf8_lossy(&capture.0.lock().clone()).into_owned();
+        assert!(!decision.is_allow(), "an unanswered question denies the tool: {log}");
+        assert!(pending.lock().is_empty(), "the parked sender goes with the denial: {log}");
+        let mut sent = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            sent.push(event);
+        }
+        assert!(
+            sent.iter().any(|event| matches!(
+                event,
+                AgentEvent::ControlRequestUnanswered { tool_use_id, .. }
+                    if tool_use_id == "tu-q-unanswered"
+            )),
+            "the workspace is told to drop the dock: {log}",
+        );
+        assert!(
+            log.contains("event_name=\"cli_control_request\""),
+            "the question's request record names itself: {log}",
+        );
+        assert!(log.contains("cli_control_answer"), "and its answer pairs with it: {log}");
+        assert_eq!(
+            log.matches("cli_control_request_unanswered").count(),
+            1,
+            "the question that outlived its bound is recorded exactly once: {log}",
+        );
+        for field in [
+            "slot=\"TestOrg/proj/lead\"",
+            "kind=\"question\"",
+            "tool=\"AskUserQuestion\"",
             "age_ms=",
             "bound_seconds=",
         ] {
