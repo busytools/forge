@@ -2459,6 +2459,20 @@ mod tests {
         String::from_utf8_lossy(&bytes).into_owned()
     }
 
+    /// The one `cli_control_request_unanswered` record, as its own line.
+    ///
+    /// **The fields are asserted on this line, not on the whole log.** The
+    /// request and answer records carry the same names, so a log-wide
+    /// `contains` would pass with the warning stripped of every field it owes.
+    fn unanswered_record(log: &str) -> &str {
+        let mut lines = log
+            .lines()
+            .filter(|line| line.contains("event_name=\"cli_control_request_unanswered\""));
+        let line = lines.next().unwrap_or_else(|| panic!("no unanswered record: {log}"));
+        assert!(lines.next().is_none(), "the unanswered record appears exactly once: {log}");
+        line
+    }
+
     /// **The bound is the property, and the record is what a capture reads.**
     /// A request no client answers is denied when the bound expires - not
     /// parked with the child waiting - and exactly one record names the seat,
@@ -2508,21 +2522,18 @@ mod tests {
             "the request record names itself, not by accident through its unanswered sibling: {log}",
         );
         assert!(log.contains("cli_control_answer"), "and its answer pairs with it: {log}");
-        assert_eq!(
-            log.matches("cli_control_request_unanswered").count(),
-            1,
-            "the request that outlived its bound is recorded exactly once: {log}",
-        );
+        let unanswered = unanswered_record(&log);
         for field in [
             "slot=\"TestOrg/proj/lead\"",
             "kind=\"permission\"",
             "tool=\"Bash\"",
+            "tool_use_id=\"tu-unanswered\"",
             "age_ms=",
             "bound_seconds=",
         ] {
             assert!(
-                log.contains(field),
-                "the unanswered record carries {field}, so a reader can act on it: {log}",
+                unanswered.contains(field),
+                "the unanswered record carries {field}, so a reader can act on it: {unanswered}",
             );
         }
     }
@@ -2588,23 +2599,100 @@ mod tests {
             "the question's request record names itself: {log}",
         );
         assert!(log.contains("cli_control_answer"), "and its answer pairs with it: {log}");
-        assert_eq!(
-            log.matches("cli_control_request_unanswered").count(),
-            1,
-            "the question that outlived its bound is recorded exactly once: {log}",
-        );
+        let unanswered = unanswered_record(&log);
         for field in [
             "slot=\"TestOrg/proj/lead\"",
             "kind=\"question\"",
             "tool=\"AskUserQuestion\"",
+            "tool_use_id=\"tu-q-unanswered\"",
             "age_ms=",
             "bound_seconds=",
         ] {
             assert!(
-                log.contains(field),
-                "the unanswered record carries {field}, so a reader can act on it: {log}",
+                unanswered.contains(field),
+                "the unanswered record carries {field}, so a reader can act on it: {unanswered}",
             );
         }
+    }
+
+    /// **One bound for the whole request, not one per prompt.** A
+    /// multi-prompt `AskUserQuestion` answers its prompts one at a time; a
+    /// per-prompt bound would let a five-prompt ask wait five bounds. The
+    /// first prompt is answered with half the bound gone, and the second must
+    /// be denied at the request's deadline rather than a fresh one.
+    #[tokio::test]
+    async fn a_multi_prompt_question_uses_one_bound_for_the_whole_request() {
+        super::set_test_control_request_bound(Some(std::time::Duration::from_millis(300)));
+        let pending = fresh_pending_questions();
+        let (event_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let started = std::time::Instant::now();
+        let task_pending = Arc::clone(&pending);
+        let task = tokio::spawn(async move {
+            super::run_ask_user_question(
+                ctx(
+                    "AskUserQuestion",
+                    "tu-q-multi",
+                    serde_json::json!({
+                        "questions": [
+                            {
+                                "question": "First?",
+                                "header": "One",
+                                "options": [
+                                    {"label": "A", "description": "a"},
+                                    {"label": "B", "description": "b"},
+                                ],
+                            },
+                            {
+                                "question": "Second?",
+                                "header": "Two",
+                                "options": [
+                                    {"label": "C", "description": "c"},
+                                    {"label": "D", "description": "d"},
+                                ],
+                            },
+                        ],
+                    }),
+                ),
+                "sess-1".to_owned(),
+                "TestOrg/proj/lead",
+                &event_tx,
+                &task_pending,
+            )
+            .await
+        });
+
+        // The first prompt is answered with 150 ms of the 300 ms bound left.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        super::deliver_question_response(
+            &pending,
+            "tu-q-multi",
+            forge_primitives::QuestionOutcome::Answered {
+                selected_option_ids: vec!["question_0".to_owned()],
+                annotation: None,
+            },
+        );
+
+        let decision = task.await.expect("the question task joins");
+        super::set_test_control_request_bound(None);
+        let elapsed = started.elapsed();
+        assert!(!decision.is_allow(), "the parked second prompt denies the question");
+        assert!(
+            elapsed < std::time::Duration::from_millis(400),
+            "the second prompt waited a fresh bound ({elapsed:?}); the request's own deadline is \
+             the one that decides",
+        );
+        // The event channel holds the two questions; the second one parked.
+        let mut sent = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            sent.push(event);
+        }
+        assert!(
+            sent.iter().any(|event| matches!(
+                event,
+                AgentEvent::QuestionRequest { request, .. } if request.question_index == 1
+            )),
+            "both prompts were offered; the second is the one the deadline cut",
+        );
     }
 
     /// The frame is decoded into the real `Message` the reader forwards,

@@ -87,30 +87,75 @@ pub struct ViewSurface {
 ///
 /// **The transport owns connection identity; this is where the two meet.**
 /// Registration follows the watch, not the ask frame: a connection that
-/// subscribed to a seat while declaring it can answer is counted from that
-/// moment, so an ask it learns from a snapshot or a replay is held by the same
-/// rule as one it hears live.
+/// subscribed to a seat while declaring it can answer is counted from the
+/// moment the server accepts that subscribe, so an ask it learns from a
+/// snapshot or a replay is held by the same rule as one it hears live.
 #[derive(Default)]
-struct SeatAnswerers(std::collections::HashMap<SessionSlot, std::collections::BTreeSet<u64>>);
+struct SeatAnswerers {
+    seats: std::collections::HashMap<SessionSlot, std::collections::BTreeSet<u64>>,
+    /// The seat's current release deadline, as a generation.
+    ///
+    /// **A deadline belongs to the seat's last answerer, not to a departure.**
+    /// Every departure that leaves the seat with nobody mints the next
+    /// generation, so the grace restarts from the last answerer to go; a task
+    /// armed with an older generation must not decide, or a second departure
+    /// four seconds in would see its promise cut to one.
+    deadlines: std::collections::HashMap<SessionSlot, u64>,
+    next: u64,
+}
 
 impl SeatAnswerers {
     fn note(&mut self, slot: &SessionSlot, client: u64) {
-        self.0.entry(slot.clone()).or_default().insert(client);
+        self.seats.entry(slot.clone()).or_default().insert(client);
     }
 
-    fn release(&mut self, slot: &SessionSlot, client: u64) {
-        let Some(held) = self.0.get_mut(slot) else {
-            return;
-        };
-        held.remove(&client);
-        if held.is_empty() {
-            self.0.remove(slot);
+    /// Release `client`, answering the generation of a fresh release deadline
+    /// when this departure left the seat with NO answerer.
+    ///
+    /// `None` when the seat still has an answerer, and when `client` was not
+    /// counted at all - neither arms anything.
+    fn release(&mut self, slot: &SessionSlot, client: u64) -> Option<u64> {
+        let held = self.seats.get_mut(slot)?;
+        if !held.remove(&client) {
+            return None;
         }
+        if !held.is_empty() {
+            return None;
+        }
+        self.seats.remove(slot);
+        self.next = self.next.wrapping_add(1);
+        self.deadlines.insert(slot.clone(), self.next);
+        Some(self.next)
     }
 
     fn any_for(&self, slot: &SessionSlot) -> bool {
-        self.0.get(slot).is_some_and(|held| !held.is_empty())
+        self.seats.get(slot).is_some_and(|held| !held.is_empty())
     }
+
+    /// Take the seat's deadline if it is still `deadline`, so exactly one task
+    /// decides for a generation.
+    fn take_deadline(&mut self, slot: &SessionSlot, deadline: u64) -> bool {
+        if self.deadlines.get(slot) != Some(&deadline) {
+            return false;
+        }
+        self.deadlines.remove(slot);
+        true
+    }
+}
+
+/// What a seat's release grace decided.
+///
+/// **The keep is an answer too**, and a debug record is what makes it
+/// visible: "not denied" on its own would read the same if the grace never
+/// ran at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AskRelease {
+    /// A later departure re-armed the seat; this task's deadline is history.
+    Stale,
+    /// A connection that can answer came back (or another one remained).
+    Kept,
+    /// Nobody can answer: this many asks were denied.
+    Denied(usize),
 }
 
 /// The update the core emits, re-exported: it is the workspace-to-view
@@ -432,27 +477,31 @@ impl ViewSurface {
         self.answerers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).note(slot, client);
     }
 
-    /// Release `client` from `slot`. Whether anyone is left is read at the
-    /// grace's own end, so a reconnect that lands first is never raced.
-    pub fn release_seat_answerer(&self, slot: &SessionSlot, client: u64) {
+    /// Release `client` from `slot`, answering the generation of a fresh
+    /// release deadline when this departure left the seat with no answerer.
+    pub fn release_seat_answerer(&self, slot: &SessionSlot, client: u64) -> Option<u64> {
         self.answerers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .release(slot, client);
+            .release(slot, client)
     }
 
-    /// Whether any connection can still answer `slot`'s asks.
-    pub fn seat_has_answerer(&self, slot: &SessionSlot) -> bool {
-        self.answerers.lock().unwrap_or_else(std::sync::PoisonError::into_inner).any_for(slot)
-    }
-
-    /// Deny every ask `slot` still holds, and report how many.
+    /// Decide the seat's release, and deny its asks when the decision is the
+    /// denial.
     ///
-    /// **The CLI must never wait on an answer that may never come.** No
-    /// connection that can answer watches the seat any more, so the child is
-    /// denied rather than left parked on a control request forever.
-    pub fn release_seat_asks(&self, slot: &SessionSlot) -> usize {
-        self.workspace.release_seat_asks(slot)
+    /// **One lock across the check and the drain.** A registration landing
+    /// between them would be denied under a client that can answer; holding
+    /// the registry across both means a registration either completes first,
+    /// and is seen, or waits until the decision is made.
+    pub fn release_asks_if_unanswered(&self, slot: &SessionSlot, deadline: u64) -> AskRelease {
+        let mut registry = self.answerers.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !registry.take_deadline(slot, deadline) {
+            return AskRelease::Stale;
+        }
+        if registry.any_for(slot) {
+            return AskRelease::Kept;
+        }
+        AskRelease::Denied(self.workspace.release_seat_asks(slot))
     }
 
     /// The live `[server]` snapshot, read by the socket's origin gate on

@@ -15,11 +15,11 @@
 //! makes a seat answerable is a connection that declared it can answer and
 //! watches that seat.
 //!
-//! Every test here drives a real `claude` child (the SDK's mock fixture)
-//! through a real socket, and reads the CLI's own receipt of the answer: the
-//! mock writes the `control_response` it decoded to a file, so a passing
-//! assertion is the child having been answered rather than the server having
-//! decided it was.
+//! Every test here drives a real `claude` child (this file's own mock
+//! script) through a real socket, and reads the CLI's own receipt of the
+//! answer: the mock writes the `control_response` it decoded to a file, so a
+//! passing assertion is the child having been answered rather than the server
+//! having decided it was.
 
 // An integration test is a crate of its own, so clippy's test exemption does
 // not reach it: the denied lints fire on a file that is entirely test code.
@@ -346,6 +346,46 @@ fn prompt_the_seat(workspace: &Arc<Workspace>) {
         .expect("the prompt is taken");
 }
 
+/// Every record a site emitted while this process's subscriber is the
+/// capture. **Global rather than thread-local**: the bridge and the
+/// workspace run on their own tasks, and nextest gives each test its own
+/// process, so a global subscriber cannot meet another test's.
+#[derive(Clone, Default)]
+struct CapturedLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for CapturedLog {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("capture").extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLog {
+    type Writer = Self;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+fn capture_records() -> CapturedLog {
+    let capture = CapturedLog::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        // ANSI escapes would split a whole `name=value` pair.
+        .with_ansi(false)
+        .with_writer(capture.clone())
+        .finish();
+    tracing::subscriber::set_global_default(subscriber).expect("no global subscriber yet");
+    capture
+}
+
+fn captured(capture: &CapturedLog) -> String {
+    String::from_utf8_lossy(&capture.0.lock().expect("capture")).into_owned()
+}
+
 /// Whether the mock wrote its receipt within `within`.
 async fn waited_for_marker(path: &Path, within: Duration) -> bool {
     let deadline = tokio::time::Instant::now() + within;
@@ -358,14 +398,28 @@ async fn waited_for_marker(path: &Path, within: Duration) -> bool {
     path.exists()
 }
 
-/// The ask's own update, whichever kind the test's mock produced.
-fn is_ask(tool_id: &'static str) -> impl FnMut(&SessionUpdate) -> bool {
-    move |update| match update {
-        SessionUpdate::PermissionRequest { key, tool_id: id, .. }
-        | SessionUpdate::QuestionRequest { key, tool_id: id, .. } => {
-            *key == seat() && id == tool_id
-        }
-        _ => false,
+/// The permission ask's own update, and never a question's.
+///
+/// **The kind is asserted, not accepted loosely.** A question routed down the
+/// permission half would otherwise pass every test here.
+fn is_permission_ask() -> impl FnMut(&SessionUpdate) -> bool {
+    |update| {
+        matches!(
+            update,
+            SessionUpdate::PermissionRequest { key, tool_id, .. }
+                if *key == seat() && tool_id == PERMISSION_ID
+        )
+    }
+}
+
+/// The question ask's own update, and never a permission's.
+fn is_question_ask() -> impl FnMut(&SessionUpdate) -> bool {
+    |update| {
+        matches!(
+            update,
+            SessionUpdate::QuestionRequest { key, tool_id, .. }
+                if *key == seat() && tool_id == QUESTION_ID
+        )
     }
 }
 
@@ -389,7 +443,7 @@ async fn a_client_that_disconnects_without_answering_still_answers_the_cli() {
         &mut socket,
         Duration::from_secs(30),
         "the permission ask",
-        is_ask(PERMISSION_ID),
+        is_permission_ask(),
     )
     .await;
     let SessionUpdate::PermissionRequest { request, .. } = delivered else {
@@ -436,18 +490,13 @@ async fn a_mirror_beside_the_answerer_does_not_keep_the_ask_alive() {
 
     prompt_the_seat(&workspace);
     // Both connections are handed the ask; witnessing it is the whole point.
-    update_until(
-        &mut answerer,
-        Duration::from_secs(30),
-        "the permission ask",
-        is_ask(PERMISSION_ID),
-    )
-    .await;
+    update_until(&mut answerer, Duration::from_secs(30), "the permission ask", is_permission_ask())
+        .await;
     update_until(
         &mut mirror,
         Duration::from_secs(30),
         "the ask on the mirror",
-        is_ask(PERMISSION_ID),
+        is_permission_ask(),
     )
     .await;
 
@@ -465,6 +514,23 @@ async fn a_mirror_beside_the_answerer_does_not_keep_the_ask_alive() {
     );
     let receipt = std::fs::read_to_string(&marker).expect("read the CLI's receipt");
     assert!(receipt.contains("\"behavior\":\"deny\""), "and answered with a denial: {receipt}");
+    // **The grace's own withdrawal, not the bound's.** A dock left drawing a
+    // prompt the CLI already denied is the defect a reconnecting client sees;
+    // the mirror still watches, so it must be told.
+    update_until(
+        &mut mirror,
+        Duration::from_secs(5),
+        "the prompt resolving on the mirror",
+        |update| {
+            matches!(
+                update,
+                SessionUpdate::PendingInteractionResolved { key, tool_id, question_index, .. }
+                    if *key == seat() && tool_id == PERMISSION_ID && question_index.is_none()
+            )
+        },
+    )
+    .await;
+    assert_eq!(workspace.pending_asks(&seat()).len(), 0, "and the seat holds no denied prompt");
     drop(mirror);
 }
 
@@ -483,7 +549,7 @@ async fn a_second_answerer_keeps_the_ask_alive_when_the_first_goes() {
     boot_the_seat(&workspace).await;
 
     prompt_the_seat(&workspace);
-    update_until(&mut first, Duration::from_secs(30), "the permission ask", is_ask(PERMISSION_ID))
+    update_until(&mut first, Duration::from_secs(30), "the permission ask", is_permission_ask())
         .await;
 
     // The second client attaches AFTER the ask and reads it from the snapshot.
@@ -575,18 +641,13 @@ async fn a_role_raised_watcher_holds_the_seat_it_already_watched() {
     boot_the_seat(&workspace).await;
 
     prompt_the_seat(&workspace);
-    update_until(
-        &mut answerer,
-        Duration::from_secs(30),
-        "the permission ask",
-        is_ask(PERMISSION_ID),
-    )
-    .await;
+    update_until(&mut answerer, Duration::from_secs(30), "the permission ask", is_permission_ask())
+        .await;
     update_until(
         &mut raised,
         Duration::from_secs(30),
         "the ask on the raised watcher",
-        is_ask(PERMISSION_ID),
+        is_permission_ask(),
     )
     .await;
 
@@ -652,7 +713,7 @@ async fn a_reconnect_inside_the_grace_keeps_its_ask() {
     boot_the_seat(&workspace).await;
 
     prompt_the_seat(&workspace);
-    update_until(&mut first, Duration::from_secs(30), "the permission ask", is_ask(PERMISSION_ID))
+    update_until(&mut first, Duration::from_secs(30), "the permission ask", is_permission_ask())
         .await;
     drop(first);
 
@@ -704,6 +765,213 @@ async fn a_reconnect_inside_the_grace_keeps_its_ask() {
     );
 }
 
+/// **The grace restarts from the seat's LAST answerer.** With two answering
+/// clients, the first leaving arms nothing; the second leaving starts the
+/// five seconds. A deadline armed per departure would fire one second after
+/// the second client left and deny a prompt that was promised five.
+#[tokio::test]
+async fn a_second_departure_restarts_the_grace() {
+    let dir = tempfile::tempdir().expect("config tempdir");
+    forge_agent::set_test_sdk_binary(Some(permission_mock(dir.path())));
+    let workspace = a_workspace(dir.path());
+    let (url, _state) = serve_workspace(&workspace).await;
+    let mut first = connect(&url).await;
+    watch_the_seat(&mut first).await;
+    let mut second = connect(&url).await;
+    watch_the_seat(&mut second).await;
+    boot_the_seat(&workspace).await;
+
+    prompt_the_seat(&workspace);
+    update_until(&mut first, Duration::from_secs(30), "the permission ask", is_permission_ask())
+        .await;
+    update_until(
+        &mut second,
+        Duration::from_secs(30),
+        "the ask on the second",
+        is_permission_ask(),
+    )
+    .await;
+
+    drop(first);
+    // The second answerer leaves four seconds later, so a per-departure
+    // deadline would deny at first+5 = second+1.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    drop(second);
+
+    let marker = answer_marker(dir.path());
+    let denied_early = waited_for_marker(&marker, Duration::from_secs(3)).await;
+    if denied_early {
+        forge_agent::set_test_sdk_binary(None);
+        let receipt = std::fs::read_to_string(&marker).expect("read the CLI's receipt");
+        panic!(
+            "the ask on {} was denied one second after the last answerer left, not five: \
+             {receipt}",
+            seat().display(),
+        );
+    }
+
+    // A client that arrives inside the restarted grace keeps the ask.
+    let mut late = connect(&url).await;
+    let snapshot = subscribe_the_seat_with_snapshot(&mut late, true).await;
+    assert!(snapshot.to_string().contains(PERMISSION_ID), "the snapshot carries the ask");
+    send(
+        &mut late,
+        ClientMessage::Command {
+            command: Box::new(Command::RespondPermission {
+                key: seat(),
+                tool_id: PERMISSION_ID.to_owned(),
+                outcome: forge_primitives::PermissionOutcome::Selected {
+                    option_id: "allow_once".to_owned(),
+                    action: PermissionAction::Allow,
+                    notes_text: None,
+                    edited_input: None,
+                },
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    let marker_written = waited_for_marker(&marker, Duration::from_secs(20)).await;
+    forge_agent::set_test_sdk_binary(None);
+    assert!(marker_written, "the late answerer answered and the CLI was never told");
+    let receipt = std::fs::read_to_string(&marker).expect("read the CLI's receipt");
+    assert!(
+        receipt.contains("\"behavior\":\"allow\""),
+        "the late answerer's allow reached the CLI: {receipt}",
+    );
+}
+
+/// **A routine refresh is not a disconnect.** The client re-reads a seat by
+/// unsubscribing and subscribing again; the pair alone must never deny the
+/// prompt the seat holds, or a person returning to a screen that went off
+/// finds their dock withdrawn with nobody having left.
+#[tokio::test]
+async fn a_refresh_pair_does_not_open_the_grace() {
+    let dir = tempfile::tempdir().expect("config tempdir");
+    forge_agent::set_test_sdk_binary(Some(permission_mock(dir.path())));
+    let workspace = a_workspace(dir.path());
+    let (url, _state) = serve_workspace(&workspace).await;
+    let mut socket = connect(&url).await;
+    watch_the_seat(&mut socket).await;
+    boot_the_seat(&workspace).await;
+
+    prompt_the_seat(&workspace);
+    update_until(&mut socket, Duration::from_secs(30), "the permission ask", is_permission_ask())
+        .await;
+
+    // The refresh: unsubscribe, then subscribe again immediately.
+    send(&mut socket, ClientMessage::Unsubscribe { what: Subject::Session(seat()) }).await;
+    let snapshot = subscribe_the_seat_with_snapshot(&mut socket, true).await;
+    assert!(
+        snapshot.to_string().contains(PERMISSION_ID),
+        "the refresh's snapshot carries the ask: {snapshot}",
+    );
+
+    let marker = answer_marker(dir.path());
+    let denied = waited_for_marker(&marker, Duration::from_secs(8)).await;
+    if denied {
+        forge_agent::set_test_sdk_binary(None);
+        let receipt = std::fs::read_to_string(&marker).expect("read the CLI's receipt");
+        panic!(
+            "the ask on {} was denied across a refresh that never left: {receipt}",
+            seat().display(),
+        );
+    }
+
+    send(
+        &mut socket,
+        ClientMessage::Command {
+            command: Box::new(Command::RespondPermission {
+                key: seat(),
+                tool_id: PERMISSION_ID.to_owned(),
+                outcome: forge_primitives::PermissionOutcome::Selected {
+                    option_id: "allow_once".to_owned(),
+                    action: PermissionAction::Allow,
+                    notes_text: None,
+                    edited_input: None,
+                },
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    let marker_written = waited_for_marker(&marker, Duration::from_secs(20)).await;
+    forge_agent::set_test_sdk_binary(None);
+    assert!(marker_written, "the refreshed client answered and the CLI was never told");
+    let receipt = std::fs::read_to_string(&marker).expect("read the CLI's receipt");
+    assert!(
+        receipt.contains("\"behavior\":\"allow\""),
+        "the refreshed client's allow reached the CLI: {receipt}",
+    );
+}
+
+/// **An unsubscribe is a departure.** The client that takes the seat off
+/// screen stays connected, so `finish` never runs for it; if the unsubscribe
+/// does not release its answerer, the seat keeps one for the process's life
+/// and every later ask on it parks until the thirty minute bound. A mirror
+/// that watches the seat is the witness: it must see the prompt withdrawn
+/// after the grace.
+#[tokio::test]
+async fn an_unsubscribe_with_an_ask_pending_is_denied_after_the_grace() {
+    let dir = tempfile::tempdir().expect("config tempdir");
+    forge_agent::set_test_sdk_binary(Some(permission_mock(dir.path())));
+    let workspace = a_workspace(dir.path());
+    let (url, _state) = serve_workspace(&workspace).await;
+    let mut answerer = connect(&url).await;
+    watch_the_seat(&mut answerer).await;
+    let mut mirror = connect(&url).await;
+    subscribe_the_seat(&mut mirror, false).await;
+    boot_the_seat(&workspace).await;
+
+    prompt_the_seat(&workspace);
+    update_until(&mut answerer, Duration::from_secs(30), "the permission ask", is_permission_ask())
+        .await;
+    update_until(
+        &mut mirror,
+        Duration::from_secs(30),
+        "the ask on the mirror",
+        is_permission_ask(),
+    )
+    .await;
+
+    // The only answerer takes the seat off screen and stays connected.
+    send(&mut answerer, ClientMessage::Unsubscribe { what: Subject::Session(seat()) }).await;
+
+    let marker = answer_marker(dir.path());
+    let denied = waited_for_marker(&marker, Duration::from_secs(20)).await;
+    forge_agent::set_test_sdk_binary(None);
+    assert!(
+        denied,
+        "the only answerer unsubscribed and the `claude` child was never answered on {}: the \
+         seat still counts a connection that can no longer see its ask",
+        seat().display(),
+    );
+    let receipt = std::fs::read_to_string(&marker).expect("read the CLI's receipt");
+    assert!(receipt.contains("\"behavior\":\"deny\""), "and answered with a denial: {receipt}");
+    update_until(
+        &mut mirror,
+        Duration::from_secs(5),
+        "the prompt resolving on the mirror",
+        |update| {
+            matches!(
+                update,
+                SessionUpdate::PendingInteractionResolved { key, tool_id, question_index, .. }
+                    if *key == seat() && tool_id == PERMISSION_ID && question_index.is_none()
+            )
+        },
+    )
+    .await;
+    assert_eq!(
+        workspace.pending_asks(&seat()).len(),
+        0,
+        "and the seat holds no ask the unsubscribe left behind",
+    );
+    drop(answerer);
+    drop(mirror);
+}
+
 /// **The last resort, for a surface that stays and never answers.** A client
 /// keeps its connection and its answering role, is handed the ask, and sends
 /// nothing. No connection dies here, so only the bridge's own bound can
@@ -711,6 +979,9 @@ async fn a_reconnect_inside_the_grace_keeps_its_ask() {
 /// pending set no longer holds a prompt whose reply can reach nothing.
 #[tokio::test]
 async fn a_client_that_never_answers_is_denied_at_the_bound() {
+    // The records are read below: the warning must name the real seat the
+    // workspace hands the bridge, not a literal a test supplied.
+    let capture = capture_records();
     let dir = tempfile::tempdir().expect("config tempdir");
     forge_agent::set_test_sdk_binary(Some(permission_mock(dir.path())));
     forge_agent::set_test_control_request_bound(Some(Duration::from_secs(2)));
@@ -721,7 +992,7 @@ async fn a_client_that_never_answers_is_denied_at_the_bound() {
     boot_the_seat(&workspace).await;
 
     prompt_the_seat(&workspace);
-    update_until(&mut socket, Duration::from_secs(30), "the permission ask", is_ask(PERMISSION_ID))
+    update_until(&mut socket, Duration::from_secs(30), "the permission ask", is_permission_ask())
         .await;
     // Deliberately unanswered: the connection stays, the prompt stays drawn.
 
@@ -757,6 +1028,18 @@ async fn a_client_that_never_answers_is_denied_at_the_bound() {
         0,
         "and the seat holds no ask whose answer can reach nothing",
     );
+    // **The record's seat is the production wiring's.** The unit tests supply
+    // their own literal; this one reads what the workspace actually handed
+    // the bridge.
+    let records = captured(&capture);
+    let line = records
+        .lines()
+        .find(|line| line.contains("event_name=\"cli_control_request_unanswered\""))
+        .unwrap_or_else(|| panic!("no unanswered record in: {records}"));
+    assert!(
+        line.contains("slot=\"TestOrg/proj/lead\""),
+        "the unanswered record names the seat the workspace passed: {line}",
+    );
 }
 
 /// **The question half takes the same bound.** An `AskUserQuestion` whose
@@ -775,8 +1058,7 @@ async fn an_unanswered_question_is_denied_at_the_bound() {
     boot_the_seat(&workspace).await;
 
     prompt_the_seat(&workspace);
-    update_until(&mut socket, Duration::from_secs(30), "the question ask", is_ask(QUESTION_ID))
-        .await;
+    update_until(&mut socket, Duration::from_secs(30), "the question ask", is_question_ask()).await;
 
     let marker = answer_marker(dir.path());
     let answered = waited_for_marker(&marker, Duration::from_secs(20)).await;
@@ -794,11 +1076,13 @@ async fn an_unanswered_question_is_denied_at_the_bound() {
         "and answered with a denial: {receipt}; lines read: {lines}",
     );
 
+    // The question's own resolve, with the index it carries: a question is
+    // drawn and withdrawn per prompt, and a permission's frame has none.
     update_until(&mut socket, Duration::from_secs(5), "the question resolving", |update| {
         matches!(
             update,
-            SessionUpdate::PendingInteractionResolved { key, tool_id, .. }
-                if *key == seat() && tool_id == QUESTION_ID
+            SessionUpdate::PendingInteractionResolved { key, tool_id, question_index, .. }
+                if *key == seat() && tool_id == QUESTION_ID && *question_index == Some(0)
         )
     })
     .await;

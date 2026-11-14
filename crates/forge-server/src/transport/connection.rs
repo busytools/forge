@@ -1158,28 +1158,50 @@ const ASK_RELEASE_GRACE: std::time::Duration = std::time::Duration::from_secs(5)
 
 /// Start the grace on a seat whose last answering connection has gone.
 ///
-/// At the end of it, an answering connection that came back keeps the seat's
-/// asks exactly as a reconnect always did; with none, the `claude` child is
-/// denied so it cannot wait on a prompt no surface can reach.
-fn schedule_ask_release(state: &Arc<TransportState>, slot: SessionSlot, client: u64) {
+/// `deadline` is the generation the seat was armed with: a later departure
+/// that leaves it empty mints the next one, and this task then does not
+/// decide, so the window always runs from the seat's last answerer. At the
+/// end of it, an answering connection that came back keeps the seat's asks
+/// exactly as a reconnect always did; with none, the `claude` child is denied
+/// so it cannot wait on a prompt no surface can reach.
+fn schedule_ask_release(
+    state: &Arc<TransportState>,
+    slot: SessionSlot,
+    client: u64,
+    deadline: u64,
+) {
     let state = Arc::clone(state);
     tokio::spawn(async move {
         tokio::time::sleep(ASK_RELEASE_GRACE).await;
-        if state.surface.seat_has_answerer(&slot) {
-            return;
-        }
-        let denied = state.surface.release_seat_asks(&slot);
-        if denied > 0 {
-            tracing::debug!(
-                target: "forge_server::transport",
-                event_name = "asks_released_without_answerer",
-                client,
-                slot = %slot.display(),
-                denied,
-                grace_seconds = ASK_RELEASE_GRACE.as_secs(),
-                "no connection could answer this seat's asks after the grace, so the CLI was \
-                 denied rather than left parked",
-            );
+        match state.surface.release_asks_if_unanswered(&slot, deadline) {
+            // Nothing was pending, or a later departure owns the decision.
+            crate::surface::AskRelease::Denied(0) | crate::surface::AskRelease::Stale => {}
+            crate::surface::AskRelease::Denied(denied) => {
+                tracing::debug!(
+                    target: "forge_server::transport",
+                    event_name = "asks_released_without_answerer",
+                    client,
+                    slot = %slot.display(),
+                    denied,
+                    grace_seconds = ASK_RELEASE_GRACE.as_secs(),
+                    "no connection could answer this seat's asks after the grace, so the CLI was \
+                     denied rather than left parked",
+                );
+            }
+            // **A keep is recorded too.** "Not denied" on its own would read
+            // the same if the grace never ran; this names the answerer that
+            // came back and the deadline that decided.
+            crate::surface::AskRelease::Kept => {
+                tracing::debug!(
+                    target: "forge_server::transport",
+                    event_name = "ask_release_kept_by_answerer",
+                    client,
+                    slot = %slot.display(),
+                    grace_seconds = ASK_RELEASE_GRACE.as_secs(),
+                    "a connection that can answer the seat is watched again, so the ask was left \
+                     standing",
+                );
+            }
         }
     });
 }
@@ -1231,13 +1253,21 @@ async fn finish(
     // **An ask outlives this connection only while another can answer it.**
     // A permission prompt or a question is parked on a oneshot only a
     // `Respond*` command resolves, and this connection no longer counts as an
-    // answerer of its seats. The last one to go starts a grace, so a
-    // reconnect keeps its own prompt exactly as before; past it, with nobody
+    // answerer of its seats. Only the departure that leaves a seat with no
+    // answerer arms its grace, and that grace restarts from that last one, so
+    // a reconnect keeps its own prompt exactly as before; past it, with nobody
     // back, the seat's asks are denied rather than left parked forever.
+    let mut seats: Vec<&SessionSlot> = Vec::new();
     for subject in &watching.subjects {
         let Subject::Session(slot) = subject else { continue };
-        state.surface.release_seat_answerer(slot, me);
-        schedule_ask_release(state, slot.clone(), me);
+        if !seats.contains(&slot) {
+            seats.push(slot);
+        }
+    }
+    for slot in seats {
+        if let Some(deadline) = state.surface.release_seat_answerer(slot, me) {
+            schedule_ask_release(state, slot.clone(), me, deadline);
+        }
     }
     // A recording this connection was feeding dies with it: dropping it is
     // the same answer as the page's cancel, and keeping it would leave a
@@ -1624,7 +1654,6 @@ where
                             &mut held,
                             *read,
                             caller.id,
-                            updates.as_ref().is_some_and(|(_, answering)| *answering),
                         )
                         .await?;
                         // **And the asks that queued behind it**, in the order
@@ -2163,8 +2192,6 @@ async fn write_snapshot<S>(
     subject: Subject,
     data: serde_json::Value,
     report: Option<OpenReport>,
-    me: u64,
-    answering: bool,
 ) -> anyhow::Result<()>
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
@@ -2177,15 +2204,6 @@ where
     // frames from here, and the marks are spent when it says the seat is on
     // screen (`Showing`), not when it starts listening.
     let seat = report.as_ref().and_then(|report| report.seat.clone());
-    // **A seat's answerers are counted where its watch is taken.** An ask is
-    // answerable from a connection that declared it can answer and watches
-    // the seat, whichever way the ask reached it - the live frame, this
-    // snapshot, or a replay - and this is the one place a subject becomes
-    // watched. Registering per delivered frame instead missed both readers
-    // and reconnects.
-    if answering && let Subject::Session(slot) = &subject {
-        state.surface.note_seat_answerer(slot, me);
-    }
     watching.subjects.push(subject.clone());
     let write = send_frame_timed(socket, ServerMessage::Snapshot { subject, data }, &SystemClock)?;
     if let Some(report) = &report {
@@ -2290,7 +2308,6 @@ async fn finish_read<S>(
     held: &mut Batch,
     done: ReadAnswer,
     me: u64,
-    answering: bool,
 ) -> anyhow::Result<()>
 where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
@@ -2314,8 +2331,6 @@ where
                     hold_ms: done.hold_ms,
                     timings,
                 }),
-                me,
-                answering,
             )
             .await?;
             // **The frames held while the record was built go out behind it.**
@@ -2333,6 +2348,16 @@ where
             // loop running behind nothing.
             if let Some(slot) = &done.seat {
                 holds.give_back(slot);
+                // **The acceptance registration goes back with the refusal.**
+                // The subscribe never became a watch, so this connection must
+                // not keep holding the seat's asks; the last answerer leaving
+                // starts the grace. Another watch entry for the seat keeps it
+                // registered: two subscriptions are one answerer.
+                if !watching.subjects.iter().any(|held| held == &done.subject)
+                    && let Some(deadline) = state.surface.release_seat_answerer(slot, me)
+                {
+                    schedule_ask_release(state, slot.clone(), me, deadline);
+                }
             }
             send(
                 socket,
@@ -2715,6 +2740,24 @@ where
             // slices: `open_ms` carries it too, and this names it apart.
             let wait_ms =
                 Instant::now().saturating_duration_since(arrived_at).as_secs_f64() * 1000.0;
+            // **Register at ACCEPTANCE, before anything can wait.** A
+            // subscribe is answerable from the moment the server takes it: the
+            // encode behind it can run for seconds, and a routine refresh is an
+            // Unsubscribe immediately followed by a Subscribe, so registering
+            // after the snapshot would leave the seat unanswered across the
+            // whole encode and a grace could deny a prompt the client never
+            // left. A refusal, and an unsubscribe, release it again.
+            let role_answerers = answering || updates.as_ref().is_some_and(|(_, held)| *held);
+            if role_answerers {
+                for subject in &watching.subjects {
+                    if let Subject::Session(slot) = subject {
+                        state.surface.note_seat_answerer(slot, caller.id);
+                    }
+                }
+                if let Subject::Session(slot) = &what {
+                    state.surface.note_seat_answerer(slot, caller.id);
+                }
+            }
             // **Which attached client this subscribe is (#2506).** Several
             // clients attach from addresses the log otherwise never names, so
             // a slow open could not be placed on the one that asked for it.
@@ -2747,17 +2790,6 @@ where
                 &watching.subjects,
                 caller.id,
             );
-            // **A subscribe that raises this connection's role makes it an
-            // answerer of every seat it already watches**, not just the one
-            // this message names. The new subject is counted when its snapshot
-            // takes the watch; these were taken while it could not answer.
-            if updates.as_ref().is_some_and(|(_, role)| *role) {
-                for subject in &watching.subjects {
-                    if let Subject::Session(slot) = subject {
-                        state.surface.note_seat_answerer(slot, caller.id);
-                    }
-                }
-            }
             // **A seat is held BEFORE its snapshot is encoded.** The hold
             // starts the seat's watch, whose first pass reads the tree, the
             // processes and the file index and announces each; the encode
@@ -2842,8 +2874,6 @@ where
                             hold_ms,
                             timings,
                         }),
-                        caller.id,
-                        updates.as_ref().is_some_and(|(_, answering)| *answering),
                     )
                     .await
                 }
@@ -2856,6 +2886,16 @@ where
                     // would keep its loop running behind nothing.
                     if let Subject::Session(slot) = &what {
                         holds.give_back(slot);
+                        // **The acceptance registration goes back too**: the
+                        // subscribe never became a watch, and the last
+                        // answerer leaving starts the grace. Another watch
+                        // entry for the seat keeps it registered.
+                        if !watching.subjects.iter().any(|held| held == &what)
+                            && let Some(deadline) =
+                                state.surface.release_seat_answerer(slot, caller.id)
+                        {
+                            schedule_ask_release(state, slot.clone(), caller.id, deadline);
+                        }
                     }
                     // **The refusal names the seat it refused** (#2420): the
                     // error has no subject of its own, and a client holding
@@ -3755,11 +3795,23 @@ where
                     // for the same reason the clean-up gives back only those:
                     // a count decremented twice is another viewer's seat.
                     holds.give_back(slot);
-                    // **Dropping the seat ends this connection's ability to
-                    // answer it.** The grace decides, the same as a connection
-                    // ending, whether anyone is left.
-                    state.surface.release_seat_answerer(slot, caller.id);
-                    schedule_ask_release(state, slot.clone(), caller.id);
+                }
+            }
+            // **Dropping the seat ends this connection's ability to answer
+            // it.** A subscribe is registered at acceptance, so this runs even
+            // when the snapshot never landed and there is no watch entry yet.
+            // Two watch entries for one seat are one registration, so it goes
+            // only when the last entry does.
+            if let Subject::Session(slot) = &what {
+                let still_watched = watching.subjects.iter().any(|held| held == &what);
+                let answering = updates.as_ref().is_some_and(|(_, role)| *role);
+                if still_watched {
+                    if answering {
+                        state.surface.note_seat_answerer(slot, caller.id);
+                    }
+                } else if let Some(deadline) = state.surface.release_seat_answerer(slot, caller.id)
+                {
+                    schedule_ask_release(state, slot.clone(), caller.id, deadline);
                 }
             }
             // **A read off the loop for this subject ends with the release.**
