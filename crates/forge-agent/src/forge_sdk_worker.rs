@@ -512,6 +512,7 @@ pub(crate) async fn spawn_session(
         Arc::clone(bridge.inner_pending()),
         Arc::clone(bridge.inner_pending_questions()),
         Arc::clone(bridge.session_id_slot_arc()),
+        bridge.slot(),
         extra_mcp_servers,
         &AccountBinding { config_dir: &config_dir, env: &account_env },
     );
@@ -1349,6 +1350,7 @@ fn build_options_with_callback(
     pending: PendingResponses,
     pending_questions: PendingQuestions,
     session_id_slot: Arc<parking_lot::Mutex<String>>,
+    slot: Option<String>,
     extra_mcp_servers: Vec<(String, forge_sdk::mcp::McpServer)>,
     binding: &AccountBinding<'_>,
 ) -> Options {
@@ -1445,11 +1447,13 @@ fn build_options_with_callback(
         let pending = Arc::clone(&pending);
         let pending_questions = Arc::clone(&pending_questions);
         let session_id = session_id_slot.lock().clone();
+        let slot = slot.clone();
         async move {
+            let seat = slot.as_deref().unwrap_or("<unknown>");
             if ctx.tool_name == bridge_user_interaction::ASK_USER_QUESTION_TOOL_NAME {
-                run_ask_user_question(ctx, session_id, &event_tx, &pending_questions).await
+                run_ask_user_question(ctx, session_id, seat, &event_tx, &pending_questions).await
             } else {
-                run_permission_request(ctx, session_id, &event_tx, &pending).await
+                run_permission_request(ctx, session_id, seat, &event_tx, &pending).await
             }
         }
     };
@@ -1657,12 +1661,110 @@ pub fn set_test_sdk_binary(path: Option<String>) {
     *TEST_SDK_BINARY.write() = path;
 }
 
+/// How long the bridge waits on the server for an answer to a control
+/// request before it answers the CLI itself.
+///
+/// **A bound, not a tuning knob.** The `claude` child blocks the turn on its
+/// control request, so a request nobody answers leaves the process alive and
+/// idle with the transcript stopped on a `tool_use` - the state the live
+/// capture found after more than an hour. Long enough that a person thinking
+/// about a permission prompt or a question is never cut off by it; short
+/// enough that no control request outlives it.
+const CONTROL_REQUEST_BOUND: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// The bound a test has shortened the request await to, or `None` for the
+/// shipped one.
+#[cfg(any(test, feature = "testing"))]
+static TEST_CONTROL_REQUEST_BOUND: parking_lot::RwLock<Option<std::time::Duration>> =
+    parking_lot::RwLock::new(None);
+
+/// Point every control request's await at `bound` instead of the shipped one;
+/// `None` restores it.
+///
+/// Process-wide, so a test holding it must span the ask it drives.
+#[cfg(any(test, feature = "testing"))]
+pub fn set_test_control_request_bound(bound: Option<std::time::Duration>) {
+    *TEST_CONTROL_REQUEST_BOUND.write() = bound;
+}
+
+fn control_request_bound() -> std::time::Duration {
+    #[cfg(any(test, feature = "testing"))]
+    if let Some(bound) = *TEST_CONTROL_REQUEST_BOUND.read() {
+        return bound;
+    }
+    CONTROL_REQUEST_BOUND
+}
+
+/// The record that says the CLI is waiting on an answer - what the next
+/// capture reads to name the request before any timeout is involved.
+fn log_control_request(slot: &str, kind: &str, tool: &str, tool_use_id: &str) {
+    tracing::debug!(
+        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+        event_name = "cli_control_request",
+        slot,
+        kind,
+        tool,
+        tool_use_id,
+        "the CLI asked for an answer; the bridge waits on the forge client",
+    );
+}
+
+/// The record that pairs with [`log_control_request`]: every request ends in
+/// an answer, and `outcome` says which one. `age_ms` is how long the wait
+/// was, so a path that answered slowly is visible without a second clock.
+fn log_control_answer(
+    slot: &str,
+    kind: &str,
+    tool: &str,
+    tool_use_id: &str,
+    outcome: &str,
+    age: std::time::Duration,
+) {
+    tracing::debug!(
+        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+        event_name = "cli_control_answer",
+        slot,
+        kind,
+        tool,
+        tool_use_id,
+        outcome,
+        age_ms = age.as_secs_f64() * 1000.0,
+        "the CLI's control request was answered",
+    );
+}
+
+/// **The last-resort record**: no client answered within the bound, so the
+/// request is denied rather than parked. One record per request, naming the
+/// seat, the kind, the tool and how long it waited.
+fn log_control_request_unanswered(
+    slot: &str,
+    kind: &str,
+    tool: &str,
+    tool_use_id: &str,
+    age: std::time::Duration,
+) {
+    tracing::warn!(
+        target: crate::logging::targets::BRIDGE_LIFECYCLE,
+        event_name = "cli_control_request_unanswered",
+        slot,
+        kind,
+        tool,
+        tool_use_id,
+        age_ms = age.as_secs_f64() * 1000.0,
+        bound_seconds = control_request_bound().as_secs(),
+        "no client answered the CLI's control request within the bound, so it is denied: the turn \
+         continues instead of parking the child",
+    );
+}
+
 async fn run_permission_request(
     ctx: ToolPermissionContext,
     session_id: String,
+    slot: &str,
     event_tx: &mpsc::UnboundedSender<AgentEvent>,
     pending: &PendingResponses,
 ) -> PermissionDecision {
+    let started = std::time::Instant::now();
     let (tx, rx) = oneshot::channel();
     {
         let mut guard = pending.lock();
@@ -1681,26 +1783,77 @@ async fn run_permission_request(
             let _ = prev.send(PermissionDecision::deny("displaced by duplicate tool_use_id"));
         }
     }
+    log_control_request(slot, "permission", &ctx.tool_name, &ctx.tool_use_id);
     let event = synth_permission_request(&session_id, &ctx);
     if event_tx.send(event).is_err() {
+        log_control_answer(
+            slot,
+            "permission",
+            &ctx.tool_name,
+            &ctx.tool_use_id,
+            "channel_closed",
+            started.elapsed(),
+        );
         return PermissionDecision::deny("event channel closed");
     }
-    match rx.await {
-        Ok(decision) => decision,
-        Err(_) => PermissionDecision::deny("response channel closed"),
-    }
+    let (decision, outcome) = match tokio::time::timeout(control_request_bound(), rx).await {
+        Ok(Ok(decision)) => {
+            let outcome = if decision.is_allow() { "allow" } else { "deny" };
+            (decision, outcome)
+        }
+        Ok(Err(_)) => (PermissionDecision::deny("response channel closed"), "channel_closed"),
+        Err(_) => {
+            // The parked sender goes with the request: a late answer has no
+            // surface left to reach, and a slot left behind would answer a
+            // `RespondPermission` that arrives after the denial.
+            pending.lock().remove(&ctx.tool_use_id);
+            log_control_request_unanswered(
+                slot,
+                "permission",
+                &ctx.tool_name,
+                &ctx.tool_use_id,
+                started.elapsed(),
+            );
+            // The workspace parked a slot for this ask; this is what drops
+            // the dock instead of leaving it drawing a prompt whose reply can
+            // no longer land anywhere.
+            let _ = event_tx.send(AgentEvent::ControlRequestUnanswered {
+                session_id: session_id.clone(),
+                tool_use_id: ctx.tool_use_id.clone(),
+            });
+            (PermissionDecision::deny("no answer from the forge client"), "unanswered")
+        }
+    };
+    log_control_answer(
+        slot,
+        "permission",
+        &ctx.tool_name,
+        &ctx.tool_use_id,
+        outcome,
+        started.elapsed(),
+    );
+    decision
 }
 
 async fn run_ask_user_question(
     ctx: ToolPermissionContext,
     session_id: String,
+    slot: &str,
     event_tx: &mpsc::UnboundedSender<AgentEvent>,
     pending_questions: &PendingQuestions,
 ) -> PermissionDecision {
     use forge_primitives::QuestionOutcome;
 
+    let started = std::time::Instant::now();
+    // **The bound is the request's, not each prompt's.** One AskUserQuestion
+    // call answers its prompts one at a time, and a per-prompt bound would
+    // let a five-question ask wait five bounds out.
+    let deadline = started + control_request_bound();
     let prompts = bridge_user_interaction::parse_ask_user_question_prompts(&ctx.tool_input);
+    let tool = bridge_user_interaction::ASK_USER_QUESTION_TOOL_NAME;
+    log_control_request(slot, "question", tool, &ctx.tool_use_id);
     if prompts.is_empty() {
+        log_control_answer(slot, "question", tool, &ctx.tool_use_id, "allow", started.elapsed());
         return PermissionDecision::allow();
     }
 
@@ -1735,10 +1888,56 @@ async fn run_ask_user_question(
             })
             .is_err()
         {
+            log_control_answer(
+                slot,
+                "question",
+                tool,
+                &ctx.tool_use_id,
+                "channel_closed",
+                started.elapsed(),
+            );
             return PermissionDecision::deny("event channel closed");
         }
-        let Ok(outcome) = rx.await else {
-            return PermissionDecision::deny("response channel closed");
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let outcome = match tokio::time::timeout(left, rx).await {
+            Ok(Ok(outcome)) => outcome,
+            Ok(Err(_)) => {
+                log_control_answer(
+                    slot,
+                    "question",
+                    tool,
+                    &ctx.tool_use_id,
+                    "channel_closed",
+                    started.elapsed(),
+                );
+                return PermissionDecision::deny("response channel closed");
+            }
+            Err(_) => {
+                // The parked sender goes with the request: a late answer has
+                // no surface left to reach, and a slot left behind would
+                // answer a `RespondQuestion` that arrives after the denial.
+                pending_questions.lock().remove(&ctx.tool_use_id);
+                log_control_request_unanswered(
+                    slot,
+                    "question",
+                    tool,
+                    &ctx.tool_use_id,
+                    started.elapsed(),
+                );
+                let _ = event_tx.send(AgentEvent::ControlRequestUnanswered {
+                    session_id: session_id.clone(),
+                    tool_use_id: ctx.tool_use_id.clone(),
+                });
+                log_control_answer(
+                    slot,
+                    "question",
+                    tool,
+                    &ctx.tool_use_id,
+                    "unanswered",
+                    started.elapsed(),
+                );
+                return PermissionDecision::deny("no answer from the forge client");
+            }
         };
         match outcome {
             QuestionOutcome::Answered { selected_option_ids, annotation } => {
@@ -1781,9 +1980,25 @@ async fn run_ask_user_question(
                         }
                         continue;
                     }
+                    log_control_answer(
+                        slot,
+                        "question",
+                        tool,
+                        &ctx.tool_use_id,
+                        "deny",
+                        started.elapsed(),
+                    );
                     return PermissionDecision::deny("Question answer was invalid");
                 }
                 if !prompt.multi_select && selected.len() != 1 {
+                    log_control_answer(
+                        slot,
+                        "question",
+                        tool,
+                        &ctx.tool_use_id,
+                        "deny",
+                        started.elapsed(),
+                    );
                     return PermissionDecision::deny("Question answer was invalid");
                 }
                 let answer =
@@ -1808,6 +2023,14 @@ async fn run_ask_user_question(
                 }
             }
             QuestionOutcome::Cancelled => {
+                log_control_answer(
+                    slot,
+                    "question",
+                    tool,
+                    &ctx.tool_use_id,
+                    "cancelled",
+                    started.elapsed(),
+                );
                 return PermissionDecision::deny("Question cancelled");
             }
         }
@@ -1815,6 +2038,7 @@ async fn run_ask_user_question(
 
     let updated_input =
         bridge_user_interaction::build_updated_input(&ctx.tool_input, answers, annotations);
+    log_control_answer(slot, "question", tool, &ctx.tool_use_id, "allow", started.elapsed());
     tracing::debug!(
         target: "forge_agent::forge_sdk_worker",
         tool_use_id = %ctx.tool_use_id,
@@ -2227,6 +2451,71 @@ mod tests {
         tracing::subscriber::with_default(subscriber, f);
         let bytes = capture.0.lock().clone();
         String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// **The bound is the property, and the record is what a capture reads.**
+    /// A request no client answers is denied when the bound expires - not
+    /// parked with the child waiting - and exactly one record names the seat,
+    /// the kind, the tool and how long it waited.
+    #[tokio::test]
+    async fn an_unanswered_permission_request_is_denied_at_the_bound_with_one_record() {
+        let capture = LogCapture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            // ANSI escapes wrap each field's name and value, which breaks a
+            // `contains` on a whole `name=value` pair.
+            .with_ansi(false)
+            .with_writer(capture.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        super::set_test_control_request_bound(Some(std::time::Duration::from_millis(60)));
+
+        let pending = fresh_pending();
+        let (event_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let decision = super::run_permission_request(
+            ctx("Bash", "tu-unanswered", serde_json::json!({"command": "ls"})),
+            "sess-1".to_owned(),
+            "TestOrg/proj/lead",
+            &event_tx,
+            &pending,
+        )
+        .await;
+        super::set_test_control_request_bound(None);
+
+        let log = String::from_utf8_lossy(&capture.0.lock().clone()).into_owned();
+        assert!(!decision.is_allow(), "an unanswered request denies the tool: {log}");
+        assert!(pending.lock().is_empty(), "the parked sender goes with the denial: {log}");
+        let mut sent = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            sent.push(event);
+        }
+        assert!(
+            sent.iter().any(|event| matches!(
+                event,
+                AgentEvent::ControlRequestUnanswered { tool_use_id, .. }
+                    if tool_use_id == "tu-unanswered"
+            )),
+            "the workspace is told to drop the dock: {log}",
+        );
+        assert!(log.contains("cli_control_request"), "the request names itself: {log}");
+        assert!(log.contains("cli_control_answer"), "and its answer pairs with it: {log}");
+        assert_eq!(
+            log.matches("cli_control_request_unanswered").count(),
+            1,
+            "the request that outlived its bound is recorded exactly once: {log}",
+        );
+        for field in [
+            "slot=\"TestOrg/proj/lead\"",
+            "kind=\"permission\"",
+            "tool=\"Bash\"",
+            "age_ms=",
+            "bound_seconds=",
+        ] {
+            assert!(
+                log.contains(field),
+                "the unanswered record carries {field}, so a reader can act on it: {log}",
+            );
+        }
     }
 
     /// The frame is decoded into the real `Message` the reader forwards,
@@ -3064,6 +3353,7 @@ mod tests {
                 fresh_pending(),
                 fresh_pending_questions(),
                 Arc::new(Mutex::new(String::new())),
+                None,
                 Vec::new(),
                 &super::AccountBinding { config_dir: Path::new("/cfg/x"), env: &env },
             )
@@ -3109,6 +3399,7 @@ mod tests {
             fresh_pending(),
             fresh_pending_questions(),
             Arc::new(Mutex::new(String::new())),
+            None,
             Vec::new(),
             &super::AccountBinding { config_dir: Path::new("/cfg/x"), env: &env },
         );
@@ -3142,6 +3433,7 @@ mod tests {
             fresh_pending(),
             fresh_pending_questions(),
             Arc::new(Mutex::new(String::new())),
+            None,
             Vec::new(),
             &super::AccountBinding { config_dir: Path::new("/cfg/x"), env: &HashMap::new() },
         );
@@ -3203,6 +3495,7 @@ mod tests {
             fresh_pending(),
             fresh_pending_questions(),
             Arc::new(Mutex::new(String::new())),
+            None,
             Vec::new(),
             &super::AccountBinding { config_dir: Path::new("/cfg/x"), env: &HashMap::new() },
         );
@@ -3237,6 +3530,7 @@ mod tests {
             fresh_pending(),
             fresh_pending_questions(),
             Arc::new(Mutex::new(String::new())),
+            None,
             Vec::new(),
             &super::AccountBinding { config_dir: Path::new("/cfg/x"), env: &HashMap::new() },
         );
@@ -3336,6 +3630,7 @@ mod tests {
             fresh_pending(),
             fresh_pending_questions(),
             Arc::new(Mutex::new(String::new())),
+            None,
             Vec::new(),
             &super::AccountBinding { config_dir: Path::new("/cfg/codex"), env: &env },
         );
@@ -3374,6 +3669,7 @@ mod tests {
             fresh_pending(),
             fresh_pending_questions(),
             Arc::new(Mutex::new(String::new())),
+            None,
             Vec::new(),
             &super::AccountBinding { config_dir: Path::new("/cfg/x"), env: &env },
         );
@@ -4420,6 +4716,7 @@ mod tests {
                 fresh_pending(),
                 fresh_pending_questions(),
                 Arc::new(Mutex::new(String::new())),
+                None,
                 servers,
                 &super::AccountBinding { config_dir: Path::new("/cfg/x"), env: &HashMap::new() },
             );
@@ -4634,6 +4931,7 @@ mod tests {
             run_ask_user_question(
                 ctx("AskUserQuestion", "tu_keys", input),
                 "sess".to_owned(),
+                "TestOrg/proj/lead",
                 &event_tx,
                 &task_pending,
             )
@@ -5092,7 +5390,8 @@ mod tests_reader_terminal {
         let _binary = mock_binary_guard().await;
         set_test_sdk_binary(Some(sdk_mock_binary()));
         let dir = tempfile::tempdir().expect("tempdir");
-        let bridge = ForgeSdkBridge::new(dir.path().to_owned(), None, Vec::new(), HashMap::new());
+        let bridge =
+            ForgeSdkBridge::new(dir.path().to_owned(), None, None, Vec::new(), HashMap::new());
         let mut events = bridge.take_events().expect("fresh bridge yields its events receiver");
 
         bridge
@@ -5198,7 +5497,8 @@ mod tests_reader_terminal {
         let dir = tempfile::tempdir().expect("tempdir");
         let stall = std::time::Duration::from_secs(8);
         set_test_sdk_binary(Some(stalled_mock(dir.path(), stall)));
-        let bridge = ForgeSdkBridge::new(dir.path().to_owned(), None, Vec::new(), HashMap::new());
+        let bridge =
+            ForgeSdkBridge::new(dir.path().to_owned(), None, None, Vec::new(), HashMap::new());
         let mut events = bridge.take_events().expect("fresh bridge yields its events receiver");
         let started = std::time::Instant::now();
         bridge

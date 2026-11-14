@@ -58,7 +58,11 @@ pub(crate) fn test_permission(
         }],
         display: None,
     };
-    crate::protocol::PendingInteractionSlot::Permission { tx, request: Box::new(request) }
+    crate::protocol::PendingInteractionSlot::Permission {
+        tx,
+        request: Box::new(request),
+        delivered_to: Vec::new(),
+    }
 }
 
 /// The tool call a fixture's prompt is about.
@@ -106,7 +110,11 @@ pub(crate) fn test_question(
         question_index: 0,
         total_questions: 1,
     };
-    crate::protocol::PendingInteractionSlot::Question { tx, request: Box::new(request) }
+    crate::protocol::PendingInteractionSlot::Question {
+        tx,
+        request: Box::new(request),
+        delivered_to: Vec::new(),
+    }
 }
 
 /// [`test_permission`] or [`test_question`] with a receiver nobody keeps.

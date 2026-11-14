@@ -126,7 +126,9 @@ tracing-subscriber = { workspace = true }
 forge-sdk = { workspace = true }
 # The default-directives test builds the scan's expected directive from the
 # target the sites emit under, so renaming one cannot leave the other behind.
-forge-agent = { workspace = true }
+# `testing` exposes the process-wide mock-binary seam, so a socket test can
+# drive a real child the way a spawn does.
+forge-agent = { workspace = true, features = ["testing"] }
 # `test-util` enables `#[tokio::test(start_paused = true)]`. The write bound's
 # tests reach its 60 s without waiting it: the fake peer's write never
 # completes, and the paused clock advances to the bound the connection armed.

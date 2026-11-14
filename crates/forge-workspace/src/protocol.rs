@@ -59,9 +59,23 @@ pub use forge_primitives::TurnErrorClass;
 /// prompt landed still draws what it offers. The stream is a mirror with no
 /// backlog, so the update that carried it is gone by then, and the dock's
 /// whole point is answering from a view that was not there when it arrived.
+///
+/// `delivered_to` is the connections the ask frame was actually forwarded to.
+/// **The CLI must never wait on an answer that may never come**, and a
+/// connection that goes away takes with it the only surface that could have
+/// answered: when the last of these ends, the ask is cancelled so the child is
+/// answered rather than parked on a control request forever.
 pub enum PendingInteractionSlot {
-    Permission { tx: oneshot::Sender<PermissionOutcome>, request: Box<PermissionRequest> },
-    Question { tx: oneshot::Sender<QuestionOutcome>, request: Box<QuestionRequest> },
+    Permission {
+        tx: oneshot::Sender<PermissionOutcome>,
+        request: Box<PermissionRequest>,
+        delivered_to: Vec<u64>,
+    },
+    Question {
+        tx: oneshot::Sender<QuestionOutcome>,
+        request: Box<QuestionRequest>,
+        delivered_to: Vec<u64>,
+    },
 }
 
 // The record a seat is held on lives in forge-primitives, so an ask source

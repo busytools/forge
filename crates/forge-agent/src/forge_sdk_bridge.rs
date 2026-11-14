@@ -112,6 +112,12 @@ pub(crate) struct BridgeInner {
     /// present, read back through the handle's `display_name()` so a
     /// view can render which forge-account the bridge is bound to.
     display_name: Option<String>,
+    /// The seat this bridge runs a child for, as `SessionSlot::display`
+    /// spells it. The workspace is the only caller that knows it, and a
+    /// control request that outlives its bound is a record a reader acts on
+    /// only if it names the seat - the CLI's own session id names an occupant
+    /// the log has to be joined to find. `None` for a bare `Agent::spawn`.
+    slot: Option<String>,
     /// Forge-workspace-supplied in-process MCP servers attached at
     /// every `spawn_session` call. Today this is the per-session
     /// `forge` MCP server, whose tool surface varies by session kind;
@@ -181,6 +187,7 @@ impl ForgeSdkBridge {
     pub(crate) fn new(
         config_dir: PathBuf,
         display_name: Option<String>,
+        slot: Option<String>,
         extra_mcp_servers: Vec<(String, forge_sdk::mcp::McpServer)>,
         env: HashMap<String, String>,
     ) -> Self {
@@ -195,6 +202,7 @@ impl ForgeSdkBridge {
                 session_id_slot: Arc::new(Mutex::new(String::new())),
                 config_dir,
                 display_name,
+                slot,
                 extra_mcp_servers,
                 env,
                 context_probes_in_flight: Mutex::new(HashMap::new()),
@@ -371,7 +379,7 @@ impl ForgeSdkBridge {
 #[cfg(any(test, feature = "testing"))]
 impl Default for ForgeSdkBridge {
     fn default() -> Self {
-        Self::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None, Vec::new(), HashMap::new())
+        Self::new(PathBuf::from(TESTING_STUB_CONFIG_DIR), None, None, Vec::new(), HashMap::new())
     }
 }
 
@@ -1158,6 +1166,13 @@ impl ForgeSdkBridge {
         self.inner.display_name.clone()
     }
 
+    /// The seat this bridge runs a child for, when the workspace named one.
+    /// Carried onto the control-request records so an unanswered request
+    /// names the seat rather than only the CLI's session id.
+    pub(crate) fn slot(&self) -> Option<String> {
+        self.inner.slot.clone()
+    }
+
     /// OS PID of the spawned `claude` child, when a client is bound
     /// and the transport reported one. Used by
     /// [`crate::env::processes`] to anchor an OS-level walk of the
@@ -1280,6 +1295,7 @@ mod tests {
     fn test_bridge() -> ForgeSdkBridge {
         ForgeSdkBridge::new(
             PathBuf::from(TESTING_STUB_CONFIG_DIR),
+            None,
             None,
             Vec::new(),
             HashMap::new(),

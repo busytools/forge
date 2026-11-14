@@ -145,6 +145,51 @@ impl PendingInteractions {
         self.held.iter().any(|(id, _)| id == tool_id)
     }
 
+    /// Note that the ask under `tool_id` was forwarded to `client`.
+    ///
+    /// Idempotent per client: the same ask can cross one connection's socket
+    /// twice (a re-subscribe that replays a queued frame), and only the
+    /// connection's absence matters.
+    pub fn note_delivered(&mut self, tool_id: &str, client: u64) {
+        let Some((_, slot)) = self.held.iter_mut().find(|(id, _)| id == tool_id) else {
+            return;
+        };
+        let delivered = match slot {
+            PendingInteractionSlot::Permission { delivered_to, .. }
+            | PendingInteractionSlot::Question { delivered_to, .. } => delivered_to,
+        };
+        if !delivered.contains(&client) {
+            delivered.push(client);
+        }
+    }
+
+    /// Release `client` from every ask it was handed, and return the asks that
+    /// are left with no holder at all - oldest first, with their ids.
+    ///
+    /// An ask that no connection holds can never be answered: its oneshot's
+    /// only consumer is the forwarder waiting for a `Respond*` command, and
+    /// the surface that would send one has gone. The caller cancels each of
+    /// these so the `claude` child is answered instead of waiting forever.
+    pub fn release_client(&mut self, client: u64) -> Vec<(String, PendingInteractionSlot)> {
+        let mut orphaned = Vec::new();
+        let mut at = 0;
+        while at < self.held.len() {
+            let delivered = match &mut self.held[at].1 {
+                PendingInteractionSlot::Permission { delivered_to, .. }
+                | PendingInteractionSlot::Question { delivered_to, .. } => delivered_to,
+            };
+            let held_before = delivered.len();
+            delivered.retain(|held| *held != client);
+            if held_before > 0 && delivered.is_empty() {
+                let (id, slot) = self.held.remove(at);
+                orphaned.push((id, slot));
+                continue;
+            }
+            at += 1;
+        }
+        orphaned
+    }
+
     pub fn len(&self) -> usize {
         self.held.len()
     }

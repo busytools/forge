@@ -292,7 +292,9 @@ use forge_gateway::ProviderHost as _;
 use crate::config::{ConfigReload, LoadedConfig, LoadedProject, load_from_dir};
 use crate::domain_session::DomainSession;
 use crate::error::WorkspaceError;
-use crate::protocol::{Command, DispatchError, NoticeSeverity, PromptSource, SessionUpdate};
+use crate::protocol::{
+    Command, DispatchError, NoticeSeverity, PendingInteractionSlot, PromptSource, SessionUpdate,
+};
 use crate::session_task::SessionTask;
 use crate::spawn;
 use crate::target::{ProjectKey, SessionSlot, SessionTarget};
@@ -3789,6 +3791,7 @@ impl Workspace {
             forge_agent::Agent::spawn(
                 account_dir.clone(),
                 Some(account_key.0.clone()),
+                Some(session_slot.display()),
                 vec![("forge".to_owned(), forge_server)],
                 session_env,
             )
@@ -8821,6 +8824,77 @@ impl Workspace {
     /// How many asks have ever arrived for `slot`, zero when none has.
     pub fn pending_request_seq(&self, slot: &SessionSlot) -> u64 {
         self.pending_seq.lock().get(slot).copied().unwrap_or(0)
+    }
+
+    /// Note that `slot`'s ask under `tool_id` was forwarded to `client`.
+    ///
+    /// The transport is the only holder of connection identity and so the
+    /// only caller: an ask is answerable only from the surfaces its frame
+    /// reached, so the workspace has to know which those were before a
+    /// connection that ends can be answered for.
+    pub fn note_ask_delivered(&self, slot: &SessionSlot, tool_id: &str, client: u64) {
+        let Some(domain) = self.domain_handles.lock().get(slot).cloned() else {
+            return;
+        };
+        domain.lock().pending_interactions.note_delivered(tool_id, client);
+    }
+
+    /// Answer every ask `client` was the last holder of, and report how many.
+    ///
+    /// **The CLI must never wait on an answer that may never come**: a
+    /// connection that ends takes with it the only dock that could have
+    /// answered, and this is what turns that into a denial rather than a
+    /// control request parked until the child is killed. An ask another
+    /// connection was also handed is left alone - the surface that can still
+    /// answer it is there.
+    ///
+    /// The cancellation is the shape the no-subscriber path uses: the outcome
+    /// goes down the slot's oneshot, whose forwarder hands the bridge its
+    /// denial, and the resolved frame drops the card wherever one was drawn.
+    pub fn release_client_asks(&self, client: u64) -> usize {
+        let domains: Vec<(SessionSlot, Arc<Mutex<DomainSession>>)> = self
+            .domain_handles
+            .lock()
+            .iter()
+            .map(|(slot, domain)| (slot.clone(), Arc::clone(domain)))
+            .collect();
+        let mut released = 0;
+        for (slot, domain) in domains {
+            let orphaned = domain.lock().pending_interactions.release_client(client);
+            for (tool_id, pending) in orphaned {
+                released += 1;
+                match pending {
+                    PendingInteractionSlot::Permission { tx, .. } => {
+                        let _ = tx.send(forge_primitives::PermissionOutcome::Cancelled);
+                        let _ = self.update_tx.send(SessionUpdate::PendingInteractionResolved {
+                            key: slot.clone(),
+                            tool_id: tool_id.clone(),
+                            question_index: None,
+                            answered_with: None,
+                        });
+                    }
+                    PendingInteractionSlot::Question { tx, request, .. } => {
+                        let _ = tx.send(forge_primitives::QuestionOutcome::Cancelled);
+                        let _ = self.update_tx.send(SessionUpdate::PendingInteractionResolved {
+                            key: slot.clone(),
+                            tool_id: tool_id.clone(),
+                            question_index: Some(request.question_index),
+                            answered_with: None,
+                        });
+                    }
+                }
+                tracing::debug!(
+                    target: "forge_workspace::workspace",
+                    event_name = "ask_released_on_disconnect",
+                    slot = %slot.display(),
+                    tool_id = %tool_id,
+                    client,
+                    "the connection holding this ask went away with no other holder; the CLI is \
+                     denied rather than parked",
+                );
+            }
+        }
+        released
     }
 
     /// Record a fatal error, so a view that was not attached when it fired

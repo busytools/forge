@@ -382,6 +382,26 @@ impl ViewSurface {
         self.workspace.note_client_detached();
     }
 
+    /// Note that a seat's ask under `tool_id` was forwarded to `client`.
+    ///
+    /// The transport owns connection identity, so it is the only caller: an
+    /// ask is answerable only from the connections its frame reached, and a
+    /// teardown has to know which surfaces it owes an answer for.
+    pub fn note_ask_delivered(&self, slot: &SessionSlot, tool_id: &str, client: u64) {
+        self.workspace.note_ask_delivered(slot, tool_id, client);
+    }
+
+    /// Answer every ask `client` was the last holder of, and report how many.
+    ///
+    /// **The CLI must never wait on an answer that may never come.** A
+    /// connection that ends answers its held asks with a denial, so a turn it
+    /// was the only surface for continues rather than parking the `claude`
+    /// child on a control request forever. An ask a second connection was
+    /// also handed is left to that one.
+    pub fn release_client_asks(&self, client: u64) -> usize {
+        self.workspace.release_client_asks(client)
+    }
+
     /// The live `[server]` snapshot, read by the socket's origin gate on
     /// every upgrade so a reload's new allowances apply to the next
     /// connection without a restart.

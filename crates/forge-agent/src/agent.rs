@@ -319,8 +319,11 @@ impl Agent {
     /// exported to the spawned `claude` subprocess as
     /// `CLAUDE_CONFIG_DIR`. `display_name`, when set, is read back
     /// through the handle's `display_name()` so a view
-    /// renders which forge-account the bridge is bound to. `env`
-    /// carries the session's resolved forge.toml env - `[env]`, then
+    /// renders which forge-account the bridge is bound to. `slot` is the
+    /// seat as `SessionSlot::display` spells it, when the caller knows one:
+    /// a control request the bridge had to answer itself names it, so the
+    /// record is actionable without joining the CLI's session id to a seat.
+    /// `env` carries the session's resolved forge.toml env - `[env]`, then
     /// `[accounts.env]`, then the spawning project's `[[orgs.projects]]`
     /// `env` - stamped onto the spawned subprocess
     /// alongside `CLAUDE_CONFIG_DIR`. Returns a
@@ -329,10 +332,11 @@ impl Agent {
     pub fn spawn(
         config_dir: PathBuf,
         display_name: Option<String>,
+        slot: Option<String>,
         extra_mcp_servers: Vec<(String, forge_sdk::mcp::McpServer)>,
         env: HashMap<String, String>,
     ) -> AgentHandle {
-        let bridge = ForgeSdkBridge::new(config_dir, display_name, extra_mcp_servers, env);
+        let bridge = ForgeSdkBridge::new(config_dir, display_name, slot, extra_mcp_servers, env);
         let agent_event_rx = bridge.take_events().unwrap_or_else(|| mpsc::unbounded_channel().1);
 
         let (commands_tx, commands_rx) = mpsc::unbounded_channel::<AgentCommand>();

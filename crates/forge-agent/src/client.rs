@@ -128,6 +128,14 @@ pub enum AgentEvent {
         session_id: String,
         request: types::QuestionRequest,
     },
+    /// **The bridge answered a control request itself.** No client answered
+    /// within the bound, so the CLI was denied and the turn continues. The
+    /// workspace drops the slot it parked for it, or a dock keeps drawing a
+    /// prompt whose answer can no longer reach anything.
+    ControlRequestUnanswered {
+        session_id: String,
+        tool_use_id: String,
+    },
     /// The CLI answered a `cancel_async_message`. `cancelled: false` means the
     /// prompt was already dequeued for execution - it is on its way to the
     /// model, and a reader has to say so rather than pretend it was dropped.

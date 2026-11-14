@@ -1191,6 +1191,26 @@ async fn finish(
             "the connection that was listening went away; its seats drop it",
         );
     }
+    // **Every ask this connection was the last surface for is answered.** A
+    // permission prompt or a question is parked in the workspace on a oneshot
+    // only a `Respond*` command resolves, and this connection was the only one
+    // its frame reached: with it gone the `claude` child would wait on a
+    // control request nobody can answer. Cancelling denies the call so the
+    // turn continues. An ask another connection also holds is left alone.
+    let released = state.surface.release_client_asks(me);
+    if released > 0 {
+        let slot = shown_seat(watching.showing.as_ref());
+        tracing::debug!(
+            target: "forge_server::transport",
+            event_name = "pending_asks_released_on_disconnect",
+            client = me,
+            ending = ended,
+            slot = %slot,
+            released,
+            "the connection ended holding asks no other surface could answer, so the CLI was \
+             denied rather than left parked",
+        );
+    }
     // A recording this connection was feeding dies with it: dropping it is
     // the same answer as the page's cancel, and keeping it would leave a
     // recording no connection can stop.
@@ -1674,6 +1694,21 @@ where
                 // The fold is the transport's, not this connection's: it runs
                 // once for the whole socket in `transport::fold_the_stream`.
                 if forwards(&update, &watching.subjects, me) {
+                    // **The connection that is handed an ask is the only one
+                    // that can answer it.** Bookkeeping for the teardown: a
+                    // connection that ends answers for every ask it held, so
+                    // the child is never left parked on a control request
+                    // whose only surface is gone. **Only one that declared it
+                    // can answer holds the ask**: a watching mirror receives
+                    // the frame too, and counting it would keep the ask alive
+                    // past the death of the only surface that could reply.
+                    let answering = updates.as_ref().is_some_and(|(_, answering)| *answering);
+                    if answering
+                        && let SessionUpdate::PermissionRequest { key, tool_id, .. }
+                        | SessionUpdate::QuestionRequest { key, tool_id, .. } = &*update
+                    {
+                        state.surface.note_ask_delivered(key, tool_id, me);
+                    }
                     // **A fatal goes out now, not on the batch's clock.** The
                     // exit it announces is already on its way - `workspace.
                     // shutdown` follows the run loop's return - and a frame
