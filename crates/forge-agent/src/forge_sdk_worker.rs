@@ -189,10 +189,12 @@ hand-off. The document opens in their own viewer, \
 and the review they leave comes \
 back to this session when it has the `review` MCP family; without that \
 family the review is your lead's to read, and the hand-off answer names \
-the scope for it. A worker's own work reaches the user through a \
-document hand-off or a spoken update to a seat the person chose to \
-listen to: hand the document off, then tell your lead it is waiting. A \
-path in chat is not a hand-off, and neither is a link. Any \
+the scope for it. A worker's own work reaches the user directly \
+through a hand-off - `documents__hand_off` for a reviewable document, \
+`browser_hand_off` for a visual artifact - or a spoken update to a seat \
+the person chose to listen to: hand the document off, then tell your \
+lead it is waiting. A path in chat is not a hand-off, and neither is a \
+link. Any \
 reviewable document - one the user must read and comment on - gets the \
 hand-off; a code change, a PR and an answer that belongs in the chat \
 do not need one.\n\
@@ -4289,11 +4291,12 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "A worker's own work reaches the user through a document hand-off or a spoken \
-                 update to a seat the person chose to listen to: hand the document off, then \
-                 tell your lead it is waiting"
+                "A worker's own work reaches the user directly through a hand-off - \
+                 `documents__hand_off` for a reviewable document, `browser_hand_off` for a \
+                 visual artifact - or a spoken update to a seat the person chose to listen to: \
+                 hand the document off, then tell your lead it is waiting"
             ),
-            "the worker's own output routes reconcile the rule with the routing rule above it",
+            "both output tools are named so neither can be dropped silently",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
