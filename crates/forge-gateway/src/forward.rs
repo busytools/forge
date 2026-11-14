@@ -241,16 +241,6 @@ impl<S> StalledStream<S> {
         }
     }
 
-    /// How late a poll may find its deadline before that lateness is read
-    /// as the body not being polled at all rather than the upstream going
-    /// silent. Half the applicable bound: ordinary jitter is far under
-    /// it, a paused reader far over.
-    fn rearm_grace(&self) -> Duration {
-        let bound =
-            if self.saw_content { self.bounds.content_idle } else { self.bounds.first_content };
-        bound / 2
-    }
-
     /// The stall record and the body's ending: logged once, then the
     /// stream is finished.
     fn stall_item(&mut self) -> Result<Frame<Bytes>, BoxError> {
@@ -307,18 +297,23 @@ where
             this.first_content_deadline = now + this.bounds.first_content;
             this.last_content_at = now;
         } else {
-            let deadline = if this.saw_content {
+            // **A poll arriving well past its deadline means the body
+            // was not serviced when the timer fired**: client
+            // backpressure, a sleeping machine, a wedged reader. That is
+            // not the upstream going silent, so the clock restarts from
+            // this poll. The grace is a tenth of the bound: a scheduler
+            // delivering the timer a moment late sits under it, while a
+            // reader that stopped pulling the body resumes far later.
+            // (Half a bound was tried and cut real pauses as stalls; a
+            // gap test with no grace re-armed on the timer's own wake.)
+            let bound =
+                if this.saw_content { this.bounds.content_idle } else { this.bounds.first_content };
+            let late_by = now.saturating_duration_since(if this.saw_content {
                 this.last_content_at + this.bounds.content_idle
             } else {
                 this.first_content_deadline
-            };
-            // A poll arriving more than a grace past the deadline means
-            // the body was not polled when it came due: client
-            // backpressure, a sleeping machine, a wedged reader. That is
-            // not the upstream going silent, so restart the clock. The
-            // grace absorbs ordinary scheduling jitter, which sits well
-            // under half a bound; a real pause overruns it.
-            if now.saturating_duration_since(deadline) > this.rearm_grace() {
+            });
+            if late_by > bound / 10 {
                 if this.saw_content {
                     this.last_content_at = now;
                 } else {
@@ -2279,6 +2274,137 @@ mod tests {
         assert!(stream.next().await.is_none(), "the body completes");
         let records = forward_records(&caught);
         assert!(records.is_empty(), "a body that was not polled is not a stall: {records:?}");
+    }
+
+    /// **The gap is the quantity, not the lateness.** A 120 ms pause
+    /// against a 100 ms bound resumes only 20 ms past the deadline, so a
+    /// re-arm keyed on lateness would leave the stale deadline to cut;
+    /// keyed on the gap it restarts and the content arrives.
+    #[tokio::test]
+    async fn a_pause_past_the_bound_restarts_even_when_the_resume_is_barely_late() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::Registry::default().with(caught.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let inner = futures_util::stream::unfold(0usize, |step| async move {
+            match step {
+                0 => Some((
+                    Ok::<Frame<Bytes>, BoxError>(Frame::data(Bytes::from_static(b": keepalive\n"))),
+                    1,
+                )),
+                1 => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    Some((
+                        Ok::<Frame<Bytes>, BoxError>(Frame::data(Bytes::from_static(
+                            b"data: hello\n\n",
+                        ))),
+                        2,
+                    ))
+                }
+                _ => None,
+            }
+        });
+        let mut stream = StalledStream::new(
+            Box::pin(inner),
+            StallBounds {
+                first_content: Duration::from_millis(100),
+                content_idle: Duration::from_millis(100),
+            },
+            stall_context(),
+        );
+
+        let first = stream.next().await.expect("the keepalive").expect("bytes");
+        assert_eq!(first.data_ref().map(|data| &data[..]), Some(&b": keepalive\n"[..]));
+
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        let second = stream.next().await.expect("the content after the pause").expect("bytes");
+        assert_eq!(second.data_ref().map(|data| &data[..]), Some(&b"data: hello\n\n"[..]));
+        let records = forward_records(&caught);
+        assert!(records.is_empty(), "a pause past the bound is not a stall: {records:?}");
+    }
+
+    /// The same gap rule holds after content starts: a pause is not the
+    /// upstream degrading to comments.
+    #[tokio::test]
+    async fn a_pause_after_content_restarts_the_content_idle_clock() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::Registry::default().with(caught.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let inner = futures_util::stream::unfold(0usize, |step| async move {
+            match step {
+                0 => Some((
+                    Ok::<Frame<Bytes>, BoxError>(Frame::data(Bytes::from_static(b"data: one\n\n"))),
+                    1,
+                )),
+                1 => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    Some((
+                        Ok::<Frame<Bytes>, BoxError>(Frame::data(Bytes::from_static(
+                            b": keepalive\n",
+                        ))),
+                        2,
+                    ))
+                }
+                _ => None,
+            }
+        });
+        let mut stream = StalledStream::new(
+            Box::pin(inner),
+            StallBounds {
+                first_content: Duration::from_millis(100),
+                content_idle: Duration::from_millis(100),
+            },
+            stall_context(),
+        );
+
+        let first = stream.next().await.expect("the content").expect("bytes");
+        assert_eq!(first.data_ref().map(|data| &data[..]), Some(&b"data: one\n\n"[..]));
+
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        let second = stream.next().await.expect("the comment after the pause").expect("bytes");
+        assert_eq!(second.data_ref().map(|data| &data[..]), Some(&b": keepalive\n"[..]));
+        let records = forward_records(&caught);
+        assert!(records.is_empty(), "a pause after content is not a stall: {records:?}");
+    }
+
+    /// The first-content clock starts at the first body poll, so a first
+    /// poll arriving after the bound is not cut for the head's delay.
+    #[tokio::test]
+    async fn the_first_content_clock_starts_at_the_first_poll() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::Registry::default().with(caught.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let inner = futures_util::stream::iter(vec![
+            Ok::<Frame<Bytes>, BoxError>(Frame::data(Bytes::from_static(b": keepalive\n"))),
+            Ok::<Frame<Bytes>, BoxError>(Frame::data(Bytes::from_static(b"data: x\n\n"))),
+        ]);
+        let mut stream = StalledStream::new(
+            Box::pin(inner),
+            StallBounds {
+                first_content: Duration::from_millis(100),
+                content_idle: Duration::from_millis(100),
+            },
+            stall_context(),
+        );
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let first = stream.next().await.expect("the keepalive").expect("bytes");
+        assert_eq!(first.data_ref().map(|data| &data[..]), Some(&b": keepalive\n"[..]));
+        let second = stream.next().await.expect("the content").expect("bytes");
+        assert_eq!(second.data_ref().map(|data| &data[..]), Some(&b"data: x\n\n"[..]));
+        let records = forward_records(&caught);
+        assert!(records.is_empty(), "the clock starts at the first poll: {records:?}");
     }
 
     /// A flood of comments keeps the inner stream ready on every poll, so
