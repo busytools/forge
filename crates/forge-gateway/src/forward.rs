@@ -492,6 +492,7 @@ enum ForwardFailureKind {
     Closed,
     Timeout,
     Fd,
+    Http2,
     Other,
 }
 
@@ -505,6 +506,7 @@ impl ForwardFailureKind {
             Self::Closed => "closed",
             Self::Timeout => "timeout",
             Self::Fd => "fd",
+            Self::Http2 => "http2",
             Self::Other => "other",
         }
     }
@@ -515,9 +517,10 @@ impl ForwardFailureKind {
 /// String matching rather than downcasts: the layer that carries the cause
 /// is a different crate's error type on every reqwest release, and matching
 /// words keeps one mechanism for the kinds reqwest has no predicate for
-/// (tls, reset, closed, fd). Precedence runs most specific first - EMFILE is
-/// a connect failure by position but its own problem by cause, and both
-/// "connection reset by peer" and "connection closed" contain "connect".
+/// (tls, reset, closed, fd, http2). Precedence runs most specific first -
+/// EMFILE is a connect failure by position but its own problem by cause, and
+/// both "connection reset by peer" and "connection closed" contain
+/// "connect".
 ///
 /// The top layer is skipped when a cause sits below it: reqwest's send top
 /// `Display` embeds the request URL, so a host carrying "ssl" or "dns"
@@ -542,6 +545,10 @@ fn classify_forward_failure(error: &(dyn std::error::Error + 'static)) -> Forwar
         (ForwardFailureKind::Reset, &["reset"]),
         (ForwardFailureKind::Closed, &["closed", "broken pipe", "eof"]),
         (ForwardFailureKind::Connect, &["connect", "refused", "unreachable", "network is down"]),
+        // Last, because the h2 wrapper shares its layer with the more
+        // specific words above it ("http2 error: connection closed",
+        // REFUSED_STREAM rendering as "refused"), and those keep their kind.
+        (ForwardFailureKind::Http2, &["http2 error", "stream error", "unspecific protocol error"]),
     ];
     let (layers, _) = error_chain(error);
     let layers: Vec<String> =
@@ -2427,6 +2434,29 @@ mod tests {
                 ForwardFailureKind::Connect,
             ),
             (
+                // The measured shape behind every gateway_forward_failed
+                // record of 2026-11-14: a peer RST_STREAM after 10-48 s.
+                chain(&[
+                    "error sending request for url \
+                     (https://openrouter.ai/api/v1/messages?beta=true)",
+                    "client error (SendRequest)",
+                    "http2 error",
+                    "stream error received: unspecific protocol error detected",
+                ]),
+                ForwardFailureKind::Http2,
+            ),
+            (
+                // A peer that closes the stream stays "closed": the h2
+                // wrapper carries its own needle in the same layer, so this
+                // pins the precedence, not just the kind's existence.
+                chain(&[
+                    "error sending request for url (https://openrouter.ai/api/v1/messages)",
+                    "client error (SendRequest)",
+                    "http2 error: connection closed",
+                ]),
+                ForwardFailureKind::Closed,
+            ),
+            (
                 // A flat error has no wrapper to skip, so its own text is
                 // still evidence.
                 Chained { message: "tcp connect error: Connection refused", source: None },
@@ -2474,6 +2504,7 @@ mod tests {
             (ForwardFailureKind::Closed, "closed"),
             (ForwardFailureKind::Timeout, "timeout"),
             (ForwardFailureKind::Fd, "fd"),
+            (ForwardFailureKind::Http2, "http2"),
             (ForwardFailureKind::Other, "other"),
         ] {
             assert_eq!(kind.as_str(), name);
