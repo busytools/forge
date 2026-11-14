@@ -249,6 +249,27 @@ describe('a dispatch read into its timeline', () => {
     ]);
   });
 
+  it('draws the hook summary line even when no count arrived', () => {
+    // A frame with no count still draws as itself rather than being dropped,
+    // the same rule the summary line is under in the first place.
+    const frames = dispatchFrames(
+      [
+        dispatch(),
+        {
+          type: 'system',
+          subtype: 'stop_hook_summary',
+          parent_tool_use_id: 'tu-task',
+          hookInfos: [{ command: 'cargo fmt', durationMs: 3 }],
+        },
+      ],
+      'tu-task',
+    );
+
+    const line = frames.lines[0];
+    expect(line?.kind).toBe('hook');
+    expect(line?.kind === 'hook' && line.text).toBe('hooks ran');
+  });
+
   it('keeps a backgrounded child call open rather than settling it on its ack', () => {
     // The session's own rule: a call whose task outlives its turn draws as
     // running however clean the launch ack it was answered with.
