@@ -630,7 +630,15 @@
   let accounted = 0;
   /** The dropped-ask count this component has already drained against. */
   let drained = 0;
-  /** The sizes at the last scroll event, which tell a reader moving from a layout moving. */
+  /**
+   * The sizes the layout was last left in, which tell a reader moving from a
+   * layout moving.
+   *
+   * Written by every event the handler reads, and by every pin - `land()`,
+   * the glide's completion and `restoreAnchor` - because a pin leaves a
+   * layout the event after it compares against, and its echo may not have
+   * been delivered when the reader's next move arrives.
+   */
   let lastSeen = { content: 0, room: 0 };
   /** The offset the last pin wrote, so the event it comes back as is not read as the reader's. */
   let pinEcho: { at: number; foot: boolean; height: number; room: number } | null = null;
@@ -3112,13 +3120,19 @@
     // column short - a pin held at the model end does - and landing the foot
     // again is the right recovery there. `restoring` is a return still
     // placing its reader, not a foot to land.
+    // **A down gesture does not explain a move AWAY from the foot.** The
+    // reader's aim is toward the end; a layout that carries them up while
+    // their aim is live is still the layout's move, and skipping the arm for
+    // every aimed event parked a following reader inside the aim's own
+    // window (#2970). Only an event moving the way their hand pointed is
+    // theirs to leave alone.
     if (
       wasFoot &&
       held.following &&
       laidOut &&
       !footHeld &&
       !byReader &&
-      !aimed &&
+      (!aimed || !towardFoot) &&
       restoring === null
     ) {
       land(true);
