@@ -256,16 +256,27 @@
   let composedText: string | null = null;
 
   /**
-   * **The keyboard belongs to the page while this surface holds the role.**
-   * The canvas is not focusable, so a click on it moves focus to the body and
-   * every key is lost until the role changes - measured on the web.
+   * **The field takes the keyboard for the page.** The canvas is not
+   * focusable, so a click on it moves focus to the body and every key is
+   * lost until something else takes focus - measured on the web. On a fine
+   * pointer this is the click's own doing; on the phone the effect raises it
+   * only for an editable answer, while a tap raises it whenever the page's
+   * last answer is editable - a field that still holds focus - which is why
+   * a button tap can raise it for the beat before the page's report drops it.
    */
   function takeKeyboard(): void {
     imeEl?.focus({ preventScroll: true });
     // **The browser clears the focus its own gesture handling did not set**;
-    // the next frame puts it back (measured on the dev stack).
+    // the next frame puts it back (measured on the dev stack). **On a coarse
+    // pointer a drop that lands in between is the page's answer and outranks
+    // this frame**, so the refocus re-reads the editable state there; a fine
+    // pointer's keyboard is physical and its refocus must run whatever the
+    // page's focus answer says - a click on a button reports `false`, which
+    // is the normal state on the web and the desktop.
+    const fine = typeof matchMedia !== 'undefined' && matchMedia('(pointer: fine)').matches;
     const refocus = (): void => {
-      if (holdsControl() && document.activeElement !== imeEl) {
+      const follows = fine || surface.editable !== false;
+      if (follows && holdsControl() && document.activeElement !== imeEl) {
         imeEl?.focus({ preventScroll: true });
       }
     };
@@ -349,11 +360,23 @@
       const tapped = !touch.moved;
       touch = null;
       if (tapped && holdsControl()) {
-        // **The tap is also how the keyboard gets the field**: a phone opens
-        // its keyboard on a real control's focus, and the canvas is not one.
-        // A swipe does not focus it - the keyboard's resize would cancel the
-        // swipe it interrupted.
-        takeKeyboard();
+        // **A tap is only a click.** Whether the keyboard rises is the
+        // page's answer, not the tap's: the host reports when the focused
+        // node is editable, and the field follows that - so tapping a
+        // button, a link or empty page raises nothing unless a field still
+        // holds focus (that tap's raise is the next paragraph).
+        //
+        // **An editable node that already holds focus still needs this
+        // tap.** The host reports changes, so a field that never lost the
+        // page's focus reports nothing when it is tapped again - and after
+        // the phone dismissed its keyboard, that tap is the only way back
+        // to typing. A button, a link or empty page reports `false`, so this
+        // is not the every-tap keyboard the defect was.
+        //
+        // **`null` is a server older than the answer**, and the only way to
+        // type into its pages is this tap: the field has nothing to follow,
+        // so the old every-tap behaviour stands.
+        if (surface.editable !== false) takeKeyboard();
         // A tap is the page's click: one press and its release at the point.
         const { x, y } = point(event);
         const gesture: BrowserInputEvent = {
@@ -392,9 +415,10 @@
    * **The phone's keyboard types into the page.** The canvas has no fields of
    * its own, so a hidden field takes the keyboard and the IME; printable text
    * crosses whole, and the named keys (Enter, Backspace, Tab, the arrows)
-   * cross as key events. **A tap on the page focuses it**; taking control
-   * alone does not, so a swipe is never interrupted by the keyboard's
-   * resize, and a watcher never gets a keyboard over a page it cannot drive.
+   * cross as key events. **The page's own focus is what raises it on its
+   * own** - an editable node, reported by the host; a tap raises it while
+   * the page's last answer is editable, and a watcher never gets a keyboard
+   * over a page it cannot drive.
    */
   function keydown(event: KeyboardEvent): void {
     if (!holdsControl() || event.isComposing) return;
@@ -471,9 +495,21 @@
   }
 
   // **A watcher never keeps the keyboard.** A surface that loses control
-  // gives the field up. **A mouse that takes control can type at once**; a
-  // finger's keyboard stays a tap away, because raising it on the role would
-  // interrupt the swipe that came with it.
+  // gives the field up. **A mouse that takes control can type at once**: a
+  // fine pointer's keyboard is physical, so the field simply follows the
+  // role as it always did.
+  //
+  // **A finger's keyboard follows the page's focus instead.** The server's
+  // `browser_view` says whether the page's focused node is editable - the
+  // browser host's answer, never a guess at a canvas - and this raises the
+  // field while it is true and drops it when it turns false, so the effect
+  // never opens the keyboard for a non-editable node. **A tap is the other
+  // hand**: it raises the keyboard while a field's focus still stands, and
+  // the page's next report drops it (the button-tap beat).
+  //
+  // **`null` is a server older than the answer**, which has no focus to
+  // follow: the tap path is the only way to type there, so this effect
+  // leaves the field alone rather than guessing either way.
   $effect(() => {
     if (!painting) return;
     if (!holdsControl()) {
@@ -482,7 +518,10 @@
     }
     if (typeof matchMedia !== 'undefined' && matchMedia('(pointer: fine)').matches) {
       imeEl?.focus({ preventScroll: true });
+      return;
     }
+    if (surface.editable === true) takeKeyboard();
+    else if (surface.editable === false) imeEl?.blur();
   });
 
   function wheel(event: WheelEvent): void {
@@ -593,9 +632,10 @@
         onpointercancel={cancel}
         onwheel={wheel}
       ></canvas>
-      <!-- The phone's keyboard and IME: invisible, but a tap on the page
-           focuses it, so its keys and composed text reach the page through
-           the same input vocabulary the desktop overlay uses. -->
+      <!-- The phone's keyboard and IME: invisible, and focused while the
+           page's own focused node is editable, so its keys and composed text
+           reach the page through the same input vocabulary the desktop
+           overlay uses. -->
       <input
         class="surface-ime"
         bind:this={imeEl}

@@ -114,6 +114,7 @@ beforeEach(() => {
   surface.controller = null;
   surface.attachedProfile = null;
   surface.profile = null;
+  surface.editable = null;
   perf.input.mockClear();
   perf.paint.mockClear();
   vi.mocked(keptFrame).mockReset();
@@ -686,9 +687,10 @@ describe('the canvas viewer', () => {
     });
   });
 
-  /// **A mouse that takes control can type at once**, and a finger's keyboard
-  /// stays a tap away: raising it on the role would interrupt the swipe that
-  /// came with it.
+  /// **A mouse that takes control can type at once.** A fine pointer's
+  /// keyboard is physical, so the field simply follows the role; a finger's
+  /// keyboard follows the page's focus instead, and the tests above pin
+  /// that.
   it('gives the keyboard to a fine pointer that takes control', async () => {
     vi.stubGlobal('matchMedia', (query: string) => ({ matches: query === '(pointer: fine)' }));
     const { connection } = stubConnection();
@@ -703,6 +705,76 @@ describe('the canvas viewer', () => {
     );
   });
 
+  /// **A fine pointer's refocus must not follow the page's focus answer.**
+  /// On the web and the desktop a click on a button or empty page reports
+  /// `editable: false` - the normal state - and the queued refocus is what
+  /// keeps the keys on the page after the browser clears them. Gating it on
+  /// the page's answer left the field blurred and the page unable to type
+  /// until an editable field was clicked.
+  it('keeps a fine pointer on the page whatever the focus answer says', async () => {
+    vi.stubGlobal('requestAnimationFrame', (fn: () => void) => setTimeout(fn, 0));
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: query === '(pointer: fine)' }));
+    surface.editable = false;
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection } = stubConnection();
+    const target = open(connection);
+    const input = target.querySelector<HTMLInputElement>('.surface-ime');
+    const canvas = target.querySelector('canvas');
+    if (input === null || canvas === null) throw new Error('no canvas or keyboard field');
+
+    canvas.dispatchEvent(new MouseEvent('pointerdown', { clientX: 4, clientY: 6, bubbles: true }));
+    // The WebView's own handling of the press, which runs after the handler.
+    input.blur();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(document.activeElement, 'the refocus is the fine pointer one').toBe(input);
+  });
+
+  /// **A fine pointer's effect stops at the role.** Its branch returns
+  /// before the page's answer, so `editable: false` - the normal report
+  /// after a button click or an attach to a page with no field - must not
+  /// blur the field the mouse just took. Deleting that return lets the
+  /// coarse follow path run and the keys stop reaching the page.
+  it("keeps a fine pointer's field when the answer turns non-editable", async () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: query === '(pointer: fine)' }));
+    const { connection } = stubConnection();
+    const target = open(connection);
+    surface.viewer = 7;
+    surface.controller = 7;
+    surface.editable = true;
+    flushSync();
+    const input = target.querySelector<HTMLInputElement>('.surface-ime');
+    if (input === null) throw new Error('no keyboard field');
+    await vi.waitFor(() =>
+      expect(document.activeElement, 'the field takes the keyboard').toBe(input),
+    );
+
+    surface.editable = false;
+    flushSync();
+    expect(document.activeElement, 'a fine pointer follows the role, not the page').toBe(input);
+  });
+
+  /// **An unknown answer leaves the field alone.** `null` is a v32 server
+  /// that cannot report focus; the effect must neither raise nor drop the
+  /// keyboard on it, or a phone on that pairing loses what the tap path
+  /// raised.
+  it('leaves the field alone when the focus answer is unknown', async () => {
+    coarse();
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection } = stubConnection();
+    const target = open(connection);
+    const ime = target.querySelector<HTMLInputElement>('.surface-ime');
+    if (ime === null) throw new Error('no keyboard field');
+
+    surface.editable = true;
+    flushSync();
+    await vi.waitFor(() => expect(document.activeElement).toBe(ime));
+    surface.editable = null;
+    flushSync();
+    expect(document.activeElement, 'an unknown answer neither raises nor drops').toBe(ime);
+  });
+
   /** A pointer event of the kind a finger sends. */
   function finger(type: string, x: number, y: number): Event {
     const event = new MouseEvent(type, { clientX: x, clientY: y, bubbles: true });
@@ -710,6 +782,173 @@ describe('the canvas viewer', () => {
     Object.defineProperty(event, 'pointerId', { value: 3 });
     return event;
   }
+
+  /** A phone's pointer is coarse: no mouse, so the keyboard follows the
+   *  page's focus rather than the role. */
+  function coarse(): void {
+    vi.stubGlobal('matchMedia', () => ({ matches: false }));
+  }
+
+  /// **The page says when a text field has focus, and the keyboard follows
+  /// it.** The canvas cannot tell a field from a button, so the browser host
+  /// is the only source - and the field is what carries the phone's typing.
+  it('raises the keyboard when the page reports an editable focus', async () => {
+    coarse();
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection } = stubConnection();
+    const target = open(connection);
+    const ime = target.querySelector('input.surface-ime');
+    if (ime === null) throw new Error('no keyboard field');
+    expect(document.activeElement, 'no focus is no keyboard').not.toBe(ime);
+
+    surface.editable = true;
+    flushSync();
+    await vi.waitFor(() =>
+      expect(document.activeElement, 'an editable node takes the keyboard').toBe(ime),
+    );
+  });
+
+  /// **With no field holding focus, a tap is only a click.** On the phone
+  /// this used to raise the keyboard whatever was under the finger; now the
+  /// page's answer decides, and a tap with no editable focus leaves the
+  /// keyboard down (a tap while a field still holds focus raises it for the
+  /// beat).
+  it('a tap on the page alone does not raise the keyboard', () => {
+    coarse();
+    // A v33 server's answer: no editable node holds focus.
+    surface.editable = false;
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection, events } = stubConnection();
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    const ime = target.querySelector('input.surface-ime');
+    if (canvas === null || ime === null) throw new Error('no canvas or keyboard field');
+
+    canvas.dispatchEvent(finger('pointerdown', 10, 20));
+    canvas.dispatchEvent(finger('pointerup', 10, 20));
+    expect(events, "the tap is still the page's click").toMatchObject([
+      { kind: 'mouse', action: 'press' },
+      { kind: 'mouse', action: 'release' },
+    ]);
+    expect(document.activeElement, 'nothing editable focused, no keyboard').not.toBe(ime);
+  });
+
+  /// **A v32 server has no focus answer, so the tap is still the way in.**
+  /// The answer is carried as `null` there, and the old every-tap behaviour
+  /// is what keeps a phone on that pairing able to type at all.
+  it('raises the keyboard on a tap when the server sends no focus answer', () => {
+    coarse();
+    expect(surface.editable, 'nothing has answered yet').toBeNull();
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection } = stubConnection();
+    const target = open(connection);
+    const ime = target.querySelector('input.surface-ime');
+    const canvas = target.querySelector('canvas');
+    if (ime === null || canvas === null) throw new Error('no canvas or keyboard field');
+
+    canvas.dispatchEvent(finger('pointerdown', 10, 20));
+    canvas.dispatchEvent(finger('pointerup', 10, 20));
+    expect(document.activeElement, 'the old tap path still types').toBe(ime);
+  });
+
+  /// **A drop that lands inside the refocus frame wins.** `takeKeyboard`
+  /// schedules one more focus a frame later; if the page answered
+  /// non-editable in between, that frame must not raise the keyboard back.
+  it('does not refocus after a drop that lands in the same frame', async () => {
+    vi.stubGlobal('requestAnimationFrame', (fn: () => void) => setTimeout(fn, 0));
+    coarse();
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection } = stubConnection();
+    const target = open(connection);
+    const ime = target.querySelector<HTMLInputElement>('.surface-ime');
+    if (ime === null) throw new Error('no keyboard field');
+
+    surface.editable = true;
+    flushSync(); // the effect focuses, and schedules its refocus frame
+    surface.editable = false;
+    flushSync(); // the page's own answer blurs it
+    expect(document.activeElement, 'the drop blurred the field').not.toBe(ime);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(document.activeElement, 'the queued frame does not raise it back').not.toBe(ime);
+  });
+
+  /// **A tap on the field that already holds focus is the way back to the
+  /// keyboard.** The host reports focus *changes*, so the field a person
+  /// typed in and then dismissed the keyboard over reports nothing when it
+  /// is tapped again - and without this the phone could not type into it a
+  /// second time.
+  it('raises the keyboard again for a tap while a field already holds focus', async () => {
+    coarse();
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection } = stubConnection();
+    const target = open(connection);
+    const canvas = target.querySelector('canvas');
+    const ime = target.querySelector<HTMLInputElement>('.surface-ime');
+    if (canvas === null || ime === null) throw new Error('no canvas or keyboard field');
+
+    surface.editable = true;
+    flushSync();
+    await vi.waitFor(() => expect(document.activeElement).toBe(ime));
+    // **The follow path's refocus frame has landed.** Left queued, it fires
+    // after the dismiss below and refocuses by itself, which would pass this
+    // test with the tap path broken.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // The phone's own dismiss: the keyboard is gone and the page still
+    // holds the field, so no focus change is coming.
+    ime.blur();
+    expect(document.activeElement, 'the keyboard was dismissed').not.toBe(ime);
+
+    canvas.dispatchEvent(finger('pointerdown', 10, 20));
+    canvas.dispatchEvent(finger('pointerup', 10, 20));
+    await vi.waitFor(() =>
+      expect(document.activeElement, 'the same field takes the keyboard back').toBe(ime),
+    );
+  });
+
+  /// **A non-editable focus drops the keyboard**: the person tapped away from
+  /// the field, or the page cleared it.
+  it('drops the keyboard when the page loses its editable focus', async () => {
+    coarse();
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection } = stubConnection();
+    const target = open(connection);
+    const ime = target.querySelector('input.surface-ime');
+    if (ime === null) throw new Error('no keyboard field');
+    surface.editable = true;
+    flushSync();
+    await vi.waitFor(() => expect(document.activeElement).toBe(ime));
+
+    surface.editable = false;
+    flushSync();
+    expect(document.activeElement, 'focus left the field').not.toBe(ime);
+  });
+
+  /// **A watcher never keeps the phone's keyboard**, whatever the page says:
+  /// its keys would be refused, and the field it does not own must not take
+  /// the person's typing.
+  it("drops the keyboard when the phone's viewer loses control", async () => {
+    coarse();
+    surface.viewer = 7;
+    surface.controller = 7;
+    const { connection } = stubConnection();
+    const target = open(connection);
+    const ime = target.querySelector('input.surface-ime');
+    if (ime === null) throw new Error('no keyboard field');
+    surface.editable = true;
+    flushSync();
+    await vi.waitFor(() => expect(document.activeElement).toBe(ime));
+
+    surface.controller = null;
+    flushSync();
+    expect(document.activeElement, 'a watcher holds no keyboard').not.toBe(ime);
+  });
 
   /// **A tap is a click and a swipe is a scroll.** A finger's drag sent as a
   /// held mouse button selected text and dragged links; the phone maps
@@ -865,19 +1104,19 @@ describe('the canvas viewer', () => {
   /// so a hidden one takes the keyboard while this surface holds control;
   /// named keys cross as key events and inserted text whole.
   it('sends keys and typed text from the hidden field', () => {
+    coarse();
     surface.viewer = 7;
     surface.controller = 7;
     const { connection, events } = stubConnection();
     const target = open(connection);
     const input = target.querySelector<HTMLInputElement>('.surface-ime');
     if (input === null) throw new Error('no keyboard field');
-    // A tap on the page is what raises the phone's keyboard.
-    const canvas = target.querySelector('canvas');
-    if (canvas === null) throw new Error('no canvas');
-    canvas.dispatchEvent(finger('pointerdown', 10, 20));
-    canvas.dispatchEvent(finger('pointerup', 10, 20));
+    // **The page reported an editable focus**, which is what raises the
+    // phone's keyboard and puts the field on it.
+    surface.editable = true;
+    flushSync();
     expect(document.activeElement, 'the field holds the keyboard').toBe(input);
-    events.length = 0; // the tap's own click
+    events.length = 0; // nothing has been typed yet
 
     const enter = new KeyboardEvent('keydown', {
       key: 'Enter',
@@ -967,10 +1206,15 @@ describe('the canvas viewer', () => {
     ]);
   });
 
-  /// **A swipe does not raise the keyboard, a tap does.** Focusing on every
-  /// touch pointerdown opened the keyboard and its resize cancelled the
-  /// swipe it interrupted.
-  it('raises the keyboard on a tap, not on a swipe', () => {
+  /// **Neither a swipe nor a bare tap raises the keyboard.** A swipe never
+  /// did - its keyboard resize would cancel the swipe it interrupted - and a
+  /// tap no longer does either with no field holding focus: the page's
+  /// answer decides, so a button, a link or empty page leaves the keyboard
+  /// down (a tap while a field still holds focus raises it for the beat).
+  it('raises the keyboard on neither a swipe nor a bare tap', () => {
+    coarse();
+    // A v33 server's answer: no editable node holds focus.
+    surface.editable = false;
     surface.viewer = 7;
     surface.controller = 7;
     const { connection } = stubConnection();
@@ -988,7 +1232,7 @@ describe('the canvas viewer', () => {
 
     canvas.dispatchEvent(finger('pointerdown', 10, 20));
     canvas.dispatchEvent(finger('pointerup', 10, 20));
-    expect(document.activeElement, 'a tap does').toBe(input);
+    expect(document.activeElement, 'and neither does a tap on its own').not.toBe(input);
   });
 
   /// **The WebView clears a focus its own tap did not set.** A canvas is not
@@ -998,17 +1242,19 @@ describe('the canvas viewer', () => {
   /// (measured on the dev stack).
   it('takes the keyboard back after the webview clears it', async () => {
     vi.stubGlobal('requestAnimationFrame', (fn: () => void) => setTimeout(fn, 0));
+    coarse();
     surface.viewer = 7;
     surface.controller = 7;
     const { connection } = stubConnection();
     const target = open(connection);
     const input = target.querySelector<HTMLInputElement>('.surface-ime');
-    const canvas = target.querySelector('canvas');
-    if (input === null || canvas === null) throw new Error('the surface is missing its parts');
+    if (input === null) throw new Error('the surface is missing its parts');
 
-    canvas.dispatchEvent(finger('pointerdown', 10, 20));
-    canvas.dispatchEvent(finger('pointerup', 10, 20));
-    // The WebView's own handling of the tap, which runs after the handler.
+    // The page reported an editable focus; the follow path focused the field.
+    surface.editable = true;
+    flushSync();
+    expect(document.activeElement, 'the field holds the keyboard').toBe(input);
+    // The WebView's own handling, which runs after the follow path's frame.
     input.blur();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(document.activeElement, 'the next frame gives the keyboard to the field').toBe(input);

@@ -2,7 +2,7 @@
  * A state class's rule, pinned to the tone that class names.
  *
  * **The defect this closes.** Swapping a token in the client's own sheet -
- * `details.hooks > summary .st.err` from `var(--bad)` to `var(--ok)`, say -
+ * `details.leaf > summary .gl.err` from `var(--bad)` to `var(--ok)`, say -
  * drew a failed hook's summary mark in the success tone with the whole suite
  * green. That is the gap this pins: the tone a state class names, in the app's
  * sheet and in the book drawing's own copy of it.

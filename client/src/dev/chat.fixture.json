@@ -535,7 +535,7 @@
           "uuid": "s-sub-hooks",
           "subtype": "stop_hook_summary",
           "parent_tool_use_id": "tu-sub",
-          "actions": 1
+          "hookCount": 1
         },
         {
           "type": "system",

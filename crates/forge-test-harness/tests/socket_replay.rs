@@ -932,6 +932,7 @@ fn frames_record() -> Value {
             controller: Some(9),
             viewers: 2,
             viewer: 9,
+            editable: true,
         },
         ServerMessage::BrowserNavState { id: 1, tab: 2, can_back: true, can_forward: false },
         ServerMessage::BrowserSurfaceFailed {
@@ -1243,6 +1244,7 @@ fn frames_record() -> Value {
             controller: Some(9),
             viewers: 2,
             viewer: 9,
+            editable: true,
         }),
     );
     // The history frame the bar's arrows read.

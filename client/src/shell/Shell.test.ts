@@ -601,6 +601,12 @@ describe('the shell at launch', () => {
     forges.push(forge);
     const opening = openAt('/', forge.address);
     await until(() => get(pendingShare) !== null, 'the launch share');
+    // **The held greeting must land on the launch's own socket.** The share
+    // ask answers before the launch dials, and a greeting sent into a server
+    // with no client reaches nobody: the launch then waits out its handshake
+    // and never sends the read this case waits on. Rendezvous on the dial
+    // first, the way the warm-share case above does.
+    await until(() => forge.live() >= 1, 'the launch to dial');
 
     // A notification (or any other move) lands while the socket is greeting.
     goTo({ name: 'home' });

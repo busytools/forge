@@ -236,6 +236,12 @@ pub struct BrowserViewState {
     pub controller: Option<u64>,
     /// How many clients are attached to this tab.
     pub viewers: u32,
+    /// **Whether the page's focused DOM node is editable.** The phone's soft
+    /// keyboard follows this answer rather than every tap: it rises while an
+    /// editable node holds focus and drops when one does not. The page's
+    /// answer is the host's, so a client never guesses at the contents of a
+    /// canvas it only has a picture of.
+    pub editable: bool,
 }
 
 /// Where the page's history sits: what the takeover bar's two arrows may do.

@@ -309,10 +309,10 @@ pub enum Message {
     },
 
     /// Stop-hook execution summary surfaced at end-of-turn. Subtype
-    /// `"stop_hook_summary"` (#273). The renderer composes a
-    /// collapsed 1-liner `↳ hook summary · N actions [▶ expand]`
-    /// from `actions` (wire `hookCount`); expanded view enumerates
-    /// `hook_infos`.
+    /// `"stop_hook_summary"` (#273). The renderer draws one tool row
+    /// for it, `hook summary · N actions`, with the hook glyph and a
+    /// chevron, from `actions` (wire `hookCount`); opening the row
+    /// enumerates `hook_infos`.
     StopHookSummary {
         /// Number of hooks that fired. Wire field is `hookCount`.
         /// Renderer hides the surface entirely when this is 0.
@@ -321,7 +321,7 @@ pub enum Message {
         /// carries the command string + its duration in ms.
         hook_infos: Vec<StopHookInfo>,
         /// Errors the hook batch reported, empty when nothing failed.
-        /// Wire field is `hookErrors`; the client's hooks chip draws
+        /// Wire field is `hookErrors`; the client's hook batch row draws
         /// these against the batch rather than against one entry.
         hook_errors: Vec<String>,
         /// Whether any hook produced output. Wire field is
@@ -3122,8 +3122,8 @@ mod tests_message_extras {
         // Wire shape (verbatim from `baselines/sdk/2.1.156/...`):
         // rich object with `hookCount` + `hookInfos` array + optional
         // `parent_tool_use_id`. The renderer reads `hookCount`
-        // (mapped to `actions: u32`) for the collapsed 1-liner and
-        // `hookInfos` for the expanded body. No top-level `summary`
+        // (mapped to `actions: u32`) for the tool row's title and
+        // `hookInfos` for the body it opens onto. No top-level `summary`
         // string in the wire; the EPIC's nominal `summary: Option<String>`
         // is preserved as an optional defensive field for future shapes
         // that might add one.
@@ -3163,7 +3163,7 @@ mod tests_message_extras {
     #[test]
     fn stop_hook_summary_errors_cross_the_crate() {
         // The CLI sends `hookErrors` on every stop_hook_summary row, empty
-        // when nothing failed, and the client's hooks chip draws them - so the
+        // when nothing failed, and the client's hook batch row draws them - so the
         // key has to survive decode and re-encode. This row is a real failing
         // one, the ralph-wiggum plugin's directory gone.
         let raw = json!({

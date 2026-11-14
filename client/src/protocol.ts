@@ -25,7 +25,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * rail footer carries both halves' build and socket numbers, and a mismatch
  * raises the notice beside it. Nothing refuses a connection over it.
  */
-export const PROTOCOL_VERSION = 32;
+export const PROTOCOL_VERSION = 33;
 
 /**
  * The release this client was built from, baked in by the build.
@@ -638,7 +638,8 @@ export type ServerMessage =
    * A profile's viewer state: which viewer controls it, and how many are
    * attached. `id` is the profile's wire id, the same one the binary frames
    * carry; `viewer` is this connection's own, which is what `controller`
-   * names when this surface holds the role.
+   * names when this surface holds the role. **`editable` is the page's
+   * focused node**, and its absence is a v32 server that never sends it.
    */
   | {
       kind: 'browser_view';
@@ -649,6 +650,7 @@ export type ServerMessage =
       controller: number | null;
       viewers: number;
       viewer: number;
+      editable?: boolean;
     }
   /** Where the viewed tab's history sits: what the bar's arrows may do. */
   | {
