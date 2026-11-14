@@ -224,7 +224,7 @@ export function dispatchFrames(messages: Iterable<unknown>, dispatchId: string):
     if (frame.type === 'system' && parent === dispatchId) {
       if (frame.subtype === 'stop_hook_summary') {
         // The wire's own name, not the Rust field it stands for: the message
-        // renames `hook_count` on the way out (`hookCount`), so a read of
+        // renames `actions` on the way out (`hookCount`), so a read of
         // `actions` is always undefined and the line has never drawn a count.
         const actions = typeof frame.hookCount === 'number' ? frame.hookCount : null;
         lines.push({
