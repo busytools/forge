@@ -7867,17 +7867,30 @@ async fn a_release_during_a_review_read_ends_it_and_answers_the_ask() {
     // the unsubscribe and its answer and the next frame is news rather than
     // the refusal. Broadcasts and the server-wide settings frame are passed
     // over, as a subscribe's own answer is read elsewhere.
+    //
+    // **One deadline covers every pass**, each given only what is left of it.
+    // A fresh bound per frame would let two broadcasts stretch the wait past
+    // the ten-second gate below, and the gate's own overrun is also a
+    // subscribe Error for this seat: the test would take that refusal as the
+    // answer and go green on the very regression it exists to catch.
+    let deadline = Instant::now() + Duration::from_millis(5_000);
     let answer = loop {
-        match next_server_within(&mut conn, 5_000).await {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let left_ms = u64::try_from(left.as_millis()).unwrap_or(u64::MAX);
+        match next_server_within(&mut conn, left_ms).await {
             Some(ServerMessage::Update { .. } | ServerMessage::Settings { .. }) => {}
             Some(other) => break other,
             None => panic!("no answer arrived for the abandoned subscribe"),
         }
     };
     match answer {
-        ServerMessage::Error { what, seat, .. } => {
+        ServerMessage::Error { what, why, seat, .. } => {
             assert_eq!(what, "subscribe", "the abandoned ask is answered as a subscribe");
             assert_eq!(seat, Some(lead_seat()), "and names the seat it was for");
+            assert_eq!(
+                why, "the seat was released before its read answered",
+                "the answer is the release, not a gate overrun",
+            );
         }
         other => panic!("no answer arrived for the abandoned subscribe: {other:?}"),
     }
