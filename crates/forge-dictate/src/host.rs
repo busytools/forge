@@ -1994,6 +1994,24 @@ mod dictate_lifecycle_tests {
         );
     }
 
+    /// Every outcome's label, because a reconstruction greps the log for
+    /// `landed`, and a flattening that names the wrong word hides the take it
+    /// is looking for. All six are reachable, so all six are pinned.
+    #[test]
+    fn every_outcome_labels_as_the_word_a_log_is_grepped_by() {
+        let cases = [
+            (DictateOutcome::Landed { text: "hello".to_owned(), truncated: false }, "landed"),
+            (DictateOutcome::Empty, "empty"),
+            (DictateOutcome::NoAudio { peak_db: -80.0, seconds: 2 }, "no_audio"),
+            (DictateOutcome::Refused { message: "no".to_owned() }, "refused"),
+            (DictateOutcome::Failed, "failed"),
+            (DictateOutcome::Cancelled, "cancelled"),
+        ];
+        for (outcome, expected) in cases {
+            assert_eq!(outcome_label(&outcome), expected, "the label for {outcome:?}");
+        }
+    }
+
     /// The axes a client sends decide its take's normalizer options,
     /// where a `None` axis would have meant "the crate default".
     #[test]

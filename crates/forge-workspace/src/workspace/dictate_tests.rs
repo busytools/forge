@@ -744,12 +744,43 @@ async fn a_cancelled_take_records_its_end_at_debug() {
     .expect("a closed take must resolve");
     assert_eq!(ended, DictateOutcome::Cancelled, "nothing was submitted");
 
+    // **The absence is the answer.** A take abandoned before its submit
+    // never reached transcribing, and the two records that did fire say so:
+    // a regression that emits the transcribing record on this path, or loses
+    // the started one, would leave the log lying about the skipped state.
     let records = caught.0.lock().expect("capture");
-    let (level, _, fields) = records
+    let transitions: Vec<_> = records
         .iter()
-        .find(|(_, _, fields)| fields.contains("dictate_take_ended"))
-        .unwrap_or_else(|| panic!("a cancelled take records its end, saw {records:?}"));
+        .filter(|(_, _, fields)| {
+            fields.contains("dictate_take_started")
+                || fields.contains("dictate_take_transcribing")
+                || fields.contains("dictate_take_ended")
+        })
+        .collect();
+    let names: Vec<&str> = transitions
+        .iter()
+        .map(|(_, _, fields)| {
+            if fields.contains("dictate_take_started") {
+                "started"
+            } else if fields.contains("dictate_take_transcribing") {
+                "transcribing"
+            } else {
+                "ended"
+            }
+        })
+        .collect();
+    assert_eq!(
+        names,
+        ["started", "ended"],
+        "an abandoned take records its start and its end and no transcribing: {records:?}"
+    );
+    let (level, _, fields) = transitions[1];
     assert_eq!(*level, tracing::Level::DEBUG, "a take's own cancel is not a warning: {fields}");
+    assert!(
+        fields.contains("slot=TestOrg/test-project/abandoned"),
+        "the record names the seat it belongs to: {fields}"
+    );
+    assert!(fields.contains("generation=1"), "and the take it belongs to: {fields}");
     assert!(
         fields.contains("outcome=\"cancelled\""),
         "the record names how the take ended: {fields}"

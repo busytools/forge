@@ -1392,8 +1392,17 @@ let running: PerfProbe | null = null;
  */
 export function startPerfProbe(options: ProbeOptions = {}): PerfProbe | null {
   if (running !== null) return running;
-  running = perfProbe({ ...options, sink: options.sink ?? perfSink() });
-  running.start();
+  const probe = perfProbe({ ...options, sink: options.sink ?? perfSink() });
+  // **A stopped probe is not a running one.** Leaving it in the module global
+  // hands the next caller a dead sink, which is silent: every record after it
+  // goes nowhere.
+  const stop = probe.stop;
+  probe.stop = () => {
+    stop();
+    if (running === probe) running = null;
+  };
+  running = probe;
+  probe.start();
   return running;
 }
 

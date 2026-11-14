@@ -1283,6 +1283,53 @@ describe('applyUpdate', () => {
       ]);
     });
 
+    /**
+     * **The frames the reducer drops are the incident's own shape, and they
+     * are recorded too.** A take whose row was cleared before its words
+     * arrived answers `dictate_ended` with no take held (`before: none`), and
+     * a superseded take's frame still names its generation. The record is
+     * written at the handler's top for exactly that reason: moved below any
+     * guard, the one frame this exists to capture goes unwritten while the
+     * happy-path test stays green.
+     */
+    it('records a dictate frame the reducer drops, naming the phase it found', () => {
+      const records: PerfRecord[] = [];
+      const probe = startPerfProbe({
+        sink: (batch) => records.push(...batch),
+        schedule: () => () => {},
+      });
+      try {
+        // The words arriving with no take on the record.
+        applyUpdate(empty(), {
+          dictate_ended: {
+            key: SLOT,
+            outcome: { landed: { text: 'late', truncated: false } },
+            generation: 7,
+          },
+        });
+        // A start whose frame carried no floor reaches the early return.
+        applyUpdate(empty(), { dictate_started: { key: SLOT, generation: 8 } });
+        // A superseded take's transcribing frame applies nothing.
+        const live = applyUpdate(empty(), {
+          dictate_started: { key: SLOT, floor_db: -50, generation: 9 },
+        });
+        applyUpdate(live, { dictate_transcribing: { key: SLOT, generation: 8 } });
+      } finally {
+        probe?.stop();
+      }
+
+      expect(
+        records
+          .filter((record) => record.kind === 'dictate')
+          .map((record) => [record.phase, record.before, record.generation]),
+      ).toEqual([
+        ['ended', 'none', 7],
+        ['started', 'none', 8],
+        ['started', 'none', 9],
+        ['transcribing', 'recording', 8],
+      ]);
+    });
+
     it('drops a reading that belongs to no take', () => {
       const held = empty();
       expect(applyUpdate(held, { dictate_level: { key: SLOT, peak_db: -20 } })).toBe(held);
