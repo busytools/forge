@@ -1405,7 +1405,7 @@ export function startPerfProbe(options: ProbeOptions = {}): PerfProbe | null {
   // **A stopped probe is not a running one.** Leaving it in the module global
   // hands the next caller a dead sink, which is silent: every record after it
   // goes nowhere.
-  const stop = probe.stop;
+  const stop = probe.stop.bind(probe);
   probe.stop = () => {
     stop();
     if (running === probe) running = null;
