@@ -355,10 +355,28 @@ their place to reopen.
 **A following column glides to the foot.** Every append - a row, a card,
 the reader's own message - lands the measured bottom over a short ease of
 about 160ms, a streamed line and a row that measures taller included, with
-the glide repeated until the content settles. A first pin, a switch's or a
-return's, lands at once, and so does an entry's settle until the list has
-measured the rows already in the element. The circle's jump lands at once as
-well. `prefers-reduced-motion: reduce` makes every landing instant.
+the glide repeated until the content settles. **An end that comes UP under a
+running ease is settled on where it now is**: the composer under the column
+takes room for a prompt and gives it back when the prompt is answered, and a
+row can correct itself shorter, so a tween the browser clamps to the shorter
+column lands on the end that is there - a following reader is never left
+reading as parked on their own last pixel. An end that moves DOWN is the
+next pass's: the tween keeps the target it set out for and the column pins
+again when the growth reports. A first pin, a switch's or a return's, lands
+at once, and so does an entry's settle until the list has measured the rows
+already in the element. The circle's jump lands at once as well.
+`prefers-reduced-motion: reduce` makes every landing instant.
+
+**A layout move is not the reader leaving.** The column's own corrections -
+a row measured shorter, the composer taking room for a prompt and giving it
+back - can carry a reader a few tens of pixels away from the foot with no
+hand behind the move. That is the column moving under them, not them
+scrolling away, so the follow survives it: a following column lands the foot
+again rather than switch the follow off and draw the way back over an end it
+never left. Only the reader's own hand - a wheel, a touch, a key, a press on
+the scrollbar - stops the follow on a move whose layout changed with it;
+where the layout did not change, a small nudge stays the column's and a real
+move is the reader's.
 
 **The column's top edge says when it is fetching.** An older page is
 asked for as the reader nears the top and answered a moment later;

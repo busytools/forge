@@ -630,10 +630,19 @@
   let accounted = 0;
   /** The dropped-ask count this component has already drained against. */
   let drained = 0;
-  /** The sizes at the last scroll event, which tell a reader moving from a layout moving. */
+  /**
+   * The sizes the layout was last left in, which tell a reader moving from a
+   * layout moving.
+   *
+   * Written by every event the handler reads, bar a return's own placement -
+   * which skips the comparison - and by every pin - `land()`, the glide's
+   * completion and `restoreAnchor` - because a pin leaves a layout the event
+   * after it compares against, and its echo may not have been delivered when
+   * the reader's next move arrives.
+   */
   let lastSeen = { content: 0, room: 0 };
   /** The offset the last pin wrote, so the event it comes back as is not read as the reader's. */
-  let pinEcho: { at: number; foot: boolean } | null = null;
+  let pinEcho: { at: number; foot: boolean; height: number; room: number } | null = null;
   /**
    * Whether the reader's own place was the foot when the column last heard
    * from them.
@@ -730,12 +739,29 @@
         glideTarget = null;
         const landed = box.scrollTop;
         placed = landed;
-        const at = landed >= reachable - FOOT_QUANTUM;
+        // **The end this landing answers to is the one it can reach NOW.**
+        // A glide runs for a few frames and the column can move under it: a
+        // row corrects itself shorter, and the browser clamps the tween's
+        // frames to the foot that leaves. Read against the end the glide was
+        // aimed at, that landing is short of a foot that no longer exists -
+        // so a following reader standing on the very last pixel is parked
+        // there, and nothing pins again until their own hand or the way back.
+        // `reachable` still bounds the landing where the list lags the
+        // element (the pin holds at the measured end by design).
+        const height = box.scrollHeight;
+        const room = box.clientHeight;
+        const max = height - room;
+        const at = landed >= Math.min(reachable, max) - FOOT_QUANTUM;
+        // **The landing writes the layout it left**, so the next event is
+        // read against it rather than a pair from before the pin - and that
+        // holds even for the echo, which has not been delivered yet when a
+        // scroll can already follow the write.
+        lastSeen = { content: height, room };
         // **Only a write that moved comes back as an event.** A tween whose
         // last frame lands on the value the frame before it already wrote
         // must not arm the token: no echo is coming, and the next event would
         // be read as one.
-        if (landed !== before) pinEcho = { at: landed, foot: at };
+        if (landed !== before) pinEcho = { at: landed, foot: at, height, room };
         footHeld = at;
         // A pin that lands at the foot is the reader leaving their place, the
         // same rule the instant landing keeps.
@@ -1321,10 +1347,17 @@
       // deletes it. The land path arms this the same way, from the read-back
       // because a write can clamp and only the read-back knows where it landed.
       if (viewport.scrollTop !== was) {
+        const height = viewport.scrollHeight;
+        const room = viewport.clientHeight;
         pinEcho = {
           at: viewport.scrollTop,
-          foot: viewport.scrollTop >= viewport.scrollHeight - viewport.clientHeight - FOOT_NEAR,
+          foot: viewport.scrollTop >= height - room - FOOT_NEAR,
+          height,
+          room,
         };
+        // The write leaves this layout behind, echo or not (see the glide's
+        // landing).
+        lastSeen = { content: height, room };
       }
     }
     owedUnplaced = false;
@@ -2415,7 +2448,16 @@
     // writes short of the maximum on purpose, so the record cannot assume a
     // pin lands at the foot; the read-back already says which it was.
     if (viewport.scrollTop !== was) {
-      pinEcho = { at: viewport.scrollTop, foot: viewport.scrollTop >= max };
+      const room = viewport.clientHeight;
+      pinEcho = {
+        at: viewport.scrollTop,
+        foot: viewport.scrollTop >= max,
+        height: foot,
+        room,
+      };
+      // The write leaves this layout behind, echo or not (see the glide's
+      // landing).
+      lastSeen = { content: foot, room };
     }
     // Where the column last left the reader, which is the foot the browser
     // clamped the pin to.
@@ -2962,15 +3004,16 @@
       pinEcho = null;
       if (offset === written.at) {
         // **The pin is the machine move a reader most often feels**, so it is
-        // written before the echo's own early return. The last event's heights
-        // are reused rather than the layout read again - the per-frame cost
-        // #1710 measured is exactly this path's - and a pin lands at the foot
-        // by construction.
+        // written before the echo's own early return. **The token carries the
+        // sizes the pin landed in** - the same pair the write left in
+        // `lastSeen`, so the record agrees with the next event's comparison -
+        // and no layout read is added: the pin sites already had both
+        // numbers.
         noteScrollMove({
           from: was,
           to: offset,
-          height: lastSeen.content,
-          room: lastSeen.room,
+          height: written.height,
+          room: written.room,
           shrank: false,
           rose: false,
           foot: written.foot,
@@ -3024,6 +3067,13 @@
     const room = viewport?.clientHeight ?? 0;
     const shrank = height < lastSeen.content;
     const rose = height - room < lastSeen.content - lastSeen.room;
+    // **Whether this event's own layout moved** - a row corrected, the dock
+    // taking room for a prompt and giving it back when the prompt is
+    // answered. A move that arrives with the layout changed is the column
+    // carrying the reader, not the reader moving: the correction puts the
+    // offset wherever the browser lands it, and a hand on the column at that
+    // moment is a coincidence, not a cause.
+    const laidOut = height !== lastSeen.content || room !== lastSeen.room;
     lastSeen = { content: height, room };
     const foot = atFoot();
     const byReader = readerMoved();
@@ -3053,24 +3103,37 @@
       pin: false,
     });
     // **A layout move is not the reader leaving.** The browser's own scroll
-    // anchoring shifts the offset toward the foot when rows above measure; a
-    // following column it leaves short of the foot goes back rather than
-    // adopt the displacement. Only that shape: the reader stood at the foot
-    // (`wasFoot`), the follow is on, and no hand made the move. `!footHeld`
-    // is this event's landing: a landing inside the notch already counts as
-    // holding the foot, so a re-land there would write the exact foot and
-    // move a reader the column has just treated as standing at it.
-    // No shrink term: a net shrink with an anchoring shift can still leave a
-    // following column short - a pin held at the model end does - and landing
-    // the foot again is the right recovery there.
-    // `restoring` is a return still placing its reader, not a foot to land.
+    // anchoring shifts the offset toward the foot when rows above measure,
+    // and a correction can as easily carry a following column a few tens of
+    // pixels AWAY from it - a row measured shorter, the dock taking room.
+    // Both are the column moving under the reader, and a following column
+    // goes back rather than adopt either displacement: the reader stood at
+    // the foot (`wasFoot`), the follow is on, the event's own layout moved
+    // (`laidOut`), and no hand made the move. The old `towardFoot` term kept
+    // only the shift toward the end, which left the away case to the disarm
+    // below - and there a machine move of more than `DISARM_SLACK` switched
+    // the follow off and parked the reader just above the foot, the way back
+    // drawn over a column that never left it (#2970). `!footHeld` is this
+    // event's landing: a landing inside the notch already counts as holding
+    // the foot, so a re-land there would write the exact foot and move a
+    // reader the column has just treated as standing at it. No shrink term:
+    // a net shrink with an anchoring shift can still leave a following
+    // column short - a pin held at the model end does - and landing the foot
+    // again is the right recovery there. `restoring` is a return still
+    // placing its reader, not a foot to land.
+    // **A down gesture does not explain a move AWAY from the foot.** The
+    // reader's aim is toward the end; a layout that carries them up while
+    // their aim is live is still the layout's move, and skipping the arm for
+    // every aimed event parked a following reader inside the aim's own
+    // window (#2970). Only an event moving the way their hand pointed is
+    // theirs to leave alone.
     if (
       wasFoot &&
       held.following &&
-      towardFoot &&
+      laidOut &&
       !footHeld &&
       !byReader &&
-      !aimed &&
+      (!aimed || !towardFoot) &&
       restoring === null
     ) {
       land(true);
@@ -3134,12 +3197,15 @@
     // rather than never disarming, which left the way-back hidden on a
     // column that had not pinned yet (Ved, 2026-10-03).
     //
-    // **And an event nobody made may not switch the follow off.** A
-    // re-measure nudges the scroll by a couple of pixels with no reader
-    // behind it, so a move inside `DISARM_SLACK` counts only when the
-    // reader's own wheel, touch or key was heard just before it; their
-    // moves count at any distance.
-    else if (!shrank || byReader) {
+    // **And an event nobody made may not switch the follow off.** A move the
+    // event's own layout made is the column carrying the reader, at whatever
+    // distance, and reading one as the reader's move parked a following
+    // column just above the foot: the way back drawn over a column that never
+    // left the end, its follow off until their own hand (#2970). Where the
+    // layout is unchanged, the old allowance stands: a nudge inside
+    // `DISARM_SLACK` counts only with the reader's own wheel, touch or key
+    // heard just before it, and a move past it is theirs.
+    else if (byReader || !laidOut) {
       const slack = byReader ? 0 : DISARM_SLACK;
       if (offset < (placed ?? Infinity) - slack) working?.following(false);
     }

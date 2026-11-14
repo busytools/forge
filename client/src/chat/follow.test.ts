@@ -562,15 +562,59 @@ async function drained(): Promise<void> {
 
 let app: Record<string, unknown> | null = null;
 
-/** Where the reader is, which is what the follow is a decision about. */
-function readerAt(offset: number): void {
+/** Put the column at `offset`, which is where the reader's own move leaves it. */
+function scrolledAt(offset: number): void {
   list()?.scrolledTo(offset, TOTAL, VIEWPORT);
   flushSync();
+}
+
+/**
+ * Where the reader is, on their own hand.
+ *
+ * **A reader's own move carries a hand**, and the column hears it: a wheel in
+ * the direction they moved, a moment before the scroll it causes, exactly as
+ * a browser delivers the pair. A case that names the gesture itself dispatches
+ * it in place of this, so the named input is the only hand.
+ */
+function readerAt(offset: number): void {
+  if (offset !== element.offset) {
+    document
+      .querySelector('.conv')
+      ?.dispatchEvent(new WheelEvent('wheel', { deltaY: offset < element.offset ? -120 : 120 }));
+  }
+  scrolledAt(offset);
+}
+
+/**
+ * Where the column is when nobody's hand moved it.
+ *
+ * **A machine move carries no input**, and the column must not read one as the
+ * reader leaving: a layout correction, the browser's clamp, a jump the app
+ * makes, or a nudge whose named gesture the test dispatches for itself. The
+ * name says which side of the rule the move is on, so the call site needs no
+ * apart boolean to explain it.
+ */
+function machineAt(offset: number): void {
+  scrolledAt(offset);
 }
 
 /** A clamp with no scroll event, which is what a resize can do to the reader. */
 function clamped(at: number, total = TOTAL, height = VIEWPORT): void {
   list()?.settled(at, total, height);
+}
+
+/**
+ * Put a hand heard under real timers behind the faked clock's own window.
+ *
+ * The column reads a hand with `performance.now()`, and faking time starts
+ * that clock at the fake clock's own origin - which can sit behind a stamp
+ * taken under real timers, so the hand would read as recent forever and a
+ * machine move after it as the reader's. Advancing past the stamp's own value
+ * makes it stale whatever the two origins are. Called with `performance.now()`
+ * read just before the clocks were faked.
+ */
+function expireHand(stampedAt: number): void {
+  vi.advanceTimersByTime(stampedAt + 1000);
 }
 
 /**
@@ -1229,13 +1273,15 @@ describe('whether the column follows the newest end', () => {
     // comes back with them and the next append lands.
     const server = stub();
     await draw(server);
-    readerAt(0);
+    // The park is nobody's gesture; the wheel below is the only hand, or the
+    // notch could re-arm on this setup's own up-wheel.
+    machineAt(0);
     await settle();
     clear();
 
     // Four pixels short, on the reader's own down-wheel: inside the notch.
     document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 }));
-    readerAt(FOOT - 4);
+    machineAt(FOOT - 4);
     await settle();
 
     expect(following(server), 'the notch resumed the follow').toBe(true);
@@ -1247,7 +1293,8 @@ describe('whether the column follows the newest end', () => {
     // The control: the same return, sixty pixels short, is a reader reading.
     const server = stub();
     await draw(server);
-    readerAt(0);
+    // The park is nobody's gesture; the return below is the reader's own.
+    machineAt(0);
     await settle();
     clear();
 
@@ -1270,8 +1317,18 @@ describe('whether the column follows the newest end', () => {
     await settle();
     clear();
 
-    // No wheel, no touch, no key: the column itself moved.
-    list()?.scrolledTo(FOOT - 20, TOTAL, VIEWPORT);
+    // No wheel, no touch, no key: the column itself moved. **The hand that
+    // parked the reader has to be stale for that to be true** - the window is
+    // a time, not a one-shot - so the clock steps past it before the move.
+    const parked = performance.now();
+    vi.useFakeTimers();
+    try {
+      expireHand(parked);
+      list()?.scrolledTo(FOOT - 20, TOTAL, VIEWPORT);
+      flushSync();
+    } finally {
+      vi.useRealTimers();
+    }
     await settle();
 
     expect(following(server), 'a layout move does not re-arm the follow').toBe(false);
@@ -1306,15 +1363,131 @@ describe('whether the column follows the newest end', () => {
     // the follow off - every growth after that left them further behind.
     const server = stub();
     await draw(server);
-    readerAt(FOOT);
+    // The setup parks the column without a hand, so the nudge below stands
+    // alone: this case is about a move with no input behind it at all.
+    machineAt(FOOT);
     await settle();
     clear();
 
-    readerAt(FOOT - 2);
+    machineAt(FOOT - 2);
     server.frame();
     await settle();
 
     expect(pinned(), 'a couple of pixels is not a reader moving').toEqual([PIN]);
+  });
+
+  it('does not disarm on a layout move past the slack, with no input behind it', async () => {
+    // **The phone's own event.** A row above corrects itself a pixel longer
+    // while the column's correction carries a following reader 60px up - past
+    // `DISARM_SLACK` - and no hand is behind the move. The disarm read the
+    // distance as the reader's and switched the follow off, parking them just
+    // above the foot: the way back drawn over a column that never left the
+    // end, the state the phone showed (#2970). The reported hand-off flows
+    // held in those runs; this is the no-hand layout move they carry, which
+    // is why the witness is shaped like this rather than like a doctored
+    // hand-off.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    setElement(TOTAL + 1, VIEWPORT);
+    machineAt(FOOT - 60);
+    server.frame();
+    await settle();
+
+    expect(following(server), 'a layout move past the slack switched the follow off').toBe(true);
+    expect(
+      document.querySelector('button.follow'),
+      'a layout move past the slack parked a following reader',
+    ).toBeNull();
+    expect(pinned().at(-1)?.landed, 'the column did not carry the reader back').toBe(
+      TOTAL - VIEWPORT,
+    );
+  });
+
+  it('lands the foot when a layout carries an aiming reader up from it', async () => {
+    // **The aim does not explain a move away from the end.** A reader's
+    // down-wheel is heard, and before their own scroll lands the layout
+    // carries them 60px UP - the one direction their gesture cannot have
+    // moved them. Skipping the layout's re-land for every aimed event parked
+    // them there, the way back drawn and nothing pinned: #2970's symptom with
+    // the follow flag still on.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 }));
+    setElement(TOTAL + 1, VIEWPORT);
+    list()?.scrolledTo(FOOT - 60, TOTAL + 1, VIEWPORT);
+    flushSync();
+    server.frame();
+    await settle();
+
+    expect(following(server), 'the aim switched the follow off').toBe(true);
+    expect(document.querySelector('button.follow'), 'the aim parked the column').toBeNull();
+    expect(pinned().at(-1)?.landed, 'the layout move did not carry the reader back').toBe(
+      Math.floor(TOTAL + 1) - VIEWPORT,
+    );
+  });
+
+  it('reads the column taking room as a layout move too', async () => {
+    // **The room is part of the layout.** The composer takes 60px back under
+    // a following reader and the column corrects 60px up with no hand; the
+    // content height never moved, so a gate watching only the height would
+    // read the move as the reader's and switch the follow off.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    setElement(TOTAL, VIEWPORT - 60);
+    list()?.scrolledTo(FOOT - 60, TOTAL, VIEWPORT - 60);
+    flushSync();
+    server.frame();
+    await settle();
+
+    expect(following(server), 'the room change switched the follow off').toBe(true);
+    expect(pinned().at(-1)?.landed, 'the column did not land the foot the room left').toBe(
+      Math.floor(TOTAL) - (VIEWPORT - 60),
+    );
+  });
+
+  it('keeps a following column its own layout already left short', async () => {
+    // **The gate the arm cannot cover.** The follow is on while the column
+    // sits above the foot - the aimed down-wheel landed short, or a no-hand
+    // move left the reader there with `wasFoot` false - so the arm has no
+    // foot to land; only the disarm's own layout test keeps the follow on
+    // when the next correction moves them again with no hand. The old slack
+    // read the distance as theirs and switched it off.
+    const server = stub();
+    await draw(server);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    // The follow armed with the column away from the foot: the state a down
+    // gesture aimed at the foot leaves when its landing lands short.
+    machineAt(FOOT - 100);
+    await settle();
+    const chat = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }))?.chat;
+    expect(chat, 'precondition: the column holds the seat conversation').toBeDefined();
+    chat?.following(true);
+    await settle();
+    expect(following(server), 'precondition: the follow is on').toBe(true);
+    expect(element.offset, 'precondition: the column is above the foot').toBeLessThan(FOOT);
+    clear();
+
+    // A correction carries them 60px further up, with no hand.
+    setElement(TOTAL + 1, VIEWPORT);
+    machineAt(FOOT - 160);
+    await settle();
+
+    expect(following(server), 'a layout move switched the follow off').toBe(true);
   });
 
   it('re-arms when a wheel was heard and the clamp lands at the foot carrying a shrink', async () => {
@@ -1355,7 +1528,7 @@ describe('whether the column follows the newest end', () => {
     // the clamp shape and his own gesture still stuck the arrow.
     const server = stub();
     await draw(server);
-    readerAt(0);
+    machineAt(0);
     await settle();
     clear();
 
@@ -1406,12 +1579,14 @@ describe('whether the column follows the newest end', () => {
     // even a two-pixel move is theirs, and the follow lets them go.
     const server = stub();
     await draw(server);
-    readerAt(FOOT);
+    // The wheel below is the hand; the reader model adds none, or the test
+    // would pass with the wheel listener deleted.
+    machineAt(FOOT);
     await settle();
     clear();
 
     document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: -120 }));
-    readerAt(FOOT - 2);
+    machineAt(FOOT - 2);
     server.frame();
     await settle();
 
@@ -1424,12 +1599,12 @@ describe('whether the column follows the newest end', () => {
     // the next adjuster write as the reader's - the drift in a narrower window.
     const server = stub();
     await draw(server);
-    readerAt(FOOT);
+    machineAt(FOOT);
     await settle();
     clear();
 
     document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 }));
-    readerAt(FOOT - 2);
+    machineAt(FOOT - 2);
     server.frame();
     await settle();
 
@@ -1456,14 +1631,16 @@ describe('whether the column follows the newest end', () => {
     // clauses divide on.
     const server = stub();
     await draw(server);
-    readerAt(FOOT);
+    // The press below is the hand; the reader model adds none, or the test
+    // would pass with the pointerdown listener deleted.
+    machineAt(FOOT);
     await settle();
     clear();
 
     element.width = 400;
     const pane = document.querySelector('.conv');
     pane?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 500 }));
-    readerAt(FOOT - 2);
+    machineAt(FOOT - 2);
     server.frame();
     await settle();
 
@@ -1477,14 +1654,14 @@ describe('whether the column follows the newest end', () => {
     // content box, so the target clause is the one that has to refuse it.
     const server = stub();
     await draw(server);
-    readerAt(FOOT);
+    machineAt(FOOT);
     await settle();
     clear();
 
     element.width = 400;
     const row = document.querySelector('.conv .turn');
     row?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 500 }));
-    readerAt(FOOT - 2);
+    machineAt(FOOT - 2);
     server.frame();
     await settle();
 
@@ -1501,14 +1678,14 @@ describe('whether the column follows the newest end', () => {
     // turns the follow off for a reader who never touched the bar.
     const server = stub();
     await draw(server);
-    readerAt(FOOT);
+    machineAt(FOOT);
     await settle();
     clear();
 
     element.width = 400;
     const pane = document.querySelector('.conv');
     pane?.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 300 }));
-    readerAt(FOOT - 2);
+    machineAt(FOOT - 2);
     server.frame();
     await settle();
 
@@ -1523,7 +1700,7 @@ describe('whether the column follows the newest end', () => {
     // them. So the press holds until the release does.
     const server = stub();
     await draw(server);
-    readerAt(FOOT);
+    machineAt(FOOT);
     await settle();
     clear();
 
@@ -1535,7 +1712,7 @@ describe('whether the column follows the newest end', () => {
       // Past the window the press armed on its own.
       vi.advanceTimersByTime(300);
 
-      readerAt(FOOT - 2);
+      machineAt(FOOT - 2);
       // A size change is the observer's pass, which is where a pin runs when
       // the follow is still on: with the press held, the disarm above means
       // there is none to run.
@@ -1553,7 +1730,7 @@ describe('whether the column follows the newest end', () => {
       flushSync();
       clear();
 
-      readerAt(FOOT - 2);
+      machineAt(FOOT - 2);
       resized();
       flushSync();
 
@@ -1573,7 +1750,7 @@ describe('whether the column follows the newest end', () => {
     // ending, the seat changing.
     const server = stub();
     await draw(server);
-    readerAt(FOOT);
+    machineAt(FOOT);
     await settle();
     clear();
 
@@ -1587,7 +1764,7 @@ describe('whether the column follows the newest end', () => {
       // Lost with no pointerup, as a release over another app is.
       window.dispatchEvent(new Event('blur'));
 
-      readerAt(FOOT - 2);
+      machineAt(FOOT - 2);
       resized();
       flushSync();
 
@@ -1607,7 +1784,7 @@ describe('whether the column follows the newest end', () => {
     // carries them to the foot.
     const server = stub();
     await draw(server);
-    readerAt(FOOT);
+    machineAt(FOOT);
     await settle();
     clear();
 
@@ -1633,7 +1810,7 @@ describe('whether the column follows the newest end', () => {
       flushSync();
       clear();
 
-      readerAt(FOOT - 2);
+      machineAt(FOOT - 2);
       flushSync();
 
       // The disarm is the thing the stuck hold would cause, and the way-back
@@ -1655,14 +1832,17 @@ describe('whether the column follows the newest end', () => {
     // ones that scroll the column up are the ones that may let the follow go.
     const server = stub();
     await draw(server);
-    readerAt(FOOT);
+    // The key below is the hand; the reader model adds none, or the test
+    // would pass with the keydown listener deleted.
+    machineAt(FOOT);
     await settle();
     clear();
 
     document
       .querySelector('.conv')
       ?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp' }));
-    readerAt(FOOT - 2);
+    // The key is the hand; the reader model adds none.
+    machineAt(FOOT - 2);
     server.frame();
     await settle();
 
@@ -1672,12 +1852,12 @@ describe('whether the column follows the newest end', () => {
   it('does not arm on a key that cannot scroll the column up', async () => {
     const server = stub();
     await draw(server);
-    readerAt(FOOT);
+    machineAt(FOOT);
     await settle();
     clear();
 
     document.querySelector('.conv')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'a' }));
-    readerAt(FOOT - 2);
+    machineAt(FOOT - 2);
     server.frame();
     await settle();
 
@@ -1689,12 +1869,12 @@ describe('whether the column follows the newest end', () => {
     // column toward the end, so it cannot have moved the reader up.
     const server = stub();
     await draw(server);
-    readerAt(FOOT);
+    machineAt(FOOT);
     await settle();
     clear();
 
     document.querySelector('.conv')?.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }));
-    readerAt(FOOT - 2);
+    machineAt(FOOT - 2);
     server.frame();
     await settle();
 
@@ -1704,14 +1884,16 @@ describe('whether the column follows the newest end', () => {
   it('disarms on shift-space, the key that scrolls the column up', async () => {
     const server = stub();
     await draw(server);
-    readerAt(FOOT);
+    // The key below is the hand; the reader model adds none.
+    machineAt(FOOT);
     await settle();
     clear();
 
     document
       .querySelector('.conv')
       ?.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', shiftKey: true }));
-    readerAt(FOOT - 2);
+    // The key is the hand; the reader model adds none.
+    machineAt(FOOT - 2);
     server.frame();
     await settle();
 
@@ -1723,12 +1905,15 @@ describe('whether the column follows the newest end', () => {
     // other half of this client.
     const server = stub();
     await draw(server);
-    readerAt(FOOT);
+    // The touch below is the hand; the reader model adds none, or the touch
+    // listener could be deleted with this green.
+    machineAt(FOOT);
     await settle();
     clear();
 
     document.querySelector('.conv')?.dispatchEvent(new Event('touchstart'));
-    readerAt(FOOT - 2);
+    // The touch is the hand; the reader model adds none.
+    machineAt(FOOT - 2);
     server.frame();
     await settle();
 
@@ -1738,12 +1923,14 @@ describe('whether the column follows the newest end', () => {
   it('disarms on a moving touch too', async () => {
     const server = stub();
     await draw(server);
-    readerAt(FOOT);
+    // The moving touch below is the hand; the reader model adds none.
+    machineAt(FOOT);
     await settle();
     clear();
 
     document.querySelector('.conv')?.dispatchEvent(new Event('touchmove'));
-    readerAt(FOOT - 2);
+    // The moving touch is the hand; the reader model adds none.
+    machineAt(FOOT - 2);
     server.frame();
     await settle();
 
@@ -1754,11 +1941,13 @@ describe('whether the column follows the newest end', () => {
     // The boundary the slack draws: inside it a move is not the reader's.
     const server = stub();
     await draw(server);
-    readerAt(FOOT);
+    machineAt(FOOT);
     await settle();
     clear();
 
-    readerAt(FOOT - 49);
+    // A move past the slack with no hand is the slot's own boundary: a wheel
+    // would replace the slack with a disarm at any distance.
+    machineAt(FOOT - 49);
     server.frame();
     await settle();
 
@@ -1770,11 +1959,12 @@ describe('whether the column follows the newest end', () => {
     // comparison now dies here.
     const server = stub();
     await draw(server);
-    readerAt(FOOT);
+    machineAt(FOOT);
     await settle();
     clear();
 
-    readerAt(FOOT - 48);
+    // The move is the layout's: a hand's own 48px would be a reader parking.
+    machineAt(FOOT - 48);
     server.frame();
     await settle();
 
@@ -1786,7 +1976,8 @@ describe('whether the column follows the newest end', () => {
     // of the same gesture that is not the move does not take it away.
     const server = stub();
     await draw(server);
-    readerAt(FOOT);
+    // The wheel below is the hand; the reader model adds none.
+    machineAt(FOOT);
     await settle();
     clear();
 
@@ -1794,7 +1985,7 @@ describe('whether the column follows the newest end', () => {
     // An event of the same gesture that lands on the pin rather than moving.
     list()?.scrolledTo(FOOT, TOTAL, VIEWPORT);
     flushSync();
-    readerAt(FOOT - 2);
+    machineAt(FOOT - 2);
     server.frame();
     await settle();
 
@@ -1808,7 +1999,8 @@ describe('whether the column follows the newest end', () => {
     // it still must.
     const server = stub();
     await draw(server);
-    readerAt(FOOT);
+    // The wheel below is the hand; the reader model adds none.
+    machineAt(FOOT);
     await settle();
     clear();
 
@@ -1816,7 +2008,7 @@ describe('whether the column follows the newest end', () => {
     setElement(TOTAL + 200, VIEWPORT);
     list()?.scrolledTo(FOOT, TOTAL + 200, VIEWPORT);
     flushSync();
-    readerAt(FOOT - 2);
+    machineAt(FOOT - 2);
     server.frame();
     await settle();
 
@@ -3228,9 +3420,19 @@ describe('whether the column follows the newest end', () => {
     await settle();
     clear();
 
-    const shorter = TOTAL - 200;
-    setElement(shorter, VIEWPORT);
-    list()?.scrolledTo(shorter - VIEWPORT, shorter, VIEWPORT);
+    // **The clamping event is the layout's, which means the hand that parked
+    // them is stale**: its window closes before a correction lands.
+    const parked = performance.now();
+    vi.useFakeTimers();
+    try {
+      expireHand(parked);
+      const shorter = TOTAL - 200;
+      setElement(shorter, VIEWPORT);
+      list()?.scrolledTo(shorter - VIEWPORT, shorter, VIEWPORT);
+      flushSync();
+    } finally {
+      vi.useRealTimers();
+    }
     await settle();
     clear();
 
@@ -3253,9 +3455,18 @@ describe('whether the column follows the newest end', () => {
     await settle();
     clear();
 
+    // **The clamp is the column's, so the hand that parked them is stale.**
     const roomier = VIEWPORT + 100;
-    setElement(TOTAL, roomier);
-    list()?.scrolledTo(TOTAL - roomier, TOTAL, roomier);
+    const parked = performance.now();
+    vi.useFakeTimers();
+    try {
+      expireHand(parked);
+      setElement(TOTAL, roomier);
+      list()?.scrolledTo(TOTAL - roomier, TOTAL, roomier);
+      flushSync();
+    } finally {
+      vi.useRealTimers();
+    }
     await settle();
     clear();
 
@@ -3280,7 +3491,9 @@ describe('whether the column follows the newest end', () => {
     // over.
     const server = stub();
     await draw(server);
-    readerAt(FOOT - 100);
+    // The wheel-down below is the hand; the reader model adds none, or the
+    // aim could be deleted with this green.
+    machineAt(FOOT - 100);
     await settle();
     clear();
 
@@ -3305,7 +3518,8 @@ describe('whether the column follows the newest end', () => {
     // is the sibling that dies if the keydown aim goes.
     const server = stub();
     await draw(server);
-    readerAt(FOOT - 100);
+    // The down key below is the hand; the reader model adds none.
+    machineAt(FOOT - 100);
     await settle();
     clear();
 
@@ -3337,8 +3551,12 @@ describe('whether the column follows the newest end', () => {
     await settle();
     clear();
 
+    const parked = performance.now();
     vi.useFakeTimers();
     try {
+      // The hand that parked the reader is long past its window before the
+      // aimed gesture below is the only hand left.
+      expireHand(parked);
       document.querySelector('.conv')?.dispatchEvent(new WheelEvent('wheel', { deltaY: 120 }));
       vi.advanceTimersByTime(300);
 
@@ -3669,6 +3887,81 @@ describe('a return to the seat the reader left', () => {
       pinned().filter((pin) => pin.landed === foot),
       'a return is not a seat switch: no foot pin',
     ).toEqual([]);
+    expect(
+      document.querySelector('button.follow'),
+      'the returned reader is away from the foot, and the way back says so',
+    ).not.toBeNull();
+  });
+
+  /**
+   * **An ask answered before the reader leaves is not a place.**
+   *
+   * Following, the reader answers a prompt in the dock: the card takes the
+   * column's room and the answer gives it back, with the browser carrying
+   * them onto the foot the room leaves. The return then lands them at the
+   * newest, still following. There was no place to begin with - a following
+   * reader captures no anchor - so what this pins is that the answer's room
+   * change did not make one: nothing about the round trip may park a column
+   * that was at the end before it.
+   */
+  it('a prompt answered while following lands at the newest on the return', async () => {
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+    layOut(40);
+    readerAt(FOOT);
+    await settle();
+    expect(following(server), 'precondition: the reader is following').toBe(true);
+
+    setElement(TOTAL, VIEWPORT - 200);
+    resized();
+    await settle();
+    setElement(TOTAL, VIEWPORT);
+    list()?.scrolledTo(TOTAL - VIEWPORT, TOTAL, VIEWPORT);
+    resized();
+    await settle();
+
+    await ontoDocument();
+    returned(server);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the return did not land at the newest').toBe(FOOT);
+    expect(following(server), 'the return left the follow off').toBe(true);
+    expect(
+      document.querySelector('button.follow'),
+      'a following reader was handed the way back',
+    ).toBeNull();
+  });
+
+  /** The other half: a parked reader's place survives the same round trip. */
+  it('a prompt answered while parked keeps the place on the return', async () => {
+    const server = stub();
+    await parked(server);
+
+    setElement(TOTAL, VIEWPORT - 200);
+    resized();
+    await settle();
+    setElement(TOTAL, VIEWPORT);
+    resized();
+    await settle();
+    expect(element.offset, 'precondition: the parked reader held their row').toBe(PLACE);
+
+    await ontoDocument();
+    returned(server);
+    await settle();
+    await settle();
+
+    expect(element.offset, 'the return lost the parked place').toBe(PLACE);
+    expect(following(server), 'the return armed the follow under a parked reader').toBe(false);
     expect(
       document.querySelector('button.follow'),
       'the returned reader is away from the foot, and the way back says so',
@@ -4909,6 +5202,138 @@ describe('the motion of a following column', () => {
     }
   });
 
+  it('keeps following when the dock gives the column its room back mid-glide', async () => {
+    // **An answered ask is a room change, and the foot moves with it.** The
+    // composer collapses when the prompt is answered and the column takes the
+    // room, so the foot comes up and the browser clamps the reader onto it. A
+    // following column has to still be following after that: answering is not
+    // the reader leaving, and the next message must carry them.
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+    layOut(40);
+    expect(element.offset, 'precondition: the landing is at the foot').toBe(FOOT);
+    clear();
+
+    vi.stubGlobal('matchMedia', () => ({ matches: false }));
+    const hand = clock();
+    try {
+      // The ask arrives: the dock takes 200px of the column, the foot drops,
+      // and the observer follows it down by gliding to the risen end.
+      setElement(TOTAL, VIEWPORT - 200);
+      resized();
+      await hand.pump(0);
+      await hand.pump(16);
+      const dropped = Math.floor(TOTAL) - (VIEWPORT - 200);
+      expect(
+        element.offset,
+        'precondition: the column is gliding toward the foot the dock left',
+      ).toBeGreaterThan(FOOT);
+      expect(element.offset, 'precondition: and the glide has not arrived').toBeLessThan(dropped);
+
+      // The reader answers: the dock gives the room back and the browser
+      // clamps the reader onto the foot it now leaves. **The clamp is the
+      // element's size change alone, and the observer's report comes after
+      // the glide has had its frames**: a report before them starts a fresh
+      // glide whose completion is the one under test only by accident, and a
+      // scroll event of the test's own making is read as a foreign move that
+      // stops the tween before its completion ever runs. This is the shape
+      // the phone delivers, and it is what fails without the fix.
+      setElement(TOTAL, VIEWPORT);
+      for (let at = 0; at < 12; at += 1) await hand.pump(16);
+      resized();
+      await hand.pump(16);
+
+      // The turn carries on, and the next message must carry the reader.
+      clear();
+      setElement(TOTAL + 120, VIEWPORT);
+      setModel(TOTAL + 120);
+      server.frame();
+      resized();
+      for (let at = 0; at < 12; at += 1) await hand.pump(16);
+      expect(following(server), 'the answered ask left the follow off').toBe(true);
+      expect(element.offset, 'the answered ask did not carry the reader').toBe(
+        Math.floor(TOTAL + 120) - VIEWPORT,
+      );
+      expect(
+        pinned().filter((pin) => pin.landed === Math.floor(TOTAL + 120) - VIEWPORT),
+        'the answered ask left the column not following',
+      ).not.toEqual([]);
+    } finally {
+      hand.stop();
+    }
+  });
+
+  it("keeps a glide's landing at the end the list has measured, not the element's", async () => {
+    // **The retained half of the landing's condition.** Where the list lags
+    // the element - the browser counts a row the measurement has not caught
+    // up with - the pin holds at the measured end by design, and the
+    // completion must call that a landing at the foot. Judged against the
+    // element's own end alone, it reads as short: the same park-at-the-foot
+    // with the way back drawn, on the #1710 path rather than a room change.
+    const server = stub();
+    await draw(server);
+    layOut(40);
+    readerAt(FOOT);
+    await settle();
+    clear();
+
+    vi.stubGlobal('matchMedia', () => ({ matches: false }));
+    const hand = clock();
+    try {
+      vi.mocked(noteScrollMove).mockClear();
+      // A growth starts the glide toward the end the list measured.
+      setElement(TOTAL + 200, VIEWPORT);
+      reported.size = TOTAL + 200;
+      server.forged('one');
+      await hand.pump(0);
+      await hand.pump(16);
+
+      // Mid-glide the element runs ahead of the measurement, and no report
+      // is delivered: the tween keeps its target and completes on the end
+      // the list has, while the element's own end is further down.
+      setElement(TOTAL + 400, VIEWPORT);
+      for (let at = 0; at < 12; at += 1) await hand.pump(16);
+      expect(following(server), 'the landing at the measured end switched the follow off').toBe(
+        true,
+      );
+      // **The echo records the layout the pin landed in, not the one before
+      // it**: the element's own count, which the tween's frames were clamped
+      // into, rather than the measured end the record cannot see.
+      expect(
+        noteScrollMove,
+        "the landing's echo records the sizes it landed in",
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({ pin: true, height: Math.floor(TOTAL + 400), room: VIEWPORT }),
+      );
+      expect(
+        document.querySelector('button.follow'),
+        'a following reader was parked on the end the list had measured',
+      ).toBeNull();
+
+      // The measurement catches up, and the next message must carry them.
+      clear();
+      setElement(TOTAL + 520, VIEWPORT);
+      reported.size = TOTAL + 520;
+      server.frame();
+      resized();
+      for (let at = 0; at < 12; at += 1) await hand.pump(16);
+      expect(pinned().at(-1)?.landed, 'the column did not follow the next message').toBe(
+        Math.floor(TOTAL + 520) - VIEWPORT,
+      );
+    } finally {
+      hand.stop();
+    }
+  });
+
   it('disarms when a small up-scroll stops a glide mid-stream', async () => {
     // **A gesture that stops a glide leaves the reader where it reached.**
     // `placed` is the offset the disarm compares against; a stale foot from
@@ -4954,6 +5379,67 @@ describe('the motion of a following column', () => {
     }
   });
 
+  it('keeps following when the column shrinks under a glide', async () => {
+    // **The foot a glide aimed at is not the foot it lands on.** A row that
+    // corrects itself shorter while the tween is running takes the end away
+    // with it, and the browser clamps every remaining frame to the foot that
+    // leaves. Judged against the end it aimed at, that landing reads as short
+    // of the foot: the reader is parked on the very last pixel, the way back
+    // is drawn over a column that is at the end, and nothing pins again. An
+    // answered ask is this shape - the dock's card collapsing moves the foot
+    // in one breath - which is where a following column was seen to stop
+    // following (#2970).
+    const server = stub();
+    await draw(server);
+    layOut(40);
+    expect(element.offset, 'precondition: the landing is at the foot').toBe(FOOT);
+    clear();
+
+    vi.stubGlobal('matchMedia', () => ({ matches: false }));
+    const hand = clock();
+    try {
+      // A growth starts the glide toward the foot it moved.
+      setElement(TOTAL + 200, VIEWPORT);
+      reported.size = TOTAL + 200;
+      server.forged('one');
+      await hand.pump(0);
+      await hand.pump(16);
+      expect(element.offset, 'precondition: the glide is in flight').toBeGreaterThan(FOOT);
+      expect(element.offset, 'precondition: and it has not arrived').toBeLessThan(
+        Math.floor(TOTAL + 200) - VIEWPORT,
+      );
+
+      // A row above corrects itself shorter while the glide is running: the
+      // foot comes up under it, and the browser clamps the tween's frames to
+      // the foot it leaves. **No size report is delivered here at all** - the
+      // case is the notification a browser drops under load - so the
+      // completion is the only thing that can read this landing, which is
+      // what the test is for.
+      setElement(TOTAL - 200, VIEWPORT);
+      reported.size = TOTAL - 200;
+      for (let at = 0; at < 12; at += 1) await hand.pump(16);
+
+      expect(following(server), 'the shrink switched the follow off').toBe(true);
+      expect(
+        document.querySelector('button.follow'),
+        'the shrink parked a following reader at the foot',
+      ).toBeNull();
+
+      // The next message must carry them.
+      clear();
+      setElement(TOTAL - 80, VIEWPORT);
+      reported.size = TOTAL - 80;
+      server.forged('two');
+      resized(40);
+      for (let at = 0; at < 12; at += 1) await hand.pump(16);
+      expect(pinned().at(-1)?.landed, 'the column did not follow the next message').toBe(
+        Math.floor(TOTAL - 80) - VIEWPORT,
+      );
+    } finally {
+      hand.stop();
+    }
+  });
+
   it('lands at once when the reader asked for less motion', async () => {
     // The suite's own preference is `reduce`, and the landing is one write.
     const server = stub();
@@ -4984,6 +5470,199 @@ describe('the motion of a following column', () => {
     flushSync();
 
     expect(element.offset, 'the circle glided instead of jumping').toBe(FOOT);
+  });
+
+  it('a send-armed glide takes the foot and leaves the place behind', async () => {
+    // **The completion owns the two writes the instant landing makes**: the
+    // foot the reader now holds, and the place they give up by reaching it.
+    // A parked reader's own send is the only glide that starts from a place,
+    // so it is the shape both land in: the landing's `at` is what clears the
+    // anchor and the place, and its `footHeld` is what keeps the column
+    // pinnable once the send's own arm is spent.
+    const server = stub();
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+    layOut(40);
+    readerAt(50);
+    await settle();
+    expect(following(server), 'precondition: the reader is parked').toBe(false);
+    const seat = subjectKey({ session: LEAD });
+    expect(places.of(seat), 'precondition: the parked reader holds a place').toBeDefined();
+    clear();
+
+    vi.stubGlobal('matchMedia', () => ({ matches: false }));
+    const hand = clock();
+    try {
+      vi.mocked(noteScrollMove).mockClear();
+      server.prompt();
+      for (let at = 0; at < 14; at += 1) await hand.pump(16);
+      expect(element.offset, 'precondition: the send landed the foot').toBe(FOOT);
+      expect(places.of(seat), 'the landing at the foot left the place standing').toBeUndefined();
+      // **The landing's echo carries the layout it left**: the record's sizes
+      // are the ones the next event compares against, so a record from a
+      // stale pair would be a claim the log cannot back.
+      expect(noteScrollMove, 'the pin echo records the sizes it landed in').toHaveBeenCalledWith(
+        expect.objectContaining({
+          pin: true,
+          height: Math.floor(TOTAL),
+          room: VIEWPORT,
+        }),
+      );
+
+      // The foot branch's own `following(true)` gives the send's arm back, so
+      // from here only the landing's `footHeld` can pin.
+      list()?.scrolledTo(FOOT, TOTAL, VIEWPORT);
+      await hand.pump(16);
+      clear();
+      setElement(TOTAL + 120, VIEWPORT);
+      setModel(TOTAL + 120);
+      server.frame();
+      resized();
+      for (let at = 0; at < 12; at += 1) await hand.pump(16);
+      expect(pinned().at(-1)?.landed, 'the completed landing left the column unpinnable').toBe(
+        Math.floor(TOTAL + 120) - VIEWPORT,
+      );
+    } finally {
+      hand.stop();
+    }
+  });
+});
+
+/**
+ * **An answered ask reaches the column as its room moving, not as a reader
+ * moving.**
+ *
+ * The dock sits under the conversation, so a prompt's card takes the column's
+ * room and answering it gives the room back: the foot drops, comes back up,
+ * and the browser clamps a reader at the end onto the foot the room leaves.
+ * That room round trip is what every case below models - the element's
+ * viewport and content height, nothing of the dock or the answer's dispatch,
+ * which are their own surfaces' tests. None of it is the reader leaving the
+ * column, so neither state may break: a following reader still follows, and
+ * a parked reader's row does not move (#2970).
+ */
+describe('a prompt answered under the column', () => {
+  /** A column with three spoken turns, left where the landing put it. */
+  async function drawn(server: ReturnType<typeof stub>): Promise<void> {
+    clear();
+    clearObservers();
+    setMeasured(TOTAL, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([spoken('t1'), spoken('t2'), spoken('t3')]);
+    await settle();
+    layOut(40);
+  }
+
+  /** The prompt's card arrives and takes 200px of the column. */
+  async function cardRises(): Promise<void> {
+    setElement(TOTAL, VIEWPORT - 200);
+    resized();
+    await settle();
+  }
+
+  /**
+   * The reader answers, and the dock gives the room back.
+   *
+   * `clamped` is the browser's own move: a reader at the end is standing past
+   * the foot the shorter room leaves, and the browser carries them onto it. A
+   * reader parked further up is beyond that reach and does not move.
+   */
+  async function cardFalls(clamped: boolean): Promise<void> {
+    setElement(TOTAL, VIEWPORT);
+    if (clamped) list()?.scrolledTo(TOTAL - VIEWPORT, TOTAL, VIEWPORT);
+    resized();
+    await settle();
+  }
+
+  it("keeps a following reader at the newest end through the card's room round trip", async () => {
+    const server = stub();
+    await drawn(server);
+    readerAt(FOOT);
+    await settle();
+    expect(following(server), 'precondition: the reader is following').toBe(true);
+    clear();
+
+    await cardRises();
+    await cardFalls(true);
+
+    expect(following(server), 'the answered ask switched the follow off').toBe(true);
+    expect(
+      document.querySelector('button.follow'),
+      'the answered ask parked a following reader',
+    ).toBeNull();
+
+    // The turn carries on: the next message must carry the reader.
+    clear();
+    setElement(TOTAL + 120, VIEWPORT);
+    setModel(TOTAL + 120);
+    server.frame();
+    resized();
+    await settle();
+    expect(pinned().at(-1), 'the answered ask left the column not following').toEqual({
+      asked: Math.floor(TOTAL + 120),
+      landed: Math.floor(TOTAL + 120) - VIEWPORT,
+    });
+  });
+
+  it("keeps a parked reader on their row through the card's room round trip", async () => {
+    const server = stub();
+    await drawn(server);
+    readerAt(50);
+    await settle();
+    expect(following(server), 'precondition: the reader is parked').toBe(false);
+    const at = element.offset;
+    clear();
+
+    await cardRises();
+    await cardFalls(false);
+
+    expect(element.offset, 'the answered ask moved the parked reader').toBe(at);
+    expect(following(server), 'the answered ask armed the follow').toBe(false);
+    expect(
+      document.querySelector('button.follow'),
+      'a parked reader is still owed the way back',
+    ).not.toBeNull();
+  });
+
+  it("follows again when the way back is pressed after the card's room round trip", async () => {
+    const server = stub();
+    await drawn(server);
+    readerAt(50);
+    await settle();
+    await cardRises();
+    await cardFalls(false);
+    clear();
+
+    document
+      .querySelector('button.follow')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+    await settle();
+
+    expect(following(server), 'the way back resumes the follow').toBe(true);
+    expect(element.offset, 'and lands the reader at the foot').toBe(FOOT);
+
+    clear();
+    setElement(TOTAL + 120, VIEWPORT);
+    setModel(TOTAL + 120);
+    server.frame();
+    resized();
+    await settle();
+    expect(pinned().at(-1)?.landed, 'and the next message carries them').toBe(
+      Math.floor(TOTAL + 120) - VIEWPORT,
+    );
   });
 });
 
