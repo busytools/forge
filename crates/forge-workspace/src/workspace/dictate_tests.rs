@@ -537,6 +537,256 @@ async fn a_failed_take_records_debug_with_its_seat() {
     );
 }
 
+/// A take's lifecycle is three records, one per transition, in order. They
+/// are what a bare `dictate_ended` cannot answer: whether the take ever
+/// reached transcribing, and how long each leg took - the question the
+/// skipped transcribing row cannot be reconstructed from otherwise.
+#[tokio::test]
+async fn a_take_records_its_three_transitions_in_order() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    /// One record: its level, its target, and its fields.
+    #[derive(Clone, Default)]
+    struct Caught(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String, String)>>>);
+
+    #[derive(Default)]
+    struct Fields(String);
+
+    impl tracing::field::Visit for Fields {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if !self.0.is_empty() {
+                self.0.push(' ');
+            }
+            let _ = std::fmt::write(&mut self.0, format_args!("{}={value:?}", field.name()));
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Caught {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = Fields::default();
+            event.record(&mut fields);
+            self.0.lock().expect("capture").push((
+                *event.metadata().level(),
+                event.metadata().target().to_owned(),
+                fields.0,
+            ));
+        }
+    }
+
+    let (ws, mut updates) = crate::Workspace::testing_stub();
+    let (_dir, engine) = synthetic_engine();
+    *ws.dictate.state.engine.lock() = Some(Arc::clone(&engine));
+    let session = key("traced");
+    live_session(&ws, &session);
+
+    // A take runs on a spawned task, and `#[tokio::test]` is a
+    // current-thread runtime, so a thread-local default still catches
+    // every record it emits.
+    let caught = Caught::default();
+    let subscriber = tracing_subscriber::registry().with(caught.clone());
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    ws.dispatch(Command::DictateStream {
+        key: session.clone(),
+        options: DictateAxes::default(),
+        surface: None,
+        initiator: Some(4),
+    })
+    .expect("dispatch");
+    assert!(
+        ws.dictate_push(&session, &[0.5; 320], Some(4)),
+        "the frame after a start must find its take"
+    );
+    ws.dispatch(Command::DictateStop { key: session.clone(), submit: true, initiator: Some(4) })
+        .expect("dispatch");
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match updates.recv().await.map(|frame| std::sync::Arc::unwrap_or_clone(frame.update)) {
+                Some(SessionUpdate::DictateEnded { outcome, .. }) => break outcome,
+                Some(_) => {}
+                None => panic!("the update stream closed before the take resolved"),
+            }
+        }
+    })
+    .await
+    .expect("the take must resolve");
+    assert_eq!(ended, DictateOutcome::Failed, "a weightless engine fails the take");
+
+    let records = caught.0.lock().expect("capture");
+    let transitions: Vec<_> = records
+        .iter()
+        .filter(|(_, _, fields)| {
+            fields.contains("dictate_take_started")
+                || fields.contains("dictate_take_transcribing")
+                || fields.contains("dictate_take_ended")
+        })
+        .collect();
+    let names: Vec<&str> = transitions
+        .iter()
+        .map(|(_, _, fields)| {
+            if fields.contains("dictate_take_started") {
+                "started"
+            } else if fields.contains("dictate_take_transcribing") {
+                "transcribing"
+            } else {
+                "ended"
+            }
+        })
+        .collect();
+    assert_eq!(
+        names,
+        ["started", "transcribing", "ended"],
+        "one record per transition, in order: {records:?}"
+    );
+    for (index, (level, target, fields)) in transitions.iter().enumerate() {
+        assert_eq!(
+            target.as_str(),
+            "forge_dictate::host",
+            "record {index} comes from the module the filter directive names: {fields}"
+        );
+        assert!(
+            fields.contains("slot=TestOrg/test-project/traced"),
+            "record {index} names the seat it belongs to: {fields}"
+        );
+        assert!(
+            fields.contains("generation=1"),
+            "record {index} names the take it belongs to: {fields}"
+        );
+        assert_eq!(
+            *level,
+            tracing::Level::DEBUG,
+            "record {index} is a session's own work at debug, and the cause record owns the level: {fields}"
+        );
+    }
+    assert!(
+        transitions[1].2.contains("elapsed_ms="),
+        "the transcribing record carries the leg's elapsed time: {}",
+        transitions[1].2
+    );
+    assert!(
+        transitions[2].2.contains("outcome=\"failed\"") && transitions[2].2.contains("elapsed_ms="),
+        "the ended record carries the outcome and the submit leg's elapsed time: {}",
+        transitions[2].2
+    );
+}
+
+/// A take abandoned before its submit still ends with its own record, and
+/// that record is a session's own work at `debug`, like every other ending:
+/// the cause record, not this transition, owns any level above it.
+#[tokio::test]
+async fn a_cancelled_take_records_its_end_at_debug() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    #[derive(Clone, Default)]
+    struct Caught(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String, String)>>>);
+
+    #[derive(Default)]
+    struct Fields(String);
+
+    impl tracing::field::Visit for Fields {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if !self.0.is_empty() {
+                self.0.push(' ');
+            }
+            let _ = std::fmt::write(&mut self.0, format_args!("{}={value:?}", field.name()));
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Caught {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = Fields::default();
+            event.record(&mut fields);
+            self.0.lock().expect("capture").push((
+                *event.metadata().level(),
+                event.metadata().target().to_owned(),
+                fields.0,
+            ));
+        }
+    }
+
+    let (ws, mut updates) = crate::Workspace::testing_stub();
+    let (_dir, engine) = synthetic_engine();
+    *ws.dictate.state.engine.lock() = Some(Arc::clone(&engine));
+    let session = key("abandoned");
+    live_session(&ws, &session);
+
+    let caught = Caught::default();
+    let subscriber = tracing_subscriber::registry().with(caught.clone());
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    ws.dispatch(Command::DictateStream {
+        key: session.clone(),
+        options: DictateAxes::default(),
+        surface: None,
+        initiator: Some(4),
+    })
+    .expect("dispatch");
+    assert!(ws.dictate_push(&session, &[0.5; 320], Some(4)), "the take is live");
+    assert!(ws.dictate_close(&session, 4), "the connection's own take is closed");
+    let ended = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match updates.recv().await.map(|frame| std::sync::Arc::unwrap_or_clone(frame.update)) {
+                Some(SessionUpdate::DictateEnded { outcome, .. }) => break outcome,
+                Some(_) => {}
+                None => panic!("the update stream closed before the take resolved"),
+            }
+        }
+    })
+    .await
+    .expect("a closed take must resolve");
+    assert_eq!(ended, DictateOutcome::Cancelled, "nothing was submitted");
+
+    // **The absence is the answer.** A take abandoned before its submit
+    // never reached transcribing, and the two records that did fire say so:
+    // a regression that emits the transcribing record on this path, or loses
+    // the started one, would leave the log lying about the skipped state.
+    let records = caught.0.lock().expect("capture");
+    let transitions: Vec<_> = records
+        .iter()
+        .filter(|(_, _, fields)| {
+            fields.contains("dictate_take_started")
+                || fields.contains("dictate_take_transcribing")
+                || fields.contains("dictate_take_ended")
+        })
+        .collect();
+    let names: Vec<&str> = transitions
+        .iter()
+        .map(|(_, _, fields)| {
+            if fields.contains("dictate_take_started") {
+                "started"
+            } else if fields.contains("dictate_take_transcribing") {
+                "transcribing"
+            } else {
+                "ended"
+            }
+        })
+        .collect();
+    assert_eq!(
+        names,
+        ["started", "ended"],
+        "an abandoned take records its start and its end and no transcribing: {records:?}"
+    );
+    let (level, _, fields) = transitions[1];
+    assert_eq!(*level, tracing::Level::DEBUG, "a take's own cancel is not a warning: {fields}");
+    assert!(
+        fields.contains("slot=TestOrg/test-project/abandoned"),
+        "the record names the seat it belongs to: {fields}"
+    );
+    assert!(fields.contains("generation=1"), "and the take it belongs to: {fields}");
+    assert!(
+        fields.contains("outcome=\"cancelled\""),
+        "the record names how the take ended: {fields}"
+    );
+}
+
 /// A second take on one seat is refused by name, whichever path it
 /// came in on: two takes would interleave their notices into one
 /// draft with nothing saying why.

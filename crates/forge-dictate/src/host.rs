@@ -1253,6 +1253,19 @@ async fn run_recording(
     surface: Option<String>,
     initiator: Option<u64>,
 ) {
+    // A take's lifecycle is written down as it happens, because a take
+    // whose transcribing row vanished leaves no other record of where it
+    // went: the client draws every phase from frames, and a lost frame is
+    // indistinguishable from a phase the take never reached.
+    let started_at = Instant::now();
+    tracing::debug!(
+        event_name = "dictate_take_started",
+        slot = %key.display(),
+        generation,
+        initiator = ?initiator,
+        surface = ?surface,
+        "dictation take started"
+    );
     // Take progress spans the whole take: segments settle while the
     // recording is still open, and the tally gains its total after the
     // stop. The stream closes when the take's segmenter exits.
@@ -1273,6 +1286,14 @@ async fn run_recording(
     if !submit {
         drop(capture);
         clear_recording_if_ours(&dictate, &key, initiator);
+        record_take_ended(
+            &key,
+            generation,
+            initiator,
+            surface.as_deref(),
+            &DictateOutcome::Cancelled,
+            started_at.elapsed(),
+        );
         let _ = host.emit(DictateUpdate::Ended {
             key,
             outcome: DictateOutcome::Cancelled,
@@ -1284,6 +1305,16 @@ async fn run_recording(
     }
 
     let _ = host.emit(DictateUpdate::Transcribing { key: key.clone(), generation, initiator });
+    let submitted_at = Instant::now();
+    tracing::debug!(
+        event_name = "dictate_take_transcribing",
+        slot = %key.display(),
+        generation,
+        initiator = ?initiator,
+        surface = ?surface,
+        elapsed_ms = millis_of(started_at.elapsed()),
+        "dictation take submitted for transcription"
+    );
     let Ok(ticket) = capture.finish_with(options) else {
         tracing::warn!(
             event_name = "dictate_submit_failed",
@@ -1291,6 +1322,14 @@ async fn run_recording(
             "dictation could not submit its take"
         );
         clear_recording_if_ours(&dictate, &key, initiator);
+        record_take_ended(
+            &key,
+            generation,
+            initiator,
+            surface.as_deref(),
+            &DictateOutcome::Failed,
+            submitted_at.elapsed(),
+        );
         let _ = host.emit(DictateUpdate::Ended {
             key,
             outcome: DictateOutcome::Failed,
@@ -1335,7 +1374,59 @@ async fn run_recording(
         },
     };
     remove_finishing(&dictate, &key);
+    record_take_ended(
+        &key,
+        generation,
+        initiator,
+        surface.as_deref(),
+        &outcome,
+        submitted_at.elapsed(),
+    );
     let _ = host.emit(DictateUpdate::Ended { key, outcome, generation, surface, initiator });
+}
+
+/// One take's end, always `debug`: a take whose recognition failed is that
+/// session's own work rather than a warning about forge (rule 20), and the
+/// cause record already owns the level - `dictate_failed` for recognition,
+/// `dictate_submit_failed` for the engine submit, `dictate_answer_task_unjoined`
+/// for the join. `elapsed` is the leg since the submit, or since the start
+/// for a take abandoned before one.
+fn record_take_ended(
+    key: &SessionSlot,
+    generation: u64,
+    initiator: Option<u64>,
+    surface: Option<&str>,
+    outcome: &DictateOutcome,
+    elapsed: Duration,
+) {
+    let outcome = outcome_label(outcome);
+    tracing::debug!(
+        event_name = "dictate_take_ended",
+        slot = %key.display(),
+        generation,
+        initiator = ?initiator,
+        surface = ?surface,
+        outcome,
+        elapsed_ms = millis_of(elapsed),
+        "dictation take ended"
+    );
+}
+
+/// The word a log groups a take's end by. The outcome itself can carry a
+/// whole transcript, which a transition record must not.
+fn outcome_label(outcome: &DictateOutcome) -> &'static str {
+    match outcome {
+        DictateOutcome::Landed { .. } => "landed",
+        DictateOutcome::Empty => "empty",
+        DictateOutcome::NoAudio { .. } => "no_audio",
+        DictateOutcome::Refused { .. } => "refused",
+        DictateOutcome::Failed => "failed",
+        DictateOutcome::Cancelled => "cancelled",
+    }
+}
+
+fn millis_of(elapsed: Duration) -> u64 {
+    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Forward a take's progress steps as updates while it runs. Steps
@@ -1901,6 +1992,24 @@ mod dictate_lifecycle_tests {
             DictateOutcome::NoAudio { peak_db: f32::NEG_INFINITY, seconds: 4 },
             "the peak must survive so the host can tell quiet from structural silence"
         );
+    }
+
+    /// Every outcome's label, because a reconstruction greps the log for
+    /// `landed`, and a flattening that names the wrong word hides the take it
+    /// is looking for. All six are reachable, so all six are pinned.
+    #[test]
+    fn every_outcome_labels_as_the_word_a_log_is_grepped_by() {
+        let cases = [
+            (DictateOutcome::Landed { text: "hello".to_owned(), truncated: false }, "landed"),
+            (DictateOutcome::Empty, "empty"),
+            (DictateOutcome::NoAudio { peak_db: -80.0, seconds: 2 }, "no_audio"),
+            (DictateOutcome::Refused { message: "no".to_owned() }, "refused"),
+            (DictateOutcome::Failed, "failed"),
+            (DictateOutcome::Cancelled, "cancelled"),
+        ];
+        for (outcome, expected) in cases {
+            assert_eq!(outcome_label(&outcome), expected, "the label for {outcome:?}");
+        }
     }
 
     /// The axes a client sends decide its take's normalizer options,

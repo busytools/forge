@@ -223,9 +223,17 @@ export interface SeatFrame {
  */
 export function slotOf(update: SessionUpdate): SessionSlot | null {
   if (typeof update === 'string') return null;
-  const payload: unknown = Object.values(update)[0];
-  // A variant's fields arrive as JSON, and this is the one place that reaches
-  // into them.
+  return slotOfPayload(Object.values(update)[0]);
+}
+
+/**
+ * The `key` one update's payload carries, narrowed at the wire boundary.
+ *
+ * The reducer is handed the payload rather than the whole update (see
+ * `apply.ts`), and a frame it records has to name its seat, so the narrowing
+ * lives here with `slotOf`'s rather than as a second copy.
+ */
+export function slotOfPayload(payload: unknown): SessionSlot | null {
   const key: unknown = (payload as { key?: unknown } | null)?.key;
   return isSlot(key) ? key : null;
 }

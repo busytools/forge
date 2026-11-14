@@ -21,7 +21,8 @@ import { outcomesOf } from '../chat/outcomes';
 import { fold } from '../chat/units';
 import { FALLBACK_FLOOR_DB, fractionOf } from '../composer/meter';
 import { surfaceFrom } from '../composer/wire';
-import { SUBSCRIBE_TURNS, type SessionUpdate } from '../protocol';
+import { noteDictateFrame, type TakePhase } from '../perf';
+import { slotOfPayload, SUBSCRIBE_TURNS, type SessionUpdate } from '../protocol';
 import { METER_CELLS } from '../wire/limits';
 import { terminalSummaryFrom } from '../wire/terminal';
 import {
@@ -407,6 +408,12 @@ export const HANDLERS: Record<string, Apply> = {
   },
 
   dictate_started: (held, payload) => {
+    noteDictateFrame(
+      'started',
+      slotOfPayload(payload),
+      number(payload['generation']),
+      recordedTakePhase(held.composer),
+    );
     const floor = number(payload['floor_db']);
     if (floor === null) return held;
     // A new take supersedes what the seat was doing, its notice included: the
@@ -425,6 +432,12 @@ export const HANDLERS: Record<string, Apply> = {
   },
 
   dictate_transcribing: (held, payload) => {
+    noteDictateFrame(
+      'transcribing',
+      slotOfPayload(payload),
+      number(payload['generation']),
+      recordedTakePhase(held.composer),
+    );
     const take = heldTake(held.composer);
     if (take === null || !ofThisTake(take, payload)) return held;
     return withTake(held, { ...take, phase: 'transcribing' }, null);
@@ -440,6 +453,12 @@ export const HANDLERS: Record<string, Apply> = {
   },
 
   dictate_ended: (held, payload) => {
+    noteDictateFrame(
+      'ended',
+      slotOfPayload(payload),
+      number(payload['generation']),
+      recordedTakePhase(held.composer),
+    );
     const take = heldTake(held.composer);
     const outcome = outcomeOf(payload['outcome']);
     // **A refusal resolves no take - it answers a start that never ran** -
@@ -975,6 +994,20 @@ function newTake(floorDb: number, generation: unknown): Record<string, unknown> 
     // dropped rather than drawn over the live one. The wire never sends it.
     generation,
   };
+}
+
+/**
+ * The phase the record's own take shows, as a perf `dictate` record names it:
+ * `none` with no take, `transcribing` once its own frame moved it, and
+ * `recording` for a take on screen that has not. **Not `takePhase` in
+ * `composer/dictate.svelte.ts`**: that one also draws `ready` for this page's
+ * own live capture with no samples, a state this record cannot see - it reads
+ * the record alone.
+ */
+function recordedTakePhase(composer: ComposerState): TakePhase {
+  const take = heldTake(composer);
+  if (take === null) return 'none';
+  return take['phase'] === 'transcribing' ? 'transcribing' : 'recording';
 }
 
 function heldTake(composer: ComposerState): Record<string, unknown> | null {
