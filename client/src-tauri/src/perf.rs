@@ -181,6 +181,19 @@ pub struct ClientPerfRecord {
     /// A `paint`: the frame's own sequence on its tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<u32>,
+    /// A page `dictate` record: the transition the received frame announced,
+    /// the seat it belongs to, the take's own number, and the phase the
+    /// record's take showed before the frame. **`before` is the field that
+    /// says which frame cleared a take's row too early**, so each one is
+    /// named here or parsed away before the write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
     /// Whether a `frame`, `tick`, `summary` or `quiet` overlapped a period
     /// the page could not be watched, or a period the window was not focused
     /// (#2569).
@@ -662,6 +675,41 @@ mod tests {
             "heartbeat",
         ] {
             assert!(parsed.get(key).is_none(), "no {key} on a page without one: {text}");
+        }
+    }
+
+    /// **A dictate frame's transition survives the desktop write.** The page
+    /// writes one per received dictate frame, and this struct is the boundary:
+    /// a field it does not name is parsed away before the file, which loses
+    /// the very evidence a take whose transcribing row vanished needs.
+    #[test]
+    fn the_dictate_transitions_survive_the_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let page = concat!(
+            r#"{"schema":"forge-perf/v1","kind":"dictate","run_id":"r","ts_ms":1,"#,
+            r#""phase":"transcribing","slot":"Busytools/forge/lead","generation":7,"#,
+            r#""before":"recording"}"#,
+            "\n",
+            r#"{"schema":"forge-perf/v1","kind":"frame","run_id":"r","ts_ms":2,"frame":1,"ms":9.5}"#,
+        );
+        let records: Vec<ClientPerfRecord> = page
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("the page's line parses"))
+            .collect();
+        append(dir.path(), &records, MAX_BYTES).expect("append");
+
+        let text = std::fs::read_to_string(dir.path().join(PERF_LOG_NAME)).expect("read back");
+        let lines: Vec<serde_json::Value> =
+            text.lines().map(|line| serde_json::from_str(line).expect("a JSON line")).collect();
+        assert_eq!(lines[0]["phase"], "transcribing", "the transition survives: {text}");
+        assert_eq!(lines[0]["slot"], "Busytools/forge/lead", "and the seat: {text}");
+        assert_eq!(lines[0]["generation"], 7, "and the take's own number: {text}");
+        assert_eq!(lines[0]["before"], "recording", "and the phase before it: {text}");
+        for key in ["phase", "slot", "generation", "before"] {
+            assert!(
+                lines[1].get(key).is_none(),
+                "a frame carries no dictate field ({key}): {text}"
+            );
         }
     }
 

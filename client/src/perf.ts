@@ -157,7 +157,8 @@ export interface PerfRecord {
     | 'connection'
     | 'input'
     | 'paint'
-    | 'tick';
+    | 'tick'
+    | 'dictate';
   run_id: string;
   ts_ms: number;
   version?: string;
@@ -295,7 +296,28 @@ export interface PerfRecord {
   tab?: number;
   /** A `paint`: the frame's own sequence on its tab. */
   seq?: number;
+  /**
+   * A `dictate`: the transition the received frame announced. **One record
+   * per received dictate frame** - `started`, `transcribing` or `ended` -
+   * because a take whose row vanished before its words arrived has no other
+   * trace.
+   */
+  phase?: DictatePhase;
+  /** A `dictate`: the seat the take belongs to, as `seatLabel` names it. */
+  slot?: string;
+  /** A `dictate`: the take's own number. Absent on a frame that carried none. */
+  generation?: number;
+  /**
+   * A `dictate`: the phase the record's take showed BEFORE the frame, or
+   * `none` with no take. **This is the field that answers a row that
+   * cleared too early**: which frame cleared it, and what it was before.
+   */
+  before?: string;
 }
+
+/** The transitions a received dictate frame announces, as a `dictate` record
+ *  names them. */
+export type DictatePhase = 'started' | 'transcribing' | 'ended';
 
 interface PerfProbe {
   start(): void;
@@ -353,6 +375,16 @@ interface PerfProbe {
   noteClockTick(seat: string | null): void;
   /** One browser frame drawn for `tab`, with its own sequence (#2645). */
   noteBrowserPaint(seq: number, tab: number, profile: string | null): void;
+  /**
+   * One dictate frame reached the reducer, with the phase the record's take
+   * showed before it: `none`, `recording` or `transcribing`.
+   */
+  noteDictateTake(
+    phase: DictatePhase,
+    slot: SessionSlot | null,
+    generation: number | null,
+    before: string,
+  ): void;
 }
 
 /** The clock and sources, injectable so a test can produce a known frame. */
@@ -1330,6 +1362,23 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     noteClockTick(seat: string | null): void {
       clockTick = { at: now(), seat, surface };
     },
+    noteDictateTake(
+      phase: DictatePhase,
+      slot: SessionSlot | null,
+      generation: number | null,
+      before: string,
+    ): void {
+      emit({
+        schema: SCHEMA,
+        kind: 'dictate',
+        run_id: runId,
+        ts_ms: Date.now(),
+        phase,
+        ...(generation === null ? {} : { generation }),
+        ...(slot === null ? {} : { slot: seatLabel(slot) }),
+        before,
+      });
+    },
   };
 }
 
@@ -1453,6 +1502,21 @@ export function noteBrowserInput(kind: string, tab: number, profile: string | nu
 /** One browser frame drawn for `tab`; only the first after a gesture is written (#2645). */
 export function noteBrowserPaint(seq: number, tab: number, profile: string | null): void {
   running?.noteBrowserPaint(seq, tab, profile);
+}
+
+/**
+ * One received dictate frame, written where the reducer takes it. `before`
+ * is the phase the record's take showed before the frame, which is what says
+ * whether a take's row was cleared before its words arrived, and by which
+ * frame.
+ */
+export function noteDictateFrame(
+  phase: DictatePhase,
+  slot: SessionSlot | null,
+  generation: number | null,
+  before: string,
+): void {
+  running?.noteDictateTake(phase, slot, generation, before);
 }
 
 /**

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { joinOfEvents } from '../chat/join';
 import { outcomesFrom, outcomesOf } from '../chat/outcomes';
 import { machineInForce } from '../composer/wire';
+import { startPerfProbe, type PerfRecord } from '../perf';
 import { applyUpdate, HANDLERS, IGNORED, REPLACES } from './apply';
 import { sessionFrom, type SessionRecord } from './wire';
 
@@ -1240,6 +1241,46 @@ describe('applyUpdate', () => {
         // own - the record's re-hand says the same thing.
         surface: 'review',
       });
+    });
+
+    /**
+     * **One perf record per received dictate frame, carrying the phase the
+     * record's take showed before the frame.** That `before` is what answers
+     * a take whose transcribing row vanished: whether the row was cleared
+     * before the words arrived, and by which frame.
+     */
+    it('writes one perf record per dictate frame with the phase before it', () => {
+      const records: PerfRecord[] = [];
+      const probe = startPerfProbe({
+        sink: (batch) => records.push(...batch),
+        schedule: () => () => {},
+      });
+      try {
+        const started = applyUpdate(empty(), {
+          dictate_started: { key: SLOT, floor_db: -50, generation: 7 },
+        });
+        const transcribing = applyUpdate(started, {
+          dictate_transcribing: { key: SLOT, generation: 7 },
+        });
+        applyUpdate(transcribing, {
+          dictate_ended: {
+            key: SLOT,
+            outcome: { landed: { text: 'hello', truncated: false } },
+            generation: 7,
+          },
+        });
+      } finally {
+        probe?.stop();
+      }
+
+      const frames = records.filter((record) => record.kind === 'dictate');
+      expect(
+        frames.map((record) => [record.phase, record.before, record.generation, record.slot]),
+      ).toEqual([
+        ['started', 'none', 7, 'Busytools/forge/lead'],
+        ['transcribing', 'recording', 7, 'Busytools/forge/lead'],
+        ['ended', 'transcribing', 7, 'Busytools/forge/lead'],
+      ]);
     });
 
     it('drops a reading that belongs to no take', () => {
