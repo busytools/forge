@@ -28,13 +28,22 @@ function withClipboard(write: (text: string) => Promise<void>): ReturnType<typeo
   return stub;
 }
 
-/** The selection copy jsdom does not carry either; `copied` is the box's text
- *  at the moment the copy ran, which is what makes the fallback observable. */
-function withExecCommand(): { exec: ReturnType<typeof vi.fn>; copied: string[] } {
-  const copied: string[] = [];
+/** The selection copy jsdom does not carry either. `copied` is the box's text
+ *  and the span it had selected at the moment the copy ran: `execCommand`
+ *  copies the selection, so an unselected box copies nothing however right
+ *  its text is. */
+function withExecCommand(): {
+  exec: ReturnType<typeof vi.fn>;
+  copied: { text: string; from: number | null; to: number | null }[];
+} {
+  const copied: { text: string; from: number | null; to: number | null }[] = [];
   const exec = vi.fn(() => {
     const box = document.querySelector('textarea');
-    copied.push(box?.value ?? '');
+    copied.push({
+      text: box?.value ?? '',
+      from: box === null ? null : box.selectionStart,
+      to: box === null ? null : box.selectionEnd,
+    });
     return true;
   });
   Object.defineProperty(document, 'execCommand', { configurable: true, value: exec });
@@ -93,8 +102,8 @@ describe('the landing clipboard', () => {
 
     expect(writeText, 'a browser page has no shell plugin').not.toHaveBeenCalled();
     expect(exec, 'the last best-effort path is a selection copy').toHaveBeenCalledWith('copy');
-    expect(copied, 'the words were in the box the copy selected').toEqual([
-      'say staging, not prod',
+    expect(copied, 'the box held the words, all of them selected').toEqual([
+      { text: 'say staging, not prod', from: 0, to: 'say staging, not prod'.length },
     ]);
     expect(document.querySelector('textarea'), 'the box does not outlive the copy').toBeNull();
   });
