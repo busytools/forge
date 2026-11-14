@@ -7860,8 +7860,22 @@ async fn a_release_during_a_review_read_ends_it_and_answers_the_ask() {
     // The abandoned subscribe is answered, so the client owes nothing for it.
     // The bound sits well under the gate below: an answer only after the gate
     // would mean the loop waited on the read.
-    match next_server_within(&mut conn, 5_000).await {
-        Some(ServerMessage::Error { what, seat, .. }) => {
+    //
+    // **The answer is found by what it is, not by being the next frame.** The
+    // seat's watch announces its first `WorkChanged` on a task of its own, so
+    // under the gate's concurrent groups that broadcast can be written between
+    // the unsubscribe and its answer and the next frame is news rather than
+    // the refusal. Broadcasts and the server-wide settings frame are passed
+    // over, as a subscribe's own answer is read elsewhere.
+    let answer = loop {
+        match next_server_within(&mut conn, 5_000).await {
+            Some(ServerMessage::Update { .. } | ServerMessage::Settings { .. }) => {}
+            Some(other) => break other,
+            None => panic!("no answer arrived for the abandoned subscribe"),
+        }
+    };
+    match answer {
+        ServerMessage::Error { what, seat, .. } => {
             assert_eq!(what, "subscribe", "the abandoned ask is answered as a subscribe");
             assert_eq!(seat, Some(lead_seat()), "and names the seat it was for");
         }
