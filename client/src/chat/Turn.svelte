@@ -4,7 +4,6 @@
   import CompactionPoint from './CompactionPoint.svelte';
   import { inFlight, type Turn as HeldTurn } from './conversation';
   import Leaves from './Leaves.svelte';
-  import Hooks from './Hooks.svelte';
   import Notice from './Notice.svelte';
   import { bytes } from './numbers';
   import Prose from './Prose.svelte';
@@ -172,8 +171,6 @@
             <div class="leaves"><Notice notice={unit.notice} /></div>
           {:else if unit.kind === 'skill'}
             <Skill name={unit.name} body={unit.body} />
-          {:else if unit.kind === 'hooks'}
-            <Hooks actions={unit.actions} infos={unit.infos} errors={unit.errors} />
           {:else if unit.kind === 'compaction'}
             <CompactionPoint
               trigger={unit.trigger}

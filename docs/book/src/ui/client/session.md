@@ -127,6 +127,12 @@ read as one system.
   Every hook still opens onto the whole of what it printed, a start whose
   hooks all finished silent opens onto a line saying so, and a hook
   outside a start keeps a row of its own.
+- **A turn's stop-hook batch** is one row of the run of rows, at the point
+  its frame arrived: `hook summary` counts the batch's actions, and the row
+  takes the hook glyph and the chevron every call beside it draws. A batch
+  that carries errors takes the failure tone and counts them in the label,
+  and the row opens onto each hook's command and duration with every error
+  under them.
 - **A read** draws by what the file is, from the same per-format policy the
   Files reader uses: markdown renders as prose, code stays coloured with the
   file's own grammar (a `Justfile` is `just`, a script's shebang names its

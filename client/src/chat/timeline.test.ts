@@ -225,6 +225,74 @@ describe('a dispatch read into its timeline', () => {
     expect(first?.kind === 'thought' && first.text).toBe('Two files, then the diff.');
   });
 
+  it('draws a hook summary under the dispatch with the count the wire carries', () => {
+    // Measured: the wire renames the field on the way out (`hookCount`), so a
+    // read of `actions` is always undefined and the line said `hooks ran` with
+    // no count on it.
+    const summary = (count: number) => ({
+      type: 'system',
+      subtype: 'stop_hook_summary',
+      parent_tool_use_id: 'tu-task',
+      hookCount: count,
+      hookInfos: [{ command: 'cargo fmt', durationMs: 3 }],
+      hookErrors: [],
+    });
+
+    const texts = [3, 1].map((count) => {
+      const line = dispatchFrames([dispatch(), summary(count)], 'tu-task').lines[0];
+      return line?.kind === 'hook' ? line.text : null;
+    });
+
+    expect(texts, 'the count, and its singular').toEqual([
+      'hooks \u{b7} 3 actions',
+      'hooks \u{b7} 1 action',
+    ]);
+  });
+
+  it('draws the hook summary line even when no count arrived', () => {
+    // A frame with no count still draws as itself rather than being dropped,
+    // the same rule the summary line is under in the first place.
+    const frames = dispatchFrames(
+      [
+        dispatch(),
+        {
+          type: 'system',
+          subtype: 'stop_hook_summary',
+          parent_tool_use_id: 'tu-task',
+          hookInfos: [{ command: 'cargo fmt', durationMs: 3 }],
+        },
+      ],
+      'tu-task',
+    );
+
+    const line = frames.lines[0];
+    expect(line?.kind).toBe('hook');
+    expect(line?.kind === 'hook' && line.text).toBe('hooks ran');
+  });
+
+  it('draws a zero-count hook summary rather than dropping it', () => {
+    // Zero is a legal wire value, and the session's own chip hides at zero
+    // because a chip marks something that happened. Here the line is the
+    // frame's only representation, so a zero count still draws as itself
+    // rather than vanishing.
+    const frames = dispatchFrames(
+      [
+        dispatch(),
+        {
+          type: 'system',
+          subtype: 'stop_hook_summary',
+          parent_tool_use_id: 'tu-task',
+          hookCount: 0,
+        },
+      ],
+      'tu-task',
+    );
+
+    const line = frames.lines[0];
+    expect(line?.kind).toBe('hook');
+    expect(line?.kind === 'hook' && line.text).toBe('hooks \u{b7} 0 actions');
+  });
+
   it('keeps a backgrounded child call open rather than settling it on its ack', () => {
     // The session's own rule: a call whose task outlives its turn draws as
     // running however clean the launch ack it was answered with.

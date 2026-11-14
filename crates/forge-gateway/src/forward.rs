@@ -428,6 +428,140 @@ fn header_value_is(headers: &HeaderMap, name: &str, value: &str) -> bool {
     headers.get(name).and_then(|v| v.to_str().ok()).is_some_and(|v| v.eq_ignore_ascii_case(value))
 }
 
+/// How deep a cause chain is walked before it is declared pathological.
+/// Real chains from reqwest + hyper are a handful of layers; a custom
+/// `source()` that returns itself must not turn a log site into a hang.
+const MAX_ERROR_CHAIN_DEPTH: usize = 16;
+
+/// The chain's layers, top first. The bound counts layers visited, not
+/// layers kept, so a self-referential `source()` terminates even when every
+/// layer renders the same text.
+fn error_chain<'a>(
+    error: &'a (dyn std::error::Error + 'static),
+) -> (Vec<&'a (dyn std::error::Error + 'static)>, bool) {
+    let mut layers = vec![error];
+    let mut source = error.source();
+    let mut truncated = false;
+    while let Some(cause) = source {
+        if layers.len() >= MAX_ERROR_CHAIN_DEPTH {
+            truncated = true;
+            break;
+        }
+        layers.push(cause);
+        source = cause.source();
+    }
+    (layers, truncated)
+}
+
+/// The whole cause chain of a failed forward leg on one line,
+/// `top -> ... -> root`.
+///
+/// reqwest's own `Display` is the top layer only, and every actionable fact
+/// (DNS, connect, TLS, reset, EMFILE) sits in a `source()` below it, so the
+/// top alone cannot tell the failures apart. The leg's two failure sites
+/// open differently: a failed send starts at "error sending request for url
+/// (...)", while a body that fails after the response started starts at
+/// "error decoding response body".
+fn describe_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let (layers, truncated) = error_chain(error);
+    let mut parts: Vec<String> = Vec::new();
+    for layer in layers {
+        let text = layer.to_string();
+        // A transparent wrapper renders its cause's text; keeping one copy
+        // and walking past it is what still reaches the root.
+        if parts.last().is_some_and(|last| *last == text) {
+            continue;
+        }
+        parts.push(text);
+    }
+    // Without the marker a capped chain ends mid-walk and its last line
+    // reads as the root.
+    if truncated {
+        parts.push(format!("... (truncated at {MAX_ERROR_CHAIN_DEPTH} layers)"));
+    }
+    parts.join(" -> ")
+}
+
+/// The transport-level shape of a failed forward leg.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForwardFailureKind {
+    Dns,
+    Connect,
+    Tls,
+    Reset,
+    Closed,
+    Timeout,
+    Fd,
+    Http2,
+    Other,
+}
+
+impl ForwardFailureKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Dns => "dns",
+            Self::Connect => "connect",
+            Self::Tls => "tls",
+            Self::Reset => "reset",
+            Self::Closed => "closed",
+            Self::Timeout => "timeout",
+            Self::Fd => "fd",
+            Self::Http2 => "http2",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Read the transport failure's kind out of the whole chain.
+///
+/// String matching rather than downcasts: the layer that carries the cause
+/// is a different crate's error type on every reqwest release, and matching
+/// words keeps one mechanism for the kinds reqwest has no predicate for
+/// (tls, reset, closed, fd, http2). Precedence runs most specific first -
+/// EMFILE is a connect failure by position but its own problem by cause, and
+/// both "connection reset by peer" and "connection closed" contain
+/// "connect".
+///
+/// The top layer is skipped when a cause sits below it: reqwest's send top
+/// `Display` embeds the request URL, so a host carrying "ssl" or "dns"
+/// would otherwise decide the kind, and the stream top ("error decoding
+/// response body") names no cause either. A flat error has no wrapper, so
+/// its own text is still read.
+fn classify_forward_failure(error: &(dyn std::error::Error + 'static)) -> ForwardFailureKind {
+    const NEEDLES: &[(ForwardFailureKind, &[&str])] = &[
+        (ForwardFailureKind::Fd, &["too many open files", "os error 24", "emfile"]),
+        (
+            ForwardFailureKind::Dns,
+            &[
+                "dns",
+                "lookup address",
+                "name or service not known",
+                "name resolution",
+                "nodename nor servname",
+            ],
+        ),
+        (ForwardFailureKind::Tls, &["tls", "ssl", "certificate"]),
+        (ForwardFailureKind::Timeout, &["timed out", "timeout"]),
+        (ForwardFailureKind::Reset, &["reset"]),
+        (ForwardFailureKind::Closed, &["closed", "broken pipe", "eof"]),
+        (ForwardFailureKind::Connect, &["connect", "refused", "unreachable", "network is down"]),
+        // Last, because h2's own words sit beside causes the kinds above
+        // already answer for: a peer close below the wrapper stays
+        // "closed", and REFUSED_STREAM's "refused" stays "connect".
+        (ForwardFailureKind::Http2, &["http2 error", "stream error", "unspecific protocol error"]),
+    ];
+    let (layers, _) = error_chain(error);
+    let layers: Vec<String> =
+        layers.iter().map(|layer| layer.to_string().to_ascii_lowercase()).collect();
+    let candidates = if layers.len() > 1 { &layers[1..] } else { &layers[..] };
+    for (kind, needles) in NEEDLES {
+        if candidates.iter().any(|layer| needles.iter().any(|needle| layer.contains(needle))) {
+            return *kind;
+        }
+    }
+    ForwardFailureKind::Other
+}
+
 #[async_trait::async_trait]
 impl RouteHandler for Gateway {
     async fn route(&self, request: Request<Bytes>) -> hyper::Response<StreamBody> {
@@ -510,9 +644,10 @@ impl RouteHandler for Gateway {
         outbound_headers.remove(CONTENT_LENGTH);
         outbound_headers.remove(hyper::header::TRANSFER_ENCODING);
 
+        let send_started = std::time::Instant::now();
         let upstream_response = match self
             .client
-            .post(url)
+            .post(url.as_str())
             .headers(outbound_headers)
             .header(hyper::header::AUTHORIZATION, format!("Bearer {credential}"))
             .body(spliced)
@@ -521,6 +656,27 @@ impl RouteHandler for Gateway {
         {
             Ok(response) => response,
             Err(error) => {
+                // The CLI's retry loop has no cause to act on: its frame
+                // carries this body and nothing else. The chain is the only
+                // place DNS, connect, TLS, reset and EMFILE differ, and this
+                // is forge's own problem rather than the session's, so it
+                // logs at warn with everything a reader needs to act.
+                let kind = classify_forward_failure(&error);
+                let chain = describe_error_chain(&error);
+                tracing::warn!(
+                    target: "forge_gateway::forward",
+                    event_name = "gateway_forward_failed",
+                    account = %account.0,
+                    org = %org,
+                    project = %project,
+                    session = %session,
+                    model = %model,
+                    upstream = %url,
+                    kind = kind.as_str(),
+                    elapsed_ms = send_started.elapsed().as_millis(),
+                    error_chain = %chain,
+                    "the forward's upstream send failed; the 502 the CLI retries carries no cause",
+                );
                 return text_response(
                     StatusCode::BAD_GATEWAY,
                     format!("upstream request failed: {error}"),
@@ -544,13 +700,52 @@ impl RouteHandler for Gateway {
             }
             response = response.header(name, value);
         }
+        // The head is already on the wire, so a body failure can only be a
+        // cut to the CLI - there is no status left to change and nothing
+        // left to rewrite. What the CLI retries with is a truncated stream
+        // carrying no cause, and the chain is the only place a reset, a
+        // timeout and an upstream that died mid-turn differ. The leg is
+        // forge's own rather than the session's work, so it logs at warn
+        // with everything a reader needs to act, the provider's request id
+        // included: that id is the correlation key to raise the cut with
+        // the provider.
+        let stream_started = std::time::Instant::now();
+        let stream_account = account.0;
+        let stream_org = org.to_owned();
+        let stream_project = project.to_owned();
+        let stream_session = session.to_owned();
+        let stream_model = model;
+        let stream_url = url;
+        let stream_headers = response_headers;
         let stream: std::pin::Pin<
             Box<dyn futures_util::Stream<Item = Result<Frame<Bytes>, BoxError>> + Send + Sync>,
-        > = Box::pin(
-            upstream_response
-                .bytes_stream()
-                .map(|chunk| chunk.map(Frame::data).map_err(|error| Box::new(error) as BoxError)),
-        );
+        > = Box::pin(upstream_response.bytes_stream().map(move |chunk| {
+            chunk.map(Frame::data).map_err(|error| {
+                let kind = classify_forward_failure(&error);
+                let chain = describe_error_chain(&error);
+                let request_id = stream_headers
+                    .get("request-id")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default();
+                tracing::warn!(
+                    target: "forge_gateway::forward",
+                    event_name = "gateway_forward_stream_failed",
+                    account = %stream_account,
+                    org = %stream_org,
+                    project = %stream_project,
+                    session = %stream_session,
+                    model = %stream_model,
+                    upstream = %stream_url,
+                    request_id = %request_id,
+                    status = status.as_u16(),
+                    kind = kind.as_str(),
+                    stream_elapsed_ms = stream_started.elapsed().as_millis(),
+                    error_chain = %chain,
+                    "the forward's upstream body failed after the response started; the CLI got a cut response",
+                );
+                Box::new(error) as BoxError
+            })
+        }));
         let streamed: StreamBody =
             http_body_util::combinators::BoxBody::new(http_body_util::StreamBody::new(stream));
         match response.body(streamed) {
@@ -594,12 +789,24 @@ mod tests {
         }
     }
 
+    /// What the stub's body does after its first chunk.
+    #[derive(Clone, Copy, Debug)]
+    enum StubTail {
+        /// The healthy shape: one more chunk after the gap, then the end.
+        Complete,
+        /// An upstream that dies mid-response: the head and the first
+        /// chunk are on the wire, then the body aborts.
+        Cut,
+    }
+
     /// A stub upstream that records what arrived and streams its
     /// response in two chunks separated by `chunk_delay`, so a
     /// buffering gateway is measurable from the client side.
     struct RecordingUpstream {
         requests: Arc<parking_lot::Mutex<Vec<Recorded>>>,
         chunk_delay: Duration,
+        /// What the body does after its first chunk.
+        tail: StubTail,
         /// One scripted (status, extra headers) pair per request.
         script: ScriptHandle,
     }
@@ -632,6 +839,7 @@ mod tests {
                 self.script.lock().pop_front().unwrap_or((StatusCode::OK.as_u16(), Vec::new()));
             let scripted = |name: &str| extra.iter().any(|(n, _)| n.eq_ignore_ascii_case(name));
             let delay = self.chunk_delay;
+            let tail = self.tail;
             let stream = futures_util::stream::unfold(
                 (0u8, delay),
                 move |state: (u8, Duration)| async move {
@@ -645,10 +853,17 @@ mod tests {
                         )),
                         1 => {
                             tokio::time::sleep(delay).await;
-                            Some((
-                                Ok(Frame::data(Bytes::from_static(b"event: second\n"))),
-                                (2u8, delay),
-                            ))
+                            let frame = match tail {
+                                StubTail::Complete => {
+                                    Ok(Frame::data(Bytes::from_static(b"event: second\n")))
+                                }
+                                StubTail::Cut => Err(Box::new(std::io::Error::new(
+                                    std::io::ErrorKind::ConnectionReset,
+                                    "stub upstream died mid-response",
+                                ))
+                                    as BoxError),
+                            };
+                            Some((frame, (2u8, delay)))
                         }
                         _ => None,
                     }
@@ -726,18 +941,33 @@ mod tests {
     /// asserts "no upstream request" is airtight whichever account a
     /// broken selection could have picked.
     async fn harness(chunk_delay: Duration) -> Harness {
-        harness_with_idle_timeout(chunk_delay, FORWARD_IDLE_TIMEOUT).await
+        harness_with(chunk_delay, FORWARD_IDLE_TIMEOUT, StubTail::Complete).await
     }
 
     /// [`harness`] with the forward leg's idle bound under the test's
     /// control, so a stalled upstream is reachable inside a test.
     async fn harness_with_idle_timeout(chunk_delay: Duration, idle_timeout: Duration) -> Harness {
+        harness_with(chunk_delay, idle_timeout, StubTail::Complete).await
+    }
+
+    /// [`harness`] with the stub's body shape under the test's control,
+    /// so an upstream that dies mid-response is reachable inside a test.
+    async fn harness_with_tail(chunk_delay: Duration, tail: StubTail) -> Harness {
+        harness_with(chunk_delay, FORWARD_IDLE_TIMEOUT, tail).await
+    }
+
+    async fn harness_with(
+        chunk_delay: Duration,
+        idle_timeout: Duration,
+        tail: StubTail,
+    ) -> Harness {
         let script: ScriptHandle =
             Arc::new(parking_lot::Mutex::new(std::collections::VecDeque::new()));
         let requests = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let upstream = Arc::new(RecordingUpstream {
             requests: Arc::clone(&requests),
             chunk_delay,
+            tail,
             script: Arc::clone(&script),
         });
         let stub_port = free_port().await;
@@ -1051,7 +1281,12 @@ mod tests {
 
     #[tokio::test]
     async fn the_response_streams_while_the_upstream_is_still_sending() {
+        use tracing_subscriber::layer::SubscriberExt;
+
         let harness = harness(Duration::from_millis(1000)).await;
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::Registry::default().with(caught.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
         let started = Instant::now();
         let mut response =
             post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
@@ -1070,6 +1305,16 @@ mod tests {
         let second = response.chunk().await.expect("a second chunk").expect("chunk bytes");
         assert!(!second.is_empty());
         assert!(started.elapsed() >= Duration::from_millis(1000), "the tail respects the gap");
+        let end = response.chunk().await.expect("the body ends cleanly");
+        assert!(end.is_none(), "the stub's body completes rather than cutting");
+
+        // A completed stream is not a failure: the other arm's record stays
+        // silent, so a healthy turn's log is uninterrupted by this site.
+        let caught = caught.0.lock().expect("capture").clone();
+        assert!(
+            caught.iter().all(|(_, target, _)| *target != "forge_gateway::forward"),
+            "a healthy forward emits no failure record: {caught:?}",
+        );
     }
 
     /// The connect bound is the tighter inner one, and that ordering is
@@ -2000,6 +2245,452 @@ mod tests {
             gateway.soonest_cooldown_end(SystemTime::now()),
             Some(crate::rotation::reset_instant(reset_at)),
             "the published end is the one the reader sleeps to",
+        );
+    }
+
+    /// A synthetic error with a hand-picked cause, so the chain walker and
+    /// the classifier are exercised on shapes reqwest's own errors cannot
+    /// be built into.
+    #[derive(Debug)]
+    struct Chained {
+        message: &'static str,
+        source: Option<Box<Chained>>,
+    }
+
+    impl std::fmt::Display for Chained {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.message)
+        }
+    }
+
+    impl std::error::Error for Chained {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.source.as_ref().map(|source| source.as_ref() as &(dyn std::error::Error + 'static))
+        }
+    }
+
+    fn chain(messages: &[&'static str]) -> Chained {
+        let mut messages = messages.to_vec();
+        let mut error =
+            Chained { message: messages.pop().expect("a chain has a root layer"), source: None };
+        while let Some(message) = messages.pop() {
+            error = Chained { message, source: Some(Box::new(error)) };
+        }
+        error
+    }
+
+    /// A `source()` that returns itself, the shape the depth cap exists for.
+    #[derive(Debug)]
+    struct Loops;
+
+    impl std::fmt::Display for Loops {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("loops forever")
+        }
+    }
+
+    impl std::error::Error for Loops {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(self)
+        }
+    }
+
+    /// reqwest's own `Display` is the top layer only; the cause a reader
+    /// needs (DNS, connect, TLS, reset, EMFILE) sits below it, so the whole
+    /// walk has to cross in one line.
+    #[test]
+    fn the_chain_describer_names_every_cause() {
+        let flat = Chained { message: "request failed", source: None };
+        assert_eq!(
+            describe_error_chain(&flat),
+            "request failed",
+            "a flat error is its own whole chain",
+        );
+
+        let nested = chain(&[
+            "error sending request for url (https://openrouter.ai/api/v1/messages)",
+            "client error (Connect)",
+            "tcp connect error: Connection refused",
+        ]);
+        assert_eq!(
+            describe_error_chain(&nested),
+            "error sending request for url (https://openrouter.ai/api/v1/messages) -> client \
+             error (Connect) -> tcp connect error: Connection refused",
+            "every layer crosses, top first and root last",
+        );
+    }
+
+    /// A wrapper whose Display delegates to its cause renders the same text
+    /// twice; the walk has to pass it and still reach the root.
+    #[test]
+    fn the_chain_describer_passes_a_repeated_layer() {
+        assert_eq!(
+            describe_error_chain(&chain(&["same text", "same text", "the root"])),
+            "same text -> the root",
+            "the repeat is skipped, the root below it is not lost",
+        );
+    }
+
+    /// A capped chain says so, so its last line cannot read as the root -
+    /// and a source that returns itself terminates.
+    #[test]
+    fn the_chain_walk_is_bounded_and_says_so() {
+        let messages: [&str; 20] = [
+            "layer 0", "layer 1", "layer 2", "layer 3", "layer 4", "layer 5", "layer 6", "layer 7",
+            "layer 8", "layer 9", "layer 10", "layer 11", "layer 12", "layer 13", "layer 14",
+            "layer 15", "layer 16", "layer 17", "layer 18", "layer 19",
+        ];
+        let described = describe_error_chain(&chain(&messages));
+        assert!(
+            described.ends_with("... (truncated at 16 layers)"),
+            "a capped chain carries the marker: {described}",
+        );
+        assert_eq!(
+            described.split(" -> ").count(),
+            MAX_ERROR_CHAIN_DEPTH + 1,
+            "the walk keeps the cap and adds the marker: {described}",
+        );
+
+        let looped = describe_error_chain(&Loops);
+        assert!(
+            looped.ends_with("... (truncated at 16 layers)"),
+            "a self-referential source terminates at the cap: {looped}",
+        );
+    }
+
+    /// The kind has to come off the chain, not the top, and every real
+    /// reqwest connect-phase error carries a `client error (Connect)`
+    /// wrapper above its cause - so each connect-phase case here holds a
+    /// "connect" token above its own kind, pinning the precedence and not
+    /// just the needles. The send-phase cases below it open with `client
+    /// error (SendRequest)` instead.
+    #[test]
+    fn the_classifier_reads_the_kind_off_the_chain() {
+        let cases = [
+            (
+                chain(&[
+                    "error sending request for url (https://openrouter.ai/api/v1/messages)",
+                    "client error (Connect)",
+                    "dns error: failed to lookup address information: nodename nor servname \
+                     provided, or not known",
+                ]),
+                ForwardFailureKind::Dns,
+            ),
+            (
+                chain(&[
+                    "error sending request",
+                    "client error (Connect)",
+                    "tcp connect error: Connection refused",
+                ]),
+                ForwardFailureKind::Connect,
+            ),
+            (
+                chain(&["error sending request", "client error (Connect)", "tls handshake eof"]),
+                ForwardFailureKind::Tls,
+            ),
+            (
+                chain(&[
+                    "error sending request",
+                    "client error (Connect)",
+                    "connection reset by peer",
+                ]),
+                ForwardFailureKind::Reset,
+            ),
+            (
+                chain(&[
+                    "error sending request",
+                    "client error (Connect)",
+                    "connection closed before message completed",
+                ]),
+                ForwardFailureKind::Closed,
+            ),
+            (
+                chain(&["error sending request", "client error (Connect)", "operation timed out"]),
+                ForwardFailureKind::Timeout,
+            ),
+            (
+                chain(&[
+                    "error sending request",
+                    "client error (Connect)",
+                    "tcp connect error: Too many open files (os error 24)",
+                ]),
+                ForwardFailureKind::Fd,
+            ),
+            (
+                // The only matching token is upper case: the classifier has
+                // to fold before it compares.
+                chain(&[
+                    "error sending request",
+                    "client error (Connect)",
+                    "TLS handshake failure",
+                ]),
+                ForwardFailureKind::Tls,
+            ),
+            (
+                // reqwest's top Display embeds the request URL; a host
+                // carrying a kind word there must not decide the kind.
+                chain(&[
+                    "error sending request for url (https://ssl-proxy.internal/v1/messages)",
+                    "tcp connect error: Connection refused",
+                ]),
+                ForwardFailureKind::Connect,
+            ),
+            (
+                // The measured shape behind every gateway_forward_failed
+                // record of 2026-11-14: a peer RST_STREAM.
+                chain(&[
+                    "error sending request for url \
+                     (https://openrouter.ai/api/v1/messages?beta=true)",
+                    "client error (SendRequest)",
+                    "http2 error",
+                    "stream error received: unspecific protocol error detected",
+                ]),
+                ForwardFailureKind::Http2,
+            ),
+            (
+                // A peer that closes the stream stays "closed". hyper sends
+                // the h2 cause as its own source layer, so this pins both
+                // the precedence and the search below the wrapper.
+                chain(&[
+                    "error sending request for url (https://openrouter.ai/api/v1/messages)",
+                    "client error (SendRequest)",
+                    "http2 error",
+                    "connection closed because of a broken pipe",
+                ]),
+                ForwardFailureKind::Closed,
+            ),
+            (
+                // The wrapper is not required for the h2 kind: the cause
+                // layer's own words are enough.
+                chain(&[
+                    "error sending request for url (https://openrouter.ai/api/v1/messages)",
+                    "client error (SendRequest)",
+                    "stream error received: unspecific protocol error detected",
+                ]),
+                ForwardFailureKind::Http2,
+            ),
+            (
+                // REFUSED_STREAM's cause layer carries "refused", which is
+                // connect by precedence; the h2 kind sitting last is what
+                // keeps that answer.
+                chain(&[
+                    "error sending request for url (https://openrouter.ai/api/v1/messages)",
+                    "client error (SendRequest)",
+                    "http2 error",
+                    "refused stream before processing any application logic",
+                ]),
+                ForwardFailureKind::Connect,
+            ),
+            (
+                // A flat error has no wrapper to skip, so its own text is
+                // still evidence.
+                Chained { message: "tcp connect error: Connection refused", source: None },
+                ForwardFailureKind::Connect,
+            ),
+            (
+                Chained { message: "something else entirely", source: None },
+                ForwardFailureKind::Other,
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(
+                classify_forward_failure(&error),
+                expected,
+                "chain '{}' classifies as {expected:?}",
+                describe_error_chain(&error),
+            );
+        }
+    }
+
+    /// A needle below the cap is never reached, so the classifier is
+    /// bounded by the same walk the describer uses.
+    #[test]
+    fn the_classifier_does_not_read_past_the_cap() {
+        let mut messages: [&str; 20] = [
+            "layer 0", "layer 1", "layer 2", "layer 3", "layer 4", "layer 5", "layer 6", "layer 7",
+            "layer 8", "layer 9", "layer 10", "layer 11", "layer 12", "layer 13", "layer 14",
+            "layer 15", "layer 16", "layer 17", "layer 18", "layer 19",
+        ];
+        messages[17] = "connection reset by peer";
+        assert_eq!(
+            classify_forward_failure(&chain(&messages)),
+            ForwardFailureKind::Other,
+            "the needle past the cap is not read",
+        );
+    }
+
+    #[test]
+    fn every_kind_names_itself() {
+        for (kind, name) in [
+            (ForwardFailureKind::Dns, "dns"),
+            (ForwardFailureKind::Connect, "connect"),
+            (ForwardFailureKind::Tls, "tls"),
+            (ForwardFailureKind::Reset, "reset"),
+            (ForwardFailureKind::Closed, "closed"),
+            (ForwardFailureKind::Timeout, "timeout"),
+            (ForwardFailureKind::Fd, "fd"),
+            (ForwardFailureKind::Http2, "http2"),
+            (ForwardFailureKind::Other, "other"),
+        ] {
+            assert_eq!(kind.as_str(), name);
+        }
+    }
+
+    /// One captured record: level, target, and `name=value` fields.
+    type CaughtRecord = (tracing::Level, &'static str, String);
+
+    /// Every record a site emitted while the capture was installed.
+    #[derive(Clone, Default)]
+    struct Caught(Arc<std::sync::Mutex<Vec<CaughtRecord>>>);
+
+    #[derive(Default)]
+    struct Fields(String);
+
+    impl tracing::field::Visit for Fields {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if !self.0.is_empty() {
+                self.0.push(' ');
+            }
+            let _ = std::fmt::write(&mut self.0, format_args!("{}={value:?}", field.name()));
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Caught {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = Fields::default();
+            event.record(&mut fields);
+            self.0.lock().expect("capture").push((
+                *event.metadata().level(),
+                event.metadata().target(),
+                fields.0,
+            ));
+        }
+    }
+
+    /// The line this change exists for: the 502 body carries no cause, so
+    /// the record is the only place it survives. Deleting the warn block,
+    /// demoting its level or dropping a field must fail here.
+    #[tokio::test]
+    async fn a_failed_forward_is_recorded_with_its_cause_chain() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let harness = harness(Duration::ZERO).await;
+        // A port the probe bound and dropped: the forward's connect is
+        // refused for real, through reqwest's own error chain.
+        let dead_port = free_port().await;
+        let dead_upstream = format!("http://127.0.0.1:{dead_port}");
+        let dead_env = HashMap::from([
+            ("ANTHROPIC_BASE_URL".to_owned(), dead_upstream.clone()),
+            ("ANTHROPIC_AUTH_TOKEN".to_owned(), "real-openrouter-key".to_owned()),
+            ("ANTHROPIC_API_KEY".to_owned(), String::new()),
+        ]);
+        harness.gateway.pool.replace_accounts(&[forge_primitives::account::LoadedAccount {
+            display_name: "OpenRouter".to_owned(),
+            provider: forge_primitives::account::Provider::Openrouter,
+            base_url: None,
+            models: vec!["glm-5.3-flash".to_owned()],
+            model_aliases: std::collections::HashMap::new(),
+            model_slugs: std::collections::HashMap::new(),
+            env: dead_env,
+        }]);
+
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::Registry::default().with(caught.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let response = post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = response.text().await.expect("a 502 body");
+        assert!(body.starts_with("upstream request failed: "), "the 502 body is unchanged: {body}");
+
+        let caught = caught.0.lock().expect("capture").clone();
+        let ours: Vec<_> =
+            caught.iter().filter(|(_, target, _)| *target == "forge_gateway::forward").collect();
+        assert_eq!(ours.len(), 1, "one failed forward emits one record: {caught:?}");
+        let (level, _, fields) = &ours[0];
+        assert_eq!(*level, tracing::Level::WARN, "the line claims forge's own problem: {fields}");
+        for needle in [
+            "event_name=\"gateway_forward_failed\"",
+            "account=OpenRouter",
+            "org=Busytools",
+            "project=forge",
+            "session=session-1",
+            "model=glm-5.3-flash",
+            &format!("upstream={dead_upstream}/v1/messages?beta=true"),
+            "kind=\"connect\"",
+            "elapsed_ms=",
+            "error_chain=",
+            " -> ",
+            "Connection refused",
+        ] {
+            assert!(fields.contains(needle), "{needle} missing from {fields}");
+        }
+        assert!(
+            !fields.contains("real-openrouter-key"),
+            "the record must never carry the credential: {fields}",
+        );
+    }
+
+    /// The other silent arm: the upstream answered and its head is already
+    /// on the wire, so the body dying mid-stream is a cut the CLI retries
+    /// with no cause. Deleting the stream's warn block, demoting its level
+    /// or dropping a field must fail here.
+    #[tokio::test]
+    async fn a_stream_cut_after_the_headers_is_recorded_with_its_cause_chain() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let harness = harness_with_tail(Duration::from_millis(50), StubTail::Cut).await;
+        let caught = Caught::default();
+        let subscriber = tracing_subscriber::Registry::default().with(caught.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let mut response =
+            post_as_cli(&format!("{}/v1/messages?beta=true", harness.client_url)).await;
+        assert_eq!(response.status(), StatusCode::OK, "the head reached the CLI before the cut");
+        let first = response.chunk().await.expect("a first chunk").expect("chunk bytes");
+        assert_eq!(&first[..], b"event: first\n", "the live prefix reached the CLI");
+        let cut = response.chunk().await;
+        assert!(cut.is_err(), "the body is cut mid-stream, not completed; got {cut:?}");
+
+        let caught = caught.0.lock().expect("capture").clone();
+        let ours: Vec<_> =
+            caught.iter().filter(|(_, target, _)| *target == "forge_gateway::forward").collect();
+        assert_eq!(ours.len(), 1, "one cut stream emits one record: {caught:?}");
+        let (level, _, fields) = &ours[0];
+        assert_eq!(*level, tracing::Level::WARN, "the line claims forge's own problem: {fields}");
+        for needle in [
+            "event_name=\"gateway_forward_stream_failed\"",
+            "account=OpenRouter",
+            "org=Busytools",
+            "project=forge",
+            "session=session-1",
+            "model=glm-5.3-flash",
+            &format!("upstream={}/v1/messages?beta=true", harness.upstream_url),
+            "request_id=req-test",
+            "status=200",
+            "kind=\"closed\"",
+            "stream_elapsed_ms=",
+            "error_chain=",
+            " -> ",
+            "unexpected EOF during chunk size line",
+        ] {
+            assert!(fields.contains(needle), "{needle} missing from {fields}");
+        }
+        // The clock is the stream's own: the stub holds the body for 50 ms
+        // after its first chunk, so a clock taken at the error site reads 0.
+        let elapsed = fields
+            .split("stream_elapsed_ms=")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|value| value.parse::<u128>().ok())
+            .expect("the record carries the stream's elapsed ms");
+        assert!(elapsed >= 50, "the stream ran for its own 50 ms at least; got {elapsed}");
+        assert!(
+            !fields.contains("real-openrouter-key"),
+            "the record must never carry the credential: {fields}",
         );
     }
 }
