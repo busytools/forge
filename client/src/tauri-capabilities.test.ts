@@ -42,6 +42,7 @@ const CAPABILITIES = fileURLToPath(new URL('../src-tauri/capabilities', import.m
 const GRANTS: Record<string, string | null> = {
   core: null,
   event: 'core:event:',
+  'plugin-clipboard-manager': 'clipboard-manager:allow-write-text',
 };
 
 /**

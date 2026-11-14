@@ -634,6 +634,7 @@ pub fn run() -> u8 {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         // **A native resize settles the webview's frame after the page has
         // measured it**, and full screen's exit is the case that leaves the
@@ -721,6 +722,7 @@ pub fn run() -> u8 {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(android::init())
         .plugin(android::init_file_names())
         .plugin(share::init())
