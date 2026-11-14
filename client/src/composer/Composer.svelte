@@ -2,6 +2,7 @@
   import { tick, untrack } from 'svelte';
 
   import { echoes } from '../chat/echoes.svelte';
+  import { copyToClipboard } from '../clipboard';
   import { pinnedRow } from '../chat/pinnedRow.svelte';
   import { runningAt } from '../chat/conversation';
   import { drawsSurface, navigateBrowser } from '../browser/link';
@@ -1030,10 +1031,10 @@
     box.beatAt = Date.now();
     // **Every landing copies its words.** One write per landing, overwriting
     // what the clipboard held; a page with no clipboard or a refused write
-    // costs the reader nothing that just landed.
-    void navigator.clipboard?.writeText(words).catch((error: unknown) => {
-      console.debug('the clipboard refused the landed words', error);
-    });
+    // costs the reader nothing that just landed. The helper picks the path
+    // the client runs on - the shell's plugin, the browser's clipboard, or a
+    // copied selection - and draws nothing whichever it takes.
+    void copyToClipboard(words);
     // The words come with the keyboard, so an immediate Enter sends what just
     // landed. The guards above already make this the landing rather than every
     // frame. When the words went to the dock this handle still holds the element

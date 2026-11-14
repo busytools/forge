@@ -246,12 +246,16 @@ crosses the C boundary, and the capture stops delivering. That line is a
 own lines. A panic that unwinds through a foreign frame still aborts; no
 catch at either layer can reach it.
 
-**Every landing copies its words.** After a take's words land in a box - the
-composer's draft, the dock's words row or the send-back field - the same text
-is written to the clipboard with `navigator.clipboard.writeText`, overwriting
-what was there. A page over a plain-http origin has no clipboard at all and a
-live one can still refuse the write; neither costs the reader the words that
-just landed, and a refusal is logged at debug.
+**Every landing copies its words, silently.** After a take's words land in a
+box - the composer's draft, the dock's words row or the send-back field - the
+same text is written to the clipboard, overwriting what was there. In the
+shell - the desktop and Android apps - the copy goes through Tauri's
+clipboard plugin, because a landing is not a user activation and the
+desktop's webview refuses an async clipboard write without one. A browser
+page uses `navigator.clipboard` where its origin allows one and a copied
+selection where it does not. Nothing is drawn on any path: a page with no way
+to copy, or a refused write, costs the reader nothing that just landed, and a
+refusal is logged at debug.
 
 ## The states the surface can be in
 

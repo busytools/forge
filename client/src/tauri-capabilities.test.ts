@@ -42,6 +42,7 @@ const CAPABILITIES = fileURLToPath(new URL('../src-tauri/capabilities', import.m
 const GRANTS: Record<string, string | null> = {
   core: null,
   event: 'core:event:',
+  'plugin-clipboard-manager': 'clipboard-manager:allow-write-text',
 };
 
 /**
@@ -164,5 +165,25 @@ describe("the page's Tauri modules", () => {
         `the page imports ${specifierOf(module)} (${[...files].join(', ')}), but no capability under client/src-tauri/capabilities grants ${needed}*; the released app denies the call`,
       ).toBe(true);
     }
+  });
+
+  /**
+   * **The grant is the door; the registration is the room behind it.** A
+   * linked plugin contributes its permission manifest at build time whether
+   * or not it is initialised, so every grant above passes with the plugin
+   * missing - and then the page's call rejects at runtime and the landing
+   * copies nothing, silently. `run` builds two arms, the desktop's and
+   * Android's, and each registers its plugins on a chain of its own.
+   */
+  it('registers the clipboard plugin on both arms of the shell', () => {
+    const lib = readFileSync(
+      fileURLToPath(new URL('../src-tauri/src/lib.rs', import.meta.url)),
+      'utf8',
+    );
+    const registered = lib.split('tauri_plugin_clipboard_manager::init()').length - 1;
+    expect(
+      registered,
+      'the clipboard plugin is registered once per arm - desktop and Android - or the page reaches a plugin that is not there',
+    ).toBe(2);
   });
 });

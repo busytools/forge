@@ -87,6 +87,11 @@ tauri-plugin-log = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 tauri-plugin-notification = "2"
+# **The landing's copy on both apps.** A landing is not a user activation, so
+# the desktop webview's own clipboard write is refused; the plugin writes from
+# the Rust half, where no gesture is required, and covers Android with the same
+# call.
+tauri-plugin-clipboard-manager = "2"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["process", "rt-multi-thread", "macros", "time", "fs", "net", "sync"] }
 # The client's socket, pinned here rather than by the workspace (this crate is
