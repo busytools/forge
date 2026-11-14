@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The page listens for the shell's client:// events.",
+  "description": "The page listens for the shell's client:// events and writes a landing's words to the clipboard.",
   "windows": ["main"],
   "permissions": ["core:event:default", "clipboard-manager:allow-write-text"]
 }
