@@ -11353,26 +11353,26 @@ mod lead_charter_tests {
             "the merge example the rule hangs off is pinned: {DEFAULT_LEAD_CHARTER}",
         );
         assert!(
-            DEFAULT_LEAD_CHARTER
-                .contains("Never pass `--delete-branch` while a worker still holds the branch"),
-            "the flag and the condition that forbids it are pinned: {DEFAULT_LEAD_CHARTER}",
+            DEFAULT_LEAD_CHARTER.contains(
+                "Never pass `--delete-branch` while any worktree has the branch checked out"
+            ),
+            "the flag and the checkout that forbids it are pinned: {DEFAULT_LEAD_CHARTER}",
         );
         assert!(
             DEFAULT_LEAD_CHARTER.contains(
-                "on a branch checked out in a locked worker worktree it can delete that \
-                 worktree's admin dir and half its files, with only a warning that the tree \
-                 could not be removed"
+                "a locked worker worktree can lose its admin dir and half its files, with only \
+                 a warning that the tree could not be removed"
             ),
             "the damage and its silent warning are pinned: {DEFAULT_LEAD_CHARTER}",
         );
         assert!(
             DEFAULT_LEAD_CHARTER.contains(
                 "merge without the flag, let the worker wind down and despawn (which reaps the \
-                 worktree and its branch once its commits are reachable elsewhere), and delete \
-                 the branch after"
+                 worktree and its `worktree-<label>` branch once its commits are reachable \
+                 elsewhere), and delete the PR branch after"
             ),
-            "the safe path names the despawn as the reap and the delete as the lead's last \
-             step: {DEFAULT_LEAD_CHARTER}",
+            "the safe path names the despawn's branch apart from the PR branch: \
+             {DEFAULT_LEAD_CHARTER}",
         );
     }
 
@@ -11388,9 +11388,10 @@ mod lead_charter_tests {
         assert!(
             DEFAULT_LEAD_CHARTER.contains(
                 "before trusting a resumed or recreated worker worktree, check `git -C \
-                 <worktree> merge-base --is-ancestor origin/main HEAD`"
+                 <worktree> merge-base --is-ancestor origin/main HEAD` after a fetch"
             ),
-            "the lineage check is pinned at the re-spawn: {DEFAULT_LEAD_CHARTER}",
+            "the lineage check and the fetch it is only true after are pinned: \
+             {DEFAULT_LEAD_CHARTER}",
         );
         assert!(
             DEFAULT_LEAD_CHARTER
@@ -11400,6 +11401,13 @@ mod lead_charter_tests {
         assert!(
             DEFAULT_LEAD_CHARTER.contains("a recreated tree can sit on a stale lineage"),
             "the condition the check catches is pinned: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains(
+                "If the check fails, point the worker at a branch at origin/main (never a rebase \
+                 of the old lineage) once both lineages are pushed, before it runs any passes"
+            ),
+            "the recovery from a stale tree is pinned: {DEFAULT_LEAD_CHARTER}",
         );
     }
 }
