@@ -1385,11 +1385,12 @@ async fn run_recording(
     let _ = host.emit(DictateUpdate::Ended { key, outcome, generation, surface, initiator });
 }
 
-/// One take's end, `warn` for a Failed outcome and `debug` for every other:
-/// a failure is forge's own problem, while a landing, an empty answer, a
-/// quiet room and an abandon are the session's own work (rule 20).
-/// `elapsed` is the leg since the submit, or since the start for a take
-/// abandoned before one.
+/// One take's end, always `debug`: a take whose recognition failed is that
+/// session's own work rather than a warning about forge (rule 20), and the
+/// cause record already owns the level - `dictate_failed` for recognition,
+/// `dictate_submit_failed` for the engine submit, `dictate_answer_task_unjoined`
+/// for the join. `elapsed` is the leg since the submit, or since the start
+/// for a take abandoned before one.
 fn record_take_ended(
     key: &SessionSlot,
     generation: u64,
@@ -1398,32 +1399,17 @@ fn record_take_ended(
     outcome: &DictateOutcome,
     elapsed: Duration,
 ) {
-    let failed = matches!(outcome, DictateOutcome::Failed);
     let outcome = outcome_label(outcome);
-    let elapsed_ms = millis_of(elapsed);
-    if failed {
-        tracing::warn!(
-            event_name = "dictate_take_ended",
-            slot = %key.display(),
-            generation,
-            initiator = ?initiator,
-            surface = ?surface,
-            outcome,
-            elapsed_ms,
-            "dictation take failed"
-        );
-    } else {
-        tracing::debug!(
-            event_name = "dictate_take_ended",
-            slot = %key.display(),
-            generation,
-            initiator = ?initiator,
-            surface = ?surface,
-            outcome,
-            elapsed_ms,
-            "dictation take ended"
-        );
-    }
+    tracing::debug!(
+        event_name = "dictate_take_ended",
+        slot = %key.display(),
+        generation,
+        initiator = ?initiator,
+        surface = ?surface,
+        outcome,
+        elapsed_ms = millis_of(elapsed),
+        "dictation take ended"
+    );
 }
 
 /// The word a log groups a take's end by. The outcome itself can carry a

@@ -656,8 +656,11 @@ async fn a_take_records_its_three_transitions_in_order() {
             fields.contains("generation=1"),
             "record {index} names the take it belongs to: {fields}"
         );
-        let expected = if index == 2 { tracing::Level::WARN } else { tracing::Level::DEBUG };
-        assert_eq!(*level, expected, "record {index} takes rule 20's level: {fields}");
+        assert_eq!(
+            *level,
+            tracing::Level::DEBUG,
+            "record {index} is a session's own work at debug, and the cause record owns the level: {fields}"
+        );
     }
     assert!(
         transitions[1].2.contains("elapsed_ms="),
@@ -672,8 +675,8 @@ async fn a_take_records_its_three_transitions_in_order() {
 }
 
 /// A take abandoned before its submit still ends with its own record, and
-/// that one is a session's own work rather than a warning: `warn` belongs to
-/// the failed outcome alone.
+/// that record is a session's own work at `debug`, like every other ending:
+/// the cause record, not this transition, owns any level above it.
 #[tokio::test]
 async fn a_cancelled_take_records_its_end_at_debug() {
     use tracing_subscriber::layer::SubscriberExt as _;
