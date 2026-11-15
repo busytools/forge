@@ -157,7 +157,8 @@ export interface PerfRecord {
     | 'connection'
     | 'input'
     | 'paint'
-    | 'tick';
+    | 'tick'
+    | 'dictate';
   run_id: string;
   ts_ms: number;
   version?: string;
@@ -241,6 +242,9 @@ export interface PerfRecord {
    * window OPENED - a window can span a seat switch, so one value cannot
    * say where every frame inside it happened, and the frames carry their
    * own. Null is honest for "the router has not wired a route yet".
+   *
+   * A `dictate` names its take's seat in `session` too, so a seat's records
+   * are collected by one key rather than two.
    */
   surface?: string | null;
   session?: string | null;
@@ -295,7 +299,34 @@ export interface PerfRecord {
   tab?: number;
   /** A `paint`: the frame's own sequence on its tab. */
   seq?: number;
+  /**
+   * A `dictate`: the transition the received frame announced. **One record
+   * per received dictate frame** - `started`, `transcribing` or `ended` -
+   * because a take whose row vanished before its words arrived has no other
+   * trace.
+   */
+  phase?: DictatePhase;
+  /** A `dictate`: the take's own number. Absent on a frame that carried none. */
+  generation?: number;
+  /**
+   * A `dictate`: the phase the record's take showed BEFORE the frame, or
+   * `none` with no take. **This is the field that answers a row that
+   * cleared too early**: which frame cleared it, and what it was before.
+   */
+  before?: TakePhase;
 }
+
+/** The transitions a received dictate frame announces, as a `dictate` record
+ *  names them. */
+export type DictatePhase = 'started' | 'transcribing' | 'ended';
+
+/**
+ * The phases a take shows on the record, as `before` names them, and the
+ * `none` a frame finds with no take. **The seat of a `dictate` record rides
+ * the log's own `session` key**, so a reader collecting one seat's records by
+ * `session` finds these beside its frames.
+ */
+export type TakePhase = 'none' | 'recording' | 'transcribing';
 
 interface PerfProbe {
   start(): void;
@@ -353,6 +384,16 @@ interface PerfProbe {
   noteClockTick(seat: string | null): void;
   /** One browser frame drawn for `tab`, with its own sequence (#2645). */
   noteBrowserPaint(seq: number, tab: number, profile: string | null): void;
+  /**
+   * One dictate frame reached the reducer, with the phase the record's take
+   * showed before it: `none`, `recording` or `transcribing`.
+   */
+  noteDictateTake(
+    phase: DictatePhase,
+    slot: SessionSlot | null,
+    generation: number | null,
+    before: TakePhase,
+  ): void;
 }
 
 /** The clock and sources, injectable so a test can produce a known frame. */
@@ -1330,6 +1371,23 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
     noteClockTick(seat: string | null): void {
       clockTick = { at: now(), seat, surface };
     },
+    noteDictateTake(
+      phase: DictatePhase,
+      slot: SessionSlot | null,
+      generation: number | null,
+      before: TakePhase,
+    ): void {
+      emit({
+        schema: SCHEMA,
+        kind: 'dictate',
+        run_id: runId,
+        ts_ms: Date.now(),
+        phase,
+        ...(generation === null ? {} : { generation }),
+        ...(slot === null ? {} : { session: seatLabel(slot) }),
+        before,
+      });
+    },
   };
 }
 
@@ -1343,8 +1401,17 @@ let running: PerfProbe | null = null;
  */
 export function startPerfProbe(options: ProbeOptions = {}): PerfProbe | null {
   if (running !== null) return running;
-  running = perfProbe({ ...options, sink: options.sink ?? perfSink() });
-  running.start();
+  const probe = perfProbe({ ...options, sink: options.sink ?? perfSink() });
+  // **A stopped probe is not a running one.** Leaving it in the module global
+  // hands the next caller a dead sink, which is silent: every record after it
+  // goes nowhere.
+  const stop = probe.stop.bind(probe);
+  probe.stop = () => {
+    stop();
+    if (running === probe) running = null;
+  };
+  running = probe;
+  probe.start();
   return running;
 }
 
@@ -1453,6 +1520,21 @@ export function noteBrowserInput(kind: string, tab: number, profile: string | nu
 /** One browser frame drawn for `tab`; only the first after a gesture is written (#2645). */
 export function noteBrowserPaint(seq: number, tab: number, profile: string | null): void {
   running?.noteBrowserPaint(seq, tab, profile);
+}
+
+/**
+ * One received dictate frame, written where the reducer takes it. `before`
+ * is the phase the record's take showed before the frame, which is what says
+ * whether a take's row was cleared before its words arrived, and by which
+ * frame.
+ */
+export function noteDictateFrame(
+  phase: DictatePhase,
+  slot: SessionSlot | null,
+  generation: number | null,
+  before: TakePhase,
+): void {
+  running?.noteDictateTake(phase, slot, generation, before);
 }
 
 /**

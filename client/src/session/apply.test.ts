@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { joinOfEvents } from '../chat/join';
 import { outcomesFrom, outcomesOf } from '../chat/outcomes';
 import { machineInForce } from '../composer/wire';
+import { startPerfProbe, type PerfRecord } from '../perf';
 import { applyUpdate, HANDLERS, IGNORED, REPLACES } from './apply';
 import { sessionFrom, type SessionRecord } from './wire';
 
@@ -1240,6 +1241,93 @@ describe('applyUpdate', () => {
         // own - the record's re-hand says the same thing.
         surface: 'review',
       });
+    });
+
+    /**
+     * **One perf record per received dictate frame, carrying the phase the
+     * record's take showed before the frame.** That `before` is what answers
+     * a take whose transcribing row vanished: whether the row was cleared
+     * before the words arrived, and by which frame.
+     */
+    it('writes one perf record per dictate frame with the phase before it', () => {
+      const records: PerfRecord[] = [];
+      const probe = startPerfProbe({
+        sink: (batch) => records.push(...batch),
+        schedule: () => () => {},
+      });
+      try {
+        const started = applyUpdate(empty(), {
+          dictate_started: { key: SLOT, floor_db: -50, generation: 7 },
+        });
+        const transcribing = applyUpdate(started, {
+          dictate_transcribing: { key: SLOT, generation: 7 },
+        });
+        applyUpdate(transcribing, {
+          dictate_ended: {
+            key: SLOT,
+            outcome: { landed: { text: 'hello', truncated: false } },
+            generation: 7,
+          },
+        });
+      } finally {
+        probe?.stop();
+      }
+
+      const frames = records.filter((record) => record.kind === 'dictate');
+      expect(
+        frames.map((record) => [record.phase, record.before, record.generation, record.session]),
+      ).toEqual([
+        ['started', 'none', 7, 'Busytools/forge/lead'],
+        ['transcribing', 'recording', 7, 'Busytools/forge/lead'],
+        ['ended', 'transcribing', 7, 'Busytools/forge/lead'],
+      ]);
+    });
+
+    /**
+     * **The frames the reducer drops are the incident's own shape, and they
+     * are recorded too.** A take whose row was cleared before its words
+     * arrived answers `dictate_ended` with no take held (`before: none`), and
+     * a superseded take's frame still names its generation. The record is
+     * written at the handler's top for exactly that reason: moved below any
+     * guard, the one frame this exists to capture goes unwritten while the
+     * happy-path test stays green.
+     */
+    it('records a dictate frame the reducer drops, naming the phase it found', () => {
+      const records: PerfRecord[] = [];
+      const probe = startPerfProbe({
+        sink: (batch) => records.push(...batch),
+        schedule: () => () => {},
+      });
+      try {
+        // The words arriving with no take on the record.
+        applyUpdate(empty(), {
+          dictate_ended: {
+            key: SLOT,
+            outcome: { landed: { text: 'late', truncated: false } },
+            generation: 7,
+          },
+        });
+        // A start whose frame carried no floor reaches the early return.
+        applyUpdate(empty(), { dictate_started: { key: SLOT, generation: 8 } });
+        // A superseded take's transcribing frame applies nothing.
+        const live = applyUpdate(empty(), {
+          dictate_started: { key: SLOT, floor_db: -50, generation: 9 },
+        });
+        applyUpdate(live, { dictate_transcribing: { key: SLOT, generation: 8 } });
+      } finally {
+        probe?.stop();
+      }
+
+      expect(
+        records
+          .filter((record) => record.kind === 'dictate')
+          .map((record) => [record.phase, record.before, record.generation]),
+      ).toEqual([
+        ['ended', 'none', 7],
+        ['started', 'none', 8],
+        ['started', 'none', 9],
+        ['transcribing', 'recording', 8],
+      ]);
     });
 
     it('drops a reading that belongs to no take', () => {
