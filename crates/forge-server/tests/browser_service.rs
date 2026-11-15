@@ -251,7 +251,9 @@ async fn a_requested_tab_is_created_and_named_by_the_real_host() {
 /// **A typed character on a hand-off's page is a keystroke, not an
 /// insertion.** The page watches its own document for `keydown`; the
 /// keystroke a raised surface sends must reach that listener, and it must
-/// still type exactly once into an ordinary focused field.
+/// still type exactly once into an ordinary focused field. **Punctuation
+/// carries the physical key it sits on**, so a field's own keyCode guard
+/// keeps it.
 ///
 /// **The red this pins**: a surface sends a printable character as
 /// `BrowserInputEvent::Text`, and the server routed that to CDP
@@ -262,8 +264,11 @@ async fn a_requested_tab_is_created_and_named_by_the_real_host() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_hand_off_keystroke_reaches_the_pages_document() {
     const PAGE: &str = "<!doctype html><meta charset=utf-8><title>keys</title>\
-        <script>window.__keys=[];document.addEventListener('keydown', \
-        (event) => window.__keys.push(event.key));</script>\
+        <script>window.__keys=[];window.__codes=[];\
+        document.addEventListener('keydown', (event) => {\
+        window.__keys.push(event.key);window.__codes.push(event.keyCode);\
+        if (event.keyCode < 32 && event.keyCode !== 8) event.preventDefault();\
+        });</script>\
         <input id=field><p>type</p>";
     let stack = stack();
     assert!(
@@ -297,16 +302,35 @@ async fn a_hand_off_keystroke_reaches_the_pages_document() {
         service.attach_page(7, &seat, &page).await.expect("the hand-off opens by its page");
     assert_eq!(attachment.tab, held, "the raised surface is the held tab");
     let (key, tab) = (attachment.key.clone(), attachment.tab);
-    // **The raise's show cue is applied by the host's own pump**, and the
-    // first frame is the evidence it landed. A key sent before it is a key
-    // the host can drop; a person reading the page never types that fast.
-    let mut frames = attachment.frames;
-    let painted = next_frame(&mut frames, tab, None).await;
-    assert_eq!(painted.tab, tab, "the raised tab paints before the key is sent");
+    // **The raise's show cue is a sequence the host acknowledges.** It is the
+    // host's side of "the page is visible and focused"; the page's own
+    // answer below is the renderer's side of the same fact.
+    let ring = forge_browser::osr::Ring::open(&record.ring).expect("the host's ring");
+    let cue = ring.show();
+    let shown = tokio::time::Instant::now() + Duration::from_secs(30);
+    while !ring.shown(cue) {
+        assert!(tokio::time::Instant::now() < shown, "the host never applied the raise's show cue");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
     service.take_control(&key, tab, 7).await.expect("the person takes the page");
 
     // **One printable character, as the overlay sends one.** The page's
     // document is where the key must arrive, with no field to receive it.
+    // **A key is sent only after the page answers that it holds the document
+    // focus.** The ring's ack is the host's side; this round trip is the
+    // renderer's, and a key sent before both was measured lost.
+    let focus_bound = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let focused = page_result(&service, &seat, "() => document.hasFocus()").await;
+        if focused == "true" {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < focus_bound,
+            "the page never held the document focus: {focused}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
     service
         .input(&key, tab, 7, 1, &BrowserInputEvent::Text { text: "1".to_owned() })
         .await
@@ -318,7 +342,8 @@ async fn a_hand_off_keystroke_reaches_the_pages_document() {
         let heard = page_result(
             &service,
             &seat,
-            "() => window.__keys.length === 1 && window.__keys[0] === '1'",
+            "() => window.__keys.length === 1 && window.__keys[0] === '1' \
+             && window.__codes[0] === 49",
         )
         .await;
         if heard == "true" {
@@ -354,7 +379,7 @@ async fn a_hand_off_keystroke_reaches_the_pages_document() {
             &seat,
             "() => { const field = document.getElementById('field'); \
              return window.__keys.length === 2 && window.__keys[1] === '2' \
-             && field.value === '2'; }",
+             && window.__codes[1] === 50 && field.value === '2'; }",
         )
         .await;
         if settled == "true" {
@@ -369,6 +394,40 @@ async fn a_hand_off_keystroke_reaches_the_pages_document() {
         assert!(
             tokio::time::Instant::now() < typed,
             "the document heard the second key and the field typed it once: {seen}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // **Punctuation carries its own key.** The page's guard drops a keydown
+    // with the DOM's control value 0, so `+` must arrive as Equal's 187, and
+    // it must still type into the focused field.
+    service
+        .input(&key, tab, 7, 3, &BrowserInputEvent::Text { text: "+".to_owned() })
+        .await
+        .expect("the punctuation keystroke is accepted");
+    let punctuation = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let settled = page_result(
+            &service,
+            &seat,
+            "() => { const field = document.getElementById('field'); \
+             return window.__keys.length === 3 && window.__keys[2] === '+' \
+             && window.__codes[2] === 187 && field.value === '2+'; }",
+        )
+        .await;
+        if settled == "true" {
+            break;
+        }
+        let seen = page_answer(
+            &service,
+            &seat,
+            "() => JSON.stringify([window.__keys, window.__codes, \
+             document.getElementById('field').value])",
+        )
+        .await;
+        assert!(
+            tokio::time::Instant::now() < punctuation,
+            "the document heard + with its key and the field typed it once: {seen}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

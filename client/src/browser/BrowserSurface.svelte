@@ -414,8 +414,9 @@
   /**
    * **The phone's keyboard types into the page.** The canvas has no fields of
    * its own, so a hidden field takes the keyboard and the IME; printable text
-   * crosses whole, and the named keys (Enter, Backspace, Tab, the arrows)
-   * cross as key events. **The page's own focus is what raises it on its
+   * crosses as text, which the server sends as a key press for a single
+   * printable ASCII character, and the named keys (Enter, Backspace, Tab, the
+   * arrows) cross as key events. **The page's own focus is what raises it on its
    * own** - an editable node, reported by the host; a tap raises it while
    * the page's last answer is editable, and a watcher never gets a keyboard
    * over a page it cannot drive.

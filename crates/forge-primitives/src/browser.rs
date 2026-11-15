@@ -156,10 +156,12 @@ pub enum BrowserInputEvent {
         modifiers: InputModifiers,
     },
     /// The person's own text, and **the one variant that carries text**. A
-    /// single printable character is a keystroke and carries its text on a
-    /// press and release, so a page's keydown listener hears it; a longer
-    /// insert (a paste, an IME commit) is inserted as text rather than
-    /// replayed as keycodes.
+    /// single printable ASCII character goes as a keystroke carrying its
+    /// text on a press and release, so a page's keydown listener hears it;
+    /// anything else, a longer paste or composition, or a character with no
+    /// standard key, is inserted as text rather than replayed as keycodes. A
+    /// one-character ASCII paste cannot be told apart from a keystroke on
+    /// this wire and takes the same key path.
     Text { text: String },
 }
 

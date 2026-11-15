@@ -218,22 +218,24 @@ pub fn route(event: &BrowserInputEvent, tab: u16) -> Route {
     }
 }
 
-/// **A typed character is a keystroke; a paste or a composition is an
-/// insertion.** `Input.insertText` edits the focused element without firing
+/// **A single printable ASCII character is a keystroke; every other text is
+/// an insertion.** `Input.insertText` edits the focused element without firing
 /// a keydown, so a page whose handler is a document listener heard nothing
-/// while a focused field typed fine (#2991). One printable character goes as
-/// a real press and release carrying its text, which types it and fires the
-/// keydown; anything longer stays on the insertion path.
+/// while a focused field typed fine (#2991). One ASCII character goes as a
+/// real press and release carrying its text, which types it and fires the
+/// keydown. A longer string, or a character with no standard key, stays an
+/// insertion: a keydown with keyCode 0 is worse for a guarded field than no
+/// keydown at all. **A one-character ASCII paste carries no provenance on
+/// this wire**, so it takes the key path too.
 fn typed(text: &str) -> Route {
     let mut characters = text.chars();
     let (Some(character), None) = (characters.next(), characters.next()) else {
-        return Route::Page("Input.insertText", json!({ "text": text }));
+        return insertion(text);
     };
-    if character.is_control() {
-        return Route::Page("Input.insertText", json!({ "text": text }));
-    }
+    let Some((code, windows_vk)) = typing_key(character) else {
+        return insertion(text);
+    };
     let key = character.to_string();
-    let (code, windows_vk) = typing_key(character);
     let down = json!({
         "type": "keyDown",
         "key": key,
@@ -251,18 +253,50 @@ fn typed(text: &str) -> Route {
     Route::PageSeq("Input.dispatchKeyEvent", vec![down, up])
 }
 
-/// The DOM code and Windows virtual key a typed character names, where it
-/// names them. **Punctuation's code is keyboard-layout dependent**, so none
-/// is invented for it: the page still reads the character from `key` and
-/// `text`.
-fn typing_key(character: char) -> (String, i32) {
+/// One text insert, for everything that is not a single printable character
+/// with a key of its own.
+fn insertion(text: &str) -> Route {
+    Route::Page("Input.insertText", json!({ "text": text }))
+}
+
+/// The DOM code and Windows virtual key a printable ASCII character names on
+/// a US keyboard, unshifted or shifted.
+///
+/// **The QWERTY assumption is the letters' own**, extended to punctuation:
+/// the character is what the person produced, so a shifted form takes the
+/// same physical key and still carries its own text. A character outside that
+/// set has no standard key, and `None` keeps it on the insertion path rather
+/// than inventing a keyCode 0 press a guarded field would drop.
+fn typing_key(character: char) -> Option<(String, i32)> {
     let upper = character.to_ascii_uppercase();
-    match upper {
+    let keyed: (String, i32) = match upper {
         'A'..='Z' => (format!("Key{upper}"), i32::try_from(u32::from(upper)).unwrap_or_default()),
         '0'..='9' => (format!("Digit{upper}"), i32::try_from(u32::from(upper)).unwrap_or_default()),
-        _ if character == ' ' => ("Space".to_owned(), 32),
-        _ => (String::new(), 0),
-    }
+        ' ' => ("Space".to_owned(), 32),
+        '`' | '~' => ("Backquote".to_owned(), 192),
+        '!' => ("Digit1".to_owned(), 49),
+        '@' => ("Digit2".to_owned(), 50),
+        '#' => ("Digit3".to_owned(), 51),
+        '$' => ("Digit4".to_owned(), 52),
+        '%' => ("Digit5".to_owned(), 53),
+        '^' => ("Digit6".to_owned(), 54),
+        '&' => ("Digit7".to_owned(), 55),
+        '*' => ("Digit8".to_owned(), 56),
+        '(' => ("Digit9".to_owned(), 57),
+        ')' => ("Digit0".to_owned(), 48),
+        '-' | '_' => ("Minus".to_owned(), 189),
+        '=' | '+' => ("Equal".to_owned(), 187),
+        '[' | '{' => ("BracketLeft".to_owned(), 219),
+        ']' | '}' => ("BracketRight".to_owned(), 221),
+        '\\' | '|' => ("Backslash".to_owned(), 220),
+        ';' | ':' => ("Semicolon".to_owned(), 186),
+        '\'' | '"' => ("Quote".to_owned(), 222),
+        ',' | '<' => ("Comma".to_owned(), 188),
+        '.' | '>' => ("Period".to_owned(), 190),
+        '/' | '?' => ("Slash".to_owned(), 191),
+        _ => return None,
+    };
+    Some(keyed)
 }
 
 /// One input as the line the host reads.
@@ -533,12 +567,14 @@ mod tests {
         assert!(params[1].get("text").is_none(), "the release inserts nothing");
     }
 
-    /// **Text longer than one character is an insertion, not a keystroke.**
-    /// A paste or an IME commit has no single key to press, and replaying it
-    /// as keycodes is exactly what the text event exists to avoid.
+    /// **Text that is not one printable ASCII character is an insertion.**
+    /// A longer paste or composition has no single key to press, and a
+    /// character with no standard key must not become a keyCode 0 press a
+    /// guarded field would drop. A one-character non-ASCII composition and a
+    /// control character stay here too.
     #[test]
-    fn pasted_or_composed_text_is_inserted_rather_than_replayed() {
-        for text in ["hello", "12", "\n"] {
+    fn text_without_a_key_of_its_own_is_inserted_rather_than_replayed() {
+        for text in ["hello", "12", "\n", "é"] {
             let route = route(&BrowserInputEvent::Text { text: text.to_owned() }, 1);
             let Route::Page(method, params) = route else {
                 panic!("{text:?} is an insertion: {route:?}");
@@ -548,43 +584,78 @@ mod tests {
         }
     }
 
-    /// **The two variants that put a character into a page both reach it as
-    /// CDP key events**, never as an insertion: a key press is what a page's
-    /// listeners and a focused field both understand. Only multi-character
-    /// text takes the insertion path, and `Text` is the variant that carries
-    /// it.
+    /// **Punctuation carries the physical key it sits on.** A guarded field
+    /// reads `keyCode` and drops the DOM's control value 0, so `+` takes
+    /// Shift+= on a US keyboard: Equal's code and virtual key, and its own
+    /// text.
     #[test]
-    fn a_character_reaches_the_page_as_a_key_event() {
-        let events = [
-            BrowserInputEvent::Text { text: "a".to_owned() },
-            BrowserInputEvent::Key {
-                down: true,
-                key: "a".to_owned(),
-                code: "KeyA".to_owned(),
-                windows_vk: 65,
-                modifiers: InputModifiers::default(),
-            },
-        ];
-        for event in events {
-            let method = match route(&event, 1) {
-                Route::Page(method, _) | Route::PageSeq(method, _) => method,
-                Route::Host(line) => panic!("a character is the page's, not the host's: {line}"),
-            };
-            assert_eq!(method, "Input.dispatchKeyEvent", "{event:?}");
-        }
+    fn punctuation_carries_its_physical_key() {
+        let route = route(&BrowserInputEvent::Text { text: "+".to_owned() }, 1);
+        let Route::PageSeq(method, params) = route else {
+            panic!("punctuation is a pair of key events: {route:?}");
+        };
+        assert_eq!(method, "Input.dispatchKeyEvent");
+        assert_eq!(params[0]["key"], "+");
+        assert_eq!(params[0]["text"], "+");
+        assert_eq!(params[0]["code"], "Equal");
+        assert_eq!(params[0]["windowsVirtualKeyCode"], 187);
     }
 
-    /// **Letters and digits name their key; punctuation does not invent
-    /// one.** A page's own typing listener reads `key` and `text`; `code` is
-    /// a physical-key label the server cannot know for punctuation on an
-    /// arbitrary layout.
+    /// **A one-character ASCII paste is a keystroke on this wire.** The text
+    /// event carries no provenance, so the server cannot tell a paste from a
+    /// typed character; the split is the character, not where it came from.
+    #[test]
+    fn a_one_character_paste_takes_the_same_path_as_a_keystroke() {
+        // The paste and the keystroke are the same wire event; there is
+        // nothing on it to tell them apart.
+        let pasted = route(&BrowserInputEvent::Text { text: "a".to_owned() }, 1);
+        assert!(matches!(pasted, Route::PageSeq("Input.dispatchKeyEvent", _)));
+    }
+
+    /// **The two variants that can carry a character reach the page
+    /// differently.** `Text` for a single printable ASCII character goes as a
+    /// keyDown carrying its text, so it types and fires keydown; `Key` carries
+    /// no text, so it fires the key and inserts nothing. A sender must not
+    /// switch a printable character to `Key` or it stops typing.
+    #[test]
+    fn a_text_character_types_and_a_key_event_does_not() {
+        let text = route(&BrowserInputEvent::Text { text: "+".to_owned() }, 1);
+        let Route::PageSeq(method, params) = text else {
+            panic!("a typed character is a pair of key events: {text:?}");
+        };
+        assert_eq!(method, "Input.dispatchKeyEvent");
+        assert_eq!(params[0]["text"], "+", "the press carries text, so it types");
+        assert_eq!(params[0]["windowsVirtualKeyCode"], 187);
+
+        let key = route(
+            &BrowserInputEvent::Key {
+                down: true,
+                key: "+".to_owned(),
+                code: "Equal".to_owned(),
+                windows_vk: 187,
+                modifiers: InputModifiers::default(),
+            },
+            1,
+        );
+        let Route::Page(method, params) = key else {
+            panic!("a key is one page command: {key:?}");
+        };
+        assert_eq!(method, "Input.dispatchKeyEvent");
+        assert!(params.get("text").is_none(), "a Key event inserts nothing");
+    }
+
+    /// **A character names its key where the standard layout has one.** A
+    /// character outside it answers `None` rather than a keyCode 0 press.
     #[test]
     fn a_typing_key_names_what_the_character_names() {
-        assert_eq!(typing_key('a'), ("KeyA".to_owned(), 65));
-        assert_eq!(typing_key('Z'), ("KeyZ".to_owned(), 90));
-        assert_eq!(typing_key('7'), ("Digit7".to_owned(), 55));
-        assert_eq!(typing_key(' '), ("Space".to_owned(), 32));
-        assert_eq!(typing_key('+'), (String::new(), 0));
+        assert_eq!(typing_key('a'), Some(("KeyA".to_owned(), 65)));
+        assert_eq!(typing_key('Z'), Some(("KeyZ".to_owned(), 90)));
+        assert_eq!(typing_key('7'), Some(("Digit7".to_owned(), 55)));
+        assert_eq!(typing_key(' '), Some(("Space".to_owned(), 32)));
+        assert_eq!(typing_key('+'), Some(("Equal".to_owned(), 187)));
+        assert_eq!(typing_key('.'), Some(("Period".to_owned(), 190)));
+        assert_eq!(typing_key('é'), None, "no standard key, so no key event");
+        assert_eq!(typing_key('\n'), None);
     }
 
     #[test]
