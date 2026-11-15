@@ -153,6 +153,26 @@
   }
 
   /**
+   * Whether this call's failed body is a command's own output, which the
+   * terminal box draws and prose must not.
+   *
+   * **The forge terminal's `run` only, and only when it answered like one** -
+   * `Exit code N` leading the text. Another server's tool, or a run refused
+   * before it started (a parked hand-off, a shell that would not spawn), may
+   * carry a `command` in its input while its failure text is a sentence, and
+   * those keep the prose lane. The row is asked rather than the field, so a
+   * third-party MCP server's rendering cannot change here.
+   */
+  const commandOutput = $derived.by(() => {
+    if (call.row.kind !== 'forge' || call.row.family !== 'terminal') return false;
+    if (mcpParts(call.name)?.tool !== 'terminal__run') return false;
+    const text = call.body.find(
+      (piece): piece is Extract<CallBody, { kind: 'text' }> => piece.kind === 'text',
+    );
+    return text !== undefined && text.text.startsWith('Exit code ');
+  });
+
+  /**
    * The grammar the panel draws with, from the format the row detected.
    *
    * Handed down rather than re-derived: the panel's text still carries the
@@ -847,7 +867,7 @@
       <div class="patchline"><span class="patchmark">{omittedText(piece.bytes)}</span></div>
     {:else if asProse}
       <Prose text={stripEscapes(textOf(piece))} preserveLines />
-    {:else if mcpParts(call.name) !== null || isBrowserTool(call.name)}
+    {:else if (mcpParts(call.name) !== null || isBrowserTool(call.name)) && !commandOutput}
       <!-- **An MCP result is markdown, one style for every call, the peer
            card's own.** What a server wrote arrives as markdown - headings,
            lists, fences - and drew raw as itself until this branch (Ved,
@@ -855,8 +875,9 @@
            one, where he asked the browser's body to follow peer messaging
            (Ved: the peer pattern is "showing the style when it is expanded" -
            the lane a peer message's body sits in). Soft breaks flow; a fence
-           is where literal lines live. A local command's OUTPUT is not prose
-           and stays the terminal box below. -->
+           is where literal lines live. A local command's OUTPUT is not prose -
+           and neither is a failed terminal run's, whose lines are the
+           compiler's or the test's - so both stay in the terminal box below. -->
       <div class="pbody"><Prose text={stripEscapes(textOf(piece))} /></div>
     {:else if readFormat?.kind === 'markdown'}
       <!-- A Read of markdown renders: the file is prose the page already

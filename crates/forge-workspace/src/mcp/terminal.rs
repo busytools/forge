@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use forge_primitives::SessionSlot;
 use forge_primitives::browser::HandOffEnding;
+use forge_primitives::terminal::TerminalExit;
 use forge_sdk::mcp::server::McpServerBuilder;
 use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 use forge_terminal::Key;
@@ -165,9 +166,14 @@ impl TerminalTool {
                  terminal__open + terminal__wait {until: \"exit\"} + terminal__close with a \
                  guaranteed close on every path, so it is the right call when you just need a \
                  TTY-backed command's result. `command` is typed into the shell once it is \
-                 ready. `cwd` defaults to the seat's own. `timeout_ms` defaults to 30000; a \
-                 timeout kills the process group and the answer carries signal 9. The text is \
-                 bounded and `truncated` says so."
+                 ready. `description` is a short label for the call, drawn as the row's title \
+                 the way Bash asks for its own; the command stands in for it when it is absent. \
+                 A non-zero exit is an error with `Exit code N` on its own line and the output \
+                 under it, and a command killed by signal N reports 128 + N - a timeout at \
+                 `timeout_ms` is `Exit code 137`. `cwd` defaults to the seat's own; `timeout_ms` \
+                 defaults to 30000, and a timeout kills the process group. The text is bounded: \
+                 a clean answer carries `truncated`, and a truncated failure ends with a line \
+                 saying the bound cut it."
             }
         }
     }
@@ -274,6 +280,11 @@ impl TerminalTool {
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "description": "The command to run."},
+                    "description": {
+                        "type": "string",
+                        "description": "A short label for the call, drawn as the row's title; \
+                                        the command is shown when omitted.",
+                    },
                     "cwd": {
                         "type": "string",
                         "description": "The cwd to run in; the seat's own when omitted.",
@@ -474,6 +485,9 @@ impl Registered {
         let cwd = optional_string(&args, "cwd")?;
         let timeout_ms = optional_u64(&args, "timeout_ms")?.unwrap_or(DEFAULT_TIMEOUT_MS);
         let answer = self.facade.run(&self.slot, &command, cwd, timeout_ms).await?;
+        if let Some(code) = failed_status(answer.exit) {
+            return Err(failed_run(code, &answer.text, answer.truncated));
+        }
         Ok(serde_json::json!({
             "exit": answer.exit,
             "text": answer.text,
@@ -481,6 +495,31 @@ impl Registered {
         })
         .to_string())
     }
+}
+
+/// The status a run failed with, or `None` for a clean zero. **A command killed
+/// by a signal carries no code**: its status is 128 + N, the number Bash
+/// answers with, and a timeout reaches here as signal 9. Neither a code nor a
+/// signal is a run with nothing to say about how it ended, which stays clean.
+fn failed_status(exit: Option<TerminalExit>) -> Option<i32> {
+    let exit = exit?;
+    match (exit.code, exit.signal) {
+        (Some(code), _) => (code != 0).then_some(code),
+        (None, Some(signal)) => Some(128 + signal),
+        (None, None) => None,
+    }
+}
+
+/// **A failed run answers in the shape Bash answers with**: the code on its
+/// own line, then what the command wrote. A failed call draws no card, so the
+/// bound's own `truncated` field would never reach a reader: it becomes a last
+/// line saying the output is a tail rather than the whole.
+fn failed_run(code: i32, text: &str, truncated: bool) -> String {
+    let mut said = format!("Exit code {code}\n{text}");
+    if truncated {
+        said.push_str("\ntruncated: the output was cut by the read bound");
+    }
+    said
 }
 
 fn required_u16(args: &Value, key: &str) -> Result<u16, String> {
@@ -578,7 +617,8 @@ fn parse_until(args: &Value) -> Result<WaitUntil, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::terminal::facade::MockTerminalFacade;
+    use crate::mcp::terminal::facade::{MockTerminalFacade, RunAnswer};
+    use forge_primitives::terminal::TerminalExit;
     use serde_json::json;
 
     fn seat() -> SessionSlot {
@@ -781,6 +821,105 @@ mod tests {
         let answer: Value = serde_json::from_str(&text(&out)).expect("a JSON answer");
         assert_eq!(answer["exit"]["code"], 0);
         assert_eq!(answer["text"], "ran");
+    }
+
+    /// A non-zero exit is the call's failure, in the shape Bash answers: the
+    /// code on its own line, then the output.
+    #[tokio::test]
+    async fn a_non_zero_exit_is_an_error_carrying_the_code_then_the_output() {
+        let mock = Arc::new(MockTerminalFacade::new());
+        *mock.run_answer.lock() = Ok(RunAnswer {
+            exit: Some(TerminalExit { code: Some(2), signal: None }),
+            text: "boom".to_owned(),
+            truncated: false,
+        });
+        let out = tool("terminal__run", Arc::clone(&mock) as Arc<dyn TerminalFacade>)
+            .call(ToolInput { value: json!({ "command": "exit 2" }) })
+            .await;
+        assert!(out.is_error, "{:?}", out.blocks);
+        assert_eq!(text(&out), "Exit code 2\nboom");
+    }
+
+    /// A failed run carries the bound's marker in its own text: a failed call
+    /// draws no card, so the `truncated` field has nowhere else to be said.
+    #[tokio::test]
+    async fn a_truncated_failure_says_the_bound_cut_the_output() {
+        let mock = Arc::new(MockTerminalFacade::new());
+        *mock.run_answer.lock() = Ok(RunAnswer {
+            exit: Some(TerminalExit { code: Some(1), signal: None }),
+            text: "boom".to_owned(),
+            truncated: true,
+        });
+        let out = tool("terminal__run", Arc::clone(&mock) as Arc<dyn TerminalFacade>)
+            .call(ToolInput { value: json!({ "command": "exit 1" }) })
+            .await;
+        assert!(out.is_error, "{:?}", out.blocks);
+        assert_eq!(
+            text(&out),
+            "Exit code 1\nboom\ntruncated: the output was cut by the read bound"
+        );
+    }
+
+    /// A command killed by a signal has no exit code: its status is 128 + N,
+    /// the number Bash answers with, and a timeout reaches here as signal 9.
+    #[tokio::test]
+    async fn a_signal_killed_run_is_a_failure_carrying_128_plus_the_signal() {
+        let mock = Arc::new(MockTerminalFacade::new());
+        *mock.run_answer.lock() = Ok(RunAnswer {
+            exit: Some(TerminalExit { code: None, signal: Some(9) }),
+            text: "never finished".to_owned(),
+            truncated: false,
+        });
+        let out = tool("terminal__run", Arc::clone(&mock) as Arc<dyn TerminalFacade>)
+            .call(ToolInput { value: json!({ "command": "sleep 60" }) })
+            .await;
+        assert!(out.is_error, "{:?}", out.blocks);
+        assert_eq!(text(&out), "Exit code 137\nnever finished");
+    }
+
+    /// And an answer carrying neither a code nor a signal is still a clean run,
+    /// with the bound's own flag intact.
+    #[tokio::test]
+    async fn a_run_with_no_exit_answers_clean() {
+        let mock = Arc::new(MockTerminalFacade::new());
+        *mock.run_answer.lock() =
+            Ok(RunAnswer { exit: None, text: "still going".to_owned(), truncated: true });
+        let out = tool("terminal__run", Arc::clone(&mock) as Arc<dyn TerminalFacade>)
+            .call(ToolInput { value: json!({ "command": "sleep 1" }) })
+            .await;
+        assert!(!out.is_error, "{:?}", out.blocks);
+        let answer: Value = serde_json::from_str(&text(&out)).expect("a JSON answer");
+        assert_eq!(answer["exit"], Value::Null);
+        assert_eq!(answer["truncated"], true, "a clean answer keeps the bound's flag");
+    }
+
+    /// **The timeout's real path, through the producer.** A run that outlives
+    /// `timeout_ms` has its process group killed, and the tool answers the
+    /// status that death carries: 128 + 9. A synthetic answer cannot catch the
+    /// producer changing the signal it reports, so this drives the real facade.
+    #[tokio::test]
+    async fn a_timed_out_run_answers_exit_137() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        workspace.seed_test_project("test-project", "/tmp");
+        let facade = crate::mcp::terminal::facade::ProdTerminalFacade::from_workspace(&workspace);
+        let out = tool("terminal__run", facade)
+            .call(ToolInput { value: json!({ "command": "sleep 30", "timeout_ms": 400 }) })
+            .await;
+        assert!(out.is_error, "{:?}", out.blocks);
+        assert!(text(&out).starts_with("Exit code 137\n"), "{}", text(&out));
+    }
+
+    /// `description` is advertised and optional: a display label the row
+    /// titles by, never a field a call is refused over.
+    #[test]
+    fn a_run_schema_takes_an_optional_description() {
+        let schema = TerminalTool::Run.schema();
+        assert_eq!(schema["properties"]["description"]["type"], "string");
+        let required = schema["required"].as_array().expect("a required list");
+        assert!(
+            !required.iter().any(|field| field == "description"),
+            "description is optional: {required:?}"
+        );
     }
 
     /// A run without a command is the call's own mistake.

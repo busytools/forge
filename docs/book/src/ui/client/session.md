@@ -70,11 +70,21 @@ read as one system.
   The handoff's exit call is its own family: its family is handoff, it wears
   the handoff mark rather than the workers one, and it carries the note it
   handed over. A terminal call is the terminal family's: it wears the
-  terminal mark, titles itself by the terminal it acted on (`opened terminal
-  3`, `ran a command in a terminal`), chips the shell's state in words
-  (`running`, `waiting for input`, `exit 2`) and quotes the screen or the
-  command's own text; a parked `terminal__hand_off` says it waits for the
-  person and carries the ask's reason. A vault call is the vault family's: it
+  terminal mark, titles itself by the terminal it acted on and what it did -
+  `opened terminal 3`, `read terminal 3 · 40 lines` (`read terminal 3 · 40
+  lines since the mark` when the call continued from a cursor), `waited on
+  terminal 2 for exit`, `waited on terminal 2 for "ready"`, `waited on
+  terminal 2 to go quiet`, ``typed `make test` into terminal 1``, `pressed
+  ctrl_c in terminal 1` - and a run titles by the description the call gave,
+  or by its command when it has none, with that command leading its body
+  above the output. It chips the shell's state in words (`running`, `waiting
+  for input`, `exit 2`), keeps `truncated` when a bound cut the text, and
+  quotes the screen or the command's own text; a run carries no exit chip: a
+  non-zero exit, or a signal kill's 128 + the signal (`Exit code 137` for a
+  timeout), answers as a failed call, so the row goes red with the code on it
+  and the output under, a cut output marked as such on its last line. A parked
+  `terminal__hand_off` says it waits for the person and carries the ask's
+  reason. A vault call is the vault family's: it
   wears the key mark, titles itself by the item it touched where the call
   names one (`created login 'bank'`, `moved item ... to the trash`,
   `searched the vault for 'bank'`), chips a parked call `waiting for your
