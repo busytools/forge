@@ -80,8 +80,9 @@ read as one system.
   above the output. It chips the shell's state in words (`running`, `waiting
   for input`, `exit 2`), keeps `truncated` when a bound cut the text, and
   quotes the screen or the command's own text; a run carries no exit chip: a
-  non-zero exit answers as a failed call, so the row goes red with `Exit
-  code 2` on it and the output under. A parked
+  non-zero exit, or a signal-killed command's `Exit code 128 + N`, answers as
+  a failed call, so the row goes red with the code on it and the output under,
+  a cut output marked as such on its last line. A parked
   `terminal__hand_off` says it waits for the person and carries the ask's
   reason. A vault call is the vault family's: it
   wears the key mark, titles itself by the item it touched where the call
