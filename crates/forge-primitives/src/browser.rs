@@ -155,7 +155,10 @@ pub enum BrowserInputEvent {
         windows_vk: i32,
         modifiers: InputModifiers,
     },
-    /// The person's own text, inserted as text rather than replayed keycodes.
+    /// The person's own text. **A single printable character is a keystroke**
+    /// and carries its text on a press and release, so a page's keydown
+    /// listener hears it; a longer insert (a paste, an IME commit) is
+    /// inserted as text rather than replayed as keycodes.
     Text { text: String },
 }
 

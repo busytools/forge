@@ -3183,32 +3183,15 @@ impl BrowserService {
                 Ok(())
             }
             input::Route::Page(method, params) => {
-                // **Typing must not pay a driver round trip per key.** The
-                // registry's target is what the nav watch and the mouse
-                // refresh keep current; a page that moved under a navigation
-                // refuses the send once, and only then is the driver asked.
-                let target = profile
-                    .tabs
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .target(tab)
-                    .map(str::to_owned)
-                    .ok_or_else(|| format!("tab {tab} is not open"))?;
-                let mut state = profile.state.lock().await;
-                match send_page(&mut state, port, &target, method, params.clone()).await {
-                    Ok(()) => Ok(()),
-                    Err(first) => {
-                        drop(state);
-                        let LiveTarget::Found(fresh) = live_target(&profile, tab).await else {
-                            return Err(first);
-                        };
-                        if fresh == target {
-                            return Err(first);
-                        }
-                        let mut state = profile.state.lock().await;
-                        send_page(&mut state, port, &fresh, method, params).await
-                    }
+                send_page_command(&profile, port, tab, method, params).await
+            }
+            // **A keystroke is a press and its release, in order.** Both go
+            // through the same target lookup and retry a single command uses.
+            input::Route::PageSeq(method, params) => {
+                for params in params {
+                    send_page_command(&profile, port, tab, method, params).await?;
                 }
+                Ok(())
             }
         }
     }
@@ -5991,6 +5974,41 @@ async fn send_page(
     params: Value,
 ) -> Result<(), String> {
     page_cdp(state, port, target).await?.send(method, params).await
+}
+
+/// **One page command through the tab's target**, with the one retry a page
+/// that moved under a navigation is owed. Typing must not pay a driver round
+/// trip per key: the registry's target is what the nav watch and the mouse
+/// refresh keep current, and only a refused send asks the driver.
+async fn send_page_command(
+    profile: &Arc<Profile>,
+    port: u16,
+    tab: u16,
+    method: &'static str,
+    params: Value,
+) -> Result<(), String> {
+    let target = profile
+        .tabs
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .target(tab)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("tab {tab} is not open"))?;
+    let mut state = profile.state.lock().await;
+    match send_page(&mut state, port, &target, method, params.clone()).await {
+        Ok(()) => Ok(()),
+        Err(first) => {
+            drop(state);
+            let LiveTarget::Found(fresh) = live_target(profile, tab).await else {
+                return Err(first);
+            };
+            if fresh == target {
+                return Err(first);
+            }
+            let mut state = profile.state.lock().await;
+            send_page(&mut state, port, &fresh, method, params).await
+        }
+    }
 }
 
 /// One CDP call to one page, answered.
