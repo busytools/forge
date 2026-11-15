@@ -165,7 +165,10 @@ impl TerminalTool {
                  terminal__open + terminal__wait {until: \"exit\"} + terminal__close with a \
                  guaranteed close on every path, so it is the right call when you just need a \
                  TTY-backed command's result. `command` is typed into the shell once it is \
-                 ready. `cwd` defaults to the seat's own. `timeout_ms` defaults to 30000; a \
+                 ready. `description` is a short label for the call, drawn as the row's title \
+                 the way Bash asks for its own; the command stands in for it when it is absent. \
+                 A non-zero exit is an error with `Exit code N` on its own line and the output \
+                 under it. `cwd` defaults to the seat's own. `timeout_ms` defaults to 30000; a \
                  timeout kills the process group and the answer carries signal 9. The text is \
                  bounded and `truncated` says so."
             }
@@ -274,6 +277,11 @@ impl TerminalTool {
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "description": "The command to run."},
+                    "description": {
+                        "type": "string",
+                        "description": "A short label for the call, drawn as the row's title; \
+                                        the command is shown when omitted.",
+                    },
                     "cwd": {
                         "type": "string",
                         "description": "The cwd to run in; the seat's own when omitted.",
@@ -474,6 +482,11 @@ impl Registered {
         let cwd = optional_string(&args, "cwd")?;
         let timeout_ms = optional_u64(&args, "timeout_ms")?.unwrap_or(DEFAULT_TIMEOUT_MS);
         let answer = self.facade.run(&self.slot, &command, cwd, timeout_ms).await?;
+        // **A non-zero exit is the call's failure**, in the shape Bash
+        // answers: the code on its own line, then what the command wrote.
+        if let Some(code) = answer.exit.and_then(|exit| exit.code).filter(|code| *code != 0) {
+            return Err(format!("Exit code {code}\n{}", answer.text));
+        }
         Ok(serde_json::json!({
             "exit": answer.exit,
             "text": answer.text,
@@ -578,7 +591,8 @@ fn parse_until(args: &Value) -> Result<WaitUntil, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::terminal::facade::MockTerminalFacade;
+    use crate::mcp::terminal::facade::{MockTerminalFacade, RunAnswer};
+    use forge_primitives::terminal::TerminalExit;
     use serde_json::json;
 
     fn seat() -> SessionSlot {
@@ -781,6 +795,36 @@ mod tests {
         let answer: Value = serde_json::from_str(&text(&out)).expect("a JSON answer");
         assert_eq!(answer["exit"]["code"], 0);
         assert_eq!(answer["text"], "ran");
+    }
+
+    /// A non-zero exit is the call's failure, in the shape Bash answers: the
+    /// code on its own line, then the output.
+    #[tokio::test]
+    async fn a_non_zero_exit_is_an_error_carrying_the_code_then_the_output() {
+        let mock = Arc::new(MockTerminalFacade::new());
+        *mock.run_answer.lock() = Ok(RunAnswer {
+            exit: Some(TerminalExit { code: Some(2), signal: None }),
+            text: "boom".to_owned(),
+            truncated: false,
+        });
+        let out = tool("terminal__run", Arc::clone(&mock) as Arc<dyn TerminalFacade>)
+            .call(ToolInput { value: json!({ "command": "exit 2" }) })
+            .await;
+        assert!(out.is_error, "{:?}", out.blocks);
+        assert_eq!(text(&out), "Exit code 2\nboom");
+    }
+
+    /// `description` is advertised and optional: a display label the row
+    /// titles by, never a field a call is refused over.
+    #[test]
+    fn a_run_schema_takes_an_optional_description() {
+        let schema = TerminalTool::Run.schema();
+        assert_eq!(schema["properties"]["description"]["type"], "string");
+        let required = schema["required"].as_array().expect("a required list");
+        assert!(
+            !required.iter().any(|field| field == "description"),
+            "description is optional: {required:?}"
+        );
     }
 
     /// A run without a command is the call's own mistake.
