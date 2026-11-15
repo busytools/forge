@@ -394,6 +394,78 @@ describe('the call row, mounted', () => {
   });
 
   /**
+   * A third-party MCP call whose input happens to carry a command is still
+   * markdown: the lane is the forge terminal's run, not the field's presence,
+   * so another server's rendering cannot change here.
+   */
+  it('draws a third-party MCP result as markdown even when its input carried a command', () => {
+    const app = mount(Call, {
+      target: document.body,
+      props: {
+        k: 'f-acme',
+        open: true,
+        call: {
+          ...backgrounded,
+          row: { kind: 'mcp' },
+          name: 'mcp__acme__deploy',
+          title: 'deploy staging',
+          command: 'deploy --prod',
+          status: 'failed',
+          body: [{ kind: 'text', text: 'deployed **staging**' }],
+        },
+      },
+    });
+    try {
+      flushSync();
+      expect(document.querySelector('.panel.bodytext'), 'not the terminal box').toBeNull();
+      expect(
+        document.querySelector('.pbody')?.textContent,
+        'the server wrote markdown, and markdown is what draws',
+      ).toContain('deployed');
+    } finally {
+      void unmount(app);
+    }
+  });
+
+  /**
+   * A run refused before it started is a reason, not command output: the
+   * hand-off's sentence keeps the prose lane rather than sitting under a `$`
+   * line for a command that never ran.
+   */
+  it('draws a refused terminal run as its reason, not as command output', () => {
+    const app = mount(Call, {
+      target: document.body,
+      props: {
+        k: 'f-refused-run',
+        open: true,
+        call: {
+          ...backgrounded,
+          row: { kind: 'forge', family: 'terminal' },
+          name: 'mcp__forge__terminal__run',
+          title: 'run the tests',
+          command: 'cargo test',
+          status: 'failed',
+          body: [
+            {
+              kind: 'text',
+              text: 'a hand-off is parked on this terminal: the person owns its screen and input until they answer',
+            },
+          ],
+        },
+      },
+    });
+    try {
+      flushSync();
+      expect(document.querySelector('.panel.bodytext'), 'not the terminal box').toBeNull();
+      expect(document.querySelector('.pbody')?.textContent, 'the reason in words').toContain(
+        'a hand-off is parked',
+      );
+    } finally {
+      void unmount(app);
+    }
+  });
+
+  /**
    * A failed terminal run's output is a command's output, not prose: it keeps
    * its lines in the terminal box, under the command that wrote them.
    */
