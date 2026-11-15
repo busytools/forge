@@ -548,6 +548,32 @@ mod tests {
         }
     }
 
+    /// **The two variants that put a character into a page both reach it as
+    /// CDP key events**, never as an insertion: a key press is what a page's
+    /// listeners and a focused field both understand. Only multi-character
+    /// text takes the insertion path, and `Text` is the variant that carries
+    /// it.
+    #[test]
+    fn a_character_reaches_the_page_as_a_key_event() {
+        let events = [
+            BrowserInputEvent::Text { text: "a".to_owned() },
+            BrowserInputEvent::Key {
+                down: true,
+                key: "a".to_owned(),
+                code: "KeyA".to_owned(),
+                windows_vk: 65,
+                modifiers: InputModifiers::default(),
+            },
+        ];
+        for event in events {
+            let method = match route(&event, 1) {
+                Route::Page(method, _) | Route::PageSeq(method, _) => method,
+                Route::Host(line) => panic!("a character is the page's, not the host's: {line}"),
+            };
+            assert_eq!(method, "Input.dispatchKeyEvent", "{event:?}");
+        }
+    }
+
     /// **Letters and digits name their key; punctuation does not invent
     /// one.** A page's own typing listener reads `key` and `text`; `code` is
     /// a physical-key label the server cannot know for punctuation on an

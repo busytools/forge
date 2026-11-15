@@ -250,8 +250,8 @@ async fn a_requested_tab_is_created_and_named_by_the_real_host() {
 
 /// **A typed character on a hand-off's page is a keystroke, not an
 /// insertion.** The page watches its own document for `keydown`; the
-/// keystroke a raised surface sends must reach that listener, not only a
-/// focused form field.
+/// keystroke a raised surface sends must reach that listener, and it must
+/// still type exactly once into an ordinary focused field.
 ///
 /// **The red this pins**: a surface sends a printable character as
 /// `BrowserInputEvent::Text`, and the server routed that to CDP
@@ -263,7 +263,8 @@ async fn a_requested_tab_is_created_and_named_by_the_real_host() {
 async fn a_hand_off_keystroke_reaches_the_pages_document() {
     const PAGE: &str = "<!doctype html><meta charset=utf-8><title>keys</title>\
         <script>window.__keys=[];document.addEventListener('keydown', \
-        (event) => window.__keys.push(event.key));</script><p>type</p>";
+        (event) => window.__keys.push(event.key));</script>\
+        <input id=field><p>type</p>";
     let stack = stack();
     assert!(
         stack.join("node/bin/node").is_file(),
@@ -327,6 +328,47 @@ async fn a_hand_off_keystroke_reaches_the_pages_document() {
         assert!(
             tokio::time::Instant::now() < deadline,
             "the page's document never heard the one key: {keys}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // **The other half is the regression guard**: an ordinary focused field
+    // must still receive exactly one character from the same event. Two
+    // would mean the press inserted and the old insertion ran as well.
+    service
+        .call(
+            &seat,
+            "browser_evaluate",
+            json!({ "function": "() => document.getElementById('field').focus()" }),
+        )
+        .await
+        .expect("the field takes focus");
+    service
+        .input(&key, tab, 7, 2, &BrowserInputEvent::Text { text: "2".to_owned() })
+        .await
+        .expect("the second keystroke is accepted");
+    let typed = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let settled = page_result(
+            &service,
+            &seat,
+            "() => { const field = document.getElementById('field'); \
+             return window.__keys.length === 2 && window.__keys[1] === '2' \
+             && field.value === '2'; }",
+        )
+        .await;
+        if settled == "true" {
+            break;
+        }
+        let seen = page_answer(
+            &service,
+            &seat,
+            "() => JSON.stringify([window.__keys, document.getElementById('field').value])",
+        )
+        .await;
+        assert!(
+            tokio::time::Instant::now() < typed,
+            "the document heard the second key and the field typed it once: {seen}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
