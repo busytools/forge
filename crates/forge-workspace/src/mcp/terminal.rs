@@ -172,8 +172,8 @@ impl TerminalTool {
                  under it, and a command killed by signal N reports 128 + N - a timeout at \
                  `timeout_ms` is `Exit code 137`. `cwd` defaults to the seat's own; `timeout_ms` \
                  defaults to 30000, and a timeout kills the process group. The text is bounded: \
-                 a clean answer carries `truncated`, and a failure ends with a line saying the \
-                 bound cut it."
+                 a clean answer carries `truncated`, and a truncated failure ends with a line \
+                 saying the bound cut it."
             }
         }
     }
@@ -877,18 +877,36 @@ mod tests {
         assert_eq!(text(&out), "Exit code 137\nnever finished");
     }
 
-    /// And an answer carrying neither a code nor a signal is still a clean run.
+    /// And an answer carrying neither a code nor a signal is still a clean run,
+    /// with the bound's own flag intact.
     #[tokio::test]
     async fn a_run_with_no_exit_answers_clean() {
         let mock = Arc::new(MockTerminalFacade::new());
         *mock.run_answer.lock() =
-            Ok(RunAnswer { exit: None, text: "still going".to_owned(), truncated: false });
+            Ok(RunAnswer { exit: None, text: "still going".to_owned(), truncated: true });
         let out = tool("terminal__run", Arc::clone(&mock) as Arc<dyn TerminalFacade>)
             .call(ToolInput { value: json!({ "command": "sleep 1" }) })
             .await;
         assert!(!out.is_error, "{:?}", out.blocks);
         let answer: Value = serde_json::from_str(&text(&out)).expect("a JSON answer");
         assert_eq!(answer["exit"], Value::Null);
+        assert_eq!(answer["truncated"], true, "a clean answer keeps the bound's flag");
+    }
+
+    /// **The timeout's real path, through the producer.** A run that outlives
+    /// `timeout_ms` has its process group killed, and the tool answers the
+    /// status that death carries: 128 + 9. A synthetic answer cannot catch the
+    /// producer changing the signal it reports, so this drives the real facade.
+    #[tokio::test]
+    async fn a_timed_out_run_answers_exit_137() {
+        let (workspace, _rx) = crate::Workspace::testing_stub();
+        workspace.seed_test_project("test-project", "/tmp");
+        let facade = crate::mcp::terminal::facade::ProdTerminalFacade::from_workspace(&workspace);
+        let out = tool("terminal__run", facade)
+            .call(ToolInput { value: json!({ "command": "sleep 30", "timeout_ms": 400 }) })
+            .await;
+        assert!(out.is_error, "{:?}", out.blocks);
+        assert!(text(&out).starts_with("Exit code 137\n"), "{}", text(&out));
     }
 
     /// `description` is advertised and optional: a display label the row
