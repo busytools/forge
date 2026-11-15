@@ -401,18 +401,93 @@ describe('the terminal card', () => {
     });
   });
 
-  it('says how a command ended and what it printed', () => {
+  it('titles a run by its description, and by the command when it has none', () => {
+    const answered = result(
+      JSON.stringify({ exit: { code: 0, signal: null }, text: 'ok', truncated: false }),
+    );
+    const described = forgeCardOf(
+      'mcp__forge__terminal__run',
+      { command: 'make test', description: 'run the test suite' },
+      answered,
+    );
+    expect(described?.title, 'the label the caller gave it').toBe('run the test suite');
+    const bare = forgeCardOf('mcp__forge__terminal__run', { command: 'make test' }, answered);
+    expect(bare?.title, 'the command, when no label was given').toBe('make test');
+  });
+
+  it('leads a run body with the command, then the output, and chips no exit', () => {
     const card = forgeCardOf(
       'mcp__forge__terminal__run',
       { command: 'echo hi' },
-      result(JSON.stringify({ exit: { code: 2, signal: null }, text: 'hi', truncated: false })),
+      result(JSON.stringify({ exit: { code: 0, signal: null }, text: 'hi', truncated: false })),
     );
-    expect(card?.title).toBe('ran a command in a terminal');
-    expect(card?.chips).toEqual([{ text: 'exit 2', tone: 'bad' }]);
+    expect(card?.chips, 'no success chip: the row itself is not a failure').toEqual([]);
+    expect(card?.pieces[0], 'the command the row elided').toEqual({ kind: 'tag', text: 'echo hi' });
     expect(card?.pieces.find((piece) => piece.kind === 'quote')).toEqual({
       kind: 'quote',
       text: 'hi',
     });
+  });
+
+  it('keeps the truncated chip and carries a long command whole in the body', () => {
+    const long = 'grep -rn "a long pattern" . --include=*.rs --exclude-dir=target';
+    const card = forgeCardOf(
+      'mcp__forge__terminal__run',
+      { command: long },
+      result(JSON.stringify({ exit: { code: 0, signal: null }, text: '', truncated: true })),
+    );
+    expect(card?.title, 'the row elides this; the title is the whole command').toBe(long);
+    expect(card?.pieces[0]).toEqual({ kind: 'tag', text: long });
+    expect(card?.chips).toEqual([{ text: 'truncated', tone: 'dim' }]);
+  });
+
+  it('names the command a failed run ran, under the reason it failed', () => {
+    expect(
+      forgeRowTitle('mcp__forge__terminal__run', { command: 'exit 2' }, 'failed'),
+      'a red row still says what it ran',
+    ).toBe('exit 2');
+  });
+
+  it('says how much a read read, and says when it continued from the mark', () => {
+    const lines = Array.from({ length: 40 }, (_, at) => `line ${at + 1}`).join('\n');
+    const answered = result(JSON.stringify({ text: lines, cursor: 9, truncated: false }));
+    const whole = forgeCardOf('mcp__forge__terminal__read', { id: 3 }, answered);
+    expect(whole?.title).toBe('read terminal 3 · 40 lines');
+    const continued = forgeCardOf('mcp__forge__terminal__read', { id: 3, since: 9 }, answered);
+    expect(continued?.title, 'a continuation did not start at the top').toBe(
+      'read terminal 3 · 40 lines since the mark',
+    );
+  });
+
+  it('names the condition a wait waited on', () => {
+    const answered = result(JSON.stringify({ matched: true, text: 'done', cursor: 3 }));
+    const cases: [unknown, string][] = [
+      ['exit', 'waited on terminal 2 for exit'],
+      [{ pattern: 'ready' }, 'waited on terminal 2 for "ready"'],
+      ['quiet', 'waited on terminal 2 to go quiet'],
+    ];
+    for (const [until, title] of cases) {
+      const card = forgeCardOf('mcp__forge__terminal__wait', { id: 2, until }, answered);
+      expect(card?.title).toBe(title);
+    }
+  });
+
+  it('shows what a write typed, its newline visible, and the keys it pressed', () => {
+    const answered = result(JSON.stringify({ ok: true, state: {} }));
+    const typed = forgeCardOf(
+      'mcp__forge__terminal__write',
+      { id: 1, text: 'make test\n' },
+      answered,
+    );
+    expect(typed?.title, 'the trailing newline is part of what went in').toBe(
+      'typed `make test\\n` into terminal 1',
+    );
+    const pressed = forgeCardOf(
+      'mcp__forge__terminal__write',
+      { id: 1, keys: ['ctrl_c'] },
+      answered,
+    );
+    expect(pressed?.title).toBe('pressed ctrl_c in terminal 1');
   });
 });
 

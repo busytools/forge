@@ -666,6 +666,13 @@ export function forgeRowTitle(
     const pending = pendingCard(family, verb, input);
     if (pending !== null) return pending.title;
   }
+  // A terminal call's subject is in its input, so a row still out and a row
+  // that failed both keep it: only `open`, `close`, `resize` and `hand_off`
+  // name their terminal in the answer alone.
+  if (family === 'terminal') {
+    const title = terminalSubject(verb, held);
+    if (title !== null) return title;
+  }
   if (family === 'settings') {
     const title = settingsTitle(verb, held);
     if (title !== null) return title;
@@ -1136,6 +1143,13 @@ function screenTail(text: string | null, lines = 12): string | null {
   return all.slice(Math.max(0, all.length - lines)).join('\n');
 }
 
+/** How many lines a read's text holds, its trailing whitespace left off. */
+function linesOf(text: string | null): number {
+  if (text === null) return 0;
+  const trimmed = text.replace(/\s+$/, '');
+  return trimmed === '' ? 0 : trimmed.split('\n').length;
+}
+
 /** The shell's state in words: what it is doing, and how it ended. */
 function terminalChips(state: unknown): ForgeChip[] {
   const held = obj(state);
@@ -1152,6 +1166,50 @@ function terminalChips(state: unknown): ForgeChip[] {
     chips.push({ text: `exit ${code}`, tone: code === 0 ? 'plain' : 'bad' });
   }
   return chips;
+}
+
+/**
+ * What a terminal call is doing, read off the call's own input: the title a
+ * row carries before its answer lands and the one a failed call keeps - a red
+ * row must still say what was read, waited on, written or run.
+ *
+ * A read's line count is the one subject fact the input cannot know, so the
+ * card adds it from the answer; everything else is here.
+ */
+function terminalSubject(verb: string, input: unknown): string | null {
+  const asked = obj(input);
+  const id = typeof asked['id'] === 'number' ? asked['id'] : null;
+  const name = id === null ? 'the terminal' : `terminal ${id}`;
+  switch (verb) {
+    case 'run': {
+      const description = str(asked, 'description');
+      if (description !== null && description.trim() !== '') return description;
+      const command = str(asked, 'command');
+      return command === null || command.trim() === '' ? null : command;
+    }
+    case 'read':
+      return `read ${name}`;
+    case 'wait': {
+      const until = asked['until'];
+      if (until === 'exit') return `waited on ${name} for exit`;
+      if (until === 'quiet') return `waited on ${name} to go quiet`;
+      const pattern = str(obj(until), 'pattern');
+      if (pattern !== null && pattern !== '') return `waited on ${name} for "${pattern}"`;
+      return `waited on ${name}`;
+    }
+    case 'write': {
+      const text = str(asked, 'text');
+      if (text !== null && text !== '') {
+        return `typed \`${text.replace(/\n/g, '\\n')}\` into ${name}`;
+      }
+      const keys = Array.isArray(asked['keys'])
+        ? asked['keys'].filter((key): key is string => typeof key === 'string')
+        : [];
+      return keys.length === 0 ? null : `pressed ${keys.join(' + ')} in ${name}`;
+    }
+    default:
+      return null;
+  }
 }
 
 /**
@@ -1181,29 +1239,45 @@ function terminalCard(verb: string, input: unknown, answer: unknown): ForgeCard 
       return { title: `opened ${name}`, chips, figure: null, pieces };
     }
     case 'write':
-      return { title: `typed into ${name}`, chips, figure: null, pieces };
+      return {
+        title: terminalSubject(verb, asked) ?? `typed into ${name}`,
+        chips,
+        figure: null,
+        pieces,
+      };
     case 'read': {
-      const tail = screenTail(str(held, 'text'));
+      const text = str(held, 'text');
+      const tail = screenTail(text);
       if (tail !== null) pieces.push({ kind: 'quote', text: tail });
       if (held['truncated'] === true) chips.push({ text: 'truncated', tone: 'dim' });
-      return { title: `read ${name}`, chips, figure: null, pieces };
+      const count = linesOf(text);
+      const since = typeof asked['since'] === 'number' ? ' since the mark' : '';
+      const lines = count === 1 ? '1 line' : `${count} lines`;
+      const subject = terminalSubject(verb, asked) ?? `read ${name}`;
+      return { title: `${subject} \u{b7} ${lines}${since}`, chips, figure: null, pieces };
     }
     case 'wait': {
       const tail = screenTail(str(held, 'text'));
       if (tail !== null) pieces.push({ kind: 'quote', text: tail });
       if (held['matched'] === true) chips.push({ text: 'matched', tone: 'ok' });
-      return { title: `waited on ${name}`, chips, figure: null, pieces };
+      return {
+        title: terminalSubject(verb, asked) ?? `waited on ${name}`,
+        chips,
+        figure: null,
+        pieces,
+      };
     }
     case 'run': {
+      const title = terminalSubject(verb, asked);
+      if (title === null) return null;
+      const command = str(asked, 'command');
+      if (command !== null && command.trim() !== '') {
+        pieces.push({ kind: 'tag', text: command });
+      }
       const tail = screenTail(str(held, 'text'));
       if (tail !== null) pieces.push({ kind: 'quote', text: tail });
       if (held['truncated'] === true) chips.push({ text: 'truncated', tone: 'dim' });
-      const exit = obj(held['exit']);
-      const code = exit['code'];
-      if (typeof code === 'number') {
-        chips.push({ text: `exit ${code}`, tone: code === 0 ? 'ok' : 'bad' });
-      }
-      return { title: 'ran a command in a terminal', chips, figure: null, pieces };
+      return { title, chips, figure: null, pieces };
     }
     case 'resize': {
       const cols = typeof asked['cols'] === 'number' ? asked['cols'] : null;
