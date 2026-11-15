@@ -248,6 +248,210 @@ async fn a_requested_tab_is_created_and_named_by_the_real_host() {
     service.close(&seat).await.expect("the profile closes");
 }
 
+/// **A typed character on a hand-off's page is a keystroke, not an
+/// insertion.** The page watches its own document for `keydown` and
+/// `keyup`; the keystroke a raised surface sends must reach those listeners
+/// in order, must release its key, and must still type exactly once into an
+/// ordinary focused field. **Punctuation carries the physical key it sits
+/// on**, so a field's own keyCode guard keeps it.
+///
+/// **The red this pins**: a surface sends a printable character as
+/// `BrowserInputEvent::Text`, and the server routed that to CDP
+/// `Input.insertText`, which edits the focused element and fires no
+/// `keydown`. A page of form fields typed fine while a page whose handler
+/// is a document listener looked dead (#2991).
+#[ignore = "needs the built host bundle and the vendored driver stack; run with --run-ignored ignored-only"]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hand_off_keystroke_reaches_the_pages_document() {
+    const PAGE: &str = "<!doctype html><meta charset=utf-8><title>keys</title>\
+        <script>window.__keys=[];window.__codes=[];window.__events=[];\
+        document.addEventListener('keydown', (event) => {\
+        window.__keys.push(event.key);window.__codes.push(event.keyCode);\
+        window.__events.push('down:' + event.key);\
+        if (event.keyCode < 32 && event.keyCode !== 8) event.preventDefault();\
+        });\
+        document.addEventListener('keyup', (event) => {\
+        window.__events.push('up:' + event.key);\
+        });</script>\
+        <input id=field><p>type</p>";
+    let stack = stack();
+    assert!(
+        stack.join("node/bin/node").is_file(),
+        "the vendored driver stack is not installed at {} - run \
+         scripts/vendor_browser_stack.sh with FORGE_BROWSER_STACK_DIR and point \
+         FORGE_BROWSER_TEST_STACK at the directory it installs",
+        stack.display()
+    );
+    let scratch = tempfile::tempdir().expect("a scratch root");
+    let service = BrowserService::at(scratch.path().to_path_buf(), stack);
+    let seat = SessionSlot::lead("TestOrg", "proj");
+    let port = serve_page(PAGE);
+    service
+        .call(&seat, "browser_navigate", json!({ "url": format!("http://127.0.0.1:{port}/") }))
+        .await
+        .expect("the page opens");
+    // **The guard goes on before the assertions**: a red must not leave a
+    // CEF host running after the test process ends.
+    let profile = service.profile_for(&seat).expect("the profile key");
+    let record = forge_browser::spawn::read_record(&service.profile_dir(&profile))
+        .expect("the host's record");
+    let _guard = HostGuard { pid: record.pid, ring: record.ring.clone() };
+
+    // **The hand-off path**: the page id its listing prints is the one a
+    // hand-off names, the park holds its tab, and the surface opens by that
+    // page rather than by a number.
+    let page = listed_page_id(&service, &seat).await;
+    let held = service.hand_off_started(&seat, &page).await.expect("the tab is parked");
+    let attachment =
+        service.attach_page(7, &seat, &page).await.expect("the hand-off opens by its page");
+    assert_eq!(attachment.tab, held, "the raised surface is the held tab");
+    let (key, tab) = (attachment.key.clone(), attachment.tab);
+    // **The raise's show cue is a sequence the host acknowledges.** It is the
+    // host's side of "the page is visible and focused"; the page's own
+    // answer below is the renderer's side of the same fact.
+    let ring = forge_browser::osr::Ring::open(&record.ring).expect("the host's ring");
+    let cue = ring.show();
+    let shown = tokio::time::Instant::now() + Duration::from_secs(30);
+    while !ring.shown(cue) {
+        assert!(tokio::time::Instant::now() < shown, "the host never applied the raise's show cue");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    service.take_control(&key, tab, 7).await.expect("the person takes the page");
+
+    // **One printable character, as the overlay sends one.** The page's
+    // document is where the key must arrive, with no field to receive it.
+    // **A key is sent only after the page answers that it holds the document
+    // focus.** The ring's ack is the host's side; this round trip is the
+    // renderer's, and a key sent before both was measured lost.
+    let focus_bound = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let focused = page_result(&service, &seat, "() => document.hasFocus()").await;
+        if focused == "true" {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < focus_bound,
+            "the page never held the document focus: {focused}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    service
+        .input(&key, tab, 7, 1, &BrowserInputEvent::Text { text: "1".to_owned() })
+        .await
+        .expect("the surface's keystroke is accepted");
+    // **The press and the read ride different connections**, so the page's
+    // answer is polled rather than assumed to have landed before the read.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let heard = page_result(
+            &service,
+            &seat,
+            "() => window.__keys.length === 1 && window.__keys[0] === '1' \
+             && window.__codes[0] === 49 && window.__events.length === 2 \
+             && window.__events[0] === 'down:1' && window.__events[1] === 'up:1'",
+        )
+        .await;
+        if heard == "true" {
+            break;
+        }
+        let keys = page_answer(
+            &service,
+            &seat,
+            "() => JSON.stringify([window.__keys, window.__codes, window.__events])",
+        )
+        .await;
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the page's document never heard the press and release: {keys}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // **The other half is the regression guard**: an ordinary focused field
+    // must still receive exactly one character from the same event. Two
+    // would mean the press inserted and the old insertion ran as well.
+    service
+        .call(
+            &seat,
+            "browser_evaluate",
+            json!({ "function": "() => document.getElementById('field').focus()" }),
+        )
+        .await
+        .expect("the field takes focus");
+    service
+        .input(&key, tab, 7, 2, &BrowserInputEvent::Text { text: "2".to_owned() })
+        .await
+        .expect("the second keystroke is accepted");
+    let typed = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let settled = page_result(
+            &service,
+            &seat,
+            "() => { const field = document.getElementById('field'); \
+             return window.__keys.length === 2 && window.__keys[1] === '2' \
+             && window.__codes[1] === 50 && field.value === '2' \
+             && window.__events.length === 4 && window.__events[2] === 'down:2' \
+             && window.__events[3] === 'up:2'; }",
+        )
+        .await;
+        if settled == "true" {
+            break;
+        }
+        let seen = page_answer(
+            &service,
+            &seat,
+            "() => JSON.stringify([window.__keys, window.__codes, window.__events, \
+             document.getElementById('field').value])",
+        )
+        .await;
+        assert!(
+            tokio::time::Instant::now() < typed,
+            "the document heard the second key and the field typed it once: {seen}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // **Punctuation carries its own key.** The page's guard drops a keydown
+    // with the DOM's control value 0, so `+` must arrive as Equal's 187, and
+    // it must still type into the focused field.
+    service
+        .input(&key, tab, 7, 3, &BrowserInputEvent::Text { text: "+".to_owned() })
+        .await
+        .expect("the punctuation keystroke is accepted");
+    let punctuation = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let settled = page_result(
+            &service,
+            &seat,
+            "() => { const field = document.getElementById('field'); \
+             return window.__keys.length === 3 && window.__keys[2] === '+' \
+             && window.__codes[2] === 187 && field.value === '2+' \
+             && window.__events.length === 6 && window.__events[4] === 'down:+' \
+             && window.__events[5] === 'up:+'; }",
+        )
+        .await;
+        if settled == "true" {
+            break;
+        }
+        let seen = page_answer(
+            &service,
+            &seat,
+            "() => JSON.stringify([window.__keys, window.__codes, window.__events, \
+             document.getElementById('field').value])",
+        )
+        .await;
+        assert!(
+            tokio::time::Instant::now() < punctuation,
+            "the document heard + with its key and the field typed it once: {seen}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    service.hand_off_finished(&seat, held).await;
+    service.detach(7).await;
+    service.close(&seat).await.expect("the profile closes");
+}
+
 /// **A host killed under a viewer takes its rows with it, and the next call
 /// brings a fresh host up.** The monitor's own path - the real process
 /// ending - is what publishes the empty list and forgets the host's parks.
@@ -783,6 +987,24 @@ async fn listed_page_id(service: &BrowserService, seat: &SessionSlot) -> String 
 const LAYOUT: &str = "() => ({ innerWidth: window.innerWidth, innerHeight: window.innerHeight, \
                       outerWidth: window.outerWidth, outerHeight: window.outerHeight, \
                       dpr: window.devicePixelRatio })";
+
+/// One `browser_evaluate` of `function`, as the answer's own text.
+async fn page_answer(service: &BrowserService, seat: &SessionSlot, function: &str) -> String {
+    let answer = service
+        .call(seat, "browser_evaluate", json!({ "function": function }))
+        .await
+        .expect("the page evaluates");
+    text_of(&answer)
+}
+
+/// One `browser_evaluate` of `function`, as the value in the driver's own
+/// `### Result` section.
+async fn page_result(service: &BrowserService, seat: &SessionSlot, function: &str) -> String {
+    let text = page_answer(service, seat, function).await;
+    let result = text.split_once("### Result").map_or(text.as_str(), |(_, result)| result);
+    let result = result.split_once("\n### ").map_or(result, |(value, _)| value);
+    result.trim().to_owned()
+}
 
 /// One `browser_evaluate` of [`LAYOUT`], as the object the page returned.
 ///
