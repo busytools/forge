@@ -485,8 +485,9 @@ define_class!(
 
         #[unsafe(method(keyUp:))]
         unsafe fn key_up(&self, _event: &objc2_app_kit::NSEvent) {
-            // A printable character rides the text event, which the server
-            // sends as a key press; the specials were sent whole on down.
+            // A single printable ASCII character rides the text event, which
+            // the server sends as a key press; the specials were sent whole on
+            // down.
         }
 
         /// **A bare modifier never reaches `keyDown:`.** AppKit turns it into

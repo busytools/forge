@@ -606,10 +606,16 @@ mod tests {
     /// typed character; the split is the character, not where it came from.
     #[test]
     fn a_one_character_paste_takes_the_same_path_as_a_keystroke() {
-        // The paste and the keystroke are the same wire event; there is
-        // nothing on it to tell them apart.
         let pasted = route(&BrowserInputEvent::Text { text: "a".to_owned() }, 1);
-        assert!(matches!(pasted, Route::PageSeq("Input.dispatchKeyEvent", _)));
+        let Route::PageSeq(method, params) = pasted else {
+            panic!("a one-character paste is a pair of key events: {pasted:?}");
+        };
+        assert_eq!(method, "Input.dispatchKeyEvent");
+        assert_eq!(params[0]["key"], "a", "case rides the text, not the key table");
+        assert_eq!(params[0]["text"], "a", "the press carries the case the person typed");
+        assert_eq!(params[0]["code"], "KeyA");
+        assert_eq!(params[0]["windowsVirtualKeyCode"], 65);
+        assert_eq!(params[1]["key"], "a", "the release carries the same key");
     }
 
     /// **The two variants that can carry a character reach the page
@@ -656,6 +662,22 @@ mod tests {
         assert_eq!(typing_key('.'), Some(("Period".to_owned(), 190)));
         assert_eq!(typing_key('é'), None, "no standard key, so no key event");
         assert_eq!(typing_key('\n'), None);
+    }
+
+    /// **Every printable ASCII character has a key of its own.** The table is
+    /// checked whole, so an arm that fell back to the DOM's control value 0
+    /// cannot pass unexercised; that fallback is the class the first cut of
+    /// #2991's fix broke for punctuation.
+    #[test]
+    fn every_printable_ascii_character_has_a_key() {
+        for code in 0x20_u32..=0x7e_u32 {
+            let character = char::from_u32(code).expect("a printable ASCII character");
+            let Some((dom_code, vk)) = typing_key(character) else {
+                panic!("{character:?} has no key");
+            };
+            assert!(!dom_code.is_empty(), "{character:?} names a DOM code");
+            assert!((32..=255).contains(&vk), "{character:?} names a virtual key, got {vk}");
+        }
     }
 
     #[test]

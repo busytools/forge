@@ -249,11 +249,11 @@ async fn a_requested_tab_is_created_and_named_by_the_real_host() {
 }
 
 /// **A typed character on a hand-off's page is a keystroke, not an
-/// insertion.** The page watches its own document for `keydown`; the
-/// keystroke a raised surface sends must reach that listener, and it must
-/// still type exactly once into an ordinary focused field. **Punctuation
-/// carries the physical key it sits on**, so a field's own keyCode guard
-/// keeps it.
+/// insertion.** The page watches its own document for `keydown` and
+/// `keyup`; the keystroke a raised surface sends must reach those listeners
+/// in order, must release its key, and must still type exactly once into an
+/// ordinary focused field. **Punctuation carries the physical key it sits
+/// on**, so a field's own keyCode guard keeps it.
 ///
 /// **The red this pins**: a surface sends a printable character as
 /// `BrowserInputEvent::Text`, and the server routed that to CDP
@@ -264,10 +264,14 @@ async fn a_requested_tab_is_created_and_named_by_the_real_host() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_hand_off_keystroke_reaches_the_pages_document() {
     const PAGE: &str = "<!doctype html><meta charset=utf-8><title>keys</title>\
-        <script>window.__keys=[];window.__codes=[];\
+        <script>window.__keys=[];window.__codes=[];window.__events=[];\
         document.addEventListener('keydown', (event) => {\
         window.__keys.push(event.key);window.__codes.push(event.keyCode);\
+        window.__events.push('down:' + event.key);\
         if (event.keyCode < 32 && event.keyCode !== 8) event.preventDefault();\
+        });\
+        document.addEventListener('keyup', (event) => {\
+        window.__events.push('up:' + event.key);\
         });</script>\
         <input id=field><p>type</p>";
     let stack = stack();
@@ -343,16 +347,22 @@ async fn a_hand_off_keystroke_reaches_the_pages_document() {
             &service,
             &seat,
             "() => window.__keys.length === 1 && window.__keys[0] === '1' \
-             && window.__codes[0] === 49",
+             && window.__codes[0] === 49 && window.__events.length === 2 \
+             && window.__events[0] === 'down:1' && window.__events[1] === 'up:1'",
         )
         .await;
         if heard == "true" {
             break;
         }
-        let keys = page_answer(&service, &seat, "() => JSON.stringify(window.__keys)").await;
+        let keys = page_answer(
+            &service,
+            &seat,
+            "() => JSON.stringify([window.__keys, window.__codes, window.__events])",
+        )
+        .await;
         assert!(
             tokio::time::Instant::now() < deadline,
-            "the page's document never heard the one key: {keys}"
+            "the page's document never heard the press and release: {keys}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -379,7 +389,9 @@ async fn a_hand_off_keystroke_reaches_the_pages_document() {
             &seat,
             "() => { const field = document.getElementById('field'); \
              return window.__keys.length === 2 && window.__keys[1] === '2' \
-             && window.__codes[1] === 50 && field.value === '2'; }",
+             && window.__codes[1] === 50 && field.value === '2' \
+             && window.__events.length === 4 && window.__events[2] === 'down:2' \
+             && window.__events[3] === 'up:2'; }",
         )
         .await;
         if settled == "true" {
@@ -388,7 +400,8 @@ async fn a_hand_off_keystroke_reaches_the_pages_document() {
         let seen = page_answer(
             &service,
             &seat,
-            "() => JSON.stringify([window.__keys, document.getElementById('field').value])",
+            "() => JSON.stringify([window.__keys, window.__codes, window.__events, \
+             document.getElementById('field').value])",
         )
         .await;
         assert!(
@@ -412,7 +425,9 @@ async fn a_hand_off_keystroke_reaches_the_pages_document() {
             &seat,
             "() => { const field = document.getElementById('field'); \
              return window.__keys.length === 3 && window.__keys[2] === '+' \
-             && window.__codes[2] === 187 && field.value === '2+'; }",
+             && window.__codes[2] === 187 && field.value === '2+' \
+             && window.__events.length === 6 && window.__events[4] === 'down:+' \
+             && window.__events[5] === 'up:+'; }",
         )
         .await;
         if settled == "true" {
@@ -421,7 +436,7 @@ async fn a_hand_off_keystroke_reaches_the_pages_document() {
         let seen = page_answer(
             &service,
             &seat,
-            "() => JSON.stringify([window.__keys, window.__codes, \
+            "() => JSON.stringify([window.__keys, window.__codes, window.__events, \
              document.getElementById('field').value])",
         )
         .await;
