@@ -847,7 +847,7 @@
       <div class="patchline"><span class="patchmark">{omittedText(piece.bytes)}</span></div>
     {:else if asProse}
       <Prose text={stripEscapes(textOf(piece))} preserveLines />
-    {:else if mcpParts(call.name) !== null || isBrowserTool(call.name)}
+    {:else if (mcpParts(call.name) !== null || isBrowserTool(call.name)) && call.command === null}
       <!-- **An MCP result is markdown, one style for every call, the peer
            card's own.** What a server wrote arrives as markdown - headings,
            lists, fences - and drew raw as itself until this branch (Ved,
@@ -855,8 +855,10 @@
            one, where he asked the browser's body to follow peer messaging
            (Ved: the peer pattern is "showing the style when it is expanded" -
            the lane a peer message's body sits in). Soft breaks flow; a fence
-           is where literal lines live. A local command's OUTPUT is not prose
-           and stays the terminal box below. -->
+           is where literal lines live. A local command's OUTPUT is not prose -
+           and neither is an MCP call's when the call ran a command, a
+           terminal__run's failing output chief among them, whose lines are the
+           compiler's or the test's - so both stay in the terminal box below. -->
       <div class="pbody"><Prose text={stripEscapes(textOf(piece))} /></div>
     {:else if readFormat?.kind === 'markdown'}
       <!-- A Read of markdown renders: the file is prose the page already

@@ -448,6 +448,16 @@ describe('the terminal card', () => {
     ).toBe('exit 2');
   });
 
+  it('chips nothing for a non-zero exit that arrived as a success', () => {
+    const card = forgeCardOf(
+      'mcp__forge__terminal__run',
+      { command: 'exit 1' },
+      result(JSON.stringify({ exit: { code: 2, signal: null }, text: 'hi', truncated: false })),
+    );
+    expect(card?.title).toBe('exit 1');
+    expect(card?.chips, 'the failed row is the signal, not a chip').toEqual([]);
+  });
+
   it('says how much a read read, and says when it continued from the mark', () => {
     const lines = Array.from({ length: 40 }, (_, at) => `line ${at + 1}`).join('\n');
     const answered = result(JSON.stringify({ text: lines, cursor: 9, truncated: false }));
@@ -488,6 +498,14 @@ describe('the terminal card', () => {
       answered,
     );
     expect(pressed?.title).toBe('pressed ctrl_c in terminal 1');
+    const both = forgeCardOf(
+      'mcp__forge__terminal__write',
+      { id: 1, text: 'yes', keys: ['enter'] },
+      answered,
+    );
+    expect(both?.title, 'the text and the key both went in').toBe(
+      'typed `yes` and pressed enter in terminal 1',
+    );
   });
 });
 

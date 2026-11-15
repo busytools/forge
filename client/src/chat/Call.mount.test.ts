@@ -392,4 +392,43 @@ describe('the call row, mounted', () => {
       void unmount(app);
     }
   });
+
+  /**
+   * A failed terminal run's output is a command's output, not prose: it keeps
+   * its lines in the terminal box, under the command that wrote them.
+   */
+  it("keeps a failed terminal run's lines in the terminal box", () => {
+    const failed: ToolLeaf = {
+      id: 'toolu_run',
+      row: { kind: 'forge', family: 'terminal' },
+      name: 'mcp__forge__terminal__run',
+      title: 'run the tests',
+      command: 'cargo test',
+      status: 'failed',
+      backgrounded: false,
+      note: null,
+      stop: null,
+      body: [{ kind: 'text', text: 'Exit code 101\nline one\nline two' }],
+      mutation: null,
+      decision: null,
+      forge: null,
+      skill: null,
+      image: null,
+      imageNote: null,
+    };
+    const app = mount(Call, {
+      target: document.body,
+      props: { k: 'f-failed-run', call: failed, open: true },
+    });
+    try {
+      flushSync();
+      expect(document.querySelector('.pbody'), 'not the prose lane').toBeNull();
+      const box = document.querySelector('.panel.bodytext');
+      expect(box).not.toBeNull();
+      expect(box?.textContent, 'the command that wrote it').toContain('cargo test');
+      expect(box?.textContent, 'the lines are kept').toContain('line one\nline two');
+    } finally {
+      void unmount(app);
+    }
+  });
 });

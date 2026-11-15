@@ -1199,13 +1199,17 @@ function terminalSubject(verb: string, input: unknown): string | null {
     }
     case 'write': {
       const text = str(asked, 'text');
-      if (text !== null && text !== '') {
-        return `typed \`${text.replace(/\n/g, '\\n')}\` into ${name}`;
-      }
+      const typed = text === null || text === '' ? null : `typed \`${text.replace(/\n/g, '\\n')}\``;
       const keys = Array.isArray(asked['keys'])
         ? asked['keys'].filter((key): key is string => typeof key === 'string')
         : [];
-      return keys.length === 0 ? null : `pressed ${keys.join(' + ')} in ${name}`;
+      const pressed = keys.length === 0 ? null : `pressed ${keys.join(' + ')}`;
+      // A write often types text and then presses Enter; both went in, so both
+      // are said.
+      if (typed !== null && pressed !== null) return `${typed} and ${pressed} in ${name}`;
+      if (typed !== null) return `${typed} into ${name}`;
+      if (pressed !== null) return `${pressed} in ${name}`;
+      return null;
     }
     default:
       return null;
