@@ -5892,13 +5892,13 @@ impl Workspace {
 
     /// Dispatch a workspace-originated prompt under `PromptSource::Forge`.
     ///
-    /// A delivery - a cron fire, a peer comm, a Gotify or Slack push - takes
-    /// [`Self::dispatch_workspace_prompt_from`] with its own source instead:
-    /// its row then draws at the CLI's `started` carrying that source, and
-    /// the server's held conversation gets the row. Forge's own words - a
-    /// worker kick, an auto-continue, a board notice - take
-    /// [`Self::dispatch_forged_prompt`], which forges their row at dispatch
-    /// because nothing else carries them.
+    /// A delivery - a cron fire, a peer comm, a Gotify or Slack push - calls
+    /// [`Self::dispatch_workspace_prompt_under`] with its own source and the
+    /// id it minted for its typed update instead: its row then draws at the
+    /// CLI's `started` carrying that source, and the server's held
+    /// conversation gets the row. Forge's own words - a worker kick, an
+    /// auto-continue, a board notice - take [`Self::dispatch_forged_prompt`],
+    /// which forges their row at dispatch because nothing else carries them.
     pub fn dispatch_workspace_prompt(
         self: &Arc<Self>,
         key: &SessionSlot,
@@ -5961,9 +5961,9 @@ impl Workspace {
         //
         // Only a source whose caller settles this error here draws: a `Forge`
         // prompt carries its own dispatch row (the failure notice's is forged
-        // from its typed update downstream), and a cron or Slack source is
-        // retried by its caller under a fresh id, so a row here would paint the
-        // failed attempt as well as the delivered one.
+        // from its typed update downstream), and a live cron fire or Slack
+        // batch is retried by its caller under a fresh id, so a row here would
+        // paint the failed attempt as well as the delivered one.
         let fallback = matches!(source, PromptSource::Peer | PromptSource::Gotify)
             .then(|| Message::display_only_user(text.clone(), uuid.clone()));
         // `route` rather than `dispatch`: the prompt has no frame of its own
@@ -24378,19 +24378,20 @@ mod async_worker_spawn_failure_tests {
             .filter(|c| matches!(c, Command::Prompt { .. } | Command::PromptUnder { .. }))
             .collect();
         assert_eq!(prompts.len(), 1, "exactly one WorkerSpawnFailedNotice envelope");
-        if let Command::PromptUnder { key, text, source, .. } = prompts[0] {
-            assert_eq!(*key, lead_key, "notice targets the lead session id");
-            assert!(text.starts_with("[Worker 'reviewer' spawn failed"));
-            assert!(text.contains("already used by worktree"));
-            // **`Peer` is this notice's only row carrier.** `delivery_turn`
-            // forges only the delivery-failure notice, so a `Forge` source
-            // here would draw no row at all.
-            assert_eq!(
-                *source,
-                PromptSource::Peer,
-                "the notice rides the source whose row the session task draws",
-            );
-        }
+        let Command::PromptUnder { key, text, source, .. } = prompts[0] else {
+            panic!("the notice is dispatched as a PromptUnder, got {:?}", prompts[0]);
+        };
+        assert_eq!(*key, lead_key, "notice targets the lead session id");
+        assert!(text.starts_with("[Worker 'reviewer' spawn failed"));
+        assert!(text.contains("already used by worktree"));
+        // **`Peer` is this notice's only row carrier.** `delivery_turn`
+        // forges only the delivery-failure notice, so a `Forge` source
+        // here would draw no row at all.
+        assert_eq!(
+            *source,
+            PromptSource::Peer,
+            "the notice rides the source whose row the session task draws",
+        );
         // And the typed update a view keeps beside that row.
         let echoed = std::iter::from_fn(|| update_rx.try_recv().ok()).any(|frame| {
             matches!(
