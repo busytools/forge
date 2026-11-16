@@ -21238,7 +21238,7 @@ mod worker_respawn_tests {
             ..SessionLaunchSettings::default()
         };
         ws.stamp_respawn_overrides(&plain, "new-id", &mut stale);
-        assert!(stale.engine.is_none(), "nothing names an engine, so the claude CLI runs",);
+        assert!(stale.engine.is_none(), "nothing names an engine, so the claude CLI runs");
     }
 
     /// The role a spawn carries is the role it gets, and the slot's label
