@@ -3065,6 +3065,11 @@ describe('the seat the client holds between visits', () => {
     const back = watch(connection);
 
     expect(connection.subscribes(), 'the return left the seat unsubscribed').toBe(2);
+    expect(
+      connection.opens,
+      'the re-ask was a relist over the kept store, not a second subscribe',
+    ).toHaveLength(1);
+    expect(connection.holds({ session: LEAD }), 'the seat is held again').toBe(true);
     back.stop();
   });
 
@@ -3084,15 +3089,38 @@ describe('the seat the client holds between visits', () => {
     connection.wentTo('open');
 
     expect(connection.subscribes(), 'the open left the shown seat unsubscribed').toBe(2);
+    expect(
+      connection.opens,
+      'the open subscribed a store the page already had instead of relisting it',
+    ).toHaveLength(1);
+    expect(connection.holds({ session: LEAD }), 'the shown seat is held again').toBe(true);
+    page.stop();
+  });
+
+  /**
+   * **A seat the connection still holds is left alone when one opens.** A
+   * relist over a hold that never went would count a second reader and a
+   * second whole record on the next reconnect (#3002).
+   */
+  it('leaves a held seat alone when the connection opens', () => {
+    const connection = drivable();
+    connection.wentTo('connecting');
+    const page = watch(connection);
+    expect(connection.subscribes(), 'precondition: the visit asked while connecting').toBe(1);
+    expect(connection.holds({ session: LEAD }), 'precondition: the ask is held').toBe(true);
+
+    connection.wentTo('open');
+
+    expect(connection.subscribes(), 'the open re-asked a seat the connection held').toBe(1);
     page.stop();
   });
 
   /**
    * **A read wanted for a seat the connection does not hold is dropped, not
-   * latched.** The open count is what says a read has a subscription to ride;
-   * a seat whose ask never went is closed, so a wanted read has nothing behind
-   * it - and latched instead it would fire later as a whole encode nobody
-   * asked for (#3002).
+   * latched.** The connection's hold is what says a read has a subscription
+   * to ride; a seat whose ask never went holds nothing, so a wanted read has
+   * nothing behind it - and latched instead it would fire later as a whole
+   * encode nobody asked for (#3002).
    */
   it('drops a wanted read while the connection holds no subscription', () => {
     const connection = drivable();
@@ -3295,6 +3323,45 @@ describe('the seat the client holds between visits', () => {
       document.dispatchEvent(new Event('visibilitychange'));
       vi.advanceTimersByTime(2_000);
       expect(connection.reads(), 'the returning page did not pick the beat up').toBe(1);
+      page.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * **A lost ask re-arms on the return too.** A page hidden when its
+   * subscribe was lost has no refused store to draw and no cue left once its
+   * beat stopped; without the hold test in `wake`, the return would arm
+   * nothing and the seat would come back blank (#3002).
+   */
+  it('re-arms on the return for a seat whose ask was lost while hidden', () => {
+    vi.useFakeTimers({
+      toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout'],
+    });
+    try {
+      const connection = drivable();
+      const page = watch(connection);
+      expect(connection.subscribes(), 'precondition: the visit asked').toBe(1);
+      connection.loseWants();
+      hidePage();
+
+      connection.land({
+        kind: 'error',
+        what: 'subscribe',
+        why: 'the subscribe did not reach the app',
+        subject: { session: LEAD },
+        dispatch_id: null,
+      });
+      vi.advanceTimersByTime(2_000);
+      expect(connection.subscribes(), 'a hidden page asked for a seat nobody was looking at').toBe(
+        1,
+      );
+
+      delete (document as { hidden?: boolean }).hidden;
+      document.dispatchEvent(new Event('visibilitychange'));
+      vi.advanceTimersByTime(2_000);
+      expect(connection.subscribes(), 'the return did not re-ask the lost seat').toBe(2);
       page.stop();
     } finally {
       vi.useRealTimers();
