@@ -3465,16 +3465,11 @@ impl Workspace {
             Some(slot) => slot,
             None => self.resolve_slot(&target)?,
         };
-        // The engine this seat launches on: the project's own setting,
-        // else its org's, else the `claude` CLI. Stamped at this one point
-        // because every session forge launches passes through here, so no
-        // spawn entry can forget it. `default` adds nothing, which is also
-        // what a launch settings that predates the key carries.
-        if let Some(project) = self.project_for_slot(&session_slot)
-            && project.engine.engine != forge_agent::client::Engine::Default
-        {
-            settings.engine = Some(project.engine);
-        }
+        // The engine this cold spawn launches on. A `/new`, `/resume` or
+        // handoff re-spawns on a pooled handle instead and is stamped in
+        // `stamp_respawn_overrides`; between the two, every launch carries
+        // the engine its project resolves to.
+        self.stamp_engine(&session_slot, &mut settings);
         // The id the child runs under. `--session-id` and `--resume` are
         // the CLI's own arguments and stay ids; the store row records it
         // under the slot before the child starts, so a restart resolves
@@ -4987,12 +4982,34 @@ impl Workspace {
     /// would otherwise come back. A worker's own denials come back with
     /// them: the kind decides the worktree pins, and the row's own
     /// `interactive` flag decides the question.
+    /// Stamp the engine the seat's project resolves to onto a launch.
+    ///
+    /// **The config is the only source.** A launch settings that arrived
+    /// carrying another engine - a client's snapshot, a handoff built
+    /// before a reload - is overwritten, so a spawn never runs a binary no
+    /// key names today; `default` clears the field, which is what a launch
+    /// settings that predates the key carries.
+    pub(crate) fn stamp_engine(
+        &self,
+        slot: &SessionSlot,
+        launch_settings: &mut SessionLaunchSettings,
+    ) {
+        launch_settings.engine = self
+            .project_for_slot(slot)
+            .map(|project| project.engine)
+            .filter(|engine| engine.engine != forge_agent::client::Engine::Default);
+    }
+
     pub(crate) fn stamp_respawn_overrides(
         &self,
         slot: &SessionSlot,
         session_id: &str,
         launch_settings: &mut SessionLaunchSettings,
     ) {
+        // A respawn is a new session, so it starts on the engine the config
+        // names now - `/new`, `/resume` and a handoff re-spawn on a pooled
+        // handle, where the cold-spawn stamp never runs.
+        self.stamp_engine(slot, launch_settings);
         let kind = if slot.is_lead() {
             crate::mcp::SessionKind::Lead
         } else {
@@ -21188,6 +21205,40 @@ mod worker_respawn_tests {
             worker_settings.delegation_preamble.is_none(),
             "and a worker is never given the lead-only block",
         );
+    }
+
+    /// A respawn starts on the engine the config names now. `/new`,
+    /// `/resume` and a handoff re-spawn on a pooled handle, where the
+    /// cold-spawn stamp never runs; a stale engine arriving on the command
+    /// is overwritten, because the config is the only source.
+    #[test]
+    fn a_respawn_launches_on_the_projects_engine() {
+        use forge_agent::client::{Engine, EngineScope, EngineSetting};
+
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project_with_engine("engine-proj", "/tmp/engine-respawn", Engine::Forge);
+        let lead = SessionSlot::lead("TestOrg", "engine-proj");
+        let mut settings = SessionLaunchSettings::default();
+        ws.stamp_respawn_overrides(&lead, "new-id", &mut settings);
+        assert_eq!(
+            settings.engine.as_ref().map(|engine| engine.engine),
+            Some(Engine::Forge),
+            "a /new on the seat runs the port its project names",
+        );
+
+        // A project with no engine key clears one a caller carried, so a
+        // reload back to `default` takes effect at the next spawn.
+        ws.seed_test_project("plain-proj", "/tmp/engine-plain");
+        let plain = SessionSlot::lead("TestOrg", "plain-proj");
+        let mut stale = SessionLaunchSettings {
+            engine: Some(EngineSetting {
+                engine: Engine::Forge,
+                scope: EngineScope::Org { org: "Stale".to_owned() },
+            }),
+            ..SessionLaunchSettings::default()
+        };
+        ws.stamp_respawn_overrides(&plain, "new-id", &mut stale);
+        assert!(stale.engine.is_none(), "nothing names an engine, so the claude CLI runs",);
     }
 
     /// The role a spawn carries is the role it gets, and the slot's label

@@ -763,7 +763,36 @@ impl Workspace {
     /// to drive the Connected-hook worker-spawn trigger without
     /// writing a real `forge.toml`. Test-only.
     pub fn seed_test_project(&self, name: &str, path: &str) {
-        self.seed_test_project_inner(name, path, None, None);
+        self.seed_test_project_inner(
+            name,
+            path,
+            None,
+            None,
+            forge_agent::client::EngineSetting::cli(),
+        );
+    }
+
+    /// [`Workspace::seed_test_project`] with an engine, so a test can drive
+    /// the spawn paths a `forge` key changes. Test-only.
+    pub fn seed_test_project_with_engine(
+        &self,
+        name: &str,
+        path: &str,
+        engine: forge_agent::client::Engine,
+    ) {
+        self.seed_test_project_inner(
+            name,
+            path,
+            None,
+            None,
+            forge_agent::client::EngineSetting {
+                engine,
+                scope: forge_agent::client::EngineScope::Project {
+                    org: "TestOrg".to_owned(),
+                    project: name.to_owned(),
+                },
+            },
+        );
     }
 
     /// Drop a project seeded by [`Self::seed_test_project`], so a test can
@@ -775,14 +804,26 @@ impl Workspace {
     /// [`Workspace::seed_test_project`] with a Slack binding, so a facade
     /// test can drive the slot-to-workspace resolution. Test-only.
     pub fn seed_test_project_with_slack_workspace(&self, name: &str, path: &str, workspace: &str) {
-        self.seed_test_project_inner(name, path, None, Some(workspace));
+        self.seed_test_project_inner(
+            name,
+            path,
+            None,
+            Some(workspace),
+            forge_agent::client::EngineSetting::cli(),
+        );
     }
 
     /// [`Workspace::seed_test_project`] with the project's
     /// `max_workers` override, so facade tests can
     /// exercise the override arm of the capacity read. Test-only.
     pub fn seed_test_project_with_max_workers(&self, name: &str, path: &str, max_workers: usize) {
-        self.seed_test_project_inner(name, path, Some(max_workers), None);
+        self.seed_test_project_inner(
+            name,
+            path,
+            Some(max_workers),
+            None,
+            forge_agent::client::EngineSetting::cli(),
+        );
     }
 
     fn seed_test_project_inner(
@@ -791,6 +832,7 @@ impl Workspace {
         path: &str,
         max_workers: Option<usize>,
         slack_workspace: Option<&str>,
+        engine: forge_agent::client::EngineSetting,
     ) {
         self.test_extra_projects.lock().push(crate::config::LoadedProject {
             name: name.to_owned(),
@@ -810,7 +852,7 @@ impl Workspace {
                 "TestOrg", "default",
             ),
             slack_workspace: slack_workspace.map(str::to_owned),
-            engine: forge_agent::client::EngineSetting::cli(),
+            engine,
         });
     }
 
