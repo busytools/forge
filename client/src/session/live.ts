@@ -521,8 +521,9 @@ function createSeat(
     //
     // **The connection holds the answer, not the store.** A seat whose want it
     // no longer carries has a store all the same, so a return is the moment to
-    // ask again (#3002): `holds` is the whole test, and a transport that keeps
-    // the want itself (the desktop's shell across a drop) is left alone.
+    // ask again (#3002): `holds` is the whole test, and only a transport that
+    // really carries the want (a shell's string subject across its retry)
+    // leaves it alone - a seat is the page's to re-open after a socket change.
     if (!connection.holds(subject)) open();
     if (seat.wire === null) read();
     return leaving;
@@ -955,8 +956,8 @@ function createSeat(
    *
    * **A seat is unheld in two ways.** Its subscription can be refused - an
    * answer rather than a subscription - and its ask can be lost before the
-   * transport took it, which reads the same at the page: nothing is coming,
-   * and nothing else emits a cue that would say so (#3002). **A refusal is
+   * transport took it; the transport reports that loss in the frame a
+   * refusal rides, and it is what arms this beat (#3002). **A refusal is
    * sometimes an answer and sometimes a wait**: a seat forge holds no session
    * for clears when it starts, and a copy behind a seal clears when the fold
    * applies it (#2514) - so the ask that comes back refused arms the next
@@ -1528,8 +1529,8 @@ function createSeat(
       // **Only the seat on screen comes back live.** The rest stay stale and
       // re-attach on their next click, which is the resume rule; the shown
       // seat's own answer is the whole record. **A seat the connection still
-      // holds is left alone** - a transport that kept the want (the desktop's
-      // shell) is already re-asking it - and one it does not hold is reopened
+      // holds is left alone** - a watch the shell never got to carry is its
+      // own re-ask at `client_connect` - and one it does not hold is reopened
       // here, which is the page's own door (#3002).
       if (shown && !connection.holds(subject)) open();
     });
