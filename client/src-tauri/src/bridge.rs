@@ -1199,6 +1199,12 @@ impl Bridge {
         json!({
             "status": state.status,
             "generation": state.generation,
+            // **The socket task itself**, which a status cannot name: a task
+            // reconnects in place and keeps its held list, while a
+            // `client_connect` replaces the task and re-asks only the
+            // subjects it owns. The page keys its own seat wants on this, so a
+            // replaced socket is told apart from a retried one (#3002).
+            "connection": state.socket_id,
             "greeting": state.greeting,
         })
     }

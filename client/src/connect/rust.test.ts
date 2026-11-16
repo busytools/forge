@@ -54,8 +54,8 @@ const slot: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 const subject = { session: slot };
 
 /** A client_state answer, overridden per test. */
-type State = { status: string; generation?: number; greeting: unknown };
-const OPEN: State = { status: 'open', generation: 1, greeting: null };
+type State = { status: string; generation?: number; connection?: number; greeting: unknown };
+const OPEN: State = { status: 'open', generation: 1, connection: 1, greeting: null };
 /** The id the mocked shell hands back for a `client_connect`. */
 const SOCKET = 7;
 
@@ -157,6 +157,41 @@ describe('what the shell is told', () => {
     expect(connection.holds(subject), 'precondition: the seat was held again').toBe(true);
     connection.close();
     expect(connection.holds(subject), 'a closed connection held its wants').toBe(false);
+  });
+
+  /**
+   * **A replaced socket task leaves the seats to the page.** A task reconnects
+   * in place and re-asks its held list, seats included; a `client_connect`
+   * replaces it, and the new one re-asks only the subjects it owns. The two
+   * look alike from a status, so the shell's own socket id is what the page
+   * reads: on a change, its seat wants are no longer carried - and the pair
+   * below tells the seat on screen to re-attach.
+   */
+  it('drops a seat it no longer carries when the shell replaces its socket', async () => {
+    const shell: State = { status: 'open', generation: 1, connection: 1, greeting: null };
+    const connection = await opened(shell);
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+    connection.subscribe(subject);
+    connection.subscribe('home');
+    expect(connection.holds(subject), 'precondition: the seat is held').toBe(true);
+    expect(connection.holds('home'), 'precondition: the home is held').toBe(true);
+    const seen: string[] = [];
+    connection.onStatus((status) => seen.push(status));
+
+    shell.connection = 2;
+    shell.generation = 2;
+    fire('client://connection', undefined);
+
+    await vi.waitFor(() =>
+      expect(connection.holds(subject), 'a seat the replaced socket skipped was still held').toBe(
+        false,
+      ),
+    );
+    expect(
+      connection.holds('home'),
+      'a subject the replaced socket re-asks was dropped with the seats',
+    ).toBe(true);
+    expect(seen, 'the page was never told the socket was replaced').toEqual(['connecting', 'open']);
   });
 
   /**

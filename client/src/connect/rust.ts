@@ -84,6 +84,14 @@ interface DesktopState {
   status: ConnectionStatus;
   /** How many sockets have opened in the shell; absent on an older shell. */
   generation?: number;
+  /**
+   * Which socket task the shell is on; absent on an older shell.
+   *
+   * **A task reconnects in place and keeps its held list; a `client_connect`
+   * replaces the task**, and the new one re-asks only the subjects it owns.
+   * The two look alike from a status, so this is what tells them apart.
+   */
+  connection?: number;
   greeting: ServerMessage | null;
 }
 
@@ -223,6 +231,15 @@ class RustConnection implements Connection {
   private generation: number | null = null;
   private transition = false;
   /**
+   * The shell's socket task this page last saw, from `client_state`.
+   *
+   * **A retried task and a replaced one are different connections to a page.**
+   * A task's own reconnect keeps its held list and re-asks it, seats
+   * included; a `client_connect` replaces the task, and the new one leaves
+   * seats to the page. This is what a replacement is recognised by (#3002).
+   */
+  private connection: number | null = null;
+  /**
    * The subjects the shell has taken a subscription for, by key, with the
    * declaration each was last asked with.
    *
@@ -235,7 +252,7 @@ class RustConnection implements Connection {
    * carried without this page asking again, which is why there is no second
    * list here of what to re-ask.
    */
-  private readonly held = new Map<string, { answering: boolean; review: boolean }>();
+  private readonly held = new Map<string, { seat: boolean; answering: boolean; review: boolean }>();
   /**
    * The bound on a subscription's first read: a subject still loading when
    * it runs out is asked again through `client_refresh`, so a snapshot lost
@@ -338,6 +355,24 @@ class RustConnection implements Connection {
       this.heard(state.greeting);
     }
     const generation = typeof state.generation === 'number' ? state.generation : null;
+    // **A replaced socket task is a new connection to this page.** A task's
+    // own reconnect keeps its held list and re-asks it (seats included), so a
+    // drop the page watched needs nothing from here; a `client_connect`
+    // replaces the task, and the new one leaves seats to the page. Its seat
+    // wants are dropped, and a `connecting` is moved so the pair reaches the
+    // seat even when the replacement is already open - a repeated `open` is a
+    // no-op and nothing else would wake the page's own re-attach (#3002).
+    // Recording the generation first keeps the branch below from pairing too.
+    const connection = typeof state.connection === 'number' ? state.connection : null;
+    const replaced =
+      connection !== null && this.connection !== null && connection !== this.connection;
+    if (connection !== null) this.connection = connection;
+    if (replaced) {
+      this.loseSeatWants();
+      if (generation !== null) this.generation = generation;
+      this.transition = false;
+      this.move('connecting');
+    }
     if (state.status === 'open' && generation !== null) {
       const known = this.generation;
       if (known === null) {
@@ -518,6 +553,22 @@ class RustConnection implements Connection {
   }
 
   /**
+   * Drop every seat want, keeping the subjects a replaced socket re-asks.
+   *
+   * **A `client_connect` replaces the shell's socket task**, and the new task
+   * re-asks the string subjects it owns and leaves seats to the page. A page
+   * that hears a new task arrive must therefore treat its seat wants as no
+   * longer carried: the visit and the connection's open re-ask the seat on
+   * screen, and every other seat re-attaches on its next click. A string
+   * subject stays held, and the shell's own re-ask is its only ask (#3002).
+   */
+  private loseSeatWants(): void {
+    for (const [key, held] of [...this.held.entries()]) {
+      if (held.seat) this.held.delete(key);
+    }
+  }
+
+  /**
    * One subscribe or relist to the shell, remembered as held until it is not.
    *
    * **The page asks once and the shell carries it.** A watch taken with no
@@ -536,7 +587,7 @@ class RustConnection implements Connection {
     review: boolean,
   ): void {
     const key = subjectKey(what);
-    this.held.set(key, { answering, review });
+    this.held.set(key, { seat: typeof what !== 'string', answering, review });
     void invoke(command, { what, answering, review }).catch((why: unknown) => {
       report(
         `a ${command === 'client_subscribe' ? 'subscribe' : 'relist'} could not reach the shell`,
