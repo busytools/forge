@@ -8903,8 +8903,8 @@ async fn a_dropped_socket_leaves_no_subscription_behind() {
 /// writing.
 ///
 /// The role is `answering: false` on purpose: a client with no dock to reply
-/// from is still shown the turn, and the forge must not be what makes an
-/// observer look like an answerer.
+/// from still has to see the delivery the seat was given, and the forge must
+/// not be what makes an observer look like an answerer.
 #[tokio::test]
 async fn a_delivery_reaches_a_socket_as_its_typed_update_alone() {
     let (url, fleet) = a_server().await;
@@ -8927,6 +8927,9 @@ async fn a_delivery_reaches_a_socket_as_its_typed_update_alone() {
         cron_id: "c1".to_owned(),
         description: Some("Morning summary".to_owned()),
     });
+    // The evidence is ORDER, never a timeout: a forged row would have to
+    // arrive between the typed update and this sentinel.
+    fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
 
     let ServerMessage::Update { update, .. } = next_server(&mut socket).await else {
         panic!("the typed update has to reach the client that keeps its schedule pairing")
@@ -8935,6 +8938,11 @@ async fn a_delivery_reaches_a_socket_as_its_typed_update_alone() {
         matches!(*update, SessionUpdate::CronPromptAppended { .. }),
         "the typed update is the whole of what the delivery sends: no forged row goes ahead \
          of it",
+    );
+    let msg = next_server(&mut socket).await;
+    assert!(
+        matches!(&msg, ServerMessage::Update { update, .. } if matches!(**update, SessionUpdate::TurnCancelled { .. })),
+        "and none follows it: a forged row would sit between the update and the sentinel: {msg:?}",
     );
 }
 
@@ -9001,9 +9009,10 @@ async fn a_delivery_failure_notice_is_sent_as_a_frame_and_then_as_its_typed_upda
 /// The same stream carries the whole fleet, so a delivery to another seat
 /// draws nothing here.
 ///
-/// The forged frame carries the delivery's own slot, so the routing that keeps
+/// The failure notice is the one delivery the server forges a frame for, and
+/// that frame carries the delivery's own slot, so the routing that keeps
 /// another seat's news out of this connection has to keep its frame out too -
-/// a frame reaching the wrong seat is a client showing one seat's cron fire
+/// a frame reaching the wrong seat is a client showing one seat's notice
 /// inside another seat's conversation.
 #[tokio::test]
 async fn a_delivery_to_another_seat_draws_nothing_on_this_one() {
@@ -9020,12 +9029,16 @@ async fn a_delivery_to_another_seat_draws_nothing_on_this_one() {
     .await;
     snapshot_answering(&mut socket).await;
 
-    fleet.emit(SessionUpdate::CronPromptAppended {
+    fleet.emit(SessionUpdate::PeerEnvelopeAppended {
         key: SessionSlot::for_label("TestOrg", "proj", Some("w1")),
-        text: "run the morning summary".to_owned(),
-        uuid: "cap-cron-2".to_owned(),
-        cron_id: "c2".to_owned(),
-        description: None,
+        uuid: "cap-notice-2".to_owned(),
+        wrapped: forge_workspace::WrappedPrompt {
+            id: forge_workspace::MessageId("m-2".to_owned()),
+            kind: forge_workspace::WrappedKind::DeliveryFailureNotice,
+            sender_name: "forge".to_owned(),
+            sender_org: "Busytools".to_owned(),
+            body: "target session connection lost".to_owned(),
+        },
     });
     // The evidence is ORDER, never a timeout: a frame forged for the other
     // seat would have to arrive ahead of an update this connection does hear,

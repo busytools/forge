@@ -1345,14 +1345,19 @@ impl crate::Workspace {
         if self.hold_prompt(key, held) {
             return Ok(());
         }
-        self.route(Command::PromptUnder {
+        let fallback = Message::display_only_user(text.clone(), uuid.clone());
+        let result = self.route(Command::PromptUnder {
             key: key.clone(),
             text,
             attachments: Vec::new(),
             uuid,
             source: crate::protocol::PromptSource::Peer,
             dispatch_id: None,
-        })
+        });
+        if result.is_err() {
+            self.send_never_routed_row(key, fallback, crate::protocol::PromptSource::Peer);
+        }
+        result
     }
 
     /// Hold a prompt for the successor. `true` when a swap took it.

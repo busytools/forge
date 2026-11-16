@@ -5890,16 +5890,15 @@ impl Workspace {
         Ok(())
     }
 
-    /// Dispatch a workspace-originated plain prompt (cron fire, peer,
-    /// gotify or slack delivery, kick, notices).
+    /// Dispatch a workspace-originated prompt under `PromptSource::Forge`.
     ///
-    /// **A delivery drawn in a view needs an update here, paired with an arm
-    /// in `forge-server`'s `delivery_turn`.** This path emits no frame of its
-    /// own - the forge for one is `delivery_turn`, downstream, and it ends in
-    /// `_ => return None`. So a prompt sent from here whose typed update has
-    /// no arm there draws nothing in any view, silently: a prompt with no
-    /// envelope of its own takes [`Self::dispatch_forged_prompt`] instead,
-    /// which forges the frame here.
+    /// A delivery - a cron fire, a peer comm, a Gotify or Slack push - takes
+    /// [`Self::dispatch_workspace_prompt_from`] with its own source instead:
+    /// its row then draws at the CLI's `started` carrying that source, and
+    /// the server's held conversation gets the row. Forge's own words - a
+    /// worker kick, an auto-continue, a board notice - take
+    /// [`Self::dispatch_forged_prompt`], which forges their row at dispatch
+    /// because nothing else carries them.
     pub fn dispatch_workspace_prompt(
         self: &Arc<Self>,
         key: &SessionSlot,
@@ -5910,7 +5909,8 @@ impl Workspace {
 
     /// [`Self::dispatch_workspace_prompt`], with the row's source label named
     /// by the caller: a delivery knows what it is (a cron fire, a Gotify
-    /// notification, a peer comm) and the queued row has to say so.
+    /// notification, a peer comm) and the row drawn at the CLI's `started`
+    /// has to say so.
     pub fn dispatch_workspace_prompt_from(
         self: &Arc<Self>,
         key: &SessionSlot,
@@ -5929,10 +5929,9 @@ impl Workspace {
     }
 
     /// [`Self::dispatch_workspace_prompt_from`] with the id supplied by the
-    /// caller, for a site that already minted one: a delivery that draws its
-    /// own envelope row passes the same id to both, so the row a view holds
-    /// while the prompt queues and the prompt's lifecycle frames are one thing
-    /// by id.
+    /// caller, for a site that already minted one: the typed update a delivery
+    /// also sends carries the same id, so the row drawn at the CLI's `started`
+    /// and the prompt's lifecycle frames are one thing by id.
     pub fn dispatch_workspace_prompt_under(
         self: &Arc<Self>,
         key: &SessionSlot,
@@ -5956,16 +5955,49 @@ impl Workspace {
         ) {
             return Ok(());
         }
-        // `route` rather than `dispatch`: the delivery's frame is the
-        // envelope one its own update forges, not a bare user turn.
-        self.route(Command::PromptUnder {
+        // The row a refusal draws, built before the command takes the prompt's
+        // words. The typed update a delivery also sends no longer forges a row,
+        // so without this a route failure would drop them silently. A `Forge`
+        // prompt is left out: the only machinery prompt carrying a typed
+        // update is the delivery-failure notice, whose row is forged from that
+        // update downstream, so drawing here would be a second copy of it.
+        let fallback = (source != PromptSource::Forge)
+            .then(|| Message::display_only_user(text.clone(), uuid.clone()));
+        // `route` rather than `dispatch`: the prompt has no frame of its own
+        // to forge. Every source draws at the CLI's `started`; a row forged
+        // here would draw it at dispatch instead.
+        let result = self.route(Command::PromptUnder {
             key: key.clone(),
             text,
             attachments: Vec::new(),
             uuid,
             source,
             dispatch_id: None,
-        })
+        });
+        if result.is_err()
+            && let Some(frame) = fallback
+        {
+            self.send_never_routed_row(key, frame, source);
+        }
+        result
+    }
+
+    /// Send the row a prompt never got: `route` refused it before the session
+    /// task saw it, so neither the CLI's `started` frame nor the task's own
+    /// dispatch-failure fallback will ever draw the words. The caller builds
+    /// them while it still owns them.
+    pub(crate) fn send_never_routed_row(
+        &self,
+        key: &SessionSlot,
+        mut frame: Message,
+        source: PromptSource,
+    ) {
+        frame.stamp_if_absent(&crate::install::rfc3339_now());
+        let _ = self.update_sender().send(SessionUpdate::ChatAppended {
+            key: key.clone(),
+            msg: frame,
+            source: Some(source),
+        });
     }
 
     /// Fire the continuation for a seat whose turn just failed: one prompt
@@ -6014,11 +6046,12 @@ impl Workspace {
         );
     }
 
-    /// Dispatch a workspace-originated prompt whose words no view has drawn:
-    /// a worker kick, an auto-continue. [`Self::dispatch_workspace_prompt`]
-    /// exactly, plus the frame - nothing else carries these words, where a
-    /// delivery's own envelope update is what draws a delivery, and routing
-    /// one of those through here would draw its words twice.
+    /// Dispatch a workspace-originated prompt whose words no other frame
+    /// draws: a worker kick, an auto-continue, a board notice, a handoff
+    /// brief. [`Self::dispatch_workspace_prompt_under`] exactly, plus the
+    /// frame - the machinery's source is the one the session task leaves to
+    /// this forge, so a delivery (which draws at the CLI's `started`) must not
+    /// be routed through here.
     pub fn dispatch_forged_prompt(
         self: &Arc<Self>,
         key: &SessionSlot,
@@ -6186,8 +6219,9 @@ impl Workspace {
     /// unrunnable slash name owes is emitted from this path, because the task
     /// never sees those prompts.
     ///
-    /// NOT from `dispatch_workspace_prompt`, which is the delivery path: a
-    /// delivery already draws as an envelope turn of its own.
+    /// NOT from `dispatch_workspace_prompt`, which is the machinery's path: a
+    /// delivery takes `dispatch_workspace_prompt_from` and draws at the CLI's
+    /// `started`, so neither path forges the refusal's frame.
     fn dispatch_answered(self: &Arc<Self>, cmd: Command) -> Result<(), DispatchError> {
         // The id is minted HERE, before the prose is taken, so the prompt and
         // its lifecycle frames carry one thing by id: a plain `Prompt` becomes
@@ -10672,10 +10706,11 @@ impl Workspace {
                         "WorkerSpawnFailedNotice dispatch to lead failed",
                     );
                 }
-                // And the visible echo, the way every other injected prompt
-                // paints one: the CLI does not echo a prompt it was handed on
-                // stdin, so a view that only drew the wire would show nothing
-                // until the page reloaded.
+                // The typed update goes out beside the dispatch: the row is
+                // the session task's, drawn at the CLI's `started`, and this
+                // carries the notice's typed fields. A dispatch that never
+                // reaches the task still draws the words, from the row
+                // `emit_never_routed_row` forges.
                 crate::spawn::push_peer_user_turn_into_chat(self, &lead_slot, &wrapped, &uuid);
             } else {
                 tracing::warn!(
@@ -14508,10 +14543,10 @@ provider = "anthropic"
         );
 
         ws.dispatch_workspace_prompt(&key, "[Cron]\n\nrun the summary".to_owned())
-            .expect("delivery dispatch");
+            .expect("workspace dispatch");
         assert!(
             !drain_updates(&mut rx).iter().any(|u| matches!(u, SessionUpdate::ChatAppended { .. })),
-            "a delivery's words are drawn by its own envelope update, so this path forges no frame",
+            "this path forges no frame: the row draws at the CLI's `started` from the queue's words",
         );
         // Both dispatches wire one prompt each, and both are the machinery's
         // own words: the source `Forge` is what the prefix follows.
@@ -18234,6 +18269,57 @@ provider = "anthropic"
         }
     }
 
+    /// **A prompt the route refuses still draws its words.** The typed update
+    /// a delivery sends no longer forges a row, and the session task's own
+    /// fallback only covers failures after the command reached it; a route
+    /// failure is the case before that.
+    #[tokio::test]
+    async fn a_prompt_the_route_refuses_still_draws_its_words() {
+        let (ws, mut rx) = Workspace::testing_stub();
+        let gone = SessionSlot::for_label("TestOrg", "gone", Some("w1"));
+        let caller = SessionSlot::lead("TestOrg", "gone");
+
+        let first = ws.dispatch_workspace_prompt_under(
+            &gone,
+            "a cron fire".to_owned(),
+            PromptSource::Cron,
+            "gone-cron".to_owned(),
+        );
+        assert!(first.is_err(), "no session task takes it: {first:?}");
+        let second = ws.dispatch_peer_prompt_under(
+            &caller,
+            &gone,
+            "a peer message".to_owned(),
+            "gone-peer".to_owned(),
+        );
+        assert!(second.is_err(), "no session task takes it: {second:?}");
+
+        let drawn: Vec<SessionUpdate> = std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+            .collect();
+        for (uuid, source, expected) in [
+            ("gone-cron", PromptSource::Cron, "a cron fire"),
+            ("gone-peer", PromptSource::Peer, "a peer message"),
+        ] {
+            assert!(
+                drawn.iter().any(|update| matches!(
+                    update,
+                    SessionUpdate::ChatAppended {
+                        msg: Message::User { uuid: Some(id), message, .. },
+                        source: Some(from),
+                        ..
+                    } if id == uuid
+                        && *from == source
+                        && message.content.iter().any(|block| matches!(
+                            block,
+                            forge_primitives::ContentBlock::Text { text, .. } if text == expected
+                        ))
+                )),
+                "{source:?} draws its words when the route refuses it: {drawn:?}",
+            );
+        }
+    }
+
     /// A message parked for a seat that never came up is acknowledged to
     /// its sender: the notice lands on the sender's slot and names the
     /// seat that did not take it.
@@ -18276,11 +18362,21 @@ provider = "anthropic"
         let dispatched = ws.drain_test_dispatch_buffer();
         assert_eq!(dispatched.len(), 1, "the notice is also dispatched as a turn");
         match &dispatched[0] {
-            Command::Prompt { key, text, .. } | Command::PromptUnder { key, text, .. } => {
+            Command::PromptUnder { key, text, source, .. } => {
                 assert_eq!(*key, sender, "the dispatched turn goes to the sender");
                 assert!(text.contains("failed to deliver"), "carrying the failure prose: {text}");
+                // **`Forge` is what keeps the notice to one row.** Its own
+                // typed update forges the row at dispatch (`delivery_turn`),
+                // and the session task draws no `started` row for a `Forge`
+                // prompt, so flipping this back to `Peer` is the duplicate row
+                // this cut exists to remove.
+                assert_eq!(
+                    *source,
+                    PromptSource::Forge,
+                    "the machinery's own notice, so the session task leaves its row to the forge",
+                );
             }
-            other => panic!("expected a prompt command, got {other:?}"),
+            other => panic!("expected a PromptUnder command, got {other:?}"),
         }
     }
 
@@ -28176,16 +28272,18 @@ mod prompt_dispatch_tests {
         assert!(!ws.drain_test_dispatch_buffer().is_empty(), "the prompt itself is wired");
     }
 
-    /// The delivery path, which already draws as an envelope turn of its own.
+    /// **A workspace prompt forges no frame at dispatch.** Its row draws at
+    /// the CLI's `started` from the queue's words; a frame here would draw the
+    /// same words above the answer the running turn is still writing.
     #[test]
-    fn a_delivery_emits_no_frame() {
+    fn a_workspace_prompt_emits_no_frame_at_dispatch() {
         let (ws, mut rx, seat) = a_fleet();
 
         let _ = ws.dispatch_workspace_prompt(&seat, "run the morning summary".to_owned());
 
         assert!(
             rx.try_recv().is_err(),
-            "a bare user turn beside a delivery's envelope turn draws the same words twice",
+            "nothing is forged at dispatch: the row draws where the CLI starts it",
         );
     }
 

@@ -1343,9 +1343,10 @@ impl SessionTask {
     /// queued rows on the connect or the failure frame instead.
     ///
     /// **A cron's row carries the `[Cron]` wrapper**, the same one the typed
-    /// update's row used to: the wrapper is what the fold reads the row back
-    /// as a delivery and what the client titles from the schedule pairing.
-    /// The prompt the model received stays the raw text.
+    /// update's row used to: the live fold reads the row back as a cron block
+    /// and the client titles it from the schedule pairing. The prompt the
+    /// model received stays the raw text; the CLI's transcript records that
+    /// raw text, so a row read back off disk carries no wrapper.
     fn emit_prompt_row(
         &self,
         text: &str,
@@ -2664,9 +2665,9 @@ impl SessionTask {
             return;
         }
         for notification in pending {
-            // Echo the notification block, then re-dispatch its prose as a
-            // plain user turn (mirrors the running-target path in
-            // spawn::deliver_gotify_message).
+            // Push the typed update, then dispatch its prose as a plain user
+            // turn (mirrors the running-target path in
+            // spawn::deliver_gotify_message); the row draws at `started`.
             let uuid = forge_sdk::request_id::next_prompt_id();
             crate::spawn::push_gotify_notification_into_chat(
                 workspace,
@@ -12654,9 +12655,8 @@ provider = "anthropic"
                 source,
                 dispatch_id: None,
             });
-            // The CLI takes it while the turn it arrived under still runs:
-            // the row is drawn where the CLI took it, not at the turn's end.
-            task.domain.lock().turn_pending = true;
+            // The CLI reports the prompt it absorbed: the row is drawn at
+            // that frame, whenever the CLI took it, not at dispatch.
             task.translate_event(AgentEvent::SdkMessage {
                 session_id: "delivery-session".to_owned(),
                 msg: forge_primitives::Message::CommandLifecycle {
@@ -12712,9 +12712,10 @@ provider = "anthropic"
 
     /// **Only the machinery's own prompts draw no started row.** A `Forge`
     /// prompt already carries the row `dispatch_forged_prompt_held` forged at
-    /// dispatch, and the delivery-failure notice carries the one
-    /// `delivery_turn` forges; a second row here would draw the handoff
-    /// brief, a continuation or a notice twice.
+    /// dispatch; a second row here would draw the handoff brief or a
+    /// continuation twice. The delivery-failure notice is the same case, and
+    /// its `Forge` dispatch is pinned where it is chosen
+    /// (`notice_undelivered_message_names_the_target_and_reaches_the_sender`).
     #[tokio::test]
     async fn a_machinery_prompt_draws_no_started_row() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -12870,6 +12871,32 @@ provider = "anthropic"
                     if uuid == "failed-1" && state == "started"
             )),
             "and the card settles: {announced:?}",
+        );
+
+        // **A delivery's failed dispatch keeps its own attribution.** The row
+        // uses the prompt's source, not a hardcoded `You`: a peer message whose
+        // dispatch fails must not draw as the reader's own send.
+        task.execute_command(Command::PromptUnder {
+            key: slot.clone(),
+            text: "a peer message".to_owned(),
+            attachments: Vec::new(),
+            uuid: "failed-peer".to_owned(),
+            source: crate::protocol::PromptSource::Peer,
+            dispatch_id: None,
+        });
+        let announced: Vec<SessionUpdate> = std::iter::from_fn(|| update_rx.try_recv().ok())
+            .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+            .collect();
+        assert!(
+            announced.iter().any(|update| matches!(
+                update,
+                SessionUpdate::ChatAppended {
+                    msg: forge_primitives::Message::User { uuid: Some(id), .. },
+                    source: Some(crate::protocol::PromptSource::Peer),
+                    ..
+                } if id == "failed-peer"
+            )),
+            "the failed delivery draws under its own source: {announced:?}",
         );
     }
 

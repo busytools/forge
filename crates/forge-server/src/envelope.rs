@@ -265,8 +265,9 @@ pub fn detect_inbound(text: &str) -> Option<PeerInboundKind> {
     }
 
     if header == "Cron" {
-        // Display-only wrapper the CronPromptAppended reducer forges around
-        // the fired prompt; `body` is the raw prompt after `]\n\n`.
+        // Display-only wrapper `SessionTask::emit_prompt_row` adds around the
+        // fired prompt on the live row; `body` is the raw prompt after
+        // `]\n\n`.
         return Some(PeerInboundKind::Cron { prompt: body });
     }
 

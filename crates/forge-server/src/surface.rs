@@ -490,13 +490,11 @@ impl ViewSurface {
     /// id, and reading first instead would lose whatever arrived in between,
     /// which no later read brings back.
     ///
-    /// The one class the two halves cannot reconcile by id is the prompts
-    /// the workspace injects. A cron, a Gotify delivery, a Slack bundle or a
-    /// peer comm reaches the stream as text alone (`CronPromptAppended`,
-    /// `GotifyNotificationAppended`, `SlackMessageAppended`) and reaches this
-    /// read as the envelope-wrapped row the CLI persisted, with no id shared
-    /// between them, so a view holding both has to match on the envelope's
-    /// source and body instead.
+    /// A prompt the workspace injects draws its stream row under the id it was
+    /// dispatched with, and the CLI records that same id on the row this read
+    /// returns, so the two halves reconcile by id like any other row - the
+    /// delivery-failure notice included, whose forged row carries the prompt's
+    /// own id.
     ///
     /// This reads a whole transcript off disk on the calling thread, with no
     /// size cap: a real session costs milliseconds, and the largest

@@ -414,10 +414,9 @@ pub(crate) fn handle_deliver_peer_prompt(
         });
 
     if let Some(target_key) = target_running_key {
-        // The typed peer-envelope update goes out beside the dispatch: it
-        // carries the envelope's kind and sender, which the row the CLI's
-        // `started` draws does not spell. The row itself is drawn at that
-        // frame, in the CLI's order - not forged here.
+        // The typed peer-envelope update goes out beside the dispatch, with
+        // the envelope's typed fields. The row itself is the session task's,
+        // drawn at the CLI's `started` in the CLI's order - not forged here.
         let uuid = forge_sdk::request_id::next_prompt_id();
         push_peer_user_turn_into_chat(workspace, &target_key, &wrapped, &uuid);
         let text = wrapped.to_prose();
@@ -735,11 +734,11 @@ fn cron_slot_exists(
 }
 
 /// Deliver a matched Gotify `notification` into `project` as a plain user
-/// turn AND echo it into the target's chat as a notification block. When
-/// `team_role` names a running team worker, deliver straight to it;
-/// otherwise deliver to the project lead - echo + dispatch a
-/// `Command::Prompt` if it's running, else park it for the target's slot
-/// and dispatch `Command::SpawnProject`
+/// turn and emit its typed update beside it. When `team_role` names a
+/// running team worker, deliver straight to it; otherwise deliver to the
+/// project lead - push the update and dispatch a `Command::PromptUnder` if
+/// it's running, else park it for the target's slot and dispatch
+/// `Command::SpawnProject`
 /// (`SessionTask` drains + echoes on Connected via
 /// `deliver_parked_gotify`). A team-worker subscription with NO live entry
 /// falls through to lead delivery (spawning the project brings the team
@@ -1110,11 +1109,10 @@ fn team_worker_key(workspace: &Arc<Workspace>, project: &str, label: &str) -> Op
     .map(|w| w.slot.clone())
 }
 
-/// Emit a typed `PeerEnvelopeAppended` so a view keeps the envelope's own
-/// facts - its kind and sender - beside the row the CLI's `started` draws.
-/// The row itself is the session task's, drawn at that frame; this update
-/// is not a row's carrier except for the delivery-failure notice, whose
-/// `delivery_turn` arm still forges one.
+/// Emit a typed `PeerEnvelopeAppended` carrying the envelope's typed fields
+/// beside the row the CLI's `started` draws. The row itself is the session
+/// task's; this update is not a row's carrier except for the delivery-failure
+/// notice, whose `delivery_turn` arm still forges one.
 pub(crate) fn push_peer_user_turn_into_chat(
     workspace: &Workspace,
     target_key: &SessionSlot,
@@ -1128,9 +1126,9 @@ pub(crate) fn push_peer_user_turn_into_chat(
     });
 }
 
-/// Emit a typed `GotifyNotificationAppended` so a view keeps the
-/// notification's own facts beside the row the CLI's `started` draws.
-/// Mirrors [`push_peer_user_turn_into_chat`].
+/// Emit a typed `GotifyNotificationAppended` carrying the notification's
+/// fields beside the row the CLI's `started` draws. Mirrors
+/// [`push_peer_user_turn_into_chat`].
 pub(crate) fn push_gotify_notification_into_chat(
     workspace: &Workspace,
     target_key: &SessionSlot,
@@ -1168,8 +1166,8 @@ pub(crate) fn push_cron_prompt_into_chat(
     });
 }
 
-/// Emit a typed `SlackMessageAppended` so a view keeps the delivered
-/// messages' own facts beside the row the CLI's `started` draws. Mirrors
+/// Emit a typed `SlackMessageAppended` carrying the delivered prose beside
+/// the row the CLI's `started` draws. Mirrors
 /// [`push_gotify_notification_into_chat`].
 pub(crate) fn push_slack_message_into_chat(
     workspace: &Workspace,

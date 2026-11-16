@@ -795,10 +795,10 @@ pub enum Command {
     /// the caller's project rather than by cross-project name.
     ///
     /// `respond` carries what actually happened to the prompt: `Ok(())`
-    /// once it was accepted - handed to the target's session queue, held
-    /// for its turn end, or parked for its connect - and `Err(reason)`
-    /// when nothing could take it. The sender's ack is built from this
-    /// answer alone, so it can only claim what the delivery really did.
+    /// once it was accepted - handed to the target's session queue or parked
+    /// for its connect - and `Err(reason)` when nothing could take it. The
+    /// sender's ack is built from this answer alone, so it can only claim what
+    /// the delivery really did.
     DeliverWorkerPrompt {
         caller: SessionSlot,
         project_key: crate::ProjectKey,
@@ -2008,12 +2008,11 @@ pub enum SessionUpdate {
         worktree: WorktreeDisposition,
     },
     /// A peer-coordination envelope arrived at `key`.
-    /// Carries the typed `WrappedPrompt` so a view's reducer can build
-    /// the chat-side echo from real fields instead of having the
-    /// workspace forge a `Message::User` carrying prose for a view to
-    /// re-parse (audit I11). The recipient's LLM still receives the
-    /// prose via a separate `Command::Prompt` dispatch - that's the
-    /// CLI's input channel and stays text-shaped.
+    /// Carries the typed `WrappedPrompt` beside the row the session task
+    /// draws at the CLI's `started`. The delivery-failure notice is the one
+    /// kind whose row `delivery_turn` forges from this update; every other
+    /// kind draws from the prompt's own start frame. The recipient's LLM
+    /// receives the prose via a separate `Command::PromptUnder` dispatch.
     PeerEnvelopeAppended {
         key: SessionSlot,
         wrapped: crate::mcp::peers::types::WrappedPrompt,
@@ -2023,10 +2022,10 @@ pub enum SessionUpdate {
         uuid: String,
     },
     /// A matched Gotify notification arrived at `key`.
-    /// Carries the typed `GotifyNotification` so a view's reducer builds
-    /// the chat-side echo from real fields (mirrors PeerEnvelopeAppended).
-    /// The session's LLM receives the same prose via a separate
-    /// `Command::Prompt` - this update only drives the visible echo.
+    /// Carries the typed `GotifyNotification` beside the row the session task
+    /// draws at the CLI's `started` (mirrors PeerEnvelopeAppended); no row is
+    /// drawn from this update. The session's LLM receives the same prose via a
+    /// separate `Command::PromptUnder`.
     GotifyNotificationAppended {
         key: SessionSlot,
         notification: crate::mcp::gotify::types::GotifyNotification,
@@ -2034,11 +2033,11 @@ pub enum SessionUpdate {
         /// row carries - see `PeerEnvelopeAppended`.
         uuid: String,
     },
-    /// A due cron fired into `key`. Carries the fired
-    /// prompt text so a view's reducer builds the chat-side echo (mirrors
-    /// GotifyNotificationAppended). The session's LLM receives the same
-    /// text via a separate `Command::Prompt` - this update only drives
-    /// the visible echo.
+    /// A due cron fired into `key`. Carries the fired prompt text and the
+    /// schedule pairing beside the row the session task draws at the CLI's
+    /// `started` (mirrors GotifyNotificationAppended); no row is drawn from
+    /// this update, and the pairing is what titles that row. The session's LLM
+    /// receives the same text via a separate `Command::PromptUnder`.
     CronPromptAppended {
         key: SessionSlot,
         text: String,
@@ -2053,12 +2052,13 @@ pub enum SessionUpdate {
         /// the row falls back to the prompt's first line.
         description: Option<String>,
     },
-    /// A matched Slack message arrived at `key`. Carries the
-    /// prose rather than the typed message: the prose builder is `pub(crate)`
-    /// to forge-workspace, so a typed message would force a view to rebuild
-    /// the very format it parses. The session's LLM receives the same prose
-    /// via a separate `Command::Prompt` - this update only drives the visible
-    /// echo (mirrors GotifyNotificationAppended).
+    /// A matched Slack message arrived at `key`. Carries the prose rather than
+    /// the typed message: the prose builder is `pub(crate)` to
+    /// forge-workspace, so a typed message would force a view to rebuild the
+    /// very format it parses. It rides beside the row the session task draws
+    /// at the CLI's `started` (mirrors GotifyNotificationAppended); no row is
+    /// drawn from this update. The session's LLM receives the same prose via a
+    /// separate `Command::PromptUnder`.
     SlackMessageAppended {
         key: SessionSlot,
         prose: String,

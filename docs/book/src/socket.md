@@ -1406,8 +1406,8 @@ persists - on the user row of a prompt that started a turn, and inside the
 as an attachment - so the frame and the page's later copy of the same
 message agree on it, and a client reconciles the two by id. It is also what
 pairs the row with the queued prompt it answers: the `command_lifecycle`
-frames carry the same id, so a view holds the row until `started` lands and
-drains it then.
+frames carry the same id, so a page's own early copy of the row is held
+until `started` lands and drained then.
 
 **The server's fold and the client's are two readings of one conversation.**
 The server folds a conversation into where its turns sit and the task

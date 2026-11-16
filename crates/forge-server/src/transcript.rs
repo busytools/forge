@@ -986,9 +986,12 @@ mod tests {
     }
 
     /// **A delivery arriving after a settled turn is the next turn's first
-    /// row.** Its envelope row is the only marker of where that turn opens,
-    /// so a fold that kept it in the turn above would draw the delivery's
-    /// exchange as that turn's work.
+    /// row.** The row the CLI records for the injected prompt is the only
+    /// marker of where that turn opens, so a fold that kept it in the turn
+    /// above would draw the delivery's exchange as that turn's work. The
+    /// fixture is the peer envelope prose forge sends, which is what the CLI
+    /// records; a cron's row on disk is its raw prompt, with no `[Cron]`
+    /// wrapper to parse.
     #[test]
     fn a_delivery_after_a_settled_turn_opens_the_next_one() {
         let rendered = settled(&[
@@ -998,7 +1001,9 @@ mod tests {
                 extras: serde_json::Map::new(),
             }]),
             user(vec![ContentBlock::Text {
-                text: "[Cron]\n\nsummarise overnight CI".to_owned(),
+                text: "[Message id=m-7f3a92e0 from agent 'companies' (org 'Busytools')]\n\n\
+                       the overnight CI run is green"
+                    .to_owned(),
                 extras: serde_json::Map::new(),
             }]),
         ]);
