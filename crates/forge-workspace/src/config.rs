@@ -4018,6 +4018,59 @@ provider = "anthropic"
         assert!(!config.org_engines.contains_key("Beta"), "an org with no engine key keeps no row");
     }
 
+    /// Every combination of the two levels: the project's own value wins,
+    /// then the org's, then the default.
+    #[test]
+    fn every_engine_combination_resolves_by_precedence() {
+        let project_scope =
+            || EngineScope::Project { org: "Alpha".to_owned(), project: "forge".to_owned() };
+        let org_scope = || EngineScope::Org { org: "Alpha".to_owned() };
+        let cases = [
+            (None, None, Engine::Default, EngineScope::Default),
+            (None, Some("forge"), Engine::Forge, project_scope()),
+            (None, Some("default"), Engine::Default, project_scope()),
+            (Some("forge"), None, Engine::Forge, org_scope()),
+            (Some("forge"), Some("forge"), Engine::Forge, project_scope()),
+            (Some("forge"), Some("default"), Engine::Default, project_scope()),
+            (Some("default"), None, Engine::Default, org_scope()),
+            (Some("default"), Some("forge"), Engine::Forge, project_scope()),
+            (Some("default"), Some("default"), Engine::Default, project_scope()),
+        ];
+        for (org, project, engine, scope) in cases {
+            let org_key = org.map(|value| format!("engine = \"{value}\"\n")).unwrap_or_default();
+            let project_key =
+                project.map(|value| format!("engine = \"{value}\"\n")).unwrap_or_default();
+            let dir = tempdir().expect("tempdir");
+            write_config(
+                dir.path(),
+                &format!(
+                    r#"
+[[orgs]]
+name = "Alpha"
+accounts = ["Stargate"]
+{org_key}
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+{project_key}
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+                ),
+            );
+            let config = load_from_dir(dir.path()).expect("every combination is valid");
+            let resolved = &config.projects[0].engine;
+            assert_eq!(
+                (resolved.engine, resolved.scope.clone()),
+                (engine, scope),
+                "org {org:?} and project {project:?} must resolve to {engine:?}",
+            );
+        }
+    }
+
     #[test]
     fn an_unknown_engine_fails_the_load_naming_the_key_and_values() {
         let dir = tempdir().expect("tempdir");
