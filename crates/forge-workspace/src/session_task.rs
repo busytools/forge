@@ -1089,18 +1089,6 @@ impl SessionTask {
                         | forge_primitives::Message::Error { .. }
                 ) {
                     let caller = self.domain.lock().key.clone();
-                    // A delivery held off this turn goes out now, where it
-                    // starts a turn of its own rather than folding into the
-                    // one that just ended. Only a `Result` is a turn
-                    // ended on a live session: an `Error` is the transport
-                    // dying, and dispatching into it would drop the held
-                    // prompt where nobody hears - the death path's own
-                    // expiry tells its sender instead.
-                    if matches!(msg, forge_primitives::Message::Result { .. })
-                        && let Some(workspace) = self.workspace.upgrade()
-                    {
-                        crate::spawn::drain_turn_held_for_slot(&workspace, &self.key);
-                    }
                     // Turn end: flush this session's accumulated review
                     // actions into one batched notice per review, routed to
                     // each review's submit origin.
@@ -1132,12 +1120,14 @@ impl SessionTask {
                         // capability is only known from this frame, and the
                         // CLI's first user message lands before it - so a
                         // prompt recorded while the flag was `None` would
-                        // never be settled by a frame. Draw every person's
-                        // row now, the only carrier it will get, and settle
-                        // the pile.
+                        // never be settled by a frame. Draw every prompt's
+                        // row now - a delivery's included, since the typed
+                        // update is no longer its carrier - and settle the
+                        // pile. The machinery's own prompts keep the row they
+                        // forged at dispatch.
                         let held = { self.domain.lock().take_queued_prompts() };
                         for prompt in held {
-                            if prompt.source == PromptSource::You {
+                            if prompt.source != PromptSource::Forge {
                                 self.emit_prompt_row(
                                     &prompt.text,
                                     &prompt.attachments,
@@ -1193,16 +1183,20 @@ impl SessionTask {
                                 // prompt the CLI settled without running.
                                 || (state == "completed" && !started_before))
                     };
-                    // **The page takes the prompt's row here, when the CLI
+                    // **The page takes every prompt's row here, when the CLI
                     // starts it** (#2816): the queue announced the words while
                     // they waited, and a row forged at dispatch sat above the
-                    // answer the running turn was still writing. Read before
-                    // the advance, because `started` is a settled state and
-                    // the entry leaves the pile as its row arrives.
+                    // answer the running turn was still writing. A delivery
+                    // draws the same way - its row is the CLI's order, not a
+                    // forge echo at dispatch. Only the machinery's own prompt
+                    // is left out: it already carries the row forged at
+                    // dispatch. Read before the advance, because `started` is
+                    // a settled state and the entry leaves the pile as its row
+                    // arrives.
                     let started_row = (state == "started")
                         .then(|| self.domain.lock().queued_prompt(command_uuid).cloned())
                         .flatten()
-                        .filter(|prompt| prompt.source == PromptSource::You);
+                        .filter(|prompt| prompt.source != PromptSource::Forge);
                     let known = { self.domain.lock().advance_queued_prompt(command_uuid, state) };
                     // **A judgment prompt the CLI settles without running
                     // ends the handoff**, for the same reason a reader's
@@ -1332,7 +1326,7 @@ impl SessionTask {
         true
     }
 
-    /// The row a person's prompt draws.
+    /// The row a prompt draws, whoever sent it.
     ///
     /// **Emitted at `started` wherever the CLI can follow a queue** (#2816):
     /// the CLI takes a prompt sent while a turn runs at its own start - at
@@ -1340,12 +1334,18 @@ impl SessionTask {
     /// `command_lifecycle: started` then, so a row forged at dispatch drew
     /// above the answer still being written. The held copy needs it here for
     /// the other half: the CLI never echoes a stdin prompt on the wire, so
-    /// this frame is the page's only carrier of the reader's own words.
+    /// this frame is the page's only carrier of the words - a person's own,
+    /// and a delivery's alike.
     ///
     /// **Two fallbacks draw at dispatch**, because no `started` is coming: a
     /// CLI that cannot follow a queue, and a dispatch that fails after the
     /// prompt was recorded. An occupant that dies or is replaced draws the
     /// queued rows on the connect or the failure frame instead.
+    ///
+    /// **A cron's row carries the `[Cron]` wrapper**, the same one the typed
+    /// update's row used to: the wrapper is what the fold reads the row back
+    /// as a delivery and what the client titles from the schedule pairing.
+    /// The prompt the model received stays the raw text.
     fn emit_prompt_row(
         &self,
         text: &str,
@@ -1353,12 +1353,17 @@ impl SessionTask {
         uuid: &str,
         source: PromptSource,
     ) {
+        let text = match source {
+            PromptSource::Cron => format!("[Cron]\n\n{text}"),
+            PromptSource::You
+            | PromptSource::Gotify
+            | PromptSource::Slack
+            | PromptSource::Peer
+            | PromptSource::Forge => text.to_owned(),
+        };
         let images = forge_primitives::display_blocks(attachments);
-        let mut framed = forge_primitives::Message::display_only_user_with_blocks(
-            text.to_owned(),
-            images,
-            uuid.to_owned(),
-        );
+        let mut framed =
+            forge_primitives::Message::display_only_user_with_blocks(text, images, uuid.to_owned());
         framed.stamp_if_absent(&crate::install::rfc3339_now());
         self.emit(SessionUpdate::ChatAppended {
             key: self.key.clone(),
@@ -1451,9 +1456,11 @@ impl SessionTask {
                 }
                 let recorded = self.record_queued(&uuid, source, &text, &attachments);
                 // **A CLI that cannot follow a queue draws its row here.**
-                // Only a person's prompt: a delivery's own envelope row and
-                // the machinery's forged row are already its carrier.
-                if !recorded && source == PromptSource::You {
+                // A delivery takes the same fallback: nothing else draws it
+                // now that the typed update is no longer a row's carrier.
+                // The machinery's own prompt keeps the row it forged at
+                // dispatch.
+                if !recorded && source != PromptSource::Forge {
                     self.emit_prompt_row(&text, &attachments, &uuid, source);
                 }
                 Command::PromptUnder { key, text, attachments, uuid, source, dispatch_id }
@@ -1620,15 +1627,15 @@ impl SessionTask {
                     matches!(&other, Command::PromptUnder { source: PromptSource::You, .. });
                 // **A prompt that never reaches the CLI leaves the queue.**
                 // Its card would otherwise wait on a frame no CLI will send,
-                // and its words would have no row. Kept before the move.
+                // and its words would have no row. Kept before the move; the
+                // machinery's own prompt is left out because the row it
+                // forged at dispatch already carries the words.
                 let failed = match &other {
-                    Command::PromptUnder {
-                        text,
-                        attachments,
-                        uuid,
-                        source: PromptSource::You,
-                        ..
-                    } => Some((text.clone(), attachments.clone(), uuid.clone())),
+                    Command::PromptUnder { text, attachments, uuid, source, .. }
+                        if *source != PromptSource::Forge =>
+                    {
+                        Some((text.clone(), attachments.clone(), uuid.clone(), *source))
+                    }
                     _ => None,
                 };
                 if let Err(err) = execute_command_via_handle(
@@ -1638,7 +1645,7 @@ impl SessionTask {
                     fresh,
                     other,
                 ) {
-                    if let Some((text, attachments, uuid)) = failed {
+                    if let Some((text, attachments, uuid, source)) = failed {
                         let held = {
                             let mut guard = self.domain.lock();
                             let held = guard.queued_prompt(&uuid).is_some();
@@ -1646,7 +1653,7 @@ impl SessionTask {
                             held
                         };
                         if held {
-                            self.emit_prompt_row(&text, &attachments, &uuid, PromptSource::You);
+                            self.emit_prompt_row(&text, &attachments, &uuid, source);
                             self.emit(SessionUpdate::PromptLifecycle {
                                 key: self.key.clone(),
                                 uuid,
@@ -2575,7 +2582,7 @@ impl SessionTask {
     /// user-typed prompt - the only difference is the prose body
     /// carries the `[Message id=m-…]` wrapper
     /// that `forge_server::envelope::detect_inbound` matches, which
-    /// the chat renders as a styled peer block.
+    /// the chat renders as a styled peer block at the CLI's `started`.
     fn deliver_parked_peers(
         &self,
         workspace: &Arc<crate::Workspace>,
@@ -2608,9 +2615,9 @@ impl SessionTask {
     }
 
     /// Deliver the cron prompts parked for this session's slot - the
-    /// bucket a due cron filled while the slot was asleep. Each is
-    /// echoed as a cron block (missed-marked when overdue) and
-    /// re-dispatched as a plain `Command::Prompt`.
+    /// bucket a due cron filled while the slot was asleep. Each keeps its
+    /// schedule pairing (missed-marked when overdue) and is re-dispatched
+    /// as a plain `Command::Prompt`; its row draws at the CLI's `started`.
     fn deliver_parked_crons(
         &self,
         workspace: &Arc<crate::Workspace>,
@@ -2645,10 +2652,9 @@ impl SessionTask {
     }
 
     /// Deliver the Gotify notifications parked for this session's slot.
-    /// Each is echoed into chat as a notification block and re-dispatched
-    /// as a plain `Command::Prompt`, landing as an ordinary user turn.
-    /// Mirrors [`Self::deliver_parked_crons`], which echoes its own
-    /// block before dispatching.
+    /// Each keeps its typed update and is re-dispatched as a plain
+    /// `Command::Prompt`, landing as an ordinary user turn whose row draws
+    /// at the CLI's `started`. Mirrors [`Self::deliver_parked_crons`].
     fn deliver_parked_gotify(
         &self,
         workspace: &Arc<crate::Workspace>,
@@ -2686,9 +2692,9 @@ impl SessionTask {
     }
 
     /// Deliver the Slack messages parked for this session's slot. Each
-    /// conversation's is echoed into chat as one notification block and
-    /// re-dispatched as a plain `Command::Prompt`, landing as an ordinary
-    /// user turn. Mirrors [`Self::deliver_parked_gotify`].
+    /// conversation's keeps its typed update and is re-dispatched as a
+    /// plain `Command::Prompt`, landing as an ordinary user turn whose row
+    /// draws at the CLI's `started`. Mirrors [`Self::deliver_parked_gotify`].
     fn deliver_parked_slack(
         &self,
         workspace: &Arc<crate::Workspace>,
@@ -12347,128 +12353,6 @@ provider = "anthropic"
         );
     }
 
-    /// A prompt held because it arrived mid-turn goes out when that turn's
-    /// Result lands: the seat is idle again, so it starts a turn of its own
-    /// instead of folding into the one that just ended.
-    #[tokio::test]
-    async fn a_turn_end_delivers_the_prompt_held_for_it() {
-        let (workspace, _updates) = crate::Workspace::testing_stub();
-        workspace.seed_test_project("hp", "/tmp/hp");
-        let key = SessionSlot::from_str_for_test("hp-worker");
-        let domain = Arc::new(parking_lot::Mutex::new(DomainSession::new(key.clone(), None)));
-        domain.lock().session_id = Some(forge_primitives::SessionId::new("hp-session"));
-        domain.lock().turn_pending = true;
-        let (handle, _agent_rx) = Agent::testing_stub();
-        let (_cmd_tx, command_rx) =
-            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
-        let mut task = SessionTask {
-            key: key.clone(),
-            handle: Arc::new(handle),
-            command_rx,
-            domain: Arc::clone(&domain),
-            update_tx: workspace.update_sender(),
-            connected_once: false,
-            workspace: Arc::downgrade(&workspace),
-            compaction_count: 0,
-            successor: None,
-            teardown_done: None,
-        };
-        let held = crate::mcp::peers::types::WrappedPrompt {
-            id: crate::mcp::peers::types::MessageId::mint(),
-            kind: crate::mcp::peers::types::WrappedKind::Message,
-            sender_name: "forge".to_owned(),
-            sender_org: "Busytools".to_owned(),
-            body: "the held words".to_owned(),
-        };
-        workspace.hold_peer_prompt_unless_turn_ended(
-            &key,
-            &SessionSlot::lead("Busytools", "hp"),
-            held,
-            || true,
-        );
-        workspace.enable_test_dispatch_intercept();
-
-        task.translate_event(AgentEvent::SdkMessage {
-            session_id: "hp-session".to_owned(),
-            msg: result_message("success", false),
-        });
-
-        let dispatched = workspace.drain_test_dispatch_buffer().into_iter().any(|cmd| {
-            matches!(
-                cmd,
-                crate::protocol::Command::PromptUnder { text, source, .. }
-                    if source == PromptSource::Peer && text.contains("the held words")
-            )
-        });
-        assert!(dispatched, "the held prompt is delivered as the turn ends");
-        assert!(
-            workspace.take_turn_held_for_slot(&key).is_empty(),
-            "and the hold is spent, not redelivered next turn",
-        );
-    }
-
-    /// A transport death is NOT a turn end to deliver behind: the seat is
-    /// gone, so the hold stays where the death path's expiry can tell its
-    /// sender rather than being dispatched into a dying session, where it
-    /// would drop unheard.
-    #[tokio::test]
-    async fn a_transport_death_does_not_drain_the_hold() {
-        let (workspace, _updates) = crate::Workspace::testing_stub();
-        workspace.seed_test_project("hd", "/tmp/hd");
-        let key = SessionSlot::from_str_for_test("hd-worker");
-        let domain = Arc::new(parking_lot::Mutex::new(DomainSession::new(key.clone(), None)));
-        domain.lock().session_id = Some(forge_primitives::SessionId::new("hd-session"));
-        domain.lock().turn_pending = true;
-        let (handle, _agent_rx) = Agent::testing_stub();
-        let (_cmd_tx, command_rx) =
-            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
-        let mut task = SessionTask {
-            key: key.clone(),
-            handle: Arc::new(handle),
-            command_rx,
-            domain: Arc::clone(&domain),
-            update_tx: workspace.update_sender(),
-            connected_once: false,
-            workspace: Arc::downgrade(&workspace),
-            compaction_count: 0,
-            successor: None,
-            teardown_done: None,
-        };
-        let held = crate::mcp::peers::types::WrappedPrompt {
-            id: crate::mcp::peers::types::MessageId::mint(),
-            kind: crate::mcp::peers::types::WrappedKind::Message,
-            sender_name: "forge".to_owned(),
-            sender_org: "Busytools".to_owned(),
-            body: "while the transport dies".to_owned(),
-        };
-        workspace.hold_peer_prompt_unless_turn_ended(
-            &key,
-            &SessionSlot::lead("Busytools", "hd"),
-            held,
-            || true,
-        );
-        workspace.enable_test_dispatch_intercept();
-
-        task.translate_event(AgentEvent::SdkMessage {
-            session_id: "hd-session".to_owned(),
-            msg: serde_json::from_value(serde_json::json!({
-                "type": "error",
-                "error": "stream closed",
-            }))
-            .expect("parse error message"),
-        });
-
-        assert!(
-            workspace.drain_test_dispatch_buffer().is_empty(),
-            "nothing is dispatched into a session whose transport just died",
-        );
-        assert_eq!(
-            workspace.take_turn_held_for_slot(&key).len(),
-            1,
-            "the hold stays for the death path's expiry to acknowledge",
-        );
-    }
-
     /// A session whose CLI says it does not carry the lifecycle frames records
     /// NO queued rows: nothing could ever settle one, and a card that can never
     /// drain is worse than no card - that session draws its prompt the way it
@@ -12628,6 +12512,53 @@ provider = "anthropic"
             )),
             "carrying the words the dispatch held: {message:?}",
         );
+
+        // **A delivery takes the same fallback.** Its typed update still
+        // carries the source and the cron's schedule, but no lifecycle frame
+        // can draw the row here, so the dispatch draws it.
+        task.execute_command(Command::PromptUnder {
+            key: key.clone(),
+            text: "[Message id=m-1 from agent 'forge' (org 'TestOrg')]\n\na peer message"
+                .to_owned(),
+            attachments: Vec::new(),
+            uuid: "peer-nf".to_owned(),
+            source: crate::protocol::PromptSource::Peer,
+            dispatch_id: None,
+        });
+        assert!(agent_rx.try_recv().is_ok(), "and it still reaches the agent");
+        let delivery: Vec<crate::protocol::SessionUpdate> =
+            std::iter::from_fn(|| updates.try_recv().ok())
+                .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                .collect();
+        assert!(
+            !delivery.iter().any(|update| matches!(
+                update,
+                crate::protocol::SessionUpdate::PromptQueued { .. }
+            )),
+            "a delivery is not announced for a row that is not kept: {delivery:?}",
+        );
+        let drawn = delivery.iter().find_map(|update| match update {
+            crate::protocol::SessionUpdate::ChatAppended { msg, source, .. }
+                if matches!(msg, forge_primitives::Message::User { .. }) =>
+            {
+                Some((msg, source))
+            }
+            _ => None,
+        });
+        let Some((msg, source)) = drawn else {
+            panic!(
+                "a delivery on a seat that cannot follow a queue draws at dispatch: {delivery:?}"
+            );
+        };
+        assert_eq!(
+            *source,
+            Some(crate::protocol::PromptSource::Peer),
+            "the row says the peer delivered it",
+        );
+        let forge_primitives::Message::User { uuid, .. } = msg else {
+            panic!("the fallback row is the user turn it draws: {msg:?}");
+        };
+        assert_eq!(uuid.as_deref(), Some("peer-nf"), "under the prompt's own id");
     }
 
     /// **The started row reaches every fanout subscriber, for each send.** The
@@ -12693,10 +12624,97 @@ provider = "anthropic"
         }
     }
 
-    /// **Only a person's prompt draws the started row.** A machinery prompt's
-    /// words ride its own forged row, and a cron fire's ride the delivery
-    /// echo; a second row here would draw every delivery and the handoff
-    /// brief twice.
+    /// **Every delivery source draws its row at the CLI's `started`**, the
+    /// same place a person's send does: the queue announced the words while
+    /// they waited, and the row arrives at the frame that says the CLI took
+    /// the prompt - inside the running turn when the CLI absorbs it there.
+    /// A cron's row carries the `[Cron]` wrapper the fold reads its envelope
+    /// back from, which no other source needs.
+    #[tokio::test]
+    async fn every_delivery_source_draws_its_row_at_started() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let slot = SessionSlot::worker("TestOrg", "forge", "delivery-row");
+        let (mut task, mut update_rx, _agent_rx) = nudge_task_for(&workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("delivery-session"));
+
+        let cases = [
+            (crate::protocol::PromptSource::Peer, "peer-1", "a peer message"),
+            (crate::protocol::PromptSource::Cron, "cron-1", "a cron fire"),
+            (crate::protocol::PromptSource::Gotify, "gotify-1", "a notification"),
+            (crate::protocol::PromptSource::Slack, "slack-1", "a slack message"),
+        ];
+        for (source, uuid, text) in cases {
+            task.execute_command(Command::PromptUnder {
+                key: slot.clone(),
+                text: text.to_owned(),
+                attachments: Vec::new(),
+                uuid: uuid.to_owned(),
+                source,
+                dispatch_id: None,
+            });
+            // The CLI takes it while the turn it arrived under still runs:
+            // the row is drawn where the CLI took it, not at the turn's end.
+            task.domain.lock().turn_pending = true;
+            task.translate_event(AgentEvent::SdkMessage {
+                session_id: "delivery-session".to_owned(),
+                msg: forge_primitives::Message::CommandLifecycle {
+                    command_uuid: uuid.to_owned(),
+                    state: "started".to_owned(),
+                    uuid: format!("lifecycle-{uuid}"),
+                    session_id: "delivery-session".to_owned(),
+                    extras: forge_primitives::messages::Extras::new(),
+                },
+            });
+
+            let announced: Vec<SessionUpdate> = std::iter::from_fn(|| update_rx.try_recv().ok())
+                .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                .collect();
+            assert!(
+                announced.iter().any(|update| matches!(
+                    update,
+                    SessionUpdate::PromptQueued { uuid: id, source: from, .. }
+                        if id == uuid && *from == source
+                )),
+                "{source:?} is announced as queued while it waits: {announced:?}",
+            );
+            let row = announced.iter().find_map(|update| match update {
+                SessionUpdate::ChatAppended { msg, source: Some(from), .. } => {
+                    let forge_primitives::Message::User { uuid: Some(id), message, .. } = msg
+                    else {
+                        return None;
+                    };
+                    (id == uuid).then(|| (*from, message.clone()))
+                }
+                _ => None,
+            });
+            let Some((from, message)) = row else {
+                panic!("{source:?} draws its row at the CLI's started: {announced:?}");
+            };
+            assert_eq!(from, source, "the row says who delivered the words");
+            let carried = message
+                .content
+                .iter()
+                .find_map(|block| match block {
+                    forge_primitives::ContentBlock::Text { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .expect("the row carries the words the model received");
+            let expected = if source == crate::protocol::PromptSource::Cron {
+                format!("[Cron]\n\n{text}")
+            } else {
+                text.to_owned()
+            };
+            assert_eq!(carried, expected, "carrying what the delivery's row draws");
+        }
+    }
+
+    /// **Only the machinery's own prompts draw no started row.** A `Forge`
+    /// prompt already carries the row `dispatch_forged_prompt_held` forged at
+    /// dispatch, and the delivery-failure notice carries the one
+    /// `delivery_turn` forges; a second row here would draw the handoff
+    /// brief, a continuation or a notice twice.
     #[tokio::test]
     async fn a_machinery_prompt_draws_no_started_row() {
         let dir = tempfile::tempdir().expect("tempdir");

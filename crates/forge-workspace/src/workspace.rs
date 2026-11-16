@@ -11413,12 +11413,17 @@ impl Workspace {
         };
         // The CLI never echoes stdin-injected prompts back, so paint the
         // visible notice block ourselves before the LLM-side dispatch.
+        //
+        // **The prompt is the machinery's, not the peer's**, so no `started`
+        // row is drawn for it: the row above is the notice's only carrier,
+        // and a second one at the CLI's start would draw the same failure
+        // twice.
         let uuid = forge_sdk::request_id::next_prompt_id();
         crate::spawn::push_peer_user_turn_into_chat(self, sender, &notice, &uuid);
         if let Err(err) = self.dispatch_workspace_prompt_under(
             sender,
             notice.to_prose(),
-            PromptSource::Peer,
+            PromptSource::Forge,
             uuid,
         ) {
             tracing::warn!(

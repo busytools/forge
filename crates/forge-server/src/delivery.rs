@@ -1,16 +1,15 @@
-//! The turn a delivery draws as: a cron fire, a Gotify notification, a Slack
-//! message or a peer comm.
+//! The one turn forge still forges from a typed update: the notice telling a
+//! sender its message never landed.
 //!
-//! Each of them reaches a session's model as a prompt on its own stdin, and
-//! the CLI does not echo a prompt back, so the wire carries nothing a view
-//! could draw and a page that only drew wire frames would show the assistant
-//! answering something nobody saw. The workspace announces each as a typed
-//! update instead, and this turns that update into the display-only user turn
-//! the fold's envelope detection recognises, carrying the same prose the
-//! model received.
+//! Every other delivery - a cron fire, a Gotify notification, a Slack message,
+//! a peer comm - rides the CLI's own queue and draws its row at the CLI's
+//! `started` frame, in the CLI's order. The notice is the exception because it
+//! is not a turn of the sender's conversation at all: it answers a send that
+//! never arrived, and its row is the only carrier the words get.
 
 use forge_primitives::{Message, SessionSlot};
 use forge_workspace::PromptSource;
+use forge_workspace::WrappedKind;
 
 use crate::surface::SessionUpdate;
 
@@ -23,28 +22,25 @@ fn rfc3339_now() -> String {
 
 /// The display-only user turn `update` draws as, when it delivers to `slot`,
 /// with the sender the frame that draws it carries.
-/// `None` for every other update, and for a delivery to another seat: the
-/// same stream carries the whole fleet.
+/// `None` for every other update, for a delivery to another seat (the same
+/// stream carries the whole fleet), and for every delivery whose row the
+/// session task draws at the CLI's `started` instead.
 ///
 /// The prose is checked against the same parser the fold reads it back with,
-/// and a drift is recorded against the delivery that produced it.
+/// and a drift is recorded against the notice that produced it.
 pub fn delivery_turn(
     update: &SessionUpdate,
     slot: &SessionSlot,
 ) -> Option<(Message, PromptSource)> {
     let (source, kind, text, uuid) = match update {
-        // The prefix is the fold's own key rather than anything the model
-        // reads: `detect_inbound` picks the envelope out of the prose.
-        SessionUpdate::CronPromptAppended { key, text, uuid, .. } if key == slot => {
-            (PromptSource::Cron, "cron_prompt", format!("[Cron]\n\n{text}"), uuid)
-        }
-        SessionUpdate::GotifyNotificationAppended { key, notification, uuid } if key == slot => {
-            (PromptSource::Gotify, "gotify_notification", notification.to_prose(), uuid)
-        }
-        SessionUpdate::SlackMessageAppended { key, prose, uuid } if key == slot => {
-            (PromptSource::Slack, "slack_message", prose.clone(), uuid)
-        }
-        SessionUpdate::PeerEnvelopeAppended { key, wrapped, uuid } if key == slot => {
+        // **The notice is the one delivery forge draws itself, at dispatch.**
+        // It answers a message that never arrived, so its words are not a
+        // turn the sender's conversation opened: this row is the only carrier
+        // the failure gets, and it must be visible even while the sender's
+        // seat is busy or its CLI cannot follow a queue.
+        SessionUpdate::PeerEnvelopeAppended { key, wrapped, uuid }
+            if key == slot && wrapped.kind == WrappedKind::DeliveryFailureNotice =>
+        {
             (PromptSource::Peer, "peer_envelope", wrapped.to_prose(), uuid)
         }
         _ => return None,
@@ -68,12 +64,12 @@ pub fn delivery_turn(
     }
     // Forged rather than read off the wire, carrying the prompt's own id:
     // the duplicate-skip the CLI applies to re-sent uuids is a stdin concern
-    // and never sees this frame, and the id is what lets a view hold this row
-    // while the prompt waits in the pile.
+    // and never sees this frame, and the id is what pairs the row with the
+    // queued prompt it answers.
     let mut row = Message::display_only_user(text, uuid.clone());
-    // Stamped at the forge, because this row OPENS the turn a delivery starts:
-    // the CLI never echoes a prompt, so a page attaching mid-turn has nothing
-    // else to anchor the running clock on.
+    // Stamped at the forge, because this row OPENS the turn the notice runs
+    // as: the CLI never echoes a prompt, so a page attaching mid-turn has
+    // nothing else to anchor the running clock on.
     row.stamp_if_absent(&rfc3339_now());
     Some((row, source))
 }
@@ -83,24 +79,35 @@ mod tests {
     use super::*;
     use crate::test_support::logged;
     use forge_primitives::ContentBlock;
+    use forge_workspace::{GotifyNotification, MessageId, WrappedPrompt};
 
-    /// **A delivery's row is stamped at the forge.** It opens the turn a cron
-    /// fire, a notification or a peer comm runs - the CLI never echoes a
-    /// prompt - so a page attaching mid-turn anchors its running clock on
-    /// this row, and an unstamped one leaves it reading 0.0s until the turn's
-    /// first wire frame lands.
-    #[test]
-    fn a_delivery_row_carries_the_stamp_a_clock_starts_from() {
-        let slot = SessionSlot::new("TestOrg", "forge", "lead");
-        let update = SessionUpdate::SlackMessageAppended {
+    fn notice(slot: &SessionSlot, kind: WrappedKind, sender_name: &str) -> SessionUpdate {
+        SessionUpdate::PeerEnvelopeAppended {
             key: slot.clone(),
-            prose: "[Slack #acme] alice: hello".to_owned(),
-            uuid: "cap-slack".to_owned(),
-        };
+            uuid: "cap-notice".to_owned(),
+            wrapped: WrappedPrompt {
+                id: MessageId("m-7f3a92e0".to_owned()),
+                kind,
+                sender_name: sender_name.to_owned(),
+                sender_org: "Busytools".to_owned(),
+                body: "target session connection lost".to_owned(),
+            },
+        }
+    }
+
+    /// **The failure notice's row is stamped at the forge.** It opens the
+    /// turn the notice runs as - the CLI never echoes a prompt - so a page
+    /// attaching mid-turn anchors its running clock on this row, and an
+    /// unstamped one leaves it reading 0.0s until the turn's first wire frame
+    /// lands.
+    #[test]
+    fn the_failure_notice_carries_the_stamp_a_clock_starts_from() {
+        let slot = SessionSlot::new("TestOrg", "forge", "lead");
+        let update = notice(&slot, WrappedKind::DeliveryFailureNotice, "companies");
 
         let before = time::OffsetDateTime::now_utc();
         let (turn, _) =
-            delivery_turn(&update, &slot).expect("a delivery to this seat forges a turn");
+            delivery_turn(&update, &slot).expect("the notice to this seat forges a turn");
         let after = time::OffsetDateTime::now_utc();
 
         let value = serde_json::to_value(&turn).expect("encode");
@@ -111,7 +118,7 @@ mod tests {
         // stayed green.
         let at = time::OffsetDateTime::parse(stamp, &time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|error| {
-                panic!("the delivery stamped a time no client can read: {stamp} ({error})")
+                panic!("the notice stamped a time no client can read: {stamp} ({error})")
             });
         let slack = time::Duration::seconds(5);
         assert!(
@@ -121,170 +128,123 @@ mod tests {
         );
     }
 
-    /// Prose the parser cannot read draws nothing, while the model still
-    /// received it - the one failure this forge can produce that no test
+    /// **Every other delivery forges nothing here.** Its row draws at the
+    /// CLI's `started`, emitted by the session task, so a frame forged from
+    /// the typed update as well would draw the same words twice - once above
+    /// the answer the running turn was still writing.
+    #[test]
+    fn only_a_delivery_failure_notice_forges_a_row() {
+        let slot = SessionSlot::new("TestOrg", "forge", "lead");
+        let updates = [
+            SessionUpdate::CronPromptAppended {
+                key: slot.clone(),
+                text: "run the morning summary".to_owned(),
+                uuid: "cap-cron".to_owned(),
+                cron_id: "c1".to_owned(),
+                description: Some("Morning summary".to_owned()),
+            },
+            SessionUpdate::GotifyNotificationAppended {
+                key: slot.clone(),
+                notification: GotifyNotification {
+                    app: "Backups".to_owned(),
+                    title: "Nightly backup complete".to_owned(),
+                    message: "All volumes backed up".to_owned(),
+                    priority: 3,
+                },
+                uuid: "cap-gotify".to_owned(),
+            },
+            SessionUpdate::SlackMessageAppended {
+                key: slot.clone(),
+                prose: "[Slack - workspace 'Trust Machines', granite-staging-alerts] \
+                        id C0AE ts 1789.5\nunknown: _Large STX Transfer_ [ts 1789.5]"
+                    .to_owned(),
+                uuid: "cap-slack".to_owned(),
+            },
+            notice(&slot, WrappedKind::Message, "terminal-cleanups"),
+            notice(&slot, WrappedKind::WorkerSpawnFailedNotice, "builder"),
+        ];
+        for update in &updates {
+            assert!(
+                delivery_turn(update, &slot).is_none(),
+                "only the failure notice forges a row, and this is {update:?}",
+            );
+        }
+        // The same stream carries the whole fleet, so the notice addressed to
+        // another seat forges nothing here either.
+        let elsewhere = SessionSlot::new("OtherOrg", "forge", "lead");
+        assert!(
+            delivery_turn(
+                &notice(&slot, WrappedKind::DeliveryFailureNotice, "companies"),
+                &elsewhere
+            )
+            .is_none(),
+            "a notice for another seat must not draw in this one",
+        );
+    }
+
+    /// The notice's prose goes through the fold's parser, so it has to survive
+    /// it and come back carrying what it was built from - the row is the
+    /// only carrier the sender gets.
+    #[test]
+    fn the_failure_notice_forges_prose_the_parser_reads_back() {
+        use crate::envelope::PeerInboundKind;
+
+        let slot = SessionSlot::new("TestOrg", "forge", "lead");
+        let update = notice(&slot, WrappedKind::DeliveryFailureNotice, "companies");
+
+        let (turn, source) =
+            delivery_turn(&update, &slot).expect("the notice to this seat forges a turn");
+        assert_eq!(source, PromptSource::Peer, "the notice is peer traffic");
+        let Message::User { message, uuid, .. } = &turn else {
+            panic!("the notice draws as the user turn it was dispatched as")
+        };
+        assert_eq!(
+            uuid.as_deref(),
+            Some("cap-notice"),
+            "the forged row is stamped with the id the notice was dispatched under",
+        );
+        let Some(ContentBlock::Text { text, .. }) = message.content.first() else {
+            panic!("the turn carries the prose the model received")
+        };
+        let kind = crate::envelope::detect_inbound(text)
+            .unwrap_or_else(|| panic!("the fold has to read the notice back: {text}"));
+        let PeerInboundKind::DeliveryFailure { target, org, reason } = kind else {
+            panic!("the notice reads back as a delivery failure, not {kind:?}");
+        };
+        assert_eq!(target, "companies", "naming the seat that never took the message");
+        assert_eq!(org, "Busytools");
+        assert_eq!(reason, "target session connection lost", "and the reason it gave");
+    }
+
+    /// Prose the parser cannot read draws nothing, while the notice was still
+    /// dispatched - the one failure this forge can produce that no test
     /// spanning the two crates would catch, since forge-workspace cannot
-    /// depend on a view. The forger records the drift it cannot fix, and
-    /// names which delivery drifted.
+    /// depend on a view. The forger records the drift it cannot fix.
     #[test]
     fn prose_that_does_not_read_as_an_envelope_is_recorded() {
         let slot = SessionSlot::new("TestOrg", "forge", "lead");
-        let update = SessionUpdate::SlackMessageAppended {
-            key: slot.clone(),
-            prose: "no bracket header here".to_owned(),
-            uuid: "cap-slack".to_owned(),
-        };
+        // A `]` in the name ends the header before the failure clause, which
+        // is the one way this producer can hand over a prose the parser
+        // rejects.
+        let update = notice(&slot, WrappedKind::DeliveryFailureNotice, "bad]name");
 
         let events = logged(|| {
             let (turn, _) =
-                delivery_turn(&update, &slot).expect("a delivery to this seat still forges a turn");
-            assert!(matches!(turn, Message::User { .. }), "the model's own prose is not withheld");
+                delivery_turn(&update, &slot).expect("the notice still draws its words");
+            assert!(matches!(turn, Message::User { .. }), "the notice's own prose is not withheld");
         });
 
         assert!(
             events.iter().any(|(level, fields)| {
                 *level == tracing::Level::ERROR
                     && fields.contains("envelope_prose_unrecognised")
-                    && fields.contains(r#"source="slack_message""#)
+                    && fields.contains(r#"source="peer_envelope""#)
                     && fields.contains(r#"org="TestOrg""#)
                     && fields.contains(r#"project="forge""#)
                     && fields.contains(r#"label="lead""#)
             }),
-            "an unreadable forge is recorded against the delivery that produced it, \
-             naming the seat that lost the message: {events:?}",
+            "an unreadable forge is recorded against the notice that produced it, \
+             naming the seat that lost the words: {events:?}",
         );
-    }
-
-    /// All four deliveries draw through the fold's parser, so each one's
-    /// prose has to survive it and come back carrying what it was built
-    /// from. Three of the four forge that prose here; the Slack variant
-    /// hands over its producer's, whose shape `forge-workspace` pins on its
-    /// own side, so this pins the parse rather than the format.
-    #[test]
-    fn every_delivery_forges_prose_the_parser_reads_back() {
-        use crate::envelope::PeerInboundKind;
-        use forge_workspace::{GotifyNotification, MessageId, WrappedKind, WrappedPrompt};
-
-        let slot = SessionSlot::new("TestOrg", "forge", "lead");
-        let cases = [
-            (
-                SessionUpdate::CronPromptAppended {
-                    key: slot.clone(),
-                    text: "run the morning summary".to_owned(),
-                    uuid: "cap-cron".to_owned(),
-                    cron_id: "c1".to_owned(),
-                    description: Some("Morning summary".to_owned()),
-                },
-                "run the morning summary",
-            ),
-            (
-                SessionUpdate::GotifyNotificationAppended {
-                    key: slot.clone(),
-                    notification: GotifyNotification {
-                        app: "Backups".to_owned(),
-                        title: "Nightly backup complete".to_owned(),
-                        message: "All volumes backed up".to_owned(),
-                        priority: 3,
-                    },
-                    uuid: "cap-gotify".to_owned(),
-                },
-                "All volumes backed up",
-            ),
-            (
-                SessionUpdate::SlackMessageAppended {
-                    key: slot.clone(),
-                    prose: "[Slack - workspace 'Trust Machines', granite-staging-alerts] \
-                            id C0AE ts 1789.5\nunknown: _Large STX Transfer_ [ts 1789.5]"
-                        .to_owned(),
-                    uuid: "cap-slack-2".to_owned(),
-                },
-                "Large STX Transfer",
-            ),
-            (
-                SessionUpdate::PeerEnvelopeAppended {
-                    key: slot.clone(),
-                    uuid: "cap-peer".to_owned(),
-                    wrapped: WrappedPrompt {
-                        id: MessageId("m-7f3a92e0".to_owned()),
-                        kind: WrappedKind::Message,
-                        sender_name: "terminal-cleanups".to_owned(),
-                        sender_org: "Busytools".to_owned(),
-                        body: "the swap case is constructed".to_owned(),
-                    },
-                },
-                "the swap case is constructed",
-            ),
-        ];
-
-        // The same stream carries the whole fleet, so a delivery addressed to
-        // another seat forges nothing here.
-        let elsewhere = SessionSlot::new("OtherOrg", "forge", "lead");
-        for (update, _) in &cases {
-            assert!(
-                delivery_turn(update, &elsewhere).is_none(),
-                "a delivery for another seat must not draw in this one",
-            );
-        }
-
-        for (update, expected) in &cases {
-            let (turn, source) =
-                delivery_turn(update, &slot).expect("a delivery to this seat forges a turn");
-            let Message::User { message, uuid, .. } = &turn else {
-                panic!("a delivery draws as the user turn the model's prompt was")
-            };
-            // **The sender rides the frame the flush forges**, and it is the
-            // delivery's own kind: a reader's follow arms on `you` alone, so a
-            // cron fire claiming anything else would either carry a parked
-            // reader or lose the delivery's own label (#2198).
-            let expected_source = match update {
-                SessionUpdate::CronPromptAppended { .. } => PromptSource::Cron,
-                SessionUpdate::GotifyNotificationAppended { .. } => PromptSource::Gotify,
-                SessionUpdate::SlackMessageAppended { .. } => PromptSource::Slack,
-                SessionUpdate::PeerEnvelopeAppended { .. } => PromptSource::Peer,
-                other => panic!("this test only carries deliveries: {other:?}"),
-            };
-            assert_eq!(
-                source, expected_source,
-                "the frame says who delivered the words, or a parked reader cannot tell them \
-                 from their own",
-            );
-            // **The prompt's own id, off the envelope.** It is what a view
-            // holds the row by while the prompt waits, and what pairs the row
-            // with the page's later copy - a row minted without it, or with a
-            // fresh one, is a row nothing can settle.
-            let carried_id = match update {
-                SessionUpdate::CronPromptAppended { uuid, .. }
-                | SessionUpdate::GotifyNotificationAppended { uuid, .. }
-                | SessionUpdate::SlackMessageAppended { uuid, .. }
-                | SessionUpdate::PeerEnvelopeAppended { uuid, .. } => uuid,
-                other => panic!("this test only carries deliveries: {other:?}"),
-            };
-            assert_eq!(
-                uuid.as_deref(),
-                Some(carried_id.as_str()),
-                "the forged row is stamped with the id the prompt was dispatched under",
-            );
-            let Some(ContentBlock::Text { text, .. }) = message.content.first() else {
-                panic!("the turn carries the prose the model received")
-            };
-            let kind = crate::envelope::detect_inbound(text).unwrap_or_else(|| {
-                panic!(
-                    "the fold has to read this delivery's prose back, or it draws nothing: {text}"
-                )
-            });
-            // Only the Slack header rejects a body it cannot read. Cron,
-            // Gotify and peer all accept an empty one, so "it parsed" is not
-            // yet "the payload arrived".
-            let carried = match kind {
-                PeerInboundKind::Cron { prompt } => prompt,
-                PeerInboundKind::Gotify { message, .. } => message,
-                PeerInboundKind::Slack { body, .. } | PeerInboundKind::Message { body, .. } => body,
-                other => panic!("this delivery forged prose the fold read as {other:?}"),
-            };
-            assert!(
-                carried.contains(expected),
-                "the fold reads this delivery's payload back, or the view draws it empty: {carried}",
-            );
-        }
     }
 }

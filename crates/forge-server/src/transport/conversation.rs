@@ -862,12 +862,14 @@ impl Conversations {
                     }
                 }
             }
-            // A delivery is a row a CONNECTION forges per client at send
-            // time, so it never arrives here as a `ChatAppended` - and a held
-            // copy that ignored it would lose the row while its ANSWER
-            // stayed, which is a reply to nothing. Forged once here, where
-            // the update arrives, rather than in each connection that sends
-            // it.
+            // The delivery-failure notice is a row a CONNECTION forges per
+            // client at send time, so it never arrives here as a
+            // `ChatAppended` - and a held copy that ignored it would lose the
+            // row while its ANSWER stayed, which is a reply to nothing.
+            // Forged once here, where the update arrives, rather than in each
+            // connection that sends it. Every other delivery's row is the
+            // session task's, drawn at the CLI's `started` and applied as the
+            // `ChatAppended` it is.
             //
             // **Every slotted update also moves the copy's watermark**, not
             // only the ones that forge a row: a frame that draws nothing still
@@ -1636,15 +1638,55 @@ mod tests {
         assert_eq!(turns, 1, "the next read folds them, rather than serving no boundaries");
     }
 
-    /// A delivery row the transport forges for a seat is part of the
-    /// conversation it is holding.
+    /// The failure notice's forged row is part of the conversation the
+    /// transport is holding.
     ///
     /// **It is forged per CONNECTION at send time, so it never arrives here as
     /// a `ChatAppended`** - and a held copy that ignored it would lose the row
     /// while its answer stayed, which is a reply to nothing. Nothing observed
     /// this: with the append removed the whole workspace suite stays green.
     #[test]
-    fn a_forged_delivery_row_joins_the_conversation_it_is_held_for() {
+    fn a_forged_failure_notice_row_joins_the_conversation_it_is_held_for() {
+        use forge_workspace::{MessageId, WrappedKind, WrappedPrompt};
+
+        let held = Conversations::new();
+        held.insert(&a_seat(), Conversation::new(vec![a_frame("asked")], 0, 0));
+
+        held.apply(
+            &SessionUpdate::PeerEnvelopeAppended {
+                key: a_seat(),
+                uuid: "cap-notice".to_owned(),
+                wrapped: WrappedPrompt {
+                    id: MessageId("m-1".to_owned()),
+                    kind: WrappedKind::DeliveryFailureNotice,
+                    sender_name: "companies".to_owned(),
+                    sender_org: "Busytools".to_owned(),
+                    body: "target session connection lost".to_owned(),
+                },
+            },
+            None,
+        );
+
+        let conversation = held.get(&a_seat()).expect("the seat is held");
+        let conversation = conversation.lock();
+        let said: Vec<String> = conversation.messages().iter().map(said).collect();
+        assert_eq!(
+            said,
+            vec![
+                "asked".to_owned(),
+                "[Message to agent 'companies' (org 'Busytools') failed to deliver: target \
+                 session connection lost]"
+                    .to_owned(),
+            ],
+            "the notice the connection forges is in the conversation a page is built from",
+        );
+    }
+
+    /// **A delivery the session task draws at `started` forges nothing here.**
+    /// Its row arrives as a `ChatAppended` like any other; a forged copy from
+    /// the typed update would put the same words in the conversation twice.
+    #[test]
+    fn a_delivery_that_draws_at_started_appends_no_forged_row() {
         let held = Conversations::new();
         held.insert(&a_seat(), Conversation::new(vec![a_frame("asked")], 0, 0));
 
@@ -1664,8 +1706,8 @@ mod tests {
         let said: Vec<String> = conversation.messages().iter().map(said).collect();
         assert_eq!(
             said,
-            vec!["asked".to_owned(), "[Cron]\n\nthe cron fired".to_owned()],
-            "the delivery the connection forges is in the conversation a page is built from",
+            vec!["asked".to_owned()],
+            "the typed update is not a row: the CLI's started frame draws it",
         );
     }
 

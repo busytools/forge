@@ -290,9 +290,17 @@ The conversation is cut by the server into turns, and the client folds
 each turn's frames into its rows; a compaction boundary draws where it
 happened, collapsed, with the header's count saying how many and the mark
 saying where. **A settled turn ends on its turn row**, and a failed turn
-on the failure line just under it; a message that arrives at the turn's
-end, a peer message among them, draws below either, where the next turn
-starts.
+on the failure line just under it.
+
+**A message draws where the CLI starts it, not where it arrived.** Every
+prompt - a person's send, a peer message, a cron fire, a Gotify push, a
+Slack delivery, a review nudge, forge's own continuation - is written to
+the CLI's queue under an id and draws its row at that prompt's `started`
+frame (see [the queue](./queue.md)). A message arriving mid-turn is the
+pile's card while it waits; its row then lands inside the running turn if
+the CLI absorbs it there, and otherwise as the next turn's first row,
+under the settled turn's ending. That is the CLI's order, which is the
+order the chat draws.
 
 **A handoff opens a new chat.** When forge replaces a session with a fresh
 one that continues from a brief - at a turn boundary past 85% of its window
