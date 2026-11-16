@@ -108,6 +108,7 @@ function connection(): Connection {
   return {
     subscribe: (what: Subject) => emptyStore(what),
     unsubscribe: () => {},
+    holds: () => true,
     refresh: () => {},
     showing: () => {},
     relist: () => {},

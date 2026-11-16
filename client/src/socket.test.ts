@@ -607,6 +607,43 @@ describe('the connection', () => {
     });
   });
 
+  /**
+   * **A held want is one this connection will keep asking for**, which is what
+   * a page reads before it counts a seat as opened (#3002). A want asked for
+   * while the socket is down is re-asked on open, so it is held; a seat's is
+   * the page's own to re-attach, so a drop ends this side's claim with the
+   * server's; and a closed connection holds nothing at all.
+   */
+  it('holds a subject only while a reconnect could still carry it', async () => {
+    const server = await stubServer();
+    servers.push(server);
+    const conn = connect(server.url);
+    opened.push(conn);
+    expect(conn.status()).toBe('connecting');
+
+    conn.subscribe(HOME);
+    expect(conn.holds(HOME), 'a want asked for while the socket was down was not held').toBe(true);
+    await until(() => server.received.length === 1, 'the subscribe to arrive');
+
+    const seat: Subject = { session: LEAD };
+    conn.subscribe(seat);
+    await until(() => server.received.length === 2, 'the seat subscribe to arrive');
+    expect(conn.holds(seat), 'a seat whose ask was on the wire was not held').toBe(true);
+
+    // **The drop AND its reconnect**, read off the status stream: the status
+    // is already `open` at the instant the drop is asked for, so a wait on
+    // that alone would pass before the close was even delivered.
+    const seen: ConnectionStatus[] = [];
+    conn.onStatus((status) => seen.push(status));
+    server.drop();
+    await until(
+      () => seen.includes('connecting') && seen.includes('open'),
+      'the drop and its reconnect',
+    );
+    expect(conn.holds(HOME), 'a reconnect that re-asks the home did not hold it').toBe(true);
+    expect(conn.holds(seat), "a seat's want outlived the socket that carried it").toBe(false);
+  });
+
   /** The greeting is what configures the client before it draws anything. */
   it('keeps the settings the greeting carried', async () => {
     const { server, conn } = await connected();
@@ -1681,6 +1718,7 @@ describe('the connection', () => {
 
     const store = conn.subscribe(HOME);
     expect(store.state()).toEqual({ kind: 'refused', why: 'this connection is closed' });
+    expect(conn.holds(HOME), 'a closed connection held a subscription it refused').toBe(false);
   });
 
   /**

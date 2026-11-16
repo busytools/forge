@@ -75,22 +75,27 @@ function boardWith(status: TaskStatus): BoardRead {
 
 /** A connection the page may hold without asking it for anything. */
 function quiet(): Connection {
+  let subscribed = false;
   return {
-    subscribe: () => ({
-      subject: { session: LEAD },
-      value: { subscribe: () => () => {} },
-      snapshot: () => null,
-      updates: () => [],
-      state: () => ({ kind: 'loading' }),
-      dropped: () => 0,
-      set: () => {},
-      push: () => {},
-      compact: () => {},
-      compacted: () => false,
-      generation: () => 0,
-      refuse: () => {},
-    }),
+    subscribe: () => {
+      subscribed = true;
+      return {
+        subject: { session: LEAD },
+        value: { subscribe: () => () => {} },
+        snapshot: () => null,
+        updates: () => [],
+        state: () => ({ kind: 'loading' }),
+        dropped: () => 0,
+        set: () => {},
+        push: () => {},
+        compact: () => {},
+        compacted: () => false,
+        generation: () => 0,
+        refuse: () => {},
+      };
+    },
     unsubscribe: () => {},
+    holds: () => subscribed,
     refresh: () => {},
     dispatch: () => null,
     more: () => false,

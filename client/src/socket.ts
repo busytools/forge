@@ -64,6 +64,22 @@ export interface Connection {
   subscribe(what: Subject, options?: { answering?: boolean; review?: boolean }): Store;
   unsubscribe(what: Subject): void;
   /**
+   * Whether this connection holds a subscription for `what`.
+   *
+   * **A held want is one the connection keeps asking for**: on the wire it is
+   * the server's subscription, and while a socket is down it is an ask a half
+   * of the connection will re-send when one opens. What it is not is a store -
+   * a subscribe answers a store on a closed connection and while connecting
+   * alike - so a page that counted a store as a subscription would leave a
+   * seat nothing ever asks again (#3002).
+   *
+   * **Where a transport keeps no seat wants itself, the page's shown seat is
+   * the one it re-attaches**, and a drop there ends the claim with the
+   * server's. Which half carries it is the transport's business; this answers
+   * whether the want is carried at all.
+   */
+  holds(what: Subject): boolean;
+  /**
    * Ask again for a subject this connection already holds.
    *
    * A pair rather than a bare `subscribe`: the server counts a subscription
@@ -1456,6 +1472,20 @@ export function connect(
   }
 
   /**
+   * Whether the held list carries a subject: the reconnect's own account.
+   *
+   * **The list is the answer, not the store.** A want enters it on
+   * `subscribe`/`relist` and leaves it on the last unsubscribe or a release; a
+   * seat leaves it with the socket that carried it (`dropped` takes the seats
+   * out, and `session/live.ts` re-attaches the shown one), while every other
+   * subject stays because `onopen` re-asks it. A closed connection holds
+   * nothing at all: nothing replays a subscribe made after the socket went.
+   */
+  function holds(what: Subject): boolean {
+    return status !== 'closed' && held.has(subjectKey(what));
+  }
+
+  /**
    * Give a subject back entirely: every store reader, and every server
    * subscription this connection holds for it.
    *
@@ -1622,6 +1652,7 @@ export function connect(
   return {
     subscribe,
     unsubscribe,
+    holds,
     refresh,
     showing,
     relist,

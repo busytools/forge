@@ -1784,8 +1784,16 @@ interface Driveable extends Omit<Connection, 'status'> {
   land(message: ServerMessage): void;
   wentTo(next: ConnectionStatus): void;
   reads(): number;
-  /** How many times a seat was subscribed on this connection. */
+  /** How many times the seat's subscription was asked for: a subscribe, or a re-ask of one. */
   subscribes(): number;
+  /**
+   * Answer a subscribe with a store and hold nothing, as a transport that is
+   * not up does: a closed connection answers a refused one, and a shell with
+   * no socket yet takes the command and has nowhere to put the frame.
+   */
+  dropAsks(): void;
+  /** Hold what is asked for again, as a connection whose socket is up does. */
+  takeAsks(): void;
   /** Every subscribe's declaration, in order. */
   opens: { answering?: boolean; review?: boolean }[];
   /** Every re-ask's own options, in order. */
@@ -1818,6 +1826,10 @@ function drivable(refusedAtFirst = false, rangeAskFails = false): Driveable {
   let refused = refusedAtFirst;
   let askFails = rangeAskFails;
   let status: ConnectionStatus = 'open';
+  /** Whether this connection holds what it is asked for, as a live socket does. */
+  let takes = true;
+  /** The subjects whose subscriptions this connection holds, by key. */
+  const wants = new Set<string>();
   const ranges: { slot: SessionSlot; epoch: string | null; from: number; to: number }[] = [];
   const opens: { answering?: boolean; review?: boolean }[] = [];
   const refreshes: { review?: boolean }[] = [];
@@ -1856,11 +1868,17 @@ function drivable(refusedAtFirst = false, rangeAskFails = false): Driveable {
     subscribe: (what, options) => {
       subscribed += 1;
       opens.push(options ?? {});
-      snapshot.set(subjectKey(what), null);
+      const key = subjectKey(what);
+      // **An ask is held only while this connection can carry it.** A refused
+      // seat's store is an answer, not a subscription, and a transport whose
+      // socket is not up has nowhere to put the frame.
+      if (takes && status !== 'closed') wants.add(key);
+      snapshot.set(key, null);
       return store(what);
     },
-    unsubscribe: () => {
+    unsubscribe: (what) => {
       unsubscribed += 1;
+      wants.delete(subjectKey(what));
     },
     refresh: (_what, options) => {
       refreshes.push(options ?? {});
@@ -1868,14 +1886,27 @@ function drivable(refusedAtFirst = false, rangeAskFails = false): Driveable {
       return true;
     },
     showing: () => undefined,
-    relist: () => undefined,
+    relist: (what) => {
+      // **A re-ask is an ask too**: the answer a seat waits on comes whichever
+      // door the subscription was asked through.
+      subscribed += 1;
+      if (takes && status !== 'closed') wants.add(subjectKey(what));
+    },
+    holds: (what) => status !== 'closed' && wants.has(subjectKey(what)),
+    dropAsks: () => {
+      takes = false;
+    },
+    takeAsks: () => {
+      takes = true;
+    },
     declare: (_what, options) => {
       declarations.push(options);
     },
-    release: () => {
+    release: (what) => {
       // One entry, which is what these cases hold: the seat's release gives
       // back what the connection holds for it.
       unsubscribed += 1;
+      wants.delete(subjectKey(what));
     },
     dispatch: () => {
       throw new Error('this page dispatched a command the case did not expect');
@@ -3016,6 +3047,87 @@ describe('the seat the client holds between visits', () => {
     ).toBe(2);
     expect(back.read().refused, 'the return drew nothing of the refusal').toBe(NO_SESSION);
     back.stop();
+  });
+
+  /**
+   * **An ask the connection never took is not an open, and the returning page
+   * asks again** (#3002).
+   *
+   * A transport that is not up answers a subscribe with a store and holds
+   * nothing: a closed connection answers a refused one, and the desktop's
+   * shell takes the command while it has no socket to put the frame on.
+   * Counting that as opened is the state the blank seat comes from - `showing`
+   * opens only at zero, and a reconnect re-asks only the wants the connection
+   * holds - so the seat draws nothing while its chat keeps paging the
+   * conversation.
+   */
+  it('opens again a seat whose subscription the connection never took', () => {
+    const connection = drivable();
+    connection.dropAsks();
+    const first = watch(connection);
+    expect(connection.subscribes(), 'precondition: the visit asked for the seat').toBe(1);
+    expect(first.read().wire, 'precondition: nothing answered').toBeNull();
+
+    first.stop();
+    connection.takeAsks();
+    const back = watch(connection);
+
+    expect(connection.subscribes(), 'the return left the seat unsubscribed').toBe(2);
+    back.stop();
+  });
+
+  /**
+   * **A shown seat is opened again when the connection opens without holding
+   * it.** The desktop's page subscribes before `client_connect` has answered,
+   * so the want reaches a shell with no socket; the connection opening is the
+   * moment that is visible, and nothing else asks again for a seat whose store
+   * is not refused.
+   */
+  it('opens a shown seat again when the connection opens without its ask', () => {
+    const connection = drivable();
+    connection.wentTo('connecting');
+    connection.dropAsks();
+    const page = watch(connection);
+    expect(connection.subscribes(), 'precondition: the visit asked while connecting').toBe(1);
+
+    connection.takeAsks();
+    connection.wentTo('open');
+
+    expect(connection.subscribes(), 'the open left the shown seat unsubscribed').toBe(2);
+    page.stop();
+  });
+
+  /**
+   * **A subscribe the transport could not take is asked again on the beat.**
+   * The transport reports the loss with the same `error` frame a refusal
+   * rides, and the refusal beat is the re-ask: a seat with no subscription
+   * has nothing a read could ride, so the ask that goes is an open.
+   */
+  it('asks again a seat whose subscribe the transport could not take', () => {
+    vi.useFakeTimers({
+      toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout'],
+    });
+    try {
+      const connection = drivable();
+      connection.dropAsks();
+      const page = watch(connection);
+      expect(connection.subscribes(), 'precondition: the visit asked').toBe(1);
+
+      connection.takeAsks();
+      connection.land({
+        kind: 'error',
+        what: 'subscribe',
+        why: 'the subscribe did not reach the app',
+        subject: { session: LEAD },
+        dispatch_id: null,
+      });
+      vi.advanceTimersByTime(2_000);
+
+      expect(connection.subscribes(), 'the seat was never asked again').toBe(2);
+      page.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   /**

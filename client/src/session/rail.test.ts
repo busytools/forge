@@ -47,6 +47,7 @@ function untouched(): Connection {
   return {
     subscribe: refuse,
     unsubscribe: refuse,
+    holds: refuse,
     refresh: refuse,
     showing: refuse,
     relist: refuse,

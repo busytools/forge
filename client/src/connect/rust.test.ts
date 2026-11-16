@@ -113,6 +113,112 @@ describe('what the shell is told', () => {
   });
 
   /**
+   * **A want the shell took before it had a socket is asked again on open.**
+   * The page subscribes on its first paint, which is before `client_connect`
+   * answers, and the shell records the reader with no socket to put the frame
+   * on. The re-ask is a relist: a second subscribe would count a reader the
+   * page does not hold, and one unsubscribe would then leave the server's
+   * count adrift (#3002).
+   */
+  it('re-asks a want it took before the connection opened, without counting a reader', async () => {
+    const shell: State = { status: 'connecting', generation: 0, greeting: null };
+    // **The dial is held open on purpose**: the page's first paint subscribes
+    // before `client_connect` answers, which is the window the shell has no
+    // socket to hold a want on.
+    let dial: (id: number) => void = () => undefined;
+    invoke.mockImplementation((command: string) => {
+      if (command === 'client_state') return Promise.resolve(shell);
+      if (command === 'client_connect') {
+        return new Promise<unknown>((resolve) => {
+          dial = resolve;
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+    const connection = connectRust('ws://127.0.0.1:7777/socket');
+    await vi.waitFor(() => expect(handlers.size).toBe(7));
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('client_connect', { url: 'ws://127.0.0.1:7777/socket' }),
+    );
+
+    connection.subscribe(subject);
+    expect(invoke).toHaveBeenCalledWith('client_subscribe', {
+      what: subject,
+      answering: false,
+      review: false,
+    });
+    expect(connection.holds(subject), 'the shell took the want, so the page holds it').toBe(true);
+    invoke.mockClear();
+
+    // The dial lands - the connection's own first state read is what proves it
+    // took the id - and the shell then reports its socket open.
+    dial(SOCKET);
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('client_state'));
+    shell.status = 'open';
+    shell.generation = 1;
+    fire('client://connection', undefined);
+
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('client_relist', {
+        what: subject,
+        answering: false,
+        review: false,
+      }),
+    );
+    expect(
+      invoke.mock.calls.map(([command]) => command).filter((name) => name === 'client_subscribe'),
+      'the re-ask counted a second reader',
+    ).toEqual([]);
+  });
+
+  /**
+   * **A subscribe the shell never took is not a subscription, and the seat is
+   * told.** An invoke that rejects is the one loss this half can see: the
+   * page's store is loading with nothing behind it, so the error frame is
+   * what lets a page ask again instead of waiting on an answer nobody owes
+   * (#3002).
+   */
+  it('tells the seat when a subscribe never reached the shell', async () => {
+    const connection = await opened();
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+    const seen: ServerMessage[] = [];
+    connection.onMessage((message) => seen.push(message));
+
+    invoke.mockImplementation((command: string) =>
+      command === 'client_subscribe'
+        ? Promise.reject(new Error('the shell is gone'))
+        : Promise.resolve(undefined),
+    );
+    connection.subscribe(subject);
+
+    await vi.waitFor(() => expect(connection.holds(subject)).toBe(false));
+    expect(seen.at(-1), 'the seat was told nothing of the loss').toMatchObject({
+      kind: 'error',
+      what: 'subscribe',
+      why: 'the shell is gone',
+      seat: slot,
+      subject,
+    });
+  });
+
+  /** A subject is held until it is given back, and a closed connection holds nothing. */
+  it('stops holding a subject when it is released or the connection closes', async () => {
+    const connection = await opened();
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+
+    connection.subscribe(subject);
+    expect(connection.holds(subject), 'a subscribed subject was not held').toBe(true);
+
+    connection.release(subject);
+    expect(connection.holds(subject), 'a released subject was still held').toBe(false);
+
+    connection.subscribe(subject);
+    expect(connection.holds(subject), 'precondition: the seat was held again').toBe(true);
+    connection.close();
+    expect(connection.holds(subject), 'a closed connection held its wants').toBe(false);
+  });
+
+  /**
    * **The save's id is what matches the answer to the request.** A desktop
    * save that crosses without one is answered as id 0, and the page waits on
    * its own number until the bar times out - so the id is asserted at the
