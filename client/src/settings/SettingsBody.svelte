@@ -16,7 +16,7 @@
   import SpeakingCard from './SpeakingCard.svelte';
   import type { ActivateState, InstallState, SpeakingWire } from '../wire/models';
   import type { SessionSlot } from '../wire/types';
-  import { builtInFor, classesOf, groupsOf, selectedArea } from './view';
+  import { builtInFor, classesOf, groupsOf, inheritedEngineFor, selectedArea } from './view';
 
   /**
    * The page's drawing, prop-only: the document the server pushed, the area
@@ -370,7 +370,7 @@
                 spec={key.edit}
                 value={currentValue(draft, key)}
                 shown={key.value}
-                builtIn={builtInFor(area.id, key.path)}
+                builtIn={builtInFor(area.id, key.path) ?? inheritedEngineFor(document, key)}
                 onchange={(next: unknown) => onValue(key, next)}
               />
             {/each}

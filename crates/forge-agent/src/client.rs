@@ -58,6 +58,11 @@ pub struct SessionLaunchSettings {
     /// the previous generation's Agent.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env_overrides: HashMap<String, String>,
+    /// The engine this launch runs on, when a `forge.toml` key asked for
+    /// one. Absent means `default` - the `claude` CLI - so a launch
+    /// settings that predates the key spawns exactly as it always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<EngineSetting>,
 }
 
 impl SessionLaunchSettings {
@@ -68,6 +73,131 @@ impl SessionLaunchSettings {
     /// contract.
     pub const PERMISSIONS_KEY: &str = "permissions";
     pub const PERMISSIONS_DEFAULT_MODE_KEY: &str = "defaultMode";
+}
+
+/// The binary the `forge` engine names on PATH.
+///
+/// Portable name, not a path: the certified artifact is installed on each
+/// machine like the `claude` CLI, and a synced `forge.toml` can name it
+/// without knowing where that machine keeps it.
+pub const FORGE_ENGINE_BINARY: &str = "claude-headless";
+
+/// The engine a session's subprocess runs on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Engine {
+    /// The `claude` CLI on PATH - forge's own behavior.
+    #[default]
+    Default,
+    /// The certified `claude-headless` port.
+    Forge,
+}
+
+impl Engine {
+    /// Every value the `engine` keys accept, quoted for load errors.
+    pub const ACCEPTED: &'static str = "\"default\", \"forge\"";
+
+    /// Every engine, so the settings page's choices and this type cannot
+    /// drift apart.
+    pub const ALL: &'static [Self] = &[Self::Default, Self::Forge];
+
+    /// The stored spelling, which is also the settings page's choice.
+    pub const fn as_stored(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Forge => "forge",
+        }
+    }
+
+    /// Parse a stored value. A typo is a load error at the key, never a
+    /// quiet fallback to `claude`.
+    pub fn from_stored(value: &str) -> Option<Self> {
+        match value {
+            "default" => Some(Self::Default),
+            "forge" => Some(Self::Forge),
+            _ => None,
+        }
+    }
+
+    /// The binary this engine launches; `None` keeps the SDK's own
+    /// default, `claude`.
+    pub fn binary(self) -> Option<&'static str> {
+        match self {
+            Self::Default => None,
+            Self::Forge => Some(FORGE_ENGINE_BINARY),
+        }
+    }
+}
+
+/// The `forge.toml` scope whose `engine` key chose an engine, kept so a
+/// missing binary can name the key a person has to fix.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum EngineScope {
+    /// No key chose it: the `claude` CLI default.
+    Default,
+    /// The org's own `engine` key.
+    Org { org: String },
+    /// The project's own `engine` key.
+    Project { org: String, project: String },
+}
+
+impl EngineScope {
+    /// The key that carries the setting.
+    pub fn setting(&self) -> String {
+        match self {
+            Self::Default => "engine".to_owned(),
+            Self::Org { org } => format!("orgs.{org}.engine"),
+            Self::Project { org, project } => format!("orgs.{org}.projects.{project}.engine"),
+        }
+    }
+
+    /// The scope in the reader's words.
+    pub fn label(&self) -> String {
+        match self {
+            Self::Default => "the default".to_owned(),
+            Self::Org { org } => format!("org '{org}'"),
+            Self::Project { org, project } => format!("project '{project}' of org '{org}'"),
+        }
+    }
+}
+
+/// The engine a session launches on, with the scope that chose it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineSetting {
+    pub engine: Engine,
+    pub scope: EngineScope,
+}
+
+impl EngineSetting {
+    /// The `claude` CLI: what an unset - or explicitly `default` -
+    /// config resolves to.
+    pub fn cli() -> Self {
+        Self { engine: Engine::Default, scope: EngineScope::Default }
+    }
+
+    /// The project's own key's value, when the project set one; `None`
+    /// when the value came from the org or the default, which is what the
+    /// settings page's project row shows.
+    pub fn project_own(&self) -> Option<Engine> {
+        match self.scope {
+            EngineScope::Project { .. } => Some(self.engine),
+            EngineScope::Default | EngineScope::Org { .. } => None,
+        }
+    }
+
+    /// The failure sentence a missing `forge` binary owes the reader: the
+    /// binary, the setting that asked for it, and no fallback.
+    pub fn missing_binary(&self) -> String {
+        format!(
+            "engine '{}' needs the '{}' binary on PATH, and this machine has none; it was \
+             chosen by {} ({}). Install the certified port or set that key back to 'default'.",
+            self.engine.as_stored(),
+            FORGE_ENGINE_BINARY,
+            self.scope.label(),
+            self.scope.setting(),
+        )
+    }
 }
 
 /// The class of a spawn failure, when the SDK could name one.
@@ -219,6 +349,51 @@ pub enum AgentEvent {
 #[cfg(test)]
 mod tests {
     use super::SessionLaunchSettings;
+
+    /// Every engine round-trips through its stored spelling, so a variant
+    /// added without a value fails here rather than at a config load.
+    #[test]
+    fn every_engine_round_trips_through_its_stored_spelling() {
+        for engine in super::Engine::ALL {
+            assert_eq!(
+                super::Engine::from_stored(engine.as_stored()),
+                Some(*engine),
+                "{} must parse back to itself",
+                engine.as_stored(),
+            );
+        }
+        assert_eq!(super::Engine::from_stored("claude"), None, "an unknown value is a load error");
+    }
+
+    /// The engine rides the launch settings only when a key asked for one,
+    /// and its scope survives the JSON the agent channel carries.
+    #[test]
+    fn an_engine_rides_the_launch_settings_with_its_scope() {
+        let settings = SessionLaunchSettings {
+            engine: Some(super::EngineSetting {
+                engine: super::Engine::Forge,
+                scope: super::EngineScope::Project {
+                    org: "Busytools".to_owned(),
+                    project: "forge".to_owned(),
+                },
+            }),
+            ..SessionLaunchSettings::default()
+        };
+        let json = serde_json::to_value(&settings).expect("serialize");
+        assert_eq!(
+            json.get("engine"),
+            Some(&serde_json::json!({
+                "engine": "forge",
+                "scope": { "kind": "project", "org": "Busytools", "project": "forge" },
+            })),
+            "the engine and the key that chose it cross together",
+        );
+        let back: SessionLaunchSettings = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, settings, "a round trip keeps the setting");
+
+        let unset = serde_json::to_value(SessionLaunchSettings::default()).expect("serialize");
+        assert_eq!(unset.get("engine"), None, "an unset engine stays out of the wire");
+    }
 
     #[test]
     fn session_launch_settings_serializes_agent_progress_summaries() {

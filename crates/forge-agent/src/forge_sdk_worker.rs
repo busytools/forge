@@ -463,6 +463,28 @@ impl<'a> SessionId<'a> {
     }
 }
 
+/// The failure a spawn whose engine's binary is absent owes the reader.
+///
+/// The SDK reports `CliNotFound` naming the binary and stops there. A
+/// `forge` engine is a `forge.toml` choice, so the failure names the key
+/// that made it and the project or org it belongs to - the machine is a
+/// per-machine difference the setting cannot show - and it never falls
+/// back to `claude`. Any other failure passes through untouched.
+fn engine_spawn_error(
+    error: forge_sdk::Error,
+    launch_settings: &crate::client::SessionLaunchSettings,
+) -> anyhow::Error {
+    let forge_sdk::Error::CliNotFound { binary } = &error else {
+        return error.into();
+    };
+    match launch_settings.engine.as_ref() {
+        Some(engine) if engine.engine.binary() == Some(binary.as_str()) => {
+            anyhow::anyhow!(engine.missing_binary())
+        }
+        _ => error.into(),
+    }
+}
+
 /// Spawn a fresh `Client` for `bridge` and start the reader subtask.
 /// Builds `Options` from `launch_settings` (mode, model, effort,
 /// `can_use_tool` callback). `id` says which session the child runs
@@ -522,7 +544,8 @@ pub(crate) async fn spawn_session(
         extra_mcp_servers,
         &AccountBinding { config_dir: &config_dir, env: &account_env },
     );
-    let (client, events) = Client::spawn(options).await?;
+    let (client, events) =
+        Client::spawn(options).await.map_err(|error| engine_spawn_error(error, launch_settings))?;
     sweep_agent_worktrees(cwd);
     // A supplied id is the truth: a resume carried it on the CLI flag,
     // and a create was adopted by the CLI, which is why the transcript
@@ -1594,8 +1617,19 @@ fn build_options_with_callback(
         b = b.extra_arg(flag.clone(), value.clone());
     }
 
+    // The engine the project's `forge.toml` key asked for. `default`
+    // leaves the SDK's own `claude`; `forge` runs the certified
+    // `claude-headless` port by name, so a machine without it fails the
+    // spawn (named in `engine_spawn_error`) rather than falling back.
+    if let Some(engine) = &launch_settings.engine
+        && let Some(binary) = engine.engine.binary()
+    {
+        b = b.binary(binary);
+    }
+
     // Swap tests drive the real spawn_session against forge-sdk's mock
-    // fixture; production always runs the `claude` on PATH.
+    // fixture; production always runs the `claude` on PATH. The test
+    // override outranks the engine so a suite never spawns the real port.
     #[cfg(any(test, feature = "testing"))]
     if let Some(path) = test_sdk_binary() {
         b = b.binary(path);
@@ -5248,6 +5282,105 @@ mod tests_reader_terminal {
             started.elapsed(),
         );
         set_test_sdk_binary(None);
+    }
+
+    /// The engine chooses the subprocess binary: `forge` runs the certified
+    /// port by name, and an absent - or explicitly `default` - engine
+    /// leaves the SDK on the `claude` CLI.
+    ///
+    /// The case holds the mock-binary guard because that slot overrides the
+    /// binary process-wide and these cases are the ones that move it.
+    #[tokio::test]
+    async fn the_engine_chooses_the_subprocess_binary() {
+        use crate::client::{Engine, EngineScope, EngineSetting, SessionLaunchSettings};
+        use std::path::Path;
+        use tokio::sync::mpsc;
+
+        let _binary = mock_binary_guard().await;
+        let build = |engine: Option<EngineSetting>| {
+            let (event_tx, _rx) = mpsc::unbounded_channel();
+            let launch = SessionLaunchSettings { engine, ..SessionLaunchSettings::default() };
+            super::build_options_with_callback(
+                "",
+                super::SessionId::Unassigned,
+                &launch,
+                event_tx,
+                std::sync::Arc::new(parking_lot::Mutex::new(HashMap::new())),
+                std::sync::Arc::new(parking_lot::Mutex::new(HashMap::new())),
+                std::sync::Arc::new(parking_lot::Mutex::new(String::new())),
+                Vec::new(),
+                &super::AccountBinding { config_dir: Path::new("/cfg/x"), env: &HashMap::new() },
+            )
+        };
+
+        let forge = build(Some(EngineSetting {
+            engine: Engine::Forge,
+            scope: EngineScope::Project {
+                org: "Busytools".to_owned(),
+                project: "forge".to_owned(),
+            },
+        }));
+        assert_eq!(
+            forge.binary, "claude-headless",
+            "the forge engine spawns the certified port, by name",
+        );
+
+        assert_eq!(build(None).binary, "claude", "an unset engine keeps the claude CLI");
+        assert_eq!(
+            build(Some(EngineSetting::cli())).binary,
+            "claude",
+            "an explicit default is the same binary as an unset one",
+        );
+    }
+
+    /// A missing `forge` binary fails with the binary, the setting and no
+    /// fallback - and only the engine's own binary is rewritten, so a
+    /// different binary's absence keeps the SDK's own error.
+    #[test]
+    fn a_missing_forge_binary_names_the_binary_and_the_setting() {
+        use crate::client::{Engine, EngineScope, EngineSetting, SessionLaunchSettings};
+
+        let launch = SessionLaunchSettings {
+            engine: Some(EngineSetting {
+                engine: Engine::Forge,
+                scope: EngineScope::Project {
+                    org: "Busytools".to_owned(),
+                    project: "forge".to_owned(),
+                },
+            }),
+            ..SessionLaunchSettings::default()
+        };
+        let message = super::engine_spawn_error(
+            forge_sdk::Error::CliNotFound { binary: crate::client::FORGE_ENGINE_BINARY.to_owned() },
+            &launch,
+        )
+        .to_string();
+        for needed in
+            ["claude-headless", "forge", "Busytools", "orgs.Busytools.projects.forge.engine"]
+        {
+            assert!(message.contains(needed), "the failure names {needed}: {message}");
+        }
+        assert!(
+            !message.contains("claude CLI binary"),
+            "and not the SDK's own rendering, which names neither the engine nor the key: \
+             {message}",
+        );
+
+        let other = super::engine_spawn_error(
+            forge_sdk::Error::CliNotFound { binary: "claude".to_owned() },
+            &launch,
+        );
+        assert!(
+            other.downcast_ref::<forge_sdk::Error>().is_some(),
+            "another binary's absence is not this error's to rewrite: {other}",
+        );
+
+        let unset = SessionLaunchSettings::default();
+        let plain = super::engine_spawn_error(
+            forge_sdk::Error::CliNotFound { binary: "claude".to_owned() },
+            &unset,
+        );
+        assert!(plain.downcast_ref::<forge_sdk::Error>().is_some());
     }
 
     /// A recorded event, captured off the subscriber so the shipped log line

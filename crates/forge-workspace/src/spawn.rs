@@ -10057,6 +10057,106 @@ provider = "anthropic"
         }
     }
 
+    /// The engine a project's key resolves reaches the launch: a cold spawn
+    /// hands its child the port's name and the setting that chose it, so
+    /// the options builder can run the binary the key asked for.
+    #[tokio::test]
+    async fn a_cold_spawn_hands_its_child_the_project_engine() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+engine = "forge"
+
+[[orgs.projects]]
+name = "proj"
+path = "/tmp/spawn-engine"
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "acct-a"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write forge.toml");
+        let ws = std::sync::Arc::new(
+            Workspace::new_for_test(dir.path().to_owned()).expect("boot from the fixture"),
+        );
+        ws.seed_test_ready_account("acct-a");
+        let (handle, mut agent_rx) = Workspace::testing_stub_handle();
+        ws.install_test_spawn_handle(handle);
+
+        let _ = handle_spawn_project(&ws, "proj", SessionLaunchSettings::default());
+
+        let Some(forge_primitives::AgentCommand::NewSession { launch_settings, .. }) =
+            agent_rx.try_recv().ok()
+        else {
+            panic!("the cold spawn has to reach a launch for anything here to be observable");
+        };
+        assert_eq!(
+            launch_settings.get("engine"),
+            Some(&serde_json::json!({
+                "engine": "forge",
+                "scope": { "kind": "org", "org": "TestOrg" },
+            })),
+            "the org's engine reaches the child with the key that chose it",
+        );
+    }
+
+    /// A project with no engine key of its own launches on the `claude`
+    /// CLI: the launch settings carry no engine at all, which is what an
+    /// older launch settings did too.
+    #[tokio::test]
+    async fn a_cold_spawn_with_no_engine_carries_none() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forge_dir = crate::config::ensure_forge_data_dir(dir.path()).expect("forge dir");
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+
+[[orgs.projects]]
+name = "proj"
+path = "/tmp/spawn-default-engine"
+model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "acct-a"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        )
+        .expect("write forge.toml");
+        let ws = std::sync::Arc::new(
+            Workspace::new_for_test(dir.path().to_owned()).expect("boot from the fixture"),
+        );
+        ws.seed_test_ready_account("acct-a");
+        let (handle, mut agent_rx) = Workspace::testing_stub_handle();
+        ws.install_test_spawn_handle(handle);
+
+        let _ = handle_spawn_project(&ws, "proj", SessionLaunchSettings::default());
+
+        let Some(forge_primitives::AgentCommand::NewSession { launch_settings, .. }) =
+            agent_rx.try_recv().ok()
+        else {
+            panic!("the cold spawn has to reach a launch for anything here to be observable");
+        };
+        assert_eq!(
+            launch_settings.get("engine"),
+            None,
+            "nothing asked for an engine, so nothing is launched on one",
+        );
+    }
+
     /// A lead's settings carry no denial of their own, so the call adds
     /// the flag. `--disallowedTools` used to be a worker-only flag, and a
     /// lead kept the CLI's tools.

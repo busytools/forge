@@ -193,6 +193,7 @@ mod tests {
             browser_profile: forge_primitives::browser::ProfileKey::of("TestOrg", "default")
                 .expect("a profile key"),
             slack_workspace: None,
+            engine: forge_agent::client::EngineSetting::cli(),
         });
         let (ws, _rx) = Workspace::testing_stub_with_config(
             PathBuf::from("/tmp/forge-document-roots-test"),

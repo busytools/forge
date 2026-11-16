@@ -23,6 +23,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use forge_agent::client::{Engine, EngineScope, EngineSetting};
 use forge_primitives::GotifyConfig;
 use forge_primitives::account::Provider;
 use forge_primitives::browser::ProfileKey;
@@ -622,6 +623,10 @@ struct OrgEntry {
     /// The org's browser profile name; `<org>/<name>`. Absent is `default`.
     #[serde(default)]
     browser_profile: Option<String>,
+    /// The engine every project in the org launches on unless it sets its
+    /// own. Absent is `default`, the `claude` CLI.
+    #[serde(default)]
+    engine: Option<String>,
     /// The Slack workspace every project in the org inherits. Absent
     /// leaves each project to bind its own or none.
     #[serde(default)]
@@ -682,6 +687,9 @@ struct ProjectEntry {
     /// the org's.
     #[serde(default)]
     browser_profile: Option<String>,
+    /// The engine this project launches on. Absent keeps the org's.
+    #[serde(default)]
+    engine: Option<String>,
     /// This project's Slack workspace, overriding the org's. Absent keeps
     /// the org's binding.
     #[serde(default)]
@@ -705,6 +713,7 @@ impl std::fmt::Debug for ProjectEntry {
             .field("document_roots", &self.document_roots)
             .field("handoff", &self.handoff)
             .field("browser_profile", &self.browser_profile)
+            .field("engine", &self.engine)
             .field("slack", &self.slack)
             .finish()
     }
@@ -913,6 +922,10 @@ pub(crate) struct LoadedConfig {
     /// Each org's own `[orgs.slack]` binding, keyed by org name. A project
     /// may override it; the resolved per-project binding is on the project.
     pub org_slack: HashMap<String, String>,
+    /// Each org's own `engine` value, keyed by org name, for the org the
+    /// key sets. An org that sets none keeps no entry; the resolved
+    /// per-project engine is on the project.
+    pub org_engines: HashMap<String, Engine>,
     /// Index into `projects` for the fallback target: the
     /// alphabetically-first project. Read only when no project is named and
     /// no picker selects one; a named project and the picker both override
@@ -994,6 +1007,7 @@ impl std::fmt::Debug for LoadedConfig {
             .field("global_env", &self.global_env.keys().map(String::as_str).collect::<Vec<_>>())
             .field("org_browser_profiles", &self.org_browser_profiles)
             .field("org_slack", &self.org_slack)
+            .field("org_engines", &self.org_engines)
             .field("default_index", &self.default_index)
             .field("accounts", &self.accounts)
             .field("models", &self.models)
@@ -1131,6 +1145,10 @@ pub(crate) struct LoadedProject {
     /// project's binding, else the org's. `None` leaves the Slack tools
     /// refusing with the key to add.
     pub slack_workspace: Option<String>,
+    /// The engine this project's sessions launch on: the project's own
+    /// key, else its org's, else the `claude` CLI. The scope rides along
+    /// so a missing `forge` binary can name the key that asked for it.
+    pub engine: EngineSetting,
 }
 
 /// Hand-written because a project's env may carry secrets (`env_file`
@@ -1156,6 +1174,7 @@ impl std::fmt::Debug for LoadedProject {
             .field("handoff", &self.handoff)
             .field("browser_profile", &self.browser_profile)
             .field("slack_workspace", &self.slack_workspace)
+            .field("engine", &self.engine)
             .finish()
     }
 }
@@ -1215,6 +1234,7 @@ impl LoadedConfig {
             global_env: HashMap::new(),
             org_browser_profiles: HashMap::new(),
             org_slack: HashMap::new(),
+            org_engines: HashMap::new(),
             default_index: 0,
             accounts: Vec::new(),
             models: HashMap::new(),
@@ -1585,6 +1605,7 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
     let mut projects: Vec<LoadedProject> = Vec::new();
     let mut org_browser_profiles: HashMap<String, String> = HashMap::new();
     let mut org_slack_bindings: HashMap<String, String> = HashMap::new();
+    let mut org_engines: HashMap<String, Engine> = HashMap::new();
     for org_entry in parsed.orgs {
         if !seen_org_names.insert(org_entry.name.clone()) {
             return Err(WorkspaceError::DuplicateOrg { path, name: org_entry.name });
@@ -1622,6 +1643,19 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
             })?,
         };
         org_browser_profiles.insert(org_entry.name.clone(), org_profile.name().to_owned());
+        let org_engine = match org_entry.engine.as_deref() {
+            None => None,
+            Some(raw) => {
+                let engine =
+                    Engine::from_stored(raw).ok_or_else(|| WorkspaceError::OrgInvalidEngine {
+                        path: path.clone(),
+                        org: org_entry.name.clone(),
+                        value: raw.to_owned(),
+                    })?;
+                org_engines.insert(org_entry.name.clone(), engine);
+                Some(engine)
+            }
+        };
         let org_slack = org_entry
             .slack
             .as_ref()
@@ -1680,6 +1714,31 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
                 })?,
                 None => org_profile.clone(),
             };
+            let engine = match project_entry.engine.as_deref() {
+                Some(raw) => {
+                    let engine = Engine::from_stored(raw).ok_or_else(|| {
+                        WorkspaceError::ProjectInvalidEngine {
+                            path: path.clone(),
+                            name: project_entry.name.clone(),
+                            value: raw.to_owned(),
+                        }
+                    })?;
+                    EngineSetting {
+                        engine,
+                        scope: EngineScope::Project {
+                            org: org_entry.name.clone(),
+                            project: project_entry.name.clone(),
+                        },
+                    }
+                }
+                None => match org_engine {
+                    Some(engine) => EngineSetting {
+                        engine,
+                        scope: EngineScope::Org { org: org_entry.name.clone() },
+                    },
+                    None => EngineSetting::cli(),
+                },
+            };
             projects.push(LoadedProject {
                 name: project_entry.name.clone(),
                 path: expand_home(&project_entry.path),
@@ -1696,6 +1755,7 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
                 handoff: project_entry.handoff,
                 browser_profile,
                 slack_workspace,
+                engine,
             });
             // The project model must be served by at least one account
             // the org can reach: a typo would boot clean, stamp all the
@@ -1835,6 +1895,7 @@ pub(crate) fn load_from_text(path: PathBuf, raw: &str) -> Result<LoadedConfig, W
         global_env,
         org_browser_profiles,
         org_slack: org_slack_bindings,
+        org_engines,
         default_index,
         accounts,
         models: parsed.models,
@@ -3879,6 +3940,146 @@ provider = "anthropic"
         assert!(
             err.to_string().contains("permissionmode"),
             "deny_unknown_fields has to catch the near-miss, got: {err}",
+        );
+    }
+
+    /// The engine resolves project, then org, then the `claude` default.
+    /// Each level is pinned by a case that would answer differently if
+    /// another level were read instead.
+    #[test]
+    fn the_engine_resolves_project_over_org_over_default() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Alpha"
+accounts = ["Stargate"]
+engine = "forge"
+
+[[orgs.projects]]
+name = "inherit"
+path = "~/Projects/inherit"
+
+[[orgs.projects]]
+name = "override"
+path = "~/Projects/override"
+engine = "default"
+
+[[orgs]]
+name = "Beta"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "plain"
+path = "~/Projects/plain"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        );
+        let config = load_from_dir(dir.path()).expect("both engine values are valid");
+
+        let inherit = named(&config, "inherit");
+        assert_eq!(
+            inherit.engine.engine,
+            Engine::Forge,
+            "a project with no engine takes its org's"
+        );
+        assert_eq!(
+            inherit.engine.scope,
+            EngineScope::Org { org: "Alpha".to_owned() },
+            "the scope names the key that chose it, for the spawn error",
+        );
+        assert_eq!(
+            config.org_engines.get("Alpha"),
+            Some(&Engine::Forge),
+            "the org's own value resolves for the settings page",
+        );
+
+        let override_project = named(&config, "override");
+        assert_eq!(
+            override_project.engine.engine,
+            Engine::Default,
+            "a project's own `default` beats its org's `forge`",
+        );
+        assert_eq!(
+            override_project.engine.scope,
+            EngineScope::Project { org: "Alpha".to_owned(), project: "override".to_owned() },
+            "the scope names the project that overrode the org",
+        );
+
+        let plain = named(&config, "plain");
+        assert_eq!(plain.engine.engine, Engine::Default, "nothing set is the `claude` CLI");
+        assert_eq!(plain.engine.scope, EngineScope::Default, "and no key chose it");
+        assert!(!config.org_engines.contains_key("Beta"), "an org with no engine key keeps no row");
+    }
+
+    #[test]
+    fn an_unknown_engine_fails_the_load_naming_the_key_and_values() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Alpha"
+accounts = ["Stargate"]
+engine = "claude"
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        );
+        let err =
+            load_from_dir(dir.path()).expect_err("an engine outside the choice must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("engine") && message.contains("claude") && message.contains("Alpha"),
+            "the error names the key, the value and the org, got: {message}",
+        );
+        assert!(
+            message.contains("default") && message.contains("forge"),
+            "the error lists the accepted values, got: {message}",
+        );
+    }
+
+    #[test]
+    fn an_unknown_project_engine_fails_the_load_naming_the_project() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            r#"
+[[orgs]]
+name = "Alpha"
+accounts = ["Stargate"]
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+engine = "Claude"
+
+[[accounts]]
+display_name = "Stargate"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#,
+        );
+        let err = load_from_dir(dir.path()).expect_err("a bad project engine must not load");
+        let message = err.to_string();
+        assert!(
+            message.contains("engine") && message.contains("Claude") && message.contains("forge"),
+            "the error names the key, the value and the project, got: {message}",
         );
     }
 

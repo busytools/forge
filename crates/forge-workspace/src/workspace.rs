@@ -3465,6 +3465,16 @@ impl Workspace {
             Some(slot) => slot,
             None => self.resolve_slot(&target)?,
         };
+        // The engine this seat launches on: the project's own setting,
+        // else its org's, else the `claude` CLI. Stamped at this one point
+        // because every session forge launches passes through here, so no
+        // spawn entry can forget it. `default` adds nothing, which is also
+        // what a launch settings that predates the key carries.
+        if let Some(project) = self.project_for_slot(&session_slot)
+            && project.engine.engine != forge_agent::client::Engine::Default
+        {
+            settings.engine = Some(project.engine);
+        }
         // The id the child runs under. `--session-id` and `--resume` are
         // the CLI's own arguments and stay ids; the store row records it
         // under the slot before the child starts, so a restart resolves
@@ -11718,6 +11728,7 @@ mod account_stamp_tests {
             browser_profile: forge_primitives::browser::ProfileKey::of("Personal", "default")
                 .expect("a profile key"),
             slack_workspace: None,
+            engine: forge_agent::client::EngineSetting::cli(),
         }
     }
 

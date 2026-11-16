@@ -810,6 +810,7 @@ impl Workspace {
                 "TestOrg", "default",
             ),
             slack_workspace: slack_workspace.map(str::to_owned),
+            engine: forge_agent::client::EngineSetting::cli(),
         });
     }
 
