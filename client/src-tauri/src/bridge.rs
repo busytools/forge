@@ -884,13 +884,7 @@ impl Bridge {
             state.order.push(key.clone());
             state.held.insert(
                 key,
-                Watch {
-                    what: what.clone(),
-                    readers: 1,
-                    answering,
-                    review,
-                    pending: !carried,
-                },
+                Watch { what: what.clone(), readers: 1, answering, review, pending: !carried },
             );
         }
         if let Some(socket) = &state.socket {
