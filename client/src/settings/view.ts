@@ -147,10 +147,7 @@ export function builtInFor(areaId: string, path: string): string | null {
  * that is not an engine draws no phrase, and an org value in a shape this
  * client does not know draws nothing rather than a guess.
  */
-export function inheritedEngineFor(
-  document: SettingsDocument,
-  key: SettingsKey,
-): string | null {
+export function inheritedEngineFor(document: SettingsDocument, key: SettingsKey): string | null {
   if (key.leaf !== 'engine' || key.value.kind !== 'unset') return null;
   const org = key.group[0];
   if (org === undefined) return null;

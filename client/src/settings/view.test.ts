@@ -110,11 +110,14 @@ describe('the settings page view', () => {
   });
 
   it('says what an unset engine inherits, one level up', () => {
-    const overridden = engineDocument(
-      { kind: 'string', text: 'forge' },
-      { kind: 'unset' },
-      [engineRow('orgs.Acme.projects.api.max_workers', ['Acme', 'api'], { kind: 'number', text: '2' }, 'max_workers')],
-    );
+    const overridden = engineDocument({ kind: 'string', text: 'forge' }, { kind: 'unset' }, [
+      engineRow(
+        'orgs.Acme.projects.api.max_workers',
+        ['Acme', 'api'],
+        { kind: 'number', text: '2' },
+        'max_workers',
+      ),
+    ]);
     expect(
       inheritedEngineFor(overridden, row(overridden, 'orgs.Acme.projects.api.engine')),
       'a project with no override takes its org engine',
