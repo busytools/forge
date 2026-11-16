@@ -297,8 +297,9 @@ prompt - a person's send, a peer message, a cron fire, a Gotify push, a
 Slack delivery, a review nudge, forge's own continuation - is written to
 the CLI's queue under an id and draws its row at that prompt's `started`
 frame (see [the queue](./queue.md)). A machinery prompt's dispatch row is
-held back by `prompt_queued` and drawn at `started`; a CLI that reports no
-lifecycle frames has no `started`, and there every row draws at dispatch.
+retracted by `prompt_queued` and drawn at `started`; a CLI that reports no
+lifecycle frames has no `started`, and there each row draws at dispatch, or
+on the init frame when it was already waiting.
 A message arriving mid-turn is the pile's card while it waits; its row
 then lands inside the running turn if the CLI absorbs it there, and
 otherwise as the next turn's first row, under the settled turn's ending.

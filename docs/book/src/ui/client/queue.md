@@ -80,8 +80,9 @@ the pile while it waits, and its row lands where the CLI took it: inside
 the running turn when the CLI absorbs it there, or as the next turn's
 first row when it queues it to the boundary. Forge's machinery keeps its
 dispatch row on the wire; `prompt_queued` retracts it and the client draws
-it at `started`. A CLI with no lifecycle frames draws every row at
-dispatch. The typed update a delivery also sends (`peer`, `cron`,
+it at `started`. A CLI with no lifecycle frames has no `started`: there each
+row draws at dispatch, or on the init frame when it was already waiting. The
+typed update a delivery also sends (`peer`, `cron`,
 `gotify`, `slack`) carries the envelope's facts and pairs a cron's
 schedule with its row; it is never a row of its own - except the
 delivery-failure notice's `peer` update, which is exactly the row the

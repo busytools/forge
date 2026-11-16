@@ -362,10 +362,10 @@ pub trait WorkerFacade: Send + Sync {
     fn capacity(&self, caller: &SessionSlot) -> Option<WorkerCapacity>;
 
     /// Dispatch a worker-bound wrapped prompt. `Delivered` means the
-    /// prompt was accepted - handed to the target's session queue, held
-    /// for its turn end, or parked for its connect - which is the whole
-    /// claim the sender's ack makes; anything that reached no session is
-    /// an error. `UnknownLabel` when no live worker matches.
+    /// prompt was accepted - handed to the target's session queue, held for a
+    /// successor's swap, or parked for its connect - which is the whole claim
+    /// the sender's ack makes; anything that reached no session is an error.
+    /// `UnknownLabel` when no live worker matches.
     async fn deliver_worker_prompt(
         &self,
         caller: &SessionSlot,

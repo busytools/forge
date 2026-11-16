@@ -1155,8 +1155,10 @@ pub(crate) fn push_cron_prompt_into_chat(
     description: Option<&str>,
 ) {
     // The frame names the schedule once, and the row outlives it: keep the
-    // pairing so the live row can still be titled once the fired entry is
-    // gone from the store.
+    // pairing so a page's `cron_names` still carries it after the fired entry
+    // has left the store. A page applies it only to a row whose prose parses
+    // as a cron envelope; a row replayed from the raw prompt does not, which
+    // is why a reload keeps the words but not the cron block.
     workspace.remember_cron_name(target_key, uuid, cron_id, description);
     let _ = workspace.update_sender().send(SessionUpdate::CronPromptAppended {
         key: target_key.clone(),
