@@ -1711,10 +1711,20 @@ describe('the connection', () => {
     ).toHaveLength(2);
   });
 
-  /** Nothing replays a subscribe made after the socket went, so a live store would be a lie. */
-  it('refuses a subscribe on a closed connection', async () => {
-    const { conn } = await connected();
+  /**
+   * **A close ends what the connection held, and nothing replays an ask made
+   * after it.** Both halves matter: a want held before the close must stop
+   * being held, or a page goes on believing a subscription is coming; and a
+   * subscribe after it answers a refused store rather than a live one.
+   */
+  it('refuses a subscribe on a closed connection, and holds nothing it held', async () => {
+    const { server, conn } = await connected();
+    conn.subscribe(HOME);
+    await until(() => server.received.length === 1, 'the subscribe to arrive');
+    expect(conn.holds(HOME), 'precondition: the want was held').toBe(true);
+
     conn.close();
+    expect(conn.holds(HOME), 'a closed connection went on holding its wants').toBe(false);
 
     const store = conn.subscribe(HOME);
     expect(store.state()).toEqual({ kind: 'refused', why: 'this connection is closed' });

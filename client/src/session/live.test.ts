@@ -1787,13 +1787,13 @@ interface Driveable extends Omit<Connection, 'status'> {
   /** How many times the seat's subscription was asked for: a subscribe, or a re-ask of one. */
   subscribes(): number;
   /**
-   * Answer a subscribe with a store and hold nothing, as a transport that is
-   * not up does: a closed connection answers a refused one, and a shell with
-   * no socket yet takes the command and has nowhere to put the frame.
+   * Stop holding what was asked for, keeping the stores it answered with.
+   *
+   * This is the state a dropped socket leaves a seat in: the store survives,
+   * the want does not, and the page that shows the seat is the thing that asks
+   * again - the same shape `socket.ts`'s own `dropped` makes for a seat.
    */
-  dropAsks(): void;
-  /** Hold what is asked for again, as a connection whose socket is up does. */
-  takeAsks(): void;
+  loseWants(): void;
   /** Every subscribe's declaration, in order. */
   opens: { answering?: boolean; review?: boolean }[];
   /** Every re-ask's own options, in order. */
@@ -1826,8 +1826,6 @@ function drivable(refusedAtFirst = false, rangeAskFails = false): Driveable {
   let refused = refusedAtFirst;
   let askFails = rangeAskFails;
   let status: ConnectionStatus = 'open';
-  /** Whether this connection holds what it is asked for, as a live socket does. */
-  let takes = true;
   /** The subjects whose subscriptions this connection holds, by key. */
   const wants = new Set<string>();
   const ranges: { slot: SessionSlot; epoch: string | null; from: number; to: number }[] = [];
@@ -1869,10 +1867,10 @@ function drivable(refusedAtFirst = false, rangeAskFails = false): Driveable {
       subscribed += 1;
       opens.push(options ?? {});
       const key = subjectKey(what);
-      // **An ask is held only while this connection can carry it.** A refused
-      // seat's store is an answer, not a subscription, and a transport whose
-      // socket is not up has nowhere to put the frame.
-      if (takes && status !== 'closed') wants.add(key);
+      // **An ask is held while this connection can carry it.** A refused
+      // seat's store is an answer, not a subscription, and `loseWants` is the
+      // drop that takes a want away without taking its store.
+      if (status !== 'closed') wants.add(key);
       snapshot.set(key, null);
       return store(what);
     },
@@ -1890,14 +1888,11 @@ function drivable(refusedAtFirst = false, rangeAskFails = false): Driveable {
       // **A re-ask is an ask too**: the answer a seat waits on comes whichever
       // door the subscription was asked through.
       subscribed += 1;
-      if (takes && status !== 'closed') wants.add(subjectKey(what));
+      if (status !== 'closed') wants.add(subjectKey(what));
     },
     holds: (what) => status !== 'closed' && wants.has(subjectKey(what)),
-    dropAsks: () => {
-      takes = false;
-    },
-    takeAsks: () => {
-      takes = true;
+    loseWants: () => {
+      wants.clear();
     },
     declare: (_what, options) => {
       declarations.push(options);
@@ -3050,26 +3045,23 @@ describe('the seat the client holds between visits', () => {
   });
 
   /**
-   * **An ask the connection never took is not an open, and the returning page
-   * asks again** (#3002).
+   * **A seat whose want the connection lost is asked again on the next
+   * visit** (#3002).
    *
-   * A transport that is not up answers a subscribe with a store and holds
-   * nothing: a closed connection answers a refused one, and the desktop's
-   * shell takes the command while it has no socket to put the frame on.
-   * Counting that as opened is the state the blank seat comes from - `showing`
-   * opens only at zero, and a reconnect re-asks only the wants the connection
-   * holds - so the seat draws nothing while its chat keeps paging the
-   * conversation.
+   * This is the contract state a dropped socket leaves: the seat's store
+   * survives, the connection's hold on it does not, and nothing tells the
+   * page. Counting the seat as open from its store is the state the blank
+   * page comes from - neither a return nor a reconnect asks again - so the
+   * visit asks from what the connection holds.
    */
-  it('opens again a seat whose subscription the connection never took', () => {
+  it('opens again a seat whose subscription the connection no longer holds', () => {
     const connection = drivable();
-    connection.dropAsks();
     const first = watch(connection);
     expect(connection.subscribes(), 'precondition: the visit asked for the seat').toBe(1);
     expect(first.read().wire, 'precondition: nothing answered').toBeNull();
 
     first.stop();
-    connection.takeAsks();
+    connection.loseWants();
     const back = watch(connection);
 
     expect(connection.subscribes(), 'the return left the seat unsubscribed').toBe(2);
@@ -3078,19 +3070,17 @@ describe('the seat the client holds between visits', () => {
 
   /**
    * **A shown seat is opened again when the connection opens without holding
-   * it.** The desktop's page subscribes before `client_connect` has answered,
-   * so the want reaches a shell with no socket; the connection opening is the
-   * moment that is visible, and nothing else asks again for a seat whose store
-   * is not refused.
+   * it.** The open is the moment the loss becomes visible, and a store that is
+   * not refused emits nothing of its own: without this, the seat stays blank
+   * until a click.
    */
-  it('opens a shown seat again when the connection opens without its ask', () => {
+  it('opens a shown seat again when the connection opens without its want', () => {
     const connection = drivable();
     connection.wentTo('connecting');
-    connection.dropAsks();
     const page = watch(connection);
     expect(connection.subscribes(), 'precondition: the visit asked while connecting').toBe(1);
+    connection.loseWants();
 
-    connection.takeAsks();
     connection.wentTo('open');
 
     expect(connection.subscribes(), 'the open left the shown seat unsubscribed').toBe(2);
@@ -3106,16 +3096,14 @@ describe('the seat the client holds between visits', () => {
    */
   it('drops a wanted read while the connection holds no subscription', () => {
     const connection = drivable();
-    connection.dropAsks();
     const page = watch(connection);
     expect(connection.subscribes(), 'precondition: the visit asked').toBe(1);
+    connection.loseWants();
 
     rereadSeat(connection, LEAD);
-    expect(connection.reads(), 'a read rode a subscription the connection does not hold').toBe(0);
 
     // The connection comes back holding the seat and the answer lands: a read
     // latched above would fire here, as a second whole record.
-    connection.takeAsks();
     page.wentTo('connecting');
     page.wentTo('open');
     page.land(snapshotOf(LEAD));
@@ -3136,11 +3124,10 @@ describe('the seat the client holds between visits', () => {
     });
     try {
       const connection = drivable();
-      connection.dropAsks();
       const page = watch(connection);
       expect(connection.subscribes(), 'precondition: the visit asked').toBe(1);
+      connection.loseWants();
 
-      connection.takeAsks();
       connection.land({
         kind: 'error',
         what: 'subscribe',

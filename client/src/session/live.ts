@@ -87,8 +87,6 @@ interface Seat {
   refused: string | null;
   /** The connection's own store for the subject, which a read is read from. */
   held: Store | null;
-  /** How many subscriptions this seat opened, to give back as many when it is let go. */
-  opened: number;
   /** What the seat is subscribed as: a later reader that can answer raises it. */
   answering: boolean;
   /**
@@ -521,10 +519,11 @@ function createSeat(
     // session ending, the connection closing, and the server refusing the seat
     // release it.
     //
-    // **The connection holds the answer, not the count.** A seat whose ask
-    // never reached the wire has a store all the same, so `opened` alone would
-    // read it as done; a return is the moment to ask again (#3002).
-    if (seat.opened === 0 || !connection.holds(subject)) open();
+    // **The connection holds the answer, not the store.** A seat whose want it
+    // no longer carries has a store all the same, so a return is the moment to
+    // ask again (#3002): `holds` is the whole test, and a transport that keeps
+    // the want itself (the desktop's shell across a drop) is left alone.
+    if (!connection.holds(subject)) open();
     if (seat.wire === null) read();
     return leaving;
   }
@@ -542,12 +541,10 @@ function createSeat(
     // an answer rather than a subscription ("a refused subscribe leaves
     // nothing to hear"), so nothing is left to draw and the next visit opens
     // the seat afresh - while the seat itself is kept for that visit to find.
-    // `release` gives back every reader and every server entry at once, so a
-    // drop that zeroed `opened` cannot leave a store or a wire subscription
-    // behind.
+    // `release` gives back every reader and every server entry at once, so the
+    // seat is left with no store and no wire subscription behind it.
     if (seat.held?.state().kind === 'refused') {
       connection.release(subject);
-      seat.opened = 0;
       seat.held = null;
       publish(null, null);
       return;
@@ -562,15 +559,14 @@ function createSeat(
    * (here), the connection closing, and the server refusing the seat - which
    * releases this connection's hold while the seat itself stays. A page
    * leaving does not. `release`
-   * gives back what the CONNECTION holds for the seat, not what `opened`
-   * remembers: after a resume the server holds one where the page may hold
+   * gives back what the CONNECTION holds for the seat, not what this side
+   * asked for: after a resume the server holds one where the page may hold
    * two readers, and a release that walked the readers would leave one
    * subscription, one work-watch hold and one store standing.
    */
   function end(): void {
     if (released) return;
     connection.release(subject);
-    seat.opened = 0;
     release();
   }
 
@@ -579,7 +575,6 @@ function createSeat(
     wire: null,
     refused: null,
     held: null,
-    opened: 0,
     answering,
     review,
     askingReview: false,
@@ -900,9 +895,12 @@ function createSeat(
    * reader has.
    */
   function reread(options?: { review?: boolean; returned?: boolean }): void {
-    // A seat never opened has nothing to ask on; its first subscribe is its
-    // read, and that subscribe carries `seat.review`.
-    if (seat.opened === 0) return;
+    // **A read rides a subscription, so a seat the connection does not hold
+    // asks nothing**: its store is not evidence (a refused or lost ask
+    // answers one too), and the first subscribe is its read when one comes
+    // (#3002). Asking on a subscription that is not there would spend a whole
+    // encode on nobody's answer.
+    if (!connection.holds(subject)) return;
     if (seat.asking) {
       // **A wanted read is recorded, not dropped**, and it keeps its own
       // scope: a whole encode is in flight and its answer was encoded before
@@ -1010,11 +1008,11 @@ function createSeat(
    */
   function open(): void {
     // **A seat the page already holds a store for is re-asked, not subscribed
-    // again**: a relist opens no second store and counts no second reader, so
-    // a resume and a lost ask both go through it. The one case that is a real
-    // new subscription is a page arriving with a stronger role, which is a
-    // subscription the server has never been asked for.
-    if (seat.held !== null && (seat.opened === 0 || !connection.holds(subject))) {
+    // again**, when the connection does not carry it: a relist opens no second
+    // store and counts no second reader. The one case that is a real new
+    // subscription is a page arriving with a stronger role on a seat already
+    // held, which the server has never been asked for.
+    if (seat.held !== null && !connection.holds(subject)) {
       connection.relist(subject, { answering: seat.answering, review: seat.review });
     } else {
       seat.held = connection.subscribe(subject, {
@@ -1022,17 +1020,10 @@ function createSeat(
         review: seat.review,
       });
     }
-    // **An ask the connection did not take is not an open.** Both transports
-    // answer a subscribe with a store while holding nothing - a closed
-    // connection answers a refused one, and the desktop's shell takes the
-    // command before its socket exists - and a seat counted as opened there
-    // has nothing that asks again: the visit's open and a reconnect's re-ask
-    // both follow the connection's answer (#3002). So the count follows the
-    // same answer, and the next visit or open asks again.
-    seat.opened = connection.holds(subject) ? 1 : 0;
-    // No answer is coming for an ask that never went, so nothing may wait on
-    // one: a latched ask would swallow the next wanted read.
-    seat.asking = seat.opened > 0;
+    // **No answer is coming for an ask the connection did not take**, so no
+    // ask may wait on one: a latched ask would swallow the next wanted read.
+    // The read gates on the same answer, so this is the only mirror of it.
+    seat.asking = connection.holds(subject);
     seat.askingReview = seat.review;
     seat.askedAt = seat.seen;
   }
@@ -1512,20 +1503,14 @@ function createSeat(
         // **This branch is safe only because a non-open status is a REAL
         // socket change.** The web's own socket close sends `connecting`, and
         // the desktop's shell sends the pair when its socket generation
-        // rises; nothing else can reach here on a live wire. Zeroing
-        // `opened` and clearing the take on a socket that never went would
-        // strand every visited seat unattached and drop a recording still
-        // running.
+        // rises; nothing else can reach here on a live wire. Dropping the ask
+        // and clearing the take on a socket that never went would leave a turn
+        // unheard and a recording cut short.
         //
         // The ask in flight went with the drop, and the record this seat holds
         // is from before it: the answer the reconnect brings is the whole
         // record, so one is wanted.
         seat.asking = false;
-        // **The drop took this seat's subscription with it, and the socket
-        // took the seat's entry out of its own list.** A page still holding
-        // this seat re-attaches below; every other seat stays stale and
-        // re-attaches on its next click, which is the resume rule.
-        seat.opened = 0;
         // The take goes with the socket: the core drops a take whose reader
         // went away, so the fold's own claim dies here - left standing, the
         // record draws a recording that is over (#1880).
@@ -1535,18 +1520,18 @@ function createSeat(
         }
         return;
       }
-      // **The socket re-asks the non-seat subjects it holds, and this seat's
-      // own re-attach is below**, so a beat armed across the drop would be a
+      // **The socket re-asks the subjects it holds, and this seat's own
+      // re-attach is below**, so a beat armed across the drop would be a
       // second ask behind them. The attach below is the one that answers -
       // and a refusal it meets arms the beat again.
       clearRetry();
       // **Only the seat on screen comes back live.** The rest stay stale and
       // re-attach on their next click, which is the resume rule; the shown
-      // seat's own answer is the whole record. **A seat the connection holds
-      // still has its count restored** (the drop zeroed it, and a read rides
-      // an open), and a seat it does not hold is opened here - which is where
-      // a want asked for before the socket existed finally reaches it (#3002).
-      if (shown && (seat.opened === 0 || !connection.holds(subject))) open();
+      // seat's own answer is the whole record. **A seat the connection still
+      // holds is left alone** - a transport that kept the want (the desktop's
+      // shell) is already re-asking it - and one it does not hold is reopened
+      // here, which is the page's own door (#3002).
+      if (shown && !connection.holds(subject)) open();
     });
   }
 
