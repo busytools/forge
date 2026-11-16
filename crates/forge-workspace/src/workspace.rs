@@ -5957,11 +5957,14 @@ impl Workspace {
         }
         // The row a refusal draws, built before the command takes the prompt's
         // words. The typed update a delivery also sends no longer forges a row,
-        // so without this a route failure would drop them silently. A `Forge`
-        // prompt is left out: the only machinery prompt carrying a typed
-        // update is the delivery-failure notice, whose row is forged from that
-        // update downstream, so drawing here would be a second copy of it.
-        let fallback = (source != PromptSource::Forge)
+        // so without this a route failure would drop them silently.
+        //
+        // Only a source whose caller settles this error here draws: a `Forge`
+        // prompt carries its own dispatch row (the failure notice's is forged
+        // from its typed update downstream), and a cron or Slack source is
+        // retried by its caller under a fresh id, so a row here would paint the
+        // failed attempt as well as the delivered one.
+        let fallback = matches!(source, PromptSource::Peer | PromptSource::Gotify)
             .then(|| Message::display_only_user(text.clone(), uuid.clone()));
         // `route` rather than `dispatch`: the prompt has no frame of its own
         // to forge. Every source draws at the CLI's `started`; a row forged
@@ -5985,7 +5988,8 @@ impl Workspace {
     /// Send the row a prompt never got: `route` refused it before the session
     /// task saw it, so neither the CLI's `started` frame nor the task's own
     /// dispatch-failure fallback will ever draw the words. The caller builds
-    /// them while it still owns them.
+    /// them while it still owns them, and only calls this for a source it does
+    /// not retry - a retried source draws on the retry, under a fresh id.
     pub(crate) fn send_never_routed_row(
         &self,
         key: &SessionSlot,
@@ -10710,7 +10714,7 @@ impl Workspace {
                 // the session task's, drawn at the CLI's `started`, and this
                 // carries the notice's typed fields. A dispatch that never
                 // reaches the task still draws the words, from the row
-                // `emit_never_routed_row` forges.
+                // `send_never_routed_row` forges.
                 crate::spawn::push_peer_user_turn_into_chat(self, &lead_slot, &wrapped, &uuid);
             } else {
                 tracing::warn!(
@@ -14481,9 +14485,8 @@ provider = "anthropic"
     /// A prompt forge wrote itself and no view drew - a worker kick, an
     /// auto-continue - draws as the words the model received: the CLI does
     /// not echo a prompt back, and nothing else carries them. The delivery
-    /// path is the other half of the pair: a delivery's words are drawn by
-    /// the envelope update its own caller emits, so a bare frame beside it
-    /// would draw the same turn twice.
+    /// path is the other half of the pair: a delivery's words draw at the
+    /// CLI's `started`, so a bare frame here would draw the same turn twice.
     #[test]
     fn a_forged_prompt_draws_its_words_where_a_delivery_prompt_forges_none() {
         let dir = tempdir().expect("tempdir");
@@ -18269,36 +18272,50 @@ provider = "anthropic"
         }
     }
 
-    /// **A prompt the route refuses still draws its words.** The typed update
-    /// a delivery sends no longer forges a row, and the session task's own
-    /// fallback only covers failures after the command reached it; a route
-    /// failure is the case before that.
+    /// **A prompt the route refuses still draws its words**, for the sources
+    /// whose caller settles the refusal here. The typed update a delivery
+    /// sends no longer forges a row, and the session task's own fallback only
+    /// covers failures after the command reached it; a route failure is the
+    /// case before that.
     #[tokio::test]
     async fn a_prompt_the_route_refuses_still_draws_its_words() {
         let (ws, mut rx) = Workspace::testing_stub();
         let gone = SessionSlot::for_label("TestOrg", "gone", Some("w1"));
         let caller = SessionSlot::lead("TestOrg", "gone");
 
-        let first = ws.dispatch_workspace_prompt_under(
+        let gotify = ws.dispatch_workspace_prompt_under(
             &gone,
-            "a cron fire".to_owned(),
-            PromptSource::Cron,
-            "gone-cron".to_owned(),
+            "a gotify push".to_owned(),
+            PromptSource::Gotify,
+            "gone-gotify".to_owned(),
         );
-        assert!(first.is_err(), "no session task takes it: {first:?}");
-        let second = ws.dispatch_peer_prompt_under(
+        assert!(gotify.is_err(), "no session task takes it: {gotify:?}");
+        let peer = ws.dispatch_peer_prompt_under(
             &caller,
             &gone,
             "a peer message".to_owned(),
             "gone-peer".to_owned(),
         );
-        assert!(second.is_err(), "no session task takes it: {second:?}");
+        assert!(peer.is_err(), "no session task takes it: {peer:?}");
+        // A cron fire and a Slack batch are retried by their callers under a
+        // fresh id: the retry is the one draw, so this path stays silent.
+        for (uuid, source) in
+            [("gone-cron", PromptSource::Cron), ("gone-slack", PromptSource::Slack)]
+        {
+            let retried = ws.dispatch_workspace_prompt_under(
+                &gone,
+                "retried".to_owned(),
+                source,
+                uuid.to_owned(),
+            );
+            assert!(retried.is_err(), "no session task takes it: {retried:?}");
+        }
 
         let drawn: Vec<SessionUpdate> = std::iter::from_fn(|| rx.try_recv().ok())
             .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
             .collect();
         for (uuid, source, expected) in [
-            ("gone-cron", PromptSource::Cron, "a cron fire"),
+            ("gone-gotify", PromptSource::Gotify, "a gotify push"),
             ("gone-peer", PromptSource::Peer, "a peer message"),
         ] {
             assert!(
@@ -18316,6 +18333,18 @@ provider = "anthropic"
                         ))
                 )),
                 "{source:?} draws its words when the route refuses it: {drawn:?}",
+            );
+        }
+        for uuid in ["gone-cron", "gone-slack"] {
+            assert!(
+                !drawn.iter().any(|update| matches!(
+                    update,
+                    SessionUpdate::ChatAppended {
+                        msg: Message::User { uuid: Some(id), .. },
+                        ..
+                    } if id == uuid
+                )),
+                "a retried source draws on the retry, not on the failed attempt: {drawn:?}",
             );
         }
     }
@@ -24349,15 +24378,20 @@ mod async_worker_spawn_failure_tests {
             .filter(|c| matches!(c, Command::Prompt { .. } | Command::PromptUnder { .. }))
             .collect();
         assert_eq!(prompts.len(), 1, "exactly one WorkerSpawnFailedNotice envelope");
-        if let Command::Prompt { key, text, .. } | Command::PromptUnder { key, text, .. } =
-            prompts[0]
-        {
+        if let Command::PromptUnder { key, text, source, .. } = prompts[0] {
             assert_eq!(*key, lead_key, "notice targets the lead session id");
             assert!(text.starts_with("[Worker 'reviewer' spawn failed"));
             assert!(text.contains("already used by worktree"));
+            // **`Peer` is this notice's only row carrier.** `delivery_turn`
+            // forges only the delivery-failure notice, so a `Forge` source
+            // here would draw no row at all.
+            assert_eq!(
+                *source,
+                PromptSource::Peer,
+                "the notice rides the source whose row the session task draws",
+            );
         }
-        // And the echo a view draws: the CLI does not paint a prompt it was
-        // handed on stdin, so without this the page shows nothing at all.
+        // And the typed update a view keeps beside that row.
         let echoed = std::iter::from_fn(|| update_rx.try_recv().ok()).any(|frame| {
             matches!(
                 std::sync::Arc::unwrap_or_clone(frame.update),

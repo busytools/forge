@@ -83,7 +83,9 @@ dispatch row on the wire; `prompt_queued` retracts it and the client draws
 it at `started`. A CLI with no lifecycle frames draws every row at
 dispatch. The typed update a delivery also sends (`peer`, `cron`,
 `gotify`, `slack`) carries the envelope's facts and pairs a cron's
-schedule with its row; it is never a row of its own.
+schedule with its row; it is never a row of its own - except the
+delivery-failure notice's `peer` update, which is exactly the row the
+server forges for it.
 
 **A parked question is the pile's other shape.** Every prompt arriving
 while a question is up is `queued` and stays; the answer lands and all of

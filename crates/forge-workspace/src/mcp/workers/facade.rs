@@ -15,9 +15,9 @@ use crate::protocol::{Command, SessionChoice, WorkerSpawnReply};
 use crate::workspace::{ResumeTarget, Workspace};
 
 /// A delivery's own answer, and it has one shape: the prompt was accepted
-/// (handed to the target's session queue, held for its turn end, or parked
-/// for its connect). A prompt that reached no session is an error instead,
-/// so "accepted" is the whole of what this claims.
+/// (handed to the target's session queue, held for a successor's swap, or
+/// parked for its connect). A prompt that reached no session is an error
+/// instead, so "accepted" is the whole of what this claims.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkerTargetStatus {
     Delivered,

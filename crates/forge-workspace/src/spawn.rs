@@ -493,15 +493,15 @@ pub(crate) fn missed_cron_text(prompt: &str, missed: bool) -> String {
     if missed { format!("[missed cron] {prompt}") } else { prompt.to_owned() }
 }
 
-/// Deliver a due cron's prompt into its OWNER's session as a plain user
-/// turn AND echo it as a cron block. `team_role` `None` routes to the
-/// project lead, `Some(label)` to that worker. A live owner gets a
-/// `Command::Prompt`; an asleep-but-existing owner is woken by dispatching
-/// `Command::SpawnProject` (which resumes the lead and, through the lead's
-/// respawn, the worker), the prompt buffered by `(project, team_role)`
-/// and drained on the owner's connect. An owner that no longer exists (a
-/// gone project, or a worker label with no persisted row) yields
-/// `TargetGone`.
+/// Deliver a due cron's prompt into its OWNER's session as a plain user turn
+/// and push its typed update. `team_role` `None` routes to the project lead,
+/// `Some(label)` to that worker. A live owner gets a `Command::PromptUnder`
+/// whose row draws at the CLI's `started`; an asleep-but-existing owner is
+/// woken by dispatching `Command::SpawnProject` (which resumes the lead and,
+/// through the lead's respawn, the worker), the prompt buffered by
+/// `(project, team_role)` and drained on the owner's connect. An owner that no
+/// longer exists (a gone project, or a worker label with no persisted row)
+/// yields `TargetGone`.
 pub(crate) fn deliver_cron_prompt(
     workspace: &Arc<Workspace>,
     cron: &forge_primitives::CronEntry,
@@ -1144,7 +1144,7 @@ pub(crate) fn push_gotify_notification_into_chat(
 
 /// Emit a typed `CronPromptAppended` so a view pairs the fired prompt's id
 /// with the schedule that produced it - the pairing titles the row the CLI's
-/// `started` draws, live and after a reload. Mirrors
+/// `started` draws, after the fired entry has left the store. Mirrors
 /// [`push_gotify_notification_into_chat`].
 pub(crate) fn push_cron_prompt_into_chat(
     workspace: &Workspace,
@@ -1155,7 +1155,8 @@ pub(crate) fn push_cron_prompt_into_chat(
     description: Option<&str>,
 ) {
     // The frame names the schedule once, and the row outlives it: keep the
-    // pairing so the read path can title the same row after a reload.
+    // pairing so the live row can still be titled once the fired entry is
+    // gone from the store.
     workspace.remember_cron_name(target_key, uuid, cron_id, description);
     let _ = workspace.update_sender().send(SessionUpdate::CronPromptAppended {
         key: target_key.clone(),
@@ -2841,10 +2842,8 @@ fn reap_worker_branch(repo: &std::path::Path, label: &str) -> Option<String> {
 /// Handle a `Command::DeliverWorkerPrompt`: route a wrapped peer-style
 /// envelope to the worker matching `target_label` in the caller's
 /// project. Latest-spawned-wins on duplicate labels. The typed
-/// PeerEnvelopeAppended echo follows the same pattern as
-/// `handle_deliver_peer_prompt` - workers reuse the peer envelope
-/// verbatim so a view's chat render is identical between the two
-/// paths.
+/// PeerEnvelopeAppended update follows the same pattern as
+/// `handle_deliver_peer_prompt`; the row draws at the CLI's `started`.
 ///
 /// Unlike `handle_deliver_peer_prompt`, this handler never buffers +
 /// auto-spawns: workers are only addressable while live. If the
@@ -2998,9 +2997,9 @@ pub(crate) fn handle_deliver_worker_prompt(
 
 /// Answer a delivery's `respond` channel, if the caller asked for one:
 /// `Ok(())` once the prompt was accepted - handed to the target's session
-/// queue or parked for its connect - and `Err(reason)` when nothing could
-/// take it. The sender's ack is built from this answer alone, so it never
-/// claims a delivery that did not happen.
+/// queue, held for a successor's swap, or parked for its connect - and
+/// `Err(reason)` when nothing could take it. The sender's ack is built from
+/// this answer alone, so it never claims a delivery that did not happen.
 fn answer_delivery(
     respond: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
     outcome: Result<(), String>,
@@ -3014,7 +3013,7 @@ fn answer_delivery(
 /// peer-style prompt from a worker back to its lead, addressed by
 /// the lead's `SessionSlot` (resolved at Tool dispatch from the
 /// worker's `spawned_by_session_id`). Same wire shape as
-/// `DeliverWorkerPrompt` - PeerEnvelopeAppended echo + Command::Prompt
+/// `DeliverWorkerPrompt` - PeerEnvelopeAppended update + Command::PromptUnder
 /// dispatch - so a view renders the lead's message identically to
 /// a sibling-worker delivery.
 ///

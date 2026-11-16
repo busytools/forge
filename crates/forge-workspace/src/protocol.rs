@@ -795,10 +795,10 @@ pub enum Command {
     /// the caller's project rather than by cross-project name.
     ///
     /// `respond` carries what actually happened to the prompt: `Ok(())`
-    /// once it was accepted - handed to the target's session queue or parked
-    /// for its connect - and `Err(reason)` when nothing could take it. The
-    /// sender's ack is built from this answer alone, so it can only claim what
-    /// the delivery really did.
+    /// once it was accepted - handed to the target's session queue, held for
+    /// a successor's swap, or parked for its connect - and `Err(reason)` when
+    /// nothing could take it. The sender's ack is built from this answer
+    /// alone, so it can only claim what the delivery really did.
     DeliverWorkerPrompt {
         caller: SessionSlot,
         project_key: crate::ProjectKey,
@@ -814,8 +814,8 @@ pub enum Command {
     /// worker's `spawned_by_session_id` so the handler can deliver
     /// directly without re-doing the lookup against a possibly-mutated
     /// `live_workers` map. Wire shape is identical to
-    /// `DeliverWorkerPrompt` (same PeerEnvelopeAppended echo + same
-    /// `Command::Prompt` dispatch into the target session), and its
+    /// `DeliverWorkerPrompt` (same PeerEnvelopeAppended update + same
+    /// `Command::PromptUnder` dispatch into the target session), and its
     /// `respond` carries the same acceptance answer.
     DeliverWorkerPromptToLead {
         caller: SessionSlot,
@@ -831,8 +831,9 @@ pub enum Command {
     /// `GotifyHost::deliver` port impl, one per matching subscription;
     /// handled by `spawn::deliver_gotify_message`. `notification` carries
     /// the resolved app name, title, message, and priority - its
-    /// `to_prose()` is the user-turn text, and the same struct drives the
-    /// chat-echo. App-level command (`key()` returns `None`).
+    /// `to_prose()` is the user-turn text, and the same struct rides the
+    /// typed update beside the row drawn at the CLI's `started`. App-level
+    /// command (`key()` returns `None`).
     DeliverGotifyMessage {
         project: String,
         team_role: Option<String>,

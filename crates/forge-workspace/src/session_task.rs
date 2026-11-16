@@ -2578,7 +2578,7 @@ impl SessionTask {
     }
 
     /// Deliver the peer prompts parked for this session's slot. Each is
-    /// re-dispatched as a normal `Command::Prompt` against `self.key`.
+    /// re-dispatched as a normal `Command::PromptUnder` against `self.key`.
     /// The existing prompt-delivery path handles it identically to a
     /// user-typed prompt - the only difference is the prose body
     /// carries the `[Message id=m-…]` wrapper
@@ -2618,7 +2618,7 @@ impl SessionTask {
     /// Deliver the cron prompts parked for this session's slot - the
     /// bucket a due cron filled while the slot was asleep. Each keeps its
     /// schedule pairing (missed-marked when overdue) and is re-dispatched
-    /// as a plain `Command::Prompt`; its row draws at the CLI's `started`.
+    /// as a plain `Command::PromptUnder`; its row draws at the CLI's `started`.
     fn deliver_parked_crons(
         &self,
         workspace: &Arc<crate::Workspace>,
@@ -2654,8 +2654,8 @@ impl SessionTask {
 
     /// Deliver the Gotify notifications parked for this session's slot.
     /// Each keeps its typed update and is re-dispatched as a plain
-    /// `Command::Prompt`, landing as an ordinary user turn whose row draws
-    /// at the CLI's `started`. Mirrors [`Self::deliver_parked_crons`].
+    /// `Command::PromptUnder`, landing as an ordinary user turn whose row
+    /// draws at the CLI's `started`. Mirrors [`Self::deliver_parked_crons`].
     fn deliver_parked_gotify(
         &self,
         workspace: &Arc<crate::Workspace>,
@@ -2694,8 +2694,8 @@ impl SessionTask {
 
     /// Deliver the Slack messages parked for this session's slot. Each
     /// conversation's keeps its typed update and is re-dispatched as a
-    /// plain `Command::Prompt`, landing as an ordinary user turn whose row
-    /// draws at the CLI's `started`. Mirrors [`Self::deliver_parked_gotify`].
+    /// plain `Command::PromptUnder`, landing as an ordinary user turn whose
+    /// row draws at the CLI's `started`. Mirrors [`Self::deliver_parked_gotify`].
     fn deliver_parked_slack(
         &self,
         workspace: &Arc<crate::Workspace>,
@@ -7068,12 +7068,12 @@ mod tests {
     }
 
     /// First-Connected drains the session's buffered Slack messages: each
-    /// dispatches a plain `Command::Prompt` AND echoes a
-    /// `SlackMessageAppended` so a message that arrived while the project was
-    /// asleep shows its block once the session connects. Driven through
-    /// Connected rather than the private drain so the ordering is pinned -
-    /// the drain runs after the Connected emit, and both carry the task's
-    /// own slot, which is the bucket the message was parked under.
+    /// dispatches a plain `Command::PromptUnder` and pushes its
+    /// `SlackMessageAppended`, whose row draws at the CLI's `started` once the
+    /// session connects. Driven through Connected rather than the private
+    /// drain so the ordering is pinned - the drain runs after the Connected
+    /// emit, and both carry the task's own slot, which is the bucket the
+    /// message was parked under.
     #[test]
     fn first_connected_drains_parked_slack_and_echoes_block() {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
@@ -10291,10 +10291,10 @@ provider = "anthropic"
     }
 
     /// First-Connected drains the session slot's buffered cron prompts:
-    /// each dispatches a plain `Command::Prompt` AND echoes a
-    /// `CronPromptAppended` so an asleep-fired cron shows its block once the
-    /// session connects (mirrors the gotify drain echo). Reproduce-first:
-    /// the echo is absent until the drain calls `push_cron_prompt_into_chat`.
+    /// each dispatches a plain `Command::PromptUnder` and pushes its
+    /// `CronPromptAppended`, whose row draws at the CLI's `started` once the
+    /// session connects (mirrors the gotify drain). Reproduce-first: the
+    /// update is absent until the drain calls `push_cron_prompt_into_chat`.
     #[tokio::test]
     async fn first_connected_drains_pending_cron_prompts_and_echoes_block() {
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
@@ -12410,6 +12410,28 @@ provider = "anthropic"
             })
             .expect("the first prompt is announced while its capability is unknown");
 
+        // **A machinery prompt waiting in the same pile draws no drain row.**
+        // Its row is the one forge laid down at dispatch; a second copy here
+        // is the duplicate this cut exists to remove.
+        task.execute_command(Command::PromptUnder {
+            key: key.clone(),
+            text: "a handoff brief".to_owned(),
+            attachments: Vec::new(),
+            uuid: "forge-flush".to_owned(),
+            source: crate::protocol::PromptSource::Forge,
+            dispatch_id: None,
+        });
+        assert_eq!(
+            domain.lock().prompt_queue.len(),
+            2,
+            "premise: both prompts wait for the init frame",
+        );
+        let mut sent = 0;
+        while agent_rx.try_recv().is_ok() {
+            sent += 1;
+        }
+        assert_eq!(sent, 2, "both prompts reach the agent: the pile is a view, not the send");
+
         // The init frame from a CLI that does not advertise the capability is
         // what draws the waiting prompt and drains the pile.
         let init: forge_primitives::Message = serde_json::from_value(serde_json::json!({
@@ -12426,10 +12448,6 @@ provider = "anthropic"
         assert!(
             domain.lock().prompt_queue.is_empty(),
             "the init frame drains the pile it can no longer settle",
-        );
-        assert!(
-            agent_rx.try_recv().is_ok(),
-            "the prompt itself still reaches the agent: the pile is a view, not the send",
         );
         let drained: Vec<crate::protocol::SessionUpdate> =
             std::iter::from_fn(|| updates.try_recv().ok())
@@ -12465,6 +12483,16 @@ provider = "anthropic"
                     if uuid == &first && state == "started"
             )),
             "and settles the card it was waiting in: {drained:?}",
+        );
+        assert!(
+            !drained.iter().any(|update| matches!(
+                update,
+                crate::protocol::SessionUpdate::ChatAppended {
+                    msg: forge_primitives::Message::User { uuid: Some(id), .. },
+                    ..
+                } if id == "forge-flush"
+            )),
+            "the machinery's waiting prompt draws no drain row: {drained:?}",
         );
 
         // **Every later prompt takes the dispatch fallback.** The flag is
@@ -12560,6 +12588,33 @@ provider = "anthropic"
             panic!("the fallback row is the user turn it draws: {msg:?}");
         };
         assert_eq!(uuid.as_deref(), Some("peer-nf"), "under the prompt's own id");
+
+        // **The machinery's own prompt draws no dispatch fallback here
+        // either**: its row is the one forge laid down at dispatch, so a row
+        // here would draw it twice.
+        task.execute_command(Command::PromptUnder {
+            key: key.clone(),
+            text: "a continuation".to_owned(),
+            attachments: Vec::new(),
+            uuid: "forge-nf".to_owned(),
+            source: crate::protocol::PromptSource::Forge,
+            dispatch_id: None,
+        });
+        assert!(agent_rx.try_recv().is_ok(), "and it still reaches the agent");
+        let forged: Vec<crate::protocol::SessionUpdate> =
+            std::iter::from_fn(|| updates.try_recv().ok())
+                .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                .collect();
+        assert!(
+            !forged.iter().any(|update| matches!(
+                update,
+                crate::protocol::SessionUpdate::ChatAppended {
+                    msg: forge_primitives::Message::User { uuid: Some(id), .. },
+                    ..
+                } if id == "forge-nf"
+            )),
+            "the machinery's prompt draws no dispatch row: {forged:?}",
+        );
     }
 
     /// **The started row reaches every fanout subscriber, for each send.** The
@@ -12897,6 +12952,30 @@ provider = "anthropic"
                 } if id == "failed-peer"
             )),
             "the failed delivery draws under its own source: {announced:?}",
+        );
+
+        // **A machinery prompt's failed dispatch draws nothing here**: its row
+        // is the one `dispatch_forged_prompt_held` laid down at dispatch.
+        task.execute_command(Command::PromptUnder {
+            key: slot.clone(),
+            text: "a continuation".to_owned(),
+            attachments: Vec::new(),
+            uuid: "failed-forge".to_owned(),
+            source: crate::protocol::PromptSource::Forge,
+            dispatch_id: None,
+        });
+        let announced: Vec<SessionUpdate> = std::iter::from_fn(|| update_rx.try_recv().ok())
+            .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+            .collect();
+        assert!(
+            !announced.iter().any(|update| matches!(
+                update,
+                SessionUpdate::ChatAppended {
+                    msg: forge_primitives::Message::User { uuid: Some(id), .. },
+                    ..
+                } if id == "failed-forge"
+            )),
+            "the machinery's failed dispatch draws no second row: {announced:?}",
         );
     }
 
