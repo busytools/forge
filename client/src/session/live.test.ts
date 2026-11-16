@@ -3098,6 +3098,33 @@ describe('the seat the client holds between visits', () => {
   });
 
   /**
+   * **A read wanted for a seat the connection does not hold is dropped, not
+   * latched.** The open count is what says a read has a subscription to ride;
+   * a seat whose ask never went is closed, so a wanted read has nothing behind
+   * it - and latched instead it would fire later as a whole encode nobody
+   * asked for (#3002).
+   */
+  it('drops a wanted read while the connection holds no subscription', () => {
+    const connection = drivable();
+    connection.dropAsks();
+    const page = watch(connection);
+    expect(connection.subscribes(), 'precondition: the visit asked').toBe(1);
+
+    rereadSeat(connection, LEAD);
+    expect(connection.reads(), 'a read rode a subscription the connection does not hold').toBe(0);
+
+    // The connection comes back holding the seat and the answer lands: a read
+    // latched above would fire here, as a second whole record.
+    connection.takeAsks();
+    page.wentTo('connecting');
+    page.wentTo('open');
+    page.land(snapshotOf(LEAD));
+
+    expect(connection.reads(), 'a read latched onto nothing fired later').toBe(0);
+    page.stop();
+  });
+
+  /**
    * **A subscribe the transport could not take is asked again on the beat.**
    * The transport reports the loss with the same `error` frame a refusal
    * rides, and the refusal beat is the re-ask: a seat with no subscription
