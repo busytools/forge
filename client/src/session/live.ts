@@ -1025,10 +1025,10 @@ function createSeat(
     // **An ask the connection did not take is not an open.** Both transports
     // answer a subscribe with a store while holding nothing - a closed
     // connection answers a refused one, and the desktop's shell takes the
-    // command before its socket exists - and a seat counted as opened there is
-    // never asked again: `showing` opens only at zero and a reconnect re-asks
-    // only the wants the connection holds (#3002). So the count follows what
-    // the connection holds, and the next visit or open asks again.
+    // command before its socket exists - and a seat counted as opened there
+    // has nothing that asks again: the visit's open and a reconnect's re-ask
+    // both follow the connection's answer (#3002). So the count follows the
+    // same answer, and the next visit or open asks again.
     seat.opened = connection.holds(subject) ? 1 : 0;
     // No answer is coming for an ask that never went, so nothing may wait on
     // one: a latched ask would swallow the next wanted read.
