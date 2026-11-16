@@ -9,6 +9,14 @@
   repository, so there is nothing to select by hand.
 - **The `claude` CLI.** forge spawns it; it does not bundle it or talk
   to the Anthropic API on its own.
+- **The `claude-headless` binary, only on a machine whose config sets an
+  `engine` to `"forge"`.** That engine spawns the certified port instead of
+  the `claude` CLI, so the binary must be on `PATH`: copy the certified
+  artifact into any directory on `PATH` and `chmod +x` it. It takes the same
+  arguments, stdin and environment as `claude -p`, and needs no config or
+  side file. Without it, a spawn on that engine fails with an error naming
+  the binary, the key and its project or org rather than falling back to
+  `claude`; every other engine runs without it.
 - **`cargo-nextest`**, for the test suite. `just check` uses it rather
   than `cargo test`.
 - **`mdbook`**, for the book. CI pins `0.5.4`; rule 11's workflow

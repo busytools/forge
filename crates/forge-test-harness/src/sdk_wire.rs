@@ -11,7 +11,9 @@
 //! - **Live mode** (`FORGE_WIRE_CAPTURE=1`): spawn real `claude`, drive
 //!   forge-sdk through the scenario, capture the full stdin/stdout
 //!   trace to `target/wire-traces/`. Burns API tokens. Updates the
-//!   committed baseline on request.
+//!   committed baseline on request. `FORGE_WIRE_BINARY` points the whole
+//!   suite at another drop-in binary - the certified `claude-headless`
+//!   port runs the same scenarios through the same assertions.
 //! - **Replay mode** (default): load the committed baseline trace
 //!   fixture for the scenario, feed every inbound line through
 //!   `forge_sdk::transport::codec::decode_dispatch`, assert everything
@@ -131,6 +133,20 @@ impl DumpKind {
     }
 }
 
+/// The binary a live spawn runs: the `claude` CLI unless
+/// `FORGE_WIRE_BINARY` names another drop-in.
+///
+/// The certified `claude-headless` port speaks the same argv, stdin and
+/// environment, so the same scenarios run against it with the same
+/// assertions - one variable points the whole suite at it rather than each
+/// scenario naming a binary.
+fn live_binary() -> Option<String> {
+    std::env::var("FORGE_WIRE_BINARY")
+        .ok()
+        .map(|binary| binary.trim().to_owned())
+        .filter(|binary| !binary.is_empty())
+}
+
 /// Install inbound + outbound wire-tee callbacks on a builder so the
 /// resulting [`forge_sdk::Options`] captures every stream-json line
 /// the SDK exchanges with the `claude` subprocess. Returns the
@@ -148,6 +164,10 @@ pub fn attach_recording(builder: OptionsBuilder) -> (OptionsBuilder, Arc<Mutex<T
         .tee_outbound(move |line: &str| {
             log_out.lock().entries.push(("out", line.to_string()));
         });
+    let builder = match live_binary() {
+        Some(binary) => builder.binary(binary),
+        None => builder,
+    };
     (builder, log)
 }
 
@@ -372,6 +392,9 @@ where
         opts.tee_outbound = Some(Arc::new(move |line: &str| {
             log_out.lock().entries.push(("out", line.to_string()));
         }));
+        if let Some(binary) = live_binary() {
+            opts.binary = binary;
+        }
         opts
     };
 

@@ -31,6 +31,12 @@ message type, or decodes to an unknown control-request subtype.
 stdin and stdout trace to `target/wire-traces/`. It burns real API
 tokens, so it is not part of any automated run.
 
+`FORGE_WIRE_BINARY` points every live spawn at another drop-in binary
+instead of the `claude` CLI on `PATH`. The certified `claude-headless`
+port takes the same argv, stdin and environment, so
+`FORGE_WIRE_CAPTURE=1 FORGE_WIRE_BINARY=claude-headless` runs the whole
+suite against it through the same assertions.
+
 ```bash
 just conformance                                  # replay everything, offline
 just conformance-capture-sdk wire_capture_trivial_prompt   # one live capture
