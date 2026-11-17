@@ -985,6 +985,33 @@ mod tests {
         assert_eq!(rendered.turns[1].opens_at, 3, "on the row it arrived in");
     }
 
+    /// **A delivery arriving after a settled turn is the next turn's first
+    /// row.** The row the CLI records for the injected prompt is the only
+    /// marker of where that turn opens, so a fold that kept it in the turn
+    /// above would draw the delivery's exchange as that turn's work. The
+    /// fixture is the peer envelope prose forge sends, which is what the CLI
+    /// records; a cron's row on disk is its raw prompt, with no `[Cron]`
+    /// wrapper to parse.
+    #[test]
+    fn a_delivery_after_a_settled_turn_opens_the_next_one() {
+        let rendered = settled(&[
+            reader_row("the earlier work"),
+            assistant(vec![ContentBlock::Text {
+                text: "done".to_owned(),
+                extras: serde_json::Map::new(),
+            }]),
+            user(vec![ContentBlock::Text {
+                text: "[Message id=m-7f3a92e0 from agent 'companies' (org 'Busytools')]\n\n\
+                       the overnight CI run is green"
+                    .to_owned(),
+                extras: serde_json::Map::new(),
+            }]),
+        ]);
+
+        assert_eq!(rendered.turns.len(), 2, "the delivery opens a turn of its own");
+        assert_eq!(rendered.turns[1].opens_at, 2, "on its own row, where the CLI started it");
+    }
+
     /// **A call whose result has not streamed yet is still a live turn.**
     ///
     /// The live fold runs over the incrementally-grown window, and during
