@@ -187,8 +187,7 @@ artifact - an HTML mockup, a PNG - is raised in the browser instead, with \
 `browser_hand_off` on the tab it landed on, never pushed through the document \
 hand-off. The document opens in their own viewer, \
 and the review they leave comes \
-back to this session when it has the `review` MCP family; without that \
-family the review is your lead's to read, and the hand-off answer names \
+back to this session, and the hand-off answer names \
 the scope for it. A worker's own work reaches the user directly \
 through a hand-off - `documents__hand_off` for a reviewable document, \
 `browser_hand_off` for a visual artifact - or a spoken update to a seat \
@@ -4329,10 +4328,10 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "the review they leave comes back to this session when it has the `review` MCP \
-                 family; without that family the review is your lead's to read"
+                "the review they leave comes back to this session, and the hand-off answer \
+                 names the scope for it"
             ),
-            "the review's return is qualified by the family the worker was spawned with",
+            "the review returns to the session that delivered the document",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(

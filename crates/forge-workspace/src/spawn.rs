@@ -1788,7 +1788,8 @@ pub(crate) fn handle_spawn_worker(
                 session_id: session_id.as_str().to_owned(),
                 tag,
                 // The stored selection, canonicalised; `None` means every
-                // family. The lead sees exactly what this worker got.
+                // family. The reply echoes the row's stored selection;
+                // review is always on in addition.
                 mcp_families: families,
                 rate_limited_account,
                 // Set when the row could not be written above; the boot
@@ -6035,6 +6036,77 @@ heal_stable = "30s"
              so composed lines here would compound on every re-spawn",
         );
         assert_eq!(stored.mcp_families, Some(vec!["slack".to_owned()]));
+    }
+
+    /// A narrowed spawn's own server build still carries the review tools.
+    /// This drives the spawn path itself - the role match in
+    /// `get_agent_handle_at_key` that resolves the stored selection - so a
+    /// regression there fails here rather than only in the resolver's unit
+    /// test.
+    #[tokio::test]
+    async fn a_narrowed_spawn_still_gets_the_review_tools() {
+        let dir = tempdir().expect("tempdir");
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
+        ws.seed_test_gateway_ready(true);
+        let key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("fixture project")
+            .key;
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &ws,
+            key,
+            WorkerSpawnArgs {
+                label: "narrowed".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                mcp_families: Some(vec!["tasks".to_owned()]),
+                cwd: None,
+            },
+            SessionSlot::from_str_for_test("lead"),
+            None,
+            false,
+            tx,
+        );
+        let reply = rx.await.expect("spawn replies");
+        assert!(reply.is_ok(), "the narrowed spawn succeeds: {reply:?}");
+
+        let server = ws.test_spawn_server().expect("the spawn composed its forge server");
+        let names = server.tool_names();
+        assert!(
+            names.iter().any(|name| name.starts_with("review__")),
+            "a narrowed spawn still carries the review family: {names:?}",
+        );
+        assert!(
+            names.iter().any(|name| name.starts_with("tasks__")),
+            "and the family its row did name: {names:?}",
+        );
+        assert!(
+            !names.iter().any(|name| name.starts_with("cron__")),
+            "while a family the row did not name stays withheld: {names:?}",
+        );
+    }
+
+    /// The prompt composer half of the rule: a worker narrowed to `tasks`
+    /// is never told it lacks the review family, because it never does.
+    #[test]
+    fn a_narrowed_charter_never_withholds_review() {
+        let text = spawn_prompt_charter("charter", Some(&["tasks".to_owned()]), true, true, true);
+        assert!(
+            !text.contains("This session has no `review__*` tools"),
+            "a narrowed worker is never told review is absent: {text}",
+        );
+        assert!(
+            text.contains("This session has no `cron__*` tools"),
+            "while a family it really lacks is still named: {text}",
+        );
     }
 
     /// The wiring the round-2 axis probed: an argument-less spawn on a
@@ -10523,15 +10595,16 @@ mod lead_charter_tests {
         }
     }
 
-    /// `review` cannot be withheld any more, so the charter must not send
-    /// a lead looking for a family it can never leave out: a lead that
-    /// reads "include `review`" learns the opposite of the rule and spends
-    /// a thought on a selection that does nothing.
+    /// `review` cannot be withheld any more, so the charter must not talk
+    /// about the family argument at all: any sentence about it either
+    /// tells a lead to select a family it can never leave out or implies
+    /// one can be withheld. The tool description is where a caller meets
+    /// the argument.
     #[test]
-    fn the_charter_does_not_ask_a_lead_to_select_review() {
+    fn the_charter_does_not_mention_mcp_families() {
         assert!(
-            !DEFAULT_LEAD_CHARTER.contains("include `review`"),
-            "the charter still tells a lead to select the always-on review family",
+            !DEFAULT_LEAD_CHARTER.contains("mcp_families"),
+            "the charter still talks about narrowing the family argument",
         );
     }
 

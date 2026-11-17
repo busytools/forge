@@ -347,8 +347,8 @@ pub struct ForgeServerFacades {
 /// each acts on is scoped rather than gated on session kind: a review
 /// conversation belongs to a project and branch, crons and subscriptions to
 /// the caller that made them, and tasks to the caller's project. A review
-/// nudge lands on a worker seat, so the family must be offered to workers
-/// and the nudge must stay usable when it is withheld.
+/// nudge lands on a worker seat, so the family is always on for workers:
+/// the worker that did the work can always answer a review on its branch.
 ///
 /// All submodules share the server name so the LLM sees a single
 /// namespace (`mcp__forge__<group>__*`) and the auto-approve fast-path
@@ -1301,6 +1301,18 @@ mod tests {
             );
             assert!(!refused.contains("unknown"), "it is not a spelling problem: {refused}");
         }
+    }
+
+    /// `review` is accepted in a selection even though it is always on:
+    /// old calls and stored rows list it, and refusing it would break them
+    /// for no gain. It is the one always-on group a caller may still name.
+    #[test]
+    fn review_is_accepted_in_a_selection_as_redundant() {
+        assert_eq!(
+            canonical_mcp_families(&["review".to_owned()]),
+            Ok(Some(vec!["review".to_owned()])),
+            "listing the always-on review family is accepted, not refused",
+        );
     }
 
     /// A stored row holding only unselectable names is corrupt, not a

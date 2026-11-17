@@ -99,8 +99,9 @@ pub struct WorkerSpawnReply {
     pub session_id: String,
     pub tag: String,
     /// The worker's stored MCP-family selection, canonicalised; `None`
-    /// means every family. The spawn tool echoes it so the lead sees
-    /// exactly which families this worker got.
+    /// means every family. The spawn tool echoes the row's stored
+    /// selection; `review` is always on in addition, so the effective
+    /// surface is this selection plus review.
     pub mcp_families: Option<Vec<String>>,
     /// Set to the account name when the walk had to take an account
     /// that is saturated or bailed, because no other account in the pin

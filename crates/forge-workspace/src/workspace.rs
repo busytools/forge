@@ -21187,16 +21187,6 @@ mod worker_respawn_tests {
         workspace: &Arc<Workspace>,
         kind: crate::mcp::SessionKind,
     ) -> Vec<String> {
-        forge_tool_surface_for(workspace, kind, &crate::mcp::McpFamily::all())
-    }
-
-    /// [`forge_tool_surface`] for an arbitrary resolved family set - what a
-    /// narrowed spawn hands the builder.
-    fn forge_tool_surface_for(
-        workspace: &Arc<Workspace>,
-        kind: crate::mcp::SessionKind,
-        families: &std::collections::BTreeSet<crate::mcp::McpFamily>,
-    ) -> Vec<String> {
         let server = crate::mcp::build_forge_server(
             crate::mcp::ForgeServerFacades {
                 workspace: crate::mcp::peers::facade::ProdWorkspaceFacade::from_arc(workspace),
@@ -21223,7 +21213,7 @@ mod worker_respawn_tests {
                     .into_arc()
                 }),
             },
-            families,
+            &crate::mcp::McpFamily::all(),
             &SessionSlot::from_str_for_test("caller"),
             kind,
         );
@@ -21452,31 +21442,6 @@ mod worker_respawn_tests {
         assert!(
             !forge_tool_surface(&ws, kind).contains(&"agents__spawn".to_owned()),
             "and a worker's forge server carries no lead-only verb",
-        );
-    }
-
-    /// The spawn's server build resolves the stored selection and hands
-    /// that set to the builder (workspace.rs, the `families` match before
-    /// `build_forge_server`), so a worker spawned with `mcp_families:
-    /// ["tasks"]` still gets the review tools. The always-on rule lives in
-    /// the resolver the build calls; this drives that path end to end
-    /// rather than asserting on the resolver alone.
-    #[test]
-    fn a_narrowed_worker_spawn_still_gets_the_review_tools() {
-        let (ws, _rx) = Workspace::testing_stub();
-        let families = crate::mcp::resolve_mcp_families(Some(&["tasks".to_owned()]));
-        let names = forge_tool_surface_for(&ws, crate::mcp::SessionKind::Worker, &families);
-        assert!(
-            names.iter().any(|name| name.starts_with("review__")),
-            "a narrowed worker still carries the review family: {names:?}",
-        );
-        assert!(
-            names.iter().any(|name| name.starts_with("tasks__")),
-            "and the family its row did name: {names:?}",
-        );
-        assert!(
-            !names.iter().any(|name| name.starts_with("cron__")),
-            "while a family the row did not name stays withheld: {names:?}",
         );
     }
 

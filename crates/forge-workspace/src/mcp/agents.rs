@@ -673,11 +673,12 @@ impl Tool for Spawn {
          spawn. The label 'lead' is reserved (it addresses a project's \
          own agent) and rejected here. Use agents__list to see your \
          project's current worker pool. `mcp_families` selects which \
-         MCP families this worker gets: any family the argument lists \
-         (the agents__* verbs are always on and cannot be listed). \
+         MCP families this worker gets: the families the argument lists \
+         are granted, and `review` is always on in addition (the \
+         agents__* verbs are always on and cannot be listed). \
          Omit it, or pass an empty list, and the \
-         worker gets every family on a fresh spawn. Pass a list and it gets exactly \
-         those; each withheld family is named in the worker's own prompt \
+         worker gets every family on a fresh spawn. Pass a list and it gets \
+         those plus `review`; each withheld family is named in the worker's own prompt \
          so it knows what it does not have - a worker without systemone \
          is told to route decisions to you. The choice is stored on the \
          worker and survives restarts; revise it with agents__update. On \
@@ -728,7 +729,7 @@ impl Tool for Spawn {
                 "mcp_families": {
                     "type": "array",
                     "items": { "type": "string", "enum": families },
-                    "description": "The MCP families this worker gets, exactly those listed. Omit or pass an empty list for every family on a fresh spawn; a resume adopts the stored selection. `agents__*` is always on and cannot be listed. `review` is always on for every worker and cannot be withheld; listing it is accepted but redundant. Each withheld family is named in the worker's own prompt. What each gives the worker: `review` - read and answer reviews filed on its branch or under a document it handed off; always on, so a lead never withholds it. `cron` - schedule and manage durable work of its own; give it to any worker that needs a recurring or deferred task. `tasks` - claim, file and update rows on the project board; give it to any worker whose work is on the board. `gotify` - subscribe to and read Gotify notifications; give it to any worker that acts on them. `slack` - read Slack, subscribe, and post through held approval; give it to any worker that works in Slack. `systemone` - put a yes/no, a choice or a score to the decision model; give it to any worker that weighs decisions itself. `voice` - speak one utterance aloud to the person listening to this seat; give it to any worker whose replies someone should hear. `vault` - read and change credentials in the Vaultwarden vault, every call held for approval; give it to any worker that needs its own credentials.",
+                    "description": "The MCP families this worker gets: the families the argument lists are granted. Omit or pass an empty list for every family on a fresh spawn; a resume adopts the stored selection. `agents__*` is always on and cannot be listed. `review` is always on for every worker and cannot be withheld; listing it is accepted but redundant. Each withheld family is named in the worker's own prompt. What each gives the worker: `review` - read and answer reviews filed on its branch or under a document it handed off; always on, so a lead never withholds it. `cron` - schedule and manage durable work of its own; give it to any worker that needs a recurring or deferred task. `tasks` - claim, file and update rows on the project board; give it to any worker whose work is on the board. `gotify` - subscribe to and read Gotify notifications; give it to any worker that acts on them. `slack` - read Slack, subscribe, and post through held approval; give it to any worker that works in Slack. `systemone` - put a yes/no, a choice or a score to the decision model; give it to any worker that weighs decisions itself. `voice` - speak one utterance aloud to the person listening to this seat; give it to any worker whose replies someone should hear. `vault` - read and change credentials in the Vaultwarden vault, every call held for approval; give it to any worker that needs its own credentials.",
                 },
                 "cwd": {
                     "type": "string",
@@ -1383,11 +1384,23 @@ mod tests {
             "the top-level text scopes the default to a fresh spawn: {}",
             tool.description(),
         );
-        // `review` reads as review-pass tooling, so a lead withholding it
-        // from an implementing worker leaves that worker unable to answer
-        // a review on its own branch (#2510) - or to read the review a
-        // handed-off document comes back with. Each family names what a
-        // worker gets from it and who should have it.
+        // `review` comes with every selection, so neither text may read as
+        // "exactly those listed": a lead that believes it can withhold
+        // review is the state this cut removes.
+        assert!(
+            tool.description().contains(
+                "the families the argument lists are granted, and `review` is always on in addition"
+            ),
+            "the spawn prose grants review in addition to the list: {}",
+            tool.description(),
+        );
+        assert!(
+            !tool.description().contains("Pass a list and it gets exactly"),
+            "a named list no longer reads as exactly those: {}",
+            tool.description(),
+        );
+        // Each family names what a worker gets from it and who should have
+        // it; `review` names its always-on state instead of a recipient.
         let families = schema["properties"]["mcp_families"]["description"]
             .as_str()
             .expect("mcp_families carries a description");
