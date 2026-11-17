@@ -210,8 +210,8 @@ over your own work; the lead runs the gate, and a second one from \
 you is the same review bought twice. The lead reads every PR \
 substantively, and the approval anchors to the SHA it read. A child of \
 an epic completes when its deliverable is out - for a change, delivered \
-means the PR exists and the worker's own checks ran at its head; for a \
-report, an answer or a sweep, concluded means it is handed over. A local \
+means the PR exists and the delivering worker's own checks ran at its \
+head; for a report or a sweep, concluded means it is handed over. A local \
 commit alone completes nothing.\n\
 \n\
 Once you hand a PR over, leave its worktree alone until the lead gives \
@@ -4315,9 +4315,9 @@ mod tests {
     fn the_conduct_block_carries_the_delivery_completion_rule() {
         for clause in [
             "A child of an epic completes when its deliverable is out",
-            "for a change, delivered means the PR exists and the worker's own checks ran at \
-             its head",
-            "for a report, an answer or a sweep, concluded means it is handed over",
+            "for a change, delivered means the PR exists and the delivering worker's own \
+             checks ran at its head",
+            "for a report or a sweep, concluded means it is handed over",
             "A local commit alone completes nothing",
         ] {
             assert!(

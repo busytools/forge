@@ -323,8 +323,8 @@ impl Tool for Update {
          verify=user child parks in waiting on the user and counts only once the user \
          approves); and completing the epic's ROOT row closes it and archives the whole \
          tree. A child of an epic completes when its deliverable is out - for a change, \
-         delivered means the PR exists and the worker's own checks ran at its head; for a \
-         report, an answer or a sweep, concluded means it is handed over. A local commit \
+         delivered means the PR exists and the delivering worker's own checks ran at its \
+         head; for a report or a sweep, concluded means it is handed over. A local commit \
          alone completes nothing. Any session in the \
          project may move any of its tasks, so a lead can \
          complete a worker's task and a worker can put a row it holds into waiting - and a row \
@@ -374,10 +374,10 @@ impl Tool for Update {
                                     terminal so the epic can read `to close`; a verify=user \
                                     row parks in waiting on the user first. A child of an \
                                     epic completes when its deliverable is out - for a \
-                                    change, delivered means the PR exists and the worker's \
-                                    own checks ran at its head; for a report, an answer or \
-                                    a sweep, concluded means it is handed over. A local \
-                                    commit alone completes nothing.",
+                                    change, delivered means the PR exists and the \
+                                    delivering worker's own checks ran at its head; for a \
+                                    report or a sweep, concluded means it is handed over. A \
+                                    local commit alone completes nothing.",
                 },
                 "owner": {
                     "type": "string",
@@ -1758,9 +1758,9 @@ mod tests {
         ] {
             for clause in [
                 "A child of an epic completes when its deliverable is out",
-                "for a change, delivered means the PR exists and the worker's own checks ran \
-                 at its head",
-                "for a report, an answer or a sweep, concluded means it is handed over",
+                "for a change, delivered means the PR exists and the delivering worker's own \
+                 checks ran at its head",
+                "for a report or a sweep, concluded means it is handed over",
                 "A local commit alone completes nothing",
             ] {
                 assert!(

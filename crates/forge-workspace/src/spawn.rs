@@ -10571,6 +10571,22 @@ mod lead_charter_tests {
         assert_eq!(settings.charter.as_deref(), Some("pre-existing"));
     }
 
+    /// An epic with no user look closes on its children being delivered,
+    /// not merged: a child completes when its deliverable is out, so a
+    /// "merged" here would wait on a merge the board's completion never
+    /// requires and hold the epic open behind it.
+    #[test]
+    fn the_charter_closes_an_epic_on_delivered_children() {
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("closes as soon as its children are delivered"),
+            "the epic close reads the children's completion moment: {DEFAULT_LEAD_CHARTER}",
+        );
+        assert!(
+            !DEFAULT_LEAD_CHARTER.contains("closes as soon as its children are merged"),
+            "the epic close must not wait on the merge the child's completion never requires",
+        );
+    }
+
     /// A plan, spec or design the lead writes for the USER's own review
     /// reaches them as a document, not as a path in chat. Pinned on the
     /// plan step, which is the moment the file is written - a lead reads
