@@ -837,6 +837,52 @@ describe('frames from the bridge', () => {
   });
 
   /**
+   * **A relist is bounded like a subscribe.** The page's recovery asks again
+   * through `client_relist`, and a snapshot lost on that door must be
+   * retried the same way - a seat whose store went back to loading would
+   * otherwise wait with no beat behind it (#3002).
+   */
+  it('asks the shell again for a relisted read the bound finds still loading', async () => {
+    vi.useFakeTimers();
+    invoke.mockImplementation((command: string) => {
+      if (command === 'client_state') return Promise.resolve(OPEN);
+      return Promise.resolve(undefined);
+    });
+    const connection = connectRust('ws://127.0.0.1:7777/socket', 1_000);
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+    const store = connection.subscribe(subject);
+    fire('client://inbound', { kind: 'snapshot', subject, data: { header: {} } });
+    await vi.waitFor(() => expect(store.state().kind).toBe('ready'));
+
+    // **The occupant is replaced**, which puts the store back to loading. The
+    // subscribe's own bound is already cleared by the answer above, so only a
+    // relist's arm can schedule the retry below.
+    fire('client://inbound', {
+      kind: 'update',
+      update: {
+        connected: {
+          key: slot,
+          session_id: 'next',
+          cwd: '/tmp',
+          current_model: null,
+          available_models: [],
+          mode: null,
+          history: [],
+          compaction_count: 0,
+        },
+      },
+    });
+    await vi.waitFor(() => expect(store.state().kind).toBe('loading'));
+    invoke.mockClear();
+
+    connection.relist(subject);
+    vi.advanceTimersByTime(1_000);
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('client_refresh', { what: subject }),
+    );
+  });
+
+  /**
    * **A review read is bounded like any other.** The server no longer waits
    * on the network for it, so an unanswered review read is presumed lost at
    * the same pass as every other read rather than loading forever. This

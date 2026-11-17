@@ -979,6 +979,7 @@ impl Bridge {
         let held_answering = state.held.get(&key).is_some_and(|watch| watch.answering);
         if let Some(watch) = state.held.get_mut(&key) {
             watch.review = review;
+            watch.answering |= answering;
             watch.pending |= !carried;
         } else {
             state.order.push(key.clone());
@@ -3633,7 +3634,7 @@ mod tests {
 
         // **The carry happens once.** A watch a socket has carried is the
         // page's to re-open; re-asking it on the next socket would be a
-        // second server entry for a seat nobody is looking at.
+        // server entry nobody asked for.
         let mut second = stub().await;
         bridge.connect(second.url.clone());
         connected(&bridge).await;
@@ -3661,6 +3662,10 @@ mod tests {
         bridge.connect(server.url.clone());
         let carried = server.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(carried["what"], seat(), "the relist reached the first socket it ever had");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "the relist asked once, not once per reader and once again",
+        );
     }
 
     /// **The page's replacement discriminator is the socket task's own id.**

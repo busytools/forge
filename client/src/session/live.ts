@@ -956,8 +956,8 @@ function createSeat(
    *
    * **A seat is unheld in two ways.** Its subscription can be refused - an
    * answer rather than a subscription - and its ask can be lost before the
-   * transport took it; the transport reports that loss in the frame a
-   * refusal rides, and it is what arms this beat (#3002). **A refusal is
+   * transport took it; the shell reports that loss in the frame a refusal
+   * rides, and it is what arms this beat (#3002). **A refusal is
    * sometimes an answer and sometimes a wait**: a seat forge holds no session
    * for clears when it starts, and a copy behind a seal clears when the fold
    * applies it (#2514) - so the ask that comes back refused arms the next

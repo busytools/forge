@@ -251,7 +251,7 @@ class RustConnection implements Connection {
    * connection closes, and when a socket drop takes the seats with it - the
    * shell keeps only its string subjects across a retry, so a seat entry that
    * outlived the socket would say the shell carries an ask nothing will send.
-   * A string entry does survive a drop: `onopen` is the shell's re-ask.
+   * A string entry does survive a drop: the shell's own retry re-asks it.
    */
   private readonly held = new Map<string, { seat: boolean; answering: boolean; review: boolean }>();
   /**
@@ -561,10 +561,11 @@ class RustConnection implements Connection {
    * down when the page gives it back, when the command never reached the
    * shell, when the connection closes, and when a socket drop ends the seats
    * with it. **An accepted string ask is carried across the shell's own
-   * retries**; a seat is carried by the socket that took it, or by the next
-   * `client_connect` for a watch taken with no socket, and by nothing after a
-   * drop - the page re-attaches that one. A closed connection holds nothing
-   * at all.
+   * retries**; a seat is carried by the socket that took it, by the shell's
+   * offline list for an ask taken while its task was between connections, or
+   * by the next `client_connect` for a watch taken with no socket - and a
+   * seat the old socket carried is gone with it, the page re-attaches that
+   * one. A closed connection holds nothing at all.
    */
   holds(what: Subject): boolean {
     return this.state !== 'closed' && this.held.has(subjectKey(what));
