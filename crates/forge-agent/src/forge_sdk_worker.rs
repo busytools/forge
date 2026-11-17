@@ -485,6 +485,17 @@ fn engine_spawn_error(
     }
 }
 
+/// `Client::spawn`'s result with the engine's missing-binary rewrite
+/// applied. **The one door the spawn takes**, split out so the rewrite is
+/// driven directly: a bare `?` at the call site would hand the SDK's own
+/// sentence to the reader, and nothing would see it before a reader did.
+fn engine_spawn_result<T>(
+    result: Result<T, forge_sdk::Error>,
+    launch_settings: &crate::client::SessionLaunchSettings,
+) -> anyhow::Result<T> {
+    result.map_err(|error| engine_spawn_error(error, launch_settings))
+}
+
 /// Spawn a fresh `Client` for `bridge` and start the reader subtask.
 /// Builds `Options` from `launch_settings` (mode, model, effort,
 /// `can_use_tool` callback). `id` says which session the child runs
@@ -544,8 +555,7 @@ pub(crate) async fn spawn_session(
         extra_mcp_servers,
         &AccountBinding { config_dir: &config_dir, env: &account_env },
     );
-    let (client, events) =
-        Client::spawn(options).await.map_err(|error| engine_spawn_error(error, launch_settings))?;
+    let (client, events) = engine_spawn_result(Client::spawn(options).await, launch_settings)?;
     sweep_agent_worktrees(cwd);
     // A supplied id is the truth: a resume carried it on the CLI flag,
     // and a create was adopted by the CLI, which is why the transcript
@@ -1628,8 +1638,9 @@ fn build_options_with_callback(
     }
 
     // Swap tests drive the real spawn_session against forge-sdk's mock
-    // fixture; production always runs the `claude` on PATH. The test
-    // override outranks the engine so a suite never spawns the real port.
+    // fixture. Production spawns the binary the launch settings carry:
+    // `claude` unless the engine names `claude-headless`. The test override
+    // outranks the engine so a suite never spawns the real port.
     #[cfg(any(test, feature = "testing"))]
     if let Some(path) = test_sdk_binary() {
         b = b.binary(path);
@@ -5331,6 +5342,22 @@ mod tests_reader_terminal {
             "claude",
             "an explicit default is the same binary as an unset one",
         );
+
+        // **The test override outranks the engine**, so a suite never
+        // spawns the real port - even when a case asks for it.
+        set_test_sdk_binary(Some("/tmp/the-suite-mock".to_owned()));
+        let overridden = build(Some(EngineSetting {
+            engine: Engine::Forge,
+            scope: EngineScope::Project {
+                org: "Busytools".to_owned(),
+                project: "forge".to_owned(),
+            },
+        }));
+        set_test_sdk_binary(None);
+        assert_eq!(
+            overridden.binary, "/tmp/the-suite-mock",
+            "the test override outranks the engine",
+        );
     }
 
     /// A missing `forge` binary fails with the binary, the setting and no
@@ -5381,6 +5408,70 @@ mod tests_reader_terminal {
             &unset,
         );
         assert!(plain.downcast_ref::<forge_sdk::Error>().is_some());
+
+        // **An engine set on the org names the org's key**, which is the
+        // other documented way to enable the port; the project arm above
+        // would otherwise be the only one a regression could not miss.
+        let org_launch = SessionLaunchSettings {
+            engine: Some(EngineSetting {
+                engine: Engine::Forge,
+                scope: EngineScope::Org { org: "Busytools".to_owned() },
+            }),
+            ..SessionLaunchSettings::default()
+        };
+        let org_message = super::engine_spawn_error(
+            forge_sdk::Error::CliNotFound { binary: crate::client::FORGE_ENGINE_BINARY.to_owned() },
+            &org_launch,
+        )
+        .to_string();
+        for needed in ["claude-headless", "orgs.Busytools.engine", "org 'Busytools'"] {
+            assert!(org_message.contains(needed), "the org failure names {needed}: {org_message}");
+        }
+        assert!(
+            !org_message.contains("projects"),
+            "and it names no project, because none chose it: {org_message}",
+        );
+    }
+
+    /// **The spawn's own door applies the rewrite.** `spawn_session` hands
+    /// `Client::spawn`'s result to `engine_spawn_result`, so a missing
+    /// engine binary reaches the reader as the sentence the book documents
+    /// rather than the SDK's own rendering.
+    #[test]
+    fn the_spawn_door_rewrites_a_missing_engine_binary() {
+        use crate::client::{Engine, EngineScope, EngineSetting, SessionLaunchSettings};
+
+        let launch = SessionLaunchSettings {
+            engine: Some(EngineSetting {
+                engine: Engine::Forge,
+                scope: EngineScope::Project {
+                    org: "Busytools".to_owned(),
+                    project: "forge".to_owned(),
+                },
+            }),
+            ..SessionLaunchSettings::default()
+        };
+        let rewritten = super::engine_spawn_result::<()>(
+            Err(forge_sdk::Error::CliNotFound {
+                binary: crate::client::FORGE_ENGINE_BINARY.to_owned(),
+            }),
+            &launch,
+        )
+        .expect_err("a missing binary is an error");
+        assert!(
+            rewritten.to_string().contains("orgs.Busytools.projects.forge.engine"),
+            "the spawn door hands the reader the named error: {rewritten}",
+        );
+
+        let passed = super::engine_spawn_result::<()>(
+            Err(forge_sdk::Error::CliNotFound { binary: "claude".to_owned() }),
+            &launch,
+        )
+        .expect_err("any other absence is still an error");
+        assert!(
+            passed.downcast_ref::<forge_sdk::Error>().is_some(),
+            "and another binary's absence passes through untouched: {passed}",
+        );
     }
 
     /// A recorded event, captured off the subscriber so the shipped log line
