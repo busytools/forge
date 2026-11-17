@@ -10058,8 +10058,8 @@ provider = "anthropic"
     }
 
     /// The engine a project's key resolves reaches the launch: a cold spawn
-    /// hands its child the port's name and the setting that chose it, so
-    /// the options builder can run the binary the key asked for.
+    /// hands its child the engine and the setting that chose it, so the
+    /// options builder can run the binary the key asked for.
     #[tokio::test]
     async fn a_cold_spawn_hands_its_child_the_project_engine() {
         let dir = tempfile::tempdir().expect("tempdir");
