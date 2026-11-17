@@ -208,7 +208,9 @@ project's tests and its check command - then hand the PR over and \
 stop. Do not spawn reviewers or run a review pass \
 over your own work; the lead runs the gate, and a second one from \
 you is the same review bought twice. The lead reads every PR \
-substantively, and the approval anchors to the SHA it read.\n\
+substantively, and the approval anchors to the SHA it read. A child of \
+an epic completes on delivery - the PR exists and the gates ran at its \
+head - not when a commit lands locally.\n\
 \n\
 Once you hand a PR over, leave its worktree alone until the lead gives \
 you a new instruction: work done after handover is work the round did not \
@@ -4297,6 +4299,23 @@ mod tests {
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("the approval anchors to the SHA it read"),
             "the SHA anchor is pinned",
+        );
+    }
+
+    /// An epic child completes on delivery, not on the local commit. The
+    /// failure that produced the rule: a worker marked its children
+    /// complete when their commits landed, before anything was pushed or a
+    /// PR existed, so the board read done while nothing had been delivered.
+    /// Every worker reads this block, so the moment is named with both
+    /// things delivery means.
+    #[test]
+    fn the_conduct_block_carries_the_delivery_completion_rule() {
+        assert!(
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
+                "A child of an epic completes on delivery - the PR exists and the gates ran \
+                 at its head - not when a commit lands locally"
+            ),
+            "an epic child's completion moment is delivery, not the local commit",
         );
     }
 

@@ -322,7 +322,8 @@ impl Tool for Update {
          terminal, because the epic reads `to close` only once every child is terminal (a \
          verify=user child parks in waiting on the user and counts only once the user \
          approves); and completing the epic's ROOT row closes it and archives the whole \
-         tree. Any session in the \
+         tree. A child of an epic completes on delivery - the PR exists and the gates \
+         ran at its head - not when a commit lands locally. Any session in the \
          project may move any of its tasks, so a lead can \
          complete a worker's task and a worker can put a row it holds into waiting - and a row \
          waiting on the user's own look cannot be completed here: the board's approve completes \
@@ -369,7 +370,10 @@ impl Tool for Update {
                                     it is deleted in the same pass. A landed row under an \
                                     epic - open or already terminal - stays completed and \
                                     terminal so the epic can read `to close`; a verify=user \
-                                    row parks in waiting on the user first.",
+                                    row parks in waiting on the user first. A child of an \
+                                    epic completes on delivery - the PR exists and the \
+                                    gates ran at its head - not when a commit lands \
+                                    locally.",
                 },
                 "owner": {
                     "type": "string",
@@ -1726,6 +1730,36 @@ mod tests {
                  {status}",
             );
         }
+    }
+
+    /// An epic child completes on delivery, not on the local commit
+    /// (#3008): a worker marked its children complete when their commits
+    /// landed, before anything was pushed or a PR existed, and the board
+    /// read done while nothing had been delivered. The update description
+    /// and its status property are the two sites a caller reads as it
+    /// picks `completed`, so both carry the moment.
+    #[test]
+    fn the_update_description_states_the_delivery_completion_moment() {
+        let update = Update { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
+        assert!(
+            update.description().contains(
+                "A child of an epic completes on delivery - the PR exists and the gates ran \
+                 at its head - not when a commit lands locally"
+            ),
+            "the update description states when a child completes: {}",
+            update.description(),
+        );
+        let status = update.input_schema()["properties"]["status"]["description"]
+            .as_str()
+            .expect("the status property carries a description")
+            .to_owned();
+        assert!(
+            status.contains(
+                "A child of an epic completes on delivery - the PR exists and the gates ran \
+                 at its head - not when a commit lands locally"
+            ),
+            "the status property states the moment where `completed` is picked: {status}",
+        );
     }
 
     /// The waiting-completion refusal is shipped text (#2414): a caller
