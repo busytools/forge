@@ -284,9 +284,7 @@ describe('the finish', () => {
     expect(
       nudge?.prompt_under?.['text'],
       'the line is the one-line nudge the view this client replaced sent',
-    ).toBe(
-      'Review #4 ready - scope work/review-nudge. Read it back under that scope.',
-    );
+    ).toBe('Review #4 ready - scope work/review-nudge. Read it back under that scope.');
     expect(nudge?.prompt_under?.['source'], 'the bubble reads as the reader own words').toBe('you');
     expect(nudge?.prompt_under?.['attachments'], 'a nudge carries no images').toEqual([]);
     expect(typeof nudge?.prompt_under?.['uuid'], 'the prompt rides its own id').toBe('string');
