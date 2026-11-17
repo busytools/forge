@@ -322,7 +322,10 @@ impl Tool for Update {
          terminal, because the epic reads `to close` only once every child is terminal (a \
          verify=user child parks in waiting on the user and counts only once the user \
          approves); and completing the epic's ROOT row closes it and archives the whole \
-         tree. Any session in the \
+         tree. A child of an epic completes when its deliverable is out - for a change, \
+         delivered means the PR exists and the delivering worker's own checks ran at its \
+         head; for a report or a sweep, concluded means it is handed over. A local commit \
+         alone completes nothing. Any session in the \
          project may move any of its tasks, so a lead can \
          complete a worker's task and a worker can put a row it holds into waiting - and a row \
          waiting on the user's own look cannot be completed here: the board's approve completes \
@@ -369,7 +372,12 @@ impl Tool for Update {
                                     it is deleted in the same pass. A landed row under an \
                                     epic - open or already terminal - stays completed and \
                                     terminal so the epic can read `to close`; a verify=user \
-                                    row parks in waiting on the user first.",
+                                    row parks in waiting on the user first. A child of an \
+                                    epic completes when its deliverable is out - for a \
+                                    change, delivered means the PR exists and the \
+                                    delivering worker's own checks ran at its head; for a \
+                                    report or a sweep, concluded means it is handed over. A \
+                                    local commit alone completes nothing.",
                 },
                 "owner": {
                     "type": "string",
@@ -1725,6 +1733,41 @@ mod tests {
                 "the status property owes the rule where the caller picks it ({clause}): \
                  {status}",
             );
+        }
+    }
+
+    /// An epic child completes when its deliverable is out, not when a
+    /// commit lands (#3008): a worker marked its children complete when
+    /// their commits landed, before anything was pushed or a PR existed,
+    /// and the board read done while nothing had been delivered. Both
+    /// shapes ship because the board carries non-PR deliverables, and the
+    /// change case names the worker's own checks rather than the lead's
+    /// gate. The update description and its status property are the two
+    /// sites a caller reads as it picks `completed`, so both carry the
+    /// moment.
+    #[test]
+    fn the_update_description_states_the_delivery_completion_moment() {
+        let update = Update { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
+        let status = update.input_schema()["properties"]["status"]["description"]
+            .as_str()
+            .expect("the status property carries a description")
+            .to_owned();
+        for (site, text) in [
+            ("the update description", update.description().to_owned()),
+            ("the status property", status),
+        ] {
+            for clause in [
+                "A child of an epic completes when its deliverable is out",
+                "for a change, delivered means the PR exists and the delivering worker's own \
+                 checks ran at its head",
+                "for a report or a sweep, concluded means it is handed over",
+                "A local commit alone completes nothing",
+            ] {
+                assert!(
+                    text.contains(clause),
+                    "{site} does not state when a child completes ({clause}): {text}",
+                );
+            }
         }
     }
 

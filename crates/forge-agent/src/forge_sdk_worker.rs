@@ -208,7 +208,11 @@ project's tests and its check command - then hand the PR over and \
 stop. Do not spawn reviewers or run a review pass \
 over your own work; the lead runs the gate, and a second one from \
 you is the same review bought twice. The lead reads every PR \
-substantively, and the approval anchors to the SHA it read.\n\
+substantively, and the approval anchors to the SHA it read. A child of \
+an epic completes when its deliverable is out - for a change, delivered \
+means the PR exists and the delivering worker's own checks ran at its \
+head; for a report or a sweep, concluded means it is handed over. A local \
+commit alone completes nothing.\n\
 \n\
 Once you hand a PR over, leave its worktree alone until the lead gives \
 you a new instruction: work done after handover is work the round did not \
@@ -4298,6 +4302,30 @@ mod tests {
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("the approval anchors to the SHA it read"),
             "the SHA anchor is pinned",
         );
+    }
+
+    /// An epic child completes when its deliverable is out, not when a
+    /// commit lands. The failure that produced the rule: a worker marked
+    /// its children complete when their commits landed, before anything was
+    /// pushed or a PR existed, so the board read done while nothing had
+    /// been delivered. Both shapes are named because the shipped set
+    /// carries non-PR deliverables, and the change case names the worker's
+    /// own checks rather than the lead's gate, which the worker cannot see.
+    #[test]
+    fn the_conduct_block_carries_the_delivery_completion_rule() {
+        for clause in [
+            "A child of an epic completes when its deliverable is out",
+            "for a change, delivered means the PR exists and the delivering worker's own \
+             checks ran at its head",
+            "for a report or a sweep, concluded means it is handed over",
+            "A local commit alone completes nothing",
+        ] {
+            assert!(
+                FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(clause),
+                "an epic child's completion moment is its deliverable, not the local commit \
+                 ({clause})",
+            );
+        }
     }
 
     /// A spec, plan or design the user is meant to review reaches them as
