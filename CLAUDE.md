@@ -515,7 +515,15 @@ inspected.
    independent groups run concurrently, capped by `FORGE_CHECK_JOBS`
    (default 4); `just check-serial` runs the same steps one at a time,
    for debugging. When `sccache` is on `PATH` the recipes export
-   `RUSTC_WRAPPER=sccache`; without it they build normally.
+   `RUSTC_WRAPPER=sccache`; without it they build normally. **Keep a
+   worktree's `OUT_DIR` short: set `CARGO_TARGET_DIR` to a short path,
+   and put no `target` symlink in the worktree.** Cargo hands `OUT_DIR`
+   through the symlink, so a `target -> /tmp` link does not shorten what
+   a build script sees, and a long worktree path truncates
+   `espeak-rs-sys`'s phoneme file names at the end of a fixed-size
+   buffer; the build then fails as "failed to run custom build command",
+   which reads like a toolchain problem. The tell is the worktree path in
+   its `Compiling phoneme data:` line and in the failing file name.
    `just check-delta <crate>...` is the review-round slice - fmt, the
    Unicode gate, both clippy feature sets and nextest for the named
    crates, plus the client's steps or the shell crate's when named - and
