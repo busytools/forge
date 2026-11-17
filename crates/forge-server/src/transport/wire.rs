@@ -597,8 +597,8 @@ pub struct SessionHeaderWire {
     pub available_models: Vec<Value>,
     /// The engine the seat's launch settings resolved, drawn beside the
     /// build facts: `"default"` or `"forge"`, and `null` while the seat
-    /// holds no session record (nothing launched yet, or a cold launch that
-    /// failed).
+    /// holds no session record (nothing launched yet, or a launch that
+    /// failed and took its record with it).
     pub engine: Option<forge_workspace::Engine>,
     pub turn_in_flight: bool,
 }

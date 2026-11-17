@@ -497,10 +497,11 @@ certified `claude-headless` port, `default` for the `claude` CLI - drawn the
 way the settings page names it. It is the seat's own value rather than the
 config's current word: a running session keeps the binary it started on, and
 the stamp moves when a `/new`, a `/resume` or a handoff starts the next
-occupant on a different engine. A cold launch that never started a session
-rolls its seat record back, so no stamp is drawn and the seat's own failure
-row says why. While the seat holds no session record the line is absent, so
-an unstarted seat cannot read as `default`.
+occupant on a different engine. A launch that never put a session on the
+seat can leave no record behind - a failed respawn releases the seat's, and
+a failed cold launch rolls back the one it made - so no stamp is drawn and
+the seat's own failure row says why. While the seat holds no record the line
+is absent, so an unstarted seat cannot read as `default`.
 
 **The review row's panel is the review sets.** The filed rounds draw
 oldest first with the latest at the bottom - the conversation's own
