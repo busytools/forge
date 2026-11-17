@@ -917,6 +917,13 @@ fn in_thread_order(messages: &[SlackMessage]) -> Vec<&SlackMessage> {
     grouped.into_iter().map(|(_, message)| message).collect()
 }
 
+/// Whether a message started a thread: a parent is the message that reports
+/// replies and is its own thread root. A root nobody has replied to starts
+/// nothing yet, so it reads as a plain root.
+fn starts_thread(message: &SlackMessage) -> bool {
+    message.latest_reply.is_some() && message.thread_ts.as_deref() == Some(message.ts.as_str())
+}
+
 /// One bundle member. The `<author>: ` clause is what
 /// `forge_server::envelope::detect_inbound` keys on, so a member always
 /// carries one. A resolved name is preferred; the raw id is only a fallback
@@ -924,12 +931,19 @@ fn in_thread_order(messages: &[SlackMessage]) -> Vec<&SlackMessage> {
 fn member_line(message: &SlackMessage) -> String {
     let author = message.author.as_deref().or(message.user.as_deref()).unwrap_or("unknown");
     let mut out = format!("{author}: {} [ts {}", message.text, message.ts);
-    // A parent carries its own ts as `thread_ts`, and the ts above already
-    // answers into that thread, so only a real parent's reply says so.
+    // Slack sends a parent with `thread_ts` equal to its own `ts`, so the
+    // field alone cannot tell a reply from a thread's start. All three cases
+    // are said outright, because the difference is what an agent gets wrong:
+    // a reply names its parent, a parent names the thread it starts, and a
+    // plain root carries the way to answer it in one.
     if let Some(thread) = message.thread_ts.as_deref()
         && thread != message.ts
     {
         let _ = write!(out, " in thread {thread}");
+    } else if starts_thread(message) {
+        let _ = write!(out, " starts thread {}", message.ts);
+    } else {
+        out.push_str(" at root - reply with its ts as thread_ts to answer in a thread");
     }
     // An edited message keeps its ts, so a correction must be marked or it reads as a duplicate.
     if message.edited.is_some() {
@@ -6307,7 +6321,8 @@ heal_stable = "30s"
         let prose = fresh_prose(&[slack_msg("hello there")]);
         assert_eq!(
             prose,
-            "[Slack - workspace 'acme', U9] id D1 ts 100.000001\nU9: hello there [ts 100.000001]",
+            "[Slack - workspace 'acme', U9] id D1 ts 100.000001\nU9: hello there [ts \
+             100.000001 at root - reply with its ts as thread_ts to answer in a thread]",
             "the exact prose forge_server::envelope::detect_inbound keys on",
         );
     }
@@ -6408,7 +6423,10 @@ heal_stable = "30s"
 
         let prose = fresh_prose(&[message]);
         assert!(
-            prose.contains("[ts 100.000001 edited]"),
+            prose.contains(
+                "[ts 100.000001 at root - reply with its ts as thread_ts to answer in a thread \
+                 edited]"
+            ),
             "the correction is marked in the member's own bracket: {prose}",
         );
     }
@@ -6420,8 +6438,8 @@ heal_stable = "30s"
         let prose =
             fresh_prose(&[slack_msg_at("1.1", "alice", "hi"), slack_msg_at("1.2", "bob", "there")]);
 
-        assert!(prose.contains("[ts 1.1]"), "the first member's ts: {prose}");
-        assert!(prose.contains("[ts 1.2]"), "and the second's: {prose}");
+        assert!(prose.contains("[ts 1.1 at root"), "the first member's ts: {prose}");
+        assert!(prose.contains("[ts 1.2 at root"), "and the second's: {prose}");
         assert!(prose.contains("alice: hi"), "each member names its author: {prose}");
         assert!(prose.contains("bob: there"), "and so does the second: {prose}");
     }
@@ -6465,16 +6483,49 @@ heal_stable = "30s"
         assert!(!prose.contains("U0ATEK2EAGP"), "an id is never a name to print: {prose}");
     }
 
-    /// A parent carries its own `ts` as `thread_ts`, so saying so again on
-    /// the member line is noise - the ts is already the handle a reply into
-    /// that thread passes.
+    /// A parent carries its own `ts` as `thread_ts`, so `in thread` would be
+    /// a reply to itself. A parent whose thread has no replies starts
+    /// nothing yet, so it reads as the root it still is.
     #[test]
-    fn a_parent_does_not_restate_its_own_ts_as_a_thread() {
+    fn a_parent_with_no_replies_reads_as_a_root() {
         let mut parent = slack_msg_at("1.1", "alice", "hi");
         parent.thread_ts = Some("1.1".to_owned());
 
         let prose = fresh_prose(&[parent]);
         assert!(!prose.contains("in thread"), "no self-referential thread clause: {prose}");
+        assert!(!prose.contains("starts thread"), "and no thread started yet: {prose}");
+        assert!(prose.contains("at root"), "it is still a root: {prose}");
+    }
+
+    /// The daily standup is the case most often got wrong: a root message
+    /// that started a thread reads like a plain root unless the envelope
+    /// says so, and an agent that cannot tell them apart answers in the
+    /// channel instead of under the message.
+    #[test]
+    fn a_thread_parent_says_it_starts_the_thread() {
+        let mut standup = slack_msg_at("1.1", "alice", "standup time");
+        standup.thread_ts = Some("1.1".to_owned());
+        standup.latest_reply = Some("1.2".to_owned());
+
+        let prose = fresh_prose(&[standup]);
+        assert!(
+            prose.contains("starts thread 1.1"),
+            "a parent names the thread it starts: {prose}",
+        );
+        assert!(!prose.contains("at root"), "and is never read as a plain root: {prose}");
+        assert!(!prose.contains("in thread"), "nor as a reply to itself: {prose}");
+    }
+
+    /// A plain root is the one case with no thread to name, so it carries
+    /// the etiquette instead: answer it with its own ts as `thread_ts`,
+    /// which starts the thread under it.
+    #[test]
+    fn a_plain_root_says_how_to_answer_in_a_thread() {
+        let prose = fresh_prose(&[slack_msg_at("1.1", "alice", "hi")]);
+        assert!(
+            prose.contains("at root - reply with its ts as thread_ts to answer in a thread"),
+            "a root carries the way to answer it: {prose}",
+        );
     }
 
     /// #1: the at-most-one-live-per-label guard lives in the shared
