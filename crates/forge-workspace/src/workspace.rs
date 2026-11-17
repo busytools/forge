@@ -3465,11 +3465,11 @@ impl Workspace {
             Some(slot) => slot,
             None => self.resolve_slot(&target)?,
         };
-        // The engine this cold spawn launches on. A `/new`, `/resume` or
-        // handoff re-spawns on a pooled handle instead and is stamped in
-        // `stamp_respawn_overrides`; between the two, every launch carries
-        // the engine its project resolves to.
-        self.stamp_engine(&session_slot, &mut settings);
+        // The engine is stamped from the SETTLED project below, inside the
+        // reload guard's answer: a stamp read here would come from before
+        // the resolution loop's wait, and a reload straddling the spawn
+        // would pair the old engine with the new project's model, account
+        // and cwd - one launch running a binary no key names today.
         // The id the child runs under. `--session-id` and `--resume` are
         // the CLI's own arguments and stay ids; the store row records it
         // under the slot before the child starts, so a restart resolves
@@ -3559,6 +3559,12 @@ impl Workspace {
                 break (project, account_key);
             }
         };
+        // The engine for this launch, from the project the guard settled on:
+        // one snapshot decides the binary, the model, the account and the
+        // cwd together. A `/new`, `/resume` or handoff re-spawns on a pooled
+        // handle instead and is stamped in `stamp_respawn_overrides`; between
+        // the two, every launch carries the engine its project resolves to.
+        Self::stamp_engine_setting(Some(&project.engine), &mut settings);
         // The account and model checks have passed, so this spawn is
         // committed: record the id its lead will run under, either the
         // one the store held or the one minted in
@@ -4967,6 +4973,33 @@ impl Workspace {
         self.gateway.bindings.binding_for(&org, &project, &session)
     }
 
+    /// Stamp the engine the seat's project resolves to onto a launch.
+    ///
+    /// **The config is the only source.** A launch settings that arrived
+    /// carrying another engine - a client's snapshot, a handoff built
+    /// before a reload - is overwritten, so a spawn never runs a binary no
+    /// key names today; `default` clears the field, which is what a launch
+    /// settings that predates the key carries.
+    pub(crate) fn stamp_engine(
+        &self,
+        slot: &SessionSlot,
+        launch_settings: &mut SessionLaunchSettings,
+    ) {
+        let engine = self.project_for_slot(slot).map(|project| project.engine);
+        Self::stamp_engine_setting(engine.as_ref(), launch_settings);
+    }
+
+    /// One resolved engine onto a launch, shared by the stamps so both read
+    /// the same field. `default` clears it, which is what a launch settings
+    /// that predates the key carries.
+    fn stamp_engine_setting(
+        engine: Option<&forge_agent::client::EngineSetting>,
+        launch_settings: &mut SessionLaunchSettings,
+    ) {
+        launch_settings.engine =
+            engine.filter(|engine| engine.engine != forge_agent::client::Engine::Default).cloned();
+    }
+
     /// Stamp a respawn's gateway registration for a child that runs
     /// under `session_id`: the four gateway-owned keys ride
     /// `launch_settings` as overrides, the binding moves to that
@@ -4982,24 +5015,6 @@ impl Workspace {
     /// would otherwise come back. A worker's own denials come back with
     /// them: the kind decides the worktree pins, and the row's own
     /// `interactive` flag decides the question.
-    /// Stamp the engine the seat's project resolves to onto a launch.
-    ///
-    /// **The config is the only source.** A launch settings that arrived
-    /// carrying another engine - a client's snapshot, a handoff built
-    /// before a reload - is overwritten, so a spawn never runs a binary no
-    /// key names today; `default` clears the field, which is what a launch
-    /// settings that predates the key carries.
-    pub(crate) fn stamp_engine(
-        &self,
-        slot: &SessionSlot,
-        launch_settings: &mut SessionLaunchSettings,
-    ) {
-        launch_settings.engine = self
-            .project_for_slot(slot)
-            .map(|project| project.engine)
-            .filter(|engine| engine.engine != forge_agent::client::Engine::Default);
-    }
-
     pub(crate) fn stamp_respawn_overrides(
         &self,
         slot: &SessionSlot,
