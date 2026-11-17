@@ -725,17 +725,21 @@ impl Tool for Post {
     }
 
     fn description(&self) -> &'static str {
-        "Post a message to Slack as the user - a root message, or a reply into an existing \
-         thread when `thread_ts` is passed. This is HELD FOR APPROVAL: the call does not return \
-         until the user decides in the dock prompt, with no timeout of its own, and a rejected \
-         draft posts nothing. The user may instead send the draft back with feedback: the call \
-         fails with their words and nothing is posted, so revise the draft and call again. Text \
-         past 4000 characters is split into numbered parts automatically, each a \
-         separate message. Returns {workspace, ts, conversation_name, parts}: `workspace` is \
-         the resolved `[[slack]]` label it posted into, and `ts` names every message it posted, \
-         in the order they went out; slack__edit, slack__react and a reply each take one. Any \
-         session in the project may call this. If this call fails for any other reason, report \
-         the exact error and stop - never fall back to Slack's web API with the configured token."
+        "Post a message to Slack as the user. An inbound message is always answered in a \
+         thread under that message: pass its `ts` as `thread_ts`, which starts the thread when \
+         the message was at root. Only a genuinely new message goes to root - one you are \
+         starting, on a new topic, not an answer to something that came in. This is HELD FOR \
+         APPROVAL: the call does not return until the user decides in the dock prompt, with no \
+         timeout of its own, and a rejected draft posts nothing. The user may instead send the \
+         draft back with feedback: the call fails with their words and nothing is posted, so \
+         revise the draft and call again, keeping its conversation and `thread_ts` unless the \
+         change is meant to move it. Text past 4000 characters is split into numbered parts \
+         automatically, each a separate message. Returns {workspace, ts, conversation_name, \
+         parts}: `workspace` is the resolved `[[slack]]` label it posted into, and `ts` names \
+         every message it posted, in the order they went out; slack__edit, slack__react and a \
+         reply each take one. Any session in the project may call this. If this call fails for \
+         any other reason, report the exact error and stop - never fall back to Slack's web API \
+         with the configured token."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -2206,6 +2210,29 @@ mod tests {
             post.contains("any other reason"),
             "the post's stop-and-report tail is qualified for a send-back: {post}",
         );
+    }
+
+    /// The agent picks the target with `slack__post` in hand, so the
+    /// etiquette has to be in the description it reads there: an inbound
+    /// message is answered in a thread under it, only a new message goes to
+    /// root, and a revision keeps the target it was parked against. The
+    /// refusal carries the concrete target; this carries the rule.
+    #[test]
+    fn the_post_description_states_the_thread_etiquette() {
+        let facade: Arc<dyn SlackFacade> = Arc::new(MockSlackFacade::new());
+        let post = Post { facade, slot: caller_slot() }.description().to_owned();
+        for needed in [
+            "answered in a thread under that message",
+            "pass its `ts` as `thread_ts`",
+            "starts the thread when the message was at root",
+            "Only a genuinely new message goes to root",
+            "keeping its conversation and `thread_ts` unless the change is meant to move it",
+        ] {
+            assert!(
+                post.contains(needed),
+                "the post description states the etiquette: {needed}\n{post}",
+            );
+        }
     }
 
     /// The headline of the cut: no Slack tool advertises a `workspace`
