@@ -42,9 +42,9 @@ chat, the review page's own line.
 | Header        | the back link to the seat, `Files`, the seat's resolved tree and its file count, `N to read` while any thread waits on the reader, the `Conversation` / `Files` tabs, and the narrow doors                                    | the record's `state.scan_cwd`, its `file_index`, and the seat-tree threads             |
 | Conversation  | the rounds newest first, each with its age, tally chips, summary and threads - state chip, `path:line`, the turns with `edit`, and `respond` / `resolve` / `reopen` / `delete` (an accepted thread collapses to its marker, opened by a press, where only reopen, collapse and delete sit); parked threads above in an Outdated group with their captured lines | the record's `tree_reviews`; the page's own drafts and reply box                       |
 | Tree          | the seat's whole index as its own Project pane: the project row carrying the project's name with the seat's path beside it, then a row per directory and per file, folders before files at every level, indented by depth, each row wearing the 16px glyph the material icon theme gives its filename, extension or folder name (folder tints included). A folder holding a file starts folded; a folder holding only folders starts open, so the first view is the tree's shape with no file rows inside folders (root files still draw). A filter stands every fold down so its matches show, and a jump from the comments rail clears the filter and opens the folders above its file. With the current file marked, a pill per file carrying its comment count, and a filter | the record's `file_index` and `state.scan_cwd`; the filter ranks by the `@` list's own matching; the glyphs come from `material-icon-theme`'s manifest |
-| Reader        | the file's head - its path, and what the per-format policy says it is: a grammar and line count, `plain text - no syntax for this file`, a mime and its dimensions, or a mime and size - then the file itself: a commentable editor for markdown, code and text, a bounded picture, a PDF's pages, or a notice naming a type no viewer draws; the target line carries the tint and the gutter `+` | the `document_read` answer for the open path: its bytes                                                |
-| A thread      | under the line it was written on: its state chip, where it is, its turns through the review page's own turn renderer, `edit` on a turn the reader wrote, and `respond` / `resolve` / `reopen` / `delete`; a resolved one collapses to its marker line, opened by a press | the record's `tree_reviews` threads and their landings, and the page's own drafts      |
-| A comment box | under the line a press landed on, the caret already in it; **Enter comments**, Shift+Enter keeps the newline                                                                                                                | the page's own comment shelf                                                           |
+| Reader        | the file's head - its path, and what the per-format policy says it is: a grammar and line count, `plain text - no syntax for this file`, a mime and its dimensions, or a mime and size - then the file itself: **markdown as the hand-off viewer's rendered blocks**, each one a comment target with a `+` on its first source line, a commentable editor for code and text, a bounded picture, a PDF's pages, or a notice naming a type no viewer draws; the editor's target line carries the tint and the gutter `+` | the `document_read` answer for the open path: its bytes                                                |
+| A thread      | under the line it was written on, or under the rendered block its landing falls in - the first block when its line sits in the hidden frontmatter, the last when its landing is past the read's end: its state chip, where it is, its turns through the review page's own turn renderer, `edit` on a turn the reader wrote, and `respond` / `resolve` / `reopen` / `delete`; a resolved one collapses to its marker line, opened by a press | the record's `tree_reviews` threads and their landings, and the page's own drafts      |
+| A comment box | under the line or block a press landed on, the caret already in it; **Enter comments**, Shift+Enter keeps the newline                                                                                                                | the page's own comment shelf                                                           |
 | Comments      | every thread in the scope as one list, by path and then by line: the state chip, `path:line`, the first words, and `delete`; a row jumps back to its line                                                                    | the record's `tree_reviews` threads                                                    |
 | Parked        | a thread whose landing could not place it - the code moved too far, or no landing was carried - says so on its row, its captured lines kept; it is never dropped                                                             | the landing's `outdated` word, or none carried                                         |
 | Finish        | the round's summary - a roomy, resizable box, present by default in the rail's bottom, its own mic like every box - over `finish review (N)`, which seals the sitting into one round; a refusal keeps the words                | `submit_review`'s reply, and the round's number                                        |
@@ -63,19 +63,23 @@ snapshot, never rewritten under the reader's eyes while a worker edits it.
 **What a file is comes from one policy, shared with the chat's Read rows**
 (`client/src/format/policy.ts`): the extension, then a filename (`Justfile`
 is `just`, `Makefile` is `make`, `Dockerfile` is `docker`, a `.env` file is
-`dotenv`), then a shebang, then whether the bytes decode as UTF-8. Markdown,
-code and text draw in a read-only CodeMirror instance, coloured by the same
-shiki highlighter the chat's code panels use, in the github-dark family
-(Oniguruma; the wasm loads when a code file is first opened, and that open
-waits on it rather than colouring in after a plain draw). Each language has
+`dotenv`), then a shebang, then whether the bytes decode as UTF-8. Markdown
+draws as the rendered blocks the document hand-off viewer draws - the same
+renderer, the same image-as-a-named-row rule and the same code panels - with
+each block a comment target; a leading YAML frontmatter block is hidden and
+the rows keep the raw file's line numbers. There is no source view for
+markdown. Code and text draw in a read-only CodeMirror instance, coloured by
+the same shiki highlighter the chat's code panels use, in the github-dark
+family (Oniguruma; the wasm loads when a code file is first opened, and that
+open waits on it rather than colouring in after a plain draw). Each language has
 two layers, neither guessed: structure and folding from the CodeMirror org's
 own package where one exists, and the colouring from shiki's grammar either
 way; `.svelte` and `.toml` are colour-only. A text file no grammar names
 draws plain, and the head says `plain text - no syntax for this file`.
 **Grammars load one file at a time** from shiki's lazy set, so the reader
 carries the whole catalogue without downloading it up front, and the chunk -
-CodeMirror, the bridge - is pulled only when the reader first draws a text
-file. A picture draws itself, bounded, with its mime and dimensions; a PDF
+CodeMirror, the bridge - is pulled only when the reader first draws a code
+or text file. A picture draws itself, bounded, with its mime and dimensions; a PDF
 draws its pages; anything else draws a notice naming its type and size, and
 saying it is still in the tree and reviewable as a file. A reader that could
 not be built - a chunk or a grammar failed - draws that reason rather than an
@@ -91,16 +95,25 @@ reader may comment on, not what this page can draw. A file whose commentable
 extension is not UTF-8 is refused with the read's own sentence; bytes
 outside that set are a binary read.
 
-**A press on any line is a comment**: the line takes the tint and the
-gutter `+`, and the box opens under it with the caret in. Doors are press
-targets at every pointer, and the reader's own scroll is capped by the
-sheet's rule that nothing scrolls sideways.
+In the editor, **a press on any line is a comment**: the line takes the
+tint and the gutter `+`, and the box opens under it with the caret in. In
+rendered markdown, **a press on a block opens a comment at its first source
+line**; the block's `+` opens the same comment. **Both capture the line's
+neighbours**, the same context an editor press captures, because the server
+relocates a moved thread by the lines recorded around the anchor - a
+block's own lines run forward from the anchor and cannot supply the line
+before it. Doors are press
+targets at every pointer: a block is focusable and Enter or Space opens it,
+the `+` is a real button, and under `pointer: coarse` both take the 44px
+floor. The reader's own scroll is capped by the sheet's rule that nothing
+scrolls sideways.
 
 ## The thread, and the round
 
 An anchor captures what the review page's anchors capture - the file's
 path, the line, the line's whitespace-collapsed hash, and its neighbours as
-context - from the same lines the reader drew. The landing is resolved by
+context - from the file's raw lines, so a block press can carry text the
+hidden frontmatter keeps off the page. The landing is resolved by
 the **server**, because the client has no working tree to re-scan: the
 record carries, per thread, either the line it sits on now (with the line
 it moved from, when it moved) or the resolver's own reason it could not be

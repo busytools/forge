@@ -11,7 +11,8 @@
   /* The same token set the client ships (theme.ts), so the drawing is held
      against the real page rather than against a lookalike. The rules below
      are the sheet's own for the pieces this page draws (the tree rows, the
-     thread card, the chips, the reader's CodeMirror skin), transcribed. */
+     thread card, the chips, the reader's CodeMirror skin and its rendered
+     markdown block skin), transcribed. */
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
     --bg:#04050a; --s1:#0d111a; --s2:#141926; --s3:#1b2130; --line:#222a3c;
@@ -133,6 +134,27 @@
     font-size: var(--fs-label); color: var(--dim); }
   .files-editor { border: 1px solid var(--line); border-top: 0;
     border-radius: 0 0 9px 9px; overflow: hidden; background: var(--s2); }
+  /* A markdown file renders as blocks: each one a comment target with a `+`
+     on its first source line, the block the hand-off viewer draws. */
+  .files-markdown { border: 1px solid var(--line); border-top: 0;
+    border-radius: 0 0 9px 9px; background: var(--s1); padding: 14px 20px 22px 44px; }
+  .files-blocks { font-size: var(--fs-base); }
+  .doc-block { position: relative; padding: 0 12px; margin: 0 -12px; border-radius: 6px; }
+  .doc-block:hover { background: var(--s2); }
+  .doc-block + .doc-block { margin-top: 12px; }
+  .doc-add { position: absolute; left: -2.2rem; top: 0; width: 44px; height: 44px;
+    display: grid; place-items: center; border: 0; background: none;
+    color: var(--dim); font-family: var(--mono); font-size: 16px; }
+  .doc-block-body h1 { font-size: 22px; font-weight: 500; margin: 0 0 6px; }
+  .doc-block-body p { margin: 0 0 8px; }
+  .doc-block-body ul { margin: 0 0 8px 20px; }
+  .doc-block-body .panel { border: 1px solid var(--line); border-radius: 9px;
+    background: var(--s2); overflow: hidden; }
+  .doc-block-body .panel .lang { font-family: var(--mono); font-size: var(--fs-label);
+    color: var(--dim); padding: 4px 10px; border-bottom: 1px solid var(--line); }
+  .doc-block-body .panel pre { font-family: var(--mono); font-size: var(--fs-prose);
+    padding: 6px 10px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.35; }
+  .files-mdthread { margin: 8px 0; }
   /* A picture and a PDF draw in the reader's own box, bounded. */
   .files-media { padding: 16px; display: flex; align-items: center; justify-content: center;
     background: #0d1013; border: 1px solid var(--line); border-top: 0;
@@ -459,9 +481,83 @@
   </div>
 </div>
 
-<p class="fig"><b>Specimen 2 - the kinds.</b> One policy decides every file, the same the chat's Read rows read: a Justfile opens coloured with its own grammar and named in the head; a text file no grammar names draws plain, and the head says why; a picture draws itself, bounded, with its mime and dimensions; a PDF draws its pages; and a file with no viewer draws a notice naming its type and size, saying it is still in the tree.</p>
+<p class="fig"><b>Specimen 2 - the kinds.</b> One policy decides every file, the same the chat's Read rows read: markdown renders as the hand-off viewer's blocks, each one a comment target with its <span class="doc-add" style="position:static;display:inline-grid;width:auto;height:auto">+</span> and the frontmatter hidden; a Justfile opens coloured with its own grammar and named in the head; a text file no grammar names draws plain, and the head says why; a picture draws itself, bounded, with its mime and dimensions; a PDF draws its pages; and a file with no viewer draws a notice naming its type and size, saying it is still in the tree.</p>
 
 <div class="files-kinds">
+  <div class="files-reader">
+    <div class="files-filehead">
+      <span class="files-path">docs/book/src/ui/client/files.md</span>
+      <span class="files-fact">markdown<span class="files-sep">&#183;</span>141 lines</span>
+    </div>
+    <div class="files-markdown">
+      <div class="files-blocks">
+        <div class="doc-block">
+          <span class="doc-add">+</span>
+          <div class="doc-block-body">
+            <h1>The files</h1>
+          </div>
+        </div>
+        <div class="doc-block">
+          <span class="doc-add">+</span>
+          <div class="doc-block-body">
+            <p>One seat's whole working tree, readable and commentable: the tree, a reader
+              over each file, and the comments dropped on what was read.</p>
+          </div>
+        </div>
+        <div class="files-mdthread">
+          <div class="rv-thread compact">
+            <div class="rv-tops">
+              <span class="rv-st open">open</span>
+              <span class="rv-where">files.md &#183; line 4</span>
+            </div>
+            <div class="rv-turn you">
+              <div class="rv-who"><span>you</span><span class="rv-a rv-edit">edit</span></div>
+              <div class="prose">The rendered markdown reads much better than the source did.</div>
+            </div>
+            <div class="rv-acts">
+              <button class="rv-a" type="button">respond</button>
+              <button class="rv-a" type="button">resolve</button>
+              <button class="rv-a" type="button">delete</button>
+            </div>
+          </div>
+        </div>
+        <div class="doc-block">
+          <span class="doc-add">+</span>
+          <div class="doc-block-body">
+            <ul>
+              <li>the tree</li>
+            </ul>
+          </div>
+        </div>
+        <div class="doc-block">
+          <span class="doc-add">+</span>
+          <div class="doc-block-body">
+            <ul>
+              <li>the reader</li>
+            </ul>
+          </div>
+        </div>
+        <div class="doc-block">
+          <span class="doc-add">+</span>
+          <div class="doc-block-body">
+            <ul>
+              <li>the comments rail</li>
+            </ul>
+          </div>
+        </div>
+        <div class="doc-block">
+          <span class="doc-add">+</span>
+          <div class="doc-block-body">
+            <div class="code panel">
+              <div class="lang">sh</div>
+              <pre>just check</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="files-reader">
     <div class="files-filehead">
       <span class="files-path">Justfile</span>

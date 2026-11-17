@@ -90,16 +90,7 @@ describe('the reader built over a file', () => {
     const other = await buildReader(plain, 'fn main() {}', 'text');
     other.destroy();
 
-    const markdown = document.createElement('div');
-    document.body.append(markdown);
-    const source = await buildReader(markdown, '# hi', 'markdown');
-    source.destroy();
-
-    expect(bridge.langs, 'the policy reaches the reader, per language').toEqual([
-      'rust',
-      'text',
-      'markdown',
-    ]);
+    expect(bridge.langs, 'the policy reaches the reader, per language').toEqual(['rust', 'text']);
     expect(built.lines(), 'and the handle carries the file\u{27}s own lines').toEqual([
       'fn main() {}',
     ]);
@@ -156,7 +147,7 @@ describe('the reader component around it', () => {
     document.body.innerHTML = '';
   });
 
-  function draw(value: DocRead, path = '/proj/a.rs'): void {
+  function draw(value: DocRead, path = '/proj/a.rs', extra: Record<string, unknown> = {}): void {
     reads.held = value;
     app = mount(Reader, {
       target: document.body,
@@ -165,6 +156,7 @@ describe('the reader component around it', () => {
         slot: SLOT,
         path,
         handle: null,
+        ...extra,
       },
     });
     flushSync();
@@ -198,6 +190,8 @@ describe('the reader component around it', () => {
       'plain text - no syntax for this file',
     );
     expect(document.querySelector('.files-hint'), 'and it opens in the editor').not.toBeNull();
+    expect(document.querySelector('.files-editor'), 'the commentable editor').not.toBeNull();
+    expect(document.querySelector('.files-blocks'), 'no rendered blocks for text').toBeNull();
     expect(document.querySelector('.files-quiet'), 'not a refusal').toBeNull();
   });
 
@@ -322,5 +316,137 @@ describe('the reader component around it', () => {
     expect(document.querySelector('.files-fact')?.textContent, 'the head names it too').toContain(
       'archive',
     );
+  });
+});
+
+/** One document as a read hands it over, its kind and bytes together. */
+function markdown(body: string): DocRead {
+  return answer({
+    path: '/proj/README.md',
+    kind: 'markdown',
+    bytes: new TextEncoder().encode(body),
+    reviewable: true,
+  });
+}
+
+describe('the reader over a markdown file', () => {
+  let app: Record<string, unknown> | null = null;
+  afterEach(async () => {
+    if (app !== null) await unmount(app);
+    app = null;
+    document.body.innerHTML = '';
+  });
+
+  function draw(
+    value: DocRead,
+    path = '/proj/README.md',
+    extra: Record<string, unknown> = {},
+  ): void {
+    reads.held = value;
+    app = mount(Reader, {
+      target: document.body,
+      props: {
+        connection: {} as never,
+        slot: SLOT,
+        path,
+        handle: null,
+        ...extra,
+      },
+    });
+    flushSync();
+  }
+
+  it('draws the file as rendered blocks, not as source in an editor', () => {
+    draw(markdown('# Title\n\nA **bold** claim.\n'));
+
+    expect(document.querySelector('.files-editor'), 'no CodeMirror for markdown').toBeNull();
+    expect(document.querySelector('.files-blocks'), 'the rendered blocks').not.toBeNull();
+    expect(document.querySelector('.doc-block h1')?.textContent).toBe('Title');
+    expect(document.querySelector('.doc-block strong')?.textContent).toBe('bold');
+    expect(
+      document.querySelector('.files-hint')?.textContent,
+      'the door says what a press is',
+    ).toContain('block');
+  });
+
+  it('keeps the editor for a code file', () => {
+    draw(answer({ path: '/proj/a.rs', kind: { other: 'rs' } }), '/proj/a.rs');
+
+    expect(document.querySelector('.files-editor'), 'the commentable editor').not.toBeNull();
+    expect(document.querySelector('.files-blocks'), 'no rendered blocks for code').toBeNull();
+  });
+
+  it('hides the frontmatter and keeps the raw line number on the block', () => {
+    draw(markdown('---\ntitle: plan\n---\n# Heading\n\nbody\n'));
+
+    const first = document.querySelector<HTMLElement>('.doc-block');
+    expect(first?.dataset.line, 'the heading keeps its raw line').toBe('4');
+    expect(document.body.textContent).not.toContain('title: plan');
+  });
+
+  it('draws a document of blank lines as a target rather than nothing', () => {
+    draw(markdown('\n\n'));
+
+    expect(document.querySelector('.files-blocks')).not.toBeNull();
+    expect(document.querySelector('.doc-block .doc-raw'), 'its empty row is drawn').not.toBeNull();
+    expect(document.querySelector('.files-quiet')).toBeNull();
+  });
+
+  it('draws an image as a named row and never fetches it', () => {
+    draw(markdown('![the mark](https://example.com/mark.png)\n'));
+
+    expect(document.querySelector('.files-blocks')?.textContent).toContain('the mark');
+    expect(document.querySelector('.files-blocks img'), 'nothing is fetched').toBeNull();
+  });
+
+  it('makes each block a keyboard target and its + a button', () => {
+    const blocks: { line: number; end: number }[] = [];
+    const lines: number[] = [];
+    draw(markdown('# One\n\nTwo\n'), '/proj/README.md', {
+      onblock: (row: { line: number; end: number }) => blocks.push(row),
+      oncomment: (line: number) => lines.push(line),
+    });
+
+    const block = document.querySelector<HTMLElement>('.doc-block');
+    expect(block?.tabIndex, 'the block is focusable').toBe(0);
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    block?.dispatchEvent(enter);
+    expect(
+      blocks.map((row) => row.line),
+      'Enter opens the block composer',
+    ).toEqual([1]);
+    expect(enter.defaultPrevented, 'and the block takes the key').toBe(true);
+
+    const space = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
+    block?.dispatchEvent(space);
+    expect(
+      blocks.map((row) => row.line),
+      'Space opens it too',
+    ).toEqual([1, 1]);
+
+    const add = document.querySelector<HTMLButtonElement>('.doc-block .doc-add');
+    expect(add?.tagName, 'the line target is a real button').toBe('BUTTON');
+    add?.click();
+    expect(lines, 'and it anchors the block\u{27}s first line').toEqual([1]);
+  });
+
+  it('keeps a link\u{27}s press and Enter out of the block composer', () => {
+    const blocks: { line: number }[] = [];
+    draw(markdown('# One\n\n[the plan](./plan.md)\n'), '/proj/README.md', {
+      onblock: (row: { line: number }) => blocks.push(row),
+    });
+
+    const link = document.querySelector<HTMLAnchorElement>('.doc-block a');
+    expect(link, 'the rendered markdown carries a real anchor').not.toBeNull();
+    // The page would navigate on a real press; the block's own handler is
+    // what this test is about, so the navigation is stopped here.
+    link?.addEventListener('click', (event) => event.preventDefault(), { once: true });
+    link?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(blocks, 'a press on the link is the link\u{27}s').toEqual([]);
+
+    link?.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    );
+    expect(blocks, 'and so is Enter on it').toEqual([]);
   });
 });

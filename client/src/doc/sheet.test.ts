@@ -120,17 +120,35 @@ describe('the document sheet', () => {
    *  coarse-pointer gate, and the `+` is drawn always there because a finger
    *  has no hover to reveal it. */
   it('gives the hover target and the answers a 44px target under a coarse pointer', () => {
+    // The `+`'s rules are shared with the files reader's rendered markdown,
+    // so the selector list names both pages; the document's own name is what
+    // this test is about.
     const coarse = mediaBlocks('@media (pointer: coarse)').find((block) =>
-      block.includes('.doc-page .doc-add'),
+      block.includes('.doc-add'),
     );
     expect(coarse, 'the floor is gated on a coarse pointer').toBeDefined();
+    if (coarse === undefined) throw new Error('the coarse block did not land');
+    // **The document's name is pinned on the `+` rule itself**, not anywhere
+    // in the media block: the answers' own selector also carries
+    // `.doc-page`, so a `toContain` on the whole block stays green when the
+    // shared `:is()` is narrowed to the files reader alone.
+    const addRules = [
+      ...coarse.matchAll(
+        /([^{}]*)\.doc-add[^{}]*\{[^{}]*width:\s*44px;[^{}]*height:\s*44px[^{}]*\}/g,
+      ),
+    ];
+    expect(addRules.length, 'the `+` takes the 44px floor').toBeGreaterThan(0);
+    expect(
+      addRules.every((hit) => (hit[1] ?? '').includes('.doc-page')),
+      'the document page is on the shared `+` rule',
+    ).toBe(true);
     expect(coarse, 'the answers share the hover target rule').toContain(
       '.doc-page .doc-answer-btn',
     );
     expect(coarse, 'and the rule is the 44px floor').toMatch(/min-height:\s*44px/);
     expect(coarse, 'the `+` is always drawn for a finger').toMatch(/opacity:\s*1/);
     expect(coarse, 'the `+` itself takes the 44px floor, not any neighbour').toMatch(
-      /\.doc-page \.doc-add\s*\{[^}]*width:\s*44px[^}]*height:\s*44px/,
+      /\.doc-add\s*\{[^}]*width:\s*44px[^}]*height:\s*44px/,
     );
   });
 
@@ -138,7 +156,11 @@ describe('the document sheet', () => {
    *  no rule; the block under the pointer shows it, focus-within covers the
    *  keyboard, and the base rule keeps it out of sight otherwise. */
   it('reveals a plain + on hover or focus', () => {
-    const base = rulesFor('.doc-add').find((rule) => rule.selector.trim() === '.doc-page .doc-add');
+    // The `+`'s rules are shared with the files reader's rendered markdown,
+    // so the base rule is the one carrying the mark's own declarations.
+    const base = rulesFor('.doc-add').find(
+      (rule) => rule.selector.includes('.doc-page') && /position:\s*absolute/.test(rule.body),
+    );
     expect(base, 'the base rule exists').toBeDefined();
     expect(base?.body, 'the `+` is hidden until the block is under the pointer').toMatch(
       /opacity:\s*0/,
@@ -162,8 +184,8 @@ describe('the document sheet', () => {
       /--accent|box-shadow/,
     );
 
-    const block = rulesFor('.doc-page .doc-block').find(
-      (rule) => rule.selector.trim() === '.doc-page .doc-block',
+    const block = rulesFor('.doc-block').find(
+      (rule) => rule.selector.includes('.doc-page') && /padding:\s*0 12px/.test(rule.body),
     );
     expect(block?.body, 'the highlight band gives both sides air').toMatch(/padding:\s*0 12px/);
     expect(block?.body, 'and is the same width on both sides').toMatch(/margin:\s*0 -12px/);
@@ -172,8 +194,8 @@ describe('the document sheet', () => {
   /** **A table's first column keeps room to read as a name.** Auto layout
    *  otherwise ribbons it while the prose columns take the width. */
   it("gives a table's first column a name-width floor", () => {
-    const cells = rulesFor('.doc-page .doc-block :is(th, td):first-child').find((rule) =>
-      rule.selector.includes(':first-child'),
+    const cells = rulesFor('.doc-block :is(th, td):first-child').find(
+      (rule) => rule.selector.includes('.doc-page') && rule.selector.includes(':first-child'),
     );
     expect(cells, 'the first-column rule exists').toBeDefined();
     expect(cells?.body, 'a minimum width').toMatch(/min-width:\s*11rem/);
