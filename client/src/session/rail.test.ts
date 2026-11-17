@@ -129,6 +129,7 @@ describe('the rail footer', () => {
         connection: untouched(),
       },
     }).body;
+    expect(unstarted, 'the footer itself drew').toContain('claude v');
     expect(unstarted, 'nothing reported an engine, so no stamp is drawn').not.toMatch(/>engine /);
   });
 

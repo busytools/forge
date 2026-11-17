@@ -492,13 +492,15 @@ rows, each with its percent, the reset that lifts it, and `at limit` on the
 window spending the plan.
 
 **The engine stamp is the server's fact.** Beside the two build rows, the
-footer names the engine the seat runs on underneath - `forge` for the
+footer names the engine the seat's last launch resolved - `forge` for the
 certified `claude-headless` port, `default` for the `claude` CLI - drawn the
 way the settings page names it. It is the seat's own value rather than the
 config's current word: a running session keeps the binary it started on, and
 the stamp moves when a `/new`, a `/resume` or a handoff starts the next
-occupant on a different engine. Before any session has reported one the line
-is absent, so an unstarted seat cannot read as `default`.
+occupant on a different engine. A launch that never started a session still
+names the engine it resolved, and the seat's own failure row says why. Before
+any launch has resolved one the line is absent, so an unstarted seat cannot
+read as `default`.
 
 **The review row's panel is the review sets.** The filed rounds draw
 oldest first with the latest at the bottom - the conversation's own

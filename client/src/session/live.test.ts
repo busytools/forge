@@ -488,6 +488,26 @@ describe('the session page over a socket', () => {
     expect(facts?.textContent, 'the header drew no facts from the record').toContain('max');
   });
 
+  /** **The record's engine reaches the rail's stamp.** The decoder and the
+   *  Rail are each tested alone; this is the page line joining them, so a
+   *  page that never passes the record's engine draws no stamp at all. */
+  it("draws the engine the record's header names", async () => {
+    const withEngine = {
+      ...sessionFixture,
+      header: { ...sessionFixture.header, engine: 'forge' },
+    };
+    await open(withEngine);
+
+    expect(
+      document.querySelector('.rfoot')?.textContent,
+      'the rail never received the engine the record named',
+    ).toContain('engine forge');
+    expect(
+      document.querySelector('.rfoot')?.textContent,
+      'and draws nothing but the value the server named',
+    ).not.toContain('engine claude');
+  });
+
   /**
    * **A refused seat subscribe is drawn, in the server's own words.**
    *
@@ -2637,10 +2657,13 @@ describe('the record a page holds over an update stream', () => {
       }),
     );
     expect(page.read().wire?.header.engine, 'the seat starts on the port').toBe('forge');
+    const asked = page.reads();
 
     // `/new` mints an id the store never held, and the answer carries the
-    // engine the new launch resolved.
+    // engine the new launch resolved - asked for by the replacement's own
+    // whole-record read, not guessed.
     page.land(updateOf(occupant('a-new-occupant')));
+    expect(page.reads(), 'the replacement asked for the whole record').toBe(asked + 1);
     page.land(
       snapshotOf(
         LEAD,

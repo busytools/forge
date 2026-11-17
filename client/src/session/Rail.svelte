@@ -72,8 +72,8 @@
 
   const groups = $derived(railGroups(home, board, current, closingSeat));
   /**
-   * The account and the two builds, which sit under the list rather than in it:
-   * the projects scroll behind them.
+   * The account, the builds and the engine stamp, which sit under the list
+   * rather than in it: the projects scroll behind them.
    */
   const foot = $derived(railFooter(home, current, connection.serverProtocol(), $now, engine));
 

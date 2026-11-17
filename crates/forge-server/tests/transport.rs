@@ -5029,13 +5029,14 @@ fn thinking_spent(data: &serde_json::Value) -> i64 {
 /// **The header names the engine the seat is running.** The rail's stamp is
 /// the server's fact, not a client's inference: the record carries the value
 /// the launch settings resolved - `forge` when the key asked for the port,
-/// `default` once a session has spawned on the CLI - and nothing at all
-/// before any session reports one.
+/// `default` when the launch resolved the CLI - and nothing at all before
+/// any launch reports one.
 ///
 /// **The stamp needs no frame of its own.** An engine can only move at a
-/// spawn, and every spawn emits `Spawning`, `Connected` or `SessionReplaced`,
-/// which are exactly the frames this client answers with a whole record read;
-/// so a respawn on another engine redraws from the same read.
+/// launch, and every launch emits `Spawning`, `Connected` or
+/// `SessionReplaced`, which are exactly the frames this client answers with a
+/// whole record read; so a respawn on another engine redraws from the same
+/// read.
 #[tokio::test]
 async fn a_seats_header_names_the_engine_it_runs_on() {
     let (url, fleet, _state) = a_server_with_state().await;

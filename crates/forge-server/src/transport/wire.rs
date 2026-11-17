@@ -569,9 +569,9 @@ pub struct ComposerWire {
     pub notice: Option<serde_json::Value>,
 }
 
-/// The session's header facts, including the two a client cannot otherwise
-/// reach: the catalogue a picker draws its rows from, and whether a turn is
-/// in flight.
+/// The session's header facts, including the three a client cannot otherwise
+/// reach: the catalogue a picker draws its rows from, the engine the seat's
+/// last launch resolved, and whether a turn is in flight.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct SessionHeaderWire {

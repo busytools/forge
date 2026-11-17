@@ -1202,7 +1202,7 @@ interface FooterWindow extends AccountWindow {
   dim: boolean;
 }
 
-/** The rail's footer: the account, what it is costing, and the two versions. */
+/** The rail's footer: the account, what it is costing, the build rows and the engine stamp. */
 interface RailFooter {
   /**
    * The account this project binds to: the chip's own name, or the project's
@@ -1221,7 +1221,8 @@ interface RailFooter {
    * The pair the footer draws, side by side: what the server is and what it
    * speaks, beside what this client is and what it speaks. A mismatch is
    * then a difference the reader sees rather than a notice they have to
-   * decode - and `skewed` is that difference, stated once.
+   * decode - and `skewed` is that difference, stated once. `engine` rides
+   * the same block: not a version, and drawn on its own row.
    */
   versions: {
     serverForge: string;
@@ -1267,7 +1268,8 @@ function footerWindows(windows: AccountWindow[]): FooterWindow[] {
 
 /**
  * The rail's footer: the account serving this seat's project, what it is
- * costing, and the two builds behind the page.
+ * costing, the two builds behind the page, and the engine the seat's last
+ * launch resolved.
  *
  * **The figures branch on the account's billing kind, which is the rule the
  * view this client replaced kept**: a spend-billed key gets its periods,

@@ -57,13 +57,13 @@ pub struct SessionHeader {
     /// picker draws its rows from. Empty for a session nothing has started.
     pub available_models: Vec<AvailableModel>,
     /// The engine the seat's launch settings resolved - `default` for the
-    /// CLI, `forge` for the certified port - or `None` before any session
-    /// has spawned on the seat.
+    /// CLI, `forge` for the certified port - or `None` before any launch on
+    /// the seat resolved one.
     ///
     /// **Carried from the core's own record of the launch**, not inferred
     /// from the argv: the value that picked the binary is the value the
-    /// header states, and a respawn overwrites it so `/new` and `/resume`
-    /// redraw.
+    /// header states, and a respawn overwrites it so `/new`, `/resume` and
+    /// a handoff redraw.
     pub engine: Option<forge_workspace::Engine>,
     /// Whether a turn is in flight, from the core's own OR of the stamped
     /// signal and the wire-lagged one: the two disagree in the window

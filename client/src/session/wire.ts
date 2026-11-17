@@ -61,9 +61,10 @@ export interface QueueEnding {
 /**
  * The header's facts.
  *
- * `available_models` and `turn_in_flight` are the two a client cannot reach
- * any other way, and neither is drawn by this shell: the model picker and the
- * live turn are the chat's and the composer's.
+ * `available_models`, `engine` and `turn_in_flight` are the ones a client
+ * cannot reach any other way; the first and the third are not drawn by this
+ * shell (the model picker and the live turn are the chat's and the
+ * composer's), while `engine` feeds the rail's own stamp.
  */
 export interface SessionHeader {
   /**

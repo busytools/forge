@@ -392,10 +392,12 @@ pub struct DomainSession {
     /// The engine the launch settings resolved, as the session page's header
     /// draws it: `default` for the CLI, `forge` for the certified port.
     ///
-    /// **`None` until a session has spawned on this seat.** The header says
-    /// nothing then rather than guessing a default, and the two writers -
-    /// the cold spawn and `stamp_respawn_overrides` - are the only places an
-    /// occupant's engine can change.
+    /// **`None` until a launch on this seat has resolved one.** The header
+    /// says nothing then rather than guessing a default, and the two writers
+    /// - the cold spawn and `stamp_respawn_overrides` - are the only places
+    /// it is written. A launch that then fails leaves the engine it resolved
+    /// on the record; the seat's own failure row is what says the session
+    /// never started.
     pub configured_engine: Option<forge_agent::client::Engine>,
     /// The MCP servers this session last saw, from its own bridge: MCP
     /// is configured per session, so this is not an account-wide fact.
