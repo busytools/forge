@@ -1302,6 +1302,20 @@ fn charter_with_withheld_families(
     text
 }
 
+/// What the spawn reply echoes as the worker's families: the selection
+/// resolved (which always carries `review`), canonicalised into wire
+/// order. `None` when it means every family, the wire's own spelling of
+/// that - so a narrowed worker's reply names review beside the families
+/// its row listed, and an unnarrowed one still reads as every family.
+fn granted_families(stored: Option<&[String]>) -> Option<Vec<String>> {
+    let stored = stored?;
+    let resolved = crate::mcp::resolve_mcp_families(Some(stored));
+    if resolved == crate::mcp::McpFamily::all() {
+        return None;
+    }
+    Some(resolved.into_iter().map(|family| family.as_str().to_owned()).collect())
+}
+
 /// Handle a `Command::SpawnWorker`: insert a `Spawning` worker entry
 /// in `live_workers[project_key]`, dispatch a spawn for the id the
 /// worker will run under (or the id being resumed) with the charter
@@ -1787,9 +1801,7 @@ pub(crate) fn handle_spawn_worker(
             let _ = return_to.send(Ok(WorkerSpawnReply {
                 session_id: session_id.as_str().to_owned(),
                 tag,
-                // The stored selection, canonicalised; `None` means every
-                // family. The lead sees exactly what this worker got.
-                mcp_families: families,
+                mcp_families: granted_families(families.as_deref()),
                 rate_limited_account,
                 // Set when the row could not be written above; the boot
                 // re-spawn paths drop the reply, so they read the warn
@@ -5945,8 +5957,8 @@ heal_stable = "30s"
         let reply = rx.await.expect("spawn replies");
         assert_eq!(
             reply.expect("ok").mcp_families,
-            Some(vec!["cron".to_owned()]),
-            "a re-spawn with nothing stated adopts the row's selection",
+            Some(vec!["review".to_owned(), "cron".to_owned()]),
+            "a re-spawn with nothing stated adopts the row's selection, plus the always-on review",
         );
 
         // State one: it wins, and the row is revised. Clear the live
@@ -5974,8 +5986,8 @@ heal_stable = "30s"
         let reply = rx.await.expect("spawn replies");
         assert_eq!(
             reply.expect("ok").mcp_families,
-            Some(vec!["tasks".to_owned()]),
-            "a stated selection wins on a re-spawn",
+            Some(vec!["review".to_owned(), "tasks".to_owned()]),
+            "a stated selection wins on a re-spawn, and the reply says review came with it",
         );
         let stored = ws
             .worker_rows_for_project(&key)
@@ -6035,6 +6047,97 @@ heal_stable = "30s"
              so composed lines here would compound on every re-spawn",
         );
         assert_eq!(stored.mcp_families, Some(vec!["slack".to_owned()]));
+    }
+
+    /// A narrowed spawn's own server build still carries the review tools.
+    /// This drives the spawn path itself - the role match in
+    /// `get_agent_handle_at_key` that resolves the stored selection - so a
+    /// regression there fails here rather than only in the resolver's unit
+    /// test.
+    #[tokio::test]
+    async fn a_narrowed_spawn_still_gets_the_review_tools() {
+        let dir = tempdir().expect("tempdir");
+        write_forge_toml(dir.path(), FIXTURE_PROJECT_PATH);
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        ws.seed_test_ready_account("Stargate");
+        ws.seed_test_gateway_ready(true);
+        let key = ws
+            .list_projects()
+            .into_iter()
+            .find(|v| v.name == "forge")
+            .expect("fixture project")
+            .key;
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &ws,
+            key,
+            WorkerSpawnArgs {
+                label: "narrowed".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                mcp_families: Some(vec!["tasks".to_owned()]),
+                cwd: None,
+            },
+            SessionSlot::from_str_for_test("lead"),
+            None,
+            false,
+            tx,
+        );
+        let reply = rx.await.expect("spawn replies");
+        assert!(reply.is_ok(), "the narrowed spawn succeeds: {reply:?}");
+
+        let server = ws.test_spawn_server().expect("the spawn composed its forge server");
+        let names = server.tool_names();
+        assert!(
+            names.iter().any(|name| name.starts_with("review__")),
+            "a narrowed spawn still carries the review family: {names:?}",
+        );
+        assert!(
+            names.iter().any(|name| name.starts_with("tasks__")),
+            "and the family its row did name: {names:?}",
+        );
+        assert!(
+            !names.iter().any(|name| name.starts_with("cron__")),
+            "while a family the row did not name stays withheld: {names:?}",
+        );
+    }
+
+    /// The reply echoes what the worker got, not the row: a narrowed
+    /// selection answers with review beside its own families, and a
+    /// selection that means every family answers `None`.
+    #[test]
+    fn the_reply_names_review_beside_a_narrowed_selection() {
+        assert_eq!(
+            granted_families(Some(&["tasks".to_owned()])),
+            Some(vec!["review".to_owned(), "tasks".to_owned()]),
+            "the reply carries the always-on review beside the listed family",
+        );
+        assert_eq!(granted_families(None), None, "no selection means every family");
+        let every: Vec<String> =
+            crate::mcp::McpFamily::ALL.iter().map(|family| family.as_str().to_owned()).collect();
+        assert_eq!(
+            granted_families(Some(&every)),
+            None,
+            "listing every family reads as every family, not as a list",
+        );
+    }
+
+    /// The prompt composer half of the rule: a worker narrowed to `tasks`
+    /// is never told it lacks the review family, because it never does.
+    #[test]
+    fn a_narrowed_charter_never_withholds_review() {
+        let text = spawn_prompt_charter("charter", Some(&["tasks".to_owned()]), true, true, true);
+        assert!(
+            !text.contains("This session has no `review__*` tools"),
+            "a narrowed worker is never told review is absent: {text}",
+        );
+        assert!(
+            text.contains("This session has no `cron__*` tools"),
+            "while a family it really lacks is still named: {text}",
+        );
     }
 
     /// The wiring the round-2 axis probed: an argument-less spawn on a
@@ -10523,20 +10626,16 @@ mod lead_charter_tests {
         }
     }
 
-    /// A worker handed off a reviewable document and had no `review__*`
-    /// tools to read the comments with. The spawn step is where a lead
-    /// picks the family selection, so the requirement ships there - pinned
-    /// so a paraphrase cannot drop it.
+    /// `review` cannot be withheld any more, so the charter must not talk
+    /// about the family argument at all: any sentence about it either
+    /// tells a lead to select a family it can never leave out or implies
+    /// one can be withheld. The tool description is where a caller meets
+    /// the argument.
     #[test]
-    fn the_charter_names_the_review_family_for_a_document_worker() {
+    fn the_charter_does_not_mention_mcp_families() {
         assert!(
-            DEFAULT_LEAD_CHARTER.contains(
-                "If you narrow a worker's `mcp_families`, include `review` for a worker whose \
-                 deliverable can be handed off as a reviewable document - a fresh spawn that \
-                 omits the field gives every family; a resume adopts the stored selection."
-            ),
-            "the spawn step scopes the requirement to a narrowed selection and states what a \
-             fresh spawn and a resume each do",
+            !DEFAULT_LEAD_CHARTER.contains("mcp_families"),
+            "the charter still talks about narrowing the family argument",
         );
     }
 

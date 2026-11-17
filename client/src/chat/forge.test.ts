@@ -1289,7 +1289,7 @@ describe('the agents spawn card', () => {
       tag: 'forge:worker:reviewer',
       resumed: false,
       session_choice: 'fresh',
-      mcp_families: ['tasks', 'slack'],
+      mcp_families: ['review', 'tasks', 'slack'],
       worktree: '/repo/.claude/worktrees/reviewer',
     };
     const card = forgeCardOf(
@@ -1300,7 +1300,7 @@ describe('the agents spawn card', () => {
     expect(card?.title).toBe("spawned worker 'reviewer'");
     expect(card?.chips).toEqual([
       { text: 'fresh', tone: 'plain' },
-      { text: 'tasks, slack', tone: 'dim' },
+      { text: 'review, tasks, slack', tone: 'dim' },
     ]);
     expect(card?.figure, 'the session it landed on, short').toBe('s-4b1e');
     expect(pairsOf(card), 'where it landed').toEqual([

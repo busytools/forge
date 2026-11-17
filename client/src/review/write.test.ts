@@ -284,9 +284,7 @@ describe('the finish', () => {
     expect(
       nudge?.prompt_under?.['text'],
       'the line is the one-line nudge the view this client replaced sent',
-    ).toBe(
-      'Review #4 ready - scope work/review-nudge. Read it back under that scope, or hand the scope to your lead if you do not have the review tools.',
-    );
+    ).toBe('Review #4 ready - scope work/review-nudge. Read it back under that scope.');
     expect(nudge?.prompt_under?.['source'], 'the bubble reads as the reader own words').toBe('you');
     expect(nudge?.prompt_under?.['attachments'], 'a nudge carries no images').toEqual([]);
     expect(typeof nudge?.prompt_under?.['uuid'], 'the prompt rides its own id').toBe('string');
@@ -383,7 +381,7 @@ describe('the reopen', () => {
       nudge?.prompt_under?.['text'],
       'the line is the one-line nudge the view this client replaced sent',
     ).toBe(
-      'Reopened a comment in review #2 - scope work/review-nudge. Take another look under that scope, or hand the scope to your lead if you do not have the review tools.',
+      'Reopened a comment in review #2 - scope work/review-nudge. Take another look under that scope.',
     );
     expect(nudge?.prompt_under?.['source'], 'the line reads as the reader own words').toBe('you');
   });
@@ -399,7 +397,7 @@ describe('the reopen', () => {
       nudge?.prompt_under?.['text'],
       'the line is the one-line nudge the view this client replaced sent',
     ).toBe(
-      'Reopened a review comment - scope work/review-nudge. Take another look under that scope, or hand the scope to your lead if you do not have the review tools.',
+      'Reopened a review comment - scope work/review-nudge. Take another look under that scope.',
     );
   });
 

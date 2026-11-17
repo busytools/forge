@@ -32,7 +32,7 @@ file tree, and the diff with the threads on their lines.
 | Outdated      | every thread whose code could not be placed, drawn against the lines captured when the comment was written                                                                                                                                                                      | the threads half                                                   |
 | Rounds        | newest first: the round's number, its age, its tally by state, its summary, and each member thread                                                                                                                                                                              | the rounds half                                                    |
 | Finish        | the round's summary - a roomy, resizable box - over `finish review (N)`, the mic before it and the pair flush right so the button keeps the corner the collapsed control has, live once a comment is drafted; the conversation half's own section, and, on the diff half, a control under the canvas that opens the same stack in place; a seal returns the reader to the seat's chat | the page's own drafts                                              |
-| The chat line | the one-line nudge the view this client replaced sent, pushed into the reviewed seat's own chat: `Review #N ready - scope <branch>. Read it back under that scope, or hand the scope to your lead if you do not have the review tools` when a round seals, `Reopened a comment in review #N - scope <branch>. Take another look under that scope, or hand the scope to your lead if you do not have the review tools` on a reopen | the page's own dispatch after the write                            |
+| The chat line | the one-line nudge the view this client replaced sent, pushed into the reviewed seat's own chat: `Review #N ready - scope <branch>. Read it back under that scope` when a round seals, `Reopened a comment in review #N - scope <branch>. Take another look under that scope` on a reopen | the page's own dispatch after the write                            |
 
 ## A scope, and where a thread draws
 
@@ -300,11 +300,9 @@ came from. The write path is the conversation half's own either way.
 **The finish nudges the seat the review belongs to.** A round that sealed
 also sends a `prompt_under` into the reviewed seat's own chat - one line,
 never the comments: `Review #N ready - scope <branch>. Read it back under
-that scope, or hand the scope to your lead if you do not have the review
-tools`, the round's own number and the scope in it, the one-line nudge the
+that scope`, the round's own number and the scope in it, the one-line nudge the
 view this client replaced sent on its own seal. The worker therefore hears a
-review is ready and reads it back under that scope, or hands the scope to its
-lead when it has no review tools. **Only a round with work in it is worth the nudge**: a round whose
+review is ready and reads it back under that scope. **Only a round with work in it is worth the nudge**: a round whose
 sealed threads are all resolved or outdated files without one, the predicate
 the view this client replaced sealed by, and a reply that carried no round
 nudges nobody - a worker sent to read a review that does not exist is worse
@@ -316,10 +314,8 @@ failure is drawn nowhere.
 open hands the work back to the worker, so the line names the round the
 reopen is about - the thread's latest filed one, never its origin:
 `Reopened a comment in review #N - scope <branch>. Take another look under
-that scope, or hand the scope to your lead if you do not have the review
-tools`, or the round-less `Reopened a review comment - scope <branch>. Take
-another look under that scope, or hand the scope to your lead if you do not
-have the review tools` for a thread no round has filed. A
+that scope`, or the round-less `Reopened a review comment - scope <branch>. Take
+another look under that scope` for a thread no round has filed. A
 resolve does not nudge at all: a thread read and accepted needs no second
 look.
 

@@ -94,7 +94,9 @@ pub enum SessionKind {
 }
 
 /// The toggleable MCP families. `agents` is always on and is not here:
-/// a worker without `tell`/`ask` cannot report to its lead.
+/// a worker without `tell`/`ask` cannot report to its lead. `review` is
+/// always on too, but it is here because a selection may still name it
+/// (old calls and stored rows do) - listing it is redundant, not refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum McpFamily {
     Review,
@@ -150,6 +152,13 @@ impl McpFamily {
 /// Unknown names cannot be written by either tool (both validate), but a
 /// hand-edited row could carry one - it is dropped loudly rather than
 /// widening or narrowing the surface silently.
+///
+/// `review` is always on for every worker and is inserted into whatever
+/// the row selects, so a review on the worker's own branch is answered by
+/// the worker that did the work. Both consumers - the server build and
+/// the prompt composer - read this set, so the rule lives here once.
+/// Listing `review` stays accepted (old calls and stored rows carry it)
+/// and is simply redundant.
 pub(crate) fn resolve_mcp_families(stored: Option<&[String]>) -> BTreeSet<McpFamily> {
     let Some(stored) = stored else {
         return McpFamily::all();
@@ -157,7 +166,7 @@ pub(crate) fn resolve_mcp_families(stored: Option<&[String]>) -> BTreeSet<McpFam
     if stored.is_empty() {
         return McpFamily::all();
     }
-    let requested: BTreeSet<McpFamily> = stored
+    let mut requested: BTreeSet<McpFamily> = stored
         .iter()
         .filter_map(|name| {
             let parsed = McpFamily::parse(name);
@@ -183,6 +192,7 @@ pub(crate) fn resolve_mcp_families(stored: Option<&[String]>) -> BTreeSet<McpFam
         );
         return McpFamily::all();
     }
+    requested.insert(McpFamily::Review);
     requested
 }
 
@@ -190,7 +200,9 @@ pub(crate) fn resolve_mcp_families(stored: Option<&[String]>) -> BTreeSet<McpFam
 /// what this forge's config can actually inject - the same gates the
 /// build applies, so the prompt's withheld lines cannot drift from the
 /// tools the session really gets. `[systemone]` and `[tts]` off are the
-/// config gates that remove a family outright.
+/// config gates that remove a family outright. `review` has no gate: it
+/// is always on for every worker, so no config and no stored selection
+/// can remove it.
 pub(crate) fn effective_mcp_families(
     stored: Option<&[String]>,
     systemone_available: bool,
@@ -250,6 +262,9 @@ pub(crate) fn withheld_family_lines(families: &BTreeSet<McpFamily>) -> Vec<&'sta
         .into_iter()
         .filter(|family| !families.contains(family))
         .map(|family| match family {
+            // No set the spawn paths build omits review - the resolver
+            // always inserts it - so this arm cannot ship. It stays so the
+            // match is exhaustive over the enum.
             McpFamily::Review => {
                 "This session has no `review__*` tools. Review threads for your work are \
                  handled through your lead - ask it to relay findings or to post your replies."
@@ -332,8 +347,8 @@ pub struct ForgeServerFacades {
 /// each acts on is scoped rather than gated on session kind: a review
 /// conversation belongs to a project and branch, crons and subscriptions to
 /// the caller that made them, and tasks to the caller's project. A review
-/// nudge lands on a worker seat, so the family must be offered to workers
-/// and the nudge must stay usable when it is withheld.
+/// nudge lands on a worker seat, so the family is always on for workers:
+/// the worker that did the work can always answer a review on its branch.
 ///
 /// All submodules share the server name so the LLM sees a single
 /// namespace (`mcp__forge__<group>__*`) and the auto-approve fast-path
@@ -1121,16 +1136,43 @@ mod tests {
         let stored = vec!["slack".to_owned(), "cron".to_owned()];
         assert_eq!(
             resolve_mcp_families(Some(&stored)),
-            [McpFamily::Cron, McpFamily::Slack].into_iter().collect(),
+            [McpFamily::Review, McpFamily::Cron, McpFamily::Slack].into_iter().collect(),
             "known names resolve into the set"
         );
 
         let with_unknown = vec!["bogus".to_owned(), "tasks".to_owned()];
         assert_eq!(
             resolve_mcp_families(Some(&with_unknown)),
-            [McpFamily::Tasks].into_iter().collect(),
+            [McpFamily::Review, McpFamily::Tasks].into_iter().collect(),
             "an unknown name is dropped"
         );
+    }
+
+    /// `review` is always on for every worker: a stored row that narrows
+    /// everything else still resolves WITH it, so a worker can answer a
+    /// review on its own branch however its lead narrowed the surface.
+    /// This is the single source of the rule - the spawn's server build
+    /// and the prompt composer both read this set.
+    #[test]
+    fn review_is_always_on_however_the_row_narrows() {
+        let tasks = vec!["tasks".to_owned()];
+        assert_eq!(
+            resolve_mcp_families(Some(&tasks)),
+            [McpFamily::Review, McpFamily::Tasks].into_iter().collect(),
+            "a narrowed selection resolves with review",
+        );
+
+        let empty: Vec<String> = Vec::new();
+        let cron = vec!["cron".to_owned()];
+        let corrupt = vec!["bogus".to_owned()];
+        for stored in
+            [None, Some(empty.as_slice()), Some(cron.as_slice()), Some(corrupt.as_slice())]
+        {
+            assert!(
+                resolve_mcp_families(stored).contains(&McpFamily::Review),
+                "review is in every resolved set: {stored:?}",
+            );
+        }
     }
 
     /// One line per withheld family, in wire order; the present family
@@ -1173,11 +1215,11 @@ mod tests {
         let selected = vec!["systemone".to_owned(), "tasks".to_owned()];
         assert_eq!(
             effective_mcp_families(Some(&selected), true, true, true),
-            [McpFamily::Tasks, McpFamily::Systemone].into_iter().collect(),
+            [McpFamily::Review, McpFamily::Tasks, McpFamily::Systemone].into_iter().collect(),
         );
         assert_eq!(
             effective_mcp_families(Some(&selected), false, true, true),
-            [McpFamily::Tasks].into_iter().collect(),
+            [McpFamily::Review, McpFamily::Tasks].into_iter().collect(),
             "a disabled [systemone] cannot be part of the effective set",
         );
 
@@ -1259,6 +1301,18 @@ mod tests {
             );
             assert!(!refused.contains("unknown"), "it is not a spelling problem: {refused}");
         }
+    }
+
+    /// `review` is accepted in a selection even though it is always on:
+    /// old calls and stored rows list it, and refusing it would break them
+    /// for no gain. It is the one always-on group a caller may still name.
+    #[test]
+    fn review_is_accepted_in_a_selection_as_redundant() {
+        assert_eq!(
+            canonical_mcp_families(&["review".to_owned()]),
+            Ok(Some(vec!["review".to_owned()])),
+            "listing the always-on review family is accepted, not refused",
+        );
     }
 
     /// A stored row holding only unselectable names is corrupt, not a

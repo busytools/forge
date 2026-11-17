@@ -187,8 +187,7 @@ artifact - an HTML mockup, a PNG - is raised in the browser instead, with \
 `browser_hand_off` on the tab it landed on, never pushed through the document \
 hand-off. The document opens in their own viewer, \
 and the review they leave comes \
-back to this session when it has the `review` MCP family; without that \
-family the review is your lead's to read, and the hand-off answer names \
+back to this session, and the hand-off answer names \
 the scope for it. A worker's own work reaches the user directly \
 through a hand-off - `documents__hand_off` for a reviewable document, \
 `browser_hand_off` for a visual artifact - or a spoken update to a seat \
@@ -4303,8 +4302,7 @@ mod tests {
 
     /// A spec, plan or design the user is meant to review reaches them as
     /// a document, not as a path in chat: the hand-off opens it in their
-    /// viewer and returns the review to the session that delivered it when
-    /// that session has the `review` family, and to its lead otherwise.
+    /// viewer and returns the review to the session that delivered it.
     /// The worker's own output route is pinned because the routing rule
     /// above tells a worker not to address the user, and a worker reading
     /// only that sends the spec through its lead instead - the behaviour
@@ -4329,10 +4327,10 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "the review they leave comes back to this session when it has the `review` MCP \
-                 family; without that family the review is your lead's to read"
+                "the review they leave comes back to this session, and the hand-off answer \
+                 names the scope for it"
             ),
-            "the review's return is qualified by the family the worker was spawned with",
+            "the review returns to the session that delivered the document",
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
