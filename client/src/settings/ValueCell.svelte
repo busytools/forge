@@ -3,9 +3,10 @@
 
   /**
    * One key's value, drawn by the shape the wire named for it. `builtIn` is
-   * the whole phrase for the effective default a `client` axis falls back
-   * to when the file does not set it: display only, never the value the
-   * axes path reads, and never a name a reader could take for a setting.
+   * the whole phrase an unset key draws for what it falls back to - a
+   * `client` axis's built-in default, or an `engine` row's inherited level:
+   * display only, never the value the axes path reads, and never a name a
+   * reader could take for a setting.
    */
   let { value, builtIn = null }: { value: SettingsValue; builtIn?: string | null } = $props();
 </script>

@@ -40,7 +40,7 @@ pub const AREAS: &[AreaSpec] = &[
     AreaSpec {
         id: "projects",
         name: "projects",
-        note: "orgs, their projects, and every per-project setting",
+        note: "orgs, their projects, and every per-project setting - an engine set to `forge` runs the certified `claude-headless`, which must be installed on this machine's PATH",
     },
     AreaSpec {
         id: "sessions",
@@ -2502,6 +2502,14 @@ engine = "default"
 name = "inherits"
 path = "/tmp/inherits"
 
+[[orgs]]
+name = "Bare"
+accounts = ["A"]
+
+[[orgs.projects]]
+name = "one"
+path = "/tmp/bare-one"
+
 [[accounts]]
 display_name = "A"
 provider = "anthropic"
@@ -2540,6 +2548,18 @@ models = ["m"]
         );
         assert_eq!(inherits.edit.allowed, org.edit.allowed, "one accepted set for both levels");
         assert_eq!(inherits.group, vec!["Org".to_owned(), "inherits".to_owned()]);
+
+        // **An org that sets no engine still draws its row**, as null with
+        // the same choices: filtering the row away would leave the page with
+        // no door to set an org engine for the first time.
+        let bare = find("orgs.Bare.engine");
+        assert_eq!(
+            bare.value,
+            serde_json::Value::Null,
+            "an unset org crosses as null rather than vanishing",
+        );
+        assert_eq!(bare.edit.kind, forge_primitives::EditKind::Enum);
+        assert_eq!(bare.edit.allowed, org.edit.allowed, "and offers the same accepted set");
     }
 
     /// The document covers the thirteen areas and counts what it draws.

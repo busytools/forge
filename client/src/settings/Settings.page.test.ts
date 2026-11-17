@@ -111,9 +111,20 @@ describe('the settings route', () => {
   it('draws both engine levels and what an unset project inherits', () => {
     settingsFrame.set({ status: 'ready', document: engineWire({ kind: 'unset' }) });
     draw();
-    expect(document.body.textContent, 'the org row draws its own value').toContain('forge');
+    // **Each row's own cell**, not the page's whole text: the project row's
+    // `inherits forge` phrase also contains the org's value, so a page-wide
+    // match would pass with the org row drawing nothing.
+    const rowOf = (path: string): HTMLElement | null =>
+      document
+        .querySelector(`.settings-setting-label code[title="${path}"]`)
+        ?.closest('.settings-setting') ?? null;
     expect(
-      document.body.textContent,
+      rowOf('orgs.Acme.engine')?.querySelector('.settings-setting-value')?.textContent ?? '',
+      'the org row draws its own value',
+    ).toContain('forge');
+    expect(
+      rowOf('orgs.Acme.projects.api.engine')?.querySelector('.settings-setting-value')
+        ?.textContent ?? '',
       'the project row says what it inherits while it sets nothing',
     ).toContain('not set · inherits forge');
 
