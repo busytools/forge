@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { violationsOf } from '../testing/axe';
 import type { Connection } from '../socket';
 import { Stores } from '../stores';
-import type { Subject } from '../protocol';
+import { subjectKey, type Subject } from '../protocol';
 import type { SessionSlot } from '../wire/types';
 import Share from './Share.svelte';
 import { shareOf, worthOpening } from './pending';
@@ -33,12 +33,18 @@ afterEach(async () => {
 function stub() {
   const dispatched: { command: unknown; at?: SessionSlot }[] = [];
   const stores = new Stores();
+  /** The subjects the page has actually subscribed, by key. */
+  const wanted = new Set<string>();
   const connection = {
     dispatch: (command: unknown, at?: SessionSlot) => {
       dispatched.push(at === undefined ? { command } : { command, at });
       return Promise.resolve(null);
     },
-    subscribe: (what: Subject) => stores.open(what),
+    subscribe: (what: Subject) => {
+      wanted.add(subjectKey(what));
+      return stores.open(what);
+    },
+    holds: (what: Subject) => wanted.has(subjectKey(what)),
     release: () => {},
     refresh: () => true,
     relist: () => {},

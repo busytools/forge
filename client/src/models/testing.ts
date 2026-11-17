@@ -325,6 +325,7 @@ export function fakeConnection() {
       unsubscribed.push(what);
       return stores.close(what);
     },
+    holds: (what) => stores.get(what) !== undefined,
     refresh(what) {
       refreshed.push(what);
       return true;

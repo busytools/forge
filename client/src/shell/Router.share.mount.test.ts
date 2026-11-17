@@ -44,6 +44,7 @@ function connection(): Connection {
   return {
     subscribe: (what: unknown) => stores.open(what as never),
     unsubscribe: () => {},
+    holds: () => true,
     refresh: () => true,
     showing: () => {},
     relist: () => {},

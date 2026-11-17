@@ -57,7 +57,11 @@ seat is not like every other subject**: forge's clients re-ask the non-seat
 subjects they hold and re-attach only the seat they have on screen, leaving
 the rest stale until their next click - and a client re-attaching the seat
 it is showing must re-send `Showing` too, because the server's showing died
-with the old connection and nothing else would spend the seat's marks.
+with the old connection and nothing else would spend the seat's marks. **A
+seat no socket has ever carried is the exception**: a page can subscribe
+before its transport has a socket, and that ask went out on no wire, so the
+transport carries it to the first socket it has rather than leaving the seat
+subscribed nowhere.
 
 **A client probes too, with `ping`.** The server's ping proves the peer is
 reading; it does not prove the peer will ever hear a close. A half-open

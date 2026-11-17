@@ -13,7 +13,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { homeWire } from '../dev/fixture.data';
-import { PROTOCOL_VERSION, type ServerMessage, type Subject } from '../protocol';
+import { PROTOCOL_VERSION, subjectKey, type ServerMessage, type Subject } from '../protocol';
 import { sessionFrom } from '../session/wire';
 import type { Connection, ConnectionStatus } from '../socket';
 import { Stores } from '../stores';
@@ -43,12 +43,21 @@ describe('the return re-read, mounted', () => {
 
   it('probes, refreshes what the page holds, and re-reads the shown seat', async () => {
     const stores = new Stores();
+    /** The subjects the page has actually subscribed: a store alone is not one. */
+    const wants = new Set<string>();
     const listeners = new Set<(message: ServerMessage) => void>();
     const quiet = (): (() => void) => () => {};
     const calls: string[] = [];
     const connection = {
-      subscribe: (what: Subject) => stores.open(what),
-      unsubscribe: (what: Subject) => stores.close(what),
+      subscribe: (what: Subject) => {
+        wants.add(subjectKey(what));
+        return stores.open(what);
+      },
+      unsubscribe: (what: Subject) => {
+        wants.delete(subjectKey(what));
+        return stores.close(what);
+      },
+      holds: (what: Subject) => wants.has(subjectKey(what)),
       refresh: (what: Subject) => {
         calls.push(`refresh:${typeof what === 'string' ? what : 'seat'}`);
         return true;

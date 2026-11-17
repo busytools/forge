@@ -105,9 +105,14 @@ function seat(turns: unknown[] = load.turns, fields: Record<string, unknown> = {
     refuse: () => undefined,
   };
 
+  let subscribed = false;
   const connection = {
-    subscribe: () => store,
+    subscribe: () => {
+      subscribed = true;
+      return store;
+    },
     unsubscribe: () => undefined,
+    holds: () => subscribed,
     refresh: (what: Subject) => {
       asked.push(what);
       // A re-answer is a whole new record, which is what a read costs a page:

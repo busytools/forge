@@ -54,8 +54,8 @@ const slot: SessionSlot = { org: 'Busytools', project: 'forge', label: 'lead' };
 const subject = { session: slot };
 
 /** A client_state answer, overridden per test. */
-type State = { status: string; generation?: number; greeting: unknown };
-const OPEN: State = { status: 'open', generation: 1, greeting: null };
+type State = { status: string; generation?: number; connection?: number; greeting: unknown };
+const OPEN: State = { status: 'open', generation: 1, connection: 1, greeting: null };
 /** The id the mocked shell hands back for a `client_connect`. */
 const SOCKET = 7;
 
@@ -110,6 +110,199 @@ describe('what the shell is told', () => {
     // what remembers which kind of read that store was.
     connection.refresh(subject);
     expect(invoke).toHaveBeenCalledWith('client_refresh', { what: subject });
+  });
+
+  /**
+   * **A subscribe the shell never took is not a subscription, and the seat is
+   * told.** An invoke that rejects is the one loss this half can see: the
+   * page's store is loading with nothing behind it, so the error frame is
+   * what lets a page ask again instead of waiting on an answer nobody owes
+   * (#3002).
+   */
+  it('tells the seat when a subscribe never reached the shell', async () => {
+    const connection = await opened();
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+    const seen: ServerMessage[] = [];
+    connection.onMessage((message) => seen.push(message));
+
+    invoke.mockImplementation((command: string) =>
+      command === 'client_subscribe'
+        ? Promise.reject(new Error('the shell is gone'))
+        : Promise.resolve(undefined),
+    );
+    connection.subscribe(subject);
+
+    await vi.waitFor(() => expect(connection.holds(subject)).toBe(false));
+    expect(seen.at(-1), 'the seat was told nothing of the loss').toMatchObject({
+      kind: 'error',
+      what: 'subscribe',
+      why: 'the shell is gone',
+      seat: slot,
+      subject,
+    });
+  });
+
+  /** A subject is held until it is given back, and a closed connection holds nothing. */
+  it('stops holding a subject when it is released or the connection closes', async () => {
+    const connection = await opened();
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+
+    connection.subscribe(subject);
+    expect(connection.holds(subject), 'a subscribed subject was not held').toBe(true);
+
+    connection.release(subject);
+    expect(connection.holds(subject), 'a released subject was still held').toBe(false);
+
+    connection.subscribe(subject);
+    expect(connection.holds(subject), 'precondition: the seat was held again').toBe(true);
+    connection.close();
+    expect(connection.holds(subject), 'a closed connection held its wants').toBe(false);
+  });
+
+  /**
+   * **A drop ends the page's seat wants.** The shell keeps only its string
+   * subjects across a retry - every seat leaves with the socket that carried
+   * it - so a seat's subscription is gone after any drop, and the page is
+   * what re-attaches the seat on screen. `holds` is how it knows (#3002).
+   */
+  it('drops its seat wants when the socket goes, and leaves the strings alone', async () => {
+    const shell: State = { status: 'open', generation: 1, connection: 1, greeting: null };
+    const connection = await opened(shell);
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+    connection.subscribe(subject);
+    connection.subscribe('home');
+    expect(connection.holds(subject), 'precondition: the seat is held').toBe(true);
+
+    shell.status = 'connecting';
+    fire('client://connection', undefined);
+    await vi.waitFor(() => expect(connection.status()).toBe('connecting'));
+    expect(connection.holds(subject), 'a seat outlived the socket that carried it').toBe(false);
+    expect(connection.holds('home'), 'a subject the retry re-asks was dropped with the seats').toBe(
+      true,
+    );
+
+    shell.status = 'open';
+    shell.generation = 2;
+    fire('client://connection', undefined);
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+    expect(connection.holds(subject), 'the transport re-attached a seat the page owns').toBe(false);
+
+    connection.relist(subject);
+    expect(connection.holds(subject), "the page's own relist is the seat's re-attach").toBe(true);
+  });
+
+  /**
+   * **A retry of the same socket task is still a socket change for a seat.**
+   * The task comes back and re-asks its strings; the seat it carried is gone,
+   * so the page's want is dropped and the status pair runs once - and the
+   * transport itself never relists, because that ask is the page's.
+   */
+  it('keeps a same-task retry to one status pair and no relist of its own', async () => {
+    const shell: State = { status: 'open', generation: 1, connection: 1, greeting: null };
+    const connection = await opened(shell);
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+    connection.subscribe(subject);
+    const seen: string[] = [];
+    connection.onStatus((status) => seen.push(status));
+
+    shell.status = 'connecting';
+    fire('client://connection', undefined);
+    await vi.waitFor(() => expect(connection.status()).toBe('connecting'));
+    shell.status = 'open';
+    shell.generation = 2;
+    fire('client://connection', undefined);
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+
+    expect(seen, 'a same-task retry ran the pair more than once').toEqual(['connecting', 'open']);
+    expect(connection.holds(subject), 'a seat outlived the retry').toBe(false);
+    expect(
+      invoke.mock.calls.filter(([command]) => command === 'client_relist'),
+      'the transport relisted a seat the page owns',
+    ).toHaveLength(0);
+  });
+
+  /**
+   * **A replacement observed at `open` still runs its pair, once.** The forced
+   * pair must not leave `transition` set: a later slept-through reconnect
+   * would then read as watched and skip its own pair, leaving the seat on
+   * screen un-attached.
+   */
+  it('runs its pair again on a reconnect the page slept through, after a replacement', async () => {
+    const shell: State = { status: 'open', generation: 1, connection: 1, greeting: null };
+    const connection = await opened(shell);
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+    connection.subscribe(subject);
+    const seen: string[] = [];
+    connection.onStatus((status) => seen.push(status));
+
+    // A replacement seen while the bridge is already open: the id changes and
+    // no status move arrives.
+    shell.connection = 2;
+    shell.generation = 2;
+    fire('client://connection', undefined);
+    await vi.waitFor(() => expect(seen).toEqual(['connecting', 'open']));
+
+    // The webview slept through the next reconnect: the same task, a raised
+    // generation, and no `connecting` the page watched.
+    shell.generation = 3;
+    fire('client://connection', undefined);
+    await vi.waitFor(() => expect(seen).toEqual(['connecting', 'open', 'connecting', 'open']));
+  });
+
+  /**
+   * **A replaced socket task leaves the seats to the page.** A `client_connect`
+   * replaces the task, and the new one re-asks only the subjects it owns. The
+   * two look alike from a status, so the shell's own socket id is what the
+   * page reads: on a change, its seat wants are no longer carried - and the
+   * pair below tells the seat on screen to re-attach.
+   */
+  it('drops a seat it no longer carries when the shell replaces its socket', async () => {
+    const shell: State = { status: 'open', generation: 1, connection: 1, greeting: null };
+    const connection = await opened(shell);
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+    connection.subscribe(subject);
+    connection.subscribe('home');
+    expect(connection.holds(subject), 'precondition: the seat is held').toBe(true);
+    expect(connection.holds('home'), 'precondition: the home is held').toBe(true);
+    const seen: string[] = [];
+    connection.onStatus((status) => seen.push(status));
+
+    shell.connection = 2;
+    shell.generation = 2;
+    fire('client://connection', undefined);
+
+    await vi.waitFor(() =>
+      expect(connection.holds(subject), 'a seat the replaced socket skipped was still held').toBe(
+        false,
+      ),
+    );
+    expect(
+      connection.holds('home'),
+      'a subject the replaced socket re-asks was dropped with the seats',
+    ).toBe(true);
+    expect(seen, 'the page was never told the socket was replaced').toEqual(['connecting', 'open']);
+  });
+
+  /**
+   * **The count is the shell's, so one page reader leaving is not the hold
+   * ending.** A subject two callers watch stays held until both have gone;
+   * answering false on the first would let a page re-subscribe a subject the
+   * shell still carries, and the server would hold two where the page holds
+   * one.
+   */
+  it('gives the hold up only when the last page reader does', async () => {
+    const connection = await opened();
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+
+    connection.subscribe(subject);
+    connection.subscribe(subject);
+    expect(connection.holds(subject), 'precondition: the subject is held').toBe(true);
+
+    connection.unsubscribe(subject);
+    expect(connection.holds(subject), 'one reader leaving ended the hold').toBe(true);
+
+    connection.unsubscribe(subject);
+    expect(connection.holds(subject), 'the last reader leaving kept the hold').toBe(false);
   });
 
   /**
@@ -641,6 +834,52 @@ describe('frames from the bridge', () => {
     expect(invoke, 'an answered read is not re-asked').not.toHaveBeenCalledWith('client_refresh', {
       what: subject,
     });
+  });
+
+  /**
+   * **A relist is bounded like a subscribe.** The page's recovery asks again
+   * through `client_relist`, and a snapshot lost on that door must be
+   * retried the same way - a seat whose store went back to loading would
+   * otherwise wait with no beat behind it (#3002).
+   */
+  it('asks the shell again for a relisted read the bound finds still loading', async () => {
+    vi.useFakeTimers();
+    invoke.mockImplementation((command: string) => {
+      if (command === 'client_state') return Promise.resolve(OPEN);
+      return Promise.resolve(undefined);
+    });
+    const connection = connectRust('ws://127.0.0.1:7777/socket', 1_000);
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+    const store = connection.subscribe(subject);
+    fire('client://inbound', { kind: 'snapshot', subject, data: { header: {} } });
+    await vi.waitFor(() => expect(store.state().kind).toBe('ready'));
+
+    // **The occupant is replaced**, which puts the store back to loading. The
+    // subscribe's own bound is already cleared by the answer above, so only a
+    // relist's arm can schedule the retry below.
+    fire('client://inbound', {
+      kind: 'update',
+      update: {
+        connected: {
+          key: slot,
+          session_id: 'next',
+          cwd: '/tmp',
+          current_model: null,
+          available_models: [],
+          mode: null,
+          history: [],
+          compaction_count: 0,
+        },
+      },
+    });
+    await vi.waitFor(() => expect(store.state().kind).toBe('loading'));
+    invoke.mockClear();
+
+    connection.relist(subject);
+    vi.advanceTimersByTime(1_000);
+    await vi.waitFor(() =>
+      expect(invoke).toHaveBeenCalledWith('client_refresh', { what: subject }),
+    );
   });
 
   /**
