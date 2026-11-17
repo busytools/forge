@@ -920,7 +920,7 @@ fn in_thread_order(messages: &[SlackMessage]) -> Vec<&SlackMessage> {
 /// Whether a message started a thread: a parent is the message that reports
 /// replies and is its own thread root. A root nobody has replied to starts
 /// nothing yet, so it reads as a plain root. **The predicate is the same
-/// `reply_count > 0 && thread_ts == ts` shape as `slack.rs`'s
+/// `reply_count > 0 && thread_ts == ts` shape as `forge-tools`' `slack.rs`
 /// `is_thread_parent`**, read off `latest_reply` here because the primitives'
 /// `SlackMessage` carries no `reply_count`; the two are meant to agree.
 fn starts_thread(message: &SlackMessage) -> bool {
