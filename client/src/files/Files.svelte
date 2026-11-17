@@ -1,8 +1,8 @@
 <script lang="ts">
   /**
    * The files page: one seat's whole working tree, walked file by file, with
-   * comments droppable on any line and the dropped set listed beside the
-   * reader.
+   * comments droppable on any line or rendered markdown block, and the
+   * dropped set listed beside the reader.
    *
    * It subscribes the seat itself, as the review page does, and answers
    * nothing. **The tree follows the SEAT** - a worker's own worktree, the
@@ -45,6 +45,7 @@
   import { Landing } from '../composer/landing';
   import { joined, noticeLine } from '../composer/view';
   import { composerFrom, filesFrom, filesOnly } from '../composer/wire';
+  import type { DocRow } from '../doc/comments';
   import { hrefForSlot } from '../routes';
   import type { CommentBox, ReplyBox, TurnEditor, Voice, Words } from '../review/boxes';
   import Conversation from '../review/Conversation.svelte';
@@ -123,7 +124,6 @@
   let reader = $state<ReaderHandle | null>(null);
   /** A jump's line, applied once the reader for its file is in hand. */
   let pendingLine = $state<number | null>(null);
-
   /** The resolved threads the reader opened back up - held on the PAGE,
    *  because the reader re-mounts a card whenever a write moves its block
    *  key (the lead's gate, 2026-10-17). */
@@ -553,7 +553,10 @@
   $effect(() => {
     const typingSomewhere = (target: EventTarget | null): boolean =>
       target instanceof HTMLElement &&
+      // The rendered markdown is a reading surface too: its blocks take the
+      // keyboard, so the tree's arrows must not walk under them.
       (target.closest('.cm-editor') !== null ||
+        target.closest('.files-markdown') !== null ||
         target instanceof HTMLInputElement ||
         target instanceof HTMLTextAreaElement ||
         target.isContentEditable);
@@ -716,6 +719,14 @@
     comment.draft = '';
   }
 
+  /** A rendered markdown block was pressed: its first source line is the
+   *  anchor, the same line its `+` names. The block is the larger target;
+   *  both capture the line's neighbours, which is what the tree-scope
+   *  resolver needs to relocate a thread after the file moves. */
+  function commentBlock(row: DocRow): void {
+    commentOn(row.line);
+  }
+
   async function commented(text: string): Promise<void> {
     const spot = comment.spot;
     const held = reader;
@@ -726,6 +737,11 @@
       side: 'new',
       line: spot.line,
       text,
+      // **The line's neighbours, for both presses.** The tree-scope resolver
+      // relocates a moved thread only when the captured context carries the
+      // lines around the anchor; a block's own lines run forward from it, so
+      // they cannot. The `+` and the block press differ in the target's size,
+      // not in what the anchor captures.
       context: contextForComment(lines, spot.line),
       lineText: lines[spot.line - 1] ?? '',
       baseRef: treeScope(slot),
@@ -857,7 +873,7 @@
         // leave its stale DOM (acts, chip, words) under the line (measured
         // live, Ved 2026-10-17 - the edit landed in the store and the card
         // read the old words until the stamp joined the key).
-        key: `thread:${id}:${statusKey(row.thread.status)}:${row.thread.comments.length}:${row.thread.updated_at}:${reply.thread === id ? 'reply' : 'shut'}:${reply.thread === id && reply.index !== null ? `edit-${reply.index}` : 'noedit'}`,
+        key: `thread:${id}:${row.line}:${statusKey(row.thread.status)}:${row.thread.comments.length}:${row.thread.updated_at}:${reply.thread === id ? 'reply' : 'shut'}:${reply.thread === id && reply.index !== null ? `edit-${reply.index}` : 'noedit'}`,
         mount: (host) => {
           const held = mount(Inline, {
             target: host,
@@ -942,7 +958,41 @@
     if (held === null) return;
     held.setBlocks(blocks);
   });
+
+  /**
+   * The page's blocks that land in one rendered-markdown row: its thread
+   * cards and the open composer, the same objects the editor mounts. A
+   * block's key is what re-mounts it when its state moves.
+   *
+   * **A block outside every row still draws**: one anchored in a hidden
+   * frontmatter block goes under the first row, and one whose landing is
+   * past the frozen snapshot's last line goes under the last row - the
+   * editor path clamped to the document's last line, and the placement is
+   * resolved against the CURRENT file while the read stays the snapshot it
+   * was opened at. The rail and the card's own line still name its line.
+   */
+  function blocksUnder(row: DocRow, first: boolean, last: boolean): ReaderBlock[] {
+    return blocks.filter((block) => {
+      if (block.line >= row.line && block.line <= row.end) return true;
+      if (first && block.line < row.line) return true;
+      return last && block.line > row.end;
+    });
+  }
+
+  /**
+   * Mount one of the page's blocks into a rendered-markdown row: the mount
+   * the editor's own widgets perform, for the reader that has no editor.
+   */
+  function landBlock(node: HTMLElement, block: ReaderBlock): { destroy: () => void } {
+    return { destroy: block.mount(node) };
+  }
 </script>
+
+{#snippet under(row: DocRow, first: boolean, last: boolean)}
+  {#each blocksUnder(row, first, last) as block (block.key)}
+    <div class="files-block" use:landBlock={block}></div>
+  {/each}
+{/snippet}
 
 <div class="files-page">
   <header class="files-top">
@@ -1069,7 +1119,15 @@
           {#if open === null}
             <p class="files-quiet">Pick a file from the tree.</p>
           {:else}
-            <Reader {connection} {slot} path={open} oncomment={commentOn} bind:handle={reader} />
+            <Reader
+              {connection}
+              {slot}
+              path={open}
+              oncomment={commentOn}
+              onblock={commentBlock}
+              {under}
+              bind:handle={reader}
+            />
           {/if}
         </main>
       {:else}

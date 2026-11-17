@@ -59,6 +59,7 @@ function fakeConnection() {
       throw new Error('the page rereads are mocked, so nothing subscribes here');
     },
     unsubscribe() {},
+    holds: () => false,
     refresh() {
       return true;
     },

@@ -80,8 +80,6 @@ const cmJson = async (): Promise<Extension> => (await import('@codemirror/lang-j
 const cmYaml = async (): Promise<Extension> => (await import('@codemirror/lang-yaml')).yaml();
 const cmCss = async (): Promise<Extension> => (await import('@codemirror/lang-css')).css();
 const cmHtml = async (): Promise<Extension> => (await import('@codemirror/lang-html')).html();
-const cmMarkdown = async (): Promise<Extension> =>
-  (await import('@codemirror/lang-markdown')).markdown();
 const cmSql = async (): Promise<Extension> => (await import('@codemirror/lang-sql')).sql();
 
 /** The CodeMirror structure loaders, by canonical shiki grammar id - the
@@ -100,7 +98,6 @@ const CM: Record<string, () => Promise<Extension>> = {
   html: cmHtml,
   xml: cmHtml,
   sql: cmSql,
-  markdown: cmMarkdown,
 };
 
 /** The reader's target line, as an effect the page's own controls dispatch. */

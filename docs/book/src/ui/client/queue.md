@@ -71,6 +71,23 @@ core carries to the CLI's `cancel_async_message` control; the CLI answers
 `{"cancelled":true}`, and a cancel landing after `started` answers false -
 the card has usually drained by then.
 
+**Every message rides this one queue, whoever sent it.** A person's send, a
+peer message, a cron fire, a Gotify push, a Slack delivery, a review nudge
+and forge's own continuation are all written to the CLI under an id the
+moment they arrive, and each draws its row where the CLI starts it. A
+delivery draws at its own `started`, so one arriving mid-turn is visible in
+the pile while it waits, and its row lands where the CLI took it: inside
+the running turn when the CLI absorbs it there, or as the next turn's
+first row when it queues it to the boundary. Forge's machinery keeps its
+dispatch row on the wire; `prompt_queued` retracts it and the client draws
+it at `started`. A CLI with no lifecycle frames has no `started`: there each
+row draws at dispatch, or on the init frame when it was already waiting. The
+typed update a delivery also sends (`peer`, `cron`,
+`gotify`, `slack`) carries the envelope's facts and pairs a cron's
+schedule with its row; it is never a row of its own - except the
+delivery-failure notice's `peer` update, which is exactly the row the
+server forges for it.
+
 **A parked question is the pile's other shape.** Every prompt arriving
 while a question is up is `queued` and stays; the answer lands and all of
 them go `started` in the same instant, delivered in the request that

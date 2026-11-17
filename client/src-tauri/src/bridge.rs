@@ -107,6 +107,16 @@ struct Watch {
     /// own. Follows the page holding the seat, so a review open that drops
     /// comes back as the read it was rather than as an ordinary record.
     review: bool,
+    /// Whether this watch has asked for a subject with no socket to carry it.
+    ///
+    /// **The one state a reconnect must re-ask a seat in.** A page's subscribe
+    /// can arrive before the bridge has a socket at all (a page subscribing
+    /// before its own `client_connect` has made one), and such a watch has
+    /// never been on a wire: the server holds nothing, and
+    /// [`Bridge::connect`]'s own rule - a seat is the page's to re-open after
+    /// a socket change - would otherwise leave it subscribed nowhere, for the
+    /// connection's life (#3002). Cleared when a socket carries it.
+    pending: bool,
 }
 
 /// A live takeover's viewer, as the attach asked for it.
@@ -809,16 +819,25 @@ impl Bridge {
             state.refreshing.clear();
             state.home_stale = false;
             let mut wanted = Vec::with_capacity(state.order.len());
-            for key in &state.order {
-                if let Some(watch) = state.held.get(key) {
-                    // **A seat is the page's own to re-open.** Only the shown
-                    // seat re-attaches after a resume; the rest re-attach on
-                    // their next click, so re-asking every visited seat here
-                    // would pay a whole record each for seats nobody is
-                    // looking at.
-                    if !watch.what.is_string() {
+            // The order is copied out so each watch can be marked carried:
+            // `&state.order` and `state.held.get_mut` are one borrow apart.
+            let order = state.order.clone();
+            for key in &order {
+                if let Some(watch) = state.held.get_mut(key) {
+                    // **A seat is the page's own to re-open** once a socket
+                    // has carried it: only the shown seat re-attaches after a
+                    // resume, and the rest re-attach on their next click, so
+                    // re-asking every visited seat here would pay a whole
+                    // record each for seats nobody is looking at.
+                    //
+                    // **A watch no socket has ever carried is not that.** The
+                    // page has no record of a subscription it never got, and
+                    // nothing else will ask again, so it goes out with the
+                    // subjects a reconnect already re-asks (#3002).
+                    if !watch.what.is_string() && !watch.pending {
                         continue;
                     }
+                    watch.pending = false;
                     wanted.push((watch.what.clone(), watch.answering, watch.review, watch.readers));
                 }
             }
@@ -851,13 +870,22 @@ impl Bridge {
             return;
         }
         let mut state = self.lock();
+        // **A subscribe with no socket has nowhere to go**, and the next
+        // connect is the only thing that will carry it: the watch says so, so
+        // that a seat is not skipped by the rule that leaves seats to the page
+        // after a socket change.
+        let carried = state.socket.is_some();
         if let Some(watch) = state.held.get_mut(&key) {
             watch.readers += 1;
             watch.answering |= answering;
             watch.review = review;
+            watch.pending |= !carried;
         } else {
             state.order.push(key.clone());
-            state.held.insert(key, Watch { what: what.clone(), readers: 1, answering, review });
+            state.held.insert(
+                key,
+                Watch { what: what.clone(), readers: 1, answering, review, pending: !carried },
+            );
         }
         if let Some(socket) = &state.socket {
             socket.subscribe(what, answering, review);
@@ -934,12 +962,31 @@ impl Bridge {
     pub fn relist(&self, what: Value, answering: bool, review: bool) {
         let mut state = self.lock();
         let key = records::subject_key(&what);
-        let held_answering = state.held.get(&key).is_some_and(|watch| watch.answering);
+        if key.is_empty() {
+            return;
+        }
+        // **A relist is an accepted ask, not a bare frame.** The page's
+        // recovery for a watch the shell never took is a relist (#3002), and a
+        // subscription made only on the wire - or nowhere, with no socket -
+        // would never be re-asked by [`Bridge::connect`] and would lose its
+        // declaration to `refresh`'s fallback. So an absent watch is created
+        // here as `subscribe` creates it: one reader, marked `pending` when no
+        // socket can carry it yet.
+        let carried = state.socket.is_some();
         // **The declaration is the held one, with this ask's own review
         // scope**: the role only rises while the connection lives, and the
         // review read follows the page that last held the seat.
+        let held_answering = state.held.get(&key).is_some_and(|watch| watch.answering);
         if let Some(watch) = state.held.get_mut(&key) {
             watch.review = review;
+            watch.answering |= answering;
+            watch.pending |= !carried;
+        } else {
+            state.order.push(key.clone());
+            state.held.insert(
+                key,
+                Watch { what: what.clone(), readers: 1, answering, review, pending: !carried },
+            );
         }
         if let Some(socket) = &state.socket {
             socket.relist(what, held_answering || answering, review);
@@ -1165,6 +1212,13 @@ impl Bridge {
         json!({
             "status": state.status,
             "generation": state.generation,
+            // **The socket task itself**, which a status cannot name: a task
+            // reconnects in place and keeps its string subjects (the seats
+            // go with the socket), while a `client_connect` replaces the task
+            // and re-asks only the subjects it owns. The page keys its own
+            // seat wants on this, so a replaced socket is told apart from a
+            // retried one (#3002).
+            "connection": state.socket_id,
             "greeting": state.greeting,
         })
     }
@@ -3551,6 +3605,122 @@ mod tests {
         assert!(
             tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
             "a seat re-attached itself on resume instead of waiting for a click",
+        );
+    }
+
+    /// **A subject subscribed with no socket is carried by the next one**, and
+    /// a seat is among them.
+    ///
+    /// A page can subscribe before its own `client_connect` has made a socket.
+    /// That watch has never been on a wire - the server holds nothing, and
+    /// the page has no record of a subscription it never got - so the
+    /// reconnect's own rule ("a seat is the page's to re-open after a socket
+    /// change") would leave it subscribed nowhere for the connection's life
+    /// (#3002). It goes out with the subjects a reconnect already re-asks.
+    #[tokio::test]
+    async fn a_seat_subscribed_with_no_socket_is_carried_by_the_next_one() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        assert!(bridge.lock().socket.is_none(), "precondition: no socket at all");
+        bridge.subscribe(seat(), true, false);
+
+        bridge.connect(server.url.clone());
+        let carried = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(carried["what"], seat(), "the seat reached the first socket it ever had");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "the watch asked once, not once per reader and once again",
+        );
+
+        // **The carry happens once.** A watch a socket has carried is the
+        // page's to re-open; re-asking it on the next socket would be a
+        // server entry nobody asked for.
+        let mut second = stub().await;
+        bridge.connect(second.url.clone());
+        connected(&bridge).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), second.heard.recv()).await.is_err(),
+            "a carried watch was re-asked on the next socket",
+        );
+    }
+
+    /// **A relist is an accepted ask like a subscribe.** The page's recovery
+    /// for a watch the shell never took is a relist (#3002); a relist that
+    /// created no watch would be a frame the shell's own accounting never
+    /// learns, so the next connect could never carry it and a later refresh
+    /// would lose its declaration.
+    #[tokio::test]
+    async fn a_relist_with_no_socket_is_carried_by_the_next_one() {
+        let mut server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.relist(seat(), true, false);
+        assert!(
+            bridge.lock().held.contains_key(&records::subject_key(&seat())),
+            "the relist left the shell no watch to carry",
+        );
+
+        bridge.connect(server.url.clone());
+        let carried = server.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(carried["what"], seat(), "the relist reached the first socket it ever had");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), server.heard.recv()).await.is_err(),
+            "the relist asked once, not once per reader and once again",
+        );
+    }
+
+    /// **The page's replacement discriminator is the socket task's own id.**
+    /// A status cannot name the task, and the page keys its seat wants on
+    /// this id: renamed or dropped, a replacement would read as a same-task
+    /// retry and the seat the new task skipped would never be re-asked
+    /// (#3002).
+    #[tokio::test]
+    async fn state_carries_the_socket_task_id() {
+        let server = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        let id = bridge.lock().socket_id;
+        assert_ne!(id, 0, "precondition: a socket task exists");
+        assert_eq!(
+            bridge.state()["connection"],
+            json!(id),
+            "the state does not name the task the page must key on",
+        );
+    }
+
+    /// **A seat the old socket carried is the page's to re-attach, and the
+    /// shell does not double it.**
+    ///
+    /// This is the window a replaced page leaves: its first subscribes land
+    /// while the previous page's socket is still the bridge's, and
+    /// `client_connect` then replaces that socket. The new socket re-asks the
+    /// string subjects it owns (none here) and leaves the seat to the page,
+    /// whose own relist is the one subscribe the new server sees - two would
+    /// be two server entries and a second whole record.
+    #[tokio::test]
+    async fn a_seat_wired_on_the_old_socket_waits_for_the_pages_own_relist() {
+        let mut first = stub().await;
+        let mut second = stub().await;
+        let (bridge, _rx) = bridge();
+        bridge.connect(first.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(seat(), true, false);
+        let heard = first.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(heard["what"], seat(), "precondition: the old socket carried the seat");
+
+        bridge.connect(second.url.clone());
+        connected(&bridge).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), second.heard.recv()).await.is_err(),
+            "the shell re-asked a seat the page owns after a socket change",
+        );
+
+        bridge.relist(seat(), true, false);
+        let again = second.heard_until(|v| v["kind"] == "subscribe").await;
+        assert_eq!(again["what"], seat(), "the page's own re-attach asked the seat");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), second.heard.recv()).await.is_err(),
+            "the page's re-attach is one subscribe, not two",
         );
     }
 

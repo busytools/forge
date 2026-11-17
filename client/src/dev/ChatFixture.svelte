@@ -86,6 +86,8 @@
     const listeners = new SvelteSet<(message: ServerMessage) => void>();
     /** The subscribe's answer, kept for a listener that registers after it. */
     let latestSnapshot: ServerMessage | null = null;
+    /** Whether the page has asked for anything, which is what a held subscription is. */
+    let asked = false;
     // A macrotask, the way a socket's answer arrives: the column that asked
     // mounts on the microtask flush, so a microtask here could land before its
     // listener exists and the page would wait for a snapshot nobody heard.
@@ -101,6 +103,7 @@
       // switch reads. Without it the column waits for a page it never asked
       // for and draws its loading state for good.
       subscribe: (what: unknown) => {
+        asked = true;
         if (what !== null && typeof what === 'object' && 'session' in what) {
           latestSnapshot = {
             kind: 'snapshot',
@@ -117,6 +120,7 @@
         return { state: () => ({ kind: 'ready' as const }), snapshot: () => null };
       },
       unsubscribe: () => undefined,
+      holds: () => asked,
       refresh: () => undefined,
       dispatch: () => null,
       more: (_slot: SessionSlot, before: string | null) => {

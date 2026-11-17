@@ -106,9 +106,14 @@ function seat(turns: unknown[] = load.turns) {
   const emit = (message: ServerMessage): void => {
     for (const listener of listeners) listener(message);
   };
+  let subscribed = false;
   const connection = {
-    subscribe: () => store,
+    subscribe: () => {
+      subscribed = true;
+      return store;
+    },
     unsubscribe: () => undefined,
+    holds: () => subscribed,
     refresh: () => undefined,
     dispatch: () => null,
     more: () => false,

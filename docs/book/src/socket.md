@@ -57,7 +57,11 @@ seat is not like every other subject**: forge's clients re-ask the non-seat
 subjects they hold and re-attach only the seat they have on screen, leaving
 the rest stale until their next click - and a client re-attaching the seat
 it is showing must re-send `Showing` too, because the server's showing died
-with the old connection and nothing else would spend the seat's marks.
+with the old connection and nothing else would spend the seat's marks. **A
+seat no socket has ever carried is the exception**: a page can subscribe
+before its transport has a socket, and that ask went out on no wire, so the
+transport carries it to the first socket it has rather than leaving the seat
+subscribed nowhere.
 
 **A client probes too, with `ping`.** The server's ping proves the peer is
 reading; it does not prove the peer will ever hear a close. A half-open
@@ -1094,9 +1098,10 @@ of prose on either side.
   under and `span` how many of the seat's numbers it stands for - 1 for a
   frame that is one update, and n for a run of token appends the batch folded
   into the one frame they draw as. `seq` is absent from a frame belonging to
-  no seat, and `span` is 0 only on the turn the batch forges from a delivery
-  - a frame with no number - and 1 everywhere else. Both are absent from a
-  server older than the fields, which leaves a client with the frames alone.
+  no seat, and `span` is 0 only on the turn the batch forges from a
+  delivery-failure notice - a frame with no number - and 1 everywhere else.
+  Both are absent from a server older than the fields, which leaves a client
+  with the frames alone.
   `seq` alone is absent from a seat's frame the server answers out of band
   rather than emitting into the stream: the `read_call_output` answer carries
   its seat, `seq: null` and `span: 1`, because it stands nowhere in the
@@ -1373,12 +1378,16 @@ only for the forged frame below.**
 **Not every frame on the stream is the CLI's, and for the forged kind the
 id is the tell.** A prompt handed to `claude` on stdin is not echoed back,
 so forge forges the user turn itself and sends it as a `chat_appended` like
-any other frame: a delivery (a cron fire, a Gotify notification, a Slack
-message, a peer comm), forge's own machinery (a worker kick, an
-auto-continue, a board chase, a board notice), and a reader's own send,
-which without it no viewer but the sender would ever see. **The folded frame
-is the other kind, and its id is the CLI's**: it is the last arrival's,
-because the one frame stands for the run the flush carried.
+any other frame. **A prompt that rides the CLI's queue is forged at its
+`started`** - a person's send, a delivery (a cron fire, a Gotify
+notification, a Slack message, a peer comm) and a review nudge - because
+that is where the CLI took it, and a row forged at dispatch sat above the
+answer a running turn was still writing. **Forge's own machinery is forged
+at dispatch** - a worker kick, an auto-continue, a board chase, a board
+notice - and so is the delivery-failure notice, whose words are not a turn
+the conversation opened and whose row is their only carrier. **The folded
+frame is the other kind, and its id is the CLI's**: it is the last
+arrival's, because the one frame stands for the run the flush carried.
 
 **A prompt frame carries no `origin` since v27.** The field said whether
 the core's own input handler or a view submitted the words, and it is gone
@@ -1400,8 +1409,9 @@ persists - on the user row of a prompt that started a turn, and inside the
 `queued_command` block's `source_uuid` when a mid-turn prompt is delivered
 as an attachment - so the frame and the page's later copy of the same
 message agree on it, and a client reconciles the two by id. It is also what
-lets a view hold the forged row while the prompt waits in the pile: the
-`command_lifecycle` frames carry the same id.
+pairs the row with the queued prompt it answers: the `command_lifecycle`
+frames carry the same id, so a page's own early copy of the row is held
+until `started` lands and drained then.
 
 **The server's fold and the client's are two readings of one conversation.**
 The server folds a conversation into where its turns sit and the task

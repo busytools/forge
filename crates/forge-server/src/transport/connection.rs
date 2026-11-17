@@ -8959,12 +8959,12 @@ mod tests {
     ///
     /// The walk names the file one row - its boundary - and two kinds of frame
     /// carry an id the file has no row for: a row the transport FORGED for
-    /// display (a delivery), and a sub-agent's frame, which the row rule drops
-    /// at the read. Naming either used to answer the read nothing, and nothing
-    /// reads as the end of the history: a silent gap, on exactly the windows
-    /// this walk exists for - a forged delivery row IS a turn opener, so the
-    /// count cut lands on one, and a running turn streaming sub-agent work
-    /// leaves sub-agent frames at its front.
+    /// display (the delivery-failure notice), and a sub-agent's frame, which
+    /// the row rule drops at the read. Naming either used to answer the read
+    /// nothing, and nothing reads as the end of the history: a silent gap, on
+    /// exactly the windows this walk exists for - a forged notice row IS a
+    /// turn opener, so the count cut lands on one, and a running turn
+    /// streaming sub-agent work leaves sub-agent frames at its front.
     #[tokio::test]
     async fn a_window_front_the_file_cannot_name_still_pages() {
         let dir = tempfile::tempdir().expect("a config dir of its own");
@@ -8984,12 +8984,16 @@ mod tests {
         conversations
             .insert(&seat, crate::transport::conversation::Conversation::new(frames, 0, 0));
         conversations.apply(
-            &SessionUpdate::CronPromptAppended {
+            &SessionUpdate::PeerEnvelopeAppended {
                 key: seat.clone(),
-                text: "the cron fired".to_owned(),
-                uuid: "cap-cron".to_owned(),
-                cron_id: "c1".to_owned(),
-                description: None,
+                uuid: "cap-notice".to_owned(),
+                wrapped: forge_workspace::WrappedPrompt {
+                    id: forge_workspace::MessageId("m-1".to_owned()),
+                    kind: forge_workspace::WrappedKind::DeliveryFailureNotice,
+                    sender_name: "companies".to_owned(),
+                    sender_org: "Busytools".to_owned(),
+                    body: "target session connection lost".to_owned(),
+                },
             },
             None,
         );
@@ -9005,7 +9009,7 @@ mod tests {
         for at in 0..5_000_usize {
             let window = conversations.get(&seat).expect("the seat is held");
             if row_id(window.lock().messages().first().expect("a front")).as_deref()
-                == Some("cap-cron")
+                == Some("cap-notice")
             {
                 break;
             }
@@ -9024,7 +9028,7 @@ mod tests {
             let window = held.lock();
             assert_eq!(
                 row_id(window.messages().first().expect("a front")).as_deref(),
-                Some("cap-cron"),
+                Some("cap-notice"),
                 "precondition: the count cut landed on the forged row",
             );
             boundary_of(&window).expect("the window carries a row the file has")

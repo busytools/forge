@@ -1784,8 +1784,16 @@ interface Driveable extends Omit<Connection, 'status'> {
   land(message: ServerMessage): void;
   wentTo(next: ConnectionStatus): void;
   reads(): number;
-  /** How many times a seat was subscribed on this connection. */
+  /** How many times the seat's subscription was asked for: a subscribe, or a re-ask of one. */
   subscribes(): number;
+  /**
+   * Stop holding what was asked for, keeping the stores it answered with.
+   *
+   * This is the state a dropped socket leaves a seat in: the store survives,
+   * the want does not, and the page that shows the seat is the thing that asks
+   * again - the same shape `socket.ts`'s own `dropped` makes for a seat.
+   */
+  loseWants(): void;
   /** Every subscribe's declaration, in order. */
   opens: { answering?: boolean; review?: boolean }[];
   /** Every re-ask's own options, in order. */
@@ -1818,6 +1826,8 @@ function drivable(refusedAtFirst = false, rangeAskFails = false): Driveable {
   let refused = refusedAtFirst;
   let askFails = rangeAskFails;
   let status: ConnectionStatus = 'open';
+  /** The subjects whose subscriptions this connection holds, by key. */
+  const wants = new Set<string>();
   const ranges: { slot: SessionSlot; epoch: string | null; from: number; to: number }[] = [];
   const opens: { answering?: boolean; review?: boolean }[] = [];
   const refreshes: { review?: boolean }[] = [];
@@ -1856,11 +1866,17 @@ function drivable(refusedAtFirst = false, rangeAskFails = false): Driveable {
     subscribe: (what, options) => {
       subscribed += 1;
       opens.push(options ?? {});
-      snapshot.set(subjectKey(what), null);
+      const key = subjectKey(what);
+      // **An ask is held while this connection can carry it.** A refused
+      // seat's store is an answer, not a subscription, and `loseWants` is the
+      // drop that takes a want away without taking its store.
+      if (status !== 'closed') wants.add(key);
+      snapshot.set(key, null);
       return store(what);
     },
-    unsubscribe: () => {
+    unsubscribe: (what) => {
       unsubscribed += 1;
+      wants.delete(subjectKey(what));
     },
     refresh: (_what, options) => {
       refreshes.push(options ?? {});
@@ -1868,14 +1884,24 @@ function drivable(refusedAtFirst = false, rangeAskFails = false): Driveable {
       return true;
     },
     showing: () => undefined,
-    relist: () => undefined,
+    relist: (what) => {
+      // **A re-ask is an ask too**: the answer a seat waits on comes whichever
+      // door the subscription was asked through.
+      subscribed += 1;
+      if (status !== 'closed') wants.add(subjectKey(what));
+    },
+    holds: (what) => status !== 'closed' && wants.has(subjectKey(what)),
+    loseWants: () => {
+      wants.clear();
+    },
     declare: (_what, options) => {
       declarations.push(options);
     },
-    release: () => {
+    release: (what) => {
       // One entry, which is what these cases hold: the seat's release gives
       // back what the connection holds for it.
       unsubscribed += 1;
+      wants.delete(subjectKey(what));
     },
     dispatch: () => {
       throw new Error('this page dispatched a command the case did not expect');
@@ -3054,6 +3080,134 @@ describe('the seat the client holds between visits', () => {
   });
 
   /**
+   * **A seat whose want the connection lost is asked again on the next
+   * visit** (#3002).
+   *
+   * This is the contract state a dropped socket leaves: the seat's store
+   * survives, the connection's hold on it does not, and nothing tells the
+   * page. Counting the seat as open from its store is the state the blank
+   * page comes from - neither a return nor a reconnect asks again - so the
+   * visit asks from what the connection holds.
+   */
+  it('opens again a seat whose subscription the connection no longer holds', () => {
+    const connection = drivable();
+    const first = watch(connection);
+    expect(connection.subscribes(), 'precondition: the visit asked for the seat').toBe(1);
+    expect(first.read().wire, 'precondition: nothing answered').toBeNull();
+
+    first.stop();
+    connection.loseWants();
+    const back = watch(connection);
+
+    expect(connection.subscribes(), 'the return left the seat unsubscribed').toBe(2);
+    expect(
+      connection.opens,
+      'the re-ask was a relist over the kept store, not a second subscribe',
+    ).toHaveLength(1);
+    expect(connection.holds({ session: LEAD }), 'the seat is held again').toBe(true);
+    back.stop();
+  });
+
+  /**
+   * **A shown seat is opened again when the connection opens without holding
+   * it.** The open is the moment the loss becomes visible, and a store that is
+   * not refused emits nothing of its own: without this, the seat stays blank
+   * until a click.
+   */
+  it('opens a shown seat again when the connection opens without its want', () => {
+    const connection = drivable();
+    connection.wentTo('connecting');
+    const page = watch(connection);
+    expect(connection.subscribes(), 'precondition: the visit asked while connecting').toBe(1);
+    connection.loseWants();
+
+    connection.wentTo('open');
+
+    expect(connection.subscribes(), 'the open left the shown seat unsubscribed').toBe(2);
+    expect(
+      connection.opens,
+      'the open subscribed a store the page already had instead of relisting it',
+    ).toHaveLength(1);
+    expect(connection.holds({ session: LEAD }), 'the shown seat is held again').toBe(true);
+    page.stop();
+  });
+
+  /**
+   * **A seat the connection still holds is left alone when one opens.** A
+   * relist over a hold that never went would count a second reader and a
+   * second whole record on the next reconnect (#3002).
+   */
+  it('leaves a held seat alone when the connection opens', () => {
+    const connection = drivable();
+    connection.wentTo('connecting');
+    const page = watch(connection);
+    expect(connection.subscribes(), 'precondition: the visit asked while connecting').toBe(1);
+    expect(connection.holds({ session: LEAD }), 'precondition: the ask is held').toBe(true);
+
+    connection.wentTo('open');
+
+    expect(connection.subscribes(), 'the open re-asked a seat the connection held').toBe(1);
+    page.stop();
+  });
+
+  /**
+   * **A read wanted for a seat the connection does not hold is dropped, not
+   * latched.** The connection's hold is what says a read has a subscription
+   * to ride; a seat whose ask never went holds nothing, so a wanted read has
+   * nothing behind it - and latched instead it would fire later as a whole
+   * encode nobody asked for (#3002).
+   */
+  it('drops a wanted read while the connection holds no subscription', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    expect(connection.subscribes(), 'precondition: the visit asked').toBe(1);
+    connection.loseWants();
+
+    rereadSeat(connection, LEAD);
+
+    // The connection comes back holding the seat and the answer lands: a read
+    // latched above would fire here, as a second whole record.
+    page.wentTo('connecting');
+    page.wentTo('open');
+    page.land(snapshotOf(LEAD));
+
+    expect(connection.reads(), 'a read latched onto nothing fired later').toBe(0);
+    page.stop();
+  });
+
+  /**
+   * **A subscribe the transport could not take is asked again on the beat.**
+   * The transport reports the loss with the same `error` frame a refusal
+   * rides, and the refusal beat is the re-ask: a seat with no subscription
+   * has nothing a read could ride, so the ask that goes is an open.
+   */
+  it('asks again a seat whose subscribe the transport could not take', () => {
+    vi.useFakeTimers({
+      toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout'],
+    });
+    try {
+      const connection = drivable();
+      const page = watch(connection);
+      expect(connection.subscribes(), 'precondition: the visit asked').toBe(1);
+      connection.loseWants();
+
+      connection.land({
+        kind: 'error',
+        what: 'subscribe',
+        why: 'the subscribe did not reach the app',
+        subject: { session: LEAD },
+        dispatch_id: null,
+      });
+      vi.advanceTimersByTime(2_000);
+
+      expect(connection.subscribes(), 'the seat was never asked again').toBe(2);
+      page.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
    * **A refused seat is asked again while a page shows it, and the answer it
    * meets replaces the refusal.**
    *
@@ -3204,6 +3358,45 @@ describe('the seat the client holds between visits', () => {
       document.dispatchEvent(new Event('visibilitychange'));
       vi.advanceTimersByTime(2_000);
       expect(connection.reads(), 'the returning page did not pick the beat up').toBe(1);
+      page.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /**
+   * **A lost ask re-arms on the return too.** A page hidden when its
+   * subscribe was lost has no refused store to draw and no cue left once its
+   * beat stopped; without the hold test in `wake`, the return would arm
+   * nothing and the seat would come back blank (#3002).
+   */
+  it('re-arms on the return for a seat whose ask was lost while hidden', () => {
+    vi.useFakeTimers({
+      toFake: ['requestAnimationFrame', 'cancelAnimationFrame', 'setTimeout', 'clearTimeout'],
+    });
+    try {
+      const connection = drivable();
+      const page = watch(connection);
+      expect(connection.subscribes(), 'precondition: the visit asked').toBe(1);
+      connection.loseWants();
+      hidePage();
+
+      connection.land({
+        kind: 'error',
+        what: 'subscribe',
+        why: 'the subscribe did not reach the app',
+        subject: { session: LEAD },
+        dispatch_id: null,
+      });
+      vi.advanceTimersByTime(2_000);
+      expect(connection.subscribes(), 'a hidden page asked for a seat nobody was looking at').toBe(
+        1,
+      );
+
+      delete (document as { hidden?: boolean }).hidden;
+      document.dispatchEvent(new Event('visibilitychange'));
+      vi.advanceTimersByTime(2_000);
+      expect(connection.subscribes(), 'the return did not re-ask the lost seat').toBe(2);
       page.stop();
     } finally {
       vi.useRealTimers();

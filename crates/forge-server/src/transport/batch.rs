@@ -140,11 +140,11 @@ where
     }
     for (frame, span) in folded(frames) {
         let update = std::sync::Arc::unwrap_or_clone(frame.update);
-        // A delivery is drawn as the turn it reaches the model as, and the
-        // CLI echoes no prompt back: a client drawing only frames would show
-        // the assistant answering something nobody saw. The frame carries the
-        // delivery's own kind, so a reader's follow can tell it from a
-        // person's send (#2198).
+        // The delivery-failure notice is drawn as the turn it reaches the
+        // model as, and the CLI echoes no prompt back: a client drawing only
+        // frames would show the assistant answering something nobody saw.
+        // The frame carries the notice's own kind, so a reader's follow can
+        // tell it from a person's send (#2198).
         //
         // **The forged turn carries no number.** It is this connection's own
         // re-shaping of the frame below it, which carries the delivery's own

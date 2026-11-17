@@ -651,10 +651,10 @@ fn boot_catch_up_fires_overdue_once_advances_persists_and_does_not_refire() {
 }
 
 /// A cron fired into a running lead delivers the raw prompt as a plain
-/// user turn AND echoes a `CronPromptAppended` so the chat shows a cron
-/// block (mirrors the gotify running-target echo). Reproduce-first: the
-/// echo is absent until `deliver_cron_prompt` calls
-/// `push_cron_prompt_into_chat`.
+/// user turn AND pushes a `CronPromptAppended` so the row is titled from the
+/// schedule that fired it (mirrors the gotify running-target push). The row
+/// itself draws at the CLI's `started`. Reproduce-first: the update is absent
+/// until `deliver_cron_prompt` calls `push_cron_prompt_into_chat`.
 #[test]
 fn deliver_cron_prompt_to_running_lead_emits_cron_prompt_appended() {
     let dir = tempdir().expect("tempdir");

@@ -197,13 +197,27 @@ describe("the conversation draws at the terminal's density", () => {
     expect(bodies.length, 'the sheet carries no coarse-pointer block').toBeGreaterThan(0);
 
     // Each rule as its selector list and declarations, matched against a real
-    // element rather than compared as text.
+    // element rather than compared as text. A selector list splits on its own
+    // commas only: `:is(a, b)` carries one inside its parentheses.
+    const splitSelectors = (list: string): string[] => {
+      const out: string[] = [];
+      let depth = 0;
+      let from = 0;
+      for (let at = 0; at < list.length; at += 1) {
+        const char = list[at];
+        if (char === '(') depth += 1;
+        else if (char === ')') depth -= 1;
+        else if (char === ',' && depth === 0) {
+          out.push(list.slice(from, at));
+          from = at + 1;
+        }
+      }
+      out.push(list.slice(from));
+      return out.map((selector) => selector.trim()).filter((selector) => selector !== '');
+    };
     const rules = bodies.flatMap((text) =>
       [...text.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((hit) => ({
-        selectors: (hit[1] ?? '')
-          .split(',')
-          .map((selector) => selector.trim())
-          .filter((selector) => selector !== ''),
+        selectors: splitSelectors(hit[1] ?? ''),
         declarations: hit[2] ?? '',
       })),
     );

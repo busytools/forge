@@ -414,14 +414,9 @@ pub(crate) fn handle_deliver_peer_prompt(
         });
 
     if let Some(target_key) = target_running_key {
-        // Fire the typed peer-envelope echo BEFORE the LLM-side
-        // dispatch so the user-turn block renders in the right
-        // order regardless of which event a view reducer drains
-        // first. The CLI doesn't echo stdin-injected prompts back
-        // on stream-json output (only tool_result-bearing user
-        // envelopes come back), so a view gets no inbound user-turn
-        // signal from the SDK side - `PeerEnvelopeAppended` is how
-        // a view knows to render the peer block.
+        // The typed peer-envelope update goes out beside the dispatch, with
+        // the envelope's typed fields. The row itself is the session task's,
+        // drawn at the CLI's `started` in the CLI's order - not forged here.
         let uuid = forge_sdk::request_id::next_prompt_id();
         push_peer_user_turn_into_chat(workspace, &target_key, &wrapped, &uuid);
         let text = wrapped.to_prose();
@@ -498,15 +493,15 @@ pub(crate) fn missed_cron_text(prompt: &str, missed: bool) -> String {
     if missed { format!("[missed cron] {prompt}") } else { prompt.to_owned() }
 }
 
-/// Deliver a due cron's prompt into its OWNER's session as a plain user
-/// turn AND echo it as a cron block. `team_role` `None` routes to the
-/// project lead, `Some(label)` to that worker. A live owner gets a
-/// `Command::Prompt`; an asleep-but-existing owner is woken by dispatching
-/// `Command::SpawnProject` (which resumes the lead and, through the lead's
-/// respawn, the worker), the prompt buffered by `(project, team_role)`
-/// and drained on the owner's connect. An owner that no longer exists (a
-/// gone project, or a worker label with no persisted row) yields
-/// `TargetGone`.
+/// Deliver a due cron's prompt into its OWNER's session as a plain user turn
+/// and push its typed update. `team_role` `None` routes to the project lead,
+/// `Some(label)` to that worker. A live owner gets a `Command::PromptUnder`
+/// whose row draws at the CLI's `started`; an asleep-but-existing owner is
+/// woken by dispatching `Command::SpawnProject` (which resumes the lead and,
+/// through the lead's respawn, the worker), the prompt buffered by
+/// `(project, team_role)` and drained on the owner's connect. An owner that no
+/// longer exists (a gone project, or a worker label with no persisted row)
+/// yields `TargetGone`.
 pub(crate) fn deliver_cron_prompt(
     workspace: &Arc<Workspace>,
     cron: &forge_primitives::CronEntry,
@@ -519,10 +514,9 @@ pub(crate) fn deliver_cron_prompt(
     };
 
     if let Some(target_key) = live_cron_slot(workspace, &view, team_role) {
-        // Echo the cron block BEFORE the LLM-side dispatch so it renders in
-        // order regardless of which event a view reducer drains first. The id
-        // is minted here so the block's row and the dispatched prompt's
-        // lifecycle frames are one thing by id.
+        // The typed update goes out beside the dispatch: it is what pairs the
+        // fired prompt's id with the schedule that produced it. The row draws
+        // at the CLI's `started`, under this same id.
         let text = missed_cron_text(&cron.prompt, missed);
         let uuid = forge_sdk::request_id::next_prompt_id();
         push_cron_prompt_into_chat(
@@ -740,11 +734,11 @@ fn cron_slot_exists(
 }
 
 /// Deliver a matched Gotify `notification` into `project` as a plain user
-/// turn AND echo it into the target's chat as a notification block. When
-/// `team_role` names a running team worker, deliver straight to it;
-/// otherwise deliver to the project lead - echo + dispatch a
-/// `Command::Prompt` if it's running, else park it for the target's slot
-/// and dispatch `Command::SpawnProject`
+/// turn and emit its typed update beside it. When `team_role` names a
+/// running team worker, deliver straight to it; otherwise deliver to the
+/// project lead - push the update and dispatch a `Command::PromptUnder` if
+/// it's running, else park it for the target's slot and dispatch
+/// `Command::SpawnProject`
 /// (`SessionTask` drains + echoes on Connected via
 /// `deliver_parked_gotify`). A team-worker subscription with NO live entry
 /// falls through to lead delivery (spawning the project brings the team
@@ -768,9 +762,9 @@ pub(crate) fn deliver_gotify_message(
             .domain_session_for(&worker_key)
             .is_some_and(|d| d.lock().session_id.is_some());
         if connected {
-            // Echo the notification block BEFORE the LLM-side dispatch so
-            // it renders in order regardless of which event a view reducer
-            // drains first (mirrors handle_deliver_peer_prompt).
+            // The typed update goes out beside the dispatch (mirrors
+            // handle_deliver_peer_prompt); the row draws at the CLI's
+            // `started`.
             let uuid = forge_sdk::request_id::next_prompt_id();
             push_gotify_notification_into_chat(workspace, &worker_key, &notification, &uuid);
             if let Err(err) = workspace.dispatch_workspace_prompt_under(
@@ -1115,16 +1109,10 @@ fn team_worker_key(workspace: &Arc<Workspace>, project: &str, label: &str) -> Op
     .map(|w| w.slot.clone())
 }
 
-/// Emit a typed `PeerEnvelopeAppended` so the target session's
-/// chat buffer shows the inbound peer user-turn. A view's reducer
-/// builds the chat-side echo directly from the `WrappedPrompt`'s
-/// typed fields - workspace no longer forges an SDK `Message::User`
-/// frame (audit I11).
-///
-/// Note: this only affects the visible chat echo. The
-/// recipient's `claude` subprocess still receives the prose via a
-/// separate `Command::Prompt` dispatch - the CLI's input channel
-/// is text-shaped and stays that way.
+/// Emit a typed `PeerEnvelopeAppended` carrying the envelope's typed fields
+/// beside the row the CLI's `started` draws. The row itself is the session
+/// task's; this update is not a row's carrier except for the delivery-failure
+/// notice, whose `delivery_turn` arm still forges one.
 pub(crate) fn push_peer_user_turn_into_chat(
     workspace: &Workspace,
     target_key: &SessionSlot,
@@ -1138,11 +1126,9 @@ pub(crate) fn push_peer_user_turn_into_chat(
     });
 }
 
-/// Emit a typed `GotifyNotificationAppended` so the target session's
-/// chat buffer shows the inbound notification block. Mirrors
-/// [`push_peer_user_turn_into_chat`] - the target's `claude` subprocess
-/// still receives the prose via a separate `Command::Prompt` dispatch;
-/// this only drives the visible chat echo.
+/// Emit a typed `GotifyNotificationAppended` carrying the notification's
+/// fields beside the row the CLI's `started` draws. Mirrors
+/// [`push_peer_user_turn_into_chat`].
 pub(crate) fn push_gotify_notification_into_chat(
     workspace: &Workspace,
     target_key: &SessionSlot,
@@ -1156,11 +1142,10 @@ pub(crate) fn push_gotify_notification_into_chat(
     });
 }
 
-/// Emit a typed `CronPromptAppended` so the target session's chat
-/// buffer shows a cron block for the fired prompt. Mirrors
-/// [`push_gotify_notification_into_chat`] - the target's `claude`
-/// subprocess still receives the raw prompt via a separate
-/// `Command::Prompt`; this only drives the visible chat echo.
+/// Emit a typed `CronPromptAppended` so a view pairs the fired prompt's id
+/// with the schedule that produced it - the pairing titles the row the CLI's
+/// `started` draws, after the fired entry has left the store. Mirrors
+/// [`push_gotify_notification_into_chat`].
 pub(crate) fn push_cron_prompt_into_chat(
     workspace: &Workspace,
     target_key: &SessionSlot,
@@ -1170,7 +1155,10 @@ pub(crate) fn push_cron_prompt_into_chat(
     description: Option<&str>,
 ) {
     // The frame names the schedule once, and the row outlives it: keep the
-    // pairing so the read path can title the same row after a reload.
+    // pairing so a page's `cron_names` still carries it after the fired entry
+    // has left the store. A page applies it only to a row whose prose parses
+    // as a cron envelope; a row replayed from the raw prompt does not, which
+    // is why a reload keeps the words but not the cron block.
     workspace.remember_cron_name(target_key, uuid, cron_id, description);
     let _ = workspace.update_sender().send(SessionUpdate::CronPromptAppended {
         key: target_key.clone(),
@@ -1181,11 +1169,9 @@ pub(crate) fn push_cron_prompt_into_chat(
     });
 }
 
-/// Emit a typed `SlackMessageAppended` so the target session's chat buffer
-/// shows the inbound Slack block. Mirrors
-/// [`push_gotify_notification_into_chat`] - the target's `claude` subprocess
-/// still receives the prose via a separate `Command::Prompt` dispatch; this
-/// only drives the visible chat echo.
+/// Emit a typed `SlackMessageAppended` carrying the delivered prose beside
+/// the row the CLI's `started` draws. Mirrors
+/// [`push_gotify_notification_into_chat`].
 pub(crate) fn push_slack_message_into_chat(
     workspace: &Workspace,
     target_key: &SessionSlot,
@@ -2858,10 +2844,8 @@ fn reap_worker_branch(repo: &std::path::Path, label: &str) -> Option<String> {
 /// Handle a `Command::DeliverWorkerPrompt`: route a wrapped peer-style
 /// envelope to the worker matching `target_label` in the caller's
 /// project. Latest-spawned-wins on duplicate labels. The typed
-/// PeerEnvelopeAppended echo follows the same pattern as
-/// `handle_deliver_peer_prompt` - workers reuse the peer envelope
-/// verbatim so a view's chat render is identical between the two
-/// paths.
+/// PeerEnvelopeAppended update follows the same pattern as
+/// `handle_deliver_peer_prompt`; the row draws at the CLI's `started`.
 ///
 /// Unlike `handle_deliver_peer_prompt`, this handler never buffers +
 /// auto-spawns: workers are only addressable while live. If the
@@ -2941,21 +2925,11 @@ pub(crate) fn handle_deliver_worker_prompt(
         return;
     };
 
-    // A delivery that lands while the seat is mid-turn is folded into the
-    // running turn as a queued_command attachment with no standing of its
-    // own - the follow-up a working worker reads past (measured on
-    // 2.1.280). Hold it and deliver it at turn end, so it starts a turn.
-    let held = {
-        let domain = workspace.domain_session_for(&target_key);
-        workspace.hold_peer_prompt_unless_turn_ended(&target_key, caller, wrapped, || {
-            domain.as_ref().is_some_and(|domain| delivery_hold_signal(&domain.lock()))
-        })
-    };
-    let Some(wrapped) = held else {
-        answer_delivery(respond, Ok(()));
-        return;
-    };
-
+    // **Written to the CLI now, mid-turn or not.** The CLI's own queue is
+    // the account of what is waiting, and its `started` frame is where the
+    // row draws - a forge hold here kept the words invisible while they
+    // waited and drew the row by a second echo at the drain.
+    //
     // Opportunistic tag-write retry: if this worker was spawned idle
     // (no initial_prompt), the JSONL didn't exist at Connected and
     // the tag-write at that point exhausted into a deferred state.
@@ -2996,12 +2970,12 @@ pub(crate) fn handle_deliver_worker_prompt(
         }
     }
 
-    // Fire the typed peer-envelope echo BEFORE the LLM-side dispatch
-    // so the user-turn block renders in the right order regardless
-    // of which event a view reducer drains first. Compute the prose
-    // body BEFORE the move into PeerEnvelopeAppended so we consume
-    // `wrapped` exactly once (the push_peer_user_turn_into_chat helper
-    // takes `&WrappedPrompt` and clones internally).
+    // The typed peer-envelope update still goes out: it is what a view keeps
+    // beside the row the CLI's `started` draws (the envelope's kind and
+    // sender), and it is what a page's read pairs the row with. Compute the
+    // prose body BEFORE the move into PeerEnvelopeAppended so we consume
+    // `wrapped` exactly once (the push helper takes `&WrappedPrompt` and
+    // clones internally).
     let text = wrapped.to_prose();
     let uuid = forge_sdk::request_id::next_prompt_id();
     push_peer_user_turn_into_chat(workspace, &target_key, &wrapped, &uuid);
@@ -3023,25 +2997,11 @@ pub(crate) fn handle_deliver_worker_prompt(
     answer_delivery(respond, Ok(()));
 }
 
-/// The turn signal a delivery is held on: only what a `Result` clears.
-///
-/// Stricter than
-/// [`turn_in_flight`](crate::domain_session::DomainSession::turn_in_flight),
-/// which ORs in `runtime_state` for the in-flight guards - no `Result`
-/// clears that one, so a gate reading it could hold every later delivery
-/// with nothing left to release it. Both signals here are down once a
-/// Result has landed, which is what lets the hold and the turn-end drain
-/// pair up.
-fn delivery_hold_signal(domain: &crate::domain_session::DomainSession) -> bool {
-    domain.turn_pending || domain.turn_open
-}
-
 /// Answer a delivery's `respond` channel, if the caller asked for one:
 /// `Ok(())` once the prompt was accepted - handed to the target's session
-/// queue, held for its turn end, or parked for its connect - and
-/// `Err(reason)` when nothing could take it. The sender's ack is built
-/// from this answer alone, so it never claims a delivery that did not
-/// happen.
+/// queue, held for a successor's swap, or parked for its connect - and
+/// `Err(reason)` when nothing could take it. The sender's ack is built from
+/// this answer alone, so it never claims a delivery that did not happen.
 fn answer_delivery(
     respond: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
     outcome: Result<(), String>,
@@ -3051,46 +3011,11 @@ fn answer_delivery(
     }
 }
 
-/// Deliver everything held for `slot` while a turn was in flight, in the
-/// order it arrived. Called where the turn's Result lands, so each held
-/// prompt starts a turn of its own instead of folding into the one that
-/// was running. A prompt the seat cannot take now - the session died
-/// between the hold and the turn end - is told to its sender rather than
-/// dropped, which is the whole point of holding it.
-///
-/// **The boundary's own settle is the session task's**, since it knows which
-/// turn ended; this drain clears no liveness. The take shares its lock with a
-/// concurrent hold's check-and-enqueue, so a delivery decides on
-/// [`delivery_hold_signal`] either before this drain (and is delivered by it)
-/// or after (and is delivered directly).
-pub(crate) fn drain_turn_held_for_slot(workspace: &Arc<Workspace>, slot: &SessionSlot) {
-    for crate::parked::ParkedPeer { sender, wrapped } in workspace.take_turn_held_for_slot(slot) {
-        let text = wrapped.to_prose();
-        let uuid = forge_sdk::request_id::next_prompt_id();
-        push_peer_user_turn_into_chat(workspace, slot, &wrapped, &uuid);
-        if let Err(err) =
-            workspace.dispatch_workspace_prompt_under(slot, text, PromptSource::Peer, uuid)
-        {
-            tracing::warn!(
-                target: "forge_workspace::spawn",
-                slot = %slot.display(),
-                error = ?err,
-                "a held prompt could not be delivered when the turn ended"
-            );
-            workspace.notice_undelivered_message(
-                &sender,
-                slot,
-                crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
-            );
-        }
-    }
-}
-
 /// Handle a `Command::DeliverWorkerPromptToLead`: route a wrapped
 /// peer-style prompt from a worker back to its lead, addressed by
 /// the lead's `SessionSlot` (resolved at Tool dispatch from the
 /// worker's `spawned_by_session_id`). Same wire shape as
-/// `DeliverWorkerPrompt` - PeerEnvelopeAppended echo + Command::Prompt
+/// `DeliverWorkerPrompt` - PeerEnvelopeAppended update + Command::PromptUnder
 /// dispatch - so a view renders the lead's message identically to
 /// a sibling-worker delivery.
 ///
@@ -3130,19 +3055,8 @@ pub(crate) fn handle_deliver_worker_prompt_to_lead(
         return;
     };
 
-    // Same hold as the sibling-worker path: a lead mid-turn folds the
-    // message into its running turn, where it has no standing of its own.
-    let held = {
-        let domain = workspace.domain_session_for(target_lead_key);
-        workspace.hold_peer_prompt_unless_turn_ended(target_lead_key, caller, wrapped, || {
-            domain.as_ref().is_some_and(|domain| delivery_hold_signal(&domain.lock()))
-        })
-    };
-    let Some(wrapped) = held else {
-        answer_delivery(respond, Ok(()));
-        return;
-    };
-
+    // Written to the CLI now, mid-turn or not, the same as the sibling-worker
+    // path: the CLI's queue and its `started` frame are the whole account.
     let text = wrapped.to_prose();
     let uuid = forge_sdk::request_id::next_prompt_id();
     push_peer_user_turn_into_chat(workspace, target_lead_key, &wrapped, &uuid);
@@ -9247,12 +9161,15 @@ provider = "anthropic"
         assert!(!wt.exists(), "worktree discarded under force");
     }
 
-    /// A delivery that lands while the seat is mid-turn is held for the
-    /// turn's end rather than written into the running turn, where the CLI
-    /// would fold it in as a queued_command attachment with no standing of
-    /// its own.
+    /// A delivery that lands while the seat is mid-turn is written to the
+    /// CLI at arrival, under its own id, exactly as the idle path does.
+    ///
+    /// **The CLI's queue is the only account of what is waiting.** A forge
+    /// hold kept the words invisible while they waited and drew the row by a
+    /// second echo at the drain; every prompt now rides the one queue and its
+    /// row draws at the CLI's own `started`, so nothing is held here.
     #[tokio::test]
-    async fn a_mid_turn_delivery_is_held_for_the_turn_end() {
+    async fn a_mid_turn_delivery_is_written_to_the_cli_at_arrival() {
         let (workspace, _rx) = Workspace::testing_stub();
         workspace.seed_test_project("forge", "/tmp/forge");
         let project = workspace
@@ -9265,35 +9182,145 @@ provider = "anthropic"
         workspace
             .insert_live_worker(&project, connected_worker_entry(&worker_key, "builder-session"));
         workspace.mark_session_connected_for_test(&worker_key, "builder-session");
-        // The seat is mid-turn: a prompt is in flight at the CLI.
-        workspace
-            .domain_session_for(&worker_key)
-            .expect("connected worker has a domain")
-            .lock()
-            .turn_pending = true;
+        let lead_key = SessionSlot::lead("TestOrg", "forge");
+        workspace.seed_test_running_session_id(&lead_key, "lead-session");
+        workspace.mark_session_connected_for_test(&lead_key, "lead-session");
+        // Both seats are mid-turn: a prompt is in flight at the CLI.
+        for key in [&worker_key, &lead_key] {
+            workspace
+                .domain_session_for(key)
+                .expect("a connected seat has a domain")
+                .lock()
+                .turn_pending = true;
+        }
         workspace.enable_test_dispatch_intercept();
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         handle_deliver_worker_prompt(
             &workspace,
-            &SessionSlot::lead("TestOrg", "forge"),
+            &lead_key,
             &project,
             "builder",
             fixture_wrapped(),
             Some(tx),
         );
-
         rx.await
             .expect("the handler answers")
-            .expect("a held prompt is accepted: the turn it waits on will deliver it");
-        assert!(
-            workspace.drain_test_dispatch_buffer().is_empty(),
-            "nothing is written into the running turn",
+            .expect("a mid-turn delivery is accepted: the CLI queues it");
+        handle_deliver_worker_prompt_to_lead(
+            &workspace,
+            &worker_key,
+            &lead_key,
+            fixture_wrapped(),
+            None,
         );
+
+        let delivered: Vec<(SessionSlot, String)> = workspace
+            .drain_test_dispatch_buffer()
+            .into_iter()
+            .filter_map(|cmd| match cmd {
+                crate::protocol::Command::PromptUnder { key, uuid, .. } => Some((key, uuid)),
+                _ => None,
+            })
+            .collect();
         assert_eq!(
-            workspace.take_turn_held_for_slot(&worker_key).len(),
-            1,
-            "the prompt is held for the turn end instead",
+            delivered.iter().map(|(key, _)| key).collect::<Vec<_>>(),
+            vec![&worker_key, &lead_key],
+            "both mid-turn deliveries reach the CLI at arrival",
+        );
+        assert!(
+            delivered.iter().all(|(_, uuid)| !uuid.is_empty()),
+            "each written under an id the CLI's lifecycle frames name: {delivered:?}",
+        );
+        assert_ne!(delivered[0].1, delivered[1].1, "and under its own id, not a shared one");
+        for key in [&worker_key, &lead_key] {
+            assert!(
+                workspace
+                    .parked_by_slot
+                    .lock()
+                    .get(key)
+                    .is_none_or(|parked| parked.peer.is_empty()),
+                "nothing is left parked for a turn end: {key:?}",
+            );
+        }
+    }
+
+    /// The connector deliveries take the same path: a cron fire, a Gotify
+    /// notification and a Slack bundle written to a seat that is mid-turn are
+    /// handed to the CLI at arrival, under their own ids - never parked for a
+    /// turn end.
+    #[tokio::test]
+    async fn every_connector_delivery_is_written_to_a_mid_turn_seat_at_arrival() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        workspace.seed_test_project("forge", "/tmp/forge");
+        let lead_key = SessionSlot::lead("TestOrg", "forge");
+        workspace.seed_test_running_session_id(&lead_key, "lead-session");
+        workspace.mark_session_connected_for_test(&lead_key, "lead-session");
+        workspace
+            .domain_session_for(&lead_key)
+            .expect("a connected lead has a domain")
+            .lock()
+            .turn_pending = true;
+        workspace.enable_test_dispatch_intercept();
+
+        let cron = forge_primitives::cron::CronEntry {
+            id: forge_primitives::cron::CronId::from("c1"),
+            project_name: "forge".to_owned(),
+            kind: forge_primitives::cron::CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: "the morning summary".to_owned(),
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            description: None,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+            team_role: None,
+            wake: true,
+        };
+        assert!(matches!(
+            deliver_cron_prompt(&workspace, &cron, false),
+            forge_tools::cron::CronFireOutcome::Delivered
+        ));
+        deliver_gotify_message(
+            &workspace,
+            "forge",
+            None,
+            GotifyNotification {
+                app: "ci".to_owned(),
+                title: "deploy finished".to_owned(),
+                message: "green".to_owned(),
+                priority: 3,
+            },
+        );
+        assert!(deliver_slack_message(&workspace, "forge", None, vec![slack_msg("hello")]));
+
+        let delivered: Vec<(String, PromptSource)> = workspace
+            .drain_test_dispatch_buffer()
+            .into_iter()
+            .filter_map(|cmd| match cmd {
+                crate::protocol::Command::PromptUnder { uuid, source, .. } => Some((uuid, source)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            delivered.iter().map(|(_, source)| *source).collect::<Vec<_>>(),
+            vec![PromptSource::Cron, PromptSource::Gotify, PromptSource::Slack],
+            "every connector delivery reaches the CLI at arrival",
+        );
+        assert!(
+            delivered.iter().all(|(uuid, _)| !uuid.is_empty()),
+            "each written under an id the CLI's lifecycle frames name: {delivered:?}",
+        );
+        assert!(
+            workspace.parked_by_slot.lock().get(&lead_key).is_none_or(|parked| parked
+                .cron
+                .is_empty()
+                && parked.gotify.is_empty()
+                && parked.slack.is_empty()
+                && parked.peer.is_empty()),
+            "nothing is left parked for a turn end",
         );
     }
 
@@ -9341,10 +9368,6 @@ provider = "anthropic"
             workspace.drain_test_dispatch_buffer().len(),
             1,
             "the delivery is written now, not held behind a stale runtime_state",
-        );
-        assert!(
-            workspace.take_turn_held_for_slot(&worker_key).is_empty(),
-            "and nothing was held for a turn end that will not come",
         );
     }
 

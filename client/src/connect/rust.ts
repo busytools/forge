@@ -34,6 +34,7 @@ import {
   skewOf,
   slotOf,
   subjectFromKey,
+  subjectKey,
   type BrowserInputEvent,
   type Command,
   type ServerMessage,
@@ -83,6 +84,15 @@ interface DesktopState {
   status: ConnectionStatus;
   /** How many sockets have opened in the shell; absent on an older shell. */
   generation?: number;
+  /**
+   * Which socket task the shell is on; absent on an older shell.
+   *
+   * **A task reconnects in place and keeps its string subjects - the seats
+   * go with the socket; a `client_connect` replaces the task**, and the new
+   * one re-asks only the subjects it owns. The two look alike from a status,
+   * so this is what tells them apart.
+   */
+  connection?: number;
   greeting: ServerMessage | null;
 }
 
@@ -222,6 +232,29 @@ class RustConnection implements Connection {
   private generation: number | null = null;
   private transition = false;
   /**
+   * The shell's socket task this page last saw, from `client_state`.
+   *
+   * **A retried task and a replaced one are different connections to a page.**
+   * The shell's own retry keeps its string subjects and drops every seat with
+   * the socket that carried it, so the page is the one that re-attaches the
+   * seat on screen; a `client_connect` replaces the task outright. This is
+   * what a replacement is recognised by (#3002).
+   */
+  private connection: number | null = null;
+  /**
+   * The subjects the shell has taken a subscription for, by key, with the
+   * declaration each was last asked with.
+   *
+   * **The page's own account of what the shell will carry** (#3002). An entry
+   * goes on when the shell takes the command and comes off when the page gives
+   * the subject back, when the command never reached the shell, when the
+   * connection closes, and when a socket drop takes the seats with it - the
+   * shell keeps only its string subjects across a retry, so a seat entry that
+   * outlived the socket would say the shell carries an ask nothing will send.
+   * A string entry does survive a drop: the shell's own retry re-asks it.
+   */
+  private readonly held = new Map<string, { seat: boolean; answering: boolean; review: boolean }>();
+  /**
    * The bound on a subscription's first read: a subject still loading when
    * it runs out is asked again through `client_refresh`, so a snapshot lost
    * between the server and the page is not a wait with nothing behind it.
@@ -323,6 +356,25 @@ class RustConnection implements Connection {
       this.heard(state.greeting);
     }
     const generation = typeof state.generation === 'number' ? state.generation : null;
+    // **A replaced socket task is a new connection to this page.** The
+    // shell's own retry keeps its string subjects and drops the seats with
+    // the socket, and the drop branch in `move` ends the page's seat wants
+    // for that path; a `client_connect` replaces the task outright, so its
+    // seats go here even when no status move follows. A `connecting` is
+    // moved so the pair reaches the seat even when the replacement is
+    // already open - a repeated `open` is a no-op and nothing else would
+    // wake the page's own re-attach (#3002). Recording the generation first
+    // keeps the branch below from pairing too.
+    const connection = typeof state.connection === 'number' ? state.connection : null;
+    const replaced =
+      connection !== null && this.connection !== null && connection !== this.connection;
+    if (connection !== null) this.connection = connection;
+    if (replaced) {
+      this.loseSeatWants();
+      if (generation !== null) this.generation = generation;
+      this.transition = false;
+      this.move('connecting');
+    }
     if (state.status === 'open' && generation !== null) {
       const known = this.generation;
       if (known === null) {
@@ -345,11 +397,16 @@ class RustConnection implements Connection {
         // **Cleared AFTER the pair.** The synthesized `connecting` sets
         // `transition` as a real one would, and leaving it set would make the
         // NEXT missed reconnect read as watched: the page would record the
-        // new generation and never zero `opened`, relist or re-send Showing.
+        // new generation and never drop its seat wants, relist or re-send
+        // Showing.
         this.transition = false;
       }
     }
     this.move(state.status);
+    // **The replacement's pair is delivered once `open` is on the page.** The
+    // forced `connecting` set `transition`; leaving it set would make the
+    // NEXT slept-through reconnect read as watched and skip its own pair.
+    if (replaced && state.status === 'open') this.transition = false;
   }
 
   private move(next: ConnectionStatus): void {
@@ -359,16 +416,28 @@ class RustConnection implements Connection {
     // move into a non-open state, and it is what tells a socket change the
     // page saw from one it slept through; `stateMoved` clears it once the
     // generation it belongs to is recorded.
-    if (next !== 'open') this.transition = true;
+    if (next !== 'open') {
+      this.transition = true;
+      // **The drop took the seat subscriptions with it.** The shell's retry
+      // keeps only the string subjects (`socket.rs` retains them and lets
+      // every seat go with the socket that carried it), and the page is what
+      // re-attaches the seat on screen - so these wants end here, exactly as
+      // `socket.ts`'s `dropped` ends them on the web. Left standing, `holds`
+      // would answer true for a seat nothing will ask again, and the shown
+      // seat would never re-subscribe (#3002).
+      this.loseSeatWants();
+    }
     // A closed connection's holds die with it: the reconnect's answer is the
     // whole record, and the numbers start wherever it says.
     if (next === 'closed') {
       this.gate.reset();
       this.bounds.stop();
     }
-    // A connection that opens after a bound fired owes its loading subjects a
-    // fresh deadline: the subscribe went out when the socket opened, and a
-    // lost first answer would otherwise leave them loading forever.
+    // **A connection that opens after a bound fired owes its loading subjects
+    // a fresh deadline**: the subscribe went out when the socket opened, and a
+    // lost first answer would otherwise leave them loading forever. A watch
+    // taken with no socket is the shell's to carry (`Bridge::connect` asks for
+    // it), so nothing is re-asked from this side.
     if (next === 'open') this.bounds.rearmLoading();
     // **Listeners first, then `Showing`.** The page's own re-attach runs on
     // this status and issues its `relist`; the spec's order is re-subscribe,
@@ -477,22 +546,101 @@ class RustConnection implements Connection {
     }
     const store = this.stores.open(what);
     if (typeof what !== 'string') this.gate.askSent(what.session);
-    void invoke('client_subscribe', {
-      what,
-      answering: options?.answering ?? false,
-      review: options?.review === true,
-    }).catch((why: unknown) => {
-      report('a subscribe could not reach the shell', why);
-    });
+    this.ask('client_subscribe', what, options?.answering ?? false, options?.review === true);
     // The read this ask owes is bounded from here: nothing else would ask
     // again for a snapshot that simply never came.
     this.bounds.arm(what, this.boundMs);
     return store;
   }
 
+  /**
+   * Whether the shell holds a subscription for `what`, as this page knows it.
+   *
+   * **The page's account of what the shell will carry**, which is the truth it
+   * can see: an entry is put up when the shell takes the command and taken
+   * down when the page gives it back, when the command never reached the
+   * shell, when the connection closes, and when a socket drop ends the seats
+   * with it. **An accepted string ask is carried across the shell's own
+   * retries**; a seat is carried by the socket that took it, by the shell's
+   * offline list for an ask taken while its task was between connections, or
+   * by the next `client_connect` for a watch taken with no socket - and a
+   * seat the old socket carried is gone with it, the page re-attaches that
+   * one. A closed connection holds nothing at all.
+   */
+  holds(what: Subject): boolean {
+    return this.state !== 'closed' && this.held.has(subjectKey(what));
+  }
+
+  /**
+   * Drop every seat want, keeping the subjects a socket or its retry re-asks.
+   *
+   * **A socket change ends a seat's subscription**: the shell lets every seat
+   * go with the socket that carried it and keeps only its string subjects,
+   * and a `client_connect` replaces the task outright. So a drop or a
+   * replacement leaves the page's seat wants uncarried: the visit and the
+   * connection's open re-ask the seat on screen, and every other seat
+   * re-attaches on its next click. A string subject stays held, and the
+   * shell's own re-ask is its only ask (#3002).
+   */
+  private loseSeatWants(): void {
+    for (const [key, held] of [...this.held.entries()]) {
+      if (held.seat) this.held.delete(key);
+    }
+  }
+
+  /**
+   * One subscribe or relist to the shell, remembered as held until it is not.
+   *
+   * **The page asks once and the shell carries it.** A watch taken with no
+   * socket is the shell's own to ask for when one exists (`Bridge::connect`
+   * carries it), so there is no second list of wants here: the shell's held
+   * list is the one account, and a re-ask from this side would double what the
+   * shell already carries. A command the shell never took is not a
+   * subscription: it is dropped from the held list and reported to the page,
+   * which is the only way a store waiting on it learns that nothing is coming
+   * (#3002).
+   */
+  private ask(
+    command: 'client_subscribe' | 'client_relist',
+    what: Subject,
+    answering: boolean,
+    review: boolean,
+  ): void {
+    const key = subjectKey(what);
+    this.held.set(key, { seat: typeof what !== 'string', answering, review });
+    void invoke(command, { what, answering, review }).catch((why: unknown) => {
+      report(
+        `a ${command === 'client_subscribe' ? 'subscribe' : 'relist'} could not reach the shell`,
+        why,
+      );
+      this.held.delete(key);
+      this.told(what, why);
+    });
+  }
+
+  /**
+   * Tell the page a subscribe was never taken, in the frame a refusal rides.
+   *
+   * **A loss reported only to the log is a blank page nobody can act on.** The
+   * frame names its subject so a page acts on its own loss and not another
+   * subject's, and `session/live.ts` answers it with a re-ask.
+   */
+  private told(what: Subject, why: unknown): void {
+    this.deliver({
+      kind: 'error',
+      what: 'subscribe',
+      why: why instanceof Error ? why.message : String(why),
+      seat: typeof what === 'object' ? what.session : null,
+      subject: what,
+    });
+  }
+
   unsubscribe(what: Subject): void {
     if (this.stores.get(what) === undefined) return;
     const last = this.stores.close(what);
+    // **The last page reader is what ends the hold**, as the shell's own count
+    // is: a subject two callers watch stays held until both have gone.
+    if (last) this.held.delete(subjectKey(what));
     void invoke('client_unsubscribe', { what }).catch((why: unknown) => {
       report('an unsubscribe could not reach the shell', why);
     });
@@ -531,13 +679,20 @@ class RustConnection implements Connection {
    */
   relist(what: Subject, options?: { answering?: boolean; review?: boolean }): void {
     if (typeof what !== 'string') this.gate.askSent(what.session);
-    void invoke('client_relist', {
+    // **The shell's held declaration carries the role and the scope**, so a
+    // relist adds no reader and only raises what it is given: the entry this
+    // side keeps is the last ask's, which is what an open later re-asks.
+    const held = this.held.get(subjectKey(what));
+    this.ask(
+      'client_relist',
       what,
-      answering: options?.answering ?? false,
-      review: options?.review === true,
-    }).catch((why: unknown) => {
-      report('a relist could not reach the shell', why);
-    });
+      (held?.answering ?? false) || options?.answering === true,
+      options?.review === true,
+    );
+    // **A relist owes its answer a deadline like a subscribe does.** The
+    // snapshot can be lost the same way, and the page's lost-ask retry
+    // reaches an ask through this door too (#3002).
+    this.bounds.arm(what, this.boundMs);
   }
 
   /** The held declaration only: nothing on the wire, no store, no reader. */
@@ -556,6 +711,7 @@ class RustConnection implements Connection {
    */
   release(what: Subject): void {
     while (this.stores.get(what) !== undefined) this.stores.close(what);
+    this.held.delete(subjectKey(what));
     void invoke('client_release', { what }).catch((why: unknown) => {
       report('a release could not reach the shell', why);
     });
@@ -736,6 +892,9 @@ class RustConnection implements Connection {
   close(): void {
     this.closing = true;
     this.move('closed');
+    // **A closed connection holds nothing**: nothing replays a subscribe made
+    // after it went, and no open is coming to carry a held want.
+    this.held.clear();
     // A closed connection has nothing to ask on.
     this.bounds.stop();
     if (this.beat !== null) clearInterval(this.beat);
