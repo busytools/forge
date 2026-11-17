@@ -613,21 +613,67 @@ impl Tool for Unsubscribe {
     }
 }
 
+/// Where the call that parked a draft was addressed, taken from its own
+/// arguments. A revision is a fresh call, so the agent rebuilds the target
+/// from memory; the refusal repeats it to make that rebuild exact.
+enum SentBackTarget {
+    /// A post or an upload: the conversation, and the thread it replies into
+    /// when it is not a root message.
+    Draft { conversation: String, thread_ts: Option<String> },
+    /// An edit or a react: the one message the call acts on.
+    Message { conversation: String, ts: String },
+}
+
+impl SentBackTarget {
+    /// The target as the retry must repeat it, named with the argument the
+    /// call itself takes so it can be copied back verbatim.
+    fn keeping(&self) -> String {
+        match self {
+            Self::Draft { conversation, thread_ts: Some(ts) } => {
+                format!("`conversation {conversation}` and `thread_ts {ts}`")
+            }
+            Self::Draft { conversation, thread_ts: None } => {
+                format!("`conversation {conversation}` at root")
+            }
+            Self::Message { conversation, ts } => {
+                format!("`conversation {conversation}` and `ts {ts}`")
+            }
+        }
+    }
+}
+
 /// What a blocked call reads when the reader sends its draft back. The note
 /// is the reader's own words and stays whole; the fixed halves say what did
-/// not happen and what the agent is expected to do next.
-fn sent_back_refusal(outcome: &str, tool: &str, note: &str) -> String {
+/// not happen, which target the retry must keep, and what the agent is
+/// expected to do next. A door with no draft behind it carries no target.
+fn sent_back_refusal(
+    outcome: &str,
+    tool: &str,
+    target: Option<&SentBackTarget>,
+    note: &str,
+) -> String {
+    // **Only a draft can be moved.** A post's or upload's target is its
+    // thread, so the revision may legitimately change it; an edit's or a
+    // reaction's is the message the call acts on, where "move it" has no
+    // reply sense.
+    let (keeping, movable) = match target {
+        Some(target @ SentBackTarget::Draft { .. }) => {
+            (format!(", keeping {}", target.keeping()), ", unless the change is meant to move it")
+        }
+        Some(target) => (format!(", keeping {}", target.keeping()), ""),
+        None => (String::new(), ""),
+    };
     format!(
         "{outcome}: the reader sent it back with this feedback and expects a revision.\n\n\
-         {note}\n\nRevise it and call {tool} again."
+         {note}\n\nRevise it and call {tool} again{keeping}{movable}."
     )
 }
 
-fn format_post_error(err: &SlackPostError) -> String {
+fn format_post_error(err: &SlackPostError, target: &SentBackTarget) -> String {
     match err {
         SlackPostError::Rejected => "the post was not approved, so nothing was sent".to_owned(),
         SlackPostError::SentBack { note } => {
-            sent_back_refusal("the post was not sent", "slack__post", note)
+            sent_back_refusal("the post was not sent", "slack__post", Some(target), note)
         }
         SlackPostError::Workspace(err) => format_workspace_error(err),
         SlackPostError::Partial { posted, total, source } => {
@@ -637,7 +683,7 @@ fn format_post_error(err: &SlackPostError) -> String {
     }
 }
 
-fn format_edit_error(err: &SlackEditError) -> String {
+fn format_edit_error(err: &SlackEditError, target: &SentBackTarget) -> String {
     match err {
         SlackEditError::NotOwnMessage => {
             "that message was not posted by you, so Slack will not let you change it".to_owned()
@@ -646,20 +692,20 @@ fn format_edit_error(err: &SlackEditError) -> String {
             "the replacement was not approved, so the message is untouched".to_owned()
         }
         SlackEditError::SentBack { note } => {
-            sent_back_refusal("the change was not made", "slack__edit", note)
+            sent_back_refusal("the change was not made", "slack__edit", Some(target), note)
         }
         SlackEditError::Workspace(err) => format_workspace_error(err),
         SlackEditError::Fetch(message) => format!("Slack request failed: {message}"),
     }
 }
 
-fn format_react_error(err: &SlackReactError) -> String {
+fn format_react_error(err: &SlackReactError, target: &SentBackTarget) -> String {
     match err {
         SlackReactError::Rejected => {
             "the reaction was not approved, so nothing was added or removed".to_owned()
         }
         SlackReactError::SentBack { note } => {
-            sent_back_refusal("the reaction was not applied", "slack__react", note)
+            sent_back_refusal("the reaction was not applied", "slack__react", Some(target), note)
         }
         SlackReactError::Workspace(err) => format_workspace_error(err),
         SlackReactError::Fetch(message) => format!("Slack request failed: {message}"),
@@ -686,17 +732,22 @@ impl Tool for Post {
     }
 
     fn description(&self) -> &'static str {
-        "Post a message to Slack as the user - a root message, or a reply into an existing \
-         thread when `thread_ts` is passed. This is HELD FOR APPROVAL: the call does not return \
-         until the user decides in the dock prompt, with no timeout of its own, and a rejected \
-         draft posts nothing. The user may instead send the draft back with feedback: the call \
-         fails with their words and nothing is posted, so revise the draft and call again. Text \
-         past 4000 characters is split into numbered parts automatically, each a \
-         separate message. Returns {workspace, ts, conversation_name, parts}: `workspace` is \
-         the resolved `[[slack]]` label it posted into, and `ts` names every message it posted, \
-         in the order they went out; slack__edit, slack__react and a reply each take one. Any \
-         session in the project may call this. If this call fails for any other reason, report \
-         the exact error and stop - never fall back to Slack's web API with the configured token."
+        "Post a message to Slack as the user. An inbound message is always answered in its \
+         thread: pass the parent's `ts` as `thread_ts` - a root message's own `ts` is that \
+         parent, so a reply under it starts the thread. Only a genuinely new message goes to \
+         root - one you are starting, on a new topic, not an answer to something that came \
+         in. This is HELD FOR \
+         APPROVAL: the call does not return until the user decides in the dock prompt, with no \
+         timeout of its own, and a rejected draft posts nothing. The user may instead send the \
+         draft back with feedback: the call fails with their words and nothing is posted, so \
+         revise the draft and call again, keeping its conversation and `thread_ts` unless the \
+         change is meant to move it. Text past 4000 characters is split into numbered parts \
+         automatically, each a separate message. Returns {workspace, ts, conversation_name, \
+         parts}: `workspace` is the resolved `[[slack]]` label it posted into, and `ts` names \
+         every message it posted, in the order they went out; slack__edit, slack__react and a \
+         reply each take one. Any session in the project may call this. If this call fails for \
+         any other reason, report the exact error and stop - never fall back to Slack's web API \
+         with the configured token."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -725,6 +776,10 @@ impl Tool for Post {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
+        let target = SentBackTarget::Draft {
+            conversation: args.conversation.clone(),
+            thread_ts: args.thread_ts.clone(),
+        };
         let request = SlackPostRequest {
             conversation: args.conversation,
             thread_ts: args.thread_ts,
@@ -740,7 +795,7 @@ impl Tool for Post {
                 Ok(json) => ToolOutput::text(json),
                 Err(err) => tool_error(format!("response serialization failed: {err}")),
             },
-            Err(err) => tool_error(format_post_error(&err)),
+            Err(err) => tool_error(format_post_error(&err, &target)),
         }
     }
 }
@@ -808,6 +863,10 @@ impl Tool for Edit {
         if !delete && args.text.is_none() {
             return tool_error("pass `text` to update the message, or `delete: true`".to_owned());
         }
+        let target = SentBackTarget::Message {
+            conversation: args.conversation.clone(),
+            ts: args.ts.clone(),
+        };
         let request = SlackEditRequest {
             conversation: args.conversation,
             ts: args.ts,
@@ -817,7 +876,7 @@ impl Tool for Edit {
             Ok(()) => {
                 ToolOutput::text(if delete { "deleted".to_owned() } else { "updated".to_owned() })
             }
-            Err(err) => tool_error(format_edit_error(&err)),
+            Err(err) => tool_error(format_edit_error(&err, &target)),
         }
     }
 }
@@ -877,6 +936,10 @@ impl Tool for React {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
+        let target = SentBackTarget::Message {
+            conversation: args.conversation.clone(),
+            ts: args.ts.clone(),
+        };
         let request = SlackReactRequest {
             conversation: args.conversation,
             ts: args.ts,
@@ -885,19 +948,19 @@ impl Tool for React {
         };
         match self.facade.react(&self.slot, request).await {
             Ok(()) => ToolOutput::text("reaction applied".to_owned()),
-            Err(err) => tool_error(format_react_error(&err)),
+            Err(err) => tool_error(format_react_error(&err, &target)),
         }
     }
 }
 
-fn format_attachment_error(err: &SlackAttachmentError) -> String {
+fn format_attachment_error(err: &SlackAttachmentError, target: Option<&SentBackTarget>) -> String {
     match err {
         SlackAttachmentError::Io(message) => format!("file error: {message}"),
         SlackAttachmentError::Rejected => {
             "the upload was not approved, so nothing was sent".to_owned()
         }
         SlackAttachmentError::SentBack { note } => {
-            sent_back_refusal("the upload was not sent", "slack__attachment", note)
+            sent_back_refusal("the upload was not sent", "slack__attachment", target, note)
         }
         SlackAttachmentError::Workspace(err) => format_workspace_error(err),
         SlackAttachmentError::Fetch(message) => format!("Slack request failed: {message}"),
@@ -988,7 +1051,7 @@ impl Tool for Attachment {
                 let request = SlackFetchRequest { file_id, dir: std::path::PathBuf::from(dir) };
                 match self.facade.fetch_attachment(&self.slot, request).await {
                     Ok(path) => ToolOutput::text(format!("fetched to {}", path.display())),
-                    Err(err) => tool_error(format_attachment_error(&err)),
+                    Err(err) => tool_error(format_attachment_error(&err, None)),
                 }
             }
             (None, Some(path)) => {
@@ -996,6 +1059,10 @@ impl Tool for Attachment {
                     return tool_error(
                         "pass `conversation`, the conversation to upload into".to_owned(),
                     );
+                };
+                let target = SentBackTarget::Draft {
+                    conversation: conversation.clone(),
+                    thread_ts: args.thread_ts.clone(),
                 };
                 let request = SlackUploadRequest {
                     conversation,
@@ -1005,7 +1072,7 @@ impl Tool for Attachment {
                 };
                 match self.facade.post_attachment(&self.slot, request).await {
                     Ok(()) => ToolOutput::text("uploaded".to_owned()),
-                    Err(err) => tool_error(format_attachment_error(&err)),
+                    Err(err) => tool_error(format_attachment_error(&err, Some(&target))),
                 }
             }
             (None, None) => tool_error(
@@ -1871,6 +1938,106 @@ mod tests {
         assert_eq!(json["workspace"], "acme", "the resolved label rides the result");
     }
 
+    /// **The wiring, not only the formatter.** A post sent back through the
+    /// real call path hands the agent the target it must keep, so a revision
+    /// cannot quietly land at root; the reader's words ride it whole.
+    #[tokio::test]
+    async fn a_sent_back_post_names_the_target_in_its_refusal() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.post_result.lock() =
+            Some(Err(SlackPostError::SentBack { note: "put this in the thread".to_owned() }));
+        let tool = Post { facade: mock, slot: caller_slot() };
+
+        let out = tool
+            .call(input(serde_json::json!({
+                "conversation": "C1",
+                "thread_ts": "1729000000.000100",
+                "text": "hello",
+            })))
+            .await;
+
+        assert!(out.is_error, "a sent-back post is a refusal");
+        let why = text_of(&out);
+        assert!(why.contains("`conversation C1`"), "the refusal names the conversation: {why}");
+        assert!(
+            why.contains("`thread_ts 1729000000.000100`"),
+            "and the thread target to keep: {why}",
+        );
+        assert!(why.contains("put this in the thread"), "and the reader's words whole: {why}");
+        assert!(why.contains("move it"), "a draft's revision may move it: {why}");
+    }
+
+    /// The same wiring through the other three doors: an edit names the
+    /// message it acts on, a reaction the message it reacts to, and an
+    /// upload the thread it replies into - never another call's argument.
+    #[tokio::test]
+    async fn a_sent_back_edit_names_the_message_it_acts_on() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.edit_result.lock() =
+            Some(Err(SlackEditError::SentBack { note: "tighten it".to_owned() }));
+        let tool = Edit { facade: mock, slot: caller_slot() };
+
+        let out = tool
+            .call(input(serde_json::json!({
+                "conversation": "C1",
+                "ts": "1729000000.000200",
+                "text": "hello",
+            })))
+            .await;
+
+        assert!(out.is_error, "a sent-back edit is a refusal");
+        let why = text_of(&out);
+        assert!(why.contains("`conversation C1`"), "the refusal names the conversation: {why}");
+        assert!(why.contains("`ts 1729000000.000200`"), "and the message it acts on: {why}");
+        assert!(!why.contains("thread_ts"), "an edit has no thread to keep: {why}");
+        assert!(!why.contains("move it"), "a message target cannot be moved: {why}");
+    }
+
+    #[tokio::test]
+    async fn a_sent_back_reaction_names_the_message_it_reacts_to() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.react_result.lock() =
+            Some(Err(SlackReactError::SentBack { note: "wrong emoji".to_owned() }));
+        let tool = React { facade: mock, slot: caller_slot() };
+
+        let out = tool
+            .call(input(serde_json::json!({
+                "conversation": "C1",
+                "ts": "1729000000.000300",
+                "name": "white_check_mark",
+            })))
+            .await;
+
+        assert!(out.is_error, "a sent-back reaction is a refusal");
+        let why = text_of(&out);
+        assert!(why.contains("`ts 1729000000.000300`"), "the reaction names its message: {why}");
+        assert!(!why.contains("thread_ts"), "and invents no thread: {why}");
+    }
+
+    #[tokio::test]
+    async fn a_sent_back_upload_names_the_thread_it_replies_into() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.upload_result.lock() =
+            Some(Err(SlackAttachmentError::SentBack { note: "wrong channel".to_owned() }));
+        let tool = Attachment { facade: mock, slot: caller_slot() };
+
+        let out = tool
+            .call(input(serde_json::json!({
+                "path": "/tmp/shot.png",
+                "conversation": "C1",
+                "thread_ts": "1729000000.000400",
+            })))
+            .await;
+
+        assert!(out.is_error, "a sent-back upload is a refusal");
+        let why = text_of(&out);
+        assert!(why.contains("`conversation C1`"), "the refusal names the conversation: {why}");
+        assert!(
+            why.contains("`thread_ts 1729000000.000400`"),
+            "and the thread it replies into: {why}",
+        );
+    }
+
     /// A failed `slack__post` is the moment the configured token looks
     /// like a way round it, so the description's closing sentence
     /// forbids that and is pinned here: a trim that drops it fails
@@ -2004,12 +2171,17 @@ mod tests {
             project: "core-v1".to_owned(),
         };
         let expected = format_workspace_error(&unbound);
+        let target =
+            SentBackTarget::Draft { conversation: "C0123456789".to_owned(), thread_ts: None };
         let answers = [
             format_read_error(&SlackReadError::Workspace(unbound.clone())),
-            format_post_error(&SlackPostError::Workspace(unbound.clone())),
-            format_edit_error(&SlackEditError::Workspace(unbound.clone())),
-            format_react_error(&SlackReactError::Workspace(unbound.clone())),
-            format_attachment_error(&SlackAttachmentError::Workspace(unbound.clone())),
+            format_post_error(&SlackPostError::Workspace(unbound.clone()), &target),
+            format_edit_error(&SlackEditError::Workspace(unbound.clone()), &target),
+            format_react_error(&SlackReactError::Workspace(unbound.clone()), &target),
+            format_attachment_error(
+                &SlackAttachmentError::Workspace(unbound.clone()),
+                Some(&target),
+            ),
             format_subscribe_error(&SlackSubscribeError::Workspace(unbound)),
         ];
         for answer in answers {
@@ -2024,15 +2196,32 @@ mod tests {
     #[test]
     fn a_sent_back_refusal_carries_the_note_and_the_next_step() {
         let note = "say staging, not prod";
+        let drafted = SentBackTarget::Draft {
+            conversation: "C0123456789".to_owned(),
+            thread_ts: Some("1729000000.000100".to_owned()),
+        };
+        let message = SentBackTarget::Message {
+            conversation: "C0123456789".to_owned(),
+            ts: "1729000000.000100".to_owned(),
+        };
         let answers = [
-            (format_post_error(&SlackPostError::SentBack { note: note.to_owned() }), "slack__post"),
-            (format_edit_error(&SlackEditError::SentBack { note: note.to_owned() }), "slack__edit"),
             (
-                format_react_error(&SlackReactError::SentBack { note: note.to_owned() }),
+                format_post_error(&SlackPostError::SentBack { note: note.to_owned() }, &drafted),
+                "slack__post",
+            ),
+            (
+                format_edit_error(&SlackEditError::SentBack { note: note.to_owned() }, &message),
+                "slack__edit",
+            ),
+            (
+                format_react_error(&SlackReactError::SentBack { note: note.to_owned() }, &message),
                 "slack__react",
             ),
             (
-                format_attachment_error(&SlackAttachmentError::SentBack { note: note.to_owned() }),
+                format_attachment_error(
+                    &SlackAttachmentError::SentBack { note: note.to_owned() },
+                    Some(&drafted),
+                ),
                 "slack__attachment",
             ),
         ];
@@ -2041,6 +2230,62 @@ mod tests {
             assert!(answer.contains("expects a revision"), "and says what is expected: {answer}");
             assert!(answer.contains(tool), "and names the call to repeat: {answer}");
         }
+    }
+
+    /// A revision is a fresh call: the agent re-sends conversation and target
+    /// from what it remembers, and a target it drops moves the retry. The
+    /// refusal repeats the exact target the draft was parked against, so a
+    /// thread reply cannot quietly land at root on the second attempt.
+    #[test]
+    fn a_sent_back_refusal_repeats_the_target_the_retry_must_keep() {
+        let note = "say staging, not prod";
+        let drafted = |thread_ts: Option<&str>| SentBackTarget::Draft {
+            conversation: "C0123456789".to_owned(),
+            thread_ts: thread_ts.map(str::to_owned),
+        };
+
+        let threaded = format_post_error(
+            &SlackPostError::SentBack { note: note.to_owned() },
+            &drafted(Some("1729000000.000100")),
+        );
+        assert!(
+            threaded.contains("`conversation C0123456789`"),
+            "the retry is told the conversation: {threaded}",
+        );
+        assert!(
+            threaded.contains("`thread_ts 1729000000.000100`"),
+            "and the thread, so the reply stays in it: {threaded}",
+        );
+
+        let root =
+            format_post_error(&SlackPostError::SentBack { note: note.to_owned() }, &drafted(None));
+        assert!(
+            root.contains("`conversation C0123456789` at root"),
+            "a root draft says where it lands: {root}",
+        );
+        assert!(!root.contains("thread_ts"), "and never invents a thread to keep: {root}");
+
+        let uploaded = format_attachment_error(
+            &SlackAttachmentError::SentBack { note: note.to_owned() },
+            Some(&drafted(Some("1729000000.000100"))),
+        );
+        assert!(
+            uploaded.contains("`thread_ts 1729000000.000100`"),
+            "an upload repeats its thread target too: {uploaded}",
+        );
+
+        let edited = format_edit_error(
+            &SlackEditError::SentBack { note: note.to_owned() },
+            &SentBackTarget::Message {
+                conversation: "C0123456789".to_owned(),
+                ts: "1729000000.000100".to_owned(),
+            },
+        );
+        assert!(
+            edited.contains("`conversation C0123456789`")
+                && edited.contains("`ts 1729000000.000100`"),
+            "an edit names the message it acts on: {edited}",
+        );
     }
 
     /// An agent reads the description before it acts. A send-back is part of
@@ -2076,6 +2321,29 @@ mod tests {
             post.contains("any other reason"),
             "the post's stop-and-report tail is qualified for a send-back: {post}",
         );
+    }
+
+    /// The agent picks the target with `slack__post` in hand, so the
+    /// etiquette has to be in the description it reads there: an inbound
+    /// message is answered in a thread under it, only a new message goes to
+    /// root, and a revision keeps the target it was parked against. The
+    /// refusal carries the concrete target; this carries the rule.
+    #[test]
+    fn the_post_description_states_the_thread_etiquette() {
+        let facade: Arc<dyn SlackFacade> = Arc::new(MockSlackFacade::new());
+        let post = Post { facade, slot: caller_slot() }.description().to_owned();
+        for needed in [
+            "answered in its thread",
+            "pass the parent's `ts` as `thread_ts`",
+            "a root message's own `ts` is that parent",
+            "Only a genuinely new message goes to root",
+            "keeping its conversation and `thread_ts` unless the change is meant to move it",
+        ] {
+            assert!(
+                post.contains(needed),
+                "the post description states the etiquette: {needed}\n{post}",
+            );
+        }
     }
 
     /// The headline of the cut: no Slack tool advertises a `workspace`

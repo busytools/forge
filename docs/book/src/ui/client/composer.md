@@ -58,8 +58,9 @@ their names. A quoted message the core could not read reads as `a thread` - `a m
 operation whose stamp names a message - and a tag it could not resolve draws its id, so a failed
 lookup is drawn as itself rather than as a missing segment. A message that itself sits inside a
 thread is not named: the read answers its thread's parent, so that card reads as `a message`
-rather than naming the wrong one. A root message draws no thread segment, and a draft that tags
-nobody draws no tags segment.
+rather than naming the wrong one. A post or an upload that replies nowhere reads as `root
+message`, so the card always names where the draft lands and a wrong target can be caught from
+the line alone. A draft that tags nobody draws no tags segment.
 
 A third answer, send back with feedback, opens a field on the card. Enter sends, Shift+Enter is
 a newline, and Escape closes the field without sending. The words reach the agent as the blocked
