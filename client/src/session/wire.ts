@@ -94,8 +94,7 @@ export interface SessionHeader {
   /**
    * The engine the seat's launch settings resolved, as the core names it:
    * `default` or `forge`, and `null` while the seat holds no session record
-   * (nothing launched yet, or a launch that failed and took its record
-   * with it).
+   * (nothing launched yet, or a launch that failed and left no record).
    *
    * **The server's own word rather than a client's guess**, so a value this
    * build does not know is kept and drawn as itself instead of being read as

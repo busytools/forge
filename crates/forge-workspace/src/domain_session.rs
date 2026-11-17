@@ -395,10 +395,8 @@ pub struct DomainSession {
     /// **`None` while the seat holds no launch record.** The header says
     /// nothing then rather than guessing a default, and the two writers (the
     /// cold spawn and `stamp_respawn_overrides`) are the only places it is
-    /// written. A launch that fails can leave the seat without a record - a
-    /// failed respawn releases the seat's, and a failed cold launch rolls
-    /// back the one it made - so the stamp is absent and the seat's failure
-    /// row says why.
+    /// written. A launch that fails can leave the seat without a record, so
+    /// the stamp is absent; the seat's failure row says why.
     pub configured_engine: Option<forge_agent::client::Engine>,
     /// The MCP servers this session last saw, from its own bridge: MCP
     /// is configured per session, so this is not an account-wide fact.
