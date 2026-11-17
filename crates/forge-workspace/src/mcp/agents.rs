@@ -728,7 +728,7 @@ impl Tool for Spawn {
                 "mcp_families": {
                     "type": "array",
                     "items": { "type": "string", "enum": families },
-                    "description": "The MCP families this worker gets, exactly those listed. Omit or pass an empty list for every family on a fresh spawn; a resume adopts the stored selection. `agents__*` is always on and cannot be listed. Each withheld family is named in the worker's own prompt. What each gives the worker: `review` - read and answer reviews filed on its branch or under a document it handed off; give it to any worker that implements or whose deliverable is a reviewable document. `cron` - schedule and manage durable work of its own; give it to any worker that needs a recurring or deferred task. `tasks` - claim, file and update rows on the project board; give it to any worker whose work is on the board. `gotify` - subscribe to and read Gotify notifications; give it to any worker that acts on them. `slack` - read Slack, subscribe, and post through held approval; give it to any worker that works in Slack. `systemone` - put a yes/no, a choice or a score to the decision model; give it to any worker that weighs decisions itself. `voice` - speak one utterance aloud to the person listening to this seat; give it to any worker whose replies someone should hear. `vault` - read and change credentials in the Vaultwarden vault, every call held for approval; give it to any worker that needs its own credentials.",
+                    "description": "The MCP families this worker gets, exactly those listed. Omit or pass an empty list for every family on a fresh spawn; a resume adopts the stored selection. `agents__*` is always on and cannot be listed. `review` is always on for every worker and cannot be withheld; listing it is accepted but redundant. Each withheld family is named in the worker's own prompt. What each gives the worker: `review` - read and answer reviews filed on its branch or under a document it handed off; always on, so a lead never withholds it. `cron` - schedule and manage durable work of its own; give it to any worker that needs a recurring or deferred task. `tasks` - claim, file and update rows on the project board; give it to any worker whose work is on the board. `gotify` - subscribe to and read Gotify notifications; give it to any worker that acts on them. `slack` - read Slack, subscribe, and post through held approval; give it to any worker that works in Slack. `systemone` - put a yes/no, a choice or a score to the decision model; give it to any worker that weighs decisions itself. `voice` - speak one utterance aloud to the person listening to this seat; give it to any worker whose replies someone should hear. `vault` - read and change credentials in the Vaultwarden vault, every call held for approval; give it to any worker that needs its own credentials.",
                 },
                 "cwd": {
                     "type": "string",
@@ -1059,7 +1059,7 @@ impl Tool for Update {
                 "mcp_families": {
                     "type": "array",
                     "items": { "type": "string", "enum": families },
-                    "description": "Replacement MCP-family selection for this worker, validated as agents__spawn validates it. Omit to leave the stored selection unchanged; pass an empty list to restore every family. Takes effect on the next respawn. The families, and what each gives a worker, are listed on agents__spawn's `mcp_families` argument; read them there before narrowing.",
+                    "description": "Replacement MCP-family selection for this worker, validated as agents__spawn validates it. Omit to leave the stored selection unchanged; pass an empty list to restore every family. Takes effect on the next respawn. The families, and what each gives a worker, are listed on agents__spawn's `mcp_families` argument; read them there before narrowing. `review` is always on for every worker and cannot be withheld; listing it is accepted but redundant.",
                 },
             },
             "required": ["label"],
@@ -1422,8 +1422,7 @@ mod tests {
                 crate::mcp::McpFamily::Review => (
                     "read and answer reviews filed on its branch or under a document it handed \
                      off",
-                    "give it to any worker that implements or whose deliverable is a reviewable \
-                     document",
+                    "always on, so a lead never withholds it",
                 ),
                 crate::mcp::McpFamily::Cron => (
                     "schedule and manage durable work of its own",
@@ -1461,21 +1460,36 @@ mod tests {
                 family.as_str(),
             );
         }
+        // `review` is always on, so a lead reading this list must not come
+        // away thinking it can be withheld - and listing it must not read
+        // as an error.
+        assert!(
+            families.contains(
+                "`review` is always on for every worker and cannot be withheld; listing it is \
+                 accepted but redundant"
+            ),
+            "the top-level text says review cannot be withheld: {families}",
+        );
         // `agents__update` changes the same selection, so it points at the
         // spawn argument for the purposes instead of restating them.
         let update =
             Update { facade: Arc::clone(&host.workers) as Arc<dyn WorkerFacade>, slot: caller() };
-        assert_eq!(
-            advertised(&update.input_schema()),
-            enum_names,
-            "update advertises the enum's own list",
+        let update_schema = update.input_schema();
+        assert_eq!(advertised(&update_schema), enum_names, "update advertises the enum's own list");
+        let update_families = update_schema["properties"]["mcp_families"]["description"]
+            .as_str()
+            .expect("update's mcp_families carries a description");
+        assert!(
+            update_families.contains("listed on agents__spawn's `mcp_families` argument"),
+            "the update argument points at the one list of family purposes",
         );
         assert!(
-            update.input_schema()["properties"]["mcp_families"]["description"]
-                .as_str()
-                .expect("update's mcp_families carries a description")
-                .contains("listed on agents__spawn's `mcp_families` argument"),
-            "the update argument points at the one list of family purposes",
+            update_families.contains(
+                "`review` is always on for every worker and cannot be withheld; listing it is \
+                 accepted but redundant"
+            ),
+            "and repeats the always-on rule, since it can revise the same selection: \
+             {update_families}",
         );
     }
 

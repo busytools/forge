@@ -308,8 +308,12 @@ tool-provider seam, and the in-process host composes them like any other
 group. A worker's families can be
 narrowed at spawn - `agents__spawn`'s `mcp_families` list, revised by
 `agents__update` and stored on the worker's durable record - and each
-withheld family is named in that worker's own prompt. The `agents` group
-is always on, and so are `browser`, `documents`, `settings` and `terminal`:
+withheld family is named in that worker's own prompt. `review` is the one
+family a lead cannot withhold: it is always on for every worker, so a
+review on the worker's own branch is always answerable by the worker that
+did the work, and listing it is accepted but redundant. The `agents` group
+is always on, and so are `browser`, `documents`, `review`, `settings` and
+`terminal`:
 the browser
 is the server's own - a session drives a host the server runs, whether or
 not any client is watching - a hand-off reads the caller's own tree or its
