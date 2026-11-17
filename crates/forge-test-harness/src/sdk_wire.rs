@@ -376,6 +376,12 @@ where
         eprintln!("FORGE_WIRE_CAPTURE not set; skipping scenario {scenario}");
         return Ok(None);
     }
+    // **Say which binary actually runs.** A misspelt or empty
+    // `FORGE_WIRE_BINARY` would otherwise leave the suite running `claude`
+    // while the operator believes it ran the port, and the traces do not
+    // record the binary.
+    let live = live_binary();
+    eprintln!("live scenario {scenario} runs {}", live.as_deref().unwrap_or("claude"));
 
     // Install wire-recording tees on the supplied options. The harness
     // takes a fully-configured Options (built by the scenario), so we
@@ -392,7 +398,7 @@ where
         opts.tee_outbound = Some(Arc::new(move |line: &str| {
             log_out.lock().entries.push(("out", line.to_string()));
         }));
-        if let Some(binary) = live_binary() {
+        if let Some(binary) = live {
             opts.binary = binary;
         }
         opts

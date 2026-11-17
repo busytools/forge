@@ -43,7 +43,12 @@ forge-sdk itself.
 
 Spawns the real `claude` binary with the scenario's options, drives
 forge-sdk through the prompt/response flow, records every stdin/stdout
-line to `target/wire-traces/capture-<scenario>-<ts>.jsonl`, then:
+line to `target/wire-traces/capture-<scenario>-<ts>.jsonl`. **A drop-in
+binary can take `claude`'s place for the whole suite**: set
+`FORGE_WIRE_BINARY=claude-headless` (or any binary speaking the same
+argv/stdin) and every live scenario spawns it; the mode prints the
+resolved binary per scenario, so a misspelt or empty value is visible
+in the run's output rather than silently running `claude`. Then:
 
 1. Asserts the run succeeded end-to-end (no panics, Result frame seen).
 2. Verifies every captured inbound line decodes cleanly.

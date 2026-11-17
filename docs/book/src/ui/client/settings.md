@@ -86,12 +86,13 @@ comes from the settings document above.
   names the instance, so a line draws the key's own name, which the server
   sends as `leaf`; the whole path stays in the document and in the key's
   title. A name containing dots, like a model slug, is one name.
-- **An engine line names the binary it runs.** The projects area's `engine`
-  rows are choice controls over `default` and `forge`; an unset row draws
-  what it inherits (its org's engine, else `default`), and a row set to
+- **An engine line names the engine a spawn runs.** The projects area's
+  `engine` rows are choice controls over `not set`, `default` and `forge`; an
+  unset row draws what it inherits (its org's engine, else `default`).
   `forge` runs the certified `claude-headless` port, which must be installed
-  on the machine's `PATH`. The page does not probe for it: a machine without
-  the binary fails that spawn with an error naming the binary and the key.
+  under that name on the machine's `PATH`; `default` runs the `claude` CLI.
+  The page does not probe for the binary: a machine without it fails that
+  spawn with an error naming the binary and the key.
 - **An area reports every class it holds.** A sub-nav row draws each
   distinct class its keys carry, not only the furthest, so an area holding
   both a restart key and an unread one says both.

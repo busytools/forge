@@ -138,7 +138,9 @@ or the project level. Two values:
 
 The key resolves at spawn: the project's own `engine`, else its org's, else
 `default`. Both levels accept both values, so a project sets `"default"`
-under an org set to `"forge"` to run the `claude` CLI.
+under an org set to `"forge"` to run the `claude` CLI. An unknown value at
+either level fails the load, naming the org or project, the value and the
+accepted values (`default`, `forge`).
 
 The setting is portable across a synced `forge.toml`; the binary it names is
 a per-machine artifact, installed on `PATH` like the `claude` CLI (see
@@ -225,7 +227,7 @@ like `providers` fails the load instead of loading and doing nothing.
 ## `[env]`
 
 A flat table of string keys to string values, stamped onto every
-spawned `claude` subprocess. Absent means empty.
+spawned agent subprocess. Absent means empty.
 
 ```toml
 [env]
