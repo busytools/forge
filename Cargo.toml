@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/forge-sdk", "crates/forge-primitives", "crates/forge-mcp", "crates/forge-capture", "crates/forge-dictate", "crates/forge-tts", "crates/forge-system-one", "crates/forge-supervise", "crates/forge-gateway", "crates/forge-tools", "crates/forge-browser", "crates/forge-terminal", "crates/forge-agent", "crates/forge-workspace", "crates/forge-server", "crates/forge-test-harness"]
 
 [workspace.package]
-version = "1.2.10"
+version = "1.2.11"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/busytools/forge"
@@ -105,21 +105,21 @@ transcribe-cpp = "0.4.1"
 cpal = "0.18"
 
 # Workspace-internal crates
-forge-primitives = { path = "crates/forge-primitives", version = "=1.2.10" }
-forge-mcp = { path = "crates/forge-mcp", version = "=1.2.10" }
-forge-capture = { path = "crates/forge-capture", version = "=1.2.10" }
-forge-gateway = { path = "crates/forge-gateway", version = "=1.2.10" }
-forge-tools = { path = "crates/forge-tools", version = "=1.2.10" }
-forge-sdk = { path = "crates/forge-sdk", version = "=1.2.10" }
-forge-agent = { path = "crates/forge-agent", version = "=1.2.10" }
-forge-dictate = { path = "crates/forge-dictate", version = "=1.2.10" }
-forge-tts = { path = "crates/forge-tts", version = "=1.2.10" }
-forge-system-one = { path = "crates/forge-system-one", version = "=1.2.10" }
-forge-supervise = { path = "crates/forge-supervise", version = "=1.2.10" }
-forge-workspace = { path = "crates/forge-workspace", version = "=1.2.10" }
-forge-browser = { path = "crates/forge-browser", version = "=1.2.10" }
-forge-terminal = { path = "crates/forge-terminal", version = "=1.2.10" }
-forge-server = { path = "crates/forge-server", version = "=1.2.10" }
+forge-primitives = { path = "crates/forge-primitives", version = "=1.2.11" }
+forge-mcp = { path = "crates/forge-mcp", version = "=1.2.11" }
+forge-capture = { path = "crates/forge-capture", version = "=1.2.11" }
+forge-gateway = { path = "crates/forge-gateway", version = "=1.2.11" }
+forge-tools = { path = "crates/forge-tools", version = "=1.2.11" }
+forge-sdk = { path = "crates/forge-sdk", version = "=1.2.11" }
+forge-agent = { path = "crates/forge-agent", version = "=1.2.11" }
+forge-dictate = { path = "crates/forge-dictate", version = "=1.2.11" }
+forge-tts = { path = "crates/forge-tts", version = "=1.2.11" }
+forge-system-one = { path = "crates/forge-system-one", version = "=1.2.11" }
+forge-supervise = { path = "crates/forge-supervise", version = "=1.2.11" }
+forge-workspace = { path = "crates/forge-workspace", version = "=1.2.11" }
+forge-browser = { path = "crates/forge-browser", version = "=1.2.11" }
+forge-terminal = { path = "crates/forge-terminal", version = "=1.2.11" }
+forge-server = { path = "crates/forge-server", version = "=1.2.11" }
 
 # Dev-only
 tempfile = "3"
