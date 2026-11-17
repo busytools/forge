@@ -3703,6 +3703,14 @@ impl Workspace {
         // in rather than a guess.
         domain_arc.lock().configured_permission_mode =
             crate::domain_session::configured_permission_mode_from_settings(&settings);
+        // The engine the launch resolved, for the session page's header:
+        // `default` when no key chose one, because this spawn ran the CLI.
+        domain_arc.lock().configured_engine = Some(
+            settings
+                .engine
+                .as_ref()
+                .map_or(forge_agent::client::Engine::Default, |engine| engine.engine),
+        );
         // Carry the row's provenance the same way: the tag-write
         // rollback runs long after this spawn returned and needs to know
         // whether the row it would delete is this spawn's to take.
@@ -5023,6 +5031,18 @@ impl Workspace {
         // names now - `/new`, `/resume` and a handoff re-spawn on a pooled
         // handle, where the cold-spawn stamp never runs.
         self.stamp_engine(slot, launch_settings);
+        // The seat's record moves with the stamp. The successor's
+        // `SessionReplaced` already makes every client re-read the record,
+        // so the header redraws the engine from this field with no frame of
+        // its own.
+        if let Some(domain) = self.domain_session_for(slot) {
+            domain.lock().configured_engine = Some(
+                launch_settings
+                    .engine
+                    .as_ref()
+                    .map_or(forge_agent::client::Engine::Default, |engine| engine.engine),
+            );
+        }
         let kind = if slot.is_lead() {
             crate::mcp::SessionKind::Lead
         } else {
@@ -21231,6 +21251,7 @@ mod worker_respawn_tests {
         let (ws, _rx) = Workspace::testing_stub();
         ws.seed_test_project_with_engine("engine-proj", "/tmp/engine-respawn", Engine::Forge);
         let lead = SessionSlot::lead("TestOrg", "engine-proj");
+        let domain = ws.register_domain_session(lead.clone(), None);
         let mut settings = SessionLaunchSettings::default();
         ws.stamp_respawn_overrides(&lead, "new-id", &mut settings);
         assert_eq!(
@@ -21238,11 +21259,17 @@ mod worker_respawn_tests {
             Some(Engine::Forge),
             "a /new on the seat runs the port its project names",
         );
+        assert_eq!(
+            domain.lock().configured_engine,
+            Some(Engine::Forge),
+            "and the seat's record moves with the stamp, so the header redraws it",
+        );
 
         // A project with no engine key clears one a caller carried, so a
         // reload back to `default` takes effect at the next spawn.
         ws.seed_test_project("plain-proj", "/tmp/engine-plain");
         let plain = SessionSlot::lead("TestOrg", "plain-proj");
+        let plain_domain = ws.register_domain_session(plain.clone(), None);
         let mut stale = SessionLaunchSettings {
             engine: Some(EngineSetting {
                 engine: Engine::Forge,
@@ -21252,6 +21279,11 @@ mod worker_respawn_tests {
         };
         ws.stamp_respawn_overrides(&plain, "new-id", &mut stale);
         assert!(stale.engine.is_none(), "nothing names an engine, so the claude CLI runs");
+        assert_eq!(
+            plain_domain.lock().configured_engine,
+            Some(Engine::Default),
+            "and a respawn back to the default clears the port from the record",
+        );
     }
 
     /// The role a spawn carries is the role it gets, and the slot's label

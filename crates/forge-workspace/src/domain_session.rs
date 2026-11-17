@@ -389,6 +389,14 @@ pub struct DomainSession {
     /// on the same terms: the answer until a hook reports one. `None`
     /// when the launch pinned none.
     pub configured_permission_mode: Option<PermissionMode>,
+    /// The engine the launch settings resolved, as the session page's header
+    /// draws it: `default` for the CLI, `forge` for the certified port.
+    ///
+    /// **`None` until a session has spawned on this seat.** The header says
+    /// nothing then rather than guessing a default, and the two writers -
+    /// the cold spawn and `stamp_respawn_overrides` - are the only places an
+    /// occupant's engine can change.
+    pub configured_engine: Option<forge_agent::client::Engine>,
     /// The MCP servers this session last saw, from its own bridge: MCP
     /// is configured per session, so this is not an account-wide fact.
     pub mcp_servers: Option<McpServers>,
@@ -759,6 +767,7 @@ impl DomainSession {
             observed_effort: None,
             configured_effort: EffortLevel::Max,
             configured_permission_mode: None,
+            configured_engine: None,
             mcp_servers: None,
             context_usage: None,
             handoff: HandoffState::default(),

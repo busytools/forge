@@ -1231,6 +1231,12 @@ interface RailFooter {
     skewed: boolean;
     claude: string | null;
     update: string | null;
+    /**
+     * The engine the seat is running on, as the core names it (`default` or
+     * `forge`), or `null` before any session has spawned on the seat - which
+     * draws no stamp rather than guessing the default.
+     */
+    engine: string | null;
   };
 }
 
@@ -1287,6 +1293,9 @@ export function railFooter(
   serverProtocol: number | null = null,
   /** The page's clock, for a reset stated as a time rather than a duration. */
   now: number = Date.now(),
+  /** The seat's engine, off the session record's header: the value the launch
+   *  resolved, or `null` before any session has reported one. */
+  engine: string | null = null,
 ): RailFooter {
   const versions = {
     serverForge: home.forge_version_short,
@@ -1299,6 +1308,7 @@ export function railFooter(
     skewed: serverProtocol !== null && serverProtocol !== PROTOCOL_VERSION,
     claude: home.cli_version?.installed ?? null,
     update: availableVersion(home.cli_version?.installed ?? null, home.cli_version?.latest ?? null),
+    engine,
   };
   const account = accountChip(home, slot, now);
   if (account === null) {

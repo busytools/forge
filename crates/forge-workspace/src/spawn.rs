@@ -10107,6 +10107,20 @@ provider = "anthropic"
             })),
             "the org's engine reaches the child with the key that chose it",
         );
+
+        // The seat records the engine its launch resolved, which is what the
+        // session page's header reads: the child's argv is not a fact a
+        // view can reach.
+        let recorded = ws
+            .domain_session_for(&crate::SessionSlot::lead("TestOrg", "proj"))
+            .expect("the cold spawn registered the seat")
+            .lock()
+            .configured_engine;
+        assert_eq!(
+            recorded,
+            Some(forge_agent::client::Engine::Forge),
+            "the seat records the engine its launch resolved",
+        );
     }
 
     /// A project whose org sets no engine either launches on the `claude`
@@ -10154,6 +10168,19 @@ provider = "anthropic"
             launch_settings.get("engine"),
             None,
             "nothing asked for an engine, so nothing is launched on one",
+        );
+
+        // The header still names one: the value the launch resolved is
+        // `default`, not silence, once a session has spawned on the seat.
+        let recorded = ws
+            .domain_session_for(&crate::SessionSlot::lead("TestOrg", "proj"))
+            .expect("the cold spawn registered the seat")
+            .lock()
+            .configured_engine;
+        assert_eq!(
+            recorded,
+            Some(forge_agent::client::Engine::Default),
+            "a spawn that resolved the default records it, so the header says default",
         );
     }
 

@@ -675,6 +675,7 @@
     {now}
     {connection}
     {notice}
+    engine={record?.header.engine ?? null}
     mode={railMode}
     onpin={() => setRail(railMode === 'static' ? 'hover' : 'static')}
     onenter={summon}

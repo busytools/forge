@@ -595,6 +595,10 @@ pub struct SessionHeaderWire {
     pub permission_mode: Option<Value>,
     pub context: Value,
     pub available_models: Vec<Value>,
+    /// The engine the seat's launch settings resolved, drawn beside the
+    /// build facts: `"default"` or `"forge"`, and `null` before any session
+    /// has spawned on the seat.
+    pub engine: Option<forge_workspace::Engine>,
     pub turn_in_flight: bool,
 }
 
@@ -2690,6 +2694,7 @@ async fn session(
                 .iter()
                 .filter_map(|model| serde_json::to_value(model).ok())
                 .collect(),
+            engine: header.engine,
             turn_in_flight: header.turn_in_flight,
         },
         reviews: ReviewsWire {

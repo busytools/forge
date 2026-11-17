@@ -349,6 +349,30 @@ describe('the diff parse', () => {
 });
 
 /**
+ * **The header's engine is the server's own word.** The rail draws it beside
+ * the build stamps, so it must read what the launch resolved rather than a
+ * client's guess: a value no session has reported is nothing, not `default`.
+ */
+describe("the seat's header engine", () => {
+  it('carries the engine the server names, and nothing before one lands', () => {
+    expect(sessionFrom({ header: { engine: 'forge' } }).header.engine).toBe('forge');
+    expect(sessionFrom({ header: { engine: 'default' } }).header.engine).toBe('default');
+    expect(
+      sessionFrom({ header: { engine: null } }).header.engine,
+      'a seat nothing has started names no engine',
+    ).toBeNull();
+    expect(
+      sessionFrom({ header: {} }).header.engine,
+      'and a core older than the field names none either',
+    ).toBeNull();
+    expect(
+      sessionFrom({ header: { engine: 'some-future-engine' } }).header.engine,
+      'a value this build does not know is drawn as itself, not dropped',
+    ).toBe('some-future-engine');
+  });
+});
+
+/**
  * The seat's resumable sessions travel on the record, and this decode is the
  * one link a fixture carrying `[]` cannot see: a wrong key or a dropped line
  * leaves the live composer offering nothing, with the popover's empty-list

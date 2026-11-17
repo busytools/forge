@@ -2596,6 +2596,41 @@ describe('the record a page holds over an update stream', () => {
   });
 
   /**
+   * **A respawn redraws the engine stamp.** The value is the record's, so the
+   * whole-record re-read a seat replacement already asks for is what carries
+   * a `/new` from the port back to the CLI - there is no frame of the
+   * engine's own to hear.
+   */
+  it('redraws the engine when a respawn replaces the occupant', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(
+      snapshotOf(LEAD, {
+        header: { engine: 'forge' },
+        conversation: { turns: [], compaction_count: 0 },
+      }),
+    );
+    expect(page.read().wire?.header.engine, 'the seat starts on the port').toBe('forge');
+
+    // `/new` mints an id the store never held, and the answer carries the
+    // engine the new launch resolved.
+    page.land(updateOf(occupant('a-new-occupant')));
+    page.land(
+      snapshotOf(
+        LEAD,
+        { header: { engine: 'default' }, conversation: { turns: [], compaction_count: 0 } },
+        { epoch: 'a-new-occupant' },
+      ),
+    );
+
+    expect(
+      page.read().wire?.header.engine,
+      'the stamp follows the occupant the respawn started',
+    ).toBe('default');
+    page.stop();
+  });
+
+  /**
    * **A machine turn ending is re-read, and one beginning is not.**
    *
    * The core's abort says only "not a handoff" - a CLI compaction that was
