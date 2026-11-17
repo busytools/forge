@@ -6651,17 +6651,27 @@ describe('the dock', () => {
     );
   });
 
-  it("names a root post's tags with no thread segment to leave behind", () => {
+  it("names a root post's target where a reply's thread would sit", () => {
     open({
       record: record({
         pending_asks: [slackDraftAsk({ tagged: [{ id: 'U2', name: 'bob' }] })],
       }),
     });
 
-    expect(dest(), 'no thread means no segment and no leftover separator').toBe(
-      'Trust Machines · #granite-staging-alerts · tags: @bob',
+    expect(dest(), 'a root post says where it lands rather than saying nothing').toBe(
+      'Trust Machines · #granite-staging-alerts root message · tags: @bob',
     );
-    expect(dest(), 'and no empty thread label is drawn').not.toContain('thread:');
+    expect(dest(), 'and it never claims a thread it does not reply into').not.toContain('thread:');
+  });
+
+  it('names a root upload as a root message too', () => {
+    open({
+      record: record({ pending_asks: [slackDraftAsk({ operation: 'upload' })] }),
+    });
+
+    expect(dest(), "an upload's thread field is a destination, so a null one is the root").toBe(
+      'Trust Machines · #granite-staging-alerts root message',
+    );
   });
 
   it('draws no tag segment when the draft tags nobody', () => {
@@ -7598,16 +7608,18 @@ describe('the dock', () => {
   // operation - the field is a reply thread only for a post or an upload - so
   // these rows carry the shape a real server sends, not a null.
   const OPERATION_CARDS: [string, string | null, string, string, string, string | null][] = [
-    ['post', null, 'Post to Slack', 'Post', 'Do not post', null],
+    ['post', null, 'Post to Slack', 'Post', 'Do not post', 'root message'],
     ['post', STAMP, 'Reply in Slack', 'Post', 'Do not post', 'thread: a thread'],
     ['edit', STAMP, 'Edit in Slack', 'Apply edit', 'Do not apply', 'message: a message'],
     ['delete', STAMP, 'Delete in Slack', 'Delete', 'Keep it', 'message: a message'],
     ['react', STAMP, 'React in Slack', 'React', 'Do not react', 'message: a message'],
     ['unreact', STAMP, 'Unreact in Slack', 'Unreact', 'Do not unreact', 'message: a message'],
-    ['upload', null, 'Upload to Slack', 'Upload', 'Do not upload', null],
+    ['upload', null, 'Upload to Slack', 'Upload', 'Do not upload', 'root message'],
     ['upload', STAMP, 'Upload to Slack', 'Upload', 'Do not upload', 'thread: a thread'],
-    // A value from a newer server draws neutral words, never a post's.
+    // A value from a newer server draws neutral words, never a post's, and a
+    // null stamp on one never claims a root this client cannot name.
     ['unknown', STAMP, 'Slack draft', 'Approve', 'Do not send', 'message: a message'],
+    ['unknown', null, 'Slack draft', 'Approve', 'Do not send', null],
   ];
 
   it.each(OPERATION_CARDS)(

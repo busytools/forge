@@ -225,6 +225,9 @@
     threadTs: string | null;
     thread: SlackThreadName | null;
     tagged: SlackPerson[];
+    /** A post or an upload with no thread_ts: it lands at the root, and the
+     * card says so rather than leaving its target to silence. */
+    root: boolean;
   }
   const slackDest = $derived.by<Dest>(() => {
     if (ask.kind !== 'slack_draft') {
@@ -235,11 +238,13 @@
         threadTs: null,
         thread: null,
         tagged: [],
+        root: false,
       };
     }
     const { workspace, conversationLabel, threadTs, operation, thread, tagged } = ask.request;
     const noun = operation === 'post' || operation === 'upload' ? 'thread' : 'message';
-    return { workspace, conversation: conversationLabel, noun, threadTs, thread, tagged };
+    const root = (operation === 'post' || operation === 'upload') && threadTs === null;
+    return { workspace, conversation: conversationLabel, noun, threadTs, thread, tagged, root };
   });
 
   /**
@@ -1756,6 +1761,8 @@
                 {/if}
               {/if}
             </span>
+          {:else if slackDest.root}
+            <span class="thr"><span class="ex">root message</span></span>
           {/if}
           {#if slackDest.tagged.length > 0}
             {@const tagged = slackDest.tagged}
