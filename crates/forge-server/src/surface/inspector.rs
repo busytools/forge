@@ -57,8 +57,9 @@ pub struct SessionHeader {
     /// picker draws its rows from. Empty for a session nothing has started.
     pub available_models: Vec<AvailableModel>,
     /// The engine the seat's launch settings resolved - `default` for the
-    /// CLI, `forge` for the certified port - or `None` before any launch on
-    /// the seat resolved one.
+    /// CLI, `forge` for the certified port - or `None` while the seat holds
+    /// no launch record: nothing has launched on it yet, or a cold launch
+    /// failed and rolled its record back (the seat's failure row says why).
     ///
     /// **Carried from the core's own record of the launch**, not inferred
     /// from the argv: the value that picked the binary is the value the

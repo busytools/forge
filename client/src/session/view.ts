@@ -1233,9 +1233,9 @@ interface RailFooter {
     claude: string | null;
     update: string | null;
     /**
-     * The engine the seat is running on, as the core names it (`default` or
-     * `forge`), or `null` before any session has spawned on the seat - which
-     * draws no stamp rather than guessing the default.
+     * The engine the seat's last launch resolved, as the core names it
+     * (`default` or `forge`), or `null` while the seat holds no session
+     * record - which draws no stamp rather than guessing the default.
      */
     engine: string | null;
   };
@@ -1295,8 +1295,8 @@ export function railFooter(
   serverProtocol: number | null = null,
   /** The page's clock, for a reset stated as a time rather than a duration. */
   now: number = Date.now(),
-  /** The seat's engine, off the session record's header: the value the launch
-   *  resolved, or `null` before any session has reported one. */
+  /** The seat's engine, off the session record's header: the value the last
+   *  launch resolved, or `null` while the seat holds no session record. */
   engine: string | null = null,
 ): RailFooter {
   const versions = {

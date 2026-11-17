@@ -1361,7 +1361,8 @@ details[open] > summary .arw { transform: rotate(90deg); }
   background: none; border: 0; display: flex; align-items: center; }
 .banner .pin:hover { color: var(--text); }
 
-/* The rail's footer: the account, what it is costing and the two builds.
+/* The rail's footer: the account, what it is costing, the two builds and
+   the engine stamp.
    `flex: none` because the list is the thing that gives - a footer that
    shrinks instead is one a long project list squashes. Named apart from
    `.foot`, which the composer already owns. */

@@ -5029,8 +5029,8 @@ fn thinking_spent(data: &serde_json::Value) -> i64 {
 /// **The header names the engine the seat is running.** The rail's stamp is
 /// the server's fact, not a client's inference: the record carries the value
 /// the launch settings resolved - `forge` when the key asked for the port,
-/// `default` when the launch resolved the CLI - and nothing at all before
-/// any launch reports one.
+/// `default` when the launch resolved the CLI - and nothing at all while
+/// the seat holds no launch record.
 ///
 /// **The stamp needs no frame of its own.** An engine can only move at a
 /// launch, and every launch emits `Spawning`, `Connected` or
