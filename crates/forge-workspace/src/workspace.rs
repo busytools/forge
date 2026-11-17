@@ -3468,8 +3468,8 @@ impl Workspace {
         // The engine is stamped from the SETTLED project below, inside the
         // reload guard's answer: a stamp read here would come from before
         // the resolution loop's wait, and a reload straddling the spawn
-        // would pair the old engine with the new project's model, account
-        // and cwd - one launch running a binary no key names today.
+        // would pair the old engine with the new project's model and
+        // account - one launch running a binary no key names today.
         // The id the child runs under. `--session-id` and `--resume` are
         // the CLI's own arguments and stay ids; the store row records it
         // under the slot before the child starts, so a restart resolves

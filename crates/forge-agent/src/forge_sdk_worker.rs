@@ -1627,8 +1627,8 @@ fn build_options_with_callback(
         b = b.extra_arg(flag.clone(), value.clone());
     }
 
-    // The engine the project's `forge.toml` key asked for. `default`
-    // leaves the SDK's own `claude`; `forge` runs the certified
+    // The engine the launch's `forge.toml` key resolves to, org or project.
+    // `default` leaves the SDK's own `claude`; `forge` runs the certified
     // `claude-headless` port by name, so a machine without it fails the
     // spawn (named in `engine_spawn_error`) rather than falling back.
     if let Some(engine) = &launch_settings.engine
@@ -5410,8 +5410,8 @@ mod tests_reader_terminal {
         assert!(plain.downcast_ref::<forge_sdk::Error>().is_some());
 
         // **An engine set on the org names the org's key**, which is the
-        // other documented way to enable the port; the project arm above
-        // would otherwise be the only one a regression could not miss.
+        // other documented way to enable the port; without this case an
+        // org-scope regression would go uncaught.
         let org_launch = SessionLaunchSettings {
             engine: Some(EngineSetting {
                 engine: Engine::Forge,

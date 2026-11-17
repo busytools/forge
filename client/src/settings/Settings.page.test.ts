@@ -38,8 +38,8 @@ function engineRow(path: string, group: string[], value: SettingsKey['value']): 
   };
 }
 
-/** A document holding only the two engine levels, which is what the
- *  controls test reads; the fixture carries no projects area at all. */
+/** A projects area holding the two engine levels and nothing else, which
+ *  is what the controls test reads. */
 function engineWire(project: SettingsKey['value']): SettingsDocument {
   return {
     version: 'v',
@@ -50,7 +50,7 @@ function engineWire(project: SettingsKey['value']): SettingsDocument {
       {
         id: 'projects',
         name: 'projects',
-        note: 'orgs, their projects, and every per-project setting',
+        note: "orgs, their projects, and every org and project setting - an engine set to forge runs the certified claude-headless binary, which must be installed on this machine's PATH",
         keys: [
           engineRow('orgs.Acme.engine', ['Acme'], { kind: 'string', text: 'forge' }),
           engineRow('orgs.Acme.projects.api.engine', ['Acme', 'api'], project),

@@ -10109,7 +10109,7 @@ provider = "anthropic"
         );
     }
 
-    /// A project with no engine key of its own launches on the `claude`
+    /// A project whose org sets no engine either launches on the `claude`
     /// CLI: the launch settings carry no engine at all, which is what an
     /// older launch settings did too.
     #[tokio::test]
