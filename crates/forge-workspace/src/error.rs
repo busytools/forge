@@ -63,6 +63,20 @@ pub enum WorkspaceError {
     ProjectInvalidPermissionMode { path: PathBuf, name: String, value: String },
 
     #[error(
+        "org '{org}' in forge.toml at {} sets engine = \"{value}\"; accepted values: {}",
+        path.display(),
+        forge_agent::client::Engine::ACCEPTED
+    )]
+    OrgInvalidEngine { path: PathBuf, org: String, value: String },
+
+    #[error(
+        "project '{name}' in forge.toml at {} sets engine = \"{value}\"; accepted values: {}",
+        path.display(),
+        forge_agent::client::Engine::ACCEPTED
+    )]
+    ProjectInvalidEngine { path: PathBuf, name: String, value: String },
+
+    #[error(
         "project '{name}' in forge.toml at {} sets document_roots entry '{root}', which is not absolute; every entry must be an absolute path, ~ or start with ~/",
         path.display()
     )]

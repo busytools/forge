@@ -40,7 +40,7 @@ pub const AREAS: &[AreaSpec] = &[
     AreaSpec {
         id: "projects",
         name: "projects",
-        note: "orgs, their projects, and every per-project setting",
+        note: "orgs, their projects, and every org and project setting - an engine set to forge runs the certified claude-headless binary, which must be installed on this machine's PATH",
     },
     AreaSpec {
         id: "sessions",
@@ -145,6 +145,9 @@ const LIST: EditSpec = EditSpec { kind: EditKind::List, allowed: &[], required: 
 
 const PERMISSION_MODES: &[&str] =
     &["default", "acceptEdits", "plan", "dontAsk", "auto", "bypassPermissions"];
+/// The two engines a session can launch on. The loader parses the same
+/// set in `Engine::from_stored`, and a test holds the two together.
+const ENGINES: &[&str] = &["default", "forge"];
 const DICTATE_BINDS: &[&str] = &["right_cmd", "left_cmd", "off"];
 const DICTATE_MODES: &[&str] = &["auto", "toggle", "hold"];
 const DICTATE_STYLINGS: &[&str] = &["casual", "semi_casual", "semi_formal", "formal"];
@@ -183,12 +186,14 @@ fn edit_spec(path: &str) -> EditSpec {
         "orgs[].accounts" => named(required(LIST), "org"),
         "orgs[].fallback_accounts" => named(LIST, "org"),
         "orgs[].browser_profile" | "orgs[].slack.workspace" => named(TEXT, "org"),
+        "orgs[].engine" => named(choice(ENGINES), "org"),
         // projects
         "orgs[].projects[].name" | "orgs[].projects[].path" | "orgs[].projects[].model" => {
             named(required(TEXT), "project")
         }
         "orgs[].projects[].handoff.enabled" => named(BOOLEAN, "project"),
         "orgs[].projects[].permission_mode" => named(choice(PERMISSION_MODES), "project"),
+        "orgs[].projects[].engine" => named(choice(ENGINES), "project"),
         "orgs[].projects[].max_workers"
         | "orgs[].projects[].handoff.at_percent"
         | "orgs[].projects[].handoff.after_compactions" => named(NUMBER, "project"),
@@ -509,6 +514,23 @@ const PROJECT_KEYS: &[ConfigKey] = &[
         },
     },
     ConfigKey {
+        path: "orgs[].engine",
+        area: "projects",
+        // Read when a session opens, so a save applies to the next spawn.
+        class: EffectClass::NextSession,
+        rows: |config| {
+            org_names(config)
+                .into_iter()
+                .map(|org| {
+                    text_set(
+                        format!("orgs.{org}.engine"),
+                        config.org_engines.get(org).map(|engine| engine.as_stored().to_owned()),
+                    )
+                })
+                .collect()
+        },
+    },
+    ConfigKey {
         path: "orgs[].slack.workspace",
         area: "projects",
         class: EffectClass::Live,
@@ -694,6 +716,27 @@ const PROJECT_KEYS: &[ConfigKey] = &[
                 .projects
                 .iter()
                 .map(|p| text(project_path(p, "browser_profile"), p.browser_profile.name()))
+                .collect()
+        },
+    },
+    ConfigKey {
+        path: "orgs[].projects[].engine",
+        area: "projects",
+        // Read when a session opens, so a save applies to the next spawn.
+        class: EffectClass::NextSession,
+        rows: |config| {
+            config
+                .projects
+                .iter()
+                .map(|project| {
+                    // The project's own key, not the resolved engine: an
+                    // unset row crosses as null and the page draws what it
+                    // inherits.
+                    text_set(
+                        project_path(project, "engine"),
+                        project.engine.project_own().map(|engine| engine.as_stored().to_owned()),
+                    )
+                })
                 .collect()
         },
     },
@@ -1859,6 +1902,7 @@ name = "TestOrg"
 accounts = ["Primary"]
 fallback_accounts = ["Primary"]
 browser_profile = "work"
+engine = "forge"
 
 [orgs.slack]
 workspace = "Test Slack"
@@ -1872,6 +1916,7 @@ max_workers = 3
 env_file = "/tmp/forge-settings-test.env"
 document_roots = ["/tmp"]
 browser_profile = "projprofile"
+engine = "default"
 
 [orgs.projects.env]
 PROJECT_FLAG = "1"
@@ -2413,6 +2458,108 @@ models = ["m"]
                 key.path,
             );
         }
+    }
+
+    /// The page's engine choices are the loader's accepted set, both ways:
+    /// every choice parses, and every engine the type carries is offered.
+    #[test]
+    fn the_engine_choices_are_the_loaders_accepted_set() {
+        use forge_agent::client::Engine;
+        for value in ENGINES {
+            assert!(
+                Engine::from_stored(value).is_some(),
+                "the page offers '{value}' and the loader must accept it",
+            );
+        }
+        for engine in Engine::ALL {
+            assert!(
+                ENGINES.contains(&engine.as_stored()),
+                "the loader accepts '{}' and the page must offer it",
+                engine.as_stored(),
+            );
+        }
+    }
+
+    /// The engine rows carry each level's own value - a project shows what
+    /// its own key sets, and an unset one crosses as null so the page draws
+    /// what it inherits - and both levels are choice edits over the same
+    /// accepted set.
+    #[test]
+    fn the_engine_rows_carry_each_levels_own_value() {
+        let config = load(
+            r#"
+[[orgs]]
+name = "Org"
+accounts = ["A"]
+engine = "forge"
+
+[[orgs.projects]]
+name = "own"
+path = "/tmp/own"
+engine = "default"
+
+[[orgs.projects]]
+name = "inherits"
+path = "/tmp/inherits"
+
+[[orgs]]
+name = "Bare"
+accounts = ["A"]
+
+[[orgs.projects]]
+name = "one"
+path = "/tmp/bare-one"
+
+[[accounts]]
+display_name = "A"
+provider = "anthropic"
+token = "t"
+models = ["m"]
+"#,
+        );
+        let document = document(&config, "v", Path::new("/tmp/forge.toml"));
+        let find = |path: &str| {
+            document
+                .areas
+                .iter()
+                .flat_map(|area| &area.keys)
+                .find(|key| key.path == path)
+                .unwrap_or_else(|| panic!("{path} has no row"))
+        };
+
+        let org = find("orgs.Org.engine");
+        assert_eq!(org.value, serde_json::json!("forge"), "the org's own value");
+        assert_eq!(org.class, EffectClass::NextSession, "read when a session opens");
+        assert_eq!(org.edit.kind, forge_primitives::EditKind::Enum);
+        assert_eq!(
+            org.edit.allowed,
+            vec!["default".to_owned(), "forge".to_owned()],
+            "the page's choices are the loader's accepted set",
+        );
+        assert_eq!(org.group, vec!["Org".to_owned()]);
+
+        let own = find("orgs.Org.projects.own.engine");
+        assert_eq!(own.value, serde_json::json!("default"), "a project's own key is what it sets");
+        let inherits = find("orgs.Org.projects.inherits.engine");
+        assert_eq!(
+            inherits.value,
+            serde_json::Value::Null,
+            "an unset project key crosses as null, so the page can draw what it inherits",
+        );
+        assert_eq!(inherits.edit.allowed, org.edit.allowed, "one accepted set for both levels");
+        assert_eq!(inherits.group, vec!["Org".to_owned(), "inherits".to_owned()]);
+
+        // **An org that sets no engine still draws its row**, as null with
+        // the same choices: filtering the row away would leave the page with
+        // no door to set an org engine for the first time.
+        let bare = find("orgs.Bare.engine");
+        assert_eq!(
+            bare.value,
+            serde_json::Value::Null,
+            "an unset org crosses as null rather than vanishing",
+        );
+        assert_eq!(bare.edit.kind, forge_primitives::EditKind::Enum);
+        assert_eq!(bare.edit.allowed, org.edit.allowed, "and offers the same accepted set");
     }
 
     /// The document covers the thirteen areas and counts what it draws.

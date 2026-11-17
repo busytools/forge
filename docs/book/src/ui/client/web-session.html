@@ -226,7 +226,8 @@
   /* A pane that covered the page carries its own way out: the header handle
      that opened it is underneath. */
   .banner .pin:hover { color: var(--text); }
-  /* The rail's footer: the account, what it is costing and the two builds.
+  /* The rail's footer: the account, what it is costing, the two builds and
+     the engine stamp.
      `flex: none` because the list is the thing that gives. */
   .rfoot { flex: none; border-top: 1px solid rgba(34,42,60,.9); padding: 10px 12px 12px; }
   .rfoot .who { display: flex; align-items: center; gap: 8px; padding: 0 1px 4px; }
@@ -1863,6 +1864,11 @@
           <span class="vt">client v1.0.116+65c8a7695</span>
           <span class="vs">&#183; socket v8</span>
         </div>
+        <!-- The engine the seat's last launch resolved, off the seat's own
+             header: the value the launch resolved, in the settings page's
+             own words. Absent while the seat holds no session record, so an
+             unstarted seat draws no line here. -->
+        <div class="v">engine forge</div>
         <div class="v">claude v2.1.280 <span class="up">&#8594; v2.1.286</span></div>
       </div>
     </div>

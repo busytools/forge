@@ -323,8 +323,18 @@ impl Subprocess {
                 .map_err(|e| Error::Connection {
                     reason: format!("version probe join failed: {e}"),
                 })?
-                .map_err(|e| Error::Connection {
-                    reason: format!("minimum_cli_version set but --version probe failed: {e}"),
+                // **A binary the probe could not find is still a missing
+                // binary.** Wrapping it in `Connection` would make "not
+                // installed" indistinguishable from "the child died", and
+                // the caller that names the binary it wanted loses the one
+                // error shape that says it is absent.
+                .map_err(|e| match e {
+                    missing @ Error::CliNotFound { .. } => missing,
+                    other => Error::Connection {
+                        reason: format!(
+                            "minimum_cli_version set but --version probe failed: {other}"
+                        ),
+                    },
                 })?;
             check_cli_version(&reported, min)?;
         }
@@ -1159,6 +1169,26 @@ mod tests {
         assert!(
             matches!(err, Error::CliNotFound { .. }),
             "a binary that is not on PATH reported {err:?} rather than CliNotFound"
+        );
+    }
+
+    /// The version probe runs before the spawn, and a binary it cannot find
+    /// is still a missing binary: the probe's own failure must not
+    /// reclassify it as a connection error, or a caller cannot tell "not
+    /// installed" from "the child died".
+    #[tokio::test]
+    async fn a_missing_binary_is_cli_not_found_even_with_a_version_floor() {
+        let options = Options {
+            binary: "forge-no-such-binary-on-path".to_owned(),
+            cwd: Some(std::env::temp_dir()),
+            minimum_cli_version: Some("2.0.0".to_owned()),
+            ..Options::default()
+        };
+        let err =
+            Subprocess::spawn(&options).await.expect_err("a missing binary must fail the spawn");
+        assert!(
+            matches!(err, Error::CliNotFound { .. }),
+            "the version probe reclassified a missing binary as {err:?}",
         );
     }
 

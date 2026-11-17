@@ -61,9 +61,10 @@ export interface QueueEnding {
 /**
  * The header's facts.
  *
- * `available_models` and `turn_in_flight` are the two a client cannot reach
- * any other way, and neither is drawn by this shell: the model picker and the
- * live turn are the chat's and the composer's.
+ * `available_models`, `engine` and `turn_in_flight` are the ones a client
+ * cannot reach any other way; the first and the third are not drawn by this
+ * shell (the model picker and the live turn are the chat's and the
+ * composer's), while `engine` feeds the rail's own stamp.
  */
 export interface SessionHeader {
   /**
@@ -90,6 +91,16 @@ export interface SessionHeader {
   permission_mode: PermissionMode | null;
   context: ContextUsage;
   available_models: unknown[];
+  /**
+   * The engine the seat's launch settings resolved, as the core names it:
+   * `default` or `forge`, and `null` while the seat holds no session record
+   * (nothing launched yet, or a launch that failed and left no record).
+   *
+   * **The server's own word rather than a client's guess**, so a value this
+   * build does not know is kept and drawn as itself instead of being read as
+   * the default.
+   */
+  engine: string | null;
   turn_in_flight: boolean;
 }
 
@@ -660,6 +671,7 @@ export function sessionFrom(data: unknown): SessionRecord {
         max_tokens: number(record(header['context'])['max_tokens']),
       },
       available_models: list(header['available_models']),
+      engine: text(header['engine']),
       turn_in_flight: header['turn_in_flight'] === true,
     },
     mcp: mcpFrom(held['mcp']),

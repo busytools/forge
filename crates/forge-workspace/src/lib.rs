@@ -154,6 +154,7 @@ pub use mcp::workers::types::{LiveWorkerState, WorkerEntry};
 // callers can write `use forge_workspace::AgentHandle` if they
 // prefer.
 pub use forge_agent::AgentHandle;
+pub use forge_agent::client::Engine;
 pub use forge_agent::client::SessionLaunchSettings;
 pub use forge_agent::has_a_transcript_row;
 pub use forge_agent::session_history;

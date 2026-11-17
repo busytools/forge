@@ -16,7 +16,7 @@ its connector sets. The drawing it is held against is
 
 | Region | Shows | Read from |
 |---|---|---|
-| Rail | every declared project grouped by the strongest state among its rows, the current seat marked, each project's and seat's decision waits marked with a glyph and a count, sleepers folded - a fold hiding a decision wait opens itself, so the mark is visible without expanding it; a seat row's own line names what happened to it - a turn failure, a death with its reason, a refused spawn, or `restarting (N of M)` while forge brings the seat back - and the footer carries the account and what it is costing | the home's snapshot, the board's snapshot for each row's task, and `accounts` |
+| Rail | every declared project grouped by the strongest state among its rows, the current seat marked, each project's and seat's decision waits marked with a glyph and a count, sleepers folded - a fold hiding a decision wait opens itself, so the mark is visible without expanding it; a seat row's own line names what happened to it - a turn failure, a death with its reason, a refused spawn, or `restarting (N of M)` while forge brings the seat back - and the footer carries the account and what it is costing, then the build facts: the server and client versions with their socket numbers, the engine the seat's last launch resolved, and the CLI version | the home's snapshot, the board's snapshot for each row's task, `accounts`, and the seat's header |
 | Header | the chip, the seat's own mark, org and name, and the facts: session id, model with its effort, mode, context fill, and the compaction count | `header`, `conversation.compaction_count` |
 | Conversation | the turns and everything inside them, in the column's own scroll viewport | `conversation` |
 | Queue | the prompts waiting, drawn against what is running | `queue`, `queue_ended` |
@@ -490,6 +490,17 @@ beside what it is costing, not on the live row: a spend-billed key shows its day
 week, month, balance and cap, and a window-billed account shows its 5h and 7d
 rows, each with its percent, the reset that lifts it, and `at limit` on the
 window spending the plan.
+
+**The engine stamp is the server's fact.** Beside the two build rows, the
+footer names the engine the seat's last launch resolved - `forge` for the
+certified `claude-headless` port, `default` for the `claude` CLI - drawn the
+way the settings page names it. It is the seat's own value rather than the
+config's current word: a running session keeps the binary it started on, and
+the stamp moves when a `/new`, a `/resume` or a handoff starts the next
+occupant on a different engine. A launch that never put a session on the
+seat can leave no record behind, so no stamp is drawn; the seat's own
+failure row says why. While the seat holds no record the line is absent, so
+an unstarted seat cannot read as `default`.
 
 **The review row's panel is the review sets.** The filed rounds draw
 oldest first with the latest at the bottom - the conversation's own

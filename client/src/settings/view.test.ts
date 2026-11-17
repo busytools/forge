@@ -1,11 +1,63 @@
 import { describe, expect, it } from 'vitest';
 
 import { settingsWire } from '../dev/settings.fixture';
-import { builtInFor, classesOf, groupsOf, selectedArea } from './view';
+import type { SettingsDocument, SettingsKey } from '../wire/settings';
+import { builtInFor, classesOf, groupsOf, inheritedEngineFor, selectedArea } from './view';
 
 function area(id: string) {
   const found = settingsWire.areas.find((candidate) => candidate.id === id);
   if (found === undefined) throw new Error(`the fixture has no ${id} area`);
+  return found;
+}
+
+/** One row of the engine document below: `engine` unless a leaf is named. */
+function engineRow(
+  path: string,
+  group: string[],
+  value: SettingsKey['value'],
+  leaf = 'engine',
+): SettingsKey {
+  return {
+    path,
+    leaf,
+    group,
+    pattern: path,
+    class: 'next_session',
+    classLabel: 'next session',
+    value,
+    edit: { kind: 'enum', allowed: ['default', 'forge'], required: false, group: null },
+  };
+}
+
+/** The projects area as the engine rows carry it: one org, one project. */
+function engineDocument(
+  org: SettingsKey['value'],
+  project: SettingsKey['value'],
+  extra: SettingsKey[] = [],
+): SettingsDocument {
+  return {
+    version: 'v',
+    source: '/tmp/forge.toml',
+    fingerprint: 'f',
+    totals: { keys: 2, areas: 1 },
+    areas: [
+      {
+        id: 'projects',
+        name: 'projects',
+        note: 'orgs, their projects, and every per-project setting',
+        keys: [
+          engineRow('orgs.Acme.engine', ['Acme'], org),
+          engineRow('orgs.Acme.projects.api.engine', ['Acme', 'api'], project),
+          ...extra,
+        ],
+      },
+    ],
+  };
+}
+
+function row(document: SettingsDocument, path: string): SettingsKey {
+  const found = document.areas.flatMap((held) => held.keys).find((key) => key.path === path);
+  if (found === undefined) throw new Error(`${path} has no row`);
   return found;
 }
 
@@ -55,6 +107,39 @@ describe('the settings page view', () => {
       'the bundled face has no settable name, so the cell does not print one',
     ).toBe('the bundled face');
     expect(builtInFor('server', 'server.port'), 'no other area has a client default').toBeNull();
+  });
+
+  it('says what an unset engine inherits, one level up', () => {
+    const overridden = engineDocument({ kind: 'string', text: 'forge' }, { kind: 'unset' }, [
+      engineRow(
+        'orgs.Acme.projects.api.max_workers',
+        ['Acme', 'api'],
+        { kind: 'number', text: '2' },
+        'max_workers',
+      ),
+    ]);
+    expect(
+      inheritedEngineFor(overridden, row(overridden, 'orgs.Acme.projects.api.engine')),
+      'a project with no override takes its org engine',
+    ).toBe('inherits forge');
+    expect(
+      inheritedEngineFor(overridden, row(overridden, 'orgs.Acme.engine')),
+      'a set row draws its own value, not an inheritance phrase',
+    ).toBeNull();
+    expect(
+      inheritedEngineFor(overridden, row(overridden, 'orgs.Acme.projects.api.max_workers')),
+      'no other key inherits an engine',
+    ).toBeNull();
+
+    const nothing = engineDocument({ kind: 'unset' }, { kind: 'unset' });
+    expect(
+      inheritedEngineFor(nothing, row(nothing, 'orgs.Acme.projects.api.engine')),
+      'an org that sets nothing leaves the built-in default',
+    ).toBe('inherits default');
+    expect(
+      inheritedEngineFor(nothing, row(nothing, 'orgs.Acme.engine')),
+      'and the org itself inherits the built-in default',
+    ).toBe('inherits default');
   });
 
   it('groups models by the model name, dots and all', () => {

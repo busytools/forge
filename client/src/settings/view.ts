@@ -139,3 +139,24 @@ export function builtInFor(areaId: string, path: string): string | null {
   if (areaId !== 'client') return null;
   return CLIENT_DEFAULTS[path] ?? null;
 }
+
+/**
+ * The phrase an unset `engine` row draws: the engine it inherits, one level
+ * up. A project takes its org's engine, and an org takes the built-in
+ * `default`. A row that sets its own value draws that value instead, a key
+ * that is not an engine draws no phrase, and an org value in a shape this
+ * client does not know draws nothing rather than a guess.
+ */
+export function inheritedEngineFor(document: SettingsDocument, key: SettingsKey): string | null {
+  if (key.leaf !== 'engine' || key.value.kind !== 'unset') return null;
+  const org = key.group[0];
+  if (org === undefined) return null;
+  if (key.group.length === 1) return 'inherits default';
+  const orgRow = document.areas
+    .flatMap((held) => held.keys)
+    .find((row) => row.leaf === 'engine' && row.group.length === 1 && row.group[0] === org);
+  const held = orgRow?.value;
+  if (held === undefined || held.kind === 'unset') return 'inherits default';
+  if (held.kind === 'string') return `inherits ${held.text}`;
+  return null;
+}

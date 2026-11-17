@@ -56,6 +56,16 @@ pub struct SessionHeader {
     /// The model catalogue the session's connect resolved against, which a
     /// picker draws its rows from. Empty for a session nothing has started.
     pub available_models: Vec<AvailableModel>,
+    /// The engine the seat's launch settings resolved - `default` for the
+    /// CLI, `forge` for the certified port - or `None` while the seat holds
+    /// no launch record: nothing has launched on it yet, or a failed launch
+    /// left it without one (the seat's failure row says why).
+    ///
+    /// **Carried from the core's own record of the launch**, not inferred
+    /// from the argv: the value that picked the binary is the value the
+    /// header states, and a respawn overwrites it so `/new`, `/resume` and
+    /// a handoff redraw.
+    pub engine: Option<forge_workspace::Engine>,
     /// Whether a turn is in flight, from the core's own OR of the stamped
     /// signal and the wire-lagged one: the two disagree in the window
     /// between a prompt being routed and its echo arriving, so a read of
@@ -78,6 +88,7 @@ impl ViewSurface {
                 permission_mode: None,
                 context: ContextUsage::default(),
                 available_models: Vec::new(),
+                engine: None,
                 turn_in_flight: false,
             };
         };
@@ -89,6 +100,7 @@ impl ViewSurface {
             permission_mode: held.observed_permission_mode.or(held.configured_permission_mode),
             context: held.context_usage.unwrap_or_default(),
             available_models: held.available_models.clone(),
+            engine: held.configured_engine,
             turn_in_flight: held.turn_in_flight(),
         }
     }

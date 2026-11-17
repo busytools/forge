@@ -37,6 +37,7 @@
     now,
     connection,
     notice = null,
+    engine = null,
     mode = 'static',
     onpin = null,
     onenter = null,
@@ -51,6 +52,10 @@
     now: Readable<number>;
     /** What a row's close chip acts through, and what moves the reader after it. */
     connection: Connection;
+    /** The engine the seat's last launch resolved, off the session record's
+     *  header - `default` or `forge`, and `null` while the seat holds no
+     *  session record, which draws no stamp rather than guessing. */
+    engine?: string | null;
     /** The connection's own line - a protocol skew or a reconnect - drawn
      *  over the versions, where the build facts live. */
     notice?: string | null;
@@ -67,10 +72,10 @@
 
   const groups = $derived(railGroups(home, board, current, closingSeat));
   /**
-   * The account and the two builds, which sit under the list rather than in it:
-   * the projects scroll behind them.
+   * The account, the builds and the engine stamp, which sit under the list
+   * rather than in it: the projects scroll behind them.
    */
-  const foot = $derived(railFooter(home, current, connection.serverProtocol(), $now));
+  const foot = $derived(railFooter(home, current, connection.serverProtocol(), $now, engine));
 
   /**
    * Close one row's seat. The command the row sends and where the reader
@@ -251,6 +256,13 @@
         <span class="vt">client {`v${foot.versions.clientForge}`}</span>
         <span class="vs">{`\u{b7} socket v${foot.versions.clientProtocol}`}</span>
       </div>
+      <!-- The engine the seat's last launch resolved: the core's own word
+           for it (`default` or `forge`), drawn beside the builds it binds.
+           Nothing is drawn while the seat holds no session record, so an
+           unstarted seat does not read as the default. -->
+      {#if foot.versions.engine !== null}
+        <div class="v">engine {foot.versions.engine}</div>
+      {/if}
       {#if foot.versions.claude !== null}
         <div class="v">
           <!-- The space between the version and the arrow is part of the row,

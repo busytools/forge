@@ -84,6 +84,7 @@ const footer = render(Rail, {
     current: LEAD,
     now: NOW,
     connection: untouched(),
+    engine: 'forge',
   },
 }).body;
 
@@ -106,6 +107,30 @@ describe('the rail footer', () => {
       footer.indexOf('claude v'),
     );
     expect(footer, 'the build must elide so the socket keeps its lane').toContain('class="vt"');
+  });
+
+  it('names the engine the seat is running, beside the build stamps', () => {
+    // The stamp is the server's own word - the value the launch settings
+    // resolved, drawn the way the settings page names it - and never the
+    // vendor's name standing in for the engine.
+    expect(footer, 'the engine is stated with the build facts').toContain('engine forge');
+    expect(footer.indexOf('engine forge'), 'and sits above the CLI the engine binds').toBeLessThan(
+      footer.indexOf('claude v'),
+    );
+    expect(footer, "the engine value is the config's own word").not.toContain('engine claude');
+
+    // **A seat that has reported no engine draws no stamp**, rather than
+    // guessing the default the config would resolve.
+    const unstarted = render(Rail, {
+      props: {
+        home: { ...homeWire, forge_version_short: '1.0.105' },
+        current: LEAD,
+        now: NOW,
+        connection: untouched(),
+      },
+    }).body;
+    expect(unstarted, 'the footer itself drew').toContain('claude v');
+    expect(unstarted, 'nothing reported an engine, so no stamp is drawn').not.toMatch(/>engine /);
   });
 
   it('separates the installed version from the one it moves to', () => {

@@ -569,9 +569,9 @@ pub struct ComposerWire {
     pub notice: Option<serde_json::Value>,
 }
 
-/// The session's header facts, including the two a client cannot otherwise
-/// reach: the catalogue a picker draws its rows from, and whether a turn is
-/// in flight.
+/// The session's header facts, including the three a client cannot otherwise
+/// reach: the catalogue a picker draws its rows from, the engine the seat's
+/// last launch resolved, and whether a turn is in flight.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct SessionHeaderWire {
@@ -595,6 +595,11 @@ pub struct SessionHeaderWire {
     pub permission_mode: Option<Value>,
     pub context: Value,
     pub available_models: Vec<Value>,
+    /// The engine the seat's launch settings resolved, drawn beside the
+    /// build facts: `"default"` or `"forge"`, and `null` while the seat
+    /// holds no session record (nothing launched yet, or a launch that
+    /// failed and left no record).
+    pub engine: Option<forge_workspace::Engine>,
     pub turn_in_flight: bool,
 }
 
@@ -2690,6 +2695,7 @@ async fn session(
                 .iter()
                 .filter_map(|model| serde_json::to_value(model).ok())
                 .collect(),
+            engine: header.engine,
             turn_in_flight: header.turn_in_flight,
         },
         reviews: ReviewsWire {

@@ -3,6 +3,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { Connection } from '../socket';
+import type { SettingsDocument, SettingsKey } from '../wire/settings';
 import Settings from './Settings.svelte';
 import { settingsFrame } from './frame';
 import { emptyHome, settingsWire } from '../dev/settings.fixture';
@@ -22,6 +23,42 @@ const connection = {
   onMessage: () => () => {},
   settingsEdit: () => true,
 } as unknown as Connection;
+
+/** One engine row, as the server sends it under the projects area. */
+function engineRow(path: string, group: string[], value: SettingsKey['value']): SettingsKey {
+  return {
+    path,
+    leaf: 'engine',
+    group,
+    pattern: path,
+    class: 'next_session',
+    classLabel: 'next session',
+    value,
+    edit: { kind: 'enum', allowed: ['default', 'forge'], required: false, group: null },
+  };
+}
+
+/** A projects area holding the two engine levels and nothing else, which
+ *  is what the controls test reads. */
+function engineWire(project: SettingsKey['value']): SettingsDocument {
+  return {
+    version: 'v',
+    source: '/tmp/forge.toml',
+    fingerprint: 'f',
+    totals: { keys: 2, areas: 1 },
+    areas: [
+      {
+        id: 'projects',
+        name: 'projects',
+        note: "orgs, their projects, and every org and project setting - an engine set to forge runs the certified claude-headless binary, which must be installed on this machine's PATH",
+        keys: [
+          engineRow('orgs.Acme.engine', ['Acme'], { kind: 'string', text: 'forge' }),
+          engineRow('orgs.Acme.projects.api.engine', ['Acme', 'api'], project),
+        ],
+      },
+    ],
+  };
+}
 
 function draw(): void {
   app = mount(Settings, {
@@ -69,5 +106,37 @@ describe('the settings route', () => {
     flushSync();
     expect(door?.getAttribute('aria-pressed'), 'the one door toggles edit mode').toBe('true');
     expect(document.querySelector('.settings-card'), 'the cards stay drawn').not.toBeNull();
+  });
+
+  it('draws both engine levels and what an unset project inherits', () => {
+    settingsFrame.set({ status: 'ready', document: engineWire({ kind: 'unset' }) });
+    draw();
+    // **Each row's own cell**, not the page's whole text: the project row's
+    // `inherits forge` phrase also contains the org's value, so a page-wide
+    // match would pass with the org row drawing nothing.
+    const rowOf = (path: string): HTMLElement | null =>
+      document
+        .querySelector(`.settings-setting-label code[title="${path}"]`)
+        ?.closest('.settings-setting') ?? null;
+    expect(
+      rowOf('orgs.Acme.engine')?.querySelector('.settings-setting-value')?.textContent ?? '',
+      'the org row draws its own value',
+    ).toContain('forge');
+    expect(
+      rowOf('orgs.Acme.projects.api.engine')?.querySelector('.settings-setting-value')
+        ?.textContent ?? '',
+      'the project row says what it inherits while it sets nothing',
+    ).toContain('not set · inherits forge');
+
+    document.querySelector<HTMLButtonElement>('.settings-mode')?.click();
+    flushSync();
+    const selects = [...document.querySelectorAll<HTMLSelectElement>('.settings-setting select')];
+    expect(selects.length, 'one control per engine level').toBe(2);
+    for (const select of selects) {
+      expect(
+        [...select.options].map((option) => option.textContent ?? ''),
+        'the choices are the accepted set, with unset offered',
+      ).toEqual(['not set', 'default', 'forge']);
+    }
   });
 });

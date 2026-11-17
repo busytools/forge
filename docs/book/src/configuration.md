@@ -63,6 +63,7 @@ An array of tables. At least one is required, or the load fails with
 | `accounts`          | array of strings | yes      | Each entry must match an `[[accounts]]` `display_name`.             |
 | `fallback_accounts` | array of strings | no       | Accounts the walk reaches after the pinned ones. Absent means none. |
 | `browser_profile`   | string           | no       | The browser profile the org's projects drive unless they override it. Absent is `default`. |
+| `engine`            | string           | no       | The engine every project in the org launches on unless it overrides it: `"default"` (the `claude` CLI) or `"forge"` (the certified `claude-headless` port). See [The engine](#the-engine). Absent is `default`. |
 | `slack`             | table            | no       | Written as `[orgs.slack]` with `workspace = "<label>"`: the `[[slack]]` every project in the org acts in. A project's own binding overrides it. Absent means no project in the org has one unless it binds its own. |
 | `projects`          | array of tables  | yes      | Written as `[[orgs.projects]]`. An org with none fails the load.    |
 
@@ -112,6 +113,50 @@ and start that session again.
 
 Project names are the argument `forge <PROJECT>` takes, and the key
 per-project settings hang off.
+
+## The engine
+
+```toml
+[[orgs]]
+name = "Busytools"
+accounts = ["Subspace"]
+engine = "forge"
+
+[[orgs.projects]]
+name = "forge"
+path = "~/Projects/forge"
+engine = "default"
+```
+
+`engine` names the binary a session's subprocess runs on, at either the org
+or the project level. Two values:
+
+- `"default"` - the `claude` CLI on `PATH`. This is forge's own behaviour,
+  and what an absent key means.
+- `"forge"` - the certified `claude-headless` port, resolved by name on
+  `PATH`.
+
+The key resolves at spawn: the project's own `engine`, else its org's, else
+`default`. Both levels accept both values, so a project sets `"default"`
+under an org set to `"forge"` to run the `claude` CLI. An unknown value at
+either level fails the load, naming the org or project, the value and the
+accepted values (`default`, `forge`).
+
+The setting is portable across a synced `forge.toml`; the binary it names is
+a per-machine artifact, installed on `PATH` like the `claude` CLI (see
+[Install and build](./install.md)). A machine whose key asks for `forge`
+and whose `PATH` has no `claude-headless` **fails that spawn rather than
+falling back to `claude`**, and the failure names the binary, the setting
+and the project or org it belongs to:
+
+```
+engine 'forge' needs the 'claude-headless' binary on PATH, and this machine has none; it was chosen by project 'forge' of org 'Busytools' (orgs.Busytools.projects.forge.engine). Install the certified port or set that key back to 'default'.
+```
+
+The engine applies to the next session: a running session keeps the binary
+it started on, and its next `/new`, `/resume` or handoff starts on the
+engine the config names then. Rollback is setting the key back to
+`default`.
 
 ## `[[accounts]]`
 
@@ -182,7 +227,7 @@ like `providers` fails the load instead of loading and doing nothing.
 ## `[env]`
 
 A flat table of string keys to string values, stamped onto every
-spawned `claude` subprocess. Absent means empty.
+spawned agent subprocess. Absent means empty.
 
 ```toml
 [env]
@@ -294,6 +339,7 @@ quietly applying nothing.
 | `document_roots`  | array   | `[]`    | Extra roots the document read accepts beyond the session's own tree, so a project's documents can live outside its repo (a vault, a shared spec directory). Each entry is an absolute path, `~` or a `~/` path; a relative one fails the load. |
 | `handoff`         | table   | none    | Written as `[orgs.projects.handoff]` under its own entry. Sets this project's handoff trigger; every key is optional and falls back to the top-level `[handoff]` section above. |
 | `browser_profile` | string  | the org's | The browser profile's name inside this project's org: a project setting `work` under `Busytools` drives `Busytools/work`. Absent keeps the org's, and a bad name fails the load naming the key and the value. |
+| `engine`          | string  | the org's | The engine this project's sessions launch on: `"default"` (the `claude` CLI) or `"forge"` (the certified `claude-headless` port). Absent keeps the org's, and an unknown value fails the load naming the key and the accepted values. See [The engine](#the-engine). |
 | `slack`           | table   | the org's | Written as `[orgs.projects.slack]` with `workspace = "<label>"`: the `[[slack]]` this project's sessions act in. Absent keeps the org's binding. |
 
 `permission_mode` stamps a permission mode onto every session the
@@ -1112,8 +1158,9 @@ accepts has no class.
 | Table or key | Takes effect |
 | --- | --- |
 | `[[orgs]]` - `name`, `accounts`, `fallback_accounts`, `browser_profile`; `[orgs.slack] workspace`, `[orgs.projects.slack] workspace` | Live. The roster, pins and the next tool call read the new values. A Slack binding to a label already in `[[slack]]` applies to the next tool call. |
+| `[[orgs]]` - `engine` | Next session. The next spawn of any project in the org reads it; a project's own `engine` overrides it. |
 | `[[orgs.projects]]` - `name`, `path` | Live. The roster re-reads them; a removed project leaves it, and sessions already running keep running. |
-| `[[orgs.projects]]` - `model`, `permission_mode`, `max_workers`, `env`, `env_file`, `browser_profile` | Next session. The next spawn reads them; a running session keeps what it spawned with. A project added by an edit starts when you open it; an edit does not start anything by itself. |
+| `[[orgs.projects]]` - `model`, `permission_mode`, `max_workers`, `env`, `env_file`, `browser_profile`, `engine` | Next session. The next spawn reads them; a running session keeps what it spawned with. A project added by an edit starts when you open it; an edit does not start anything by itself. |
 | `[[orgs.projects]]` - `document_roots` | Live. The next document read or hand-off consults the reloaded list. |
 | `[[accounts]]` - `display_name`, `provider`, `base_url`, `token`, `models`, `model_slugs`, `model_aliases` | Live. The pool gains or changes accounts, and retires a removed one: sessions bound to it keep working, new selections never see it, and usage probes follow the new set. A re-minted token reaches a bound session on its next request. |
 | `[[accounts]]` - `env` | Next session. Folded into each account's env at load, so the next spawn carries it; a running child keeps its own environment. |

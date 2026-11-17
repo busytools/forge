@@ -1202,7 +1202,7 @@ interface FooterWindow extends AccountWindow {
   dim: boolean;
 }
 
-/** The rail's footer: the account, what it is costing, and the two versions. */
+/** The rail's footer: the account, what it is costing, the build rows and the engine stamp. */
 interface RailFooter {
   /**
    * The account this project binds to: the chip's own name, or the project's
@@ -1221,7 +1221,8 @@ interface RailFooter {
    * The pair the footer draws, side by side: what the server is and what it
    * speaks, beside what this client is and what it speaks. A mismatch is
    * then a difference the reader sees rather than a notice they have to
-   * decode - and `skewed` is that difference, stated once.
+   * decode - and `skewed` is that difference, stated once. `engine` rides
+   * the same block: not a version, and drawn on its own row.
    */
   versions: {
     serverForge: string;
@@ -1231,6 +1232,12 @@ interface RailFooter {
     skewed: boolean;
     claude: string | null;
     update: string | null;
+    /**
+     * The engine the seat's last launch resolved, as the core names it
+     * (`default` or `forge`), or `null` while the seat holds no session
+     * record - which draws no stamp rather than guessing the default.
+     */
+    engine: string | null;
   };
 }
 
@@ -1261,7 +1268,8 @@ function footerWindows(windows: AccountWindow[]): FooterWindow[] {
 
 /**
  * The rail's footer: the account serving this seat's project, what it is
- * costing, and the two builds behind the page.
+ * costing, the two builds behind the page, and the engine the seat's last
+ * launch resolved.
  *
  * **The figures branch on the account's billing kind, which is the rule the
  * view this client replaced kept**: a spend-billed key gets its periods,
@@ -1287,6 +1295,9 @@ export function railFooter(
   serverProtocol: number | null = null,
   /** The page's clock, for a reset stated as a time rather than a duration. */
   now: number = Date.now(),
+  /** The seat's engine, off the session record's header: the value the last
+   *  launch resolved, or `null` while the seat holds no session record. */
+  engine: string | null = null,
 ): RailFooter {
   const versions = {
     serverForge: home.forge_version_short,
@@ -1299,6 +1310,7 @@ export function railFooter(
     skewed: serverProtocol !== null && serverProtocol !== PROTOCOL_VERSION,
     claude: home.cli_version?.installed ?? null,
     update: availableVersion(home.cli_version?.installed ?? null, home.cli_version?.latest ?? null),
+    engine,
   };
   const account = accountChip(home, slot, now);
   if (account === null) {

@@ -3465,6 +3465,11 @@ impl Workspace {
             Some(slot) => slot,
             None => self.resolve_slot(&target)?,
         };
+        // The engine is stamped from the SETTLED project below, inside the
+        // reload guard's answer: a stamp read here would come from before
+        // the resolution loop's wait, and a reload straddling the spawn
+        // would pair the old engine with the new project's model and
+        // account - one launch running a binary no key names today.
         // The id the child runs under. `--session-id` and `--resume` are
         // the CLI's own arguments and stay ids; the store row records it
         // under the slot before the child starts, so a restart resolves
@@ -3554,6 +3559,12 @@ impl Workspace {
                 break (project, account_key);
             }
         };
+        // The engine for this launch, from the project the guard settled on:
+        // one snapshot decides the binary, the model and the account together.
+        // A `/new`, `/resume` or handoff re-spawns on a pooled handle instead
+        // and is stamped in `stamp_respawn_overrides`; between the two, every
+        // launch carries the engine its project resolves to.
+        Self::stamp_engine_setting(Some(&project.engine), &mut settings);
         // The account and model checks have passed, so this spawn is
         // committed: record the id its lead will run under, either the
         // one the store held or the one minted in
@@ -3692,6 +3703,14 @@ impl Workspace {
         // in rather than a guess.
         domain_arc.lock().configured_permission_mode =
             crate::domain_session::configured_permission_mode_from_settings(&settings);
+        // The engine the launch resolved, for the session page's header:
+        // `default` when no key chose one, because this spawn ran the CLI.
+        domain_arc.lock().configured_engine = Some(
+            settings
+                .engine
+                .as_ref()
+                .map_or(forge_agent::client::Engine::Default, |engine| engine.engine),
+        );
         // Carry the row's provenance the same way: the tag-write
         // rollback runs long after this spawn returned and needs to know
         // whether the row it would delete is this spawn's to take.
@@ -4962,6 +4981,31 @@ impl Workspace {
         self.gateway.bindings.binding_for(&org, &project, &session)
     }
 
+    /// Stamp the engine the seat's project resolves to onto a launch.
+    ///
+    /// **The config is the only source.** A launch settings that arrived
+    /// carrying an engine of its own is overwritten, so a spawn never runs a
+    /// binary no key names today; `default` clears the field, which is what a
+    /// launch settings that predates the key carries.
+    pub(crate) fn stamp_engine(
+        &self,
+        slot: &SessionSlot,
+        launch_settings: &mut SessionLaunchSettings,
+    ) {
+        let engine = self.project_for_slot(slot).map(|project| project.engine);
+        Self::stamp_engine_setting(engine.as_ref(), launch_settings);
+    }
+
+    /// One resolved engine onto a launch, shared by the cold spawn and the
+    /// respawn stamps so both write the field the same way.
+    fn stamp_engine_setting(
+        engine: Option<&forge_agent::client::EngineSetting>,
+        launch_settings: &mut SessionLaunchSettings,
+    ) {
+        launch_settings.engine =
+            engine.filter(|engine| engine.engine != forge_agent::client::Engine::Default).cloned();
+    }
+
     /// Stamp a respawn's gateway registration for a child that runs
     /// under `session_id`: the four gateway-owned keys ride
     /// `launch_settings` as overrides, the binding moves to that
@@ -4983,6 +5027,22 @@ impl Workspace {
         session_id: &str,
         launch_settings: &mut SessionLaunchSettings,
     ) {
+        // A respawn is a new session, so it starts on the engine the config
+        // names now - `/new`, `/resume` and a handoff re-spawn on a pooled
+        // handle, where the cold-spawn stamp never runs.
+        self.stamp_engine(slot, launch_settings);
+        // The seat's record moves with the stamp. The successor's
+        // `SessionReplaced` already makes every client re-read the record,
+        // so the header redraws the engine from this field with no frame of
+        // its own.
+        if let Some(domain) = self.domain_session_for(slot) {
+            domain.lock().configured_engine = Some(
+                launch_settings
+                    .engine
+                    .as_ref()
+                    .map_or(forge_agent::client::Engine::Default, |engine| engine.engine),
+            );
+        }
         let kind = if slot.is_lead() {
             crate::mcp::SessionKind::Lead
         } else {
@@ -11762,6 +11822,7 @@ mod account_stamp_tests {
             browser_profile: forge_primitives::browser::ProfileKey::of("Personal", "default")
                 .expect("a profile key"),
             slack_workspace: None,
+            engine: forge_agent::client::EngineSetting::cli(),
         }
     }
 
@@ -21306,6 +21367,52 @@ mod worker_respawn_tests {
         assert!(
             worker_settings.delegation_preamble.is_none(),
             "and a worker is never given the lead-only block",
+        );
+    }
+
+    /// A respawn starts on the engine the config names now. `/new`,
+    /// `/resume` and a handoff re-spawn on a pooled handle, where the
+    /// cold-spawn stamp never runs; a stale engine arriving on the command
+    /// is overwritten, because the config is the only source.
+    #[test]
+    fn a_respawn_launches_on_the_projects_engine() {
+        use forge_agent::client::{Engine, EngineScope, EngineSetting};
+
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project_with_engine("engine-proj", "/tmp/engine-respawn", Engine::Forge);
+        let lead = SessionSlot::lead("TestOrg", "engine-proj");
+        let domain = ws.register_domain_session(lead.clone(), None);
+        let mut settings = SessionLaunchSettings::default();
+        ws.stamp_respawn_overrides(&lead, "new-id", &mut settings);
+        assert_eq!(
+            settings.engine.as_ref().map(|engine| engine.engine),
+            Some(Engine::Forge),
+            "a /new on the seat runs the port its project names",
+        );
+        assert_eq!(
+            domain.lock().configured_engine,
+            Some(Engine::Forge),
+            "and the seat's record moves with the stamp, so the header redraws it",
+        );
+
+        // A project with no engine key clears one a caller carried, so a
+        // reload back to `default` takes effect at the next spawn.
+        ws.seed_test_project("plain-proj", "/tmp/engine-plain");
+        let plain = SessionSlot::lead("TestOrg", "plain-proj");
+        let plain_domain = ws.register_domain_session(plain.clone(), None);
+        let mut stale = SessionLaunchSettings {
+            engine: Some(EngineSetting {
+                engine: Engine::Forge,
+                scope: EngineScope::Org { org: "Stale".to_owned() },
+            }),
+            ..SessionLaunchSettings::default()
+        };
+        ws.stamp_respawn_overrides(&plain, "new-id", &mut stale);
+        assert!(stale.engine.is_none(), "nothing names an engine, so the claude CLI runs");
+        assert_eq!(
+            plain_domain.lock().configured_engine,
+            Some(Engine::Default),
+            "and a respawn back to the default clears the port from the record",
         );
     }
 

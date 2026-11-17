@@ -5026,6 +5026,50 @@ fn thinking_spent(data: &serde_json::Value) -> i64 {
         .sum()
 }
 
+/// **The header names the engine the seat is running.** The rail's stamp is
+/// the server's fact, not a client's inference: the record carries the value
+/// the launch settings resolved - `forge` when the key asked for the port,
+/// `default` when the launch resolved the CLI - and nothing at all while
+/// the seat holds no launch record.
+///
+/// **The stamp needs no frame of its own.** An engine can only move at a
+/// launch, and every launch emits `Spawning`, `Connected` or
+/// `SessionReplaced`, which are exactly the frames this client answers with a
+/// whole record read; so a respawn on another engine redraws from the same
+/// read.
+#[tokio::test]
+async fn a_seats_header_names_the_engine_it_runs_on() {
+    let (url, fleet, _state) = a_server_with_state().await;
+    let seat = lead_seat();
+    fleet.seed_view_facts(&seat, ViewFacts::default());
+    let domain =
+        fleet.workspace().domain_session_for(&seat).expect("the fixture registers the seat");
+
+    let mut socket = connect(&url).await;
+    let unstarted = snapshot_until(&mut socket, Subject::Session(seat.clone()), |data| {
+        data["header"]["engine"].is_null()
+    })
+    .await;
+    assert!(unstarted, "a seat nothing has started names no engine rather than guessing a default");
+
+    domain.lock().configured_engine = Some(forge_workspace::Engine::Forge);
+    let port = snapshot_until(&mut socket, Subject::Session(seat.clone()), |data| {
+        data["header"]["engine"] == "forge"
+    })
+    .await;
+    assert!(port, "the record carries the engine the launch resolved");
+
+    domain.lock().configured_engine = Some(forge_workspace::Engine::Default);
+    let cli = snapshot_until(&mut socket, Subject::Session(seat.clone()), |data| {
+        data["header"]["engine"] == "default"
+    })
+    .await;
+    assert!(
+        cli,
+        "and a seat back on the CLI names the default, so a respawn cannot keep a stale port",
+    );
+}
+
 /// A client attaching to a seat MID-TURN is handed the turn it is on: the
 /// running state, and the thinking the running turn has already spent.
 ///
