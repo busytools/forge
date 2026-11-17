@@ -630,13 +630,13 @@ impl SentBackTarget {
     fn keeping(&self) -> String {
         match self {
             Self::Draft { conversation, thread_ts: Some(ts) } => {
-                format!("conversation `{conversation}` and `thread_ts {ts}`")
+                format!("`conversation {conversation}` and `thread_ts {ts}`")
             }
             Self::Draft { conversation, thread_ts: None } => {
-                format!("conversation `{conversation}` as a root message")
+                format!("`conversation {conversation}` at root")
             }
             Self::Message { conversation, ts } => {
-                format!("conversation `{conversation}` and `ts {ts}`")
+                format!("`conversation {conversation}` and `ts {ts}`")
             }
         }
     }
@@ -652,13 +652,20 @@ fn sent_back_refusal(
     target: Option<&SentBackTarget>,
     note: &str,
 ) -> String {
-    let keeping = match target {
-        Some(target) => format!(", keeping {}", target.keeping()),
-        None => String::new(),
+    // **Only a draft can be moved.** A post's or upload's target is its
+    // thread, so the revision may legitimately change it; an edit's or a
+    // reaction's is the message the call acts on, where "move it" has no
+    // reply sense.
+    let (keeping, movable) = match target {
+        Some(target @ SentBackTarget::Draft { .. }) => {
+            (format!(", keeping {}", target.keeping()), ", unless the change is meant to move it")
+        }
+        Some(target) => (format!(", keeping {}", target.keeping()), ""),
+        None => (String::new(), ""),
     };
     format!(
         "{outcome}: the reader sent it back with this feedback and expects a revision.\n\n\
-         {note}\n\nRevise it and call {tool} again{keeping}, unless the change is meant to move it."
+         {note}\n\nRevise it and call {tool} again{keeping}{movable}."
     )
 }
 
@@ -725,10 +732,11 @@ impl Tool for Post {
     }
 
     fn description(&self) -> &'static str {
-        "Post a message to Slack as the user. An inbound message is always answered in a \
-         thread under that message: pass its `ts` as `thread_ts`, which starts the thread when \
-         the message was at root. Only a genuinely new message goes to root - one you are \
-         starting, on a new topic, not an answer to something that came in. This is HELD FOR \
+        "Post a message to Slack as the user. An inbound message is always answered in its \
+         thread: pass the parent's `ts` as `thread_ts` - a root message's own `ts` is that \
+         parent, so a reply under it starts the thread. Only a genuinely new message goes to \
+         root - one you are starting, on a new topic, not an answer to something that came \
+         in. This is HELD FOR \
          APPROVAL: the call does not return until the user decides in the dock prompt, with no \
          timeout of its own, and a rejected draft posts nothing. The user may instead send the \
          draft back with feedback: the call fails with their words and nothing is posted, so \
@@ -1930,6 +1938,34 @@ mod tests {
         assert_eq!(json["workspace"], "acme", "the resolved label rides the result");
     }
 
+    /// **The wiring, not only the formatter.** A post sent back through the
+    /// real call path hands the agent the target it must keep, so a revision
+    /// cannot quietly land at root; the reader's words ride it whole.
+    #[tokio::test]
+    async fn a_sent_back_post_names_the_target_in_its_refusal() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.post_result.lock() =
+            Some(Err(SlackPostError::SentBack { note: "put this in the thread".to_owned() }));
+        let tool = Post { facade: mock, slot: caller_slot() };
+
+        let out = tool
+            .call(input(serde_json::json!({
+                "conversation": "C1",
+                "thread_ts": "1729000000.000100",
+                "text": "hello",
+            })))
+            .await;
+
+        assert!(out.is_error, "a sent-back post is a refusal");
+        let why = text_of(&out);
+        assert!(why.contains("`conversation C1`"), "the refusal names the conversation: {why}");
+        assert!(
+            why.contains("`thread_ts 1729000000.000100`"),
+            "and the thread target to keep: {why}",
+        );
+        assert!(why.contains("put this in the thread"), "and the reader's words whole: {why}");
+    }
+
     /// A failed `slack__post` is the moment the configured token looks
     /// like a way round it, so the description's closing sentence
     /// forbids that and is pinned here: a trim that drops it fails
@@ -2141,7 +2177,7 @@ mod tests {
             &drafted(Some("1729000000.000100")),
         );
         assert!(
-            threaded.contains("conversation `C0123456789`"),
+            threaded.contains("`conversation C0123456789`"),
             "the retry is told the conversation: {threaded}",
         );
         assert!(
@@ -2151,7 +2187,10 @@ mod tests {
 
         let root =
             format_post_error(&SlackPostError::SentBack { note: note.to_owned() }, &drafted(None));
-        assert!(root.contains("as a root message"), "a root draft says where it lands: {root}");
+        assert!(
+            root.contains("`conversation C0123456789` at root"),
+            "a root draft says where it lands: {root}",
+        );
         assert!(!root.contains("thread_ts"), "and never invents a thread to keep: {root}");
 
         let uploaded = format_attachment_error(
@@ -2171,7 +2210,7 @@ mod tests {
             },
         );
         assert!(
-            edited.contains("conversation `C0123456789`")
+            edited.contains("`conversation C0123456789`")
                 && edited.contains("`ts 1729000000.000100`"),
             "an edit names the message it acts on: {edited}",
         );
@@ -2222,9 +2261,9 @@ mod tests {
         let facade: Arc<dyn SlackFacade> = Arc::new(MockSlackFacade::new());
         let post = Post { facade, slot: caller_slot() }.description().to_owned();
         for needed in [
-            "answered in a thread under that message",
-            "pass its `ts` as `thread_ts`",
-            "starts the thread when the message was at root",
+            "answered in its thread",
+            "pass the parent's `ts` as `thread_ts`",
+            "a root message's own `ts` is that parent",
             "Only a genuinely new message goes to root",
             "keeping its conversation and `thread_ts` unless the change is meant to move it",
         ] {

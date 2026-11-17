@@ -284,7 +284,7 @@
     },
   };
 
-  /** A root post that tags two people: the thread segment is absent. */
+  /** A root post that tags two people: no thread, so the card says `root message`. */
   const slackDraft = {
     kind: 'slack_draft',
     request: {

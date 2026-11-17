@@ -919,7 +919,10 @@ fn in_thread_order(messages: &[SlackMessage]) -> Vec<&SlackMessage> {
 
 /// Whether a message started a thread: a parent is the message that reports
 /// replies and is its own thread root. A root nobody has replied to starts
-/// nothing yet, so it reads as a plain root.
+/// nothing yet, so it reads as a plain root. **The predicate is the same
+/// `reply_count > 0 && thread_ts == ts` shape as `slack.rs`'s
+/// `is_thread_parent`**, read off `latest_reply` here because the primitives'
+/// `SlackMessage` carries no `reply_count`; the two are meant to agree.
 fn starts_thread(message: &SlackMessage) -> bool {
     message.latest_reply.is_some() && message.thread_ts.as_deref() == Some(message.ts.as_str())
 }
@@ -931,11 +934,17 @@ fn starts_thread(message: &SlackMessage) -> bool {
 fn member_line(message: &SlackMessage) -> String {
     let author = message.author.as_deref().or(message.user.as_deref()).unwrap_or("unknown");
     let mut out = format!("{author}: {} [ts {}", message.text, message.ts);
+    // An edited message keeps its ts, so a correction must be marked or it
+    // reads as a duplicate - and it goes before the thread clause, where
+    // "thread edited" would otherwise parse as a thread that was edited.
+    if message.edited.is_some() {
+        out.push_str(" edited");
+    }
     // Slack sends a parent with `thread_ts` equal to its own `ts`, so the
     // field alone cannot tell a reply from a thread's start. All three cases
     // are said outright, because the difference is what an agent gets wrong:
     // a reply names its parent, a parent names the thread it starts, and a
-    // plain root carries the way to answer it in one.
+    // plain root carries the way to answer it in one clause.
     if let Some(thread) = message.thread_ts.as_deref()
         && thread != message.ts
     {
@@ -944,10 +953,6 @@ fn member_line(message: &SlackMessage) -> String {
         let _ = write!(out, " starts thread {}", message.ts);
     } else {
         out.push_str(" at root - reply with its ts as thread_ts to answer in a thread");
-    }
-    // An edited message keeps its ts, so a correction must be marked or it reads as a duplicate.
-    if message.edited.is_some() {
-        out.push_str(" edited");
     }
     out.push(']');
     for file in &message.files {
@@ -6424,10 +6429,11 @@ heal_stable = "30s"
         let prose = fresh_prose(&[message]);
         assert!(
             prose.contains(
-                "[ts 100.000001 at root - reply with its ts as thread_ts to answer in a thread \
-                 edited]"
+                "[ts 100.000001 edited at root - reply with its ts as thread_ts to answer in a \
+                 thread]"
             ),
-            "the correction is marked in the member's own bracket: {prose}",
+            "the correction is marked before the thread clause, in the member's own bracket: \
+             {prose}",
         );
     }
 

@@ -3409,12 +3409,13 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   font-family: var(--mono); font-size: var(--fs-label); border-radius: 999px;
   padding: 3px 10px; }
 .dock .tag.warn { color: var(--warn); border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); }
-/* The destination line: the pill that says where a draft goes, the thread
-   named beside it, and the people it tags. Thread first - it takes every
+/* The destination line: the pill that says where a draft goes, the target
+   named beside it - a thread, or `root message` for a post or upload that
+   replies nowhere - and the people it tags. Thread first - it takes every
    pixel the pill leaves and the excerpt truncates only inside that space.
    Tags never take width from the thread: where it needs the row they move
-   below it. Absence is silence: no thread and no tags mean no segment and no
-   separator. */
+   below it. A segment is drawn whenever there is a target to name; tags
+   keep their separator rules. */
 .dock .dest { flex: 1 1 0; min-width: 0; display: inline-flex; flex-wrap: wrap;
   align-items: baseline; column-gap: 10px; row-gap: 4px;
   font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); }

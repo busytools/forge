@@ -232,7 +232,8 @@
      named beside it, and the people it tags. Thread first: it takes every
      pixel the pill leaves and the excerpt truncates only inside that space.
      Tags never take width from the thread and move below it where it needs
-     the row. Absence is silence: no segment and no separator. */
+     the row. A segment is drawn whenever there is a target to name; tags
+     keep their separator rules. */
   .dock .dest { flex: 1 1 0; min-width: 0; display: inline-flex; flex-wrap: wrap;
     align-items: baseline; column-gap: 10px; row-gap: 4px;
     font-family: var(--mono); font-size: var(--fs-label); color: var(--muted); }
