@@ -40,7 +40,7 @@ pub const AREAS: &[AreaSpec] = &[
     AreaSpec {
         id: "projects",
         name: "projects",
-        note: "orgs, their projects, and every per-project setting - an engine set to `forge` runs the certified `claude-headless`, which must be installed on this machine's PATH",
+        note: "orgs, their projects, and every org and project setting - an engine set to forge runs the certified claude-headless binary, which must be installed on this machine's PATH",
     },
     AreaSpec {
         id: "sessions",

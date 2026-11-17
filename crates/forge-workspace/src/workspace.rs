@@ -3560,10 +3560,10 @@ impl Workspace {
             }
         };
         // The engine for this launch, from the project the guard settled on:
-        // one snapshot decides the binary, the model, the account and the
-        // cwd together. A `/new`, `/resume` or handoff re-spawns on a pooled
-        // handle instead and is stamped in `stamp_respawn_overrides`; between
-        // the two, every launch carries the engine its project resolves to.
+        // one snapshot decides the binary, the model and the account together.
+        // A `/new`, `/resume` or handoff re-spawns on a pooled handle instead
+        // and is stamped in `stamp_respawn_overrides`; between the two, every
+        // launch carries the engine its project resolves to.
         Self::stamp_engine_setting(Some(&project.engine), &mut settings);
         // The account and model checks have passed, so this spawn is
         // committed: record the id its lead will run under, either the
@@ -4976,10 +4976,9 @@ impl Workspace {
     /// Stamp the engine the seat's project resolves to onto a launch.
     ///
     /// **The config is the only source.** A launch settings that arrived
-    /// carrying another engine - a client's snapshot, a handoff built
-    /// before a reload - is overwritten, so a spawn never runs a binary no
-    /// key names today; `default` clears the field, which is what a launch
-    /// settings that predates the key carries.
+    /// carrying an engine of its own is overwritten, so a spawn never runs a
+    /// binary no key names today; `default` clears the field, which is what a
+    /// launch settings that predates the key carries.
     pub(crate) fn stamp_engine(
         &self,
         slot: &SessionSlot,
@@ -4989,9 +4988,8 @@ impl Workspace {
         Self::stamp_engine_setting(engine.as_ref(), launch_settings);
     }
 
-    /// One resolved engine onto a launch, shared by the stamps so both read
-    /// the same field. `default` clears it, which is what a launch settings
-    /// that predates the key carries.
+    /// One resolved engine onto a launch, shared by the cold spawn and the
+    /// respawn stamps so both write the field the same way.
     fn stamp_engine_setting(
         engine: Option<&forge_agent::client::EngineSetting>,
         launch_settings: &mut SessionLaunchSettings,

@@ -11,7 +11,7 @@ pub struct SessionLaunchSettings {
     pub settings: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_progress_summaries: Option<bool>,
-    /// Charter appended to the spawned `claude` subprocess's system
+    /// Charter appended to the spawned agent subprocess's system
     /// prompt via `--append-system-prompt`. Set for worker spawns (the
     /// LLM-supplied inline persona, via `handle_spawn_worker`) and for
     /// lead spawns (the lead charter, via `apply_lead_charter`); `None`
@@ -25,7 +25,7 @@ pub struct SessionLaunchSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delegation_preamble: Option<String>,
     /// Spawn-path-specific extra CLI args to thread through to the
-    /// `claude` subprocess via `OptionsBuilder::extra_arg`. Each pair
+    /// agent subprocess via `OptionsBuilder::extra_arg`. Each pair
     /// becomes `--<flag> <value>` (or `--<flag>` when the value is
     /// `None`). Workers in git-repo projects populate
     /// `("worktree", Some(label))` so claude forks a worktree at
@@ -38,7 +38,7 @@ pub struct SessionLaunchSettings {
     /// and start a fresh one, and the lead cascades it to its workers.
     /// Pure workspace-side routing - `#[serde(skip)]` keeps it out of
     /// every serialized form, so it never reaches the `settings` JSON
-    /// sent to `claude`. Defaults `false`; only the boot dispatch sets it.
+    /// sent to the agent. Defaults `false`; only the boot dispatch sets it.
     #[serde(skip)]
     pub force_new: bool,
     /// The first turn a lead receives when this spawn carries a stored

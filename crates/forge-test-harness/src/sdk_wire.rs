@@ -376,10 +376,11 @@ where
         eprintln!("FORGE_WIRE_CAPTURE not set; skipping scenario {scenario}");
         return Ok(None);
     }
-    // **Say which binary actually runs.** A misspelt or empty
+    // **Say which binary actually runs.** An unset or empty
     // `FORGE_WIRE_BINARY` would otherwise leave the suite running `claude`
     // while the operator believes it ran the port, and the traces do not
-    // record the binary.
+    // record the binary; a misspelt name fails the spawn, and this line is
+    // what names what it looked for.
     let live = live_binary();
     eprintln!("live scenario {scenario} runs {}", live.as_deref().unwrap_or("claude"));
 

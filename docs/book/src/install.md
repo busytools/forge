@@ -13,10 +13,15 @@
   `engine` to `"forge"`.** That engine spawns the certified port instead of
   the `claude` CLI, so the binary must be on `PATH`: copy the certified
   artifact into any directory on `PATH` **under the exact name
-  `claude-headless`** and `chmod +x` it. Never install it as `claude`: that
+  `claude-headless`** and `chmod +x` it. The artifact comes from the port's
+  own build (the reference build is `claude-headless-2d6c1e9`); forge does
+  not ship it. Never install it as `claude`: that
   name is the default engine's binary, and taking it over leaves every
   `default` engine running the port. It takes the same arguments, stdin and
-  environment as `claude -p`, and needs no config or side file. Without it,
+  environment as `claude -p`, and needs no config or side file; it must
+  answer `--version` at or above the `2.0.0` floor the SDK checks before
+  every spawn, so a port older than that fails the version check with its
+  own error rather than the engine's. Without it,
   a spawn on that engine fails with an error naming the binary, the key and
   its project or org rather than falling back to `claude`; every other
   engine runs without it.
