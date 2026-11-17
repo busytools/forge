@@ -109,7 +109,8 @@ forge-test-harness ─→ primitives + sdk + workspace + server
   `VaultEmit` (the wire frames its updates map onto), and registers the
   family's `ToolProvider` and `AskSource`. No generic connector trait: the
   variety is still small, and a trait waits until it is real.
-- **`forge-sdk`** - owns the `claude` subprocess: stream-json codec,
+- **`forge-sdk`** - owns the agent subprocess (the `claude` CLI, or the
+  certified port when an engine names it): stream-json codec,
   transport, control dispatch, in-process MCP host, Options.
 - **`forge-agent`** - drives one SDK Client behind a channel-based
   `Agent`/`AgentHandle`. Owns userdata, cloud, env, translate, tooling.
@@ -248,7 +249,7 @@ Work top-down; first match wins.
    `CronHost` and `CronFacadeHost`, the vault family's `VaultHost` and
    `VaultEmit`). A family's tools are described
    through `forge-mcp`'s `ToolProvider`, never built against forge-sdk.
-8. **Speaks stream-json to the `claude` subprocess?** (decoder,
+8. **Speaks stream-json to the agent subprocess?** (decoder,
    control_request subtype, transport, MCP host, OptionsBuilder)
    -> `forge-sdk`. Pair with a wire-conformance scenario.
 9. **Live state about the user's environment?** (git watcher, cwd
