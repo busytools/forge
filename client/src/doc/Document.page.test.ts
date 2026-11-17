@@ -1051,9 +1051,7 @@ describe('the reviewable document', () => {
       'Review #4 ready on the document',
     );
     expect(nudge?.text).toContain(`doc:${PATH}`);
-    expect(nudge?.text, 'and names no review tool the asking seat may lack').not.toContain(
-      'review__',
-    );
+    expect(nudge?.text, 'and names no review tool at all').not.toContain('review__');
   });
 
   /** **A reload of the address mounts the viewer with no hand-off**, and

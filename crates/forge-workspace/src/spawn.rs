@@ -1302,6 +1302,20 @@ fn charter_with_withheld_families(
     text
 }
 
+/// What the spawn reply echoes as the worker's families: the selection
+/// resolved (which always carries `review`), canonicalised into wire
+/// order. `None` when it means every family, the wire's own spelling of
+/// that - so a narrowed worker's reply names review beside the families
+/// its row listed, and an unnarrowed one still reads as every family.
+fn granted_families(stored: Option<&[String]>) -> Option<Vec<String>> {
+    let stored = stored?;
+    let resolved = crate::mcp::resolve_mcp_families(Some(stored));
+    if resolved == crate::mcp::McpFamily::all() {
+        return None;
+    }
+    Some(resolved.into_iter().map(|family| family.as_str().to_owned()).collect())
+}
+
 /// Handle a `Command::SpawnWorker`: insert a `Spawning` worker entry
 /// in `live_workers[project_key]`, dispatch a spawn for the id the
 /// worker will run under (or the id being resumed) with the charter
@@ -1787,10 +1801,7 @@ pub(crate) fn handle_spawn_worker(
             let _ = return_to.send(Ok(WorkerSpawnReply {
                 session_id: session_id.as_str().to_owned(),
                 tag,
-                // The stored selection, canonicalised; `None` means every
-                // family. The reply echoes the row's stored selection;
-                // review is always on in addition.
-                mcp_families: families,
+                mcp_families: granted_families(families.as_deref()),
                 rate_limited_account,
                 // Set when the row could not be written above; the boot
                 // re-spawn paths drop the reply, so they read the warn
@@ -5946,8 +5957,8 @@ heal_stable = "30s"
         let reply = rx.await.expect("spawn replies");
         assert_eq!(
             reply.expect("ok").mcp_families,
-            Some(vec!["cron".to_owned()]),
-            "a re-spawn with nothing stated adopts the row's selection",
+            Some(vec!["review".to_owned(), "cron".to_owned()]),
+            "a re-spawn with nothing stated adopts the row's selection, plus the always-on review",
         );
 
         // State one: it wins, and the row is revised. Clear the live
@@ -5975,8 +5986,8 @@ heal_stable = "30s"
         let reply = rx.await.expect("spawn replies");
         assert_eq!(
             reply.expect("ok").mcp_families,
-            Some(vec!["tasks".to_owned()]),
-            "a stated selection wins on a re-spawn",
+            Some(vec!["review".to_owned(), "tasks".to_owned()]),
+            "a stated selection wins on a re-spawn, and the reply says review came with it",
         );
         let stored = ws
             .worker_rows_for_project(&key)
@@ -6091,6 +6102,26 @@ heal_stable = "30s"
         assert!(
             !names.iter().any(|name| name.starts_with("cron__")),
             "while a family the row did not name stays withheld: {names:?}",
+        );
+    }
+
+    /// The reply echoes what the worker got, not the row: a narrowed
+    /// selection answers with review beside its own families, and a
+    /// selection that means every family answers `None`.
+    #[test]
+    fn the_reply_names_review_beside_a_narrowed_selection() {
+        assert_eq!(
+            granted_families(Some(&["tasks".to_owned()])),
+            Some(vec!["review".to_owned(), "tasks".to_owned()]),
+            "the reply carries the always-on review beside the listed family",
+        );
+        assert_eq!(granted_families(None), None, "no selection means every family");
+        let every: Vec<String> =
+            crate::mcp::McpFamily::ALL.iter().map(|family| family.as_str().to_owned()).collect();
+        assert_eq!(
+            granted_families(Some(&every)),
+            None,
+            "listing every family reads as every family, not as a list",
         );
     }
 

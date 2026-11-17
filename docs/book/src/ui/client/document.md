@@ -151,8 +151,8 @@ the same press and release the composer's box reads.
 **One feedback box is the description and the note.** A single box sits
 above the answers when a hand-off is parked or there is a review to file.
 Its words ride the submit as the round's summary and the
-`answer_document_hand_off` as the note, so an agent without the review
-family still learns what the reader said. Approve may go with it empty;
+`answer_document_hand_off` as the note, so the reader's words reach the
+agent on either ending. Approve may go with it empty;
 send feedback requires words, and the row says so in a hint under the box -
 an empty press turns that hint into the warning and keeps the button in the
 tab order.

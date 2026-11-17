@@ -98,10 +98,10 @@ impl std::fmt::Debug for PendingInteractionSlot {
 pub struct WorkerSpawnReply {
     pub session_id: String,
     pub tag: String,
-    /// The worker's stored MCP-family selection, canonicalised; `None`
-    /// means every family. The spawn tool echoes the row's stored
-    /// selection; `review` is always on in addition, so the effective
-    /// surface is this selection plus review.
+    /// The families the worker actually got, canonicalised into wire
+    /// order; `None` means every family. The spawn tool echoes the
+    /// resolved selection, which always carries `review`, so a narrowed
+    /// worker's reply names review beside the families its row listed.
     pub mcp_families: Option<Vec<String>>,
     /// Set to the account name when the walk had to take an account
     /// that is saturated or bailed, because no other account in the pin
