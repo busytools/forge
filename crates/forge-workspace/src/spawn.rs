@@ -6474,6 +6474,7 @@ heal_stable = "30s"
 
         let prose = fresh_prose(&[reply]);
         assert!(prose.contains("in thread 1.1"), "the parent ts must survive: {prose}");
+        assert!(!prose.contains("at root"), "and a reply is never also said to be a root: {prose}",);
     }
 
     /// The name the connector resolved is what the block shows. The raw id

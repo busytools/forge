@@ -1964,6 +1964,78 @@ mod tests {
             "and the thread target to keep: {why}",
         );
         assert!(why.contains("put this in the thread"), "and the reader's words whole: {why}");
+        assert!(why.contains("move it"), "a draft's revision may move it: {why}");
+    }
+
+    /// The same wiring through the other three doors: an edit names the
+    /// message it acts on, a reaction the message it reacts to, and an
+    /// upload the thread it replies into - never another call's argument.
+    #[tokio::test]
+    async fn a_sent_back_edit_names_the_message_it_acts_on() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.edit_result.lock() =
+            Some(Err(SlackEditError::SentBack { note: "tighten it".to_owned() }));
+        let tool = Edit { facade: mock, slot: caller_slot() };
+
+        let out = tool
+            .call(input(serde_json::json!({
+                "conversation": "C1",
+                "ts": "1729000000.000200",
+                "text": "hello",
+            })))
+            .await;
+
+        assert!(out.is_error, "a sent-back edit is a refusal");
+        let why = text_of(&out);
+        assert!(why.contains("`conversation C1`"), "the refusal names the conversation: {why}");
+        assert!(why.contains("`ts 1729000000.000200`"), "and the message it acts on: {why}");
+        assert!(!why.contains("thread_ts"), "an edit has no thread to keep: {why}");
+        assert!(!why.contains("move it"), "a message target cannot be moved: {why}");
+    }
+
+    #[tokio::test]
+    async fn a_sent_back_reaction_names_the_message_it_reacts_to() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.react_result.lock() =
+            Some(Err(SlackReactError::SentBack { note: "wrong emoji".to_owned() }));
+        let tool = React { facade: mock, slot: caller_slot() };
+
+        let out = tool
+            .call(input(serde_json::json!({
+                "conversation": "C1",
+                "ts": "1729000000.000300",
+                "name": "white_check_mark",
+            })))
+            .await;
+
+        assert!(out.is_error, "a sent-back reaction is a refusal");
+        let why = text_of(&out);
+        assert!(why.contains("`ts 1729000000.000300`"), "the reaction names its message: {why}");
+        assert!(!why.contains("thread_ts"), "and invents no thread: {why}");
+    }
+
+    #[tokio::test]
+    async fn a_sent_back_upload_names_the_thread_it_replies_into() {
+        let mock = Arc::new(MockSlackFacade::new());
+        *mock.upload_result.lock() =
+            Some(Err(SlackAttachmentError::SentBack { note: "wrong channel".to_owned() }));
+        let tool = Attachment { facade: mock, slot: caller_slot() };
+
+        let out = tool
+            .call(input(serde_json::json!({
+                "path": "/tmp/shot.png",
+                "conversation": "C1",
+                "thread_ts": "1729000000.000400",
+            })))
+            .await;
+
+        assert!(out.is_error, "a sent-back upload is a refusal");
+        let why = text_of(&out);
+        assert!(why.contains("`conversation C1`"), "the refusal names the conversation: {why}");
+        assert!(
+            why.contains("`thread_ts 1729000000.000400`"),
+            "and the thread it replies into: {why}",
+        );
     }
 
     /// A failed `slack__post` is the moment the configured token looks
