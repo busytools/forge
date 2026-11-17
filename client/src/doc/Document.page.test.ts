@@ -1087,7 +1087,7 @@ describe('the reviewable document', () => {
     );
     expect(nudge?.text).toContain(`doc:${PATH}`);
     expect(nudge?.text).toContain('Read it back under that scope');
-    expect(nudge?.text, 'and hands the scope to the lead when it lacks the tools').toContain(
+    expect(nudge?.text, 'and never hands the scope away: every seat has the tools').not.toContain(
       'or hand the scope to your lead',
     );
     expect(nudge?.text, 'and promises no hand-off answer that never comes').not.toContain(

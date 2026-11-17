@@ -4302,8 +4302,7 @@ mod tests {
 
     /// A spec, plan or design the user is meant to review reaches them as
     /// a document, not as a path in chat: the hand-off opens it in their
-    /// viewer and returns the review to the session that delivered it when
-    /// that session has the `review` family, and to its lead otherwise.
+    /// viewer and returns the review to the session that delivered it.
     /// The worker's own output route is pinned because the routing rule
     /// above tells a worker not to address the user, and a worker reading
     /// only that sends the spec through its lead instead - the behaviour

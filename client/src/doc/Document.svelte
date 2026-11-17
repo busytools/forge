@@ -810,7 +810,7 @@
             {
               prompt_under: {
                 key: slot,
-                text: `Review #${number} ready on the document - scope ${scope}. Read it back under that scope, or hand the scope to your lead if you do not have the review tools.`,
+                text: `Review #${number} ready on the document - scope ${scope}. Read it back under that scope.`,
                 attachments: [],
                 uuid,
                 source: 'you',
