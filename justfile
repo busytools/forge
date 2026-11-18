@@ -241,6 +241,27 @@ conformance-capture-sdk test:
     FORGE_WIRE_CAPTURE=1 cargo nextest run -p forge-test-harness \
         --no-capture --run-ignored only --no-tests=fail -P capture {{test}}
 
+# The opt-in live engine parity matrix: the same session shape and env on
+# `claude` and on the certified `claude-headless` port, diffed field by
+# field. A differing field fails naming both values.
+#
+# The argument filters by check suffix (`init_frame`, `context_usage`,
+# `usage_and_cost`, `model_resolution`, `streaming_shapes`,
+# `control_protocol`, `hooks`, `permission`); no argument runs the matrix.
+# A name that matches no check fails rather than reporting a clean run.
+#
+# `-P capture` is nextest's live-capture profile: a spawn plus a model round
+# legitimately outlasts the default 30s x 4 kill. `--no-fail-fast` is the
+# point of a matrix - every check reports even when an earlier one diverges.
+# `--success-output=immediate` is why a PASS verdict is visible at all: nextest
+# swallows a passing test's output by default, and the verdict line is the run's
+# record of which checks agreed.
+#
+# Live parity matrix against the certified claude-headless port (burns tokens).
+engine-parity *check:
+    cargo nextest run -p forge-test-harness --run-ignored only --no-fail-fast \
+        --no-tests=fail --success-output=immediate -P capture engine_parity_{{check}}
+
 # Mirrors CI's published build (`--document-private-items` included),
 # so a private item's doc warning fails here, not only in the docs job.
 # `RUSTDOCFLAGS=-D warnings` denies rustdoc lints (broken links,

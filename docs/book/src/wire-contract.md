@@ -49,6 +49,21 @@ An empty argument is rejected outright rather than passed through,
 because with no filter left it would capture everything against the
 real API.
 
+**The engine parity matrix** is a separate opt-in run rather than a
+scenario mode. It spawns the same session shape and environment on
+`claude` and on `claude-headless`, captures every answer forge consumes -
+the init frame, context usage, usage and cost, model resolution, streaming
+frame shapes, the control protocol, hook payloads and permission asks -
+and diffs the two field by field. A field that differs fails naming both
+values, `rawMaxTokens: reference=1000000 port=200000`. It needs both
+binaries on `PATH` and burns real tokens, so it is never part of
+`just check` or CI.
+
+```bash
+just engine-parity                   # the whole matrix
+just engine-parity context_usage     # one check
+```
+
 ## Baselines
 
 Committed baselines live at:
