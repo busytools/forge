@@ -52,8 +52,19 @@ unsafe extern "C" {
     fn CGDisplayIsAsleep(display: u32) -> u32;
 }
 
+/// One reading of the screen.
+#[derive(Clone, Copy)]
+struct Screen {
+    /// Whether the session is away from its screen.
+    away: bool,
+    /// Whether the session record could not be read at all. A blind reading
+    /// is answered as an unlocked screen, and the transition says so: a
+    /// permanently blind machine must not look like a real unlock.
+    blind: bool,
+}
+
 /// The screen's own reading, as one function so a test can stand one in.
-type Reading = fn() -> bool;
+type Reading = fn() -> Screen;
 
 /// Watch the screen and report every change of its lock state to `mic`,
 /// calling `awake` as it comes back.
@@ -70,29 +81,37 @@ pub(crate) fn watch(mic: Arc<Mic>, awake: impl Fn() + Send + 'static) {
 /// launched while the screen is already locked is away from its first
 /// instruction rather than only once the first poll comes back, and a lock
 /// that lands on a running process is seen as a transition from that same
-/// reading. The debug line is what makes a misread visible: without it, a
-/// wrong reading restores the old reopen behaviour in silence.
+/// reading. The debug lines are what make a misread visible: without them, a
+/// wrong reading restores the old reopen behaviour in silence, and a blind
+/// one reads as a real unlock.
 fn watch_with(mic: Arc<Mic>, awake: impl Fn() + Send + 'static, read: Reading) {
-    let mut away = read();
+    let first = read();
     tauri_plugin_log::log::debug!(
         target: super::LOG_TARGET,
-        "the screen's lock reading at start (event_name client_mic_screen, away {away})"
+        "the screen's lock reading at start (event_name client_mic_screen, away {}, blind {})",
+        first.away,
+        first.blind,
     );
-    mic.set_screen_away(away);
+    mic.set_screen_away(first.away);
     std::thread::spawn(move || {
+        let mut seen = first;
         loop {
             std::thread::sleep(POLL);
             let reading = read();
-            if reading == away {
+            if reading.away == seen.away && reading.blind == seen.blind {
                 continue;
             }
-            away = reading;
+            let was_away = seen.away;
+            seen = reading;
             tauri_plugin_log::log::debug!(
                 target: super::LOG_TARGET,
-                "the screen's lock state changed (event_name client_mic_screen, away {reading})"
+                "the screen's lock state changed (event_name client_mic_screen, away {}, blind \
+                 {})",
+                reading.away,
+                reading.blind,
             );
-            mic.set_screen_away(reading);
-            if !reading {
+            mic.set_screen_away(reading.away);
+            if was_away && !reading.away {
                 awake();
             }
         }
@@ -100,24 +119,24 @@ fn watch_with(mic: Arc<Mic>, awake: impl Fn() + Send + 'static, read: Reading) {
 }
 
 /// Whether the session is away from its screen: locked, asleep, or another
-/// user is on the console.
-fn is_away() -> bool {
+/// user is on the console - and whether the record could be read at all.
+fn is_away() -> Screen {
     let asleep = unsafe { CGDisplayIsAsleep(CGMainDisplayID()) } != 0;
     if asleep {
-        return true;
+        return Screen { away: true, blind: false };
     }
     let raw = unsafe { CGSessionCopyCurrentDictionary() };
     if raw.is_null() {
         // No session record: read as an unlocked screen, because the other
         // reading is a hold that never comes back on a machine that cannot
-        // tell us why.
-        return false;
+        // tell us why - and said blind, so the transition is visible.
+        return Screen { away: false, blind: true };
     }
     let session: CFDictionary<CFString, CFType> =
         unsafe { CFDictionary::wrap_under_create_rule(raw) };
     let locked = flag(&session, SCREEN_LOCKED).unwrap_or(false);
     let ours = flag(&session, ON_CONSOLE).unwrap_or(true);
-    locked || !ours
+    Screen { away: locked || !ours, blind: false }
 }
 
 /// One boolean in the session record, when present.
@@ -128,7 +147,7 @@ fn flag(session: &CFDictionary<CFString, CFType>, name: &str) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use forge_capture::Device;
 
@@ -160,6 +179,8 @@ mod tests {
         let counted = Arc::clone(&opens);
         let mic = Arc::new(Mic {
             warm: Mutex::new(None),
+            screen_away: AtomicBool::new(false),
+            hidden_away: AtomicBool::new(false),
             restraint: Mutex::new(Restraint::default()),
             opener: Box::new(move |device, carry| {
                 counted.fetch_add(1, Ordering::SeqCst);
@@ -184,7 +205,7 @@ mod tests {
     #[test]
     fn a_locked_boot_reading_keeps_every_open_path_shut() {
         let (mic, bridge, opens) = rig();
-        watch_with(Arc::clone(&mic), || {}, || true);
+        watch_with(Arc::clone(&mic), || {}, || Screen { away: true, blind: false });
 
         assert!(
             mic.hold(&bridge, None, "page").expect("the hold answers").is_none(),

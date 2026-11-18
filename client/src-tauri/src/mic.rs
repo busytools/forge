@@ -636,6 +636,17 @@ pub struct Mic {
     warm: Mutex<Option<Warm>>,
     /// The screen, the page, and the reopen budget the hold keeps.
     restraint: Mutex<Restraint>,
+    /// The screen's away reading as a press that is already opening sees it.
+    ///
+    /// A transition lands its own flag BEFORE it takes the restraint lock,
+    /// because an open in flight holds that lock: the transition then queues
+    /// behind the open, and the press re-reads both flags on its way out -
+    /// so a capture that came up behind a lock is ended rather than left
+    /// recording. One flag per input, so neither setter can clear a signal
+    /// the other has already raised.
+    screen_away: AtomicBool,
+    /// The page's hidden reading, landed the same way as [`Mic::screen_away`].
+    hidden_away: AtomicBool,
     /// How a capture is opened; the shell's own value is `forge-capture`.
     opener: Opener,
 }
@@ -644,6 +655,8 @@ impl Default for Mic {
     fn default() -> Self {
         Self {
             warm: Mutex::new(None),
+            screen_away: AtomicBool::new(false),
+            hidden_away: AtomicBool::new(false),
             restraint: Mutex::new(Restraint::default()),
             opener: Box::new(|device, carry| {
                 let seen = Arc::clone(&carry);
@@ -816,14 +829,15 @@ impl Mic {
         abandoned: Option<&GivenUp>,
     ) -> Result<forge_capture::Device, String> {
         // **A press races the screen going away, and loses.** The lock can
-        // land between the key and this call, and a device opened there is a
-        // microphone behind a locked screen - the reopen the hold rule exists
-        // to stop. The check, the budget's reset and the open below are one
-        // reading: the guard is held to the end of this call, so a lock that
-        // lands here is released by its own transition rather than after the
-        // press has opened under it. The budget is left as it was on the away
-        // path: the away state is not a real trigger, and the reader's line
-        // says why nothing opened.
+        // land between the key and this call, or while the device is opening,
+        // and a device opened there is a microphone behind a locked screen -
+        // the reopen the hold rule exists to stop. The first check is the
+        // state this call starts in; a transition that lands while it holds
+        // the guard below lands its own signal first (see [`Mic::screen_away`])
+        // and queues behind it, and the checks after the begin and the open
+        // read that signal. The budget is left as it was on the away path: the
+        // away state is not a real trigger, and the reader's line says why
+        // nothing opened.
         let mut restraint = self.restraint.lock().unwrap_or_else(PoisonError::into_inner);
         if restraint.away() {
             return Err(AWAY.to_owned());
@@ -845,6 +859,7 @@ impl Mic {
             None => Found { path: PressPath::Cold, delivering: false },
         };
         log_press(session.as_ref(), device.as_deref(), warm.as_ref(), &found);
+        let mut crossed = false;
         if let Some(held) = warm.as_mut() {
             match found.path {
                 PressPath::Busy => {
@@ -861,15 +876,43 @@ impl Mic {
                         held.end();
                         return Err(NOT_COME_UP.to_owned());
                     }
-                    return Ok(held.held.device().clone());
+                    // **The lock can land while this call holds the guard**:
+                    // the transition queues behind it and its signal is what
+                    // this reads. A warm press that crossed it ends its take
+                    // and lets the capture go below.
+                    crossed = self.away_now();
+                    if !crossed {
+                        return Ok(held.held.device().clone());
+                    }
+                    held.end();
                 }
                 PressPath::Cold => {}
             }
+        }
+        if crossed {
+            if let Some(stale) = warm.take() {
+                stale.held.release();
+            }
+            return Err(AWAY.to_owned());
         }
         let next = self.open(bridge, device.as_deref(), Some((page, take)))?;
         let resolved = next.held.device().clone();
         if let Some(stale) = warm.replace(next) {
             stale.held.release();
+        }
+        // **The lock can land while the open blocks**: its signal lands before
+        // the transition queues behind this guard, so this read is what sees
+        // it. A capture that came up behind the lock is ended and let go, and
+        // the press answers the away line rather than recording behind a
+        // locked screen.
+        if self.away_now() {
+            if let Some(held) = warm.as_mut() {
+                held.end();
+            }
+            if let Some(stale) = warm.take() {
+                stale.held.release();
+            }
+            return Err(AWAY.to_owned());
         }
         // **And here the read comes last, after the release**: letting the
         // replaced capture go takes the capture thread's own window (up to
@@ -986,11 +1029,18 @@ impl Mic {
     /// dictation.
     #[cfg(target_os = "macos")]
     pub fn set_screen_away(&self, away: bool) {
+        // **Landed before the lock**: an open in flight holds it, and the
+        // press re-reads this on its way out (see [`Mic::screen_away`]). The
+        // setter's own flag only, so the page's signal is never cleared here.
+        if away {
+            self.screen_away.store(true, Ordering::Release);
+        }
         let away = {
             let mut restraint = self.restraint.lock().unwrap_or_else(PoisonError::into_inner);
             let was = restraint.away();
             restraint.screen = away;
             let now = restraint.away();
+            self.screen_away.store(away, Ordering::Release);
             if was == now {
                 return;
             }
@@ -1010,11 +1060,16 @@ impl Mic {
     /// hidden window - a minimized or occluded page feeds no take - and the
     /// page takes it up again when it is back on screen.
     pub fn set_hidden(&self, hidden: bool) {
+        // The same early landing as the screen's, on its own flag.
+        if hidden {
+            self.hidden_away.store(true, Ordering::Release);
+        }
         let away = {
             let mut restraint = self.restraint.lock().unwrap_or_else(PoisonError::into_inner);
             let was = restraint.away();
             restraint.hidden = hidden;
             let now = restraint.away();
+            self.hidden_away.store(hidden, Ordering::Release);
             if was == now {
                 return;
             }
@@ -1026,6 +1081,12 @@ impl Mic {
         if away {
             self.let_go("the page is hidden");
         }
+    }
+
+    /// The away reading a press re-checks on its way out, as the transitions
+    /// landed it before they queued behind the press's guard.
+    fn away_now(&self) -> bool {
+        self.screen_away.load(Ordering::Acquire) || self.hidden_away.load(Ordering::Acquire)
     }
 
     /// Let the held capture go, unless a take is recording on it.
@@ -1297,6 +1358,8 @@ mod tests {
                 let watching = Arc::clone(&opening);
                 let mic = Mic {
                     warm: Mutex::new(None),
+                    screen_away: AtomicBool::new(false),
+                    hidden_away: AtomicBool::new(false),
                     // Every reopen is taken at once here: the waits are the
                     // budget's own business, and this rig's tests are about
                     // what each attempt did, not when.
@@ -1772,6 +1835,126 @@ mod tests {
             assert_eq!(rig.calls(), vec!["open edge"]);
         }
 
+        /// **A press whose open spans the lock records nothing.** The
+        /// transition lands its signal while the open blocks and queues
+        /// behind the press's guard; the press reads the signal on its way
+        /// out, ends the take it opened and lets the capture go.
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn a_press_whose_open_spans_the_lock_records_nothing() {
+            let settle = Duration::from_secs(10);
+            let (entered, arrived) = std::sync::mpsc::channel::<()>();
+            let (release, parked) = std::sync::mpsc::channel::<()>();
+            // The opener is a `Fn` and must be `Sync`, so the one-shot wait
+            // is held where it can be taken, as the wedged-open rig does.
+            let parked: Arc<Mutex<Option<std::sync::mpsc::Receiver<()>>>> =
+                Arc::new(Mutex::new(Some(parked)));
+            let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let opened = Arc::clone(&log);
+            let mic = Arc::new(Mic {
+                warm: Mutex::new(None),
+                screen_away: AtomicBool::new(false),
+                hidden_away: AtomicBool::new(false),
+                restraint: Mutex::new(Restraint::default()),
+                opener: Box::new(move |device, carry| {
+                    let _ = entered.send(());
+                    let waiting = parked.lock().unwrap_or_else(PoisonError::into_inner).take();
+                    if let Some(waiting) = waiting {
+                        let _ = waiting.recv_timeout(settle);
+                    }
+                    let name = device.unwrap_or("default").to_owned();
+                    opened.lock().unwrap().push(format!("open {name}"));
+                    Ok(Box::new(Fake {
+                        device: forge_capture::Device {
+                            id: name,
+                            name: "stand-in".to_owned(),
+                            is_default: device.is_none(),
+                        },
+                        carry,
+                        log: Arc::clone(&opened),
+                    }))
+                }),
+            });
+            let bridge = Bridge::new(None, tokio::sync::mpsc::unbounded_channel().0);
+
+            let pressing = {
+                let mic = Arc::clone(&mic);
+                let bridge = Arc::clone(&bridge);
+                std::thread::spawn(move || {
+                    mic.start(&bridge, Some("spanning".to_owned()), "page", "take")
+                })
+            };
+            arrived.recv_timeout(settle).expect("the open is in flight");
+
+            // The lock lands while the open blocks: its signal is set before
+            // it queues on the guard the press is holding.
+            let locking = {
+                let mic = Arc::clone(&mic);
+                std::thread::spawn(move || mic.set_screen_away(true))
+            };
+            let deadline = Instant::now() + settle;
+            while !mic.away_now() && Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            assert!(mic.away_now(), "the transition landed its signal");
+
+            release.send(()).expect("the open is parked");
+            let outcome = pressing.join().expect("the press finishes");
+            locking.join().expect("the transition finishes");
+
+            assert_eq!(
+                outcome.err().as_deref(),
+                Some(AWAY),
+                "the press answers the away line rather than reporting a take",
+            );
+            assert_eq!(
+                log.lock().unwrap().clone(),
+                vec!["open spanning", "release spanning"],
+                "the capture that came up behind the lock is let go, not left recording",
+            );
+            assert!(mic.warm.lock().unwrap().is_none(), "and the hold keeps nothing");
+        }
+
+        /// **The away press must not hand a spent budget a fresh start.**
+        /// Moving the `fresh()` above the `away()` check would pass every
+        /// other test while doing exactly that.
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn an_away_press_leaves_the_spent_budget_spent() {
+            let attempts = Arc::new(Mutex::new(0usize));
+            let counted = Arc::clone(&attempts);
+            let mic = Mic {
+                warm: Mutex::new(None),
+                screen_away: AtomicBool::new(false),
+                hidden_away: AtomicBool::new(false),
+                restraint: Mutex::new(Restraint {
+                    waits: [Duration::ZERO; REOPEN_ATTEMPTS],
+                    ..Restraint::default()
+                }),
+                opener: Box::new(move |_, _| {
+                    *counted.lock().unwrap() += 1;
+                    Err("the device is gone".to_owned())
+                }),
+            };
+            let bridge = Bridge::new(None, tokio::sync::mpsc::unbounded_channel().0);
+            for _ in 0..REOPEN_ATTEMPTS {
+                assert!(mic.hold(&bridge, Some("gone".to_owned()), "page").is_err());
+            }
+            assert!(mic.restraint.lock().unwrap().spent, "the budget is spent");
+
+            mic.set_screen_away(true);
+            assert_eq!(
+                mic.start(&bridge, Some("gone".to_owned()), "page", "take").err().as_deref(),
+                Some(AWAY),
+                "the press is refused while away",
+            );
+            assert!(
+                mic.restraint.lock().unwrap().spent,
+                "and the away press left the spent budget spent",
+            );
+            assert_eq!(*attempts.lock().unwrap(), REOPEN_ATTEMPTS, "no device was opened");
+        }
+
         /// **A take in flight is not the hold.** Hiding the page mid-take
         /// must not throw away words already spoken: the capture serves the
         /// take until the page ends it, and is let go then.
@@ -1917,6 +2100,8 @@ mod tests {
             let counted = Arc::clone(&attempts);
             let mic = Mic {
                 warm: Mutex::new(None),
+                screen_away: AtomicBool::new(false),
+                hidden_away: AtomicBool::new(false),
                 restraint: Mutex::new(Restraint {
                     waits: [Duration::ZERO; REOPEN_ATTEMPTS],
                     ..Restraint::default()
@@ -2038,6 +2223,8 @@ mod tests {
             let opened = Arc::clone(&log);
             let mic = Mic {
                 warm: Mutex::new(None),
+                screen_away: AtomicBool::new(false),
+                hidden_away: AtomicBool::new(false),
                 restraint: Mutex::new(Restraint::default()),
                 opener: Box::new(move |device, carry| {
                     let mut opened = opened.lock().unwrap();
@@ -2420,6 +2607,8 @@ mod tests {
             let opened = Arc::clone(&log);
             let mic = Mic {
                 warm: Mutex::new(None),
+                screen_away: AtomicBool::new(false),
+                hidden_away: AtomicBool::new(false),
                 restraint: Mutex::new(Restraint::default()),
                 opener: Box::new(move |device, carry| {
                     let name = device.unwrap_or("default").to_owned();
@@ -2463,6 +2652,8 @@ mod tests {
             let counted = Arc::clone(&attempts);
             let mic = Mic {
                 warm: Mutex::new(None),
+                screen_away: AtomicBool::new(false),
+                hidden_away: AtomicBool::new(false),
                 restraint: Mutex::new(Restraint {
                     waits: [Duration::ZERO; REOPEN_ATTEMPTS],
                     ..Restraint::default()
@@ -2698,6 +2889,8 @@ mod tests {
                     Arc::new(Mutex::new(Some(entered)));
                 let mic = Arc::new(Mic {
                     warm: Mutex::new(None),
+                    screen_away: AtomicBool::new(false),
+                    hidden_away: AtomicBool::new(false),
                     restraint: Mutex::new(Restraint::default()),
                     opener: Box::new(move |device, carry| {
                         let name = device.unwrap_or("default").to_owned();
@@ -2782,6 +2975,8 @@ mod tests {
                 let parked = Arc::new(Mutex::new(Some(parked)));
                 let mic = Arc::new(Mic {
                     warm: Mutex::new(None),
+                    screen_away: AtomicBool::new(false),
+                    hidden_away: AtomicBool::new(false),
                     restraint: Mutex::new(Restraint::default()),
                     opener: Box::new(move |device, carry| {
                         let name = device.unwrap_or("default").to_owned();
@@ -2823,6 +3018,8 @@ mod tests {
                 let opened = Arc::clone(&log);
                 let mic = Arc::new(Mic {
                     warm: Mutex::new(None),
+                    screen_away: AtomicBool::new(false),
+                    hidden_away: AtomicBool::new(false),
                     restraint: Mutex::new(Restraint::default()),
                     opener: Box::new(move |device, carry| {
                         if let Some(why) = &refusal {
@@ -2857,6 +3054,8 @@ mod tests {
             fn new() -> Self {
                 let mic = Arc::new(Mic {
                     warm: Mutex::new(None),
+                    screen_away: AtomicBool::new(false),
+                    hidden_away: AtomicBool::new(false),
                     restraint: Mutex::new(Restraint::default()),
                     opener: Box::new(|_, _| panic!("a wedged audio layer")),
                 });
