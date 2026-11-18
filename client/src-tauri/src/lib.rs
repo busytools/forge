@@ -14,6 +14,10 @@ const UPDATE_TIMEOUT: Duration = Duration::from_secs(60);
 /// The page's wake route: the shell says the screen is back, and the page
 /// takes the microphone hold up from its own pick. Kept in step with
 /// `MIC_AWAKE` in `client/src/composer/mic-shell.ts`.
+///
+/// macOS only, with the screen watcher that raises it: no other platform
+/// reads the screen, so no other one has a wake to announce.
+#[cfg(target_os = "macos")]
 const MIC_AWAKE: &str = "client://mic-awake";
 
 /// The stages that finish an update tap, named by the platform that needs
@@ -1260,13 +1264,14 @@ fn record(log_file: Option<&std::path::Path>, line: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ANDROID_FILE_NAME_PLUGIN, ANDROID_SHARE_PLUGIN, ANDROID_UPDATE_PLUGIN, MIC_AWAKE, attention,
-    };
+    #[cfg(target_os = "macos")]
+    use super::MIC_AWAKE;
+    use super::{ANDROID_FILE_NAME_PLUGIN, ANDROID_SHARE_PLUGIN, ANDROID_UPDATE_PLUGIN, attention};
 
     /// **The wake route is one string on two sides**, and only the page test
     /// can see the other one: this pins the shell's own value, and
     /// `mic-shell.test.ts` pins the page listening on the same literal.
+    #[cfg(target_os = "macos")]
     #[test]
     fn the_wake_route_is_the_pages_own_literal() {
         assert_eq!(MIC_AWAKE, "client://mic-awake");
