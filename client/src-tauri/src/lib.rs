@@ -11,6 +11,11 @@ use tauri_plugin_updater::UpdaterExt;
 #[cfg(desktop)]
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// The page's wake route: the shell says the screen is back, and the page
+/// takes the microphone hold up from its own pick. Kept in step with
+/// `MIC_AWAKE` in `client/src/composer/mic-shell.ts`.
+const MIC_AWAKE: &str = "client://mic-awake";
+
 /// The stages that finish an update tap, named by the platform that needs
 /// them. The client's line draws its words per stage, so this is a fact rather
 /// than copy: the desktop restarts into the swapped bundle, the phone opens the
@@ -105,7 +110,7 @@ mod commands {
         {
             let awake = app.clone();
             crate::mic::screen::watch(mic, move || {
-                let _ = awake.emit("client://mic-awake", ());
+                let _ = awake.emit(crate::MIC_AWAKE, ());
             });
         }
         // **The viewer is the desktop's**, and so is the native layer it
@@ -1255,7 +1260,17 @@ fn record(log_file: Option<&std::path::Path>, line: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ANDROID_FILE_NAME_PLUGIN, ANDROID_SHARE_PLUGIN, ANDROID_UPDATE_PLUGIN, attention};
+    use super::{
+        ANDROID_FILE_NAME_PLUGIN, ANDROID_SHARE_PLUGIN, ANDROID_UPDATE_PLUGIN, MIC_AWAKE, attention,
+    };
+
+    /// **The wake route is one string on two sides**, and only the page test
+    /// can see the other one: this pins the shell's own value, and
+    /// `mic-shell.test.ts` pins the page listening on the same literal.
+    #[test]
+    fn the_wake_route_is_the_pages_own_literal() {
+        assert_eq!(MIC_AWAKE, "client://mic-awake");
+    }
 
     /// **A blur is the moment the rule must look again**, and no frame
     /// carries it. A gain of focus asks the same review; an event that says

@@ -216,11 +216,18 @@ was.
 
 **The hold is let go when the screen goes away.** A locked screen, a
 sleeping display and a hidden page all feed no take, so the shell lets the
-device go there: it reads the session's lock state (the page cannot see a
+device go there: on macOS it reads the session's lock state (locked, the
+display asleep, or another user on the console - the page cannot see a
 locked screen), the page reports its own visibility, and neither the hold
 nor a reopen opens the device while either says away. When the screen is
 back and the page is on screen again, the page re-holds from its own pick -
 so the hold is only ever taken where a surface still offers dictation.
+
+**On the phone the lock reading is the page's own**, because the shell has
+none there: the app going to the background is a hidden page, so the hold
+is let go when it does and taken up again when it returns. A take already
+recording is never cut by any of these: it keeps the device until the page
+ends it, and the hold is let go then.
 
 **A held capture the device has stopped serving is opened again within a
 budget.** The audio layer under the client changes on its own - Android

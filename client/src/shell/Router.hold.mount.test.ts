@@ -15,12 +15,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 /** The shell, as the page reaches it: the holds it was asked for, and the events it raised. */
 const shell = vi.hoisted(() => {
   const holds: (string | null)[] = [];
+  const hidden: boolean[] = [];
   const hearing: { event: string; handler: (() => void) | null }[] = [];
   return {
     holds,
+    hidden,
     hearing,
-    invoke: (command: string, args?: { device?: string | null }): Promise<unknown> => {
+    invoke: (
+      command: string,
+      args?: { device?: string | null; hidden?: boolean },
+    ): Promise<unknown> => {
       if (command === 'client_mic_hold') holds.push(args?.device ?? null);
+      if (command === 'client_mic_hidden') hidden.push(args?.hidden === true);
       return Promise.resolve(undefined);
     },
     isTauri: (): boolean => true,
@@ -63,6 +69,7 @@ afterEach(async () => {
 
 beforeEach(() => {
   shell.holds.length = 0;
+  shell.hidden.length = 0;
   shell.hearing.length = 0;
 });
 
@@ -204,6 +211,36 @@ describe('the microphone hold at the router', () => {
       shell.holds,
       'the unlock re-holds without a press: a locked screen let the device go',
     ).toEqual(['coreaudio:two', 'coreaudio:two']);
+  });
+
+  it('lets the hold go while the page is hidden and takes it up when it is back', () => {
+    rememberDevice(KEY, 'coreaudio:one');
+    shell.holds.length = 0;
+    shell.hidden.length = 0;
+
+    draw({ name: 'session', slot: LEAD });
+    expect(shell.holds, 'the hold is taken as the page draws').toEqual(['coreaudio:one']);
+
+    const setHidden = (hidden: boolean): void => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
+      document.dispatchEvent(new Event('visibilitychange'));
+    };
+    try {
+      setHidden(true);
+      expect(
+        shell.hidden,
+        'a hidden page tells the shell to let the hold go, or a minimized window holds a device it cannot use',
+      ).toEqual([true]);
+      expect(shell.holds, 'and takes no hold behind it').toEqual(['coreaudio:one']);
+
+      setHidden(false);
+      expect(shell.holds, 'the page coming back takes the hold up from its own pick').toEqual([
+        'coreaudio:one',
+        'coreaudio:one',
+      ]);
+    } finally {
+      Reflect.deleteProperty(document, 'hidden');
+    }
   });
 
   it('holds nothing while dictation is not offered', () => {

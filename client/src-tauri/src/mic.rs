@@ -109,6 +109,13 @@ pub const OPEN_LIMIT: Duration = Duration::from_secs(20);
 /// caller's bound, whether the bound answered it or the device did, late.
 const NOT_COME_UP: &str = "the microphone did not come up";
 
+/// What a press is answered while the screen is away or the page hidden.
+///
+/// The press cannot be served there - a locked screen feeds a take nothing -
+/// and a device opened for it is the very reopen this rule exists to stop.
+/// The line is the reader's, for the press that lands on the lock's edge.
+const AWAY: &str = "the microphone is away: the screen is locked or the page is hidden";
+
 /// Run device work off the reactor with any unwind caught and answered.
 ///
 /// **What this buys, and what it cannot.** `spawn_blocking` already turns a
@@ -494,6 +501,7 @@ enum Reopen {
 /// locked one and a locked screen delivers no audio: a hold kept through it
 /// is one every later staleness check reopens. The page reports its own
 /// visibility, which the shell cannot see either.
+#[derive(Default)]
 struct Restraint {
     /// The screen is locked or asleep, as the platform reports it.
     screen: bool,
@@ -513,24 +521,10 @@ struct Restraint {
     /// Whether the give-up has been said, so it is said once rather than on
     /// every hold that arrives after it.
     announced: bool,
-    /// The waits before each reopen: the shipped ones, and a test's own.
+    /// The waits before each retry: only a test carries its own, so a spacing
+    /// test needs no real sleeping; the shipped build reads [`REOPEN_WAITS`].
+    #[cfg(test)]
     waits: [Duration; REOPEN_ATTEMPTS],
-}
-
-impl Default for Restraint {
-    fn default() -> Self {
-        Self {
-            screen: false,
-            hidden: false,
-            asked: None,
-            stated: false,
-            attempts: 0,
-            at: None,
-            spent: false,
-            announced: false,
-            waits: REOPEN_WAITS,
-        }
-    }
 }
 
 impl Restraint {
@@ -567,8 +561,12 @@ impl Restraint {
             self.spent = true;
             return Reopen::GivenUp;
         }
+        #[cfg(test)]
+        let waits = &self.waits;
+        #[cfg(not(test))]
+        let waits = &REOPEN_WAITS;
         if let Some(at) = self.at
-            && now.duration_since(at) < self.waits[self.attempts]
+            && now.duration_since(at) < waits[self.attempts]
         {
             return Reopen::Wait;
         }
@@ -728,10 +726,17 @@ impl Mic {
                 Reopen::Wait => return Ok(None),
                 Reopen::GivenUp => {
                     restraint.announce_give_up(device.as_deref());
-                    // A capture already known to be dead is let go rather
-                    // than held: keeping it only re-lectures every later
-                    // staleness check, and the indicator it lit stays on.
-                    if let Some(stale) = warm.take() {
+                    // **Only the capture that stopped serving is let go.** A
+                    // newly picked device that will not open spends the same
+                    // budget while a healthy hold for the previous pick still
+                    // stands, and three failures of the new one must not tear
+                    // that down.
+                    let dead = warm.as_ref().is_some_and(|held| {
+                        !held.recording()
+                            && !held.delivering()
+                            && held.requested.as_deref() == device.as_deref()
+                    });
+                    if dead && let Some(stale) = warm.take() {
                         stale.held.release();
                     }
                     return Ok(None);
@@ -810,14 +815,24 @@ impl Mic {
         take: &str,
         abandoned: Option<&GivenUp>,
     ) -> Result<forge_capture::Device, String> {
+        // **A press races the screen going away, and loses.** The lock can
+        // land between the key and this call, and a device opened there is a
+        // microphone behind a locked screen - the reopen the hold rule exists
+        // to stop. The check, the budget's reset and the open below are one
+        // reading: the guard is held to the end of this call, so a lock that
+        // lands here is released by its own transition rather than after the
+        // press has opened under it. The budget is left as it was on the away
+        // path: the away state is not a real trigger, and the reader's line
+        // says why nothing opened.
+        let mut restraint = self.restraint.lock().unwrap_or_else(PoisonError::into_inner);
+        if restraint.away() {
+            return Err(AWAY.to_owned());
+        }
         // **A press is a real trigger**: whatever the reopen budget had spent,
         // the reader asking again is worth a fresh try, and a different pick
         // starts the budget over on its own.
-        {
-            let mut restraint = self.restraint.lock().unwrap_or_else(PoisonError::into_inner);
-            restraint.ask(device.as_deref());
-            restraint.fresh();
-        }
+        restraint.ask(device.as_deref());
+        restraint.fresh();
         // Read before the hold's lock: the on-screen seat is the bridge's
         // state, and the two locks never nest.
         let session = bridge.shown();
@@ -915,13 +930,18 @@ impl Mic {
     /// reload's discarded page leaves its take for another page to end -
     /// and the take that followed is not this one's to throw away.
     pub fn stop(&self, take: &str) {
-        let mut warm = self.warm.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(held) = warm.as_mut() else {
-            return;
-        };
-        if held.own_take(take) {
+        {
+            let mut warm = self.warm.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some(held) = warm.as_mut() else {
+                return;
+            };
+            if !held.own_take(take) {
+                return;
+            }
             held.end();
         }
+        // A take that outlived an away screen ends the hold it kept alive.
+        self.release_if_away();
     }
 
     /// Hold the capture open for the drain window, hand over the last
@@ -938,17 +958,21 @@ impl Mic {
     /// is not this one's to throw away.
     pub async fn drain(&self, take: &str) {
         tokio::time::sleep(Duration::from_millis(DRAIN_MS)).await;
-        let mut warm = self.warm.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(held) = warm.as_mut() else {
-            return;
-        };
-        if !held.own_take(take) {
-            return;
+        {
+            let mut warm = self.warm.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some(held) = warm.as_mut() else {
+                return;
+            };
+            if !held.own_take(take) {
+                return;
+            }
+            let tail = held.end();
+            if !tail.is_empty() {
+                held.held.carry().bridge.mic_frame(encode_frame(&tail));
+            }
         }
-        let tail = held.end();
-        if !tail.is_empty() {
-            held.held.carry().bridge.mic_frame(encode_frame(&tail));
-        }
+        // The take's own end is what lets the device go behind an away screen.
+        self.release_if_away();
     }
 
     /// The screen is away (locked, or the display asleep), or is back.
@@ -1004,22 +1028,56 @@ impl Mic {
         }
     }
 
-    /// Let the held capture go, ending the take that was recording on it.
+    /// Let the held capture go, unless a take is recording on it.
     ///
-    /// A stop or a drain the page sends afterwards names a take that is no
-    /// longer here, which both are built to tolerate (see [`Mic::stop`]).
+    /// **The away rule is about the hold, not a take.** A minimized window
+    /// with the reader still present, or a lock landing mid-dictation, must
+    /// not throw away words already spoken: the capture serves the take until
+    /// the page ends it, and [`Mic::release_if_away`] lets the device go then.
     fn let_go(&self, why: &'static str) {
-        let stale = self.warm.lock().unwrap_or_else(PoisonError::into_inner).take();
-        let Some(mut held) = stale else {
+        let mut warm = self.warm.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(held) = warm.as_ref() else {
             return;
         };
-        let recording = held.recording();
+        if held.recording() {
+            tauri_plugin_log::log::debug!(
+                target: LOG_TARGET,
+                "the microphone hold is kept for a take in flight (event_name \
+                 client_mic_hold_kept, reason {why})"
+            );
+            return;
+        }
+        let Some(mut held) = warm.take() else {
+            return;
+        };
         held.end();
         held.held.release();
         tauri_plugin_log::log::debug!(
             target: LOG_TARGET,
-            "the microphone hold was let go (event_name client_mic_hold_released, reason {why}, \
-             recording {recording})"
+            "the microphone hold was let go (event_name client_mic_hold_released, reason {why})"
+        );
+    }
+
+    /// Let the capture go when a take that outlived an away screen ends.
+    ///
+    /// The hold does not exist behind a locked screen or a hidden page; a
+    /// take that was already recording is the one exception, and it takes the
+    /// exception with it when it ends.
+    fn release_if_away(&self) {
+        let away = self.restraint.lock().unwrap_or_else(PoisonError::into_inner).away();
+        if !away {
+            return;
+        }
+        let stale = self.warm.lock().unwrap_or_else(PoisonError::into_inner).take();
+        let Some(mut held) = stale else {
+            return;
+        };
+        held.end();
+        held.held.release();
+        tauri_plugin_log::log::debug!(
+            target: LOG_TARGET,
+            "the microphone hold was let go with the take it was kept for (event_name \
+             client_mic_hold_released, reason the take outlived an away screen)"
         );
     }
 
@@ -1687,6 +1745,95 @@ mod tests {
             assert_eq!(rig.calls().len(), 3);
         }
 
+        /// **A press that lands after the lock opens nothing.** The key and
+        /// the lock can cross; the press is answered with a line rather than
+        /// a device a locked screen can never feed.
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn a_press_racing_the_lock_opens_nothing_and_says_so() {
+            let rig = Rig::new();
+            rig.mic.set_screen_away(true);
+
+            assert_eq!(
+                rig.mic
+                    .start(&rig.bridge, Some("edge".to_owned()), "page", "take")
+                    .err()
+                    .as_deref(),
+                Some(AWAY),
+                "the press is refused by name",
+            );
+            assert!(rig.calls().is_empty(), "and no device is opened");
+
+            rig.mic.set_screen_away(false);
+            assert!(
+                rig.mic.start(&rig.bridge, Some("edge".to_owned()), "page", "take").is_ok(),
+                "the press records once the screen is back",
+            );
+            assert_eq!(rig.calls(), vec!["open edge"]);
+        }
+
+        /// **A take in flight is not the hold.** Hiding the page mid-take
+        /// must not throw away words already spoken: the capture serves the
+        /// take until the page ends it, and is let go then.
+        #[test]
+        fn a_take_in_flight_outlives_the_page_hiding_and_is_let_go_when_it_ends() {
+            let rig = Rig::new();
+            rig.mic
+                .hold(&rig.bridge, Some("one".to_owned()), "page")
+                .expect("opens")
+                .expect("held");
+            rig.mic.start(&rig.bridge, Some("one".to_owned()), "page", "take-1").expect("starts");
+
+            rig.mic.set_hidden(true);
+            assert_eq!(
+                rig.calls(),
+                vec!["open one"],
+                "the take's capture is not torn out from under it",
+            );
+
+            // A re-stated hold behind the hidden page is still answered with
+            // nothing, and the take keeps its stream.
+            assert!(
+                rig.mic
+                    .hold(&rig.bridge, Some("one".to_owned()), "page")
+                    .expect("answers")
+                    .is_none(),
+            );
+            assert_eq!(rig.calls(), vec!["open one"]);
+
+            // The page's own stop ends the take, and with it the capture the
+            // away screen was waiting on.
+            rig.mic.stop("take-1");
+            assert_eq!(
+                rig.calls(),
+                vec!["open one", "release one"],
+                "the capture is let go with the take it was kept for",
+            );
+
+            rig.mic.set_hidden(false);
+            assert!(
+                rig.mic.hold(&rig.bridge, Some("one".to_owned()), "page").expect("opens").is_some(),
+                "the hold is taken up again on return",
+            );
+            assert_eq!(rig.calls(), vec!["open one", "release one", "open one"]);
+        }
+
+        /// The drain is the other way a take ends, and it owes the same
+        /// release when the screen is away.
+        #[test]
+        fn a_drain_ending_a_take_behind_a_hidden_page_lets_the_capture_go() {
+            let rig = Rig::new();
+            rig.mic
+                .hold(&rig.bridge, Some("one".to_owned()), "page")
+                .expect("opens")
+                .expect("held");
+            rig.mic.start(&rig.bridge, Some("one".to_owned()), "page", "take-1").expect("starts");
+
+            rig.mic.set_hidden(true);
+            drained(&rig, "take-1");
+            assert_eq!(rig.calls(), vec!["open one", "release one"]);
+        }
+
         /// **The reopen budget.** A capture the device keeps dropping is
         /// reopened a few times with growing waits, and then the hold gives
         /// up; it answers nothing and opens nothing until a press, another
@@ -1808,12 +1955,45 @@ mod tests {
             assert_eq!(*attempts.lock().unwrap(), REOPEN_ATTEMPTS + 1);
         }
 
+        /// **The spacing holds through the hold path too.** The rig zeroes
+        /// its waits for the attempt tests, so this one sets a real one and
+        /// proves a hold inside the wait opens nothing.
+        #[test]
+        fn a_reopen_that_is_too_soon_opens_nothing() {
+            let rig = Rig::new();
+            rig.mic.restraint.lock().unwrap().waits =
+                [Duration::ZERO, Duration::from_secs(60), Duration::from_secs(60)];
+            rig.mic
+                .hold(&rig.bridge, Some("one".to_owned()), "page")
+                .expect("opens")
+                .expect("held");
+
+            // The first reopen is taken at once; its wait is the second's.
+            staled(&rig);
+            rig.mic
+                .hold(&rig.bridge, Some("one".to_owned()), "page")
+                .expect("reopens")
+                .expect("held");
+            let opened = rig.calls();
+
+            staled(&rig);
+            assert!(
+                rig.mic
+                    .hold(&rig.bridge, Some("one".to_owned()), "page")
+                    .expect("answers")
+                    .is_none(),
+                "a reopen inside its wait is refused rather than opened",
+            );
+            assert_eq!(rig.calls(), opened, "and nothing is opened or released");
+        }
+
         /// The budget's own clock, without a device: the waits grow between
         /// attempts, the last one is the last, and a real trigger starts it
         /// over.
         #[test]
         fn the_reopen_budget_waits_between_attempts_and_then_gives_up() {
-            let mut restraint = Restraint::default();
+            // The shipped waits, not the test build's default of zero.
+            let mut restraint = Restraint { waits: REOPEN_WAITS, ..Restraint::default() };
             let start = Instant::now();
             assert!(restraint.ask(Some("one")), "the first ask of a device is a change");
 
@@ -2270,6 +2450,68 @@ mod tests {
                 "one",
                 "the hold that was working is the one still standing"
             );
+        }
+
+        /// **A bad pick spends its budget without tearing down the good
+        /// one.** Three failed opens of "bad" must not release the healthy
+        /// capture the previous pick was serving on.
+        #[test]
+        fn a_bad_pick_that_spends_the_budget_leaves_the_healthy_hold_standing() {
+            let log: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+            let opened = Arc::clone(&log);
+            let attempts = Arc::new(Mutex::new(0usize));
+            let counted = Arc::clone(&attempts);
+            let mic = Mic {
+                warm: Mutex::new(None),
+                restraint: Mutex::new(Restraint {
+                    waits: [Duration::ZERO; REOPEN_ATTEMPTS],
+                    ..Restraint::default()
+                }),
+                opener: Box::new(move |device, carry| {
+                    let name = device.unwrap_or("default").to_owned();
+                    if name == "bad" {
+                        *counted.lock().unwrap() += 1;
+                        return Err("no input device named \"bad\"".to_owned());
+                    }
+                    opened.lock().unwrap().push(format!("open {name}"));
+                    Ok(Box::new(Fake {
+                        device: forge_capture::Device {
+                            id: name,
+                            name: "stand-in".to_owned(),
+                            is_default: false,
+                        },
+                        carry,
+                        log: Arc::clone(&opened),
+                    }))
+                }),
+            };
+            let bridge = Bridge::new(None, tokio::sync::mpsc::unbounded_channel().0);
+            mic.hold(&bridge, Some("one".to_owned()), "page").expect("opens").expect("held");
+
+            // The budget and one more: the last is answered with nothing once
+            // it is spent.
+            for _ in 0..REOPEN_ATTEMPTS {
+                assert!(
+                    mic.hold(&bridge, Some("bad".to_owned()), "page").is_err(),
+                    "the bad pick answers the device's words while the budget lasts",
+                );
+            }
+            assert!(
+                mic.hold(&bridge, Some("bad".to_owned()), "page").expect("answers").is_none(),
+                "a spent budget answers no capture",
+            );
+            assert_eq!(*attempts.lock().unwrap(), REOPEN_ATTEMPTS);
+
+            // The healthy hold for the previous pick never left.
+            assert_eq!(
+                mic.hold(&bridge, Some("one".to_owned()), "page")
+                    .expect("answers")
+                    .expect("held")
+                    .id,
+                "one",
+                "the healthy capture is not torn down by another pick's failures",
+            );
+            assert_eq!(log.lock().unwrap().clone(), vec!["open one"], "and it was never reopened");
         }
     }
 

@@ -37,6 +37,13 @@ import type { MicSource } from './take';
  */
 const page = mintPromptId();
 
+/**
+ * The shell's wake route: it says the screen is back, and the page takes the
+ * hold up from its own pick. Kept in step with `MIC_AWAKE` in the shell's
+ * `lib.rs`.
+ */
+export const MIC_AWAKE = 'client://mic-awake';
+
 /** One live capture in the shell, as this side sees it. */
 export class ShellMic implements MicSource {
   onFrame: ((bytes: Uint8Array) => void) | null = null;
@@ -197,7 +204,7 @@ export async function setShellMicHidden(hidden: boolean): Promise<void> {
  */
 export async function onShellMicAwake(awake: () => void): Promise<UnlistenFn> {
   if (!isTauri()) return () => {};
-  return listen('client://mic-awake', () => {
+  return listen(MIC_AWAKE, () => {
     awake();
   });
 }

@@ -1,6 +1,11 @@
+// @vitest-environment jsdom
 /**
  * The desktop's capture source, against a shell that is a fake: what it asks
  * the shell for, and in what order.
+ *
+ * **A DOM, because the page's own visibility rides the hold**: a node-only
+ * run has no `document.hidden`, so a hardcoded `false` would pass every case
+ * that means to pin a hidden page.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -196,6 +201,19 @@ describe('the hold', () => {
       (shell.invoked[0]?.args as { hidden?: unknown }).hidden,
       'the hold and the page visibility are one reading in the shell, so a hide cannot land between them',
     ).toBe(false);
+  });
+
+  it('states a hidden page as hidden, so the shell never holds behind it', async () => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    try {
+      await holdShellMic('coreaudio:one');
+    } finally {
+      Reflect.deleteProperty(document, 'hidden');
+    }
+    expect(
+      (shell.invoked[0]?.args as { hidden?: unknown }).hidden,
+      'a page that reports itself hidden must not read as on screen',
+    ).toBe(true);
   });
 
   it('holds nothing in a browser, where the shell is not the one capturing', async () => {
