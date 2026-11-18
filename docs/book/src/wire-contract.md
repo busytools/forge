@@ -49,6 +49,33 @@ An empty argument is rejected outright rather than passed through,
 because with no filter left it would capture everything against the
 real API.
 
+**The engine parity matrix** is a separate opt-in run rather than a
+scenario mode. It spawns the same session shape and environment on
+`claude` and on `claude-headless`, captures every answer forge consumes -
+the init frame, context usage before and after a turn, turn usage and cost,
+model resolution, streaming frame shapes, the control protocol, hook
+payloads and permission asks - and diffs the two field by field. A field
+that differs fails naming both values,
+`rawMaxTokens: reference=1048576 port=200000`. Token counters are compared
+with a narrow tolerance the control run measured; every other value must
+match exactly. Turn cost and the cache-read/cache-creation split are printed
+for the record rather than compared: they move with which engine warmed the
+shared prompt cache first.
+The matrix inherits the operator's `CLAUDE_CONFIG_DIR` (or `~/.claude`) on
+purpose, so the port is judged on the commands, skills, agents and hooks the
+operator actually has; the same run can green differently on another
+machine. `just engine-parity-control` separates operator noise from engine
+behaviour by running every check twice on `claude`: a field that differs
+between two reference spawns is noise. The probe removes the transcripts its
+sessions write. The matrix needs both binaries on `PATH` and burns real
+tokens, so it is never part of `just check` or CI.
+
+```bash
+just engine-parity                   # the whole matrix
+just engine-parity context_usage     # one check
+just engine-parity-control           # reference-vs-reference noise control
+```
+
 ## Baselines
 
 Committed baselines live at:
