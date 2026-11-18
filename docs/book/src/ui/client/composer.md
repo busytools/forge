@@ -204,21 +204,41 @@ anchored to the row, the row grows under it and the panel stays where it is. Its
 held for the connection rather than remade whenever the page hands the composer its props
 again, so a record frame never blinks the rows back to "reading".
 
-**On the desktop the picked input stays open for the client's whole
-run**: the shell takes the hold as the page that takes typing appears and
-again whenever the pick changes, so a press records from the press rather
-than opening a device under it, and a take reuses the held stream instead
-of paying the device's own start-up. The microphone indicator stays lit
-while the hold is on - the accepted cost - and macOS asks for the
-microphone as the page opens rather than at the first press. In a browser
-the capture is the webview's own, opened per take as it always was.
+**On the desktop the picked input stays open while the client is on screen
+and unlocked**: the shell takes the hold as the page that takes typing
+appears and again whenever the pick changes, so a press records from the
+press rather than opening a device under it, and a take reuses the held
+stream instead of paying the device's own start-up. The microphone
+indicator stays lit while the hold is on - the accepted cost - and macOS
+asks for the microphone as the page opens rather than at the first press.
+In a browser the capture is the webview's own, opened per take as it always
+was.
 
-**A held capture the device has stopped serving is opened again.** The
-audio layer under the client changes on its own - Android disconnects the
-app's input stream when the route moves, and a disconnected stream never
-delivers again - so the hold and the press open the device again when the
-held capture has gone half a second without a block. One such event does
-not leave every later press recording nothing.
+**The hold is let go when the screen goes away.** A locked screen, a
+sleeping display and a hidden page all feed no take, so the shell lets the
+device go there: on macOS it reads the session's lock state (locked, the
+display asleep, or another user on the console - the page cannot see a
+locked screen), the page reports its own visibility, and neither the hold
+nor a reopen opens the device while either says away. When the screen is
+back and the page is on screen again, the page re-holds from its own pick -
+so the hold is only ever taken where a surface still offers dictation.
+
+**On the phone the lock reading is the page's own**, because the shell has
+none there: the app going to the background is a hidden page, so the hold
+is let go when it does and taken up again when it returns. A take already
+recording is never cut by any of these: it keeps the device until the page
+ends it, and the hold is let go then.
+
+**A held capture the device has stopped serving is opened again within a
+budget.** The audio layer under the client changes on its own - Android
+disconnects the app's input stream when the route moves, and a disconnected
+stream never delivers again - so the hold and the press open the device
+again when the held capture has gone half a second without a block. The
+reopens are counted and spaced: three attempts with growing waits, then the
+hold gives up and opens nothing until a press, another pick, or the screen
+coming back starts the budget over. An unbounded retry is what a locked
+screen used to feed: every open rebuilds the macOS menu bar, and a laptop
+left locked overnight leaked gigabytes to it.
 
 **A capture the device is feeding nothing says so while it is running.** The
 row's chip stays `ready` and no graph draws for as long as that lasts, so past

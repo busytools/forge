@@ -1,6 +1,11 @@
+// @vitest-environment jsdom
 /**
  * The desktop's capture source, against a shell that is a fake: what it asks
  * the shell for, and in what order.
+ *
+ * **A DOM, because the page's own visibility rides the hold**: a node-only
+ * run has no `document.hidden`, so a hardcoded `false` would pass every case
+ * that means to pin a hidden page.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -54,7 +59,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: shell.listen }));
 
-import { holdShellMic, ShellMic } from './mic-shell';
+import { holdShellMic, onShellMicAwake, setShellMicHidden, ShellMic } from './mic-shell';
 
 /** The live `client://mic` handler, or a failure if none is registered. */
 function handler(): (event: { payload: number[] }) => void {
@@ -190,6 +195,27 @@ describe('the hold', () => {
     ).toMatchObject({ device: null });
   });
 
+  it('states whether the page is on screen with every hold', async () => {
+    await holdShellMic('coreaudio:one');
+    expect(
+      (shell.invoked[0]?.args as { hidden?: unknown }).hidden,
+      'the hold and the page visibility are one reading in the shell, so a hide cannot land between them',
+    ).toBe(false);
+  });
+
+  it('states a hidden page as hidden, so the shell never holds behind it', async () => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    try {
+      await holdShellMic('coreaudio:one');
+    } finally {
+      Reflect.deleteProperty(document, 'hidden');
+    }
+    expect(
+      (shell.invoked[0]?.args as { hidden?: unknown }).hidden,
+      'a page that reports itself hidden must not read as on screen',
+    ).toBe(true);
+  });
+
   it('holds nothing in a browser, where the shell is not the one capturing', async () => {
     shell.inTauri.held = false;
     await holdShellMic('coreaudio:one');
@@ -202,5 +228,45 @@ describe('the hold', () => {
       holdShellMic('coreaudio:gone'),
       'the press then opens the device itself, exactly as it did before there was a hold',
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('the page on screen', () => {
+  it('states its visibility to the shell, which cannot see a hidden window', async () => {
+    await setShellMicHidden(true);
+    await setShellMicHidden(false);
+    expect(
+      shell.invoked,
+      'the hold is let go behind a hidden page, and taken up when it is back',
+    ).toMatchObject([
+      { command: 'client_mic_hidden', args: { hidden: true } },
+      { command: 'client_mic_hidden', args: { hidden: false } },
+    ]);
+  });
+
+  it('reports nothing in a browser, where there is no shell hold to let go', async () => {
+    shell.inTauri.held = false;
+    await setShellMicHidden(true);
+    expect(shell.invoked).toEqual([]);
+  });
+
+  it('hands the screen waking back to the page, which knows a surface still offers dictation', async () => {
+    const woken: number[] = [];
+    const off = await onShellMicAwake(() => woken.push(1));
+    const wake = shell.hearing.find((entry) => entry.event === 'client://mic-awake');
+    wake?.handler?.({ payload: [] });
+    expect(
+      woken,
+      'the shell says the screen is back rather than opening a device behind whichever route shows',
+    ).toHaveLength(1);
+    off();
+    expect(wake?.handler, "the listener is the route effect's to remove").toBeNull();
+  });
+
+  it('registers no wake route in a browser', async () => {
+    shell.inTauri.held = false;
+    const off = await onShellMicAwake(() => undefined);
+    expect(shell.hearing, 'the web leg has no shell to wake').toHaveLength(0);
+    off();
   });
 });

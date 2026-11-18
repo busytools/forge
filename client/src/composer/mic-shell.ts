@@ -37,6 +37,13 @@ import type { MicSource } from './take';
  */
 const page = mintPromptId();
 
+/**
+ * The shell's wake route: it says the screen is back, and the page takes the
+ * hold up from its own pick. Kept in step with `MIC_AWAKE` in the shell's
+ * `lib.rs`.
+ */
+export const MIC_AWAKE = 'client://mic-awake';
+
 /** One live capture in the shell, as this side sees it. */
 export class ShellMic implements MicSource {
   onFrame: ((bytes: Uint8Array) => void) | null = null;
@@ -144,17 +151,60 @@ export function openShellMic(device: string | null): Promise<MicSource> {
  * Called where the input in force becomes known - the surface that takes
  * typing, as it mounts, and the panel on every pick - and it is the shell
  * that holds the device from there: a take consumes the held stream without
- * closing it, and the hold outlives every take until the client exits.
+ * closing it, and the hold outlives every take while the client is on screen
+ * and unlocked.
  *
- * The cost is the microphone indicator staying lit while the client runs.
+ * The cost is the microphone indicator staying lit while the hold is on.
  * A hold that will not open is not drawn: the shell logs it, and the next
  * press opens the device itself, exactly as it did before there was a hold.
  */
 export async function holdShellMic(device: string | null): Promise<void> {
   if (!isTauri()) return;
   try {
-    await invoke('client_mic_hold', { device, page });
+    // **The page's own visibility rides the hold**, so the shell's hidden
+    // flag and the hold are one reading: a hold can never land between the
+    // page hiding and the shell learning it. Read off `globalThis`: the web
+    // leg has a document, and a test run of this module may not.
+    const hidden = globalThis.document?.hidden ?? false;
+    await invoke('client_mic_hold', { device, page, hidden });
   } catch {
     // The shell's own log carries why; the press falls back to a cold open.
   }
+}
+
+/**
+ * Tell the shell this page is hidden, so the hold is let go.
+ *
+ * **The hold does not exist behind a hidden page.** A minimized or occluded
+ * window feeds no take, and the shell cannot see its own visibility - this
+ * side is the only one that can say. A hold taken while the page is visible
+ * states that in its own call, so this is the hide's half alone; the page
+ * takes the hold up again from its own pick when it is back.
+ *
+ * The screen's own lock is the shell's to read, and it applies the same rule
+ * there; see `onShellMicAwake` for the other half.
+ */
+export async function setShellMicHidden(hidden: boolean): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    await invoke('client_mic_hidden', { hidden });
+  } catch {
+    // The shell is gone, and the hold went with it.
+  }
+}
+
+/**
+ * The screen is back: the shell let the hold go when the screen locked, and
+ * the page takes it up again.
+ *
+ * **Only a surface that offers dictation re-holds** - the shell cannot know
+ * which route is showing, so it says the screen is back rather than opening
+ * a device behind the home or board page. `awake` is asked to hold for the
+ * route it is on, and does nothing where dictation is not offered.
+ */
+export async function onShellMicAwake(awake: () => void): Promise<UnlistenFn> {
+  if (!isTauri()) return () => {};
+  return listen(MIC_AWAKE, () => {
+    awake();
+  });
 }

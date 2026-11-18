@@ -1,9 +1,12 @@
 <script lang="ts">
+  import type { UnlistenFn } from '@tauri-apps/api/event';
+
   import Chat from '../chat/Chat.svelte';
   import type { Attempt } from '../connect/attempt';
   import { boxKey } from '../composer/box.svelte';
   import Composer from '../composer/Composer.svelte';
   import { holdDeviceFor } from '../composer/dictation';
+  import { onShellMicAwake, setShellMicHidden } from '../composer/mic-shell';
   import { dictationOffered } from '../composer/view';
   import { watchBoard } from '../board/live';
   import Connect from '../connect/Connect.svelte';
@@ -24,7 +27,7 @@
   import Session from '../session/Session.svelte';
   import Share from '../share/Share.svelte';
   import { pendingShare } from '../share/pending';
-  import type { Connection } from '../socket';
+  import { report, type Connection } from '../socket';
   import type { ClientSettings } from '../wire/types';
 
   let {
@@ -153,6 +156,13 @@
    * hold follows the seat's own pick, and none is taken while dictation is
    * not offered - a switched-off install must not light the indicator - so
    * it lands as the mic is drawn and moves with the seat.
+   *
+   * **And it follows the screen.** The page is the only side that can see
+   * its own visibility, and the shell is the only side that can see the
+   * screen (a locked one delivers no audio), so the page states its own
+   * reading here and the shell applies both rules: the hold does not exist
+   * behind a hidden window or a locked screen. Both coming back re-hold,
+   * because a surface that still offers dictation is the page's to know.
    */
   $effect(() => {
     if (!dictate) return;
@@ -161,15 +171,43 @@
     // comment, reply, edit and summary boxes all wear one (the lead's gate,
     // 2026-10-17: the files route was missing and its first press opened a
     // device under the box).
+    let seat: string | null = null;
     if (
-      route.name !== 'session' &&
-      route.name !== 'review' &&
-      route.name !== 'doc' &&
-      route.name !== 'files'
+      route.name === 'session' ||
+      route.name === 'review' ||
+      route.name === 'doc' ||
+      route.name === 'files'
     ) {
-      return;
+      seat = boxKey(route.slot);
     }
-    holdDeviceFor(boxKey(route.slot));
+    // **The hide releases and the show re-holds**, and the hold itself says
+    // the page is visible, so the two readings can never cross.
+    const sync = (): void => {
+      if (document.hidden) void setShellMicHidden(true);
+      else if (seat !== null) holdDeviceFor(seat);
+    };
+    sync();
+    document.addEventListener('visibilitychange', sync);
+
+    // **The screen's lock is the shell's**, and this is its way back: the
+    // shell says it is awake, and a route that still offers dictation takes
+    // the hold up again. A refused listen is retried by the next run of this
+    // effect, the next route, rather than killing the route in silence.
+    let live = true;
+    let stop: UnlistenFn | null = null;
+    void onShellMicAwake(() => {
+      if (seat !== null) holdDeviceFor(seat);
+    })
+      .then((off) => {
+        if (live) stop = off;
+        else off();
+      })
+      .catch((why: unknown) => report('the microphone wake route did not open', why));
+    return () => {
+      live = false;
+      stop?.();
+      document.removeEventListener('visibilitychange', sync);
+    };
   });
 </script>
 
