@@ -52,12 +52,14 @@ real API.
 **The engine parity matrix** is a separate opt-in run rather than a
 scenario mode. It spawns the same session shape and environment on
 `claude` and on `claude-headless`, captures every answer forge consumes -
-the init frame, context usage, usage and cost, model resolution, streaming
-frame shapes, the control protocol, hook payloads and permission asks -
-and diffs the two field by field. A field that differs fails naming both
-values, `rawMaxTokens: reference=1000000 port=200000`. It needs both
-binaries on `PATH` and burns real tokens, so it is never part of
-`just check` or CI.
+the init frame, context usage, turn usage and cost, model resolution,
+streaming frame shapes, the control protocol, hook payloads and permission
+asks - and diffs the two field by field. A field that differs fails naming
+both values, `rawMaxTokens: reference=1000000 port=200000`. Turn cost and
+the cache-read/cache-creation split are printed for the record rather than
+compared: they move with which engine warmed the shared prompt cache first.
+The matrix needs both binaries on `PATH` and burns real tokens, so it is
+never part of `just check` or CI.
 
 ```bash
 just engine-parity                   # the whole matrix
