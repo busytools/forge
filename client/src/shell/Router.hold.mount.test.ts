@@ -12,17 +12,25 @@ import { mount, flushSync, unmount } from 'svelte';
 import { writable } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-/** The shell, as the page reaches it: the holds it was asked for, and no more. */
+/** The shell, as the page reaches it: the holds it was asked for, and the events it raised. */
 const shell = vi.hoisted(() => {
   const holds: (string | null)[] = [];
+  const hearing: { event: string; handler: (() => void) | null }[] = [];
   return {
     holds,
+    hearing,
     invoke: (command: string, args?: { device?: string | null }): Promise<unknown> => {
       if (command === 'client_mic_hold') holds.push(args?.device ?? null);
       return Promise.resolve(undefined);
     },
     isTauri: (): boolean => true,
-    listen: (): Promise<() => void> => Promise.resolve(() => {}),
+    listen: (event: string, handler: () => void): Promise<() => void> => {
+      const entry: { event: string; handler: (() => void) | null } = { event, handler };
+      hearing.push(entry);
+      return Promise.resolve(() => {
+        entry.handler = null;
+      });
+    },
   };
 });
 
@@ -55,6 +63,7 @@ afterEach(async () => {
 
 beforeEach(() => {
   shell.holds.length = 0;
+  shell.hearing.length = 0;
 });
 
 /** One store that has been subscribed and never answered, which draws empty. */
@@ -179,6 +188,22 @@ describe('the microphone hold at the router', () => {
       shell.holds,
       "the session page's first press must record from the press, not open a device under it",
     ).toEqual(['coreaudio:one']);
+  });
+
+  it('takes the hold up again when the shell says the screen is back', () => {
+    rememberDevice(KEY, 'coreaudio:two');
+    shell.holds.length = 0;
+
+    draw({ name: 'session', slot: LEAD });
+    expect(shell.holds, 'the hold is taken as the page draws').toEqual(['coreaudio:two']);
+
+    const wake = shell.hearing.find((entry) => entry.event === 'client://mic-awake');
+    expect(wake, 'the page listens for the shell saying the screen is back').toBeDefined();
+    wake?.handler?.();
+    expect(
+      shell.holds,
+      'the unlock re-holds without a press: a locked screen let the device go',
+    ).toEqual(['coreaudio:two', 'coreaudio:two']);
   });
 
   it('holds nothing while dictation is not offered', () => {

@@ -96,7 +96,18 @@ mod commands {
         let (events, rx) = tokio::sync::mpsc::unbounded_channel();
         let bridge = Bridge::new(Some(app.clone()), events);
         app.manage(Arc::clone(&bridge));
-        app.manage(Arc::new(crate::mic::Mic::default()));
+        let mic = Arc::new(crate::mic::Mic::default());
+        app.manage(Arc::clone(&mic));
+        // **The hold follows the screen**, which only the shell can see: a
+        // locked screen delivers no audio, so the capture is let go there and
+        // the page takes it up again on this wake.
+        #[cfg(target_os = "macos")]
+        {
+            let awake = app.clone();
+            crate::mic::screen::watch(mic, move || {
+                let _ = awake.emit("client://mic-awake", ());
+            });
+        }
         // **The viewer is the desktop's**, and so is the native layer it
         // draws into: the phone paints the same frames in its page instead.
         #[cfg(target_os = "macos")]
@@ -242,8 +253,11 @@ mod commands {
     ///
     /// The page names the input to hold - at client start, and again when
     /// the pick changes - and the device stays open, and its indicator lit,
-    /// until the client exits. A take consumes the held stream without
-    /// closing it, so the hold outlives every take.
+    /// while the client is on screen and unlocked. It is let go when the
+    /// screen locks or the page hides, and this command answers `null` there
+    /// rather than opening a device a take could never be fed from. A take
+    /// consumes the held stream without closing it, so the hold outlives
+    /// every take.
     ///
     /// A hold that will not open is answered rather than drawn: the caller
     /// carries on, and a press then opens the device itself exactly as it
@@ -253,19 +267,27 @@ mod commands {
     /// The hold also says which page load it comes from, which is how a
     /// reload mid-take is caught: a take left recording by a page that is
     /// gone can be ended by nothing else, so a hold from another page ends it
-    /// rather than being answered by it.
+    /// rather than being answered by it. And it states whether the page is on
+    /// screen, which the shell applies before it reads the hold - one call is
+    /// one reading of both.
     #[tauri::command]
     pub async fn client_mic_hold(
         bridge: tauri::State<'_, Arc<Bridge>>,
         mic: tauri::State<'_, Arc<crate::mic::Mic>>,
         device: Option<String>,
         page: String,
+        hidden: bool,
     ) -> Result<Value, String> {
         let bridge = Arc::clone(bridge.inner());
         let mic = Arc::clone(mic.inner());
         let logged = device.clone();
         let answered = crate::mic::guarded("the hold", logged, move || {
-            mic.hold(&bridge, device, &page).map(|held| crate::mic::device_json(&held))
+            // **The page's visibility rides the hold**, so the flag and the
+            // hold are one reading: a hold can never land between the page
+            // hiding and the shell learning it.
+            mic.set_hidden(hidden);
+            mic.hold(&bridge, device, &page)
+                .map(|held| held.map_or(Value::Null, |held| crate::mic::device_json(&held)))
         })
         .await?;
         if let Err(why) = &answered {
@@ -275,6 +297,19 @@ mod commands {
             tauri_plugin_log::log::warn!("the microphone hold did not open: {why}");
         }
         answered
+    }
+
+    /// Tell the shell whether the page is on screen.
+    ///
+    /// **The hold does not exist behind a hidden page**: a minimized or
+    /// occluded window feeds no take, and a capture kept for it is one the
+    /// next staleness check reopens. The page reports a hide here, and a hold
+    /// taken while visible states its own reading, so a page that loaded
+    /// hidden does not hold either.
+    #[tauri::command(async)]
+    pub fn client_mic_hidden(mic: tauri::State<'_, Arc<crate::mic::Mic>>, hidden: bool) {
+        let mic = Arc::clone(mic.inner());
+        mic.set_hidden(hidden);
     }
 
     /// Open this machine's microphone for a take, and answer with the input
@@ -688,6 +723,7 @@ pub fn run() -> u8 {
             commands::client_mic_start,
             commands::client_mic_drain,
             commands::client_mic_stop,
+            commands::client_mic_hidden,
             commands::client_mic_devices,
             client_mic_state,
             client_tap_seat,
@@ -768,6 +804,7 @@ pub fn run() -> u8 {
             commands::client_mic_start,
             commands::client_mic_drain,
             commands::client_mic_stop,
+            commands::client_mic_hidden,
             commands::client_mic_devices,
             client_mic_state,
             client_tap_seat,
