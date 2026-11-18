@@ -6,7 +6,7 @@
 //! shape and environment on `claude` and on `claude-headless`, projects the
 //! captured answer into a JSON value, and diffs the two values field by
 //! field. A difference panics naming the field and both values:
-//! `rawMaxTokens: reference=1000000 port=200000`.
+//! `rawMaxTokens: reference=1048576 port=200000`.
 //!
 //! ## What a check may compare
 //!
@@ -15,7 +15,19 @@
 //! entry says why. Values that merely happen to be unstable (model prose,
 //! sampling) are not compared at all: a check projects the frames it owns
 //! into stable fields rather than dumping raw lines, so an unlisted key that
-//! starts differing is a failure.
+//! starts differing is a failure. The few token counters two reference
+//! spawns legitimately disagree on are compared with a narrow tolerance
+//! measured by the control run; every other value must match exactly.
+//!
+//! **The matrix runs under the operator's Claude config on purpose.** It
+//! inherits `CLAUDE_CONFIG_DIR` (or `~/.claude`) so the port is judged on the
+//! command, skill, agent and hook surface the operator actually has: a port
+//! that enumerates none of it must fail even though it would match on a bare
+//! config dir. The same run therefore greens differently on another machine,
+//! and `just engine-parity-control` is how operator noise is told apart from
+//! engine behaviour: it runs every check twice on the reference, and a field
+//! that differs there is noise that must not be read as a port finding.
+//! Transcripts the probe writes are removed after each session.
 //!
 //! Runs are opted into with `#[ignore]` and the `just engine-parity` recipe.
 //! They are never part of `just check` or CI: both binaries and a real model
@@ -89,6 +101,15 @@ const ENGINE_SPECIFIC_KEYS: &[&str] = &[
     "session_state",
     "tool_use_result",
 ];
+
+/// True when the matrix is running as a reference-vs-reference control
+/// (`FORGE_PARITY_CONTROL=1`, the `just engine-parity-control` recipe). In
+/// control mode every check is captured twice on the reference and the two
+/// captures are diffed; a field that differs there is operator noise, not an
+/// engine finding.
+pub fn control_mode() -> bool {
+    std::env::var_os("FORGE_PARITY_CONTROL").is_some_and(|value| !value.is_empty())
+}
 
 /// Why the matrix cannot run here, or `None` when both engines are present.
 pub fn unavailable_reason() -> Option<String> {
@@ -181,9 +202,16 @@ impl Wire {
     /// The body of the last answer to a request of `subtype` - what the CLI
     /// put under `response.response`. `None` when the port never answered.
     pub fn control_body(&self, subtype: &str) -> Option<Value> {
+        self.control_bodies(subtype).into_iter().next_back()
+    }
+
+    /// Every answer body to a request of `subtype`, in arrival order. A check
+    /// that queries twice (before and after a turn) reads both here.
+    pub fn control_bodies(&self, subtype: &str) -> Vec<Value> {
         self.control_responses(subtype)
-            .last()
-            .and_then(|frame| frame.pointer("/response/response").cloned())
+            .iter()
+            .filter_map(|frame| frame.pointer("/response/response").cloned())
+            .collect()
     }
 
     /// The success/error discriminant of the last answer to `subtype`.
@@ -338,11 +366,39 @@ fn diff_at(path: &str, reference: &Value, port: &Value, out: &mut Vec<Difference
             }
         }
         (reference_value, port_value) if scalar_equal(reference_value, port_value) => {}
+        (reference_value, port_value)
+            if within_measured_noise(path, reference_value, port_value) => {}
         (reference_value, port_value) => out.push(Difference {
             field: path.to_owned(),
             reference: reference_value.clone(),
             port: port_value.clone(),
         }),
+    }
+}
+
+/// Fields whose values two reference spawns legitimately differ on, measured
+/// by `just engine-parity-control`, and the tolerance each is compared with.
+///
+/// Token counters are estimates: the same prompt and the same model answered
+/// twice on `claude` differ by a few dozen prompt tokens and by a point of
+/// percentage, because the conversation's own round-trip is counted slightly
+/// differently each time. The matrix's real findings are orders of magnitude
+/// larger than this band (a 200k window against 1M moves `percentage` by
+/// several points and `totalTokens` by tens of thousands), so a narrow
+/// tolerance keeps the diff honest without making the matrix flake on its own
+/// control. A field absent from this list must match exactly.
+fn within_measured_noise(field: &str, reference: &Value, port: &Value) -> bool {
+    let (Some(reference), Some(port)) = (reference.as_f64(), port.as_f64()) else {
+        return false;
+    };
+    match field {
+        "usage.prompt_tokens" | "before_turn.totalTokens" | "after_turn.totalTokens" => {
+            // One percent, and never less than 100 tokens, of the larger value.
+            let scale = reference.abs().max(port.abs());
+            (reference - port).abs() <= (scale * 0.01).max(100.0)
+        }
+        "before_turn.percentage" | "after_turn.percentage" => (reference - port).abs() <= 1.0,
+        _ => false,
     }
 }
 
@@ -478,7 +534,66 @@ where
     if let Err(error) = client.disconnect().await {
         eprintln!("{binary}: disconnect failed (frames already captured): {error}");
     }
+    remove_transcripts(&wire);
     Ok((wire, captured))
+}
+
+/// Remove the transcript files this session wrote, and nothing else.
+///
+/// A matrix run spawns roughly thirty short sessions, each of which the CLI
+/// persists under `<config>/projects/<slug>/<session-id>.jsonl`. Only the ids
+/// the captured frames name are touched, so a concurrent real session is safe;
+/// a file that has not landed yet is left, and the next run's cleanup does not
+/// revisit it. Best-effort by design: cleanup must never fail a check.
+fn remove_transcripts(wire: &Wire) {
+    let Some(config_dir) = config_dir() else {
+        return;
+    };
+    let mut session_ids: Vec<String> = wire
+        .inbound_frames()
+        .iter()
+        .filter_map(|frame| {
+            frame
+                .get("session_id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+        })
+        .collect();
+    session_ids.sort();
+    session_ids.dedup();
+    if session_ids.is_empty() {
+        return;
+    }
+    let Ok(projects) = std::fs::read_dir(config_dir.join("projects")) else {
+        return;
+    };
+    for project in projects.flatten() {
+        let project_dir = project.path();
+        if !project_dir.is_dir() {
+            continue;
+        }
+        for session_id in &session_ids {
+            let transcript = project_dir.join(format!("{session_id}.jsonl"));
+            if transcript.is_file() {
+                let _ = std::fs::remove_file(&transcript);
+            }
+            // Sub-agent transcripts live in a directory named for the session.
+            let subagents = project_dir.join(session_id);
+            if subagents.is_dir() {
+                let _ = std::fs::remove_dir_all(&subagents);
+            }
+        }
+    }
+}
+
+/// The config dir the spawned engines inherit: `CLAUDE_CONFIG_DIR`, else
+/// `~/.claude`. Read here only to locate the transcripts a probe session wrote.
+fn config_dir() -> Option<std::path::PathBuf> {
+    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR") {
+        return Some(dir.into());
+    }
+    std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".claude"))
 }
 
 /// Wait for the turn's closing `result` frame. A transport error is a failed
@@ -551,33 +666,48 @@ pub async fn capture_init_frame(binary: &str) -> Result<Value, String> {
         "model": field(&init, "/model"),
         "tools": sorted_strings(&field(&init, "/tools")),
         "tools_count": field(&init, "/tools").as_array().map_or(Value::Null, |tools| json!(tools.len())),
-        "mcp_servers": sorted_by_name(field(&init, "/mcp_servers")),
+        "mcp_servers": mask(&sorted_by_name(field(&init, "/mcp_servers"))),
         "slash_commands": sorted_strings(&field(&init, "/slash_commands")),
         "agents": sorted_strings(&field(&init, "/agents")),
-        "betas": field(&init, "/betas"),
+        "betas": mask(&field(&init, "/betas")),
     }))
 }
 
-/// (2) Context usage after one trivial turn: the window and the percentage
-/// derived from it.
+/// (2) Context usage at spawn and after one trivial turn: the window and the
+/// percentage derived from it. The pre-turn snapshot is the one a
+/// just-started seat draws, so it is compared as its own set of fields.
 pub async fn capture_context_usage(binary: &str) -> Result<Value, String> {
     let (wire, ()) = session(binary, base_options().max_turns(1), |client, events| async move {
+        // Before any prompt: no init frame yet, but the usage query is local.
+        let _ = bounded("get_context_usage (before turn)", client.get_context_usage()).await;
         client.send_user_message(TRIVIAL_PROMPT).await.map_err(|error| error.to_string())?;
         let mut events = events;
         await_result(&mut events).await?;
-        let _ = bounded("get_context_usage", client.get_context_usage()).await;
+        let _ = bounded("get_context_usage (after turn)", client.get_context_usage()).await;
         Ok((client, events, ()))
     })
     .await?;
-    let body =
-        wire.control_body("get_context_usage").ok_or("no get_context_usage answer was captured")?;
+    let bodies = wire.control_bodies("get_context_usage");
+    if bodies.len() < 2 {
+        return Err(format!(
+            "expected a get_context_usage answer before and after the turn, captured {}",
+            bodies.len()
+        ));
+    }
     Ok(json!({
-        "rawMaxTokens": field(&body, "/rawMaxTokens"),
-        "maxTokens": field(&body, "/maxTokens"),
-        "percentage": field(&body, "/percentage"),
-        "totalTokens": field(&body, "/totalTokens"),
-        "model": field(&body, "/model"),
+        "before_turn": context_snapshot(&bodies[0]),
+        "after_turn": context_snapshot(&bodies[1]),
     }))
+}
+
+fn context_snapshot(body: &Value) -> Value {
+    json!({
+        "rawMaxTokens": field(body, "/rawMaxTokens"),
+        "maxTokens": field(body, "/maxTokens"),
+        "percentage": field(body, "/percentage"),
+        "totalTokens": field(body, "/totalTokens"),
+        "model": field(body, "/model"),
+    })
 }
 
 /// (3) Usage and cost of one trivial turn.
@@ -604,7 +734,8 @@ pub async fn capture_usage_and_cost(binary: &str) -> Result<Value, String> {
     let result = wire.last_result().ok_or("no result frame was captured")?;
     let usage = field(&result, "/usage");
     // The compared turn's own transcript entry: the last assistant frame is
-    // turn two's, whose cache state is symmetric across the two engines.
+    // turn two's. Only its input and output counts are compared; the cache
+    // split is not, for the same reason as the result frame's.
     let assistant_usage = wire
         .turn_frames()
         .into_iter()
@@ -615,8 +746,6 @@ pub async fn capture_usage_and_cost(binary: &str) -> Result<Value, String> {
             json!({
                 "input_tokens": field(&frame_usage, "/input_tokens"),
                 "output_tokens": field(&frame_usage, "/output_tokens"),
-                "cache_creation_input_tokens": field(&frame_usage, "/cache_creation_input_tokens"),
-                "cache_read_input_tokens": field(&frame_usage, "/cache_read_input_tokens"),
             })
         });
     // The cache split, the session cost and the modelUsage aggregate are
@@ -630,9 +759,15 @@ pub async fn capture_usage_and_cost(binary: &str) -> Result<Value, String> {
             .iter()
             .filter_map(|key| usage.get(*key).and_then(Value::as_u64))
             .sum();
+    let assistant_frame_usage = wire
+        .turn_frames()
+        .into_iter()
+        .rev()
+        .find(|frame| frame.get("type").and_then(Value::as_str) == Some("assistant"))
+        .map_or(Value::Null, |frame| field(&frame, "/message/usage"));
     eprintln!(
         "engine-parity usage_and_cost: {binary} observed turn_usage={usage} \
-         total_cost_usd={} modelUsage={}",
+         assistant_usage={assistant_frame_usage} total_cost_usd={} modelUsage={}",
         field(&result, "/total_cost_usd"),
         field(&result, "/modelUsage")
     );
@@ -677,24 +812,24 @@ pub async fn capture_model_resolution(binary: &str) -> Result<Value, String> {
 
     let default_case = model_case(binary, None, &[]).await?;
     let default_model = default_case.get("init_model").and_then(Value::as_str).map(str::to_owned);
-    if default_model.as_deref().is_none_or(str::is_empty) {
+    let Some(default_model) = default_model.filter(|model| !model.is_empty()) else {
         return Err("the default model case captured no resolved model".to_owned());
-    }
+    };
     cases.insert("default".to_owned(), default_case);
 
-    if let Some(model) = &default_model {
-        // The default can already carry the suffix (a project configured for
-        // the 1M window). Strip it so `plain` and `one_m_suffix` compare the
-        // two spellings rather than doubling the suffix.
-        let plain = model.strip_suffix("[1m]").unwrap_or(model).to_owned();
-        if plain.as_str() != model.as_str() {
-            cases.insert("plain".to_owned(), model_case(binary, Some(plain.clone()), &[]).await?);
-        }
-        cases.insert(
-            "one_m_suffix".to_owned(),
-            model_case(binary, Some(format!("{plain}[1m]")), &[]).await?,
-        );
+    // The default can carry the suffix (a project configured for the 1M
+    // window). Strip it so `plain` and `one_m_suffix` compare the two
+    // spellings, and so the env overrides below run on the plain model: a
+    // `[1m]` suffix would otherwise decide the window before the override is
+    // read, hiding the env red behind the conditional `plain` case.
+    let plain = default_model.strip_suffix("[1m]").unwrap_or(&default_model).to_owned();
+    if plain != default_model {
+        cases.insert("plain".to_owned(), model_case(binary, Some(plain.clone()), &[]).await?);
     }
+    cases.insert(
+        "one_m_suffix".to_owned(),
+        model_case(binary, Some(format!("{plain}[1m]")), &[]).await?,
+    );
     cases.insert("alias".to_owned(), model_case(binary, Some("sonnet".to_owned()), &[]).await?);
     cases.insert(
         "unknown".to_owned(),
@@ -702,11 +837,12 @@ pub async fn capture_model_resolution(binary: &str) -> Result<Value, String> {
     );
     cases.insert(
         "max_context_override".to_owned(),
-        model_case(binary, None, &[("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "300000")]).await?,
+        model_case(binary, Some(plain.clone()), &[("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "300000")])
+            .await?,
     );
     cases.insert(
         "auto_compact_override".to_owned(),
-        model_case(binary, None, &[("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "250000")]).await?,
+        model_case(binary, Some(plain), &[("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "250000")]).await?,
     );
 
     Ok(Value::Object(cases))
@@ -794,7 +930,7 @@ pub async fn capture_streaming_shapes(binary: &str) -> Result<Value, String> {
     // empty or partial capture otherwise agrees with an empty or partial one.
     for required in ["assistant:text", "assistant:tool_use", "user:tool_result", "result"] {
         if shapes.get(required).is_none() {
-            return Err(format!("the turns produced no `{required}` frame"));
+            return Err(format!("capture incomplete: the turns produced no `{required}` frame"));
         }
     }
     Ok(shapes)
@@ -1011,13 +1147,13 @@ pub async fn capture_hooks(binary: &str) -> Result<Value, String> {
             events.iter().any(|event| event.get("event").and_then(Value::as_str) == Some(required));
         if !seen {
             return Err(format!(
-                "no {required} hook request was captured ({})",
+                "capture incomplete: no {required} hook request was captured ({})",
                 turn_outcome(&wire)
             ));
         }
     }
     if answers.is_empty() {
-        return Err("no hook_callback answer was captured".to_owned());
+        return Err("capture incomplete: no hook_callback answer was captured".to_owned());
     }
     Ok(json!({
         "events": distinct_shapes(&events),
@@ -1104,19 +1240,24 @@ pub async fn capture_permission(binary: &str) -> Result<Value, String> {
     // A side that never asked would compare two empty lists as agreement, and
     // a turn that asked for some other tool would not exercise the write path.
     if asks.is_empty() {
-        return Err(format!("no can_use_tool request was captured ({})", turn_outcome(&wire)));
+        return Err(format!(
+            "capture incomplete: no can_use_tool request was captured ({})",
+            turn_outcome(&wire)
+        ));
     }
     if !asks.iter().any(|ask| ask.get("tool_name") == Some(&json!("Write"))) {
         return Err(format!(
-            "the turn asked for no Write tool: asks={asks:?} ({})",
+            "capture incomplete: the turn asked for no Write tool: asks={asks:?} ({})",
             turn_outcome(&wire)
         ));
     }
     if answers.is_empty() {
-        return Err("no can_use_tool answer was captured".to_owned());
+        return Err("capture incomplete: no can_use_tool answer was captured".to_owned());
     }
     if denials.is_empty() {
-        return Err("the result frame recorded no permission_denials".to_owned());
+        return Err(
+            "capture incomplete: the result frame recorded no permission_denials".to_owned()
+        );
     }
     // Compare the FIRST ask and its outcome. How many times a model retries
     // after a denial, or which tool it falls back to, is sampling: the

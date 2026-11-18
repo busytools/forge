@@ -262,6 +262,14 @@ engine-parity *check:
     cargo nextest run -p forge-test-harness --run-ignored only --no-fail-fast \
         --no-tests=fail --success-output=immediate -P capture engine_parity_{{check}}
 
+# Reference-vs-reference control for the parity matrix: every check runs twice
+# on `claude`, and a field that differs between the two captures is operator
+# noise (cache warmth, model sampling, the invoking config) rather than a port
+# finding. Run it before treating a matrix red as the port's.
+engine-parity-control *check:
+    FORGE_PARITY_CONTROL=1 cargo nextest run -p forge-test-harness --run-ignored only \
+        --no-fail-fast --no-tests=fail --success-output=immediate -P capture engine_parity_{{check}}
+
 # Mirrors CI's published build (`--document-private-items` included),
 # so a private item's doc warning fails here, not only in the docs job.
 # `RUSTDOCFLAGS=-D warnings` denies rustdoc lints (broken links,

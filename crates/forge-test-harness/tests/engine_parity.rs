@@ -15,11 +15,13 @@ use std::future::Future;
 use forge_test_harness::engine_parity::{
     PORT_BINARY, REFERENCE_BINARY, capture_context_usage, capture_control_protocol, capture_hooks,
     capture_init_frame, capture_model_resolution, capture_permission, capture_streaming_shapes,
-    capture_usage_and_cost, compare, unavailable_reason,
+    capture_usage_and_cost, compare, control_mode, unavailable_reason,
 };
 
 /// Run one check on both engines and compare. Skipped, not failed, when
-/// either binary is missing.
+/// either binary is missing. In control mode (`just engine-parity-control`)
+/// the same check runs twice on the reference instead: a field that differs
+/// between two reference spawns is operator noise, not an engine finding.
 async fn run_check<F, Fut>(check: &str, capture: F)
 where
     F: Fn(&'static str) -> Fut,
@@ -27,6 +29,20 @@ where
 {
     if let Some(reason) = unavailable_reason() {
         eprintln!("engine-parity {check}: skipped - {reason}");
+        return;
+    }
+    if control_mode() {
+        eprintln!(
+            "engine-parity control:{check}: {REFERENCE_BINARY} twice; a difference here is \
+             operator noise, not engine behaviour"
+        );
+        let first = capture(REFERENCE_BINARY).await.unwrap_or_else(|error| {
+            panic!("engine-parity control:{check}: first capture failed: {error}")
+        });
+        let second = capture(REFERENCE_BINARY).await.unwrap_or_else(|error| {
+            panic!("engine-parity control:{check}: second capture failed: {error}")
+        });
+        compare(&format!("control:{check}"), &first, &second);
         return;
     }
     eprintln!("engine-parity {check}: running {REFERENCE_BINARY} then {PORT_BINARY}");
