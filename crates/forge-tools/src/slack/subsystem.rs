@@ -4177,6 +4177,28 @@ mod tests {
         );
     }
 
+    /// A despawned worker's PARTICIPATION goes with it, even when it held no
+    /// subscription at all. A participant outlives subscriptions, and
+    /// delivery for a dead label falls through to the project lead, which is
+    /// the one thing teardown must never cause - so the label is stripped
+    /// from participants on the path that used to return early.
+    #[tokio::test]
+    async fn worker_teardown_strips_participation_even_with_no_subscription() {
+        let h = harness();
+        let parent = recent_ts();
+        let seat = owner("forge", Some("a"));
+        // Joining writes the row and starts the pump; the worker never
+        // subscribed to anything.
+        h.slack.join_slack_thread("acme", "C1", &parent, &seat, &parent);
+
+        h.slack.remove_slack_subscriptions_for_worker("forge", "a");
+
+        assert!(
+            h.slack.slack_followed_threads("acme", "C1").is_empty(),
+            "the despawned worker's participation is gone, and the row with it",
+        );
+    }
+
     #[test]
     fn advancing_a_thread_cursor_keeps_its_owners() {
         let (host, _slack, _store) = host_with_c1_subscriber("forge", Some("tester"));
