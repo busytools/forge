@@ -41,7 +41,22 @@ fn caller() -> SessionSlot {
 /// is recorded under `host.caller`'s project and worker label, and a lead
 /// resolves to the project with no label.
 fn ledgered(ws: &Arc<Workspace>, workspace: &str, conversation: &str, ts: &str) -> bool {
-    let owner = SlackThreadOwner { project: "forge".to_owned(), team_role: None };
+    ledgered_by(ws, workspace, conversation, ts, "forge", None)
+}
+
+/// Whether the ledger refuses `ts` for `(project, team_role)`. The write-side
+/// pin: an ownerless row answers `ledgered` too, so the owner the write
+/// recorded is checked against a second session's identity.
+fn ledgered_by(
+    ws: &Arc<Workspace>,
+    workspace: &str,
+    conversation: &str,
+    ts: &str,
+    project: &str,
+    team_role: Option<&str>,
+) -> bool {
+    let owner =
+        SlackThreadOwner { project: project.to_owned(), team_role: team_role.map(str::to_owned) };
     ws.slack.slack_own_post_by(workspace, conversation, ts, Some(&owner))
 }
 
@@ -1521,6 +1536,10 @@ async fn a_multi_part_post_ledgers_every_landed_part() {
     assert_eq!(outcome.ts, vec!["1.0".to_owned(), "2.0".to_owned()], "two parts were sent");
     for ts in &outcome.ts {
         assert!(ledgered(&ws, "acme", "C1", ts), "part {ts} must be refused to the sweep");
+        assert!(
+            !ledgered_by(&ws, "acme", "C1", ts, "forge", Some("other")),
+            "part {ts} is recorded under the poster: another session still receives it",
+        );
     }
     assert!(
         !ledgered(&ws, "acme", "C2", "1.0"),
@@ -1564,11 +1583,24 @@ async fn a_post_is_ledgered_under_the_channel_slack_posted_into() {
 async fn a_partial_multi_part_post_ledgers_the_parts_slack_took() {
     let (facade, ws, api, _rx, _dir) = facade_with_recording_slack_and_store();
     api.fail_post_at(1);
+    let posted_ts = recent_slack_ts();
+    api.answer_posts_with(&posted_ts);
     let text = "a".repeat(forge_tools::slack::POST_LIMIT + 1);
 
     let task = tokio::spawn({
         let facade = facade.clone();
-        async move { facade.post(&caller(), post_request("C1", &text)).await }
+        async move {
+            facade
+                .post(
+                    &caller(),
+                    SlackPostRequest {
+                        conversation: "C1".to_owned(),
+                        thread_ts: Some("100.0".to_owned()),
+                        text,
+                    },
+                )
+                .await
+        }
     });
     let id = wait_for_draft(&ws).await;
     ws.slack.resolve_slack_draft(id, &caller(), answered(true));
@@ -1578,7 +1610,18 @@ async fn a_partial_multi_part_post_ledgers_the_parts_slack_took() {
         matches!(outcome, Err(SlackPostError::Partial { posted: 1, .. })),
         "the failure names how much landed: {outcome:?}",
     );
-    assert!(ledgered(&ws, "acme", "C1", "1.0"), "the part Slack took is refused to the sweep");
+    assert!(ledgered(&ws, "acme", "C1", &posted_ts), "the part Slack took is refused to the sweep");
+    assert!(
+        !ledgered_by(&ws, "acme", "C1", &posted_ts, "forge", Some("other")),
+        "and it is recorded under the poster, not ownerless: another session still receives it",
+    );
+    let threads = ws.slack.slack_followed_threads("acme", "C1");
+    assert_eq!(threads.len(), 1, "the part that landed joined the thread it landed in");
+    assert_eq!(
+        threads[0].participants,
+        vec![SlackThreadOwner { project: "forge".to_owned(), team_role: None }],
+        "the poster is the participant, from the partial landing",
+    );
 }
 
 /// The mark is held across the post call: without it a sweep in the
@@ -1809,6 +1852,10 @@ async fn an_upload_ledgers_the_message_under_the_shares_own_conversation() {
         "the share's own conversation holds the message, so that is what the ledger keys",
     );
     assert!(
+        !ledgered_by(&ws, "acme", "D456", "1700000000.000100", "forge", Some("other")),
+        "the upload is recorded under the uploading session, not ownerless",
+    );
+    assert!(
         !ledgered(&ws, "acme", "U123", "1700000000.000100"),
         "the request string is not a conversation",
     );
@@ -1856,6 +1903,10 @@ async fn an_edit_ledgers_the_message_ts_it_rewrote() {
     assert!(
         ledgered(&ws, "acme", "C1", "100.0"),
         "the edited message's own ts is refused to the sweep",
+    );
+    assert!(
+        !ledgered_by(&ws, "acme", "C1", "100.0", "forge", Some("other")),
+        "the edit is recorded under the editing session, not ownerless",
     );
 }
 

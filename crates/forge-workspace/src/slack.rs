@@ -228,6 +228,13 @@ impl SlackStore for SlackPorts {
             .map_err(|error| error.to_string())
     }
 
+    fn own_post_any(&self, workspace: &str, conversation: &str, ts: &str) -> Result<bool, String> {
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return Ok(false) };
+        crate::store::slack::own_post_any(db, workspace, conversation, ts)
+            .map_err(|error| error.to_string())
+    }
+
     fn record_own_post(
         &self,
         workspace: &str,
@@ -725,6 +732,44 @@ mod tests {
         ws.slack.remove_slack_subscription_owned_by("acme", id, None).expect("the lead's own row");
         ws.stop_slack_subsystem_if_idle();
         assert!(ws.slack.pump_labels().is_empty(), "the pump stops with its last subscription");
+    }
+
+    /// A followed thread is something to watch. A workspace whose only
+    /// subscription is gone must still run its pump while a participant row
+    /// exists, and must stop once the row ages out - the two gates move
+    /// together, or #2877's participant path never runs.
+    #[tokio::test]
+    async fn the_subsystem_runs_for_a_followed_thread_with_no_subscription() {
+        let (ws, dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let ports = Arc::clone(&ws.slack_ports);
+        let record = forge_primitives::slack::SlackThreadRecord {
+            cursor: "100.0".to_owned(),
+            edit_watermark: None,
+            owners: Vec::new(),
+            participants: vec![forge_primitives::slack::SlackThreadOwner {
+                project: "forge".to_owned(),
+                team_role: Some("tester".to_owned()),
+            }],
+            participating: true,
+        };
+        ports.set_thread("acme", "C1", "100.0", &record).expect("seed the thread");
+
+        ws.start_slack_subsystem();
+        assert_eq!(
+            ws.slack.pump_labels(),
+            vec!["acme".to_owned()],
+            "a participant row keeps the workspace pumped with no subscription",
+        );
+
+        ports.remove_thread("acme", "C1", "100.0").expect("remove the row");
+        ws.stop_slack_subsystem_if_idle();
+        assert!(
+            ws.slack.pump_labels().is_empty(),
+            "the pump stops with the last thread row, as it does with the last subscription",
+        );
     }
 
     /// The port writes through to the real store: the sweep's backfill is

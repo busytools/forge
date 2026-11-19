@@ -331,6 +331,25 @@ pub fn own_post_by(
     Ok(owner == Some(&stored))
 }
 
+/// Whether forge posted this message at all, whoever posted it. The mention
+/// sweep's guard: a mention in forge's own words must not pull a seat into
+/// the conversation it came from.
+pub fn own_post_any(
+    db: &Db,
+    workspace: &str,
+    conversation: &str,
+    ts: &str,
+) -> anyhow::Result<bool> {
+    let key = own_post_key(workspace, conversation, ts);
+    let txn = db.database().begin_read()?;
+    let table = match txn.open_table(OWN_POSTS) {
+        Ok(t) => t,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(table.get(key.as_str())?.is_some())
+}
+
 /// Record a message forge posted at `now` for `owner`, pruning the
 /// conversation's rows past either bound and the owner entries with them.
 pub fn record_own_post(

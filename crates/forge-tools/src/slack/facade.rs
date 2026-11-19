@@ -35,6 +35,35 @@ pub struct SlackCaller {
     pub worker_label: Option<String>,
 }
 
+/// The one conversion from a caller to the owner pair Slack records: the
+/// ledger's poster identity and the join's participant identity must never
+/// drift apart.
+impl From<SlackCaller> for forge_primitives::slack::SlackThreadOwner {
+    fn from(caller: SlackCaller) -> Self {
+        Self { project: caller.project_name, team_role: caller.worker_label }
+    }
+}
+
+/// Join the poster to the thread it posted into, at the newest part that
+/// landed. A no-op for a root post, an unresolved owner, or a post where
+/// nothing landed. Runs on the partial path too: the parts Slack took are
+/// live in the thread, and the join must agree with the ledger.
+fn join_posted_thread(
+    slack: &Arc<Slack>,
+    workspace: &str,
+    thread_ts: Option<&str>,
+    owner: Option<&forge_primitives::slack::SlackThreadOwner>,
+    posted: &[String],
+    landed_in: Option<&str>,
+) {
+    let (Some(parent), Some(owner), Some(posted_ts), Some(conversation)) =
+        (thread_ts, owner, posted.last(), landed_in)
+    else {
+        return;
+    };
+    slack.join_slack_thread(workspace, conversation, parent, owner, posted_ts);
+}
+
 /// What the facade needs from the workspace it is registered on.
 ///
 /// Everything here is a resolution the workspace owns: `forge.toml`'s
@@ -805,10 +834,7 @@ impl SlackFacade for ProdSlackFacade {
         let (label, api) = resolve_in(&slack, &host, caller).map_err(SlackPostError::Workspace)?;
         // The session a post is recorded under: it joins the thread, and the
         // ledger refuses the echo for this session alone.
-        let owner = host.caller(caller).map(|cx| forge_primitives::slack::SlackThreadOwner {
-            project: cx.project_name,
-            team_role: cx.worker_label,
-        });
+        let owner = host.caller(caller).map(forge_primitives::slack::SlackThreadOwner::from);
         let (conversation, conversation_label) =
             Self::resolve_conversation(&api, &label, &request.conversation).await;
         let mut draft = SlackDraft {
@@ -880,6 +906,17 @@ impl SlackFacade for ProdSlackFacade {
                     return Err(SlackPostError::Fetch(error.to_string()));
                 }
                 Err(error) => {
+                    // The parts Slack took are live in the thread, so the
+                    // seat joins with them: the join must not disagree with
+                    // the ledger about partial success.
+                    join_posted_thread(
+                        &slack,
+                        &draft.workspace,
+                        draft.thread_ts.as_deref(),
+                        owner.as_ref(),
+                        &ts,
+                        landed_in.as_deref(),
+                    );
                     // Say exactly what landed: a truncated multi-part post
                     // is live and readable, so a retry must resume rather
                     // than duplicate the parts already sent.
@@ -893,14 +930,14 @@ impl SlackFacade for ProdSlackFacade {
         }
         // Posting into a thread joins the session to it: later replies reach
         // it without a conversation subscription, until the thread idles out.
-        // The cursor seeds at the newest part, so the next walk starts at
-        // this post rather than at the thread's beginning.
-        if let Some(parent) = draft.thread_ts.as_deref()
-            && let (Some(owner), Some(posted_ts), Some(landed_in)) =
-                (owner.as_ref(), ts.last(), landed_in.as_deref())
-        {
-            slack.join_slack_thread(&draft.workspace, landed_in, parent, owner, posted_ts);
-        }
+        join_posted_thread(
+            &slack,
+            &draft.workspace,
+            draft.thread_ts.as_deref(),
+            owner.as_ref(),
+            &ts,
+            landed_in.as_deref(),
+        );
         Ok(SlackPostOutcome {
             workspace: draft.workspace.clone(),
             ts,
@@ -919,10 +956,7 @@ impl SlackFacade for ProdSlackFacade {
         // Who the ledger records the change under. An edit does not join a
         // thread: the message was already there, and correcting it is not
         // entering the conversation.
-        let owner = host.caller(caller).map(|cx| forge_primitives::slack::SlackThreadOwner {
-            project: cx.project_name,
-            team_role: cx.worker_label,
-        });
+        let owner = host.caller(caller).map(forge_primitives::slack::SlackThreadOwner::from);
 
         // A replacement puts new words in front of people as the user, and
         // a deletion changes what they see on a message attributed to him -
@@ -1223,10 +1257,7 @@ impl SlackFacade for ProdSlackFacade {
             resolve_in(&slack, &host, caller).map_err(SlackAttachmentError::Workspace)?;
         // The session an upload into a thread is recorded under: it joins
         // the thread, and the echo is refused for this session alone.
-        let owner = host.caller(caller).map(|cx| forge_primitives::slack::SlackThreadOwner {
-            project: cx.project_name,
-            team_role: cx.worker_label,
-        });
+        let owner = host.caller(caller).map(forge_primitives::slack::SlackThreadOwner::from);
 
         let bytes = std::fs::read(&request.path)
             .map_err(|err| SlackAttachmentError::Io(err.to_string()))?;
