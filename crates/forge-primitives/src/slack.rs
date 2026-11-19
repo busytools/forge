@@ -350,9 +350,10 @@ pub struct SlackThreadRecord {
     /// thread and drives whole reads, not delivery.
     #[serde(default)]
     pub participants: Vec<SlackThreadOwner>,
-    /// Whether the user is in this thread, once that has been read off its
-    /// replies. Kept because a reply cannot un-happen: once true, every walk
-    /// can read past the cursor instead of reading the thread whole.
+    /// Whether the user is in this thread: set by a join, where forge posted
+    /// as the user, or once a walk reads it off the thread's replies. Kept
+    /// because a reply cannot un-happen: once true, every walk can read past
+    /// the cursor instead of reading the thread whole.
     #[serde(default)]
     pub participating: bool,
 }

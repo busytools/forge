@@ -1063,12 +1063,16 @@ impl Slack {
     }
 
     /// Join a session to a thread it posted into: add it to the row's
-    /// participants and move the cursor to its own post, creating the row
-    /// when the thread was not followed.
+    /// participants and mark the user in the thread. A row created here is
+    /// seeded at the seat's own post; an existing row's cursor is left
+    /// alone, because it is the whole thread's delivery position and moving
+    /// it would skip replies for every destination.
     ///
     /// A participant is not an owner: it outlives the subscription that
     /// anchored the thread, so the seat keeps receiving the thread's replies
-    /// after the channel is quieted.
+    /// after the channel is quieted. The join also starts the workspace's
+    /// pump, since a thread row is what keeps a subscription-less workspace
+    /// worth sweeping.
     pub fn join_slack_thread(
         self: &Arc<Self>,
         workspace: &str,
@@ -1254,6 +1258,7 @@ impl Slack {
             .collect();
         let idle_days = self.slack_thread_idle_days(workspace);
         let mut out = Vec::new();
+        let mut dropped_any = false;
         for (parent_ts, _record) in rows {
             // Each row is re-read and re-pruned inside one guarded update:
             // the listing above is only the set of keys, so an owner a
@@ -1299,6 +1304,7 @@ impl Slack {
             }
             if expired || idle {
                 self.forget_thread_clocks(workspace, conversation, &parent_ts);
+                dropped_any = true;
                 if idle {
                     tracing::debug!(
                         target: "forge_tools::slack",
@@ -1313,6 +1319,13 @@ impl Slack {
             if let Some(row) = kept {
                 out.push(row);
             }
+        }
+        // The listing is where a thread row ends, and it runs inside the
+        // pump's own sweep: when the last row in a subscription-less
+        // workspace ages out here, this is the only place that can tell the
+        // pump its work is done.
+        if dropped_any {
+            self.stop_slack_subsystem_if_idle();
         }
         out
     }
@@ -1994,9 +2007,9 @@ impl Slack {
         });
     }
 
-    /// Start one pump per configured workspace that has at least one
-    /// subscription. Idempotent per workspace, and a no-op with no
-    /// `[[slack]]` entry.
+    /// Start one pump per configured workspace that has something to watch:
+    /// a subscription, or a followed thread that outlived one. Idempotent
+    /// per workspace, and a no-op with no `[[slack]]` entry.
     pub fn start_slack_subsystem(self: &Arc<Self>) {
         if self.clients.is_empty() {
             return;
@@ -2041,10 +2054,11 @@ impl Slack {
         }
     }
 
-    /// Stop the Slack pump for any workspace that no longer has a
-    /// subscription, and mark it disconnected. Pumps are per workspace, so
-    /// one workspace losing its subscriptions must not keep another's
-    /// pump alive - nor leave its own running with nothing to watch.
+    /// Stop the Slack pump for any workspace with nothing left to watch - no
+    /// subscription and no followed thread - and mark it disconnected.
+    /// Pumps are per workspace, so one workspace losing its subscriptions
+    /// must not keep another's pump alive - nor leave its own running with
+    /// nothing to watch.
     pub fn stop_slack_subsystem_if_idle(&self) {
         let running: Vec<String> = self.slack_subsystem.lock().keys().cloned().collect();
         let idle_labels: Vec<String> = running
@@ -3970,6 +3984,15 @@ mod tests {
                 parent.clone()
             )),
             "no first-walk mark: the next tick is an ordinary walk from the cursor",
+        );
+
+        // The join is the one way a thread row appears with no sweep
+        // already running, so it has to start the pump itself: a workspace
+        // with no subscription has no other trigger until a restart.
+        assert_eq!(
+            h.slack.pump_labels(),
+            vec!["acme".to_owned()],
+            "joining a thread starts the workspace's pump",
         );
 
         // Joining again adds no second participant and does not move the

@@ -764,6 +764,17 @@ mod tests {
             "a participant row keeps the workspace pumped with no subscription",
         );
 
+        // The stop gate is the other half: a sibling unsubscribe or a
+        // teardown calls it while the row is still there, and the pump must
+        // survive that, or a participant-only workspace goes permanently
+        // quiet.
+        ws.stop_slack_subsystem_if_idle();
+        assert_eq!(
+            ws.slack.pump_labels(),
+            vec!["acme".to_owned()],
+            "the stop gate keeps a pump whose only work is a thread row",
+        );
+
         ports.remove_thread("acme", "C1", "100.0").expect("remove the row");
         ws.stop_slack_subsystem_if_idle();
         assert!(

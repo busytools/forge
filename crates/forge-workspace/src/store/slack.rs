@@ -704,6 +704,47 @@ mod tests {
         SlackThreadOwner { project: project.to_owned(), team_role: role.map(str::to_owned) }
     }
 
+    /// The mention guard's read: a row written by any session, and an old
+    /// ownerless row, both answer true; an unrecorded ts, another
+    /// conversation and another workspace answer false. The port's own
+    /// wiring is what the fake cannot prove.
+    #[test]
+    fn own_post_any_reads_a_row_written_by_anyone() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        record_own_post(
+            &db,
+            "acme",
+            "C1",
+            "100.000001",
+            1_700_000_000,
+            Some(&owner("forge", Some("a"))),
+        )
+        .expect("record");
+        record_ownerless(&db, "acme", "C1", "100.000002", 1_700_000_000);
+
+        assert!(
+            own_post_any(&db, "acme", "C1", "100.000001").expect("read"),
+            "a session's row answers",
+        );
+        assert!(
+            own_post_any(&db, "acme", "C1", "100.000002").expect("read"),
+            "an old ownerless row answers",
+        );
+        assert!(
+            !own_post_any(&db, "acme", "C1", "100.000003").expect("read"),
+            "an unrecorded ts does not",
+        );
+        assert!(
+            !own_post_any(&db, "acme", "C2", "100.000001").expect("read"),
+            "another conversation does not",
+        );
+        assert!(
+            !own_post_any(&db, "beta", "C1", "100.000001").expect("read"),
+            "another workspace does not",
+        );
+    }
+
     /// A row written before the ledger carried sessions: the value is the
     /// bare recording time, with no owner beside it. It keeps today's
     /// behaviour, suppressing for every session - the degrade path a live

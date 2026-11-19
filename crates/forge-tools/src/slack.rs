@@ -1652,8 +1652,19 @@ pub(crate) async fn sweep_scope(
         // failed - a swallowed backlog. That is still the right direction:
         // refusing to sweep would deliver nothing forever, and replaying the
         // backlog would spam every session watching it.
+        //
+        // **A conversation only thread rows hold keeps no conversation
+        // cursor.** Unsubscribe clears it on purpose, so a later subscriber
+        // seeds `now` rather than replaying the gap between; a walk run for
+        // a participant must not put it back, or that subscriber is handed
+        // the whole gap (and, past the page cap, wedges). The thread walk
+        // carries its own cursor and needs nothing here.
+        let subscribed_here = targets(&subscriptions, conversation);
         let baselined = watermark.is_none();
-        if baselined && let Some(newest) = window.iter().map(|message| message.ts.as_str()).max() {
+        if subscribed_here
+            && baselined
+            && let Some(newest) = window.iter().map(|message| message.ts.as_str()).max()
+        {
             tracing::info!(
                 target: "forge_tools::slack",
                 workspace,
@@ -1929,7 +1940,7 @@ pub(crate) async fn sweep_scope(
                     );
                 }
             }
-            if let Some(newest) = batch.iter().map(newest_stamp).max() {
+            if subscribed_here && let Some(newest) = batch.iter().map(newest_stamp).max() {
                 host.set_watermark(workspace, &conversation.id, newest);
             }
         }
@@ -4305,6 +4316,10 @@ mod tests {
         /// Conversations with a post in flight, keyed
         /// `workspace/address`.
         inflight: std::sync::Mutex<HashSet<String>>,
+        /// Whether `followed_threads` applies the idle clock the real host
+        /// applies. Off by default: fixtures seed epoch-era cursors to force
+        /// a walk, and a clock would erase them.
+        idle_prune: std::sync::atomic::AtomicBool,
     }
 
     fn conversation_for(id: &str) -> SlackConversation {
@@ -4449,6 +4464,13 @@ mod tests {
         /// Drop every subscription: the state after a channel is quieted.
         fn clear_subscriptions(&self) {
             self.subscriptions.lock().expect("lock").clear();
+        }
+
+        /// Make `followed_threads` age rows out on the idle clock, as the
+        /// real host does. Opt-in, because most fixtures seed epoch-era
+        /// cursors on purpose.
+        fn mirror_idle_prune(&self) {
+            self.idle_prune.store(true, std::sync::atomic::Ordering::SeqCst);
         }
 
         /// Put a message in the outbound ledger: forge posted it, as `owner`.
@@ -4729,6 +4751,18 @@ mod tests {
                 if record.owners.is_empty() && record.participants.is_empty() {
                     threads.remove(&key);
                     continue;
+                }
+                if self.idle_prune.load(std::sync::atomic::Ordering::SeqCst) {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                        .map(|now| now.as_secs())
+                        .unwrap_or_default();
+                    let cursor_secs: u64 =
+                        record.cursor.split('.').next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                    if now.saturating_sub(cursor_secs) / 86_400 >= 14 {
+                        threads.remove(&key);
+                        continue;
+                    }
                 }
                 out.push(SlackFollowedThread {
                     parent_ts: key
@@ -8267,9 +8301,10 @@ mod tests {
     }
 
     /// With no subscriptions at all, a reply in a thread holding a
-    /// participant row is still fetched and delivered. The conversation
-    /// itself has no cursor, so this also pins that a baselined conversation
-    /// still walks its followed threads instead of skipping the tick.
+    /// participant row is still fetched and delivered - and the sweep leaves
+    /// NO conversation cursor behind. Unsubscribe cleared it on purpose so a
+    /// later subscriber seeds `now`; a participant walk that re-baselined it
+    /// would hand that subscriber the whole gap instead.
     #[tokio::test]
     async fn a_thread_holding_a_participant_is_walked_with_no_subscriptions_at_all() {
         let host = FakeHost::with_subscriptions(Vec::new());
@@ -8291,13 +8326,32 @@ mod tests {
 
         assert_eq!(
             host.watermark("acme", "C1").expect("watermark"),
-            Some("100.0".to_owned()),
-            "the conversation baselines instead of replaying its history",
+            None,
+            "a conversation held only by thread rows keeps no cursor, so a later subscribe seeds fresh",
         );
         assert!(
             host.delivered().iter().any(|message| message.ts == "150.0"),
             "and its participant's thread is walked anyway: {:?}",
             host.delivered(),
+        );
+    }
+
+    /// The gate on that cursor write: a conversation a subscription DOES
+    /// cover still baselines its missing cursor, as every subscription has
+    /// always relied on.
+    #[tokio::test]
+    async fn a_subscribed_conversation_still_baselines_its_missing_cursor() {
+        let host = FakeHost::with_subscriptions(vec![sub_conversation_owned_by(
+            "acme", "forge", None, "C1",
+        )]);
+        host.seed_history("C1", vec![history_message("100.0", "U1", "hello")]);
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        assert_eq!(
+            host.watermark("acme", "C1").expect("watermark"),
+            Some("100.0".to_owned()),
+            "a subscribed conversation baselines at its newest message",
         );
     }
 
@@ -8553,6 +8607,59 @@ mod tests {
             host.delivered().iter().any(|message| message.ts == "150.0"),
             "a thread row keeps a left conversation swept: {:?}",
             host.delivered(),
+        );
+    }
+
+    /// A thread row in a conversation whose history the sweep cannot read
+    /// still expires: each failure arm lists the rows on its way out, and
+    /// that listing is the only idle prune such a row ever gets.
+    #[tokio::test]
+    async fn an_unreadable_conversation_still_expires_its_thread_rows() {
+        let host = FakeHost::with_subscriptions(Vec::new());
+        host.mirror_idle_prune();
+        host.seed_history_unlisted("C9", Vec::new());
+        host.fail_history_with(
+            "C9",
+            SlackError::Api {
+                method: "conversations.history".to_owned(),
+                error: "channel_not_found".to_owned(),
+                needed: None,
+            },
+        );
+        let seat = thread_owner("forge", Some("tester"));
+        host.seed_thread("acme", "C9", "100.0", "100.0", Vec::new(), vec![seat]);
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        assert!(
+            host.followed_threads("acme", "C9").is_empty(),
+            "the idle row is pruned on the failure path",
+        );
+    }
+
+    /// The DM carve-out arm prunes the same way: a DM the user token can
+    /// never read must not hold a participant row forever.
+    #[tokio::test]
+    async fn an_unreadable_dm_still_expires_its_thread_rows() {
+        let host = FakeHost::with_subscriptions(Vec::new());
+        host.mirror_idle_prune();
+        host.seed_history("D1", Vec::new());
+        host.fail_history_with(
+            "D1",
+            SlackError::Api {
+                method: "conversations.history".to_owned(),
+                error: "channel_not_found".to_owned(),
+                needed: None,
+            },
+        );
+        let seat = thread_owner("forge", Some("tester"));
+        host.seed_thread("acme", "D1", "100.0", "100.0", Vec::new(), vec![seat]);
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        assert!(
+            host.followed_threads("acme", "D1").is_empty(),
+            "an unreadable DM still expires its thread row",
         );
     }
 
