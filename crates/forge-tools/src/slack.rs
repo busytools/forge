@@ -71,17 +71,29 @@ pub trait SlackHost: Send + Sync {
     /// microsecond fraction; never round-trip it through a number.
     fn set_watermark(&self, workspace: &str, conversation: &str, ts: &str);
 
+    /// Drop a conversation's cursor. The sweep does this for a conversation
+    /// no subscription covers any more: a cursor left standing there makes
+    /// every tick page the whole gap from it, and hands a later subscriber a
+    /// backlog instead of a fresh seed.
+    fn clear_watermark(&self, workspace: &str, conversation: &str);
+
     /// The threads tracked for a conversation, each with the owners still
-    /// subscribed to it. The host prunes while listing: an owner whose
-    /// subscription is gone is dropped from the record, a row's last owner
-    /// deletion removes the row, and a row idle past the host's drop age
-    /// never comes back.
+    /// subscribed to it and the participants that joined by posting. The
+    /// host prunes while listing: an owner whose subscription is gone is
+    /// dropped from the record, a row left with no owner AND no participant
+    /// is removed, and a row idle past the host's drop age never comes back.
     fn followed_threads(&self, workspace: &str, conversation: &str) -> Vec<SlackFollowedThread>;
 
-    /// How far a thread's replies have been read: normally the newest reply
-    /// seen, and nothing at all before the first walk. An error means the
-    /// cursor could not be read: the caller skips the thread this tick
-    /// rather than walking it from the parent.
+    /// Every conversation the workspace holds a followed thread in. The
+    /// sweep widens its candidate list by this, so a thread a session joined
+    /// stays walked after the conversation's subscription is gone.
+    fn followed_conversations(&self, workspace: &str) -> Vec<String>;
+
+    /// How far a thread's replies have been delivered: normally the newest
+    /// reply seen, nothing at all before the first walk, and the joining
+    /// seat's own post for a row a post created. An error means the cursor
+    /// could not be read: the caller skips the thread this tick rather than
+    /// walking it from the parent.
     fn thread_watermark(
         &self,
         workspace: &str,
@@ -185,12 +197,14 @@ pub trait SlackHost: Send + Sync {
     /// was subscribed keeps the stored name.
     fn name_conversation(&self, workspace: &str, conversation: &str, name: &str);
 
-    /// Hand one conversation's matched messages to its subscriber's
-    /// session, as the one block they will be read as. Returns whether
-    /// delivery succeeded: a `false` means the caller did not advance the
-    /// conversation cursor past this batch, so the next sweep re-delivers
-    /// it instead of losing it.
-    fn deliver(&self, subscription: &SlackSubscription, messages: &[SlackMessage]) -> bool;
+    /// Hand one conversation's matched messages to its destination's
+    /// session, as the one block they will be read as. The destination is
+    /// the owner - project and worker label - because a thread's delivery
+    /// set is owners ∪ participants and a participant need hold no
+    /// subscription. Returns whether delivery succeeded: a `false` means the
+    /// caller did not advance the conversation cursor past this batch, so the
+    /// next sweep re-delivers it instead of losing it.
+    fn deliver(&self, project: &str, team_role: Option<&str>, messages: &[SlackMessage]) -> bool;
 
     /// Called after a mention is delivered, so the conversation it came
     /// from is watched too and the agent can reply into it rather than
@@ -198,10 +212,23 @@ pub trait SlackHost: Send + Sync {
     /// does nothing when that owner already covers the conversation.
     fn auto_subscribe(&self, workspace: &str, message: &SlackMessage) -> bool;
 
-    /// Whether forge posted this message itself, read from the outbound
-    /// ledger by its ts. This is what the sweep refuses: forge posts as
-    /// the user, so the author says nothing about who wrote the words.
-    fn own_post(&self, workspace: &str, conversation: &str, ts: &str) -> bool;
+    /// Whether forge posted this message itself, and whether `owner` is the
+    /// session that posted it. This is what the sweep refuses: forge posts as
+    /// the user, so the author says nothing about who wrote the words. A
+    /// message is refused only for the session that posted it; every other
+    /// participant in the conversation or thread still receives it.
+    fn own_post_by(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        ts: &str,
+        owner: &SlackThreadOwner,
+    ) -> bool;
+
+    /// Whether forge posted this message at all, whoever posted it. The
+    /// mention sweep refuses such a hit outright: a mention in forge's own
+    /// words must not pull a seat into the conversation it came from.
+    fn own_post_any(&self, workspace: &str, conversation: &str, ts: &str) -> bool;
 
     /// How long the oldest live post call in `conversation` has been in
     /// flight, or `None` when none is. A message can reach history before
@@ -629,16 +656,22 @@ pub fn shared_messages(file: &SlackFile) -> Vec<(String, String)> {
 /// Whether one subscription wants this message. forge posts as the user, so
 /// a message is refused by identity - its ts in the outbound ledger - and
 /// never by author: refusing every message the user wrote drops what Ved
-/// types himself, and a thread he is in then reads one-sided.
+/// types himself, and a thread he is in then reads one-sided. The refusal is
+/// per session: a post one session made through forge still reaches every
+/// other subscriber, so a shared thread reads whole on every side.
 fn matches(
     subscription: &SlackSubscription,
     conversation: &SlackConversation,
     text: &str,
     ts: &str,
     user_id: &str,
-    own_post: &dyn Fn(&str) -> bool,
+    own_post: &dyn Fn(&str, &SlackThreadOwner) -> bool,
 ) -> bool {
-    if own_post(ts) {
+    let owner = SlackThreadOwner {
+        project: subscription.project.clone(),
+        team_role: subscription.team_role.clone(),
+    };
+    if own_post(ts, &owner) {
         return false;
     }
     match &subscription.target {
@@ -662,7 +695,7 @@ pub fn wants(
     text: &str,
     ts: &str,
     user_id: &str,
-    own_post: &dyn Fn(&str) -> bool,
+    own_post: &dyn Fn(&str, &SlackThreadOwner) -> bool,
 ) -> bool {
     subscriptions.iter().any(|s| matches(s, conversation, text, ts, user_id, own_post))
 }
@@ -1362,12 +1395,16 @@ pub(crate) enum SweepScope {
 }
 
 /// Whether this pass is for this conversation. `targets` has already said the
-/// conversation is watched by someone; this narrows that to the clock the
-/// sweep is running on.
+/// conversation is watched by someone or holds a followed thread; this
+/// narrows that to the clock the sweep is running on. `followed` is the
+/// widened half: a thread row keeps its conversation swept after the
+/// subscription that anchored it is gone, and a DM-shaped one stays on the DM
+/// clock.
 fn in_scope(
     subscriptions: &[SlackSubscription],
     conversation: &SlackConversation,
     scope: SweepScope,
+    followed: bool,
 ) -> bool {
     let named = subscriptions.iter().any(|subscription| {
         matches!(
@@ -1375,14 +1412,15 @@ fn in_scope(
             SlackSubscriptionTarget::Conversation { id, .. } if id == &conversation.id
         )
     });
+    let dm = conversation.is_im || conversation.is_mpim;
     match scope {
-        SweepScope::Conversations => named,
+        SweepScope::Conversations => named || (followed && !dm),
         SweepScope::DirectMessages => {
-            (conversation.is_im || conversation.is_mpim)
-                && !named
-                && subscriptions
-                    .iter()
-                    .any(|s| matches!(s.target, SlackSubscriptionTarget::DirectMessages))
+            dm && !named
+                && (followed
+                    || subscriptions
+                        .iter()
+                        .any(|s| matches!(s.target, SlackSubscriptionTarget::DirectMessages)))
         }
     }
 }
@@ -1415,7 +1453,11 @@ pub(crate) async fn sweep_scope(
     scope: SweepScope,
 ) -> Result<SweepOutcome, SlackError> {
     let subscriptions = host.subscriptions(workspace);
-    if subscriptions.is_empty() {
+    // A followed thread outlives the subscription that anchored it, so the
+    // sweep must still run with no subscriptions at all: its conversations
+    // come from the thread rows themselves.
+    let followed = host.followed_conversations(workspace);
+    if subscriptions.is_empty() && followed.is_empty() {
         return Ok(SweepOutcome { delivered: 0, ..Default::default() });
     }
     let user_id = host.user_id(workspace).unwrap_or_default();
@@ -1466,6 +1508,27 @@ pub(crate) async fn sweep_scope(
             });
         }
     }
+    // A followed thread names its conversation, and that conversation must
+    // stay swept after its subscription is gone - a seat that posted into a
+    // thread keeps receiving it. Same synthetic shape as the entries above:
+    // the directory list cannot be relied on to carry a conversation the
+    // token's user has left.
+    for id in &followed {
+        if !conversations.iter().any(|conversation| &conversation.id == id) {
+            conversations.push(SlackConversation {
+                id: id.clone(),
+                name: None,
+                is_channel: false,
+                is_private: false,
+                is_im: false,
+                is_mpim: false,
+                is_archived: false,
+                user: None,
+                purpose: None,
+                topic: None,
+            });
+        }
+    }
     // The synthetic entries above carry no name, so they are skipped
     // without a case of their own.
     for subscription in &subscriptions {
@@ -1488,7 +1551,9 @@ pub(crate) async fn sweep_scope(
     let mut conversation_gone = false;
     let mut own = OwnIdentity { id: &user_id, name: None, asked: false };
     for conversation in &conversations {
-        if !targets(&subscriptions, conversation) || !in_scope(&subscriptions, conversation, scope)
+        let holds_thread = followed.iter().any(|id| id == &conversation.id);
+        if !(targets(&subscriptions, conversation) || holds_thread)
+            || !in_scope(&subscriptions, conversation, scope, holds_thread)
         {
             continue;
         }
@@ -1515,7 +1580,7 @@ pub(crate) async fn sweep_scope(
             );
             continue;
         }
-        let watermark = match host.watermark(workspace, &conversation.id) {
+        let mut watermark = match host.watermark(workspace, &conversation.id) {
             Ok(watermark) => watermark,
             Err(error) => {
                 // "Could not read the cursor" is not "never swept": sweeping
@@ -1531,6 +1596,18 @@ pub(crate) async fn sweep_scope(
                 continue;
             }
         };
+        // **A conversation only thread rows hold keeps no conversation
+        // cursor.** Unsubscribe clears it on purpose so a later subscriber
+        // seeds `now`; a cursor left standing - an ephemeral worker's
+        // subscription gone at a restart, a raced clear - would make every
+        // tick page the whole gap from it, and past the history cap wedge
+        // the sweep for good. Clearing it here also means this tick
+        // baselines, and the thread walk below runs on its own cursor.
+        let subscribed_here = targets(&subscriptions, conversation);
+        if !subscribed_here && watermark.is_some() {
+            host.clear_watermark(workspace, &conversation.id);
+            watermark = None;
+        }
 
         let window = match fetch_recent(api, &conversation.id).await {
             Ok(window) => window,
@@ -1558,6 +1635,10 @@ pub(crate) async fn sweep_scope(
                         %error,
                         "slack withholds this DM's history from user tokens; skipping it every tick",
                     );
+                    // The listing is the only idle prune a followed thread
+                    // gets, and this conversation is not walked past this
+                    // point: without it a participant row here never ages out.
+                    let _ = host.followed_threads(workspace, &conversation.id);
                     continue;
                 }
                 // A conversation deleted on Slack's side is permanent. The
@@ -1573,6 +1654,9 @@ pub(crate) async fn sweep_scope(
                     %error,
                     "reading a conversation's history failed; skipping it this tick",
                 );
+                // Same as the DM arm: prune on the way out, or a followed
+                // thread in a channel that can never be read never expires.
+                let _ = host.followed_threads(workspace, &conversation.id);
                 continue;
             }
         };
@@ -1586,18 +1670,19 @@ pub(crate) async fn sweep_scope(
         // failed - a swallowed backlog. That is still the right direction:
         // refusing to sweep would deliver nothing forever, and replaying the
         // backlog would spam every session watching it.
-        if watermark.is_none() {
-            if let Some(newest) = window.iter().map(|message| message.ts.as_str()).max() {
-                tracing::info!(
-                    target: "forge_tools::slack",
-                    workspace,
-                    conversation = %conversation.id,
-                    cursor = %newest,
-                    "no cursor for this conversation; baselining at the newest message seen",
-                );
-                host.set_watermark(workspace, &conversation.id, newest);
-            }
-            continue;
+        let baselined = watermark.is_none();
+        if subscribed_here
+            && baselined
+            && let Some(newest) = window.iter().map(|message| message.ts.as_str()).max()
+        {
+            tracing::info!(
+                target: "forge_tools::slack",
+                workspace,
+                conversation = %conversation.id,
+                cursor = %newest,
+                "no cursor for this conversation; baselining at the newest message seen",
+            );
+            host.set_watermark(workspace, &conversation.id, newest);
         }
 
         // The window reaches back past the cursor on the common tick, so it
@@ -1606,9 +1691,16 @@ pub(crate) async fn sweep_scope(
         // cursor walk reaches that. That walk starts at the cursor and ends
         // on the very page the window just returned, so the overlap is
         // deliberate: the window is a view, not a read position.
+        //
+        // A baselined conversation reads no history at all: its past is not
+        // news. Its followed threads are walked below regardless, because
+        // their cursor is their own and the channel's missing one says
+        // nothing about them.
         let reaches_back =
             window.last().is_some_and(|oldest| !is_newer(&oldest.ts, watermark.as_deref()));
-        let history = if reaches_back {
+        let history = if baselined {
+            Vec::new()
+        } else if reaches_back {
             window.clone()
         } else {
             match fetch_history(api, workspace, &conversation.id, watermark.as_deref()).await {
@@ -1628,6 +1720,10 @@ pub(crate) async fn sweep_scope(
                         %error,
                         "reading a conversation's history failed; skipping it this tick",
                     );
+                    // Same as the window arm: prune on the way out, or a
+                    // followed thread in a channel that can never be read
+                    // never expires.
+                    let _ = host.followed_threads(workspace, &conversation.id);
                     continue;
                 }
             }
@@ -1644,33 +1740,38 @@ pub(crate) async fn sweep_scope(
         // every thread that had none when its parent went past: the parent is
         // read once, and the reply that arrives minutes later never brings it
         // back. Whether the user is IN the thread is a separate question,
-        // asked of the replies the walk fetches.
-        for message in window.iter().filter(|message| is_thread_parent(message)) {
-            let anchor = match message.latest_reply.as_deref() {
-                Some(latest) => just_below(latest),
-                None => message.ts.clone(),
-            };
-            // A new thread's seed never falls below the conversation cursor:
-            // its newest reply can predate a new subscription. The walk filters
-            // by ts alone, so a correction to a reply already behind that
-            // cursor is not re-offered on the first follow.
-            let since = match watermark.as_deref() {
-                Some(cursor) if is_newer(cursor, Some(anchor.as_str())) => cursor.to_owned(),
-                _ => anchor,
-            };
-            for subscription in
-                subscriptions.iter().filter(|subscription| owns_threads(subscription, conversation))
-            {
-                host.follow_thread(
-                    workspace,
-                    &conversation.id,
-                    &message.ts,
-                    SlackThreadOwner {
-                        project: subscription.project.clone(),
-                        team_role: subscription.team_role.clone(),
-                    },
-                    &since,
-                );
+        // asked of the replies the walk fetches. A baselined conversation
+        // anchors nothing: its past is not news, and the threads it already
+        // holds are walked below.
+        if !baselined {
+            for message in window.iter().filter(|message| is_thread_parent(message)) {
+                let anchor = match message.latest_reply.as_deref() {
+                    Some(latest) => just_below(latest),
+                    None => message.ts.clone(),
+                };
+                // A new thread's seed never falls below the conversation cursor:
+                // its newest reply can predate a new subscription. The walk filters
+                // by ts alone, so a correction to a reply already behind that
+                // cursor is not re-offered on the first follow.
+                let since = match watermark.as_deref() {
+                    Some(cursor) if is_newer(cursor, Some(anchor.as_str())) => cursor.to_owned(),
+                    _ => anchor,
+                };
+                for subscription in subscriptions
+                    .iter()
+                    .filter(|subscription| owns_threads(subscription, conversation))
+                {
+                    host.follow_thread(
+                        workspace,
+                        &conversation.id,
+                        &message.ts,
+                        SlackThreadOwner {
+                            project: subscription.project.clone(),
+                            team_role: subscription.team_role.clone(),
+                        },
+                        &since,
+                    );
+                }
             }
         }
 
@@ -1745,14 +1846,12 @@ pub(crate) async fn sweep_scope(
 
         let label =
             conversation.name.clone().or_else(|| conversation.user.clone()).unwrap_or_default();
-        // The ledger is per conversation, so one read per message serves
-        // every subscription watching it.
-        let own_posts: HashSet<&str> = batch
-            .iter()
-            .map(|message| message.ts.as_str())
-            .filter(|ts| host.own_post(workspace, &conversation.id, ts))
-            .collect();
-        let own_post = |ts: &str| own_posts.contains(ts);
+        // The ledger refuses an own post for the session that posted it
+        // alone, so the read is per (ts, owner) rather than one set shared by
+        // the block: a post one subscriber made still reaches the others.
+        let own_post = |ts: &str, owner: &SlackThreadOwner| {
+            host.own_post_by(workspace, &conversation.id, ts, owner)
+        };
         // One block per subscription that wants this conversation's news:
         // a lead and a worker watching one channel are two destinations,
         // and one shared block would starve whichever sorted second. No
@@ -1762,6 +1861,11 @@ pub(crate) async fn sweep_scope(
         // The thread watermark has to clear edits this batch hands over, or
         // the thread walk's next whole read offers the same correction again.
         let mut handed_edits: HashMap<String, String> = HashMap::new();
+        // Which (project, team_role, ts) pairs this block already carried to
+        // a session, so the thread walk below does not hand the same reply
+        // to the same seat twice. The walk's own delivery set is wider -
+        // owners ∪ participants - so this is per destination, not one flag.
+        let mut handed: HashSet<(String, Option<String>, String)> = HashSet::new();
         for subscription in &subscriptions {
             let wanted: Vec<&SlackHistoryMessage> = batch
                 .iter()
@@ -1799,12 +1903,17 @@ pub(crate) async fn sweep_scope(
                     files: message.files.clone(),
                 })
                 .collect();
-            if !host.deliver(subscription, &messages) {
+            if !host.deliver(&subscription.project, subscription.team_role.as_deref(), &messages) {
                 all_handed = false;
                 continue;
             }
             delivered += 1;
             for message in wanted {
+                handed.insert((
+                    subscription.project.clone(),
+                    subscription.team_role.clone(),
+                    message.ts.clone(),
+                ));
                 if let Some(parent_ts) = followed_parent_of(message)
                     && message.ts != parent_ts
                     && let Some(edited) = message.edited.as_deref()
@@ -2019,21 +2128,29 @@ pub(crate) async fn sweep_scope(
             // What this thread has to say this tick, in the order the wire
             // sent it, so an owner is handed one block rather than one per
             // reply - the shape the conversation batch delivers.
+            //
+            // Its own dedupe set, never the conversation batch's: the two
+            // paths deliver to different destination sets, and a reply the
+            // channel block carried to a subscriber must still reach a
+            // participant that holds no subscription. The workspace's
+            // delivery memory absorbs a second hand-off to the same seat.
+            let mut walk_seen: HashSet<String> = HashSet::new();
             let mut deliverable: Vec<(&SlackHistoryMessage, Option<String>)> = Vec::new();
             let mut thread_throttled = false;
             for reply in &replies {
                 // Slack repeats the parent on every page of the walk.
-                if reply.ts == thread.parent_ts || !news(reply) || !seen.insert(reply.ts.clone()) {
+                if reply.ts == thread.parent_ts
+                    || !news(reply)
+                    || !walk_seen.insert(reply.ts.clone())
+                {
                     continue;
                 }
                 // Replies never appear in history, so this walk is the one
-                // path that sees the agent's own answers to the threads it
-                // anchors - and they must not come back, or an agent
-                // answering the echo answers itself. Identity, not author:
-                // Ved's own replies in the thread are his to see.
-                if host.own_post(workspace, &conversation.id, &reply.ts) {
-                    continue;
-                }
+                // path that sees a session's own answers to the threads it
+                // anchors. The echo is refused per destination below - for
+                // the session that posted it alone - so a shared thread reads
+                // whole on every side, and Ved's own replies, which carry no
+                // ledger row, still arrive.
                 // Resolved the same way the conversation batch's are: a
                 // reply usually comes from someone who posted nothing in
                 // the channel this tick, so the map may not hold him yet.
@@ -2051,10 +2168,34 @@ pub(crate) async fn sweep_scope(
             if thread_throttled {
                 continue;
             }
+            // Delivery is owners ∪ participants, deduped: an owner is a seat
+            // a delivered message anchored here and is pruned with its
+            // subscriptions, a participant joined by posting and survives
+            // them. Neither needs a subscription lookup - delivery routes by
+            // the owner fields alone.
+            let mut destinations: Vec<&SlackThreadOwner> = Vec::new();
+            for owner in thread.owners.iter().chain(thread.participants.iter()) {
+                if !destinations.contains(&owner) {
+                    destinations.push(owner);
+                }
+            }
             let mut walk_failed = false;
-            for owner in &thread.owners {
+            for owner in destinations {
                 let messages: Vec<SlackMessage> = deliverable
                     .iter()
+                    // The echo is refused for the session that posted it and
+                    // delivered to every other participant: an agent
+                    // answering its own echo would answer itself, while the
+                    // thread's other seats must read what it said. A reply
+                    // this tick's channel block already carried to this seat
+                    // is skipped: the two paths' destination sets overlap.
+                    .filter(|(reply, _)| {
+                        !handed.contains(&(
+                            owner.project.clone(),
+                            owner.team_role.clone(),
+                            reply.ts.clone(),
+                        )) && !host.own_post_by(workspace, &conversation.id, &reply.ts, owner)
+                    })
                     .map(|(reply, author)| SlackMessage {
                         workspace: workspace.to_owned(),
                         conversation: conversation.id.clone(),
@@ -2071,18 +2212,11 @@ pub(crate) async fn sweep_scope(
                     })
                     .collect();
                 if messages.is_empty() {
-                    break;
-                }
-                // Delivery routes by the owner fields alone, so any
-                // subscription of the same owner carries the block.
-                let Some(subscription) = subscriptions.iter().find(|subscription| {
-                    subscription.project == owner.project
-                        && subscription.team_role == owner.team_role
-                }) else {
-                    walk_failed = true;
+                    // Every reply this tick was the destination's own: an
+                    // empty hand-off is not a delivery, and not a failure.
                     continue;
-                };
-                if host.deliver(subscription, &messages) {
+                }
+                if host.deliver(&owner.project, owner.team_role.as_deref(), &messages) {
                     delivered += 1;
                 } else {
                     // Whatever came back may hold replies newer than the
@@ -2247,14 +2381,20 @@ pub(crate) async fn sweep_mentions(
             }
             // The query is the literal mention token, so it matches the
             // agent's own posts that quote one. The ledger is what refuses
-            // those; a message Ved wrote himself mentioning himself is his
-            // own conversation and is delivered.
-            if host.own_post(workspace, &hit.conversation_id, &hit.ts) {
+            // those: the hit is refused outright, as it was before thread
+            // participation existed. A message Ved wrote himself mentioning
+            // himself is not in the ledger, so it is still delivered. A
+            // search hit sends the handle alongside the id, so the mention
+            // path needs no lookup at all - except for the user's own
+            // posts, where that handle can be the Slack app's name.
+            //
+            // Refused here rather than per destination: the auto-subscribe
+            // and thread-follow below are the reasons a mention pulls a seat
+            // into a conversation, and forge's own words must not do that -
+            // that is the alert loop #2877 was filed about.
+            if host.own_post_any(workspace, &hit.conversation_id, &hit.ts) {
                 continue;
             }
-            // A search hit sends the handle alongside the id, so the
-            // mention path needs no lookup at all - except for the user's
-            // own posts, where that handle can be the Slack app's name.
             let author = if hit.user.as_deref() == Some(own.id) {
                 match own_name(host, api, workspace, &mut own).await {
                     Ok(name) => {
@@ -2293,7 +2433,11 @@ pub(crate) async fn sweep_mentions(
             };
             let mut all_handed = true;
             for subscription in &mention_subscriptions {
-                if !host.deliver(subscription, std::slice::from_ref(&message)) {
+                if !host.deliver(
+                    &subscription.project,
+                    subscription.team_role.as_deref(),
+                    std::slice::from_ref(&message),
+                ) {
                     all_handed = false;
                 }
             }
@@ -3540,13 +3684,50 @@ mod tests {
     }
 
     /// A message forge did not post: nothing in the outbound ledger.
-    fn not_ours(_ts: &str) -> bool {
+    fn not_ours(_ts: &str, _owner: &SlackThreadOwner) -> bool {
         false
     }
 
     /// A message forge posted: every ts is in the outbound ledger.
-    fn ours(_ts: &str) -> bool {
+    fn ours(_ts: &str, _owner: &SlackThreadOwner) -> bool {
         true
+    }
+
+    /// A ledgered post is refused for the session that posted it alone. A
+    /// second session watching the same conversation still receives it, so a
+    /// shared channel reads whole on both sides.
+    #[test]
+    fn a_ledgered_post_is_refused_for_its_poster_and_wanted_by_another_session() {
+        let poster = thread_owner("forge", Some("tester"));
+        let channel = conversation_channel("C1", "general");
+        let own_post =
+            |ts: &str, owner: &SlackThreadOwner| ts == "1700000000.000100" && owner == &poster;
+
+        let poster_sub = vec![sub_conversation_owned_by("acme", "forge", Some("tester"), "C1")];
+        assert!(
+            !wants(
+                &poster_sub,
+                &channel,
+                "the agent's own words",
+                "1700000000.000100",
+                "U1",
+                &own_post,
+            ),
+            "the session that posted it must not answer its own echo",
+        );
+
+        let lead_sub = vec![sub_conversation_owned_by("acme", "forge", None, "C1")];
+        assert!(
+            wants(
+                &lead_sub,
+                &channel,
+                "the agent's own words",
+                "1700000000.000100",
+                "U1",
+                &own_post,
+            ),
+            "the lead watching the same conversation still receives it",
+        );
     }
 
     #[test]
@@ -4142,11 +4323,17 @@ mod tests {
         /// The `oldest` each `conversations.replies` call carried, so a test
         /// can tell a whole read from the cheap tick.
         replies_oldest: std::sync::Mutex<Vec<Option<String>>>,
-        /// The outbound ledger, keyed `workspace/conversation/ts`.
-        own_posts: std::sync::Mutex<HashSet<String>>,
+        /// The outbound ledger, keyed `workspace/conversation/ts`. The value
+        /// is the session that posted it; `None` is an ownerless row, which
+        /// refuses every session.
+        own_posts: std::sync::Mutex<HashMap<String, Option<SlackThreadOwner>>>,
         /// Conversations with a post in flight, keyed
         /// `workspace/address`.
         inflight: std::sync::Mutex<HashSet<String>>,
+        /// Whether `followed_threads` applies the idle clock the real host
+        /// applies. Off by default: fixtures seed epoch-era cursors to force
+        /// a walk, and a clock would erase them.
+        idle_prune: std::sync::atomic::AtomicBool,
     }
 
     fn conversation_for(id: &str) -> SlackConversation {
@@ -4262,9 +4449,58 @@ mod tests {
             self.user_names.lock().expect("lock").insert(user.to_owned(), name.to_owned());
         }
 
-        /// Put a message in the outbound ledger: forge posted it.
-        fn record_own_post(&self, workspace: &str, conversation: &str, ts: &str) {
-            self.own_posts.lock().expect("lock").insert(format!("{workspace}/{conversation}/{ts}"));
+        /// Seed a followed thread exactly as the durable row stands: its
+        /// cursor, the owners a subscription anchored, and the participants
+        /// that joined by posting. Bypasses the clock, so a row survives
+        /// `followed_threads`' subscription prune only through its
+        /// participants - the shape a joined thread has.
+        fn seed_thread(
+            &self,
+            workspace: &str,
+            conversation: &str,
+            parent: &str,
+            cursor: &str,
+            owners: Vec<SlackThreadOwner>,
+            participants: Vec<SlackThreadOwner>,
+        ) {
+            self.threads.lock().expect("lock").insert(
+                format!("{workspace}/{conversation}/{parent}"),
+                SlackThreadRecord {
+                    cursor: cursor.to_owned(),
+                    edit_watermark: Some(cursor.to_owned()),
+                    owners,
+                    participants,
+                    participating: false,
+                },
+            );
+        }
+
+        /// Drop every subscription: the state after a channel is quieted.
+        fn clear_subscriptions(&self) {
+            self.subscriptions.lock().expect("lock").clear();
+        }
+
+        /// Make `followed_threads` age rows out on the idle clock, as the
+        /// real host does. Opt-in, because most fixtures seed epoch-era
+        /// cursors on purpose.
+        fn mirror_idle_prune(&self) {
+            self.idle_prune.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        /// Put a message in the outbound ledger: forge posted it, as `owner`.
+        /// An ownerless row is what a ledger row written before owners looks
+        /// like.
+        fn record_own_post(
+            &self,
+            workspace: &str,
+            conversation: &str,
+            ts: &str,
+            owner: Option<SlackThreadOwner>,
+        ) {
+            self.own_posts
+                .lock()
+                .expect("lock")
+                .insert(format!("{workspace}/{conversation}/{ts}"), owner);
         }
 
         /// Mark a post in flight, addressed as a post addresses it.
@@ -4448,6 +4684,10 @@ mod tests {
                 .insert(format!("{workspace}/{conversation}"), ts.to_owned());
         }
 
+        fn clear_watermark(&self, workspace: &str, conversation: &str) {
+            self.watermarks.lock().expect("lock").remove(&format!("{workspace}/{conversation}"));
+        }
+
         fn set_connected(&self, _workspace: &str, connected: bool) {
             *self.connected.lock().expect("lock") = Some(connected);
         }
@@ -4469,7 +4709,12 @@ mod tests {
             }
         }
 
-        fn deliver(&self, subscription: &SlackSubscription, messages: &[SlackMessage]) -> bool {
+        fn deliver(
+            &self,
+            project: &str,
+            team_role: Option<&str>,
+            messages: &[SlackMessage],
+        ) -> bool {
             // One attempt per batch, not per message: the whole slice lands
             // or none of it does, which is what `fail_delivery_at` indexes.
             let attempt = {
@@ -4481,8 +4726,8 @@ mod tests {
                 return false;
             }
             let owner = SlackThreadOwner {
-                project: subscription.project.clone(),
-                team_role: subscription.team_role.clone(),
+                project: project.to_owned(),
+                team_role: team_role.map(str::to_owned),
             };
             self.batches.lock().expect("lock").push(messages.to_vec());
             for message in messages {
@@ -4492,27 +4737,77 @@ mod tests {
             true
         }
 
+        /// Mirrors the real host's subscription prune and its participants:
+        /// an owner whose subscription is gone is dropped, a participant
+        /// stays whatever it holds, and a row with neither left is gone.
+        /// The idle clock is off unless a test opts in with
+        /// [`Self::mirror_idle_prune`], because most fixtures seed epoch-era
+        /// cursors to force a walk and a clock would erase them.
         fn followed_threads(
             &self,
             workspace: &str,
             conversation: &str,
         ) -> Vec<SlackFollowedThread> {
             let prefix = format!("{workspace}/{conversation}/");
-            self.threads
+            let alive: HashSet<(String, Option<String>)> = self
+                .subscriptions
                 .lock()
                 .expect("lock")
                 .iter()
-                .filter(|(key, _)| key.starts_with(&prefix))
-                .map(|(key, record)| SlackFollowedThread {
+                .filter(|sub| sub.workspace == workspace)
+                .map(|sub| (sub.project.clone(), sub.team_role.clone()))
+                .collect();
+            let mut threads = self.threads.lock().expect("lock");
+            let keys: Vec<String> =
+                threads.keys().filter(|key| key.starts_with(&prefix)).cloned().collect();
+            let mut out = Vec::new();
+            for key in keys {
+                let Some(record) = threads.get_mut(&key) else { continue };
+                record.owners.retain(|owner| {
+                    alive.contains(&(owner.project.clone(), owner.team_role.clone()))
+                });
+                if record.owners.is_empty() && record.participants.is_empty() {
+                    threads.remove(&key);
+                    continue;
+                }
+                if self.idle_prune.load(std::sync::atomic::Ordering::SeqCst) {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                        .map(|now| now.as_secs())
+                        .unwrap_or_default();
+                    let cursor_secs: u64 =
+                        record.cursor.split('.').next().and_then(|s| s.parse().ok()).unwrap_or(0);
+                    if now.saturating_sub(cursor_secs) / 86_400 >= 14 {
+                        threads.remove(&key);
+                        continue;
+                    }
+                }
+                out.push(SlackFollowedThread {
                     parent_ts: key
                         .rsplit('/')
                         .next()
                         .expect("the parent is the last part")
                         .to_owned(),
                     owners: record.owners.clone(),
+                    participants: record.participants.clone(),
                     participating: record.participating,
-                })
-                .collect()
+                });
+            }
+            out
+        }
+
+        fn followed_conversations(&self, workspace: &str) -> Vec<String> {
+            let prefix = format!("{workspace}/");
+            let threads = self.threads.lock().expect("lock");
+            let mut conversations: Vec<String> = threads
+                .keys()
+                .filter_map(|key| key.strip_prefix(&prefix))
+                .filter_map(|rest| rest.split_once('/').map(|(conversation, _)| conversation))
+                .map(str::to_owned)
+                .collect();
+            conversations.sort_unstable();
+            conversations.dedup();
+            conversations
         }
 
         fn thread_watermark(
@@ -4543,6 +4838,7 @@ mod tests {
                     cursor: String::new(),
                     edit_watermark: None,
                     owners: Vec::new(),
+                    participants: Vec::new(),
                     participating: false,
                 });
             record.cursor = ts.to_owned();
@@ -4652,6 +4948,7 @@ mod tests {
                         cursor: since.to_owned(),
                         edit_watermark: Some(since.to_owned()),
                         owners: Vec::new(),
+                        participants: Vec::new(),
                         participating: false,
                     }
                 });
@@ -4699,11 +4996,31 @@ mod tests {
             true
         }
 
-        fn own_post(&self, workspace: &str, conversation: &str, ts: &str) -> bool {
+        fn own_post_by(
+            &self,
+            workspace: &str,
+            conversation: &str,
+            ts: &str,
+            owner: &SlackThreadOwner,
+        ) -> bool {
+            match self
+                .own_posts
+                .lock()
+                .expect("lock")
+                .get(&format!("{workspace}/{conversation}/{ts}"))
+            {
+                None => false,
+                // An old row refuses everyone, the real host's fallback.
+                Some(None) => true,
+                Some(Some(poster)) => poster == owner,
+            }
+        }
+
+        fn own_post_any(&self, workspace: &str, conversation: &str, ts: &str) -> bool {
             self.own_posts
                 .lock()
                 .expect("lock")
-                .contains(&format!("{workspace}/{conversation}/{ts}"))
+                .contains_key(&format!("{workspace}/{conversation}/{ts}"))
         }
 
         fn post_in_flight(&self, workspace: &str, conversation: &str) -> Option<Duration> {
@@ -5506,7 +5823,7 @@ mod tests {
                 history_message("200.1", "U1", "what Ved typed"),
             ],
         );
-        host.record_own_post("acme", "C1", "200.2");
+        host.record_own_post("acme", "C1", "200.2", Some(thread_owner("forge", None)));
 
         sweep(&host, &host, "acme").await.expect("sweep");
 
@@ -5804,7 +6121,7 @@ mod tests {
         let mut user_post = search_match("250.1", "C1", "what I wrote <@U1>");
         user_post.user = Some("U1".to_owned());
         host.seed_search(vec![search_match("200.1", "C1", "theirs <@U1>"), agent_post, user_post]);
-        host.record_own_post("acme", "C1", "300.2");
+        host.record_own_post("acme", "C1", "300.2", Some(thread_owner("forge", None)));
 
         let outcome = sweep_mentions(&host, &host, "acme").await.expect("sweep");
         assert_eq!(outcome.delivered, 2, "the agent's post is refused; every other hit arrives");
@@ -7924,7 +8241,7 @@ mod tests {
         host.seed_history("C1", vec![parent.clone()]);
         seed_user_participation(&host, &parent);
         sweep(&host, &host, "acme").await.expect("trigger sweep");
-        host.record_own_post("acme", "C1", "150.0");
+        host.record_own_post("acme", "C1", "150.0", Some(thread_owner("forge", Some("tester"))));
 
         host.seed_replies(
             "C1",
@@ -7950,6 +8267,234 @@ mod tests {
         assert!(
             delivered.iter().any(|message| message.text == "someone else's reply"),
             "and everyone else's replies still arrive",
+        );
+    }
+
+    /// #2877, offline: a seat that posted into a thread keeps receiving it
+    /// after the channel subscription that anchored the thread is removed.
+    /// The owner is pruned with its subscription; the participation row is
+    /// what survives it, so quieting a noisy channel no longer makes the
+    /// seat unreachable in the threads it is answering.
+    #[tokio::test]
+    async fn a_seat_keeps_receiving_a_thread_after_its_subscription_is_removed() {
+        let host = FakeHost::with_subscriptions(vec![sub_conversation_owned_by(
+            "acme",
+            "forge",
+            Some("tester"),
+            "C1",
+        )]);
+        let parent = parent_with_latest_reply("100.0", 2, "150.0");
+        host.set_watermark("acme", "C1", "050.0");
+        host.seed_history("C1", vec![parent.clone()]);
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                parent,
+                // The seat's own answer, posted through forge as the user:
+                // this is what joined it to the thread.
+                reply("105.0", "100.0", "U1", "the seat's answer"),
+                reply("150.0", "100.0", "U8", "a later reply"),
+            ],
+        );
+        // The row the post left behind: the owner anchored it, the seat
+        // joined it.
+        let seat = thread_owner("forge", Some("tester"));
+        host.seed_thread("acme", "C1", "100.0", "105.0", vec![seat.clone()], vec![seat.clone()]);
+
+        // The channel is quieted: the subscription goes, the participation
+        // row stays.
+        host.clear_subscriptions();
+        sweep(&host, &host, "acme").await.expect("the sweep after the unsubscribe");
+
+        assert!(
+            host.delivered().iter().any(|message| message.ts == "150.0"),
+            "the reply in the thread the seat is in must reach it: {:?}",
+            host.delivered(),
+        );
+        let thread = host.followed_threads("acme", "C1");
+        assert_eq!(thread.len(), 1, "the row survives its subscription");
+        assert!(thread[0].owners.is_empty(), "the owner is pruned with its subscription");
+        assert_eq!(thread[0].participants, vec![seat], "and the participant is what kept it");
+    }
+
+    /// With no subscriptions at all, a reply in a thread holding a
+    /// participant row is still fetched and delivered - and the sweep leaves
+    /// NO conversation cursor behind. Unsubscribe cleared it on purpose so a
+    /// later subscriber seeds `now`; a participant walk that re-baselined it
+    /// would hand that subscriber the whole gap instead.
+    #[tokio::test]
+    async fn a_thread_holding_a_participant_is_walked_with_no_subscriptions_at_all() {
+        let host = FakeHost::with_subscriptions(Vec::new());
+        let parent = parent_with_latest_reply("100.0", 2, "150.0");
+        host.seed_history("C1", vec![parent.clone()]);
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                parent,
+                reply("105.0", "100.0", "U1", "the seat's answer"),
+                reply("150.0", "100.0", "U8", "a later reply"),
+            ],
+        );
+        let seat = thread_owner("forge", Some("tester"));
+        host.seed_thread("acme", "C1", "100.0", "105.0", Vec::new(), vec![seat]);
+
+        sweep(&host, &host, "acme").await.expect("a sweep with no subscriptions");
+
+        assert_eq!(
+            host.watermark("acme", "C1").expect("watermark"),
+            None,
+            "a conversation held only by thread rows keeps no cursor, so a later subscribe seeds fresh",
+        );
+        assert!(
+            host.delivered().iter().any(|message| message.ts == "150.0"),
+            "and its participant's thread is walked anyway: {:?}",
+            host.delivered(),
+        );
+    }
+
+    /// The gate on that cursor write: a conversation a subscription DOES
+    /// cover still baselines its missing cursor, as every subscription has
+    /// always relied on.
+    #[tokio::test]
+    async fn a_subscribed_conversation_still_baselines_its_missing_cursor() {
+        let host = FakeHost::with_subscriptions(vec![sub_conversation_owned_by(
+            "acme", "forge", None, "C1",
+        )]);
+        host.seed_history("C1", vec![history_message("100.0", "U1", "hello")]);
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        assert_eq!(
+            host.watermark("acme", "C1").expect("watermark"),
+            Some("100.0".to_owned()),
+            "a subscribed conversation baselines at its newest message",
+        );
+    }
+
+    /// A subscription-less conversation that still carries a cursor gets it
+    /// CLEARED. Unsubscribe clears it so a later subscriber seeds fresh, and
+    /// one left standing - an ephemeral worker's subscription gone at a
+    /// restart, a raced clear - would make every tick page the whole gap
+    /// from it until the history cap wedged the sweep. The participant's
+    /// thread still walks on its own cursor.
+    #[tokio::test]
+    async fn a_participant_sweep_clears_a_stale_conversation_cursor() {
+        let host = FakeHost::with_subscriptions(Vec::new());
+        host.set_watermark("acme", "C1", "050.0");
+        let parent = parent_with_latest_reply("100.0", 2, "150.0");
+        host.seed_history("C1", vec![parent.clone()]);
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                parent,
+                reply("105.0", "100.0", "U1", "the seat's answer"),
+                reply("150.0", "100.0", "U8", "a later reply"),
+            ],
+        );
+        let seat = thread_owner("forge", Some("tester"));
+        host.seed_thread("acme", "C1", "100.0", "105.0", Vec::new(), vec![seat]);
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        assert_eq!(
+            host.watermark("acme", "C1").expect("watermark"),
+            None,
+            "the stale cursor is cleared, so a later subscribe seeds fresh",
+        );
+        assert!(
+            host.delivered().iter().any(|message| message.ts == "150.0"),
+            "and the participant's thread still walks: {:?}",
+            host.delivered(),
+        );
+    }
+
+    /// Echo split: a forge post is suppressed for the session that posted it
+    /// alone. In a thread with two participants, one seat's post reaches the
+    /// other and never comes back to it, so every side reads the thread
+    /// whole without answering itself.
+    #[tokio::test]
+    async fn a_participants_post_reaches_the_other_participant_and_not_itself() {
+        let host = FakeHost::with_subscriptions(Vec::new());
+        let parent = parent_with_latest_reply("100.0", 2, "200.0");
+        host.set_watermark("acme", "C1", "050.0");
+        host.seed_history("C1", vec![parent.clone()]);
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                parent,
+                reply("150.0", "100.0", "U1", "the agent's post"),
+                reply("200.0", "100.0", "U8", "the answer"),
+            ],
+        );
+        let poster = thread_owner("forge", Some("tester"));
+        let other = thread_owner("forge", Some("other"));
+        host.seed_thread(
+            "acme",
+            "C1",
+            "100.0",
+            "140.0",
+            Vec::new(),
+            vec![poster.clone(), other.clone()],
+        );
+        host.record_own_post("acme", "C1", "150.0", Some(poster.clone()));
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        let batches = host.batches();
+        let texts: Vec<Vec<&str>> = batches
+            .iter()
+            .map(|batch| batch.iter().map(|message| message.ts.as_str()).collect())
+            .collect();
+        assert_eq!(
+            texts,
+            vec![vec!["200.0"], vec!["150.0", "200.0"]],
+            "the poster's block omits its own post; the other participant reads the whole thread",
+        );
+        // And the ledgered ts reached exactly one destination, so an echo
+        // cannot slip through under a second owner.
+        let delivered = host.delivered();
+        let owners = host.delivered_owners();
+        let owners_of_post: Vec<&SlackThreadOwner> = delivered
+            .iter()
+            .zip(owners.iter())
+            .filter(|(message, _)| message.ts == "150.0")
+            .map(|(_, owner)| owner)
+            .collect();
+        assert_eq!(owners_of_post, vec![&other], "only the other participant received it");
+    }
+
+    /// A participant row is created at the seat's own post, so its first
+    /// walk starts there rather than at the thread's beginning: a reply
+    /// older than that post is never news.
+    #[tokio::test]
+    async fn a_new_participant_row_walks_from_its_own_post() {
+        let host = FakeHost::with_subscriptions(Vec::new());
+        let parent = parent_with_latest_reply("100.0", 2, "200.0");
+        host.set_watermark("acme", "C1", "050.0");
+        host.seed_history("C1", vec![parent.clone()]);
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                parent,
+                reply("120.0", "100.0", "U8", "older than the post"),
+                reply("150.0", "100.0", "U1", "the seat's own post"),
+                reply("200.0", "100.0", "U8", "a later answer"),
+            ],
+        );
+        let seat = thread_owner("forge", Some("tester"));
+        host.seed_thread("acme", "C1", "100.0", "150.0", Vec::new(), vec![seat]);
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        assert_eq!(
+            host.delivered().iter().map(|message| message.ts.as_str()).collect::<Vec<_>>(),
+            vec!["200.0"],
+            "the walk starts at the seat's own post, so nothing below it is re-offered",
         );
     }
 
@@ -8022,6 +8567,155 @@ mod tests {
         assert!(
             owners.iter().any(|role| role.as_deref() == Some("b")),
             "the second mention subscription is not starved: {owners:?}",
+        );
+    }
+
+    /// A ledgered hit is refused for every mention subscriber, and it must
+    /// not auto-subscribe or follow a thread either: an agent's own words
+    /// that quote a mention were skipped entirely before thread
+    /// participation existed, and falling through to the auto-subscribe
+    /// would pull a seat back into the channel it just removed.
+    #[tokio::test]
+    async fn a_ledgered_mention_hit_reaches_no_subscriber_and_subscribes_none() {
+        let host = FakeHost::with_subscriptions(vec![
+            {
+                let mut sub = sub_mentions("acme");
+                sub.team_role = Some("a".to_owned());
+                sub
+            },
+            {
+                let mut sub = sub_mentions("acme");
+                sub.team_role = Some("b".to_owned());
+                sub
+            },
+        ]);
+        host.set_watermark("acme", MENTION_CURSOR, "100.0");
+        host.seed_search(vec![search_match("150.0", "C9", "mine <@U1>")]);
+        host.record_own_post("acme", "C9", "150.0", Some(thread_owner("forge", Some("a"))));
+
+        sweep_mentions(&host, &host, "acme").await.expect("sweep");
+
+        assert!(
+            host.delivered().is_empty(),
+            "forge's own words reach no mention subscriber: {:?}",
+            host.delivered(),
+        );
+        assert!(
+            host.auto_subscribed().is_empty(),
+            "and the hit pulls nobody into the conversation: {:?}",
+            host.auto_subscribed(),
+        );
+    }
+
+    /// A participant-only thread in a DM is walked with no subscriptions at
+    /// all. The plan widened both sweep scopes, and this pins the DM arm:
+    /// a regression there stops delivery for a joined DM thread silently.
+    #[tokio::test]
+    async fn a_dm_thread_holding_a_participant_is_walked_with_no_subscriptions() {
+        let host = FakeHost::with_subscriptions(Vec::new());
+        let parent = parent_with_latest_reply("100.0", 2, "150.0");
+        host.seed_history("D1", vec![parent.clone()]);
+        host.seed_replies(
+            "D1",
+            "100.0",
+            vec![
+                parent,
+                reply("105.0", "100.0", "U1", "the seat's answer"),
+                reply("150.0", "100.0", "U8", "a later reply"),
+            ],
+        );
+        let seat = thread_owner("forge", Some("tester"));
+        host.seed_thread("acme", "D1", "100.0", "105.0", Vec::new(), vec![seat]);
+
+        sweep(&host, &host, "acme").await.expect("sweep with no subscriptions");
+
+        assert!(
+            host.delivered().iter().any(|message| message.ts == "150.0"),
+            "the DM's participant thread is walked: {:?}",
+            host.delivered(),
+        );
+    }
+
+    /// A participant-only thread in a conversation the token's user has left
+    /// is swept too: the directory listing cannot be relied on to carry it,
+    /// so the thread row itself names the conversation.
+    #[tokio::test]
+    async fn a_participant_thread_in_an_unlisted_conversation_is_still_walked() {
+        let host = FakeHost::with_subscriptions(Vec::new());
+        let parent = parent_with_latest_reply("100.0", 2, "150.0");
+        host.seed_history_unlisted("C9", vec![parent.clone()]);
+        host.seed_replies(
+            "C9",
+            "100.0",
+            vec![
+                parent,
+                reply("105.0", "100.0", "U1", "the seat's answer"),
+                reply("150.0", "100.0", "U8", "a later reply"),
+            ],
+        );
+        host.set_watermark("acme", "C9", "050.0");
+        let seat = thread_owner("forge", Some("tester"));
+        host.seed_thread("acme", "C9", "100.0", "105.0", Vec::new(), vec![seat]);
+
+        sweep(&host, &host, "acme").await.expect("sweep with no subscriptions");
+
+        assert!(
+            host.delivered().iter().any(|message| message.ts == "150.0"),
+            "a thread row keeps a left conversation swept: {:?}",
+            host.delivered(),
+        );
+    }
+
+    /// A thread row in a conversation whose history the sweep cannot read
+    /// still expires: each failure arm lists the rows on its way out, and
+    /// that listing is the only idle prune such a row ever gets.
+    #[tokio::test]
+    async fn an_unreadable_conversation_still_expires_its_thread_rows() {
+        let host = FakeHost::with_subscriptions(Vec::new());
+        host.mirror_idle_prune();
+        host.seed_history_unlisted("C9", Vec::new());
+        host.fail_history_with(
+            "C9",
+            SlackError::Api {
+                method: "conversations.history".to_owned(),
+                error: "channel_not_found".to_owned(),
+                needed: None,
+            },
+        );
+        let seat = thread_owner("forge", Some("tester"));
+        host.seed_thread("acme", "C9", "100.0", "100.0", Vec::new(), vec![seat]);
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        assert!(
+            host.thread_cursor("acme", "C9", "100.0").is_none(),
+            "the idle row is pruned on the failure path, read without the listing's own prune",
+        );
+    }
+
+    /// The DM carve-out arm prunes the same way: a DM the user token can
+    /// never read must not hold a participant row forever.
+    #[tokio::test]
+    async fn an_unreadable_dm_still_expires_its_thread_rows() {
+        let host = FakeHost::with_subscriptions(Vec::new());
+        host.mirror_idle_prune();
+        host.seed_history("D1", Vec::new());
+        host.fail_history_with(
+            "D1",
+            SlackError::Api {
+                method: "conversations.history".to_owned(),
+                error: "channel_not_found".to_owned(),
+                needed: None,
+            },
+        );
+        let seat = thread_owner("forge", Some("tester"));
+        host.seed_thread("acme", "D1", "100.0", "100.0", Vec::new(), vec![seat]);
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        assert!(
+            host.thread_cursor("acme", "D1", "100.0").is_none(),
+            "an unreadable DM still expires its thread row, read without the listing's own prune",
         );
     }
 

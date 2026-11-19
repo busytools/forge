@@ -13,8 +13,8 @@ use forge_primitives::SessionSlot;
 use forge_primitives::slack::{
     SlackBookmark, SlackConfig, SlackConversation, SlackDraftAnswer, SlackDraftEnding,
     SlackDraftOperation, SlackFile, SlackFileShare, SlackFileShares, SlackPerson, SlackPin,
-    SlackPinMessage, SlackSearchMatch, SlackSubscription, SlackSubscriptionTarget, SlackUser,
-    SlackUserProfile, SlackWatchMode,
+    SlackPinMessage, SlackSearchMatch, SlackSubscription, SlackSubscriptionTarget,
+    SlackThreadOwner, SlackUser, SlackUserProfile, SlackWatchMode,
 };
 use forge_tools::slack::facade::{
     ProdSlackFacade, SlackAttachmentError, SlackChannelWatch, SlackEditError, SlackEditRequest,
@@ -35,6 +35,36 @@ use crate::workspace::Workspace;
 
 fn caller() -> SessionSlot {
     SessionSlot::lead("TestOrg", "forge")
+}
+
+/// Whether the ledger refuses `ts` for the caller these tests run as. A post
+/// is recorded under `host.caller`'s project and worker label, and a lead
+/// resolves to the project with no label.
+fn ledgered(ws: &Arc<Workspace>, workspace: &str, conversation: &str, ts: &str) -> bool {
+    ledgered_by(ws, workspace, conversation, ts, "forge", None)
+}
+
+/// Whether the ledger refuses `ts` for `(project, team_role)`. The write-side
+/// pin: an ownerless row answers `ledgered` too, so the owner the write
+/// recorded is checked against a second session's identity.
+fn ledgered_by(
+    ws: &Arc<Workspace>,
+    workspace: &str,
+    conversation: &str,
+    ts: &str,
+    project: &str,
+    team_role: Option<&str>,
+) -> bool {
+    let owner =
+        SlackThreadOwner { project: project.to_owned(), team_role: team_role.map(str::to_owned) };
+    ws.slack.slack_own_post_by(workspace, conversation, ts, Some(&owner))
+}
+
+/// A ts shaped like Slack's and set to now: a followed thread whose cursor
+/// is older than its idle window is dropped the moment it is listed.
+fn recent_slack_ts() -> String {
+    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("past the epoch");
+    format!("{}.{:06}", now.as_secs(), now.subsec_micros())
 }
 
 /// The production facade over one workspace: the subsystem handle and the
@@ -1505,13 +1535,14 @@ async fn a_multi_part_post_ledgers_every_landed_part() {
     let outcome = task.await.expect("no panic").expect("the parts land");
     assert_eq!(outcome.ts, vec!["1.0".to_owned(), "2.0".to_owned()], "two parts were sent");
     for ts in &outcome.ts {
+        assert!(ledgered(&ws, "acme", "C1", ts), "part {ts} must be refused to the sweep");
         assert!(
-            ws.slack.slack_own_post("acme", "C1", ts),
-            "part {ts} must be refused to the sweep"
+            !ledgered_by(&ws, "acme", "C1", ts, "forge", Some("other")),
+            "part {ts} is recorded under the poster: another session still receives it",
         );
     }
     assert!(
-        !ws.slack.slack_own_post("acme", "C2", "1.0"),
+        !ledgered(&ws, "acme", "C2", "1.0"),
         "and the ledger stays scoped to the conversation it was posted in",
     );
 }
@@ -1536,11 +1567,11 @@ async fn a_post_is_ledgered_under_the_channel_slack_posted_into() {
 
     assert_eq!(outcome.ts, vec!["1700000000.000100".to_owned()]);
     assert!(
-        ws.slack.slack_own_post("acme", "D456", "1700000000.000100"),
+        ledgered(&ws, "acme", "D456", "1700000000.000100"),
         "the conversation the post landed in is refused to the sweep",
     );
     assert!(
-        !ws.slack.slack_own_post("acme", "U123", "1700000000.000100"),
+        !ledgered(&ws, "acme", "U123", "1700000000.000100"),
         "the address it was sent to is not the conversation the sweep reads",
     );
 }
@@ -1552,11 +1583,24 @@ async fn a_post_is_ledgered_under_the_channel_slack_posted_into() {
 async fn a_partial_multi_part_post_ledgers_the_parts_slack_took() {
     let (facade, ws, api, _rx, _dir) = facade_with_recording_slack_and_store();
     api.fail_post_at(1);
+    let posted_ts = recent_slack_ts();
+    api.answer_posts_with(&posted_ts);
     let text = "a".repeat(forge_tools::slack::POST_LIMIT + 1);
 
     let task = tokio::spawn({
         let facade = facade.clone();
-        async move { facade.post(&caller(), post_request("C1", &text)).await }
+        async move {
+            facade
+                .post(
+                    &caller(),
+                    SlackPostRequest {
+                        conversation: "C1".to_owned(),
+                        thread_ts: Some("100.0".to_owned()),
+                        text,
+                    },
+                )
+                .await
+        }
     });
     let id = wait_for_draft(&ws).await;
     ws.slack.resolve_slack_draft(id, &caller(), answered(true));
@@ -1566,9 +1610,17 @@ async fn a_partial_multi_part_post_ledgers_the_parts_slack_took() {
         matches!(outcome, Err(SlackPostError::Partial { posted: 1, .. })),
         "the failure names how much landed: {outcome:?}",
     );
+    assert!(ledgered(&ws, "acme", "C1", &posted_ts), "the part Slack took is refused to the sweep");
     assert!(
-        ws.slack.slack_own_post("acme", "C1", "1.0"),
-        "the part Slack took is refused to the sweep",
+        !ledgered_by(&ws, "acme", "C1", &posted_ts, "forge", Some("other")),
+        "and it is recorded under the poster, not ownerless: another session still receives it",
+    );
+    let threads = ws.slack.slack_followed_threads("acme", "C1");
+    assert_eq!(threads.len(), 1, "the part that landed joined the thread it landed in");
+    assert_eq!(
+        threads[0].participants,
+        vec![SlackThreadOwner { project: "forge".to_owned(), team_role: None }],
+        "the poster is the participant, from the partial landing",
     );
 }
 
@@ -1770,7 +1822,7 @@ async fn a_post_answered_without_a_channel_is_ledgered_under_the_resolved_conver
     task.await.expect("no panic").expect("the post lands");
 
     assert!(
-        ws.slack.slack_own_post("acme", "C1", "1700000000.000100"),
+        ledgered(&ws, "acme", "C1", "1700000000.000100"),
         "the resolved conversation is what the fallback keys on",
     );
 }
@@ -1796,11 +1848,15 @@ async fn an_upload_ledgers_the_message_under_the_shares_own_conversation() {
     task.await.expect("no panic").expect("an approved upload sends");
 
     assert!(
-        ws.slack.slack_own_post("acme", "D456", "1700000000.000100"),
+        ledgered(&ws, "acme", "D456", "1700000000.000100"),
         "the share's own conversation holds the message, so that is what the ledger keys",
     );
     assert!(
-        !ws.slack.slack_own_post("acme", "U123", "1700000000.000100"),
+        !ledgered_by(&ws, "acme", "D456", "1700000000.000100", "forge", Some("other")),
+        "the upload is recorded under the uploading session, not ownerless",
+    );
+    assert!(
+        !ledgered(&ws, "acme", "U123", "1700000000.000100"),
         "the request string is not a conversation",
     );
 }
@@ -1825,7 +1881,7 @@ async fn an_upload_answer_that_carries_its_shares_costs_no_files_info_call() {
 
     assert_eq!(api.file_info_calls(), 0, "the answer was enough; no follow-up read");
     assert!(
-        ws.slack.slack_own_post("acme", "C1", "1700000000.000100"),
+        ledgered(&ws, "acme", "C1", "1700000000.000100"),
         "and the message it named is refused to the sweep",
     );
 }
@@ -1845,8 +1901,117 @@ async fn an_edit_ledgers_the_message_ts_it_rewrote() {
     task.await.expect("no panic").expect("an approved replacement is sent");
 
     assert!(
-        ws.slack.slack_own_post("acme", "C1", "100.0"),
+        ledgered(&ws, "acme", "C1", "100.0"),
         "the edited message's own ts is refused to the sweep",
+    );
+    assert!(
+        !ledgered_by(&ws, "acme", "C1", "100.0", "forge", Some("other")),
+        "the edit is recorded under the editing session, not ownerless",
+    );
+}
+
+/// Posting into a thread joins the session to it: the durable row names the
+/// poster as a participant, seeded at its own post, so later replies reach
+/// it without a conversation subscription. A root post joins nothing.
+#[tokio::test]
+async fn a_post_into_a_thread_joins_the_session_and_a_root_post_does_not() {
+    let (facade, ws, api, _rx, _dir) = facade_with_recording_slack_and_store();
+    // A ts shaped like Slack's and set to now: a followed thread whose cursor
+    // is older than the idle window is dropped the moment it is listed.
+    let posted_ts = recent_slack_ts();
+    api.answer_posts_with(&posted_ts);
+    assert!(
+        SlackFacadeHost::caller(ws.as_ref(), &caller()).is_some(),
+        "the harness's caller must resolve to a project, or the post records no owner",
+    );
+
+    let task = tokio::spawn({
+        let facade = facade.clone();
+        async move {
+            facade
+                .post(
+                    &caller(),
+                    SlackPostRequest {
+                        conversation: "C1".to_owned(),
+                        thread_ts: Some("100.0".to_owned()),
+                        text: "an answer in the thread".to_owned(),
+                    },
+                )
+                .await
+        }
+    });
+    let id = wait_for_draft(&ws).await;
+    ws.slack.resolve_slack_draft(id, &caller(), answered(true));
+    task.await.expect("no panic").expect("the reply lands");
+
+    let threads = ws.slack.slack_followed_threads("acme", "C1");
+    assert_eq!(threads.len(), 1, "the thread is tracked");
+    assert_eq!(threads[0].parent_ts, "100.0");
+    assert_eq!(
+        threads[0].participants,
+        vec![SlackThreadOwner { project: "forge".to_owned(), team_role: None }],
+        "the posting session joined the thread",
+    );
+    assert_eq!(
+        ws.slack.slack_thread_watermark("acme", "C1", "100.0").expect("read"),
+        Some(posted_ts),
+        "the row starts at the seat's own post, not the thread's beginning",
+    );
+
+    let task = tokio::spawn({
+        let facade = facade.clone();
+        async move { facade.post(&caller(), post_request("C1", "a root message")).await }
+    });
+    let id = wait_for_draft(&ws).await;
+    ws.slack.resolve_slack_draft(id, &caller(), answered(true));
+    task.await.expect("no panic").expect("the root post lands");
+    assert_eq!(
+        ws.slack.slack_followed_threads("acme", "C1").len(),
+        1,
+        "a root post joins no thread",
+    );
+}
+
+/// An upload into a thread joins the session too, anchored at the share's
+/// message ts - the upload call itself answers no message ts.
+#[tokio::test]
+async fn an_upload_into_a_thread_joins_the_session() {
+    let (facade, ws, api, _rx, _dir) = facade_with_recording_slack_and_store();
+    let posted_ts = recent_slack_ts();
+    api.seed_file("F-uploaded", "file.txt", b"payload");
+    api.seed_upload_shares("C1", &posted_ts);
+    let dir = tempdir().expect("tempdir");
+    let source = dir.path().join("file.txt");
+    std::fs::write(&source, b"payload").expect("write the source file");
+
+    let task = tokio::spawn({
+        let facade = facade.clone();
+        let path = source.clone();
+        async move {
+            facade
+                .post_attachment(
+                    &caller(),
+                    SlackUploadRequest {
+                        conversation: "C1".to_owned(),
+                        thread_ts: Some("100.0".to_owned()),
+                        path,
+                        title: None,
+                    },
+                )
+                .await
+        }
+    });
+    let id = wait_for_draft(&ws).await;
+    ws.slack.resolve_slack_draft(id, &caller(), answered(true));
+    task.await.expect("no panic").expect("the upload sends");
+
+    let threads = ws.slack.slack_followed_threads("acme", "C1");
+    assert_eq!(threads.len(), 1, "the thread is tracked");
+    assert_eq!(threads[0].parent_ts, "100.0");
+    assert_eq!(
+        ws.slack.slack_thread_watermark("acme", "C1", "100.0").expect("read"),
+        Some(posted_ts),
+        "the share's message ts seeds the cursor",
     );
 }
 

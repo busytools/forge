@@ -309,8 +309,11 @@ pub struct SlackBookmark {
     pub link: Option<String>,
 }
 
-/// One session's ownership of a followed thread, named after the
-/// `SlackSubscription` fields it is taken from.
+/// One session's identity in Slack's records, named after the
+/// `SlackSubscription` fields it is taken from. It names three roles: the
+/// owner a delivered message anchored a thread to, the participant that
+/// posted into it, and the session the outbound ledger records as a post's
+/// poster.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlackThreadOwner {
     pub project: String,
@@ -318,8 +321,9 @@ pub struct SlackThreadOwner {
 }
 
 /// What the store keeps about one followed thread: how far its replies have
-/// been read, the newest edit already handed over, and the sessions whose
-/// subscriptions put the thread on their radar.
+/// been read, the newest edit already handed over, the sessions whose
+/// subscriptions put the thread on their radar, and the sessions that joined
+/// it by posting.
 ///
 /// The cursor is usually the string Slack sent, but not always: a thread
 /// forge starts tracking seeds it one microsecond below the reply that
@@ -338,9 +342,18 @@ pub struct SlackThreadRecord {
     /// already-handed one above it.
     pub edit_watermark: Option<String>,
     pub owners: Vec<SlackThreadOwner>,
-    /// Whether the user is in this thread, once that has been read off its
-    /// replies. Kept because a reply cannot un-happen: once true, every walk
-    /// can read past the cursor instead of reading the thread whole.
+    /// The sessions that posted into this thread, which keeps them in its
+    /// delivery set without a subscription. Not `owners`: an owner is the
+    /// seat a delivered message anchored the thread to and is pruned with
+    /// its subscriptions, while a participant joined by posting and outlives
+    /// them. Kept apart from `participating`, which says the *user* is in the
+    /// thread and drives whole reads, not delivery.
+    #[serde(default)]
+    pub participants: Vec<SlackThreadOwner>,
+    /// Whether the user is in this thread: set by a join, where forge posted
+    /// as the user, or once a walk reads it off the thread's replies. Kept
+    /// because a reply cannot un-happen: once true, every walk can read past
+    /// the cursor instead of reading the thread whole.
     #[serde(default)]
     pub participating: bool,
 }
@@ -351,6 +364,11 @@ pub struct SlackThreadRecord {
 pub struct SlackFollowedThread {
     pub parent_ts: String,
     pub owners: Vec<SlackThreadOwner>,
+    /// The sessions that posted into the thread; delivery is
+    /// owners ∪ participants. Not the `participating` flag below: that one
+    /// says the *user* is in the thread and drives how much of it is read,
+    /// while a participant is a session's delivery membership.
+    pub participants: Vec<SlackThreadOwner>,
     /// Whether the user is already known to be in this thread.
     pub participating: bool,
 }

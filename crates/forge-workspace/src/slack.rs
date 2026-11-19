@@ -14,7 +14,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use forge_primitives::slack::{SlackMessage, SlackSubscription, SlackThreadRecord};
+use forge_primitives::slack::{
+    SlackMessage, SlackSubscription, SlackThreadOwner, SlackThreadRecord,
+};
 use forge_primitives::{AskSink, PendingInteractionKind, SessionSlot};
 use forge_tools::slack::{Slack, SlackEmit, SlackSeams, SlackStore, SlackUpdate, SlackWorkspaces};
 use parking_lot::Mutex;
@@ -213,10 +215,23 @@ impl SlackStore for SlackPorts {
             .map_err(|error| error.to_string())
     }
 
-    fn own_post(&self, workspace: &str, conversation: &str, ts: &str) -> Result<bool, String> {
+    fn own_post_by(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        ts: &str,
+        owner: Option<&SlackThreadOwner>,
+    ) -> Result<bool, String> {
         let db = self.db.lock();
         let Some(db) = db.as_ref() else { return Ok(false) };
-        crate::store::slack::own_post(db, workspace, conversation, ts)
+        crate::store::slack::own_post_by(db, workspace, conversation, ts, owner)
+            .map_err(|error| error.to_string())
+    }
+
+    fn own_post_any(&self, workspace: &str, conversation: &str, ts: &str) -> Result<bool, String> {
+        let db = self.db.lock();
+        let Some(db) = db.as_ref() else { return Ok(false) };
+        crate::store::slack::own_post_any(db, workspace, conversation, ts)
             .map_err(|error| error.to_string())
     }
 
@@ -226,10 +241,11 @@ impl SlackStore for SlackPorts {
         conversation: &str,
         ts: &str,
         now: u64,
+        owner: Option<&SlackThreadOwner>,
     ) -> Result<(), String> {
         let db = self.db.lock();
         let Some(db) = db.as_ref() else { return Ok(()) };
-        crate::store::slack::record_own_post(db, workspace, conversation, ts, now)
+        crate::store::slack::record_own_post(db, workspace, conversation, ts, now, owner)
             .map_err(|error| error.to_string())
     }
 }
@@ -718,6 +734,55 @@ mod tests {
         assert!(ws.slack.pump_labels().is_empty(), "the pump stops with its last subscription");
     }
 
+    /// A followed thread is something to watch. A workspace whose only
+    /// subscription is gone must still run its pump while a participant row
+    /// exists, and must stop once the row ages out - the two gates move
+    /// together, or #2877's participant path never runs.
+    #[tokio::test]
+    async fn the_subsystem_runs_for_a_followed_thread_with_no_subscription() {
+        let (ws, dir, _rx) = workspace_with_one_slack_workspace("acme");
+        ws.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        let ports = Arc::clone(&ws.slack_ports);
+        let record = forge_primitives::slack::SlackThreadRecord {
+            cursor: "100.0".to_owned(),
+            edit_watermark: None,
+            owners: Vec::new(),
+            participants: vec![forge_primitives::slack::SlackThreadOwner {
+                project: "forge".to_owned(),
+                team_role: Some("tester".to_owned()),
+            }],
+            participating: true,
+        };
+        ports.set_thread("acme", "C1", "100.0", &record).expect("seed the thread");
+
+        ws.start_slack_subsystem();
+        assert_eq!(
+            ws.slack.pump_labels(),
+            vec!["acme".to_owned()],
+            "a participant row keeps the workspace pumped with no subscription",
+        );
+
+        // The stop gate is the other half: a sibling unsubscribe or a
+        // teardown calls it while the row is still there, and the pump must
+        // survive that, or a participant-only workspace goes permanently
+        // quiet.
+        ws.stop_slack_subsystem_if_idle();
+        assert_eq!(
+            ws.slack.pump_labels(),
+            vec!["acme".to_owned()],
+            "the stop gate keeps a pump whose only work is a thread row",
+        );
+
+        ports.remove_thread("acme", "C1", "100.0").expect("remove the row");
+        ws.stop_slack_subsystem_if_idle();
+        assert!(
+            ws.slack.pump_labels().is_empty(),
+            "the pump stops with the last thread row, as it does with the last subscription",
+        );
+    }
+
     /// The port writes through to the real store: the sweep's backfill is
     /// what names a watched conversation, and a name that only lived in
     /// memory would come back unnamed after the restart that produced it.
@@ -828,6 +893,7 @@ mod tests {
                 project: "forge".to_owned(),
                 team_role: None,
             }],
+            participants: Vec::new(),
             participating: true,
         };
         ports.set_thread("acme", "C1", "100.0", &record).expect("seed the thread");
@@ -1173,6 +1239,7 @@ mod tests {
             cursor: "1.0".to_owned(),
             edit_watermark: None,
             owners: Vec::new(),
+            participants: Vec::new(),
             participating: false,
         };
         assert!(ports.set_thread("acme", "C1", "100.0", &record).is_ok());
@@ -1183,8 +1250,8 @@ mod tests {
         assert!(ports.threads_for("acme", "C1").expect("default").is_empty());
         assert!(ports.threads_for_workspace("acme").expect("default").is_empty());
         assert!(!ports.remove_thread("acme", "C1", "100.0").expect("default"));
-        assert!(!ports.own_post("acme", "C1", "1.0").expect("default"));
-        assert!(ports.record_own_post("acme", "C1", "1.0", 42).is_ok());
+        assert!(!ports.own_post_by("acme", "C1", "1.0", None).expect("default"));
+        assert!(ports.record_own_post("acme", "C1", "1.0", 42, None).is_ok());
         assert!(ports.list_subscriptions().expect("default").is_empty());
         assert!(!ports.remove_subscription(Uuid::new_v4()).expect("default"));
         assert!(

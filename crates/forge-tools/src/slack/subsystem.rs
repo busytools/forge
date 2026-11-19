@@ -73,11 +73,12 @@ pub trait SlackEmit: Send + Sync {
     /// composes it rather than this module.
     fn subscriptions_changed(&self, project: &str);
 
-    /// Hand one conversation's matched messages to its subscriber's session,
-    /// as the one block they will be read as. Returns whether delivery
-    /// succeeded: a `false` means the caller did not advance the
-    /// conversation cursor past this batch, so the next sweep re-delivers
-    /// it instead of losing it.
+    /// Hand one conversation's or thread's matched messages to the
+    /// destination session, as the one block they will be read as. The
+    /// destination may be a subscriber or a participant holding no
+    /// subscription. Returns whether delivery succeeded: a `false` means the
+    /// caller did not advance the cursor past this batch, so the next sweep
+    /// re-delivers it instead of losing it.
     fn deliver(&self, project: &str, team_role: Option<&str>, messages: &[SlackMessage]) -> bool;
 }
 
@@ -185,13 +186,26 @@ pub trait SlackStore: Send + Sync {
         conversation: &str,
         parent_ts: &str,
     ) -> Result<bool, String>;
-    fn own_post(&self, workspace: &str, conversation: &str, ts: &str) -> Result<bool, String>;
+    /// Whether forge posted this message, and whether `owner` is the session
+    /// that posted it. A row recorded with no owner refuses every session;
+    /// one recorded by a session refuses only that session, so the thread's
+    /// other participants still receive it.
+    fn own_post_by(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        ts: &str,
+        owner: Option<&SlackThreadOwner>,
+    ) -> Result<bool, String>;
+    /// Whether forge posted this message at all, whoever posted it.
+    fn own_post_any(&self, workspace: &str, conversation: &str, ts: &str) -> Result<bool, String>;
     fn record_own_post(
         &self,
         workspace: &str,
         conversation: &str,
         ts: &str,
         now: u64,
+        owner: Option<&SlackThreadOwner>,
     ) -> Result<(), String>;
 }
 
@@ -634,6 +648,17 @@ impl Slack {
             removed
         };
 
+        // The participant half comes first and runs even when the worker
+        // held no subscription: a participant row outlives subscriptions,
+        // and a delivery addressed to a dead label falls through to the
+        // lead, which is the one thing teardown must never cause. Every
+        // workspace is scanned because a participant-only worker has no
+        // subscription naming where it joined.
+        let gone =
+            SlackThreadOwner { project: project.to_owned(), team_role: Some(label.to_owned()) };
+        for workspace in self.clients.labels() {
+            self.strip_thread_participant(&workspace, &gone);
+        }
         if removed.is_empty() {
             return;
         }
@@ -719,15 +744,39 @@ impl Slack {
         }
     }
 
+    /// Drop a conversation's cursor. The sweep calls this for a conversation
+    /// no subscription covers any more, so the next subscriber seeds fresh
+    /// and no tick pages a gap from a cursor nobody owns.
+    pub fn clear_slack_watermark(&self, workspace: &str, conversation: &str) {
+        if let Err(error) = self.store.remove_watermark(workspace, conversation) {
+            tracing::warn!(
+                target: "forge_tools::slack",
+                event_name = "slack_watermark_clear_failed",
+                workspace,
+                conversation,
+                %error,
+                "clearing a Slack conversation cursor failed",
+            );
+        }
+    }
+
     /// Record a message forge posted, so the sweep refuses it by identity
     /// rather than by author. forge posts as the user, so this is the only
-    /// thing that tells its own words from the ones Ved typed.
-    pub fn record_slack_own_post(&self, workspace: &str, conversation: &str, ts: &str) {
+    /// thing that tells its own words from the ones Ved typed. The owner is
+    /// the session that posted it, so the thread's other participants still
+    /// receive words it wrote.
+    pub fn record_slack_own_post(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        ts: &str,
+        owner: Option<&SlackThreadOwner>,
+    ) {
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|now| now.as_secs())
             .unwrap_or_default();
-        if let Err(error) = self.store.record_own_post(workspace, conversation, ts, now) {
+        if let Err(error) = self.store.record_own_post(workspace, conversation, ts, now, owner) {
             tracing::warn!(
                 target: "forge_tools::slack",
                 workspace,
@@ -738,13 +787,19 @@ impl Slack {
         }
     }
 
-    /// Whether forge posted this message itself. A ledger that cannot be
-    /// read answers `false`: a self-post delivered once costs what a lost
-    /// ledger costs, while refusing would drop what the user wrote. The
-    /// failure is worth a line once, not once per message, because a
+    /// Whether forge posted this message itself, as `owner`. A ledger that
+    /// cannot be read answers `false`: a self-post delivered once costs what
+    /// a lost ledger costs, while refusing would drop what the user wrote.
+    /// The failure is worth a line once, not once per message, because a
     /// persistent fault would otherwise echo every post back to the agent.
-    pub fn slack_own_post(&self, workspace: &str, conversation: &str, ts: &str) -> bool {
-        match self.store.own_post(workspace, conversation, ts) {
+    pub fn slack_own_post_by(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        ts: &str,
+        owner: Option<&SlackThreadOwner>,
+    ) -> bool {
+        match self.store.own_post_by(workspace, conversation, ts, owner) {
             Ok(own) => {
                 // A read that works again ends the failure, so a later
                 // fault is a new line rather than silence.
@@ -774,6 +829,38 @@ impl Slack {
                         conversation = %conversation,
                         %error,
                         "reading the Slack own-post ledger failed again",
+                    );
+                }
+                false
+            }
+        }
+    }
+
+    /// Whether forge posted this message at all, whoever posted it. The
+    /// mention sweep uses this where delivering is not the question: a
+    /// mention in forge's own words must not pull a seat into the
+    /// conversation, which is what finding it in search would otherwise do.
+    pub fn slack_own_post_any(&self, workspace: &str, conversation: &str, ts: &str) -> bool {
+        match self.store.own_post_any(workspace, conversation, ts) {
+            Ok(own) => {
+                self.slack_ledger_failures
+                    .lock()
+                    .remove(&(workspace.to_owned(), conversation.to_owned()));
+                own
+            }
+            Err(error) => {
+                let first = self
+                    .slack_ledger_failures
+                    .lock()
+                    .insert((workspace.to_owned(), conversation.to_owned()));
+                if first {
+                    tracing::warn!(
+                        target: "forge_tools::slack",
+                        event_name = "slack_own_post_ledger_unreadable",
+                        workspace,
+                        conversation = %conversation,
+                        %error,
+                        "reading the Slack own-post ledger failed; own posts are treated as not ours until it reads",
                     );
                 }
                 false
@@ -968,6 +1055,7 @@ impl Slack {
                 cursor: since.to_owned(),
                 edit_watermark: Some(since.to_owned()),
                 owners: vec![owner.clone()],
+                participants: Vec::new(),
                 participating: false,
             });
         };
@@ -988,6 +1076,78 @@ impl Slack {
             self.slack_thread_edit_watermarks.lock().insert(key.clone(), since.to_owned());
             self.slack_thread_first_walks.lock().insert(key);
         }
+    }
+
+    /// Join a session to a thread it posted into: add it to the row's
+    /// participants and mark the user in the thread. A row created here is
+    /// seeded at the seat's own post; an existing row's cursor is left
+    /// alone, because it is the whole thread's delivery position and moving
+    /// it would skip replies for every destination.
+    ///
+    /// A participant is not an owner: it outlives the subscription that
+    /// anchored the thread, so the seat keeps receiving the thread's replies
+    /// after the channel is quieted. The join also starts the workspace's
+    /// pump, since a thread row is what keeps a subscription-less workspace
+    /// worth sweeping.
+    pub fn join_slack_thread(
+        self: &Arc<Self>,
+        workspace: &str,
+        conversation: &str,
+        parent_ts: &str,
+        owner: &SlackThreadOwner,
+        posted_ts: &str,
+    ) {
+        if !self.store.available() {
+            return;
+        }
+        let mut update = |record: &mut Option<SlackThreadRecord>| {
+            let Some(record) = record.as_mut() else {
+                // A row created here is seeded at the seat's own post: no
+                // first-walk mark, because the walk's ts filter starts there
+                // rather than at the thread's beginning.
+                *record = Some(SlackThreadRecord {
+                    cursor: posted_ts.to_owned(),
+                    edit_watermark: None,
+                    owners: Vec::new(),
+                    participants: vec![owner.clone()],
+                    // forge posts as the user, so posting here IS the user
+                    // being in the thread. The flag is read off that fact, and
+                    // it is what lets a walk read past the cursor instead of
+                    // reading the thread whole.
+                    participating: true,
+                });
+                return;
+            };
+            if !record.participants.contains(owner) {
+                record.participants.push(owner.clone());
+            }
+            // **The cursor never moves here.** It is the whole thread's
+            // delivery position, shared by every destination: moving it to
+            // this post would skip every reply between the old cursor and
+            // the post for every seat, and would make the post itself never
+            // news, so the thread's other participants would miss it.
+            record.participating = true;
+        };
+        if let Err(error) =
+            self.store.update_thread(workspace, conversation, parent_ts, &mut update)
+        {
+            tracing::warn!(
+                target: "forge_tools::slack",
+                event_name = "slack_thread_join_failed",
+                workspace,
+                conversation,
+                parent = %parent_ts,
+                project = %owner.project,
+                team_role = ?owner.team_role,
+                %error,
+                "joining a Slack thread failed; the seat stays unjoined until it posts again",
+            );
+            return;
+        }
+        // A participant row is what keeps this workspace worth sweeping with
+        // no subscription in it. The pump gates on thread rows too, and a
+        // join is the one way a row appears without a sweep already running.
+        self.start_slack_subsystem();
     }
 
     /// Drop a removed thread's in-memory clocks, so a thread re-followed
@@ -1049,10 +1209,43 @@ impl Slack {
         Duration::from_secs(hours.saturating_mul(3_600))
     }
 
+    /// The conversations this workspace holds any followed thread in. The
+    /// sweep widens its candidate list by this, so a thread that outlived
+    /// its subscription is still walked: a thread row names its conversation
+    /// id, which is what both sweep scopes key on. Read-only - the listing
+    /// that prunes is [`Self::slack_followed_threads`], which runs once per
+    /// candidate conversation.
+    pub fn slack_followed_conversations(&self, workspace: &str) -> Vec<String> {
+        if !self.store.available() {
+            return Vec::new();
+        }
+        match self.store.threads_for_workspace(workspace) {
+            Ok(rows) => {
+                let mut conversations: Vec<String> =
+                    rows.into_iter().map(|(conversation, _, _)| conversation).collect();
+                conversations.sort_unstable();
+                conversations.dedup();
+                conversations
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_tools::slack",
+                    event_name = "slack_threads_for_sweep_unreadable",
+                    workspace,
+                    %error,
+                    "reading Slack threads for the sweep's conversation list failed",
+                );
+                Vec::new()
+            }
+        }
+    }
+
     /// The threads tracked for a conversation, pruned while listed: an
     /// owner with no remaining subscription in the workspace is dropped
-    /// from the record, a row whose last owner goes is deleted, and a row
-    /// idle past the workspace's window is dropped with a debug log.
+    /// from the record, a participant is kept whatever its subscriptions
+    /// (that is what makes it a participant), a row with neither left is
+    /// deleted, and a row idle past the workspace's window is dropped with a
+    /// debug log.
     pub fn slack_followed_threads(
         &self,
         workspace: &str,
@@ -1081,6 +1274,7 @@ impl Slack {
             .collect();
         let idle_days = self.slack_thread_idle_days(workspace);
         let mut out = Vec::new();
+        let mut dropped_any = false;
         for (parent_ts, _record) in rows {
             // Each row is re-read and re-pruned inside one guarded update:
             // the listing above is only the set of keys, so an owner a
@@ -1098,12 +1292,13 @@ impl Slack {
                     existing.owners.retain(|owner| {
                         alive_owners.contains(&(owner.project.clone(), owner.team_role.clone()))
                     });
-                    empty = existing.owners.is_empty();
+                    empty = existing.owners.is_empty() && existing.participants.is_empty();
                     stale = !empty && thread_idle_days(&existing.cursor) >= idle_days;
                     if !empty && !stale {
                         kept = Some(SlackFollowedThread {
                             parent_ts: parent_ts.clone(),
                             owners: existing.owners.clone(),
+                            participants: existing.participants.clone(),
                             participating: existing.participating,
                         });
                         return;
@@ -1125,6 +1320,7 @@ impl Slack {
             }
             if expired || idle {
                 self.forget_thread_clocks(workspace, conversation, &parent_ts);
+                dropped_any = true;
                 if idle {
                     tracing::debug!(
                         target: "forge_tools::slack",
@@ -1139,6 +1335,13 @@ impl Slack {
             if let Some(row) = kept {
                 out.push(row);
             }
+        }
+        // The listing is where a thread row ends, and it runs inside the
+        // pump's own sweep: when the last row in a subscription-less
+        // workspace ages out here, this is the only place that can tell the
+        // pump its work is done.
+        if dropped_any {
+            self.stop_slack_subsystem_if_idle();
         }
         out
     }
@@ -1176,6 +1379,7 @@ impl Slack {
                 cursor: ts.to_owned(),
                 edit_watermark: None,
                 owners: Vec::new(),
+                participants: Vec::new(),
                 participating: false,
             });
         };
@@ -1618,14 +1822,69 @@ impl Slack {
         }
     }
 
+    /// Drop one session from every thread row's participants in `workspace`,
+    /// deleting a row left with neither owners nor participants. Teardown's
+    /// counterpart to [`Self::prune_slack_threads`]: a participant outlives
+    /// its subscriptions by design, so removing subscriptions alone would
+    /// keep a despawned worker's threads delivering - and delivery for a
+    /// dead label falls through to the project lead.
+    fn strip_thread_participant(&self, workspace: &str, owner: &SlackThreadOwner) {
+        if !self.store.available() {
+            return;
+        }
+        let Ok(rows) = self.store.threads_for_workspace(workspace) else {
+            tracing::warn!(
+                target: "forge_tools::slack",
+                event_name = "slack_threads_for_teardown_unreadable",
+                workspace,
+                project = %owner.project,
+                team_role = ?owner.team_role,
+                "reading Slack threads at worker teardown failed; its participation may be stranded",
+            );
+            return;
+        };
+        for (conversation, parent_ts, record) in rows {
+            if !record.participants.contains(owner) {
+                continue;
+            }
+            let mut dropped = false;
+            let mut update = |record: &mut Option<SlackThreadRecord>| {
+                let Some(existing) = record.as_mut() else { return };
+                existing.participants.retain(|participant| participant != owner);
+                if existing.owners.is_empty() && existing.participants.is_empty() {
+                    *record = None;
+                    dropped = true;
+                }
+            };
+            if let Err(error) =
+                self.store.update_thread(workspace, &conversation, &parent_ts, &mut update)
+            {
+                tracing::warn!(
+                    target: "forge_tools::slack",
+                    event_name = "slack_thread_teardown_write_failed",
+                    workspace,
+                    conversation,
+                    parent = %parent_ts,
+                    %error,
+                    "dropping a despawned worker's participation failed; its threads may still deliver to the lead",
+                );
+                continue;
+            }
+            if dropped {
+                self.forget_thread_clocks(workspace, &conversation, &parent_ts);
+            }
+        }
+    }
+
     /// Prune every followed thread in `workspace` against the same
     /// predicate the sweep's listing uses: an owner survives only while
-    /// it holds ANY remaining subscription in the workspace. Runs when a
-    /// subscription is removed, so a thread whose conversation is no
-    /// longer swept does not freeze until some sweep happens to list it -
-    /// [`Self::slack_followed_threads`] re-prunes as a backstop. The
-    /// surviving set decides because an owner key removed with one
-    /// subscription may still hold others: a Mentions target anchors
+    /// it holds ANY remaining subscription in the workspace, while a
+    /// participant outlives its subscriptions and drops only with the row's
+    /// idle window. Runs when a subscription is removed, so a thread whose
+    /// conversation is no longer swept does not freeze until some sweep
+    /// happens to list it - [`Self::slack_followed_threads`] re-prunes as a
+    /// backstop. The surviving set decides because an owner key removed with
+    /// one subscription may still hold others: a Mentions target anchors
     /// threads in every conversation its mentions touched.
     pub fn prune_slack_threads(&self, workspace: &str) {
         if !self.store.available() {
@@ -1646,20 +1905,21 @@ impl Slack {
             .filter(|sub| sub.workspace == workspace)
             .map(|sub| (sub.project.clone(), sub.team_role.clone()))
             .collect();
+        let idle_days = self.slack_thread_idle_days(workspace);
         for (conversation, parent_ts, _record) in rows {
             // The row is re-read and re-pruned inside one guarded update, so
             // an owner a concurrent delivery added between the listing and
             // here survives: the filter runs on the row as it stands.
-            let mut pruned = false;
+            let mut dropped = false;
             let mut update = |record: &mut Option<SlackThreadRecord>| {
                 let Some(existing) = record.as_mut() else { return };
-                let before = existing.owners.len();
                 existing.owners.retain(|owner| {
                     alive_owners.contains(&(owner.project.clone(), owner.team_role.clone()))
                 });
-                pruned = existing.owners.len() != before;
-                if existing.owners.is_empty() {
+                let empty = existing.owners.is_empty() && existing.participants.is_empty();
+                if empty || thread_idle_days(&existing.cursor) >= idle_days {
                     *record = None;
+                    dropped = true;
                 }
             };
             if let Err(error) =
@@ -1672,7 +1932,7 @@ impl Slack {
                 );
                 continue;
             }
-            if pruned {
+            if dropped {
                 self.forget_thread_clocks(workspace, &conversation, &parent_ts);
             }
         }
@@ -1763,15 +2023,20 @@ impl Slack {
         });
     }
 
-    /// Start one pump per configured workspace that has at least one
-    /// subscription. Idempotent per workspace, and a no-op with no
-    /// `[[slack]]` entry.
+    /// Start one pump per configured workspace that has something to watch:
+    /// a subscription, or a followed thread that outlived one. Idempotent
+    /// per workspace, and a no-op with no `[[slack]]` entry.
     pub fn start_slack_subsystem(self: &Arc<Self>) {
         if self.clients.is_empty() {
             return;
         }
         for label in self.clients.labels() {
-            if !self.slack_subs.lock().iter().any(|sub| sub.workspace == label) {
+            // A workspace is worth a pump when it has something to watch: a
+            // subscription, or a followed thread that outlived its
+            // subscription. A participant row keeps delivery alive with no
+            // subscription at all, which is what #2877 is about.
+            let subscribed = self.slack_subs.lock().iter().any(|sub| sub.workspace == label);
+            if !subscribed && self.slack_followed_conversations(&label).is_empty() {
                 continue;
             }
             let mut guard = self.slack_subsystem.lock();
@@ -1805,21 +2070,22 @@ impl Slack {
         }
     }
 
-    /// Stop the Slack pump for any workspace that no longer has a
-    /// subscription, and mark it disconnected. Pumps are per workspace, so
-    /// one workspace losing its subscriptions must not keep another's
-    /// pump alive - nor leave its own running with nothing to watch.
+    /// Stop the Slack pump for any workspace with nothing left to watch - no
+    /// subscription and no followed thread - and mark it disconnected.
+    /// Pumps are per workspace, so one workspace losing its subscriptions
+    /// must not keep another's pump alive - nor leave its own running with
+    /// nothing to watch.
     pub fn stop_slack_subsystem_if_idle(&self) {
-        let idle_labels: Vec<String> = {
-            let subs = self.slack_subs.lock();
-            let watched: HashSet<&str> = subs.iter().map(|sub| sub.workspace.as_str()).collect();
-            self.slack_subsystem
-                .lock()
-                .keys()
-                .filter(|label| !watched.contains(label.as_str()))
-                .cloned()
-                .collect()
-        };
+        let running: Vec<String> = self.slack_subsystem.lock().keys().cloned().collect();
+        let idle_labels: Vec<String> = running
+            .into_iter()
+            .filter(|label| {
+                let subscribed = self.slack_subs.lock().iter().any(|sub| sub.workspace == *label);
+                // A followed thread outlives its subscription, so the
+                // workspace stays pumped while one exists (#2877).
+                !subscribed && self.slack_followed_conversations(label).is_empty()
+            })
+            .collect();
         if idle_labels.is_empty() {
             return;
         }
@@ -1996,9 +2262,19 @@ impl SlackHost for SlackSubsystemHost {
         slack.set_slack_watermark(workspace, conversation, ts);
     }
 
+    fn clear_watermark(&self, workspace: &str, conversation: &str) {
+        let Some(slack) = self.0.upgrade() else { return };
+        slack.clear_slack_watermark(workspace, conversation);
+    }
+
     fn followed_threads(&self, workspace: &str, conversation: &str) -> Vec<SlackFollowedThread> {
         let Some(slack) = self.0.upgrade() else { return Vec::new() };
         slack.slack_followed_threads(workspace, conversation)
+    }
+
+    fn followed_conversations(&self, workspace: &str) -> Vec<String> {
+        let Some(slack) = self.0.upgrade() else { return Vec::new() };
+        slack.slack_followed_conversations(workspace)
     }
 
     fn thread_watermark(
@@ -2130,21 +2406,33 @@ impl SlackHost for SlackSubsystemHost {
         )
     }
 
-    fn own_post(&self, workspace: &str, conversation: &str, ts: &str) -> bool {
-        self.0.upgrade().is_some_and(|slack| slack.slack_own_post(workspace, conversation, ts))
+    fn own_post_by(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        ts: &str,
+        owner: &SlackThreadOwner,
+    ) -> bool {
+        self.0
+            .upgrade()
+            .is_some_and(|slack| slack.slack_own_post_by(workspace, conversation, ts, Some(owner)))
+    }
+
+    fn own_post_any(&self, workspace: &str, conversation: &str, ts: &str) -> bool {
+        self.0.upgrade().is_some_and(|slack| slack.slack_own_post_any(workspace, conversation, ts))
     }
 
     fn post_in_flight(&self, workspace: &str, conversation: &str) -> Option<Duration> {
         self.0.upgrade().and_then(|slack| slack.slack_post_in_flight(workspace, conversation))
     }
 
-    fn deliver(&self, subscription: &SlackSubscription, messages: &[SlackMessage]) -> bool {
+    fn deliver(&self, project: &str, team_role: Option<&str>, messages: &[SlackMessage]) -> bool {
         let Some(slack) = self.0.upgrade() else { return false };
         // Direct, not via the command bus: the pump needs the delivery's
         // own outcome, and a bus round-trip reports only that the command
         // was accepted - a mid-delivery failure would read as success and
         // advance the cursor past an undelivered message.
-        slack.emit.deliver(&subscription.project, subscription.team_role.as_deref(), messages)
+        slack.emit.deliver(project, team_role, messages)
     }
 }
 
@@ -2311,7 +2599,11 @@ mod tests {
         subscriptions: Vec<SlackSubscription>,
         watermarks: BTreeSet<(String, String, String)>,
         threads: std::collections::BTreeMap<(String, String, String), SlackThreadRecord>,
-        own_posts: BTreeSet<(String, String, String)>,
+        /// The outbound ledger, keyed `(workspace, conversation, ts)`. The
+        /// value is the session that recorded it; `None` is a row written
+        /// without an owner, which refuses every session - the shape the
+        /// durable store's old rows take.
+        own_posts: std::collections::BTreeMap<(String, String, String), Option<SlackThreadOwner>>,
     }
 
     impl TestStore {
@@ -2609,8 +2901,32 @@ mod tests {
                 .is_some())
         }
 
-        fn own_post(&self, workspace: &str, conversation: &str, ts: &str) -> Result<bool, String> {
-            Ok(self.inner.lock().own_posts.contains(&(
+        fn own_post_by(
+            &self,
+            workspace: &str,
+            conversation: &str,
+            ts: &str,
+            owner: Option<&SlackThreadOwner>,
+        ) -> Result<bool, String> {
+            let inner = self.inner.lock();
+            let key = (workspace.to_owned(), conversation.to_owned(), ts.to_owned());
+            match inner.own_posts.get(&key) {
+                // Not an own post at all.
+                None => Ok(false),
+                // A row written without an owner refuses every session, the
+                // durable store's behaviour for a row that predates owners.
+                Some(None) => Ok(true),
+                Some(Some(poster)) => Ok(owner == Some(poster)),
+            }
+        }
+
+        fn own_post_any(
+            &self,
+            workspace: &str,
+            conversation: &str,
+            ts: &str,
+        ) -> Result<bool, String> {
+            Ok(self.inner.lock().own_posts.contains_key(&(
                 workspace.to_owned(),
                 conversation.to_owned(),
                 ts.to_owned(),
@@ -2623,12 +2939,16 @@ mod tests {
             conversation: &str,
             ts: &str,
             _now: u64,
+            owner: Option<&SlackThreadOwner>,
         ) -> Result<(), String> {
             let mut inner = self.inner.lock();
             if !inner.available {
                 return Ok(());
             }
-            inner.own_posts.insert((workspace.to_owned(), conversation.to_owned(), ts.to_owned()));
+            inner.own_posts.insert(
+                (workspace.to_owned(), conversation.to_owned(), ts.to_owned()),
+                owner.cloned(),
+            );
             Ok(())
         }
     }
@@ -3441,6 +3761,7 @@ mod tests {
                 cursor: parent.clone(),
                 edit_watermark: None,
                 owners: vec![owner("forge", Some("a"))],
+                participants: Vec::new(),
                 participating: false,
             },
         );
@@ -3482,6 +3803,7 @@ mod tests {
                 cursor: parent.clone(),
                 edit_watermark: Some("900.0".to_owned()),
                 owners: vec![owner("forge", Some("a"))],
+                participants: Vec::new(),
                 participating: false,
             },
         );
@@ -3513,6 +3835,7 @@ mod tests {
                 cursor: parent.clone(),
                 edit_watermark: None,
                 owners: vec![owner("forge", Some("a"))],
+                participants: Vec::new(),
                 participating: false,
             },
         );
@@ -3545,6 +3868,7 @@ mod tests {
                 cursor: "400.0".to_owned(),
                 edit_watermark: None,
                 owners: vec![owner("forge", Some("a"))],
+                participants: Vec::new(),
                 participating: false,
             },
         );
@@ -3652,6 +3976,135 @@ mod tests {
             "the 15- and 14-day idle threads are dropped, the 13-day one kept",
         );
         assert_eq!(threads[0].parent_ts, days_ago(13), "and the survivor is the young one");
+    }
+
+    /// Posting into a thread joins the session: a new row is created at the
+    /// seat's own post, with the participant recorded, the user marked in the
+    /// thread, and no first-walk mark - the cursor already starts the walk
+    /// where the seat entered.
+    #[tokio::test]
+    async fn joining_a_thread_creates_a_participant_row_at_its_own_post() {
+        let h = harness();
+        let parent = recent_ts();
+        let seat = owner("forge", Some("tester"));
+        h.slack.join_slack_thread("acme", "C1", &parent, &seat, "150.0");
+
+        let row = h.store.thread("acme", "C1", &parent).expect("the row exists");
+        assert_eq!(row.cursor, "150.0", "the cursor is the seat's own post");
+        assert!(row.edit_watermark.is_none(), "a joined row has judged no edit yet");
+        assert_eq!(row.participants, vec![seat.clone()], "the seat that posted is a participant");
+        assert!(row.owners.is_empty(), "posting alone anchors no owner");
+        assert!(
+            row.participating,
+            "forge posts as the user, so the post puts the user in the thread",
+        );
+        assert!(
+            !h.slack.slack_thread_first_walks.lock().contains(&(
+                "acme".to_owned(),
+                "C1".to_owned(),
+                parent.clone()
+            )),
+            "no first-walk mark: the join's whole read is stamped by the full-read clock",
+        );
+
+        // The join is the one way a thread row appears with no sweep
+        // already running, so it has to start the pump itself: a workspace
+        // with no subscription has no other trigger until a restart.
+        assert_eq!(
+            h.slack.pump_labels(),
+            vec!["acme".to_owned()],
+            "joining a thread starts the workspace's pump",
+        );
+
+        // Joining again adds no second participant and does not move the
+        // cursor back over what the walk already read.
+        h.slack.join_slack_thread("acme", "C1", &parent, &seat, "120.0");
+        let row = h.store.thread("acme", "C1", &parent).expect("still there");
+        assert_eq!(row.participants, vec![seat], "one participant, not two");
+        assert_eq!(row.cursor, "150.0", "a lower post never moves the cursor");
+    }
+
+    /// The live shape of #2877: the thread row already exists, because a
+    /// delivered message anchored it. A seat that then posts into it joins
+    /// WITHOUT moving the shared cursor: the cursor is every destination's
+    /// delivery position, so moving it would skip replies between the old
+    /// position and the post for every seat, and would make that post itself
+    /// never news for the thread's other participants.
+    #[tokio::test]
+    async fn joining_an_existing_thread_adds_the_participant_and_leaves_the_cursor() {
+        let h = harness();
+        let parent = recent_ts();
+        let anchored = owner("forge", Some("other"));
+        h.store.inner.lock().threads.insert(
+            ("acme".to_owned(), "C1".to_owned(), parent.clone()),
+            SlackThreadRecord {
+                cursor: "140.0".to_owned(),
+                edit_watermark: Some("140.0".to_owned()),
+                owners: vec![anchored.clone()],
+                participants: Vec::new(),
+                participating: false,
+            },
+        );
+
+        let seat = owner("forge", Some("tester"));
+        h.slack.join_slack_thread("acme", "C1", &parent, &seat, "150.0");
+
+        let row = h.store.thread("acme", "C1", &parent).expect("still there");
+        assert_eq!(row.participants, vec![seat], "the posting seat joined the existing row");
+        assert_eq!(row.owners, vec![anchored], "the anchored owner is untouched");
+        assert_eq!(
+            row.cursor, "140.0",
+            "the shared cursor stays where delivery left it; the post at 150.0 is still news",
+        );
+        assert!(row.participating, "posting puts the user in the thread");
+    }
+
+    /// A participant is not an owner: the subscription prune leaves it on
+    /// the row, so quieting the channel keeps the seat in the thread. The
+    /// row ends on the idle window, participants included.
+    #[test]
+    fn a_participant_survives_the_prune_and_goes_with_the_idle_window() {
+        let h = harness();
+        let live = recent_ts();
+        let seat = owner("forge", Some("tester"));
+        h.store.inner.lock().threads.insert(
+            ("acme".to_owned(), "C1".to_owned(), live.clone()),
+            SlackThreadRecord {
+                cursor: live.clone(),
+                edit_watermark: None,
+                owners: vec![owner("forge", None)],
+                participants: vec![seat.clone()],
+                participating: false,
+            },
+        );
+
+        h.slack.prune_slack_threads("acme");
+        let row = h.store.thread("acme", "C1", &live).expect("the participant keeps the row");
+        assert!(row.owners.is_empty(), "the owner whose subscription is gone is pruned");
+        assert_eq!(row.participants, vec![seat], "and the participant survives it");
+
+        // The same clock that ends any followed thread ends this one.
+        let old = "100.0".to_owned();
+        h.store.inner.lock().threads.insert(
+            ("acme".to_owned(), "C2".to_owned(), old.clone()),
+            SlackThreadRecord {
+                cursor: old.clone(),
+                edit_watermark: None,
+                owners: Vec::new(),
+                participants: vec![owner("forge", Some("tester"))],
+                participating: false,
+            },
+        );
+        assert!(
+            h.slack.slack_followed_threads("acme", "C2").is_empty(),
+            "an idle row ends, participant included",
+        );
+        assert!(h.store.thread("acme", "C2", &old).is_none(), "the row is deleted, not filtered");
+        assert_eq!(
+            h.slack.slack_followed_conversations("acme"),
+            vec!["C1".to_owned()],
+            "and the sweep stops walking the idle conversation",
+        );
     }
 
     /// The documented fail-closed arm: a cursor that does not parse reads
@@ -3768,6 +4221,52 @@ mod tests {
         );
     }
 
+    /// A despawned worker's PARTICIPATION goes with it, even when it held no
+    /// subscription at all. A participant outlives subscriptions, and
+    /// delivery for a dead label falls through to the project lead, which is
+    /// the one thing teardown must never cause - so the label is stripped
+    /// from participants on the path that used to return early.
+    #[tokio::test]
+    async fn worker_teardown_strips_participation_even_with_no_subscription() {
+        let h = harness();
+        let parent = recent_ts();
+        let seat = owner("forge", Some("a"));
+        // Joining writes the row and starts the pump; the worker never
+        // subscribed to anything.
+        h.slack.join_slack_thread("acme", "C1", &parent, &seat, &parent);
+
+        h.slack.remove_slack_subscriptions_for_worker("forge", "a");
+
+        assert!(
+            h.slack.slack_followed_threads("acme", "C1").is_empty(),
+            "the despawned worker's participation is gone, and the row with it",
+        );
+    }
+
+    /// The listing is where a pump learns its last row aged out: after a
+    /// join started the pump, listing an aged-out row must stop it, or a
+    /// subscription-less workspace wakes for the process lifetime.
+    #[tokio::test]
+    async fn an_idle_row_aging_out_stops_the_pump() {
+        let h = harness();
+        let parent = recent_ts();
+        let seat = owner("forge", Some("tester"));
+        h.slack.join_slack_thread("acme", "C1", &parent, &seat, &parent);
+        assert_eq!(h.slack.pump_labels(), vec!["acme".to_owned()], "the join started it");
+
+        // Age the row past the window, then let the sweep's listing prune it.
+        {
+            let mut inner = h.store.inner.lock();
+            let record = inner
+                .threads
+                .get_mut(&("acme".to_owned(), "C1".to_owned(), parent.clone()))
+                .expect("the row exists");
+            record.cursor = "100.0".to_owned();
+        }
+        assert!(h.slack.slack_followed_threads("acme", "C1").is_empty(), "the idle row is dropped");
+        assert!(h.slack.pump_labels().is_empty(), "and the pump it started goes with it");
+    }
+
     #[test]
     fn advancing_a_thread_cursor_keeps_its_owners() {
         let (host, _slack, _store) = host_with_c1_subscriber("forge", Some("tester"));
@@ -3865,15 +4364,27 @@ mod tests {
     #[test]
     fn the_own_post_port_reads_the_ledger_by_workspace_and_conversation() {
         let (host, slack, _store) = host_with_c1_subscriber("forge", None);
-        slack.record_slack_own_post("acme", "C1", "1700000000.000100");
+        let forge = owner("forge", None);
+        slack.record_slack_own_post("acme", "C1", "1700000000.000100", Some(&forge));
 
-        assert!(host.own_post("acme", "C1", "1700000000.000100"), "the recorded row is read back");
         assert!(
-            !host.own_post("acme", "C2", "1700000000.000100"),
+            host.own_post_by("acme", "C1", "1700000000.000100", &forge),
+            "the recorded row is read back",
+        );
+        assert!(
+            host.own_post_any("acme", "C1", "1700000000.000100"),
+            "the any-owner read sees it, whoever recorded it",
+        );
+        assert!(
+            !host.own_post_by("acme", "C2", "1700000000.000100", &forge),
             "another conversation's ledger does not answer for it",
         );
         assert!(
-            !host.own_post("beta", "C1", "1700000000.000100"),
+            !host.own_post_any("acme", "C2", "1700000000.000100"),
+            "the any-owner read is scoped by conversation too",
+        );
+        assert!(
+            !host.own_post_by("beta", "C1", "1700000000.000100", &forge),
             "another workspace's ledger does not answer for it",
         );
     }
@@ -4174,7 +4685,7 @@ mod tests {
         );
         assert!(!slack.slack_has_cursor("acme", "C1"), "no store means no cursor");
         assert!(slack.slack_followed_threads("acme", "C1").is_empty());
-        assert!(!slack.slack_own_post("acme", "C1", "1.0"));
+        assert!(!slack.slack_own_post_by("acme", "C1", "1.0", Some(&owner("forge", Some("a")))));
         assert_eq!(
             slack.slack_thread_edit_watermark("acme", "C1", "100.0"),
             None,
@@ -4189,11 +4700,14 @@ mod tests {
         slack.set_slack_thread_edit_watermark("acme", "C1", "100.0", "101.0");
         slack.mark_slack_thread_participating("acme", "C1", "100.0");
         slack.name_slack_conversation("acme", "C1", "general");
-        slack.record_slack_own_post("acme", "C1", "100.0");
+        slack.record_slack_own_post("acme", "C1", "100.0", Some(&owner("forge", Some("a"))));
 
         assert!(store.thread("acme", "C1", "100.0").is_none(), "a thread write is refused");
         assert_eq!(store.watermark("acme", "C1"), None, "and a cursor write");
-        assert!(!slack.slack_own_post("acme", "C1", "100.0"), "and the own-post ledger");
+        assert!(
+            !slack.slack_own_post_by("acme", "C1", "100.0", Some(&owner("forge", Some("a")))),
+            "and the own-post ledger",
+        );
     }
 
     /// The pump's delivery goes through the emit seam with the
@@ -4206,7 +4720,10 @@ mod tests {
         let host = SlackSubsystemHost::new(&h.slack);
         let messages = vec![message("C1", "200.1")];
 
-        assert!(host.deliver(&sub, &messages), "a successful delivery reports success");
+        assert!(
+            host.deliver(&sub.project, sub.team_role.as_deref(), &messages),
+            "a successful delivery reports success",
+        );
         assert_eq!(
             h.emit.delivered.lock().as_slice(),
             [("forge".to_owned(), Some("tester".to_owned()), messages.clone())],
@@ -4214,6 +4731,9 @@ mod tests {
         );
 
         h.emit.delivery_ok.store(false, Ordering::SeqCst);
-        assert!(!host.deliver(&sub, &messages), "a refused delivery reports failure");
+        assert!(
+            !host.deliver(&sub.project, sub.team_role.as_deref(), &messages),
+            "a refused delivery reports failure",
+        );
     }
 }
