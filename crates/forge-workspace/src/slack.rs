@@ -14,7 +14,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use forge_primitives::slack::{SlackMessage, SlackSubscription, SlackThreadRecord};
+use forge_primitives::slack::{
+    SlackMessage, SlackSubscription, SlackThreadOwner, SlackThreadRecord,
+};
 use forge_primitives::{AskSink, PendingInteractionKind, SessionSlot};
 use forge_tools::slack::{Slack, SlackEmit, SlackSeams, SlackStore, SlackUpdate, SlackWorkspaces};
 use parking_lot::Mutex;
@@ -213,10 +215,16 @@ impl SlackStore for SlackPorts {
             .map_err(|error| error.to_string())
     }
 
-    fn own_post(&self, workspace: &str, conversation: &str, ts: &str) -> Result<bool, String> {
+    fn own_post_by(
+        &self,
+        workspace: &str,
+        conversation: &str,
+        ts: &str,
+        owner: Option<&SlackThreadOwner>,
+    ) -> Result<bool, String> {
         let db = self.db.lock();
         let Some(db) = db.as_ref() else { return Ok(false) };
-        crate::store::slack::own_post(db, workspace, conversation, ts)
+        crate::store::slack::own_post_by(db, workspace, conversation, ts, owner)
             .map_err(|error| error.to_string())
     }
 
@@ -226,10 +234,11 @@ impl SlackStore for SlackPorts {
         conversation: &str,
         ts: &str,
         now: u64,
+        owner: Option<&SlackThreadOwner>,
     ) -> Result<(), String> {
         let db = self.db.lock();
         let Some(db) = db.as_ref() else { return Ok(()) };
-        crate::store::slack::record_own_post(db, workspace, conversation, ts, now)
+        crate::store::slack::record_own_post(db, workspace, conversation, ts, now, owner)
             .map_err(|error| error.to_string())
     }
 }
@@ -828,6 +837,7 @@ mod tests {
                 project: "forge".to_owned(),
                 team_role: None,
             }],
+            participants: Vec::new(),
             participating: true,
         };
         ports.set_thread("acme", "C1", "100.0", &record).expect("seed the thread");
@@ -1173,6 +1183,7 @@ mod tests {
             cursor: "1.0".to_owned(),
             edit_watermark: None,
             owners: Vec::new(),
+            participants: Vec::new(),
             participating: false,
         };
         assert!(ports.set_thread("acme", "C1", "100.0", &record).is_ok());
@@ -1183,8 +1194,8 @@ mod tests {
         assert!(ports.threads_for("acme", "C1").expect("default").is_empty());
         assert!(ports.threads_for_workspace("acme").expect("default").is_empty());
         assert!(!ports.remove_thread("acme", "C1", "100.0").expect("default"));
-        assert!(!ports.own_post("acme", "C1", "1.0").expect("default"));
-        assert!(ports.record_own_post("acme", "C1", "1.0", 42).is_ok());
+        assert!(!ports.own_post_by("acme", "C1", "1.0", None).expect("default"));
+        assert!(ports.record_own_post("acme", "C1", "1.0", 42, None).is_ok());
         assert!(ports.list_subscriptions().expect("default").is_empty());
         assert!(!ports.remove_subscription(Uuid::new_v4()).expect("default"));
         assert!(

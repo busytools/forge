@@ -6,7 +6,7 @@
 //! shapes, so one table would decode the other's rows as garbage.
 
 use anyhow::Context;
-use forge_primitives::slack::{SlackSubscription, SlackThreadRecord};
+use forge_primitives::slack::{SlackSubscription, SlackThreadOwner, SlackThreadRecord};
 use redb::{ReadableTable, TableDefinition};
 use uuid::Uuid;
 
@@ -273,6 +273,15 @@ pub fn remove_thread(
 /// posts as the user and the author can no longer tell them apart.
 const OWN_POSTS: TableDefinition<&str, u64> = TableDefinition::new("slack_own_posts");
 
+/// The session that recorded each own post, keyed like [`OWN_POSTS`] and
+/// carrying a JSON `SlackThreadOwner`. A row of its own rather than a field
+/// on the ledger's value: redb records a table's type names and refuses to
+/// open one under a different definition, so widening `OWN_POSTS` past
+/// `u64` would fail every existing state database at its first read. A
+/// missing entry is an old row and keeps the old rule - suppress for every
+/// session.
+const OWN_POST_OWNERS: TableDefinition<&str, &[u8]> = TableDefinition::new("slack_own_post_owners");
+
 /// A conversation's newest own posts kept, and the age past which a row is
 /// dropped. Both are applied when that conversation records its next post,
 /// so a conversation that never posts again keeps what it had. A pruned row
@@ -288,8 +297,17 @@ fn own_post_key(workspace: &str, conversation: &str, ts: &str) -> String {
     format!("{workspace}\u{0}{conversation}\u{0}{ts}")
 }
 
-/// Whether forge posted this message.
-pub fn own_post(db: &Db, workspace: &str, conversation: &str, ts: &str) -> anyhow::Result<bool> {
+/// Whether forge posted this message, and whether it was this session that
+/// posted it. A row recorded with no owner - an old row, or a caller whose
+/// owner did not resolve - suppresses for every session, which is the
+/// behaviour rows had before the owner was recorded.
+pub fn own_post_by(
+    db: &Db,
+    workspace: &str,
+    conversation: &str,
+    ts: &str,
+    owner: Option<&SlackThreadOwner>,
+) -> anyhow::Result<bool> {
     let key = own_post_key(workspace, conversation, ts);
     let txn = db.database().begin_read()?;
     let table = match txn.open_table(OWN_POSTS) {
@@ -297,24 +315,40 @@ pub fn own_post(db: &Db, workspace: &str, conversation: &str, ts: &str) -> anyho
         Err(redb::TableError::TableDoesNotExist(_)) => return Ok(false),
         Err(e) => return Err(e.into()),
     };
-    Ok(table.get(key.as_str())?.is_some())
+    if table.get(key.as_str())?.is_none() {
+        return Ok(false);
+    }
+    let owners = match txn.open_table(OWN_POST_OWNERS) {
+        Ok(t) => t,
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(true),
+        Err(e) => return Err(e.into()),
+    };
+    let Some(stored) = owners.get(key.as_str())? else {
+        // The row predates owners: today's rule, refused for everyone.
+        return Ok(true);
+    };
+    let stored: SlackThreadOwner = serde_json::from_slice(stored.value())?;
+    Ok(owner == Some(&stored))
 }
 
-/// Record a message forge posted at `now`, pruning the conversation's
-/// rows past either bound.
+/// Record a message forge posted at `now` for `owner`, pruning the
+/// conversation's rows past either bound and the owner entries with them.
 pub fn record_own_post(
     db: &Db,
     workspace: &str,
     conversation: &str,
     ts: &str,
     now: u64,
+    owner: Option<&SlackThreadOwner>,
 ) -> anyhow::Result<()> {
     let prefix = own_post_prefix(workspace, conversation);
     let key = own_post_key(workspace, conversation, ts);
+    let encoded = owner.map(serde_json::to_vec).transpose()?;
     let cutoff = now.saturating_sub(OWN_POST_MAX_AGE_SECS);
     let txn = db.database().begin_write()?;
     {
         let mut table = txn.open_table(OWN_POSTS)?;
+        let mut owners = txn.open_table(OWN_POST_OWNERS)?;
         let mut kept: Vec<String> = Vec::new();
         let mut expired: Vec<String> = Vec::new();
         // This conversation's rows only, and only until the prefix ends:
@@ -336,15 +370,25 @@ pub fn record_own_post(
                 kept.push(stored.to_owned());
             }
         }
-        for key in expired {
-            table.remove(key.as_str())?;
+        for stored in expired {
+            table.remove(stored.as_str())?;
+            owners.remove(stored.as_str())?;
         }
         // Keys are the timestamps, so the vector is oldest first.
         let excess = kept.len().saturating_add(1).saturating_sub(OWN_POST_KEEP);
-        for key in kept.drain(..excess) {
-            table.remove(key.as_str())?;
+        for stored in kept.drain(..excess) {
+            table.remove(stored.as_str())?;
+            owners.remove(stored.as_str())?;
         }
         table.insert(key.as_str(), now)?;
+        match encoded {
+            Some(encoded) => {
+                owners.insert(key.as_str(), encoded.as_slice())?;
+            }
+            None => {
+                owners.remove(key.as_str())?;
+            }
+        }
     }
     txn.commit()?;
     Ok(())
@@ -472,6 +516,7 @@ mod tests {
             cursor: cursor.to_owned(),
             edit_watermark: None,
             participating: false,
+            participants: Vec::new(),
             owners: owners
                 .iter()
                 .map(|(project, role)| SlackThreadOwner {
@@ -531,31 +576,29 @@ mod tests {
         assert_eq!(thread(&db, "acme", "C1", "999.9").expect("get"), None);
     }
 
+    /// The pre-owner call shape: a row written with no owner, which is what
+    /// an old row is.
+    fn record_ownerless(db: &Db, workspace: &str, conversation: &str, ts: &str, now: u64) {
+        record_own_post(db, workspace, conversation, ts, now, None).expect("record");
+    }
+
+    fn own_ownerless(db: &Db, workspace: &str, conversation: &str, ts: &str) -> bool {
+        own_post_by(db, workspace, conversation, ts, None).expect("read")
+    }
+
     #[test]
     fn an_own_post_is_known_only_in_the_conversation_it_was_recorded() {
         let dir = tempdir().expect("tempdir");
         let db = Db::open(&dir.path().join("db.redb")).expect("open db");
 
-        record_own_post(&db, "acme", "C1", "100.000001", 1_700_000_000).expect("record");
+        record_ownerless(&db, "acme", "C1", "100.000001", 1_700_000_000);
 
+        assert!(own_ownerless(&db, "acme", "C1", "100.000001"), "the recorded ts is an own post");
+        assert!(!own_ownerless(&db, "acme", "C1", "100.000002"), "a ts never recorded is not");
+        assert!(!own_ownerless(&db, "acme", "C2", "100.000001"), "another conversation is not");
+        assert!(!own_ownerless(&db, "beta", "C1", "100.000001"), "another workspace is not");
         assert!(
-            own_post(&db, "acme", "C1", "100.000001").expect("read"),
-            "the recorded ts is ours"
-        );
-        assert!(
-            !own_post(&db, "acme", "C1", "100.000002").expect("read"),
-            "a ts never recorded is not"
-        );
-        assert!(
-            !own_post(&db, "acme", "C2", "100.000001").expect("read"),
-            "another conversation is not"
-        );
-        assert!(
-            !own_post(&db, "beta", "C1", "100.000001").expect("read"),
-            "another workspace is not"
-        );
-        assert!(
-            !own_post(&db, "acme", "C1", "100.0000010").expect("read"),
+            !own_ownerless(&db, "acme", "C1", "100.0000010"),
             "the ts is compared verbatim, never as a number - both parse to the same f64",
         );
     }
@@ -574,43 +617,39 @@ mod tests {
         let ts = |offset: u64| format!("{}.000001", now + offset);
 
         for offset in 0..OWN_POST_KEEP as u64 {
-            record_own_post(&db, "acme", "C1", &ts(offset), now).expect("record");
+            record_ownerless(&db, "acme", "C1", &ts(offset), now);
         }
         // Re-recording a row already held - an edit, a share read again -
         // refreshes it and prunes nothing.
-        record_own_post(&db, "acme", "C1", &ts(5), now).expect("re-record");
+        record_ownerless(&db, "acme", "C1", &ts(5), now);
         assert!(
-            own_post(&db, "acme", "C1", &ts(0)).expect("read")
-                && own_post(&db, "acme", "C1", &ts(5)).expect("read"),
+            own_ownerless(&db, "acme", "C1", &ts(0)) && own_ownerless(&db, "acme", "C1", &ts(5)),
             "a re-recorded ts is not counted twice",
         );
 
-        record_own_post(&db, "acme", "C1", &ts(OWN_POST_KEEP as u64), now).expect("record");
+        record_ownerless(&db, "acme", "C1", &ts(OWN_POST_KEEP as u64), now);
         assert!(
-            !own_post(&db, "acme", "C1", &ts(0)).expect("read"),
+            !own_ownerless(&db, "acme", "C1", &ts(0)),
             "the oldest row past the count bound is dropped",
         );
         assert!(
-            own_post(&db, "acme", "C1", &ts(1)).expect("read"),
+            own_ownerless(&db, "acme", "C1", &ts(1)),
             "exactly one row is dropped: the next-oldest survives",
         );
-        assert!(
-            own_post(&db, "acme", "C1", &ts(OWN_POST_KEEP as u64)).expect("read"),
-            "the new row is kept",
-        );
+        assert!(own_ownerless(&db, "acme", "C1", &ts(OWN_POST_KEEP as u64)), "the new row is kept");
 
         // The age bound is exclusive: a row recorded exactly at the cutoff
         // is still recent.
         let old = now.saturating_sub(OWN_POST_MAX_AGE_SECS);
-        record_own_post(&db, "acme", "C1", &ts(9_000), old).expect("record at the bound");
-        record_own_post(&db, "acme", "C1", &ts(9_001), now).expect("record a fresh row");
+        record_ownerless(&db, "acme", "C1", &ts(9_000), old);
+        record_ownerless(&db, "acme", "C1", &ts(9_001), now);
         assert!(
-            own_post(&db, "acme", "C1", &ts(9_000)).expect("read"),
+            own_ownerless(&db, "acme", "C1", &ts(9_000)),
             "a row exactly at the age bound is kept",
         );
-        record_own_post(&db, "acme", "C1", &ts(9_002), now + 1).expect("record one second on");
+        record_ownerless(&db, "acme", "C1", &ts(9_002), now + 1);
         assert!(
-            !own_post(&db, "acme", "C1", &ts(9_000)).expect("read"),
+            !own_ownerless(&db, "acme", "C1", &ts(9_000)),
             "a row past the age bound is dropped on the next write",
         );
     }
@@ -628,18 +667,148 @@ mod tests {
         let ts = |offset: u64| format!("{}.000001", now + offset);
 
         for offset in 0..OWN_POST_KEEP as u64 {
-            record_own_post(&db, "acme", "C2", &ts(offset), now).expect("record");
+            record_ownerless(&db, "acme", "C2", &ts(offset), now);
         }
-        record_own_post(&db, "acme", "C1", &ts(9_000), now).expect("record");
+        record_ownerless(&db, "acme", "C1", &ts(9_000), now);
 
         assert!(
-            own_post(&db, "acme", "C2", &ts(0)).expect("read"),
+            own_ownerless(&db, "acme", "C2", &ts(0)),
             "another conversation's oldest row survives the write",
         );
         assert!(
-            own_post(&db, "acme", "C1", &ts(9_000)).expect("read"),
+            own_ownerless(&db, "acme", "C1", &ts(9_000)),
             "and the recording conversation keeps its row",
         );
+    }
+
+    fn owner(project: &str, role: Option<&str>) -> SlackThreadOwner {
+        SlackThreadOwner { project: project.to_owned(), team_role: role.map(str::to_owned) }
+    }
+
+    /// A row written before the ledger carried sessions: the value is the
+    /// bare recording time, with no owner beside it. It keeps today's
+    /// behaviour, suppressing for every session - the degrade path a live
+    /// database's existing rows take.
+    #[test]
+    fn an_own_post_row_written_before_owners_suppresses_for_every_session() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        let ts = "1700000000.000100";
+        // The old writer, byte for byte: the table's original value type and
+        // no owner entry.
+        {
+            let txn = db.database().begin_write().expect("write");
+            {
+                let mut table = txn.open_table(OWN_POSTS).expect("old table");
+                table.insert(own_post_key("acme", "C1", ts).as_str(), 1_700_000_000).expect("row");
+            }
+            txn.commit().expect("commit");
+        }
+
+        assert!(
+            own_post_by(&db, "acme", "C1", ts, Some(&owner("forge", None))).expect("read"),
+            "an ownerless row refuses the lead",
+        );
+        assert!(
+            own_post_by(&db, "acme", "C1", ts, Some(&owner("forge", Some("tester"))))
+                .expect("read"),
+            "and refuses a worker in the same project",
+        );
+        assert!(
+            own_post_by(&db, "acme", "C1", ts, None).expect("read"),
+            "and refuses a caller whose owner could not be resolved",
+        );
+    }
+
+    /// A post recorded by one session is suppressed only for that session:
+    /// every other participant in the thread still receives it.
+    #[test]
+    fn an_own_post_recorded_by_a_session_suppresses_only_for_that_session() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        let ts = "1700000000.000100";
+        let poster = owner("forge", Some("tester"));
+        record_own_post(&db, "acme", "C1", ts, 1_700_000_000, Some(&poster)).expect("record");
+
+        assert!(
+            own_post_by(&db, "acme", "C1", ts, Some(&poster)).expect("read"),
+            "the session that posted it never receives its own words",
+        );
+        assert!(
+            !own_post_by(&db, "acme", "C1", ts, Some(&owner("forge", None))).expect("read"),
+            "the lead in the same project does",
+        );
+        assert!(
+            !own_post_by(&db, "acme", "C1", ts, Some(&owner("forge", Some("other"))))
+                .expect("read"),
+            "and so does another worker",
+        );
+        assert!(
+            !own_post_by(&db, "acme", "C1", ts, None).expect("read"),
+            "a caller whose owner did not resolve is not the poster",
+        );
+    }
+
+    /// An expired row takes its owner entry with it. A later re-record of
+    /// the same ts without an owner must read as the old ownerless shape,
+    /// not inherit the pruned session's owner and stay hidden from everyone
+    /// else.
+    #[test]
+    fn pruning_a_row_takes_its_owner_entry_too() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+        let now = 1_700_000_000;
+        let ts = format!("{now}.000001");
+        record_own_post(&db, "acme", "C1", &ts, now, Some(&owner("forge", Some("tester"))))
+            .expect("record");
+
+        let old = now.saturating_sub(OWN_POST_MAX_AGE_SECS);
+        record_own_post(&db, "acme", "C1", &format!("{}.000002", now + 1), old, None)
+            .expect("an old row");
+        record_own_post(&db, "acme", "C1", &format!("{}.000003", now + 2), now + 1, None)
+            .expect("a write one second on prunes the expired row");
+
+        assert!(
+            !own_post_by(&db, "acme", "C1", &ts, Some(&owner("forge", None))).expect("read"),
+            "the expired row is gone",
+        );
+        record_own_post(&db, "acme", "C1", &ts, now + 2, None).expect("re-record ownerless");
+        assert!(
+            own_post_by(&db, "acme", "C1", &ts, Some(&owner("forge", Some("other"))))
+                .expect("read"),
+            "the re-recorded row is ownerless, so it suppresses for every session again",
+        );
+    }
+
+    /// A thread row written before participants existed reads as holding
+    /// none, and one written with them carries them back verbatim.
+    #[test]
+    fn a_thread_row_carries_its_participants_and_an_old_row_reads_empty() {
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        // The pre-change shape, serialised field for field.
+        let legacy =
+            r#"{"cursor":"100.1","edit_watermark":null,"owners":[],"participating":false}"#;
+        {
+            let txn = db.database().begin_write().expect("write");
+            {
+                let mut table = txn.open_table(THREADS).expect("threads");
+                table.insert(thread_key("acme", "C1", "100.000001").as_str(), legacy).expect("row");
+            }
+            txn.commit().expect("commit");
+        }
+        let back = thread(&db, "acme", "C1", "100.000001").expect("read").expect("present");
+        assert!(back.participants.is_empty(), "an old row holds no participants");
+
+        let record = SlackThreadRecord {
+            participants: vec![owner("forge", Some("tester")), owner("forge", None)],
+            ..thread_record("100.1", &[])
+        };
+        set_thread(&db, "acme", "C1", "200.000002", &record).expect("set");
+        let back = thread(&db, "acme", "C1", "200.000002").expect("read").expect("present");
+        assert_eq!(back.participants.len(), 2, "both participants ride along");
+        assert_eq!(back.participants[0].team_role.as_deref(), Some("tester"));
     }
 
     #[test]

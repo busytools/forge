@@ -338,6 +338,14 @@ pub struct SlackThreadRecord {
     /// already-handed one above it.
     pub edit_watermark: Option<String>,
     pub owners: Vec<SlackThreadOwner>,
+    /// The sessions that posted into this thread, which keeps them in its
+    /// delivery set without a subscription. Not `owners`: an owner is the
+    /// seat a delivered message anchored the thread to and is pruned with
+    /// its subscriptions, while a participant joined by posting and outlives
+    /// them. Kept apart from `participating`, which says the *user* is in the
+    /// thread and drives whole reads, not delivery.
+    #[serde(default)]
+    pub participants: Vec<SlackThreadOwner>,
     /// Whether the user is in this thread, once that has been read off its
     /// replies. Kept because a reply cannot un-happen: once true, every walk
     /// can read past the cursor instead of reading the thread whole.
@@ -351,6 +359,9 @@ pub struct SlackThreadRecord {
 pub struct SlackFollowedThread {
     pub parent_ts: String,
     pub owners: Vec<SlackThreadOwner>,
+    /// The sessions that posted into the thread; delivery is
+    /// owners ∪ participants.
+    pub participants: Vec<SlackThreadOwner>,
     /// Whether the user is already known to be in this thread.
     pub participating: bool,
 }
