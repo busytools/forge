@@ -744,6 +744,22 @@ impl Slack {
         }
     }
 
+    /// Drop a conversation's cursor. The sweep calls this for a conversation
+    /// no subscription covers any more, so the next subscriber seeds fresh
+    /// and no tick pages a gap from a cursor nobody owns.
+    pub fn clear_slack_watermark(&self, workspace: &str, conversation: &str) {
+        if let Err(error) = self.store.remove_watermark(workspace, conversation) {
+            tracing::warn!(
+                target: "forge_tools::slack",
+                event_name = "slack_watermark_clear_failed",
+                workspace,
+                conversation,
+                %error,
+                "clearing a Slack conversation cursor failed",
+            );
+        }
+    }
+
     /// Record a message forge posted, so the sweep refuses it by identity
     /// rather than by author. forge posts as the user, so this is the only
     /// thing that tells its own words from the ones Ved typed. The owner is
@@ -2244,6 +2260,11 @@ impl SlackHost for SlackSubsystemHost {
     fn set_watermark(&self, workspace: &str, conversation: &str, ts: &str) {
         let Some(slack) = self.0.upgrade() else { return };
         slack.set_slack_watermark(workspace, conversation, ts);
+    }
+
+    fn clear_watermark(&self, workspace: &str, conversation: &str) {
+        let Some(slack) = self.0.upgrade() else { return };
+        slack.clear_slack_watermark(workspace, conversation);
     }
 
     fn followed_threads(&self, workspace: &str, conversation: &str) -> Vec<SlackFollowedThread> {
@@ -3983,7 +4004,7 @@ mod tests {
                 "C1".to_owned(),
                 parent.clone()
             )),
-            "no first-walk mark: the next tick is an ordinary walk from the cursor",
+            "no first-walk mark: the join's whole read is stamped by the full-read clock",
         );
 
         // The join is the one way a thread row appears with no sweep
@@ -4222,6 +4243,30 @@ mod tests {
         );
     }
 
+    /// The listing is where a pump learns its last row aged out: after a
+    /// join started the pump, listing an aged-out row must stop it, or a
+    /// subscription-less workspace wakes for the process lifetime.
+    #[tokio::test]
+    async fn an_idle_row_aging_out_stops_the_pump() {
+        let h = harness();
+        let parent = recent_ts();
+        let seat = owner("forge", Some("tester"));
+        h.slack.join_slack_thread("acme", "C1", &parent, &seat, &parent);
+        assert_eq!(h.slack.pump_labels(), vec!["acme".to_owned()], "the join started it");
+
+        // Age the row past the window, then let the sweep's listing prune it.
+        {
+            let mut inner = h.store.inner.lock();
+            let record = inner
+                .threads
+                .get_mut(&("acme".to_owned(), "C1".to_owned(), parent.clone()))
+                .expect("the row exists");
+            record.cursor = "100.0".to_owned();
+        }
+        assert!(h.slack.slack_followed_threads("acme", "C1").is_empty(), "the idle row is dropped");
+        assert!(h.slack.pump_labels().is_empty(), "and the pump it started goes with it");
+    }
+
     #[test]
     fn advancing_a_thread_cursor_keeps_its_owners() {
         let (host, _slack, _store) = host_with_c1_subscriber("forge", Some("tester"));
@@ -4327,8 +4372,16 @@ mod tests {
             "the recorded row is read back",
         );
         assert!(
+            host.own_post_any("acme", "C1", "1700000000.000100"),
+            "the any-owner read sees it, whoever recorded it",
+        );
+        assert!(
             !host.own_post_by("acme", "C2", "1700000000.000100", &forge),
             "another conversation's ledger does not answer for it",
+        );
+        assert!(
+            !host.own_post_any("acme", "C2", "1700000000.000100"),
+            "the any-owner read is scoped by conversation too",
         );
         assert!(
             !host.own_post_by("beta", "C1", "1700000000.000100", &forge),

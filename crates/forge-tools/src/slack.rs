@@ -71,6 +71,12 @@ pub trait SlackHost: Send + Sync {
     /// microsecond fraction; never round-trip it through a number.
     fn set_watermark(&self, workspace: &str, conversation: &str, ts: &str);
 
+    /// Drop a conversation's cursor. The sweep does this for a conversation
+    /// no subscription covers any more: a cursor left standing there makes
+    /// every tick page the whole gap from it, and hands a later subscriber a
+    /// backlog instead of a fresh seed.
+    fn clear_watermark(&self, workspace: &str, conversation: &str);
+
     /// The threads tracked for a conversation, each with the owners still
     /// subscribed to it and the participants that joined by posting. The
     /// host prunes while listing: an owner whose subscription is gone is
@@ -1574,7 +1580,7 @@ pub(crate) async fn sweep_scope(
             );
             continue;
         }
-        let watermark = match host.watermark(workspace, &conversation.id) {
+        let mut watermark = match host.watermark(workspace, &conversation.id) {
             Ok(watermark) => watermark,
             Err(error) => {
                 // "Could not read the cursor" is not "never swept": sweeping
@@ -1590,6 +1596,18 @@ pub(crate) async fn sweep_scope(
                 continue;
             }
         };
+        // **A conversation only thread rows hold keeps no conversation
+        // cursor.** Unsubscribe clears it on purpose so a later subscriber
+        // seeds `now`; a cursor left standing - an ephemeral worker's
+        // subscription gone at a restart, a raced clear - would make every
+        // tick page the whole gap from it, and past the history cap wedge
+        // the sweep for good. Clearing it here also means this tick
+        // baselines, and the thread walk below runs on its own cursor.
+        let subscribed_here = targets(&subscriptions, conversation);
+        if !subscribed_here && watermark.is_some() {
+            host.clear_watermark(workspace, &conversation.id);
+            watermark = None;
+        }
 
         let window = match fetch_recent(api, &conversation.id).await {
             Ok(window) => window,
@@ -1652,14 +1670,6 @@ pub(crate) async fn sweep_scope(
         // failed - a swallowed backlog. That is still the right direction:
         // refusing to sweep would deliver nothing forever, and replaying the
         // backlog would spam every session watching it.
-        //
-        // **A conversation only thread rows hold keeps no conversation
-        // cursor.** Unsubscribe clears it on purpose, so a later subscriber
-        // seeds `now` rather than replaying the gap between; a walk run for
-        // a participant must not put it back, or that subscriber is handed
-        // the whole gap (and, past the page cap, wedges). The thread walk
-        // carries its own cursor and needs nothing here.
-        let subscribed_here = targets(&subscriptions, conversation);
         let baselined = watermark.is_none();
         if subscribed_here
             && baselined
@@ -1710,6 +1720,10 @@ pub(crate) async fn sweep_scope(
                         %error,
                         "reading a conversation's history failed; skipping it this tick",
                     );
+                    // Same as the window arm: prune on the way out, or a
+                    // followed thread in a channel that can never be read
+                    // never expires.
+                    let _ = host.followed_threads(workspace, &conversation.id);
                     continue;
                 }
             }
@@ -1940,7 +1954,7 @@ pub(crate) async fn sweep_scope(
                     );
                 }
             }
-            if subscribed_here && let Some(newest) = batch.iter().map(newest_stamp).max() {
+            if let Some(newest) = batch.iter().map(newest_stamp).max() {
                 host.set_watermark(workspace, &conversation.id, newest);
             }
         }
@@ -4670,6 +4684,10 @@ mod tests {
                 .insert(format!("{workspace}/{conversation}"), ts.to_owned());
         }
 
+        fn clear_watermark(&self, workspace: &str, conversation: &str) {
+            self.watermarks.lock().expect("lock").remove(&format!("{workspace}/{conversation}"));
+        }
+
         fn set_connected(&self, _workspace: &str, connected: bool) {
             *self.connected.lock().expect("lock") = Some(connected);
         }
@@ -4722,9 +4740,9 @@ mod tests {
         /// Mirrors the real host's subscription prune and its participants:
         /// an owner whose subscription is gone is dropped, a participant
         /// stays whatever it holds, and a row with neither left is gone.
-        /// The idle clock is NOT mirrored - the fake keeps a row until a
-        /// test says so, because fixtures seed epoch-era cursors to force a
-        /// walk and a clock here would erase them.
+        /// The idle clock is off unless a test opts in with
+        /// [`Self::mirror_idle_prune`], because most fixtures seed epoch-era
+        /// cursors to force a walk and a clock would erase them.
         fn followed_threads(
             &self,
             workspace: &str,
@@ -8355,6 +8373,44 @@ mod tests {
         );
     }
 
+    /// A subscription-less conversation that still carries a cursor gets it
+    /// CLEARED. Unsubscribe clears it so a later subscriber seeds fresh, and
+    /// one left standing - an ephemeral worker's subscription gone at a
+    /// restart, a raced clear - would make every tick page the whole gap
+    /// from it until the history cap wedged the sweep. The participant's
+    /// thread still walks on its own cursor.
+    #[tokio::test]
+    async fn a_participant_sweep_clears_a_stale_conversation_cursor() {
+        let host = FakeHost::with_subscriptions(Vec::new());
+        host.set_watermark("acme", "C1", "050.0");
+        let parent = parent_with_latest_reply("100.0", 2, "150.0");
+        host.seed_history("C1", vec![parent.clone()]);
+        host.seed_replies(
+            "C1",
+            "100.0",
+            vec![
+                parent,
+                reply("105.0", "100.0", "U1", "the seat's answer"),
+                reply("150.0", "100.0", "U8", "a later reply"),
+            ],
+        );
+        let seat = thread_owner("forge", Some("tester"));
+        host.seed_thread("acme", "C1", "100.0", "105.0", Vec::new(), vec![seat]);
+
+        sweep(&host, &host, "acme").await.expect("sweep");
+
+        assert_eq!(
+            host.watermark("acme", "C1").expect("watermark"),
+            None,
+            "the stale cursor is cleared, so a later subscribe seeds fresh",
+        );
+        assert!(
+            host.delivered().iter().any(|message| message.ts == "150.0"),
+            "and the participant's thread still walks: {:?}",
+            host.delivered(),
+        );
+    }
+
     /// Echo split: a forge post is suppressed for the session that posted it
     /// alone. In a thread with two participants, one seat's post reaches the
     /// other and never comes back to it, so every side reads the thread
@@ -8632,8 +8688,8 @@ mod tests {
         sweep(&host, &host, "acme").await.expect("sweep");
 
         assert!(
-            host.followed_threads("acme", "C9").is_empty(),
-            "the idle row is pruned on the failure path",
+            host.thread_cursor("acme", "C9", "100.0").is_none(),
+            "the idle row is pruned on the failure path, read without the listing's own prune",
         );
     }
 
@@ -8658,8 +8714,8 @@ mod tests {
         sweep(&host, &host, "acme").await.expect("sweep");
 
         assert!(
-            host.followed_threads("acme", "D1").is_empty(),
-            "an unreadable DM still expires its thread row",
+            host.thread_cursor("acme", "D1", "100.0").is_none(),
+            "an unreadable DM still expires its thread row, read without the listing's own prune",
         );
     }
 
