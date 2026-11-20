@@ -88,6 +88,32 @@ describe('the stream gate', () => {
     expect(gate.inbound(update(5))).toHaveLength(1);
   });
 
+  /**
+   * **A take's frame is never held for a seat gap.** It rides the
+   * connection's `dictate` subject, written ahead of the seat's bulk, so it
+   * can arrive above numbers the seat has not sent yet; its own number is
+   * seen there and asks for nothing, and the seat frames it jumped land in
+   * order afterwards.
+   */
+  it('passes a take frame at once, filling no hole in the seat stream', () => {
+    const { gate, asked } = aGate();
+    gate.inbound(snap('occ', 1));
+    gate.inbound(update(1));
+    const take = {
+      kind: 'update',
+      seq: 4,
+      span: 1,
+      update: { dictate_level: { key: LEAD, peak_db: -20, generation: 1 } },
+    } as unknown as ServerMessage;
+
+    expect(gate.inbound(take), 'the take draws on arrival, held for nothing').toHaveLength(1);
+    expect(asked, 'and its number is not read as a hole').toEqual([]);
+
+    expect(gate.inbound(update(2))).toHaveLength(1);
+    expect(gate.inbound(update(3))).toHaveLength(1);
+    expect(gate.inbound(update(5)), 'the run carries on past the take').toHaveLength(1);
+  });
+
   it('holds the frames above a hole, asks for the gap, and releases in order', () => {
     const { gate, asked, emitted } = aGate();
     gate.inbound(snap('occ', 1));

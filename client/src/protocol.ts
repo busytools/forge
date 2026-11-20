@@ -25,7 +25,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * rail footer carries both halves' build and socket numbers, and a mismatch
  * raises the notice beside it. Nothing refuses a connection over it.
  */
-export const PROTOCOL_VERSION = 33;
+export const PROTOCOL_VERSION = 34;
 
 /**
  * The release this client was built from, baked in by the build.
@@ -131,9 +131,20 @@ export function skewMessage(skew: Skew): string {
  * rows, schedules and connector sets (#2517). `dictate_models` and
  * `extensions` are their pages' own reads: the pins and catalogue only the
  * models page draws, and the plugin inventory only the extensions page draws.
+ *
+ * `dictate` is the connection's own rather than a seat's: one subscription per
+ * client, taken when it opens, carrying the take frames of that connection and
+ * no other's. It has no read state - the server answers it with an empty
+ * snapshot - so nothing draws it and nothing re-reads it.
  */
 export type Subject =
-  'home' | 'board' | { session: SessionSlot } | 'usage' | 'dictate_models' | 'extensions';
+  | 'home'
+  | 'board'
+  | { session: SessionSlot }
+  | 'usage'
+  | 'dictate_models'
+  | 'extensions'
+  | 'dictate';
 
 /**
  * A subscription's address as one string, which is what a store is keyed by.
@@ -160,7 +171,30 @@ const NAMED_SUBJECTS: readonly string[] = [
   'usage',
   'dictate_models',
   'extensions',
+  'dictate',
 ];
+
+/** The variants that ride the `dictate` subject: one take's own news. */
+export const TAKE_VARIANTS: readonly string[] = [
+  'dictate_started',
+  'dictate_level',
+  'dictate_transcribing',
+  'dictate_progress',
+  'dictate_ended',
+];
+
+/**
+ * Whether an update is one of a take's own frames.
+ *
+ * The family rides the connection's `dictate` subject rather than a seat's, so
+ * the seat's stream must not sequence it: a take's phase applies on arrival
+ * and is never held for a seat gap.
+ */
+export function isTakeUpdate(update: SessionUpdate): boolean {
+  if (typeof update === 'string') return TAKE_VARIANTS.includes(update);
+  const [name] = Object.keys(update);
+  return name !== undefined && TAKE_VARIANTS.includes(name);
+}
 
 /**
  * The subject a store key names, or `null` for a key this client does not

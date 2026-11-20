@@ -328,6 +328,13 @@ class RustConnection implements Connection {
     // **Narrowed once at the invoke boundary**, as every wire value is: a
     // shell that answered something else leaves this connection with no id,
     // and a close with no id is not sent.
+    //
+    // **The dictate subscription is part of opening, not of the first press.**
+    // The server emits `dictate_started` the moment a take begins, so a
+    // subscription racing that press would miss the frame. It is a string
+    // subject, so the shell keeps it across its own retries and re-asks it on
+    // every reconnect; its answer is an empty snapshot.
+    this.subscribe('dictate');
     const opened: unknown = await invoke('client_connect', { url });
     this.socket = typeof opened === 'number' ? opened : null;
     if (this.closing) {

@@ -367,9 +367,9 @@ settings card's `enrol`, which needs the vault open.
 
 ## Subjects
 
-Everything a client reads is addressed by a subject, and there are six:
-`home`, `board`, `session <org>/<project>/<label>`, `usage`, `dictate_models`
-and `extensions`.
+Everything a client reads is addressed by a subject, and there are seven:
+`home`, `board`, `session <org>/<project>/<label>`, `usage`, `dictate_models`,
+`extensions` and `dictate`.
 
 A seat nobody has started is an answer rather than a silence. Subscribing
 to one that is not there comes back as an `error` saying so, so a client
@@ -1420,6 +1420,23 @@ ending rides; the client's chat makes its own calls over the same
 frames - its own unit fold, its own lifecycle carving, its own status
 aggregation. The drawing is the client's, and the client's answer is the
 one on screen.
+
+**`dictate`** is one connection's dictation, and it is the one subject that
+belongs to the connection rather than to a seat: a client takes it when the
+socket opens and re-takes it after a reconnect, and every take that
+connection starts rides it. It has no read state - the snapshot answer
+carries `null` - and it hears the `Dictate*` family and nothing else:
+`dictate_started`, `dictate_level`, `dictate_transcribing`,
+`dictate_progress` and `dictate_ended`.
+
+The family used to ride the seat's subscription and no longer does (protocol
+34): a take's frames are written ahead of the seat's bulk, so a heavy seat's
+snapshot or a run of seat frames cannot hold a take's meter or its end behind
+them. `key` on each frame is still the seat the take records for - its landed
+words are that seat's conversation - and `initiator` still gates it, so a
+second client subscribed to `dictate` never hears another connection's take.
+The seat's own sequence numbers are not involved: a take frame applies on
+arrival rather than in a seat's stream.
 
 ## What is not here
 

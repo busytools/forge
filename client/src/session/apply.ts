@@ -407,89 +407,6 @@ export const HANDLERS: Record<string, Apply> = {
     return { ...held, pending_asks };
   },
 
-  dictate_started: (held, payload) => {
-    noteDictateFrame(
-      'started',
-      slotOfPayload(payload),
-      number(payload['generation']),
-      recordedTakePhase(held.composer),
-    );
-    const floor = number(payload['floor_db']);
-    if (floor === null) return held;
-    // A new take supersedes what the seat was doing, its notice included: the
-    // words it left are already in the box.
-    return {
-      ...held,
-      composer: { ...held.composer, take: newTake(floor, payload['generation']), notice: null },
-    };
-  },
-
-  dictate_level: (held, payload) => {
-    const take = heldTake(held.composer);
-    const peak = number(payload['peak_db']);
-    if (take === null || !ofThisTake(take, payload) || peak === null) return held;
-    return withTake(held, push(take, peak), null);
-  },
-
-  dictate_transcribing: (held, payload) => {
-    noteDictateFrame(
-      'transcribing',
-      slotOfPayload(payload),
-      number(payload['generation']),
-      recordedTakePhase(held.composer),
-    );
-    const take = heldTake(held.composer);
-    if (take === null || !ofThisTake(take, payload)) return held;
-    return withTake(held, { ...take, phase: 'transcribing' }, null);
-  },
-
-  dictate_progress: (held, payload) => {
-    const take = heldTake(held.composer);
-    if (take === null || !ofThisTake(take, payload)) return held;
-    const done = payload['done'];
-    const total = payload['total'];
-    if (done === undefined && total === undefined) return held;
-    return withTake(held, { ...take, progress: [done, total] }, null);
-  },
-
-  dictate_ended: (held, payload) => {
-    noteDictateFrame(
-      'ended',
-      slotOfPayload(payload),
-      number(payload['generation']),
-      recordedTakePhase(held.composer),
-    );
-    const take = heldTake(held.composer);
-    const outcome = outcomeOf(payload['outcome']);
-    // **A refusal resolves no take - it answers a start that never ran** -
-    // so a take drawn here is this connection's own and still live on the
-    // server. Clearing it would empty the screen while the recording runs
-    // (#1880); only a seat with nothing drawn takes the refusal's notice.
-    if ('refused' in outcome && take !== null) return held;
-    // A tail from a take that is gone is not this one.
-    if (!('refused' in outcome) && (take === null || !ofThisTake(take, payload))) return held;
-    const floor =
-      take === null ? FALLBACK_FLOOR_DB : (number(take['floor_db']) ?? FALLBACK_FLOOR_DB);
-    const notice = noticeOf(outcome, floor);
-    return {
-      ...held,
-      composer: {
-        ...held.composer,
-        take: null,
-        notice:
-          notice === null
-            ? null
-            : {
-                ...notice,
-                ...generationOf(payload),
-                // The surface belongs to the words, not to a refusal's line:
-                // only a landed notice carries it.
-                ...(notice.kind === 'landed' ? surfaceOf(payload) : {}),
-              },
-      },
-    };
-  },
-
   // The turn's own end, for whichever of the three ways the core says it. All
   // three settle the turn; only `turn_error` reaches the wire today.
   turn_complete: (held) => settled(held),
@@ -587,6 +504,109 @@ export function applyUpdate(held: SessionRecord, update: SessionUpdate): Session
   const [name, payload] = variantOf(update);
   if (name === null) return held;
   const handler = HANDLERS[name];
+  return handler === undefined ? held : handler(held, payload);
+}
+
+/**
+ * The take's own frames, which ride the connection's `dictate` subject
+ * rather than the seat's.
+ *
+ * **A take belongs to the connection, not to the seat it records for.** Its
+ * frames are written ahead of the seat's bulk and applied on arrival, so they
+ * never pass through the seat's sequence, and the seat's reducer keeps no arm
+ * for them: one arriving on a seat subscription is a repair of numbers the
+ * client already drew, not news.
+ */
+export const TAKE_HANDLERS: Record<string, Apply> = {
+  dictate_started: (held, payload) => {
+    noteDictateFrame(
+      'started',
+      slotOfPayload(payload),
+      number(payload['generation']),
+      recordedTakePhase(held.composer),
+    );
+    const floor = number(payload['floor_db']);
+    if (floor === null) return held;
+    // A new take supersedes what the seat was doing, its notice included: the
+    // words it left are already in the box.
+    return {
+      ...held,
+      composer: { ...held.composer, take: newTake(floor, payload['generation']), notice: null },
+    };
+  },
+
+  dictate_level: (held, payload) => {
+    const take = heldTake(held.composer);
+    const peak = number(payload['peak_db']);
+    if (take === null || !ofThisTake(take, payload) || peak === null) return held;
+    return withTake(held, push(take, peak), null);
+  },
+
+  dictate_transcribing: (held, payload) => {
+    noteDictateFrame(
+      'transcribing',
+      slotOfPayload(payload),
+      number(payload['generation']),
+      recordedTakePhase(held.composer),
+    );
+    const take = heldTake(held.composer);
+    if (take === null || !ofThisTake(take, payload)) return held;
+    return withTake(held, { ...take, phase: 'transcribing' }, null);
+  },
+
+  dictate_progress: (held, payload) => {
+    const take = heldTake(held.composer);
+    if (take === null || !ofThisTake(take, payload)) return held;
+    const done = payload['done'];
+    const total = payload['total'];
+    if (done === undefined && total === undefined) return held;
+    return withTake(held, { ...take, progress: [done, total] }, null);
+  },
+
+  dictate_ended: (held, payload) => {
+    noteDictateFrame(
+      'ended',
+      slotOfPayload(payload),
+      number(payload['generation']),
+      recordedTakePhase(held.composer),
+    );
+    const take = heldTake(held.composer);
+    const outcome = outcomeOf(payload['outcome']);
+    // **A refusal resolves no take - it answers a start that never ran** -
+    // so a take drawn here is this connection's own and still live on the
+    // server. Clearing it would empty the screen while the recording runs
+    // (#1880); only a seat with nothing drawn takes the refusal's notice.
+    if ('refused' in outcome && take !== null) return held;
+    // A tail from a take that is gone is not this one.
+    if (!('refused' in outcome) && (take === null || !ofThisTake(take, payload))) return held;
+    const floor =
+      take === null ? FALLBACK_FLOOR_DB : (number(take['floor_db']) ?? FALLBACK_FLOOR_DB);
+    const notice = noticeOf(outcome, floor);
+    return {
+      ...held,
+      composer: {
+        ...held.composer,
+        take: null,
+        notice:
+          notice === null
+            ? null
+            : {
+                ...notice,
+                ...generationOf(payload),
+                // The surface belongs to the words, not to a refusal's line:
+                // only a landed notice carries it.
+                ...(notice.kind === 'landed' ? surfaceOf(payload) : {}),
+              },
+      },
+    };
+  },
+};
+
+/** Fold one take frame into the record, on the `dictate` subject's own path. */
+export function applyTake(held: SessionRecord, update: SessionUpdate): SessionRecord {
+  const [name, payload] = variantOf(update);
+  if (name === null) return held;
+  const handler = TAKE_HANDLERS[name];
   return handler === undefined ? held : handler(held, payload);
 }
 

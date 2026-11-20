@@ -56,6 +56,22 @@ pub enum Subject {
     /// family: an action's outcome, a run's progress, and the refreshed
     /// inventory are all news about what this subscription is showing.
     Extensions,
+    /// One client's dictation: the take frames of the connection that
+    /// subscribed, and nothing else.
+    ///
+    /// **One subscription per client, not per seat.** Every seat a client
+    /// visits keeps its own subscription, and every one of them grows; the
+    /// dictate subscription does not, because a take belongs to the
+    /// connection rather than to the seat it records for. It carries no read
+    /// state - a subscribe is answered with an empty snapshot - and hears
+    /// only the `Dictate*` family, still gated on the take's initiator so a
+    /// second client cannot hear a take it did not start.
+    ///
+    /// It exists so a take's phases do not queue behind a seat's bulk: the
+    /// connection's writer serves this subject's frames ahead of seat frames,
+    /// so a `dictate_started` does not wait out a seat snapshot in front of
+    /// it.
+    Dictate,
 }
 
 impl Subject {
@@ -105,7 +121,15 @@ impl Subject {
                     || matches!(update, SessionUpdate::TasksChanged { .. })
                     || seat_liveness(update)
             }
-            Self::Session(seat) => update.slot() == Some(seat),
+            // **A take is not the seat's.** The `Dictate*` family names the
+            // seat it records for, so the slot test alone would keep carrying
+            // it here; it belongs to the connection's dictate subscription,
+            // where the take can be served ahead of the seat's bulk.
+            Self::Session(seat) => update.slot() == Some(seat) && !is_dictate(update),
+            // The whole `Dictate*` family, gated on its initiator by the
+            // connection's own routing: another client's take is not this
+            // subscription's.
+            Self::Dictate => is_dictate(update),
             // Nothing carries the pool: its snapshot is a scan, and a
             // transcript's tokens moving is not an update any variant
             // announces.
@@ -137,6 +161,22 @@ impl Subject {
             ),
         }
     }
+}
+
+/// Whether an update is one of a take's own news.
+///
+/// The family that rides [`Subject::Dictate`]: a take's start, its meter,
+/// its phases and the end that settles it. The seat a take records for hears
+/// none of them.
+pub fn is_dictate(update: &SessionUpdate) -> bool {
+    matches!(
+        update,
+        SessionUpdate::DictateStarted { .. }
+            | SessionUpdate::DictateLevel { .. }
+            | SessionUpdate::DictateTranscribing { .. }
+            | SessionUpdate::DictateProgress { .. }
+            | SessionUpdate::DictateEnded { .. }
+    )
 }
 
 /// The updates whose whole effect is the board's own snapshot.

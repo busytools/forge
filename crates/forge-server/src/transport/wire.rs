@@ -2000,6 +2000,10 @@ pub(crate) async fn encode_subject_timed(
         // The Extensions page's read: one disk scan of the plugin
         // inventory per read, plus the PATH checks and the last run.
         Subject::Extensions => Ok((serde_json::to_value(extensions(state).await)?, timings)),
+        // **A dictate subscription has no read state.** The take's phases
+        // arrive as updates; answering `null` clears the client's read bound
+        // at once, so it never re-asks for a snapshot nothing fills.
+        Subject::Dictate => Ok((Value::Null, timings)),
     }
 }
 

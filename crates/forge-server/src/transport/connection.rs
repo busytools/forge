@@ -27,6 +27,7 @@ use serde_json::json;
 use super::batch::{self, Batch};
 use super::envelope::{
     ClientMessage, ClientSettings, SeatFrameWire, ServerMessage, SettingsRefusal, Subject,
+    is_dictate,
 };
 use super::frame::FrameTransport as _;
 use super::origin as origin_gate;
@@ -1674,21 +1675,32 @@ where
                 // The fold is the transport's, not this connection's: it runs
                 // once for the whole socket in `transport::fold_the_stream`.
                 if forwards(&update, &watching.subjects, me) {
-                    // **A fatal goes out now, not on the batch's clock.** The
-                    // exit it announces is already on its way - `workspace.
-                    // shutdown` follows the run loop's return - and a frame
-                    // still waiting out its window when the process drops dies
-                    // with it. Everything else can wait the interval.
+                    // **A take's frame goes now, on the control lane.** It
+                    // skips the batch, so its phase is not held for company,
+                    // and the writer serves it at the next frame boundary
+                    // ahead of whatever seat bulk is queued.
                     let fatal = matches!(&*update, SessionUpdate::FatalError { .. });
-                    held.push(
-                        Instant::now(),
-                        SeatUpdate {
-                            seq: frame.seq,
-                            update: Arc::new(for_a_client(Arc::unwrap_or_clone(update), cap)),
-                        },
-                    );
-                    if fatal {
-                        batch::flush(socket, held.take()).await?;
+                    let update = Arc::new(for_a_client(Arc::unwrap_or_clone(update), cap));
+                    if is_dictate(&update) {
+                        send_control(
+                            socket,
+                            ServerMessage::Update {
+                                update: Box::new(Arc::unwrap_or_clone(update)),
+                                seq: frame.seq,
+                                span: 1,
+                            },
+                        )?;
+                    } else {
+                        // **A fatal goes out now, not on the batch's clock.**
+                        // The exit it announces is already on its way -
+                        // `workspace.shutdown` follows the run loop's return -
+                        // and a frame still waiting out its window when the
+                        // process drops dies with it. Everything else can wait
+                        // the interval.
+                        held.push(Instant::now(), SeatUpdate { seq: frame.seq, update });
+                        if fatal {
+                            batch::flush(socket, held.take()).await?;
+                        }
                     }
                 }
             }
@@ -3928,32 +3940,18 @@ fn ours_to_hear(update: &SessionUpdate, me: u64) -> bool {
     }
 }
 
-/// Whether this update is one of a take's own.
-///
-/// The family `ours_to_hear` stamps by connection: a take's meter, its
-/// phases and the end that settles it.
-fn is_take_news(update: &SessionUpdate) -> bool {
-    matches!(
-        update,
-        SessionUpdate::DictateStarted { .. }
-            | SessionUpdate::DictateLevel { .. }
-            | SessionUpdate::DictateTranscribing { .. }
-            | SessionUpdate::DictateProgress { .. }
-            | SessionUpdate::DictateEnded { .. }
-    )
-}
-
 /// Whether this connection forwards one update.
 ///
-/// **A take's own news reaches its connection whether or not the seat is
-/// showing.** The reader may be on another seat while their recording runs,
-/// and the fold that draws the take - and the end settling it - is this
-/// connection's: filtered by the watch, the record would go on drawing a
-/// recording that is over (#1880). Every other update keeps the watch rule
-/// alone.
+/// **A take's own news reaches its connection through the dictate
+/// subscription.** The reader may be on another seat while their recording
+/// runs, and the fold that draws the take - and the end settling it - is
+/// this connection's: without a subscription of its own the record would go
+/// on drawing a recording that is over (#1880). That is why the client takes
+/// the subscription eagerly at open, beside its seat subscriptions; once it
+/// holds one, the ordinary watch rule carries the take, and a seat no longer
+/// carries it at all.
 fn forwards(update: &SessionUpdate, watched: &[Subject], me: u64) -> bool {
-    ours_to_hear(update, me)
-        && (is_take_news(update) || watched.iter().any(|what| what.covers(update)))
+    ours_to_hear(update, me) && watched.iter().any(|what| what.covers(update))
 }
 
 /// The update as it crosses to a client.
@@ -4234,6 +4232,10 @@ enum Write {
 /// answer. The writer stamps [`Progress`] on each completed flush, so the
 /// watchdog measures the socket, not the read loop.
 struct Writer {
+    /// The control lane: a take's frames, written at the next frame
+    /// boundary whatever bulk is queued.
+    control: mpsc::UnboundedSender<Write>,
+    /// Everything else, in the order it was handed over.
     tx: mpsc::UnboundedSender<Write>,
     /// Why the writer died, or `None` when its queue closed. The read half
     /// polls this beside its own stream, so a dead writer ends the connection
@@ -4251,6 +4253,7 @@ impl Writer {
     where
         S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send + 'static,
     {
+        let (control, mut control_rx) = mpsc::unbounded_channel();
         let (tx, mut rx) = mpsc::unbounded_channel();
         let (done_tx, done) = oneshot::channel();
         let outstanding = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -4258,7 +4261,18 @@ impl Writer {
         let task = tokio::spawn(async move {
             let mut sink = sink;
             let mut failure = None;
-            while let Some(write) = rx.recv().await {
+            // **The control lane is drained first at every frame boundary.**
+            // A write already in the sink runs to its bound; the next one
+            // taken is the oldest control frame if there is one, and bulk
+            // otherwise. Bulk's own queue keeps its order, and nothing is
+            // dropped from either.
+            loop {
+                let write = tokio::select! {
+                    biased;
+                    Some(write) = control_rx.recv() => write,
+                    Some(write) = rx.recv() => write,
+                    else => break,
+                };
                 // **Each entry is its own bounded write.** A frame the sink's
                 // buffer will not take, and a flush a stopped reader never
                 // completes, both end the connection at the bound rather than
@@ -4319,14 +4333,23 @@ impl Writer {
             }
             let _ = done_tx.send(failure);
         });
-        Self { tx, done: Some(done), outstanding, task: Some(task) }
+        Self { control, tx, done: Some(done), outstanding, task: Some(task) }
     }
 
-    /// Queue one write. A queue whose writer is already gone drops it: the
-    /// read half learns why from [`done`](Self::done) at its next poll.
+    /// Queue one bulk write. A queue whose writer is already gone drops it:
+    /// the read half learns why from [`done`](Self::done) at its next poll.
     fn enqueue(&self, write: Write) {
         self.outstanding.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if self.tx.send(write).is_err() {
+            self.outstanding.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Queue one control write: a take's frame, which the writer serves
+    /// ahead of every bulk frame not already mid-write.
+    fn enqueue_control(&self, write: Write) {
+        self.outstanding.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if self.control.send(write).is_err() {
             self.outstanding.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
@@ -4401,6 +4424,12 @@ impl<S> ClientSocket<S> {
     /// write is judged as the base judged it.
     pub(crate) fn write(&self, frame: Message) {
         self.writer.enqueue(Write::Send(frame, None));
+    }
+
+    /// Queue one whole control frame: a take's update, which the writer
+    /// serves at the next frame boundary whatever seat bulk is queued.
+    fn write_control(&self, frame: Message) {
+        self.writer.enqueue_control(Write::Send(frame, None));
     }
 
     /// Queue a keepalive ping and answer its completion when the writer
@@ -4581,6 +4610,20 @@ where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
 {
     send_frame(socket, message).map(|_| ())
+}
+
+/// [`send`] on the control lane: a take's frame, served ahead of seat bulk.
+fn send_control<S>(
+    socket: &mut ClientSocket<S>,
+    message: impl serde::Serialize,
+) -> anyhow::Result<()>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
+    let text = serde_json::to_string(&message)?;
+    let frame = frame_for(socket, &text);
+    socket.write_control(frame);
+    Ok(())
 }
 
 /// Write an already-encoded frame. The settings document is encoded once per
@@ -7485,6 +7528,50 @@ mod tests {
             failure.downcast_ref::<WriteStalled>().is_some(),
             "one whole send is judged on one bound: {failure:?}",
         );
+    }
+
+    /// **A take's frame is next, not last.** A frame already being written
+    /// is not preempted; the control lane's frame is guaranteed to be the
+    /// very next write after it, so it is not queued behind the bulk that
+    /// arrived with it - which is the whole reason the lane exists, and what
+    /// a take's phases wait out today.
+    ///
+    /// The gated sink stands in for the slow peer: the first bulk frame is
+    /// held inside its own write while everything else is queued, which is
+    /// the state a big snapshot leaves a take's start in.
+    #[tokio::test]
+    async fn a_dictate_frame_is_written_at_the_next_frame_boundary_ahead_of_bulk() {
+        let (_from_test, inbound) = mpsc::unbounded_channel();
+        let fed = Arc::new(Mutex::new(Vec::new()));
+        let gate = Gate::default();
+        let (held_tx, held) = oneshot::channel();
+        let writer = Writer::new(
+            Gated { inbound, fed: Arc::clone(&fed), gate: gate.clone(), held: Some(held_tx) },
+            Arc::new(Progress::new()),
+        );
+        let bulk = |n: usize| Message::Text(format!("bulk {n}").into());
+
+        writer.enqueue(Write::Send(bulk(1), None));
+        held.await.expect("the first bulk frame is mid-write");
+
+        writer.enqueue(Write::Send(bulk(2), None));
+        writer.enqueue_control(Write::Send(Message::Text("the take".into()), None));
+        writer.enqueue(Write::Send(bulk(3), None));
+        let (settled_tx, settled) = oneshot::channel();
+        writer.enqueue(Write::Flush(Some(settled_tx)));
+
+        gate.open();
+        settled.await.expect("the queue drained");
+
+        let fed = fed.lock().expect("the frame log");
+        let said: Vec<String> =
+            fed.iter().filter_map(|frame| frame.to_text().ok().map(str::to_owned)).collect();
+        assert_eq!(
+            said,
+            ["bulk 1", "the take", "bulk 2", "bulk 3"],
+            "the take's frame is the write after the one in flight, and bulk keeps its order",
+        );
+        assert_eq!(fed.len(), 4, "and nothing was dropped");
     }
 
     /// **The bound is the writer's, on both halves of a write.** A flush a

@@ -4,7 +4,16 @@ import { joinOfEvents } from '../chat/join';
 import { outcomesFrom, outcomesOf } from '../chat/outcomes';
 import { machineInForce } from '../composer/wire';
 import { startPerfProbe, type PerfRecord } from '../perf';
-import { applyUpdate, HANDLERS, IGNORED, REPLACES } from './apply';
+import type { SessionUpdate } from '../protocol';
+import {
+  applyTake,
+  applyUpdate,
+  applyUpdate as seatUpdate,
+  HANDLERS,
+  IGNORED,
+  REPLACES,
+  TAKE_HANDLERS,
+} from './apply';
 import { sessionFrom, type SessionRecord } from './wire';
 
 /**
@@ -1197,7 +1206,31 @@ describe('applyUpdate', () => {
     });
   });
 
+  /**
+   * **A take frame arriving on the seat's subscription is not news.** The
+   * server writes the family on the connection's `dictate` subject, so one
+   * that reaches the seat's reducer is a repaired duplicate of a number the
+   * client already drew - and redrawing it would replay a phase the take has
+   * left.
+   */
+  it('leaves the record alone for a take frame on the seat subscription', () => {
+    const started = applyTake(empty(), {
+      dictate_started: { key: SLOT, floor_db: -50, generation: 1 },
+    });
+    expect(
+      applyUpdate(started, { dictate_level: { key: SLOT, peak_db: -20, generation: 1 } }),
+      'the seat reducer no longer carries the take',
+    ).toBe(started);
+  });
+
   describe('the composer', () => {
+    // **The take's frames ride the connection's dictate subject.** They are
+    // folded by `applyTake` rather than the seat's `applyUpdate`, so the
+    // cases below run both: the seat's own frames still reach the record, and
+    // a take frame reaches it through the path it really takes.
+    const applyUpdate = (held: SessionRecord, update: SessionUpdate): SessionRecord =>
+      applyTake(seatUpdate(held, update), update);
+
     it('runs a take from its first reading to the notice it leaves', () => {
       const started = applyUpdate(empty(), {
         dictate_started: { key: SLOT, floor_db: -50, generation: 1 },
@@ -1873,7 +1906,11 @@ describe('the variant list', () => {
 
   it('classifies every variant the core can send', () => {
     const unclassified = EVERY_VARIANT.filter(
-      (name) => !(name in HANDLERS) && !REPLACES.includes(name) && !IGNORED.includes(name),
+      (name) =>
+        !(name in HANDLERS) &&
+        !(name in TAKE_HANDLERS) &&
+        !REPLACES.includes(name) &&
+        !IGNORED.includes(name),
     );
 
     expect(
@@ -1886,6 +1923,7 @@ describe('the variant list', () => {
     const twice = EVERY_VARIANT.filter(
       (name) =>
         (name in HANDLERS ? 1 : 0) +
+          (name in TAKE_HANDLERS ? 1 : 0) +
           (REPLACES.includes(name) ? 1 : 0) +
           (IGNORED.includes(name) ? 1 : 0) >
         1,

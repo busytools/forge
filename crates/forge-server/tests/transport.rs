@@ -885,6 +885,282 @@ fn a_prompt_for(org: &str, project: &str, label: &str) -> Command {
     }
 }
 
+/// Dictation rides a subject of its own, one per connection.
+///
+/// A `dictate` subscribe is answered at once with no read state, and the
+/// take's family reaches the connection that started it through that
+/// subscription alone: a seat subscription carries none of it, and a second
+/// connection's dictate subscription hears no other connection's take.
+#[tokio::test]
+async fn a_dictate_subscription_is_answered_empty_and_hears_only_its_own_connections_take() {
+    let (url, fleet) = a_server().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+    let _models = fleet.arm_dictation(&lead_seat()).expect("dictation arms without weights");
+
+    // The take's owner holds the dictate subscription and nothing else, so
+    // every frame it hears is the subject's.
+    let mut owner = connect(&url).await;
+    send(
+        &mut owner,
+        ClientMessage::Subscribe { what: Subject::Dictate, answering: true, review: false },
+    )
+    .await;
+    let (subject, data, _) = snapshot_answering(&mut owner).await;
+    assert_eq!(subject, Subject::Dictate, "the answer names the subject the client asked for");
+    assert!(data.is_null(), "a dictate subscription has no read state: {data}");
+
+    // A connection on the seat alone: the seat must no longer carry a take.
+    let mut seat_only = connect(&url).await;
+    send(
+        &mut seat_only,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut seat_only).await;
+
+    // A second connection on dictate alone: another client's take is not its.
+    let mut other = connect(&url).await;
+    send(
+        &mut other,
+        ClientMessage::Subscribe { what: Subject::Dictate, answering: true, review: false },
+    )
+    .await;
+    let (subject, data, _) = snapshot_answering(&mut other).await;
+    assert_eq!(subject, Subject::Dictate);
+    assert!(data.is_null(), "a dictate subscription has no read state: {data}");
+
+    send(
+        &mut owner,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStream {
+                key: lead_seat(),
+                options: forge_workspace::DictateAxes::default(),
+                surface: None,
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    // The owner hears its own start and meter on the dictate subject.
+    update_until(&mut owner, "the take's start", |update| {
+        matches!(update, SessionUpdate::DictateStarted { .. })
+    })
+    .await;
+    update_until(&mut owner, "the take's meter", |update| {
+        matches!(update, SessionUpdate::DictateLevel { .. })
+    })
+    .await;
+
+    // The seat subscriber's read is ordered by a marker that follows every
+    // take frame emitted above: anything the seat was going to carry would
+    // have been enqueued before it.
+    fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
+    loop {
+        match next_server_within(&mut seat_only, 5_000).await {
+            Some(ServerMessage::Update { update, .. }) => {
+                assert!(
+                    !a_take_update(&update),
+                    "a seat subscription drew a take frame: {update:?}",
+                );
+                if matches!(*update, SessionUpdate::TurnCancelled { .. }) {
+                    break;
+                }
+            }
+            other => panic!("waited for the marker, heard {other:?}"),
+        }
+    }
+
+    // The other dictate subscriber's read is ordered by its own Pong, which
+    // crosses the same writer after everything enqueued before it.
+    send(&mut other, ClientMessage::Ping).await;
+    loop {
+        match next_server_within(&mut other, 5_000).await {
+            Some(ServerMessage::Update { update, .. }) => {
+                assert!(
+                    !a_take_update(&update),
+                    "another connection's take drew on this dictate subscription: {update:?}",
+                );
+            }
+            Some(ServerMessage::Pong) => break,
+            other => panic!("waited for the pong, heard {other:?}"),
+        }
+    }
+}
+
+/// Whether an update is one of a take's own news.
+fn a_take_update(update: &SessionUpdate) -> bool {
+    matches!(
+        update,
+        SessionUpdate::DictateStarted { .. }
+            | SessionUpdate::DictateLevel { .. }
+            | SessionUpdate::DictateTranscribing { .. }
+            | SessionUpdate::DictateProgress { .. }
+            | SessionUpdate::DictateEnded { .. }
+    )
+}
+
+/// The incident as a test: a take's start jumps the seat bulk queued ahead
+/// of it on the same connection.
+///
+/// The connection subscribes a heavy seat - a one-megabyte snapshot - and
+/// then two ten-megabyte seat frames are emitted while the client reads
+/// nothing, so the writer is mid-frame with a small marker frame queued
+/// behind them. The take starts after all of that, and its start is heard
+/// BEFORE the marker that was queued first; the seat's bulk follows. On the
+/// seat's own FIFO the start queued behind every one of those frames, which
+/// is how a remote take's phases landed 15 to 32 seconds late.
+#[tokio::test]
+async fn a_takes_start_overtakes_seat_bulk_queued_ahead_of_it() {
+    let (url, fleet, state) = a_server_with_state().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+    let _models = fleet.arm_dictation(&lead_seat()).expect("dictation arms without weights");
+    // A heavy seat: one assistant row of about a megabyte, which the seat's
+    // snapshot carries.
+    let represented = "x".repeat(1_000_000);
+    let row = format!(
+        r#"{{"type":"assistant","uuid":"a-heavy","message":{{"id":"m-heavy","role":"assistant","model":"claude-opus-5","content":[{{"type":"text","text":"{represented}"}}]}}}}"#
+    );
+    fleet
+        .seed_transcript("TestOrg", "proj", "lead", &[row.as_str()])
+        .expect("the heavy transcript");
+    fleet.hold_conversation(&state, "TestOrg", "proj", "lead").expect("the seat's window is held");
+
+    let mut client = connect(&url).await;
+    // The eager dictate subscription a client takes at open.
+    send(
+        &mut client,
+        ClientMessage::Subscribe { what: Subject::Dictate, answering: true, review: false },
+    )
+    .await;
+    let _ = snapshot_answering(&mut client).await;
+
+    // The heavy seat, read whole, so the connection is watching it.
+    send(
+        &mut client,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let (_, _, _) = snapshot_answering(&mut client).await;
+
+    // Two frames too big for the socket buffers together (8 MiB each way),
+    // then a marker. The client reads nothing, so the writer is still inside
+    // the seat's bulk with the marker queued behind it.
+    let mut heavy = Vec::new();
+    for n in 0..2 {
+        heavy.push(SessionUpdate::ChatAppended {
+            key: lead_seat(),
+            source: None,
+            msg: a_said_frame(&format!("{} {n}", "y".repeat(10_000_000))),
+        });
+    }
+    for update in heavy {
+        fleet.emit(update);
+    }
+    fleet.emit(SessionUpdate::ChatAppended {
+        key: lead_seat(),
+        source: None,
+        msg: a_said_frame("the marker"),
+    });
+    // The batch's own window is 16 ms with a 100 ms ceiling; the marker is
+    // queued on the seat's FIFO well before the take is pressed.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    send(
+        &mut client,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStream {
+                key: lead_seat(),
+                options: forge_workspace::DictateAxes::default(),
+                surface: None,
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    // Read until both are seen: the take's start and the marker that was
+    // queued first. The start must come first.
+    let mut started_at = None;
+    let mut marker_at = None;
+    let mut index = 0usize;
+    while started_at.is_none() || marker_at.is_none() {
+        match next_server_within(&mut client, 10_000).await {
+            Some(ServerMessage::Update { update, .. }) => {
+                if started_at.is_none() && matches!(*update, SessionUpdate::DictateStarted { .. }) {
+                    started_at = Some(index);
+                }
+                if marker_at.is_none()
+                    && matches!(
+                        &*update,
+                        SessionUpdate::ChatAppended { msg, .. }
+                            if says(msg, "the marker")
+                    )
+                {
+                    marker_at = Some(index);
+                }
+                index += 1;
+            }
+            Some(ServerMessage::Settings { .. }) => {}
+            other => panic!("waited for the take's start and the marker, heard {other:?}"),
+        }
+    }
+    assert!(
+        started_at.unwrap_or(usize::MAX) < marker_at.unwrap_or(0),
+        "the take's start queued behind the seat's bulk: start at {started_at:?}, marker at {marker_at:?}",
+    );
+
+    // The rest of the phase runs on the same lane: a metered level, then the
+    // end.
+    let mut frame = vec![forge_server::transport::frame::Kind::Dictation.tag()];
+    for _ in 0..320 {
+        frame.extend_from_slice(&16384i16.to_le_bytes());
+    }
+    client.send(Message::Binary(frame.into())).await.expect("the frame goes");
+    update_until(&mut client, "a metered level", |update| {
+        matches!(update, SessionUpdate::DictateLevel { peak_db, .. } if peak_db.is_finite())
+    })
+    .await;
+    send(
+        &mut client,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStop {
+                key: lead_seat(),
+                submit: true,
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+    update_until(&mut client, "the take's end", |update| {
+        matches!(update, SessionUpdate::DictateEnded { .. })
+    })
+    .await;
+}
+
+/// Whether a message's text is exactly `want`.
+fn says(msg: &forge_primitives::Message, want: &str) -> bool {
+    matches!(
+        msg,
+        forge_primitives::Message::User { message, .. }
+            if message.content.iter().any(|block| matches!(
+                block,
+                forge_primitives::ContentBlock::Text { text, .. } if text == want
+            ))
+    )
+}
+
 /// A take belongs to the connection that started it: that connection hears
 /// its start and its meter, and every other subscriber to the same seat
 /// hears none of them - an in-process take included, whose
@@ -898,11 +1174,7 @@ async fn a_take_is_heard_by_its_own_connection_and_no_other() {
     let mut owner = connect(&url).await;
     send(
         &mut owner,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            review: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Dictate, answering: true, review: false },
     )
     .await;
     let _ = snapshot_answering(&mut owner).await;
@@ -1156,11 +1428,7 @@ async fn a_takes_surface_crosses_the_socket_into_its_end() {
     let mut owner = connect(&url).await;
     send(
         &mut owner,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            review: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Dictate, answering: true, review: false },
     )
     .await;
     let _ = snapshot_answering(&mut owner).await;
@@ -1235,6 +1503,14 @@ async fn a_second_take_on_another_seat_is_refused_for_one_connection() {
         .await;
         let _ = snapshot_answering(&mut owner).await;
     }
+    // The take's family rides its own subject now, so the connection has to
+    // hold one to hear the start it is about to ask for.
+    send(
+        &mut owner,
+        ClientMessage::Subscribe { what: Subject::Dictate, answering: true, review: false },
+    )
+    .await;
+    let _ = snapshot_answering(&mut owner).await;
 
     send(
         &mut owner,
@@ -1307,11 +1583,7 @@ async fn a_second_take_on_another_seat_is_refused_for_one_connection() {
     let mut next = connect(&url).await;
     send(
         &mut next,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            review: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Dictate, answering: true, review: false },
     )
     .await;
     let _ = snapshot_answering(&mut next).await;
@@ -1347,11 +1619,7 @@ async fn a_refused_clients_frames_never_land_in_the_holders_take() {
     let mut holder = connect(&url).await;
     send(
         &mut holder,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            review: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Dictate, answering: true, review: false },
     )
     .await;
     let _ = snapshot_answering(&mut holder).await;
@@ -1378,11 +1646,7 @@ async fn a_refused_clients_frames_never_land_in_the_holders_take() {
     let mut second = connect(&url).await;
     send(
         &mut second,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            review: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Dictate, answering: true, review: false },
     )
     .await;
     let _ = snapshot_answering(&mut second).await;
@@ -1467,11 +1731,7 @@ async fn a_clients_frames_feed_the_take_it_started() {
     let mut socket = connect(&url).await;
     send(
         &mut socket,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            review: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Dictate, answering: true, review: false },
     )
     .await;
     let _ = snapshot_answering(&mut socket).await;
@@ -1583,11 +1843,7 @@ async fn a_dropped_connection_frees_the_seat_for_the_next_take() {
     let mut first = connect(&url).await;
     send(
         &mut first,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            review: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Dictate, answering: true, review: false },
     )
     .await;
     let _ = snapshot_answering(&mut first).await;
@@ -1629,11 +1885,7 @@ async fn a_dropped_connection_frees_the_seat_for_the_next_take() {
     let mut next = connect(&url).await;
     send(
         &mut next,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            review: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Dictate, answering: true, review: false },
     )
     .await;
     let _ = snapshot_answering(&mut next).await;
@@ -1673,11 +1925,7 @@ async fn a_refused_restart_leaves_the_live_take_to_the_disconnect() {
     let mut first = connect(&url).await;
     send(
         &mut first,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            review: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Dictate, answering: true, review: false },
     )
     .await;
     let _ = snapshot_answering(&mut first).await;
@@ -1741,11 +1989,7 @@ async fn a_refused_restart_leaves_the_live_take_to_the_disconnect() {
     let mut next = connect(&url).await;
     send(
         &mut next,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            review: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Dictate, answering: true, review: false },
     )
     .await;
     let _ = snapshot_answering(&mut next).await;
@@ -1779,16 +2023,10 @@ async fn a_take_ending_reaches_its_connection_with_the_seat_unsubscribed() {
     let _models = fleet.arm_dictation(&lead_seat()).expect("dictation arms without weights");
 
     let mut client = connect(&url).await;
-    send(
-        &mut client,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            review: false,
-        },
-    )
-    .await;
-    let _ = snapshot_answering(&mut client).await;
+    for what in [Subject::Session(lead_seat()), Subject::Dictate] {
+        send(&mut client, ClientMessage::Subscribe { what, answering: true, review: false }).await;
+        let _ = snapshot_answering(&mut client).await;
+    }
     send(
         &mut client,
         ClientMessage::Command {
@@ -1895,11 +2133,7 @@ async fn take_after_take_on_one_seat_leaves_it_free_for_the_next_client() {
     let mut client = connect(&url).await;
     send(
         &mut client,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            review: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Dictate, answering: true, review: false },
     )
     .await;
     let _ = snapshot_answering(&mut client).await;
@@ -1990,11 +2224,7 @@ async fn take_after_take_on_one_seat_leaves_it_free_for_the_next_client() {
     let mut next = connect(&url).await;
     send(
         &mut next,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            review: false,
-        },
+        ClientMessage::Subscribe { what: Subject::Dictate, answering: true, review: false },
     )
     .await;
     let _ = snapshot_answering(&mut next).await;
