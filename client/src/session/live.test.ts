@@ -2082,6 +2082,14 @@ function frameOf(update: SessionUpdate, seq: number | null, span = 1): ServerMes
   return { kind: 'update', update, seq, span };
 }
 
+/** One repaired stretch, as the server answers a range ask. */
+function repairOf(
+  seat: SessionSlot,
+  frames: { seq: number; update: SessionUpdate }[],
+): ServerMessage {
+  return { kind: 'seat_frames', slot: seat, epoch: null, frames };
+}
+
 /** The seat taking a new occupant, which is a read rather than a patch. */
 function occupant(sessionId: string): SessionUpdate {
   return {
@@ -4098,6 +4106,34 @@ describe('the read, and the answer a frame has outrun', () => {
     expect(connection.ranges, 'nothing about the take was read as a hole').toEqual([
       { slot: LEAD, epoch: null, from: 1, to: 1 },
     ]);
+
+    // **The seat's run is undisturbed by the take.** A frame after it still
+    // waits behind the same hole asking for nothing new - a take that moved
+    // the seat's counter would show here - and the repair releases the run in
+    // order with the take still standing.
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('after the take', 'u3') } }, 3));
+    paint();
+    expect(connection.ranges, 'the seat frame after the take opened no second ask').toEqual([
+      { slot: LEAD, epoch: null, from: 1, to: 1 },
+    ]);
+
+    page.land(
+      repairOf(LEAD, [
+        {
+          seq: 1,
+          update: { chat_appended: { key: LEAD, msg: spoke('the hole fills', 'u0') } },
+        },
+      ]),
+    );
+    paint();
+    expect(spoken(page), 'the run resumes in order under the live take').toEqual([
+      'the hole fills',
+      'above the hole',
+      'after the take',
+    ]);
+    expect(page.read().wire?.composer.take, 'and the take still stands').toMatchObject({
+      phase: 'recording',
+    });
     page.stop();
   });
 

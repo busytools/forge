@@ -134,7 +134,7 @@ export function skewMessage(skew: Skew): string {
  *
  * `dictate` is the connection's own rather than a seat's: one subscription per
  * client, taken when it opens, carrying the take frames of that connection and
- * no other's. It has no read state - the server answers it with an empty
+ * no other's. It has no read state - the server answers it with a `null`
  * snapshot - so nothing draws it and nothing re-reads it.
  */
 export type Subject =
@@ -173,28 +173,6 @@ const NAMED_SUBJECTS: readonly string[] = [
   'extensions',
   'dictate',
 ];
-
-/** The variants that ride the `dictate` subject: one take's own news. */
-export const TAKE_VARIANTS: readonly string[] = [
-  'dictate_started',
-  'dictate_level',
-  'dictate_transcribing',
-  'dictate_progress',
-  'dictate_ended',
-];
-
-/**
- * Whether an update is one of a take's own frames.
- *
- * The family rides the connection's `dictate` subject rather than a seat's, so
- * the seat's stream must not sequence it: a take's phase applies on arrival
- * and is never held for a seat gap.
- */
-export function isTakeUpdate(update: SessionUpdate): boolean {
-  if (typeof update === 'string') return TAKE_VARIANTS.includes(update);
-  const [name] = Object.keys(update);
-  return name !== undefined && TAKE_VARIANTS.includes(name);
-}
 
 /**
  * The subject a store key names, or `null` for a key this client does not

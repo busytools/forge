@@ -104,21 +104,27 @@ describe('what the shell is told', () => {
    * own retry (`socket.rs`), and a second ask from the page would double the
    * count the server holds for it.
    */
-  it('takes the dictate subscription at open, on the shell', async () => {
-    const connection = await opened();
+  it('takes the dictate subscription at open, and never asks again on a reconnect', async () => {
+    const shell: State = { status: 'open', generation: 1, connection: 1, greeting: null };
+    const connection = await opened(shell);
     expect(invoke).toHaveBeenCalledWith('client_subscribe', {
       what: 'dictate',
       answering: false,
       review: false,
     });
     expect(connection.holds('dictate'), 'the shell carries it').toBe(true);
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
 
-    // A reconnect: the shell re-asks its own held subjects, and the page
-    // neither drops this one nor asks again for it.
+    // **A genuine reconnect**: the generation rises while the page believes
+    // the connection open, which is the branch a page-side re-ask would be
+    // added to. The shell re-asks its own held subjects; the page must not
+    // ask again, or the server's count for the subject doubles.
     invoke.mockClear();
+    const seen: string[] = [];
+    connection.onStatus((status) => seen.push(status));
+    shell.generation = 2;
     fire('client://connection', undefined);
-    connection.showing(slot);
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('client_showing', { seat: slot }));
+    await vi.waitFor(() => expect(seen).toEqual(['connecting', 'open']));
     expect(
       invoke.mock.calls.filter(([command]) => command === 'client_subscribe'),
       'the page asked again for a subject the shell re-asks itself',

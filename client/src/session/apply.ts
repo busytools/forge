@@ -512,10 +512,10 @@ export function applyUpdate(held: SessionRecord, update: SessionUpdate): Session
  * rather than the seat's.
  *
  * **A take belongs to the connection, not to the seat it records for.** Its
- * frames are written ahead of the seat's bulk and applied on arrival, so they
- * never pass through the seat's sequence, and the seat's reducer keeps no arm
- * for them: one arriving on a seat subscription is a repair of numbers the
- * client already drew, not news.
+ * frames carry no seat number and are written ahead of the seat's bulk, and
+ * the seat's reducer keeps no arm for them: on a v34 pairing they never
+ * arrive on a seat subscription, and a frame from an older peer that still
+ * rode the seat is not drawn.
  */
 export const TAKE_HANDLERS: Record<string, Apply> = {
   dictate_started: (held, payload) => {
@@ -608,6 +608,20 @@ export function applyTake(held: SessionRecord, update: SessionUpdate): SessionRe
   if (name === null) return held;
   const handler = TAKE_HANDLERS[name];
   return handler === undefined ? held : handler(held, payload);
+}
+
+/**
+ * Whether an update is one of a take's own frames, read off the reducer's own
+ * table.
+ *
+ * **No second list.** The census binds `TAKE_HANDLERS`'s keys to the enum's
+ * variants, so a variant added there is routed by this in the same edit; a
+ * separate list could miss one, and the frame would fall through to
+ * `applyFrame`, which keeps no arm for it, and be dropped (rule 25).
+ */
+export function isTakeUpdate(update: SessionUpdate): boolean {
+  const [name] = variantOf(update);
+  return name !== null && Object.hasOwn(TAKE_HANDLERS, name);
 }
 
 /** The variant's name and its fields, as the core's own externally tagged enums cross. */
