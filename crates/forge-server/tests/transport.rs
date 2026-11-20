@@ -1161,6 +1161,77 @@ fn says(msg: &forge_primitives::Message, want: &str) -> bool {
     )
 }
 
+/// A take frame never overtakes a seal emitted before it.
+///
+/// A `Connected` waiting out the batch's window must be written before a take
+/// frame that started after it: the page draws a take on arrival, and a seal
+/// landing afterwards wipes the record - and the take with it - from under
+/// the reader.
+#[tokio::test]
+async fn a_take_frame_never_overtakes_the_seal_queued_before_it() {
+    let (url, fleet) = a_server().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+    let _models = fleet.arm_dictation(&lead_seat()).expect("dictation arms without weights");
+
+    let mut client = connect(&url).await;
+    for what in [Subject::Dictate, Subject::Session(lead_seat())] {
+        send(&mut client, ClientMessage::Subscribe { what, answering: true, review: false }).await;
+        let _ = snapshot_answering(&mut client).await;
+    }
+
+    // The seal is emitted first; the pause leaves it inside the batch's 16 ms
+    // quiet window when the take starts.
+    fleet.emit(SessionUpdate::Connected {
+        key: lead_seat(),
+        session_id: SessionId::from("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45"),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: Vec::new(),
+        dropped: 0,
+        compaction_count: 0,
+    });
+    tokio::time::sleep(Duration::from_millis(5)).await;
+
+    send(
+        &mut client,
+        ClientMessage::Command {
+            command: Box::new(Command::DictateStream {
+                key: lead_seat(),
+                options: forge_workspace::DictateAxes::default(),
+                surface: None,
+                initiator: None,
+            }),
+            reply_to: None,
+        },
+    )
+    .await;
+
+    let mut sealed_at = None;
+    let mut started_at = None;
+    let mut index = 0usize;
+    while sealed_at.is_none() || started_at.is_none() {
+        match next_server_within(&mut client, 10_000).await {
+            Some(ServerMessage::Update { update, .. }) => {
+                if sealed_at.is_none() && matches!(*update, SessionUpdate::Connected { .. }) {
+                    sealed_at = Some(index);
+                }
+                if started_at.is_none() && matches!(*update, SessionUpdate::DictateStarted { .. }) {
+                    started_at = Some(index);
+                }
+                index += 1;
+            }
+            Some(ServerMessage::Settings { .. }) => {}
+            other => panic!("waited for the seal and the take's start, heard {other:?}"),
+        }
+    }
+    assert!(
+        sealed_at.unwrap_or(usize::MAX) < started_at.unwrap_or(0),
+        "the take overtook the seal: seal at {sealed_at:?}, start at {started_at:?}",
+    );
+}
+
 /// A take belongs to the connection that started it: that connection hears
 /// its start and its meter, and every other subscriber to the same seat
 /// hears none of them - an in-process take included, whose

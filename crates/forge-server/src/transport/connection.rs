@@ -1679,9 +1679,17 @@ where
                     // skips the batch, so its phase is not held for company,
                     // and the writer serves it at the next frame boundary
                     // ahead of whatever seat bulk is queued.
+                    //
+                    // **A seal rides with it.** A `Connected` or
+                    // `SessionReplaced` waiting out the batch window would
+                    // otherwise be written after a take frame emitted later:
+                    // the client would draw the take and the seal would then
+                    // wipe the record under it. Both on the control lane keeps
+                    // their emission order, and a seal resets the client
+                    // anyway.
                     let fatal = matches!(&*update, SessionUpdate::FatalError { .. });
                     let update = Arc::new(for_a_client(Arc::unwrap_or_clone(update), cap));
-                    if is_dictate(&update) {
+                    if is_dictate(&update) || is_seal(&update) {
                         send_control(
                             socket,
                             ServerMessage::Update {
@@ -3938,6 +3946,16 @@ fn ours_to_hear(update: &SessionUpdate, me: u64) -> bool {
         | SessionUpdate::DictateEnded { initiator, .. } => *initiator == Some(me),
         _ => true,
     }
+}
+
+/// Whether this update replaces a seat's whole record.
+///
+/// The frames a client wipes the seat on. They ride the control lane beside a
+/// take's frames, so a take emitted before a seal is written before it - the
+/// batch's window would otherwise let the take overtake, draw, and be wiped
+/// by the seal that was already queued.
+fn is_seal(update: &SessionUpdate) -> bool {
+    matches!(update, SessionUpdate::Connected { .. } | SessionUpdate::SessionReplaced { .. })
 }
 
 /// Whether this connection forwards one update.
@@ -7534,7 +7552,7 @@ mod tests {
     /// is not preempted; the control lane's frame is guaranteed to be the
     /// very next write after it, so it is not queued behind the bulk that
     /// arrived with it - which is the whole reason the lane exists, and what
-    /// a take's phases wait out today.
+    /// a take's phases waited out before it.
     ///
     /// The gated sink stands in for the slow peer: the first bulk frame is
     /// held inside its own write while everything else is queued, which is
