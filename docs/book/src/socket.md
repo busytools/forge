@@ -126,7 +126,7 @@ for anything:
 ```json
 {
   "kind": "greeting",
-  "version": 33,
+  "version": 34,
   "forge_version": "1.1.25 · abc1234",
   "forge_version_short": "1.1.25+abc1234",
   "settings": {
@@ -367,9 +367,9 @@ settings card's `enrol`, which needs the vault open.
 
 ## Subjects
 
-Everything a client reads is addressed by a subject, and there are six:
-`home`, `board`, `session <org>/<project>/<label>`, `usage`, `dictate_models`
-and `extensions`.
+Everything a client reads is addressed by a subject, and there are seven:
+`home`, `board`, `session <org>/<project>/<label>`, `usage`, `dictate_models`,
+`extensions` and `dictate`.
 
 A seat nobody has started is an answer rather than a silence. Subscribing
 to one that is not there comes back as an `error` saying so, so a client
@@ -1097,12 +1097,14 @@ of prose on either side.
   reader joins. `seq` is the number the frame's OLDEST update was minted
   under and `span` how many of the seat's numbers it stands for - 1 for a
   frame that is one update, and n for a run of token appends the batch folded
-  into the one frame they draw as. `seq` is absent from a frame belonging to
-  no seat, and `span` is 0 only on the turn the batch forges from a
-  delivery-failure notice - a frame with no number - and 1 everywhere else.
-  Both are absent from a server older than the fields, which leaves a client
-  with the frames alone.
-  `seq` alone is absent from a seat's frame the server answers out of band
+  into the one frame they draw as. `seq` is `null` for a frame belonging to
+  no seat and for a take's frame - the `Dictate*` family rides the
+  connection's `dictate` subject and is never numbered on the seat it names -
+  and `span` is 0 only on the turn the batch forges from a delivery-failure
+  notice, a frame with no number, and 1 everywhere else. Both fields are
+  missing from a server older than them, which leaves a client with the
+  frames alone.
+  `seq` alone is `null` on a seat's frame the server answers out of band
   rather than emitting into the stream: the `read_call_output` answer carries
   its seat, `seq: null` and `span: 1`, because it stands nowhere in the
   sequence.
@@ -1420,6 +1422,25 @@ ending rides; the client's chat makes its own calls over the same
 frames - its own unit fold, its own lifecycle carving, its own status
 aggregation. The drawing is the client's, and the client's answer is the
 one on screen.
+
+**`dictate`** is one connection's dictation, and it is the one subject that
+belongs to the connection rather than to a seat: a client takes it when the
+socket opens and re-takes it after a reconnect, and every take that
+connection starts rides it. It has no read state - the snapshot answer
+carries `null` - and it hears the `Dictate*` family and nothing else:
+`dictate_started`, `dictate_level`, `dictate_transcribing`,
+`dictate_progress` and `dictate_ended`.
+
+The family used to ride the seat's subscription and no longer does (protocol
+34): a take's frames are written ahead of the seat's bulk, so a heavy seat's
+snapshot or a run of seat frames cannot hold a take's meter or its end behind
+them. **A take never overtakes a seal**: a `Spawning`, `Connected` or
+`SessionReplaced` keeps its order with the frames it followed, and a take
+that starts behind one waits for that write rather than jumping it. `key` on each frame is still
+the seat the take records for - its landed words are that seat's conversation
+- and `initiator` still gates it, so a second client subscribed to `dictate`
+never hears another connection's take. The seat's own sequence numbers are
+not involved: a take frame applies on arrival rather than in a seat's stream.
 
 ## What is not here
 

@@ -93,6 +93,45 @@ afterEach(() => {
 });
 
 describe('what the shell is told', () => {
+  /**
+   * **The shell takes the connection's dictate subscription when it opens.**
+   * A take's frames ride a subject of its own, and a client that never
+   * subscribes it draws no take at all - the desktop and Android builds reach
+   * the shell only through this ask, so deleting it leaves two of the three
+   * shipped clients blind with a green suite.
+   *
+   * **The page asks once.** A string subject is the shell's to re-ask on its
+   * own retry (`socket.rs`), and a second ask from the page would double the
+   * count the server holds for it.
+   */
+  it('takes the dictate subscription at open, and never asks again on a reconnect', async () => {
+    const shell: State = { status: 'open', generation: 1, connection: 1, greeting: null };
+    const connection = await opened(shell);
+    expect(invoke).toHaveBeenCalledWith('client_subscribe', {
+      what: 'dictate',
+      answering: false,
+      review: false,
+    });
+    expect(connection.holds('dictate'), 'the shell carries it').toBe(true);
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+
+    // **A genuine reconnect**: the generation rises while the page believes
+    // the connection open, which is the branch a page-side re-ask would be
+    // added to. The shell re-asks its own held subjects; the page must not
+    // ask again, or the server's count for the subject doubles.
+    invoke.mockClear();
+    const seen: string[] = [];
+    connection.onStatus((status) => seen.push(status));
+    shell.generation = 2;
+    fire('client://connection', undefined);
+    await vi.waitFor(() => expect(seen).toEqual(['connecting', 'open']));
+    expect(
+      invoke.mock.calls.filter(([command]) => command === 'client_subscribe'),
+      'the page asked again for a subject the shell re-asks itself',
+    ).toEqual([]);
+    expect(connection.holds('dictate'), 'a reconnect keeps it held').toBe(true);
+  });
+
   it('a subscribe, an unsubscribe and a refresh each cross as their own command', async () => {
     const connection = await opened();
     connection.subscribe(subject, { answering: true, review: true });

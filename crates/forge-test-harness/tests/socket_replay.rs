@@ -295,7 +295,7 @@ census!(OutdatedReasonWire,
 
 census!(Subject,
     [Home struct, Board struct, Session tuple, Usage struct, DictateModels struct,
-     Extensions struct],
+     Extensions struct, Dictate struct],
     subject_census, SUBJECT_VARIANTS);
 
 census!(SessionUpdate,
@@ -980,6 +980,7 @@ fn frames_record() -> Value {
         Subject::Session(seat.clone()),
         Subject::DictateModels,
         Subject::Extensions,
+        Subject::Dictate,
     ];
     for subject in &subjects {
         let encoded = serde_json::to_value(subject).expect("a subject encodes");

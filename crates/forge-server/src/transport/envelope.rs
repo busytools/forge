@@ -56,6 +56,22 @@ pub enum Subject {
     /// family: an action's outcome, a run's progress, and the refreshed
     /// inventory are all news about what this subscription is showing.
     Extensions,
+    /// One client's dictation: the take frames of the connection that
+    /// subscribed, and nothing else.
+    ///
+    /// **One subscription per client, not per seat.** Every seat a client
+    /// visits keeps its own subscription, and every one of them grows; the
+    /// dictate subscription does not, because a take belongs to the
+    /// connection rather than to the seat it records for. It carries no read
+    /// state - a subscribe is answered with a `null` snapshot - and hears
+    /// only the `Dictate*` family, still gated on the take's initiator so a
+    /// second client cannot hear a take it did not start.
+    ///
+    /// It exists so a take's phases do not queue behind a seat's bulk: the
+    /// connection's writer serves this subject's frames ahead of seat frames,
+    /// so a `dictate_started` does not wait out a seat snapshot in front of
+    /// it.
+    Dictate,
 }
 
 impl Subject {
@@ -105,7 +121,15 @@ impl Subject {
                     || matches!(update, SessionUpdate::TasksChanged { .. })
                     || seat_liveness(update)
             }
-            Self::Session(seat) => update.slot() == Some(seat),
+            // **A take is not the seat's.** The `Dictate*` family names the
+            // seat it records for, so the slot test alone would keep carrying
+            // it here; it belongs to the connection's dictate subscription,
+            // where the take can be served ahead of the seat's bulk.
+            Self::Session(seat) => update.slot() == Some(seat) && !is_dictate(update),
+            // The whole `Dictate*` family, gated on its initiator by the
+            // connection's own routing: another client's take is not this
+            // subscription's.
+            Self::Dictate => is_dictate(update),
             // Nothing carries the pool: its snapshot is a scan, and a
             // transcript's tokens moving is not an update any variant
             // announces.
@@ -137,6 +161,36 @@ impl Subject {
             ),
         }
     }
+}
+
+/// Whether an update is one of a take's own news.
+///
+/// The family that rides [`Subject::Dictate`]: a take's start, its meter,
+/// its phases and the end that settles it. The seat a take records for hears
+/// none of them.
+pub fn is_dictate(update: &SessionUpdate) -> bool {
+    update.is_take()
+}
+
+/// Whether this update replaces a seat's whole record: the frames a client
+/// wipes the seat on.
+///
+/// **The set is the client's own** (`REPLACES` in
+/// `client/src/session/apply.ts` - spawning, connected, session_replaced), so
+/// a take cannot be drawn before any of them and then wiped by it.
+///
+/// **A seal keeps its emission order with the seat's bulk.** Written ahead of
+/// frames already queued, the old run's frames would arrive after the wipe
+/// and read as a hole in the new run. The connection asks this to write a
+/// seal onto the bulk queue as soon as it lands - after the frames already
+/// held - and to hold a take's frame back while that write is still owed.
+pub fn is_seal(update: &SessionUpdate) -> bool {
+    matches!(
+        update,
+        SessionUpdate::Spawning { .. }
+            | SessionUpdate::Connected { .. }
+            | SessionUpdate::SessionReplaced { .. }
+    )
 }
 
 /// The updates whose whole effect is the board's own snapshot.
@@ -536,13 +590,17 @@ pub enum ServerMessage {
     Update {
         update: Box<SessionUpdate>,
         /// The number the frame's oldest update was minted under, `None` for
-        /// a frame belonging to no seat.
+        /// a frame belonging to no seat and for a take's frame.
         ///
         /// **A client reads the numbers to see what it missed.** Every frame
         /// the workspace emits for a seat is numbered on that seat's counter,
         /// so a client that reads 5 and then 7 knows exactly one frame went
         /// missing and asks the seat for it (`seat_range`); the snapshot's
         /// `header.seq` says where a fresh reader joins.
+        ///
+        /// **A take names a seat and is still `None`.** The `Dictate*` family
+        /// rides the connection's `dictate` subject rather than the seat's,
+        /// so it is never numbered and never enters the seat's ring.
         seq: Option<u64>,
         /// How many of the seat's numbers this frame stands for: 1 for a
         /// frame that is one update, and n for a run the batch folded into
@@ -1805,5 +1863,134 @@ mod tests {
             "and the door that sent it is named",
         );
         assert_eq!(answer.client, None, "a client cannot know its own connection");
+    }
+
+    /// **A take belongs to the dictate subject and to no seat**, whatever seat
+    /// it records for. This is the classification the connection filters on,
+    /// and the seat's own `slot` match is exactly what would otherwise carry
+    /// the family there: a `covers` that only compared slots would hand every
+    /// take frame to the seat subscription.
+    ///
+    /// **Every variant, not the first one.** The family is one list in
+    /// `SessionUpdate::take_initiator`, and a variant missing from it would
+    /// ride the seat, where the client's reducer keeps no arm and drops it.
+    #[test]
+    fn a_take_belongs_to_the_dictate_subject_and_no_seat() {
+        let seat = SessionSlot::for_label("TestOrg", "proj", Some("lead"));
+        let updates = [
+            SessionUpdate::DictateStarted {
+                key: seat.clone(),
+                floor_db: -50.0,
+                generation: 1,
+                initiator: None,
+            },
+            SessionUpdate::DictateLevel {
+                key: seat.clone(),
+                peak_db: -20.0,
+                generation: 1,
+                initiator: None,
+            },
+            SessionUpdate::DictateTranscribing {
+                key: seat.clone(),
+                generation: 1,
+                initiator: None,
+            },
+            SessionUpdate::DictateProgress {
+                key: seat.clone(),
+                generation: 1,
+                done: 0,
+                total: None,
+                initiator: None,
+            },
+            SessionUpdate::DictateEnded {
+                key: seat.clone(),
+                outcome: crate::surface::DictateOutcome::Empty,
+                generation: 1,
+                surface: None,
+                initiator: None,
+            },
+        ];
+
+        for update in &updates {
+            assert!(
+                !Subject::Session(seat.clone()).covers(update),
+                "the seat a take records for must not carry {update:?}",
+            );
+            assert!(Subject::Dictate.covers(update), "the dictate subject carries {update:?}");
+            assert!(is_dictate(update), "and the routing classification names {update:?}");
+        }
+    }
+
+    /// **The seal set is exactly the three record replacers.**
+    /// `client/src/session/apply.ts` names the same three in `REPLACES`, and
+    /// a frame outside it must never make a take wait: the client draws a
+    /// take on arrival, so only a frame that wipes the record can justify
+    /// holding one back.
+    #[test]
+    fn a_seal_is_exactly_the_three_record_replacers() {
+        let seat = SessionSlot::for_label("TestOrg", "proj", Some("lead"));
+        let model = forge_primitives::runtime::CurrentModel {
+            requested_id: None,
+            resolved_id: "claude-opus-5".to_owned(),
+            display_name_short: "Opus".to_owned(),
+            display_name_long: "Opus 5".to_owned(),
+            catalog_id: None,
+            supports_effort: false,
+            supported_effort_levels: Vec::new(),
+            supports_auto_mode: None,
+            supports_adaptive_thinking: None,
+            is_authoritative: true,
+        };
+        let seals = [
+            SessionUpdate::Spawning {
+                key: seat.clone(),
+                project_name: "proj".to_owned(),
+                cwd: "/tmp".to_owned(),
+                display_name: "lead".to_owned(),
+            },
+            SessionUpdate::Connected {
+                key: seat.clone(),
+                session_id: forge_primitives::SessionId::from(
+                    "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+                ),
+                cwd: "/tmp".to_owned(),
+                current_model: model.clone(),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                dropped: 0,
+                compaction_count: 0,
+            },
+            SessionUpdate::SessionReplaced {
+                key: seat.clone(),
+                session_id: forge_primitives::SessionId::from(
+                    "6c2d3e4f-5a60-4b71-c829-0d1e2f3a4b5c",
+                ),
+                cwd: "/tmp".to_owned(),
+                current_model: model,
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                dropped: 0,
+                compaction_count: 0,
+            },
+        ];
+        for seal in &seals {
+            assert!(is_seal(seal), "a record replacer must seal: {seal:?}");
+        }
+
+        assert!(
+            !is_seal(&SessionUpdate::TurnCancelled { key: seat.clone() }),
+            "an ordinary frame must not make a take wait",
+        );
+        assert!(
+            !is_seal(&SessionUpdate::DictateStarted {
+                key: seat,
+                floor_db: -50.0,
+                generation: 1,
+                initiator: None,
+            }),
+            "nor may a take seal another take",
+        );
     }
 }

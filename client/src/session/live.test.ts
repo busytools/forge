@@ -393,6 +393,19 @@ function seatSubscribe(): Subscribe | undefined {
   );
 }
 
+/**
+ * The newest subscribe of the seat's own subject.
+ *
+ * By subject rather than by position in the received list: the connection
+ * takes its `dictate` subscription when it opens, so a seat's first ask is no
+ * longer the first message the server received.
+ */
+function lastSeatSubscribe(): Subscribe | undefined {
+  return server?.received
+    .filter((message) => message.kind === 'subscribe' && typeof message.what === 'object')
+    .at(-1);
+}
+
 /** How many times the client subscribed the seat, which is the count a journey is read by. */
 function seatSubscribes(): number {
   return (
@@ -1645,7 +1658,7 @@ describe('the session page over a socket', () => {
 
     expect(seatSubscribes(), 'the second visit did not re-ask under the stronger role').toBe(2);
     expect(
-      server?.received[1]?.answering,
+      lastSeatSubscribe()?.answering,
       'the escalation did not declare the answering role',
     ).toBe(true);
     // The leave kept the subscription, so the second subscribe is the
@@ -2067,6 +2080,14 @@ function updateOf(update: SessionUpdate): ServerMessage {
  * it, and how many of the seat's numbers it stands for. */
 function frameOf(update: SessionUpdate, seq: number | null, span = 1): ServerMessage {
   return { kind: 'update', update, seq, span };
+}
+
+/** One repaired stretch, as the server answers a range ask. */
+function repairOf(
+  seat: SessionSlot,
+  frames: { seq: number; update: SessionUpdate }[],
+): ServerMessage {
+  return { kind: 'seat_frames', slot: seat, epoch: null, frames };
 }
 
 /** The seat taking a new occupant, which is a read rather than a patch. */
@@ -4059,6 +4080,61 @@ describe('the read, and the answer a frame has outrun', () => {
     expect(other.read().wire?.work.branch, 'the control took the record').toBe('new');
     expect(other.reads(), 'a clean answer was asked for again').toBe(askedOnce);
     expect(control.ranges, 'a clean answer asked for numbers it carried').toHaveLength(0);
+  });
+
+  /**
+   * **A take's frame draws on arrival while the seat's stream is at a gap.**
+   * The family rides the connection's `dictate` subject and carries no seat
+   * number - the server leaves it unnumbered - so it arrives between seat
+   * frames that are still held for a hole, and it must draw anyway: held for
+   * the gap it would wait out exactly the delay the subject exists to remove.
+   */
+  it('draws a take frame on arrival while the seat stream holds a gap', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD));
+    // A seat frame above the stream's next number opens a hole and waits.
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('above the hole') } }, 2));
+    paint();
+    expect(spoken(page), 'precondition: the seat frame is held').not.toContain('above the hole');
+
+    page.land(updateOf({ dictate_started: { key: LEAD, floor_db: -50, generation: 1 } }));
+    paint();
+    expect(page.read().wire?.composer.take, 'the take drew despite the gap').toMatchObject({
+      phase: 'recording',
+    });
+    expect(connection.ranges, 'nothing about the take was read as a hole').toEqual([
+      { slot: LEAD, epoch: null, from: 1, to: 1 },
+    ]);
+
+    // **The seat's run is undisturbed by the take.** A frame after it still
+    // waits behind the same hole asking for nothing new - a take that moved
+    // the seat's counter would show here - and the repair releases the run in
+    // order with the take still standing.
+    page.land(frameOf({ chat_appended: { key: LEAD, msg: spoke('after the take', 'u3') } }, 3));
+    paint();
+    expect(connection.ranges, 'the seat frame after the take opened no second ask').toEqual([
+      { slot: LEAD, epoch: null, from: 1, to: 1 },
+    ]);
+
+    page.land(
+      repairOf(LEAD, [
+        {
+          seq: 1,
+          update: { chat_appended: { key: LEAD, msg: spoke('the hole fills', 'u0') } },
+        },
+      ]),
+    );
+    paint();
+    expect(spoken(page), 'the run resumes in order under the live take').toEqual([
+      'the hole fills',
+      'above the hole',
+      'after the take',
+    ]);
+    expect(page.read().wire?.composer.take, 'and the take still stands').toMatchObject({
+      phase: 'recording',
+    });
+    page.stop();
   });
 
   it('does not read a take off the record, and does read the notice', () => {

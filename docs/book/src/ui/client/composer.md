@@ -17,7 +17,7 @@ card shows is a bundled default; every list it opens is a live read.
 | Live row | the running turn's figures (mark, clock, thinking, tokens, cached, written, cost) and the seat's segment chips, one line, never wrapping; the ask that waits, and the reader's draft chip | the seat's record, the board's project row, and the segment stores |
 | Body | exactly one of: the field (with its notice above), an ask's dock, a take's card, a blocked line | the host's composer store, `pending_asks`, the dictate subject |
 | Menu | one popover above the card: the five lists below | the CLI's advertised commands, this seat's file index, the subagent catalogue, the bundle's emoji set, the sessions this seat can resume |
-| Dialog | the dictation panel: the axes, the models each role runs, the input device | the greeting's dictate axes; `dictate` subject |
+| Dialog | the dictation panel: the axes, the models each role runs, the input device | the greeting's dictate axes; `dictate_models` subject |
 
 **The live row is the strip, moved onto the card.** It mounts the same segment components the
 strip drew - browser, terminal, subagents, processes, connectors, schedules, MCPs, files, git,

@@ -16,7 +16,8 @@ use crate::protocol::SessionUpdate;
 /// emits for a seat is numbered on that seat's counter - whichever site
 /// emitted it - so a client that reads 5 and then 7 knows exactly one frame
 /// went missing and can ask for it. `seq` is `None` for a frame belonging to
-/// no seat, which rides the stream without joining any sequence.
+/// no seat, and for a take's frames: those ride the connection's `dictate`
+/// subject, never a seat subscription, so neither carries a seat number.
 #[derive(Clone, Debug)]
 pub struct SeatUpdate {
     pub seq: Option<u64>,
@@ -207,7 +208,7 @@ impl Default for Shared {
 
 impl Shared {
     /// Number `update` on its seat's counter, or leave it unnumbered when it
-    /// belongs to no seat.
+    /// belongs to no seat or is one of a take's own frames.
     ///
     /// **An occupant change closes its epoch.** `Connected` and
     /// `SessionReplaced` are numbered on the run they end and the seat's
@@ -221,6 +222,15 @@ impl Shared {
     /// out of that guard - or fanning out around it - reorders a seat's stream
     /// against its own numbers.
     fn numbered(&mut self, update: SessionUpdate, charge: usize) -> SeatUpdate {
+        // **A take's frame rides unnumbered**, like a slotless one: the
+        // family is delivered on the connection's `dictate` subject and never
+        // on a seat subscription, so a number would leave a hole in the
+        // seat's stream that no frame fills, and the frame would be kept in
+        // the seat's ring for a repair to hand to a connection that did not
+        // start the take. [`SessionUpdate::is_take`] is the one list.
+        if update.is_take() {
+            return SeatUpdate { seq: None, update: Arc::new(update) };
+        }
         let Some(slot) = update.slot().cloned() else {
             return SeatUpdate { seq: None, update: Arc::new(update) };
         };
@@ -464,8 +474,11 @@ impl UpdateFanout {
         // frame's charge is its JSON, and paying that inside the fan-out's
         // guard would serialize every seat's stream behind it; an epoch frame
         // is never ringed, and its history makes that the one serialisation
-        // worth skipping.
-        let charge = if ringed(&update) { frame_bytes(&update) } else { 0 };
+        // worth skipping. **A take is never ringed either** - `numbered`
+        // returns it unnumbered and drops the charge - and the meter emits at
+        // 20 Hz, so weighing one would be a serialisation on the hot path for
+        // nothing.
+        let charge = if ringed(&update) && !update.is_take() { frame_bytes(&update) } else { 0 };
         let mut shared = self.shared.lock();
         let update = shared.numbered(update, charge);
         let Some(tail) = shared.subscribers.pop() else {
@@ -788,6 +801,42 @@ mod tests {
             next_seq(&mut rx, "seat"),
             Some(1),
             "and it does not advance any seat's counter",
+        );
+    }
+
+    /// **A take's frame rides unnumbered too.** It is delivered on the
+    /// connection's `dictate` subject, never on a seat subscription, so a seat
+    /// number would be one no subscriber of that seat ever receives - a hole
+    /// the client asks to repair - and the frame would sit in the seat's ring,
+    /// where a repair could hand it to a connection that did not start the
+    /// take.
+    #[test]
+    fn a_take_frame_rides_unnumbered() {
+        let fanout = UpdateFanout::default();
+        let mut rx = fanout.subscribe(SubscriberRole::Answering);
+        let seat = seat("lead");
+
+        assert!(
+            fanout.send(SessionUpdate::DictateStarted {
+                key: seat.clone(),
+                floor_db: -50.0,
+                generation: 1,
+                initiator: Some(7),
+            }),
+            "a subscribed fan-out delivers",
+        );
+        assert_eq!(next_seq(&mut rx, "take"), None, "a take's frame carries no seat number");
+        assert_eq!(
+            fanout.shared.lock().oldest_kept(&seat),
+            None,
+            "nor is the take in the seat's ring for a repair to hand on",
+        );
+
+        assert!(fanout.send(a_turn_ends(&seat)), "a subscribed fan-out delivers");
+        assert_eq!(
+            next_seq(&mut rx, "seat"),
+            Some(1),
+            "and the take did not consume the seat's first number",
         );
     }
 

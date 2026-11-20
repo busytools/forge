@@ -67,6 +67,8 @@ async function stubServer() {
 
   /** Everything the client has sent, in order. */
   const received: ClientMessage[] = [];
+  /** How many times the page took its own dictate subscription. */
+  let dictateSubscribes = 0;
   /** Every binary frame the client sent, in order - the dictation's audio. */
   const binary: Buffer[] = [];
   /** Both kinds in ONE log, in arrival order. */
@@ -81,6 +83,17 @@ async function stubServer() {
         return;
       }
       const message = JSON.parse(frame(data)) as ClientMessage;
+      // **The page's automatic dictate subscription is answered here, and
+      // kept out of the logs.** The connection takes it when the socket
+      // opens, ahead of whatever a case subscribes; every case below counts
+      // the messages ITS asks produce, so mixing this one in would move every
+      // count by one. Its own behaviour is pinned by its own case, which
+      // reads `dictateSubscribes`.
+      if (message.kind === 'subscribe' && message.what === 'dictate') {
+        dictateSubscribes += 1;
+        socket.send(JSON.stringify({ kind: 'snapshot', subject: 'dictate', data: null }));
+        return;
+      }
       received.push(message);
       arrivals.push({ kind: 'json', message });
     });
@@ -92,6 +105,7 @@ async function stubServer() {
     binary,
     arrivals,
     dials,
+    dictateSubscribes: () => dictateSubscribes,
     /** Say something to every client attached. */
     send(message: ServerMessage) {
       for (const socket of sockets) socket.send(JSON.stringify(message));
@@ -269,6 +283,14 @@ async function connected() {
   const conn = connect(server.url);
   opened.push(conn);
   await untilStatus(conn, 'open', 'the socket to open');
+  // **The connection's own dictate answer is read before the case starts.**
+  // It is taken at open, and a snapshot still in flight would land as a
+  // second frame inside every listener the case registers - moving each
+  // count this file reads by one.
+  await until(
+    () => conn.store('dictate')?.state().kind === 'ready',
+    'the dictate subscription to be answered',
+  );
   return { server, conn };
 }
 
@@ -1215,6 +1237,24 @@ describe('the connection', () => {
       () =>
         JSON.stringify(conn.store(HOME)?.snapshot()) === JSON.stringify({ projects: ['a', 'b'] }),
       'the fresh snapshot',
+    );
+  });
+
+  /**
+   * **The dictate subscription is taken when the socket opens, and again
+   * after a drop.** The server emits `dictate_started` the moment a take
+   * begins, so a subscription racing the first press would miss the frame and
+   * the take's row would never draw; one subscription per connection is free,
+   * and the reconnect's own re-ask list is what re-takes it.
+   */
+  it('takes its dictate subscription at open and again after a drop', async () => {
+    const { server, conn } = await connected();
+    await until(() => server.dictateSubscribes() === 1, 'the dictate subscription at open');
+
+    server.drop();
+    await until(() => server.dictateSubscribes() === 2, 'the dictate subscription re-taken');
+    expect(conn.store('dictate')?.state().kind, 'and it holds a store like any subject').toBe(
+      'ready',
     );
   });
 

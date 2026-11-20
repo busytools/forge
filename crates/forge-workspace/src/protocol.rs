@@ -2192,6 +2192,14 @@ pub enum SessionUpdate {
     /// goes to that connection alone, so no other subscriber draws its
     /// meter, its phases or its words. `None` is this process's own
     /// take.
+    ///
+    /// **The family rides the connection's `dictate` subject, not `key`'s
+    /// seat.** `key` names the seat the take records for - its landed words
+    /// are that seat's conversation - but the frames cross on one
+    /// subscription per client, taken when it opens, and the connection's
+    /// writer serves them ahead of the seat's bulk. A seat subscription does
+    /// not carry them, and its sequence numbers are not involved: the take
+    /// applies on arrival.
     DictateStarted {
         key: SessionSlot,
         floor_db: f32,
@@ -2482,6 +2490,41 @@ impl SessionUpdate {
             | Self::VaultRotated { .. }
             | Self::VaultLockChanged { .. } => None,
         }
+    }
+
+    /// The initiator a take's frame is gated on, or `None` for any other
+    /// update.
+    ///
+    /// **The family is named once, here.** Every `Dictate*` variant rides the
+    /// connection's `dictate` subject rather than a seat's, and every reader
+    /// that has to tell them apart asks this: the routing classification
+    /// (`is_take`), the fanout's numbering, and the per-connection gate that
+    /// keeps one client's take off another's connection. A variant added to
+    /// the family is therefore routed, numbered and gated by one edit. The
+    /// one remaining spelling is [`Self::slot`], which must name every
+    /// slot-bearing variant whether or not it is a take.
+    ///
+    /// `Some(None)` is an in-process take, which belongs to no connection.
+    pub fn take_initiator(&self) -> Option<Option<u64>> {
+        match self {
+            Self::DictateStarted { initiator, .. }
+            | Self::DictateLevel { initiator, .. }
+            | Self::DictateTranscribing { initiator, .. }
+            | Self::DictateProgress { initiator, .. }
+            | Self::DictateEnded { initiator, .. } => Some(*initiator),
+            _ => None,
+        }
+    }
+
+    /// Whether this update is one of a take's own news.
+    ///
+    /// **A take is never numbered on its seat's counter.** A number would be
+    /// one no seat subscription ever delivers, leaving a hole the client
+    /// asks to repair; and the frame would enter the seat's ring, where a
+    /// `seat_range` answer could hand it to a connection that did not start
+    /// the take.
+    pub fn is_take(&self) -> bool {
+        self.take_initiator().is_some()
     }
 }
 
@@ -3177,10 +3220,11 @@ mod session_update_variants {
 
     /// The names the client's classifying tables hold.
     ///
-    /// The handler table's keys, and the quoted entries of the two lists. An
-    /// export of anything else is skipped rather than read: a table of the
-    /// record's FIELD names would answer a variant check with names the enum
-    /// never declares.
+    /// The two handler tables' keys - the seat's and the take's, which rides
+    /// its own subject - and the quoted entries of the two lists. An export of
+    /// anything else is skipped rather than read: a table of the record's
+    /// FIELD names would answer a variant check with names the enum never
+    /// declares.
     fn classified_names(client: &str) -> Vec<String> {
         let mut names = Vec::new();
         let mut table = "";
@@ -3188,7 +3232,9 @@ mod session_update_variants {
         let mut open = false;
         for line in client.lines() {
             let trimmed = line.trim();
-            if trimmed.starts_with("export const HANDLERS") {
+            if trimmed.starts_with("export const HANDLERS")
+                || trimmed.starts_with("export const TAKE_HANDLERS")
+            {
                 table = "handlers";
                 open = false;
                 continue;
@@ -3199,6 +3245,14 @@ mod session_update_variants {
                 table = "list";
                 open = false;
             } else if trimmed.starts_with("export const") {
+                table = "";
+                open = false;
+                continue;
+            }
+            // **A table ends at its closing brace.** What follows a handler
+            // table is ordinary code, and a function's parameter list written
+            // one field per line sits at the same two spaces a key does.
+            if line.starts_with("};") {
                 table = "";
                 open = false;
                 continue;

@@ -1090,6 +1090,18 @@ inspected.
     judging the web layout alone. **The list moves in the same change that
     adds or removes a client**: a stale list is how a new client ships
     unconsidered.
+31. **No backward-compatibility machinery; a skew warns, then continues.**
+    Ved, 2026-11-20: forge maintains no backward compatibility. A wire change
+    replaces the old shape and bumps `PROTOCOL_VERSION`; it does not
+    dual-send, version-gate a branch, or carry a shim. A client and server a
+    version or two apart are expected to keep working where the wire
+    tolerates it - missing fields default, unknown fields are ignored, and
+    the skew is drawn as a warning on the home and the seat - and to fail
+    loudly at the point an actual type or shape differs: the client errors,
+    and the server refuses the frame it cannot read, so Ved can restart
+    whichever half is older. Passive tolerance in decoding is the design, not
+    compatibility code. An explicit version-gated behaviour found in the tree
+    is reported to Ved for approval, never removed unilaterally.
 
 ## Claude Code worktree interop
 

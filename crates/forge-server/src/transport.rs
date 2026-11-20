@@ -321,10 +321,19 @@ pub mod wire;
 /// the halves should not ship apart. `baselines/socket/33/` is the record a
 /// v33 server emitted.
 ///
+/// **v34 moves a take onto its own subject.** The `Dictate*` family - a
+/// take's start, its meter, its phases and the end that settles it - no
+/// longer rides a seat's subscription: it rides the connection's own
+/// `dictate` subject, one per client, answered with an empty snapshot and
+/// written ahead of the seat's bulk. A v33 client subscribes no such subject
+/// and draws no take at all, and a v34 server stops sending the family on the
+/// seat, so the two halves move together. The frames themselves are
+/// unchanged. `baselines/socket/34/` is the record a v34 server emitted.
+///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 33;
+pub const PROTOCOL_VERSION: u32 = 34;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, how long it may stay silent before it is reaped, and how long

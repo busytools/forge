@@ -39,7 +39,7 @@ import { slotOf, subjectKey, type SessionUpdate, type Subject } from '../protoco
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import type { SessionSlot } from '../wire/types';
-import { applyUpdate, REPLACES, variantOf } from './apply';
+import { applyTake, applyUpdate, isTakeUpdate, REPLACES, variantOf } from './apply';
 import { markReturn } from './returns';
 import { cover as coverRanges, filled as fillRanges, type Range } from './stream';
 import { sessionFrom, type SessionRecord } from './wire';
@@ -1207,6 +1207,23 @@ function createSeat(
   }
 
   /**
+   * One take frame, applied where it lands.
+   *
+   * **Not through the seat's sequence.** The family rides the connection's
+   * `dictate` subject, which the server writes ahead of a seat's bulk, so the
+   * frame is drawn on arrival: held for a seat gap it would wait out exactly
+   * the delay the subject exists to remove, and its generation already says
+   * whether it belongs to the live take.
+   */
+  function drawTake(update: SessionUpdate): void {
+    if (seat.wire === null) return;
+    const next = applyTake(seat.wire, update);
+    if (next === seat.wire) return;
+    seat.wire = next;
+    soon();
+  }
+
+  /**
    * One frame of the seat's stream, live or repaired: the sequence decides.
    *
    * **Every frame the workspace emits for a seat is numbered on that seat's
@@ -1484,6 +1501,14 @@ function createSeat(
       // page's record.
       const at = slotOf(message.update);
       if (at === null || subjectKey({ session: at }) !== key) return;
+      // **A take's frames ride the connection's dictate subject, not this
+      // seat's.** They carry no seat number, so the gate passes them straight
+      // through, and they apply on arrival rather than through the seat's
+      // sequence, where a gap would park them.
+      if (isTakeUpdate(message.update)) {
+        drawTake(message.update);
+        return;
+      }
       applyFrame(message);
     });
     // A drop takes any read in flight with it, and the reconnect answers with a

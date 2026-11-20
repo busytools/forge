@@ -1647,6 +1647,14 @@ export function connect(
     return answer;
   }
 
+  // **The dictate subscription is taken at open, not at the first press.**
+  // The server emits `dictate_started` the moment a take begins, so a
+  // subscription racing that press would miss the frame and the take's row
+  // would never draw. One subscription per connection is free, its answer is
+  // an empty snapshot that clears the read bound at once, and `onopen`
+  // re-asks every held subject - so a reconnect takes it again.
+  subscribe('dictate');
+
   open();
 
   return {

@@ -300,6 +300,10 @@ export class StreamGate {
         // for a history nobody opened. Arrival order is what it gets.
         if (!state.anchored) return [message];
 
+        // **A take's frame carries no seat number**, so it falls through the
+        // `seq === null` path below: the server leaves the family unnumbered
+        // on purpose, which is what lets it ride the connection's `dictate`
+        // subject without leaving a hole in the seat's run.
         const seal = replacer(message.update);
         if (seal !== null) {
           // **Every seal restarts the count, not only a new occupant.** The
