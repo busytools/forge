@@ -8,8 +8,9 @@ reach; `/new` and `/resume` swap the occupant and leave the slot alone.
 
 It is drawn from one read of the `session` subject - a snapshot, then the
 updates that move it - plus the home's snapshot for the facts that ride a
-project's row and the board's snapshot for the row's task, its schedules and
-its connector sets. The drawing it is held against is
+project's row, the board's snapshot for the row's task, its schedules and its
+connector sets, and the connection's own `dictate` subject for a live take's
+card. The drawing it is held against is
 [web-session.html](./web-session.html), beside this page.
 
 ## What it draws
