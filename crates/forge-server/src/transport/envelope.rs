@@ -169,14 +169,7 @@ impl Subject {
 /// its phases and the end that settles it. The seat a take records for hears
 /// none of them.
 pub fn is_dictate(update: &SessionUpdate) -> bool {
-    matches!(
-        update,
-        SessionUpdate::DictateStarted { .. }
-            | SessionUpdate::DictateLevel { .. }
-            | SessionUpdate::DictateTranscribing { .. }
-            | SessionUpdate::DictateProgress { .. }
-            | SessionUpdate::DictateEnded { .. }
-    )
+    update.is_take()
 }
 
 /// The updates whose whole effect is the board's own snapshot.
@@ -1845,5 +1838,28 @@ mod tests {
             "and the door that sent it is named",
         );
         assert_eq!(answer.client, None, "a client cannot know its own connection");
+    }
+
+    /// **A take belongs to the dictate subject and to no seat**, whatever seat
+    /// it records for. This is the classification the connection filters on,
+    /// and the seat's own `slot` match is exactly what would otherwise carry
+    /// the family there: a `covers` that only compared slots would hand every
+    /// take frame to the seat subscription.
+    #[test]
+    fn a_take_is_the_dictate_subjects_and_no_seats() {
+        let seat = SessionSlot::for_label("TestOrg", "proj", Some("lead"));
+        let update = SessionUpdate::DictateStarted {
+            key: seat.clone(),
+            floor_db: -50.0,
+            generation: 1,
+            initiator: None,
+        };
+
+        assert!(
+            !Subject::Session(seat.clone()).covers(&update),
+            "the seat the take records for must not carry the take",
+        );
+        assert!(Subject::Dictate.covers(&update), "the dictate subject carries it");
+        assert!(is_dictate(&update), "and the routing classification names the same family");
     }
 }

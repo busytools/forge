@@ -1502,8 +1502,8 @@ function createSeat(
       const at = slotOf(message.update);
       if (at === null || subjectKey({ session: at }) !== key) return;
       // **A take's frames ride the connection's dictate subject, not this
-      // seat's.** They apply on arrival - the gate has already marked their
-      // numbers seen without holding them - rather than through the seat's
+      // seat's.** They carry no seat number, so the gate passes them straight
+      // through, and they apply on arrival rather than through the seat's
       // sequence, where a gap would park them.
       if (isTakeUpdate(message.update)) {
         drawTake(message.update);

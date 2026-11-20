@@ -28,13 +28,7 @@
  * passes through untouched.
  */
 
-import {
-  isTakeUpdate,
-  slotOf,
-  subjectKey,
-  type ServerMessage,
-  type SessionUpdate,
-} from '../protocol';
+import { slotOf, subjectKey, type ServerMessage, type SessionUpdate } from '../protocol';
 import type { SessionSlot } from '../wire/types';
 
 /** How many frames one seat waits with before it releases them unordered. */
@@ -99,14 +93,6 @@ interface StreamState {
   seenThrough: number;
   /** Ranges seen as holes and not yet filled, sorted and merged. */
   missing: Range[];
-  /**
-   * Numbers a take frame consumed on its own subject.
-   *
-   * Its frame carries a number the seat's counter minted, but it never
-   * arrives on the seat's stream - so the run must step over it rather than
-   * wait for a frame that will not come.
-   */
-  skipped: Range[];
   /** The ranges an ask has already gone out for. */
   asked: Range[];
   /**
@@ -167,7 +153,6 @@ function stateOf(streams: Map<string, StreamState>, key: string): StreamState {
       expecting: 1,
       seenThrough: 0,
       missing: [],
-      skipped: [],
       asked: [],
       askedAt: [],
       generation: 0,
@@ -315,29 +300,10 @@ export class StreamGate {
         // for a history nobody opened. Arrival order is what it gets.
         if (!state.anchored) return [message];
 
-        // **A take's frame is not the seat's to sequence.** It rides the
-        // connection's `dictate` subject, written ahead of the seat's bulk, so
-        // it applies on arrival: holding it for a seat gap is the delay the
-        // subject exists to remove. Its number is still the seat's own and was
-        // minted in the seat's stream, so the numbers are marked seen - the
-        // seat frames it jumped are queued, not missing, and none of them is
-        // ever asked for.
-        if (isTakeUpdate(message.update)) {
-          const seq = typeof message.seq === 'number' ? message.seq : null;
-          if (seq !== null) {
-            const span = typeof message.span === 'number' && message.span > 0 ? message.span : 1;
-            state.framesSeen += 1;
-            filled(state.missing, seq, seq + span - 1);
-            // Numbers the run has already passed cannot matter again, and a
-            // long recording would otherwise leave a range per take frame
-            // behind it for the connection's life.
-            state.skipped = state.skipped.filter((range) => range.to >= state.expecting);
-            cover(state.skipped, { from: seq, to: seq + span - 1 });
-            state.seenThrough = Math.max(state.seenThrough, seq + span - 1);
-          }
-          return [message];
-        }
-
+        // **A take's frame carries no seat number**, so it falls through the
+        // `seq === null` path below: the server leaves the family unnumbered
+        // on purpose, which is what lets it ride the connection's `dictate`
+        // subject without leaving a hole in the seat's run.
         const seal = replacer(message.update);
         if (seal !== null) {
           // **Every seal restarts the count, not only a new occupant.** The
@@ -538,13 +504,6 @@ export class StreamGate {
 
     for (;;) {
       const at = state.expecting;
-      // **A take's number was delivered on its own subject.** The run steps
-      // over it rather than waiting for a seat frame that will not come.
-      const skip = state.skipped.find((range) => range.from <= at && at <= range.to);
-      if (skip !== undefined) {
-        state.expecting = skip.to + 1;
-        continue;
-      }
       const repair = state.repairs.find((frame) => frame.seq <= at && at < frame.seq + frame.span);
       if (repair !== undefined) {
         state.repairs = state.repairs.filter((frame) => frame !== repair);
@@ -639,7 +598,6 @@ export class StreamGate {
     state.generation += 1;
     state.waiting.length = 0;
     state.repairs.length = 0;
-    state.skipped.length = 0;
     state.origin = null;
   }
 }

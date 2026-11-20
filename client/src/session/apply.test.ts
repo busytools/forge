@@ -1208,10 +1208,9 @@ describe('applyUpdate', () => {
 
   /**
    * **A take frame arriving on the seat's subscription is not news.** The
-   * server writes the family on the connection's `dictate` subject, so one
-   * that reaches the seat's reducer is a repaired duplicate of a number the
-   * client already drew - and redrawing it would replay a phase the take has
-   * left.
+   * server writes the family on the connection's `dictate` subject and never
+   * on a seat's, so the seat's reducer keeps no arm for it - nothing can draw
+   * a take's phase twice.
    */
   it('leaves the record alone for a take frame on the seat subscription', () => {
     const started = applyTake(empty(), {
@@ -1225,9 +1224,10 @@ describe('applyUpdate', () => {
 
   describe('the composer', () => {
     // **The take's frames ride the connection's dictate subject.** They are
-    // folded by `applyTake` rather than the seat's `applyUpdate`, so the
-    // cases below run both: the seat's own frames still reach the record, and
-    // a take frame reaches it through the path it really takes.
+    // folded by `applyTake`, not the seat's `applyUpdate`. These cases are the
+    // take's own and read through that path; the composition keeps the few
+    // seat frames among them - a compaction's status - reaching the record
+    // too.
     const applyUpdate = (held: SessionRecord, update: SessionUpdate): SessionRecord =>
       applyTake(seatUpdate(held, update), update);
 

@@ -4076,10 +4076,10 @@ describe('the read, and the answer a frame has outrun', () => {
 
   /**
    * **A take's frame draws on arrival while the seat's stream is at a gap.**
-   * The family rides the connection's `dictate` subject, written ahead of the
-   * seat's bulk, so it can arrive above a seat frame still held for a hole -
-   * and it must draw anyway: held for the gap it would wait out exactly the
-   * delay the subject exists to remove.
+   * The family rides the connection's `dictate` subject and carries no seat
+   * number - the server leaves it unnumbered - so it arrives between seat
+   * frames that are still held for a hole, and it must draw anyway: held for
+   * the gap it would wait out exactly the delay the subject exists to remove.
    */
   it('draws a take frame on arrival while the seat stream holds a gap', () => {
     const connection = drivable();
@@ -4090,12 +4090,12 @@ describe('the read, and the answer a frame has outrun', () => {
     paint();
     expect(spoken(page), 'precondition: the seat frame is held').not.toContain('above the hole');
 
-    page.land(frameOf({ dictate_started: { key: LEAD, floor_db: -50, generation: 1 } }, 3));
+    page.land(updateOf({ dictate_started: { key: LEAD, floor_db: -50, generation: 1 } }));
     paint();
     expect(page.read().wire?.composer.take, 'the take drew despite the gap').toMatchObject({
       phase: 'recording',
     });
-    expect(connection.ranges, 'and its number was not read as a hole').toEqual([
+    expect(connection.ranges, 'nothing about the take was read as a hole').toEqual([
       { slot: LEAD, epoch: null, from: 1, to: 1 },
     ]);
     page.stop();
