@@ -93,6 +93,39 @@ afterEach(() => {
 });
 
 describe('what the shell is told', () => {
+  /**
+   * **The shell takes the connection's dictate subscription when it opens.**
+   * A take's frames ride a subject of its own, and a client that never
+   * subscribes it draws no take at all - the desktop and Android builds reach
+   * the shell only through this ask, so deleting it leaves two of the three
+   * shipped clients blind with a green suite.
+   *
+   * **The page asks once.** A string subject is the shell's to re-ask on its
+   * own retry (`socket.rs`), and a second ask from the page would double the
+   * count the server holds for it.
+   */
+  it('takes the dictate subscription at open, on the shell', async () => {
+    const connection = await opened();
+    expect(invoke).toHaveBeenCalledWith('client_subscribe', {
+      what: 'dictate',
+      answering: false,
+      review: false,
+    });
+    expect(connection.holds('dictate'), 'the shell carries it').toBe(true);
+
+    // A reconnect: the shell re-asks its own held subjects, and the page
+    // neither drops this one nor asks again for it.
+    invoke.mockClear();
+    fire('client://connection', undefined);
+    connection.showing(slot);
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('client_showing', { seat: slot }));
+    expect(
+      invoke.mock.calls.filter(([command]) => command === 'client_subscribe'),
+      'the page asked again for a subject the shell re-asks itself',
+    ).toEqual([]);
+    expect(connection.holds('dictate'), 'a reconnect keeps it held').toBe(true);
+  });
+
   it('a subscribe, an unsubscribe and a refresh each cross as their own command', async () => {
     const connection = await opened();
     connection.subscribe(subject, { answering: true, review: true });
