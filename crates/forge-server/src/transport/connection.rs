@@ -1683,7 +1683,7 @@ where
                     // and the writer serves it at the next frame boundary
                     // ahead of whatever seat bulk is queued.
                     //
-                    // **A seal is never jumped.** `Connected` and
+                    // **A seal is never jumped.** `Spawning`, `Connected` and
                     // `SessionReplaced` keep their emission order with the
                     // bulk before them: the held batch goes to the writer
                     // first, then the seal, and a tracked flush marks the
@@ -1691,8 +1691,11 @@ where
                     // unwritten joins the batch instead - the lane would
                     // otherwise write the take ahead of the seal, the client
                     // would draw it, and the seal would wipe the record under
-                    // it. The seal is one small frame, so the wait is one
-                    // write.
+                    // it. **The trade is real**: a take behind a seal waits
+                    // behind whatever bulk precedes that seal, which can be
+                    // the heavy snapshot the lane exists to jump. Correct
+                    // order wins while a seal is owed; the window ends at the
+                    // seal's own flush.
                     let fatal = matches!(&*update, SessionUpdate::FatalError { .. });
                     let update = Arc::new(for_a_client(Arc::unwrap_or_clone(update), cap));
                     if is_seal(&update) {

@@ -1920,4 +1920,77 @@ mod tests {
             assert!(is_dictate(update), "and the routing classification names {update:?}");
         }
     }
+
+    /// **The seal set is exactly the three record replacers.**
+    /// `client/src/session/apply.ts` names the same three in `REPLACES`, and
+    /// a frame outside it must never make a take wait: the client draws a
+    /// take on arrival, so only a frame that wipes the record can justify
+    /// holding one back.
+    #[test]
+    fn a_seal_is_exactly_the_three_record_replacers() {
+        let seat = SessionSlot::for_label("TestOrg", "proj", Some("lead"));
+        let model = forge_primitives::runtime::CurrentModel {
+            requested_id: None,
+            resolved_id: "claude-opus-5".to_owned(),
+            display_name_short: "Opus".to_owned(),
+            display_name_long: "Opus 5".to_owned(),
+            catalog_id: None,
+            supports_effort: false,
+            supported_effort_levels: Vec::new(),
+            supports_auto_mode: None,
+            supports_adaptive_thinking: None,
+            is_authoritative: true,
+        };
+        let seals = [
+            SessionUpdate::Spawning {
+                key: seat.clone(),
+                project_name: "proj".to_owned(),
+                cwd: "/tmp".to_owned(),
+                display_name: "lead".to_owned(),
+            },
+            SessionUpdate::Connected {
+                key: seat.clone(),
+                session_id: forge_primitives::SessionId::from(
+                    "5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45",
+                ),
+                cwd: "/tmp".to_owned(),
+                current_model: model.clone(),
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                dropped: 0,
+                compaction_count: 0,
+            },
+            SessionUpdate::SessionReplaced {
+                key: seat.clone(),
+                session_id: forge_primitives::SessionId::from(
+                    "6c2d3e4f-5a60-4b71-c829-0d1e2f3a4b5c",
+                ),
+                cwd: "/tmp".to_owned(),
+                current_model: model,
+                available_models: Vec::new(),
+                mode: None,
+                history: Vec::new(),
+                dropped: 0,
+                compaction_count: 0,
+            },
+        ];
+        for seal in &seals {
+            assert!(is_seal(seal), "a record replacer must seal: {seal:?}");
+        }
+
+        assert!(
+            !is_seal(&SessionUpdate::TurnCancelled { key: seat.clone() }),
+            "an ordinary frame must not make a take wait",
+        );
+        assert!(
+            !is_seal(&SessionUpdate::DictateStarted {
+                key: seat,
+                floor_db: -50.0,
+                generation: 1,
+                initiator: None,
+            }),
+            "nor may a take seal another take",
+        );
+    }
 }

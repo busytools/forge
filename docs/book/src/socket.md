@@ -1434,9 +1434,9 @@ carries `null` - and it hears the `Dictate*` family and nothing else:
 The family used to ride the seat's subscription and no longer does (protocol
 34): a take's frames are written ahead of the seat's bulk, so a heavy seat's
 snapshot or a run of seat frames cannot hold a take's meter or its end behind
-them. **A take never overtakes a seal**: a `Connected` or `SessionReplaced`
-keeps its order with the frames it followed, and a take that starts behind
-one waits for that write rather than jumping it. `key` on each frame is still
+them. **A take never overtakes a seal**: a `Spawning`, `Connected` or
+`SessionReplaced` keeps its order with the frames it followed, and a take
+that starts behind one waits for that write rather than jumping it. `key` on each frame is still
 the seat the take records for - its landed words are that seat's conversation
 - and `initiator` still gates it, so a second client subscribed to `dictate`
 never hears another connection's take. The seat's own sequence numbers are

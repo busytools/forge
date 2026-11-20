@@ -993,16 +993,9 @@ async fn a_dictate_subscription_answers_null_and_hears_only_its_own_connections_
     }
 }
 
-/// Whether an update is one of a take's own news.
+/// Whether an update is one of a take's own news, by the core's own list.
 fn a_take_update(update: &SessionUpdate) -> bool {
-    matches!(
-        update,
-        SessionUpdate::DictateStarted { .. }
-            | SessionUpdate::DictateLevel { .. }
-            | SessionUpdate::DictateTranscribing { .. }
-            | SessionUpdate::DictateProgress { .. }
-            | SessionUpdate::DictateEnded { .. }
-    )
+    update.is_take()
 }
 
 /// The incident as a test: a take's start jumps the seat bulk queued ahead
@@ -1311,9 +1304,10 @@ async fn a_seal_does_not_overtake_the_seat_frames_queued_before_it() {
 }
 
 /// A take belongs to the connection that started it: that connection hears
-/// its start and its meter, and every other subscriber to the same seat
-/// hears none of them - an in-process take included, whose
-/// updates carry no connection at all.
+/// its start and its meter, and a second connection hears none of them even
+/// while holding the dictate subject - the initiator gate, not the seat's
+/// coverage, is what excludes it. An in-process take included, whose updates
+/// carry no connection at all.
 #[tokio::test]
 async fn a_take_is_heard_by_its_own_connection_and_no_other() {
     let (url, fleet) = a_server().await;
@@ -1327,17 +1321,15 @@ async fn a_take_is_heard_by_its_own_connection_and_no_other() {
     )
     .await;
     let _ = snapshot_answering(&mut owner).await;
+    // **The other connection holds the dictate subject too.** Without it the
+    // seat's `covers` alone would exclude the take, and the initiator gate -
+    // the rule that keeps one client's take off another's subscription -
+    // would never be consulted.
     let mut other = connect(&url).await;
-    send(
-        &mut other,
-        ClientMessage::Subscribe {
-            what: Subject::Session(lead_seat()),
-            answering: true,
-            review: false,
-        },
-    )
-    .await;
-    let _ = snapshot_answering(&mut other).await;
+    for what in [Subject::Session(lead_seat()), Subject::Dictate] {
+        send(&mut other, ClientMessage::Subscribe { what, answering: true, review: false }).await;
+        let _ = snapshot_answering(&mut other).await;
+    }
 
     send(
         &mut owner,
@@ -1382,14 +1374,7 @@ async fn a_take_is_heard_by_its_own_connection_and_no_other() {
         match next_server_within(&mut other, 5_000).await {
             Some(ServerMessage::Update { update, .. }) => {
                 assert!(
-                    !matches!(
-                        *update,
-                        SessionUpdate::DictateStarted { .. }
-                            | SessionUpdate::DictateLevel { .. }
-                            | SessionUpdate::DictateTranscribing { .. }
-                            | SessionUpdate::DictateProgress { .. }
-                            | SessionUpdate::DictateEnded { .. }
-                    ),
+                    !a_take_update(&update),
                     "another view's take drew on this connection's stream: {update:?}",
                 );
                 if matches!(*update, SessionUpdate::TurnCancelled { .. }) {
