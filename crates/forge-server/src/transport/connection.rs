@@ -27,7 +27,7 @@ use serde_json::json;
 use super::batch::{self, Batch};
 use super::envelope::{
     ClientMessage, ClientSettings, SeatFrameWire, ServerMessage, SettingsRefusal, Subject,
-    is_dictate,
+    is_dictate, is_seal,
 };
 use super::frame::FrameTransport as _;
 use super::origin as origin_gate;
@@ -1485,6 +1485,9 @@ where
     let SettingsPush { receiver: settings, sent: sent_settings } = settings_push;
     let me = caller.id;
     let mut held = Batch::default();
+    // The tracked flush that marks a seal's write, while it is still owed;
+    // see the update branch for why a take waits on it.
+    let mut seal_pending: Option<oneshot::Receiver<()>> = None;
     let mut settings = settings;
     let mut settings_open = true;
     // The frame the greeting sent, so a watch version that has not moved
@@ -1680,16 +1683,24 @@ where
                     // and the writer serves it at the next frame boundary
                     // ahead of whatever seat bulk is queued.
                     //
-                    // **A seal rides with it.** A `Connected` or
-                    // `SessionReplaced` waiting out the batch window would
-                    // otherwise be written after a take frame emitted later:
-                    // the client would draw the take and the seal would then
-                    // wipe the record under it. Both on the control lane keeps
-                    // their emission order, and a seal resets the client
-                    // anyway.
+                    // **A seal is never jumped.** `Connected` and
+                    // `SessionReplaced` keep their emission order with the
+                    // bulk before them: the held batch goes to the writer
+                    // first, then the seal, and a tracked flush marks the
+                    // point. A take that arrives while that flush is still
+                    // unwritten joins the batch instead - the lane would
+                    // otherwise write the take ahead of the seal, the client
+                    // would draw it, and the seal would wipe the record under
+                    // it. The seal is one small frame, so the wait is one
+                    // write.
                     let fatal = matches!(&*update, SessionUpdate::FatalError { .. });
                     let update = Arc::new(for_a_client(Arc::unwrap_or_clone(update), cap));
-                    if is_dictate(&update) || is_seal(&update) {
+                    if is_seal(&update) {
+                        batch::flush(socket, held.take()).await?;
+                        let seal = SeatUpdate { seq: frame.seq, update };
+                        batch::flush(socket, vec![seal]).await?;
+                        seal_pending = Some(socket.flush_tracked());
+                    } else if is_dictate(&update) && seal_written(&mut seal_pending) {
                         send_control(
                             socket,
                             ServerMessage::Update {
@@ -3938,24 +3949,28 @@ async fn transcript_frames(
 /// is nobody's on the socket. Every other update keeps the watch rule
 /// alone.
 fn ours_to_hear(update: &SessionUpdate, me: u64) -> bool {
-    match update {
-        SessionUpdate::DictateStarted { initiator, .. }
-        | SessionUpdate::DictateLevel { initiator, .. }
-        | SessionUpdate::DictateTranscribing { initiator, .. }
-        | SessionUpdate::DictateProgress { initiator, .. }
-        | SessionUpdate::DictateEnded { initiator, .. } => *initiator == Some(me),
-        _ => true,
-    }
+    // **The take family is asked for, not matched again.** `take_initiator`
+    // is the one list; a variant added there is routed and gated in the same
+    // edit, which is what keeps another client's take off this connection.
+    update.take_initiator().is_none_or(|initiator| initiator == Some(me))
 }
 
-/// Whether this update replaces a seat's whole record.
+/// Whether no seal is still waiting to be written.
 ///
-/// The frames a client wipes the seat on. They ride the control lane beside a
-/// take's frames, so a take emitted before a seal is written before it - the
-/// batch's window would otherwise let the take overtake, draw, and be wiped
-/// by the seal that was already queued.
-fn is_seal(update: &SessionUpdate) -> bool {
-    matches!(update, SessionUpdate::Connected { .. } | SessionUpdate::SessionReplaced { .. })
+/// Answers `true` when nothing is pending, and clears the receiver once it
+/// reports the seal's flush reached the wire. A closed one is the writer
+/// gone - the connection is ending, and there is no order left to keep.
+fn seal_written(pending: &mut Option<oneshot::Receiver<()>>) -> bool {
+    let Some(done) = pending else {
+        return true;
+    };
+    match done.try_recv() {
+        Ok(()) | Err(oneshot::error::TryRecvError::Closed) => {
+            *pending = None;
+            true
+        }
+        Err(oneshot::error::TryRecvError::Empty) => false,
+    }
 }
 
 /// Whether this connection forwards one update.
@@ -4251,7 +4266,9 @@ enum Write {
 /// watchdog measures the socket, not the read loop.
 struct Writer {
     /// The control lane: a take's frames, written at the next frame
-    /// boundary whatever bulk is queued.
+    /// boundary whatever bulk is queued. **Never a seal**: the connection
+    /// holds a take back while a seal's write is owed, so nothing on this
+    /// lane can jump the frame that wipes a seat.
     control: mpsc::UnboundedSender<Write>,
     /// Everything else, in the order it was handed over.
     tx: mpsc::UnboundedSender<Write>,
@@ -4450,10 +4467,27 @@ impl<S> ClientSocket<S> {
         self.writer.enqueue_control(Write::Send(frame, None));
     }
 
+    /// Queue a flush whose completion is reported, and answer the receiver.
+    ///
+    /// **A point in the bulk queue, not a wait.** The receiver resolves once
+    /// every write handed over before it, this flush included, is on the
+    /// wire - which is how a seal's write is known to be behind the control
+    /// lane's reach.
+    fn flush_tracked(&self) -> oneshot::Receiver<()> {
+        let (done, settled) = oneshot::channel();
+        self.writer.enqueue(Write::Flush(Some(done)));
+        settled
+    }
+
     /// Queue a keepalive ping and answer its completion when the writer
     /// reports it written. **The read half never waits for this send**: a ping
     /// behind a stalled frame must not hold the read loop, and the read half
     /// stamps the keepalive when the completion arrives.
+    ///
+    /// It rides bulk, so a take emitting faster than the writer drains can
+    /// delay its write and with it the ping's deadline. The meter's rate
+    /// bounds that, and the 60 s write bound ends a connection rather than
+    /// hanging it.
     fn ping(&self, written: oneshot::Sender<()>) {
         self.writer.enqueue(Write::Send(
             Message::Ping(tokio_tungstenite::tungstenite::Bytes::new()),

@@ -2492,13 +2492,31 @@ impl SessionUpdate {
         }
     }
 
-    /// Whether this update is one of a take's own news.
+    /// The initiator a take's frame is gated on, or `None` for any other
+    /// update.
     ///
-    /// **The family is named once, here.** The `Dictate*` variants ride the
+    /// **The family is named once, here.** Every `Dictate*` variant rides the
     /// connection's `dictate` subject rather than a seat's, and every reader
-    /// that has to tell them apart - the transport's routing classification
-    /// and the fanout's numbering - asks this instead of matching the five
-    /// variants again.
+    /// that has to tell them apart asks this: the routing classification
+    /// (`is_take`), the fanout's numbering, and the per-connection gate that
+    /// keeps one client's take off another's connection. A variant added to
+    /// the family is therefore routed, numbered and gated by one edit. The
+    /// one remaining spelling is [`Self::slot`], which must name every
+    /// slot-bearing variant whether or not it is a take.
+    ///
+    /// `Some(None)` is an in-process take, which belongs to no connection.
+    pub fn take_initiator(&self) -> Option<Option<u64>> {
+        match self {
+            Self::DictateStarted { initiator, .. }
+            | Self::DictateLevel { initiator, .. }
+            | Self::DictateTranscribing { initiator, .. }
+            | Self::DictateProgress { initiator, .. }
+            | Self::DictateEnded { initiator, .. } => Some(*initiator),
+            _ => None,
+        }
+    }
+
+    /// Whether this update is one of a take's own news.
     ///
     /// **A take is never numbered on its seat's counter.** A number would be
     /// one no seat subscription ever delivers, leaving a hole the client
@@ -2506,14 +2524,7 @@ impl SessionUpdate {
     /// `seat_range` answer could hand it to a connection that did not start
     /// the take.
     pub fn is_take(&self) -> bool {
-        matches!(
-            self,
-            Self::DictateStarted { .. }
-                | Self::DictateLevel { .. }
-                | Self::DictateTranscribing { .. }
-                | Self::DictateProgress { .. }
-                | Self::DictateEnded { .. }
-        )
+        self.take_initiator().is_some()
     }
 }
 

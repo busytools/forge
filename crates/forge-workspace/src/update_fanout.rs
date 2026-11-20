@@ -474,8 +474,11 @@ impl UpdateFanout {
         // frame's charge is its JSON, and paying that inside the fan-out's
         // guard would serialize every seat's stream behind it; an epoch frame
         // is never ringed, and its history makes that the one serialisation
-        // worth skipping.
-        let charge = if ringed(&update) { frame_bytes(&update) } else { 0 };
+        // worth skipping. **A take is never ringed either** - `numbered`
+        // returns it unnumbered and drops the charge - and the meter emits at
+        // 20 Hz, so weighing one would be a serialisation on the hot path for
+        // nothing.
+        let charge = if ringed(&update) && !update.is_take() { frame_bytes(&update) } else { 0 };
         let mut shared = self.shared.lock();
         let update = shared.numbered(update, charge);
         let Some(tail) = shared.subscribers.pop() else {
@@ -823,6 +826,11 @@ mod tests {
             "a subscribed fan-out delivers",
         );
         assert_eq!(next_seq(&mut rx, "take"), None, "a take's frame carries no seat number");
+        assert_eq!(
+            fanout.shared.lock().oldest_kept(&seat),
+            None,
+            "nor is the take in the seat's ring for a repair to hand on",
+        );
 
         assert!(fanout.send(a_turn_ends(&seat)), "a subscribed fan-out delivers");
         assert_eq!(

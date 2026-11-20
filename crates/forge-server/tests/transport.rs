@@ -892,7 +892,7 @@ fn a_prompt_for(org: &str, project: &str, label: &str) -> Command {
 /// subscription alone: a seat subscription carries none of it, and a second
 /// connection's dictate subscription hears no other connection's take.
 #[tokio::test]
-async fn a_dictate_subscription_is_answered_empty_and_hears_only_its_own_connections_take() {
+async fn a_dictate_subscription_answers_null_and_hears_only_its_own_connections_take() {
     let (url, fleet) = a_server().await;
     fleet.install_agent("TestOrg", "proj", "lead");
     let _models = fleet.arm_dictation(&lead_seat()).expect("dictation arms without weights");
@@ -1163,10 +1163,11 @@ fn says(msg: &forge_primitives::Message, want: &str) -> bool {
 
 /// A take frame never overtakes a seal emitted before it.
 ///
-/// A `Connected` waiting out the batch's window must be written before a take
-/// frame that started after it: the page draws a take on arrival, and a seal
-/// landing afterwards wipes the record - and the take with it - from under
-/// the reader.
+/// A `Connected` still owed a write must be written before a take frame that
+/// started after it: the page draws a take on arrival, and a seal landing
+/// afterwards wipes the record - and the take with it - from under the
+/// reader. The bulk backlog ahead of the seal is what leaves its write owed,
+/// so the take has to wait for it rather than take the control lane past it.
 #[tokio::test]
 async fn a_take_frame_never_overtakes_the_seal_queued_before_it() {
     let (url, fleet) = a_server().await;
@@ -1179,8 +1180,21 @@ async fn a_take_frame_never_overtakes_the_seal_queued_before_it() {
         let _ = snapshot_answering(&mut client).await;
     }
 
-    // The seal is emitted first; the pause leaves it inside the batch's 16 ms
-    // quiet window when the take starts.
+    // A bulk backlog the socket buffers cannot take, so the writer is still
+    // inside it when the seal and then the take arrive. Without the backlog
+    // the seal is written before the take starts and the guard is never
+    // exercised.
+    for n in 0..2 {
+        fleet.emit(SessionUpdate::ChatAppended {
+            key: lead_seat(),
+            source: None,
+            msg: a_said_frame(&format!("{} {n}", "y".repeat(10_000_000))),
+        });
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // The seal is emitted after the backlog, so its write is owed behind it
+    // when the take starts.
     fleet.emit(SessionUpdate::Connected {
         key: lead_seat(),
         session_id: SessionId::from("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45"),
@@ -1192,7 +1206,7 @@ async fn a_take_frame_never_overtakes_the_seal_queued_before_it() {
         dropped: 0,
         compaction_count: 0,
     });
-    tokio::time::sleep(Duration::from_millis(5)).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
 
     send(
         &mut client,
@@ -1229,6 +1243,70 @@ async fn a_take_frame_never_overtakes_the_seal_queued_before_it() {
     assert!(
         sealed_at.unwrap_or(usize::MAX) < started_at.unwrap_or(0),
         "the take overtook the seal: seal at {sealed_at:?}, start at {started_at:?}",
+    );
+}
+
+/// **A seal keeps its emission order with the seat's bulk.**
+///
+/// An ordinary frame emitted before a `SessionReplaced` must be written before
+/// it. Given the control lane, the seal would jump every seat frame already
+/// queued: the client's gate clears on the seal, and the old run's frame
+/// arriving afterwards reads as a hole in the new run - repaired out of the
+/// new occupant's transcript, into the record that just replaced it.
+#[tokio::test]
+async fn a_seal_does_not_overtake_the_seat_frames_queued_before_it() {
+    let (url, fleet) = a_server().await;
+    fleet.install_agent("TestOrg", "proj", "lead");
+
+    let mut client = connect(&url).await;
+    send(
+        &mut client,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let _ = snapshot_answering(&mut client).await;
+
+    // One seat frame, then the seal, emitted back to back so both wait out
+    // the same batch window.
+    fleet.emit(SessionUpdate::TurnCancelled { key: lead_seat() });
+    fleet.emit(SessionUpdate::SessionReplaced {
+        key: lead_seat(),
+        session_id: SessionId::from("6c2d3e4f-5a60-4b71-c829-0d1e2f3a4b5c"),
+        cwd: "/tmp".to_owned(),
+        current_model: a_current_model(),
+        available_models: Vec::new(),
+        mode: None,
+        history: Vec::new(),
+        dropped: 0,
+        compaction_count: 0,
+    });
+
+    let mut ordinary_at = None;
+    let mut seal_at = None;
+    let mut index = 0usize;
+    while ordinary_at.is_none() || seal_at.is_none() {
+        match next_server_within(&mut client, 10_000).await {
+            Some(ServerMessage::Update { update, .. }) => {
+                if ordinary_at.is_none() && matches!(*update, SessionUpdate::TurnCancelled { .. }) {
+                    ordinary_at = Some(index);
+                }
+                if seal_at.is_none() && matches!(*update, SessionUpdate::SessionReplaced { .. }) {
+                    seal_at = Some(index);
+                }
+                index += 1;
+            }
+            Some(ServerMessage::Settings { .. }) => {}
+            other => panic!("waited for the frame and the seal, heard {other:?}"),
+        }
+    }
+    assert!(
+        ordinary_at.unwrap_or(usize::MAX) < seal_at.unwrap_or(0),
+        "the seal overtook the frame queued before it: frame at {ordinary_at:?}, seal at \
+         {seal_at:?}",
     );
 }
 

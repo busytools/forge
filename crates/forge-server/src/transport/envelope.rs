@@ -63,7 +63,7 @@ pub enum Subject {
     /// visits keeps its own subscription, and every one of them grows; the
     /// dictate subscription does not, because a take belongs to the
     /// connection rather than to the seat it records for. It carries no read
-    /// state - a subscribe is answered with an empty snapshot - and hears
+    /// state - a subscribe is answered with a `null` snapshot - and hears
     /// only the `Dictate*` family, still gated on the take's initiator so a
     /// second client cannot hear a take it did not start.
     ///
@@ -170,6 +170,27 @@ impl Subject {
 /// none of them.
 pub fn is_dictate(update: &SessionUpdate) -> bool {
     update.is_take()
+}
+
+/// Whether this update replaces a seat's whole record: the frames a client
+/// wipes the seat on.
+///
+/// **The set is the client's own** (`REPLACES` in
+/// `client/src/session/apply.ts` - spawning, connected, session_replaced), so
+/// a take cannot be drawn before any of them and then wiped by it.
+///
+/// **A seal keeps its emission order with the seat's bulk.** Written ahead of
+/// frames already queued, the old run's frames would arrive after the wipe
+/// and read as a hole in the new run. The connection asks this to write a
+/// seal onto the bulk queue as soon as it lands - after the frames already
+/// held - and to hold a take's frame back while that write is still owed.
+pub fn is_seal(update: &SessionUpdate) -> bool {
+    matches!(
+        update,
+        SessionUpdate::Spawning { .. }
+            | SessionUpdate::Connected { .. }
+            | SessionUpdate::SessionReplaced { .. }
+    )
 }
 
 /// The updates whose whole effect is the board's own snapshot.
@@ -569,13 +590,17 @@ pub enum ServerMessage {
     Update {
         update: Box<SessionUpdate>,
         /// The number the frame's oldest update was minted under, `None` for
-        /// a frame belonging to no seat.
+        /// a frame belonging to no seat and for a take's frame.
         ///
         /// **A client reads the numbers to see what it missed.** Every frame
         /// the workspace emits for a seat is numbered on that seat's counter,
         /// so a client that reads 5 and then 7 knows exactly one frame went
         /// missing and asks the seat for it (`seat_range`); the snapshot's
         /// `header.seq` says where a fresh reader joins.
+        ///
+        /// **A take names a seat and is still `None`.** The `Dictate*` family
+        /// rides the connection's `dictate` subject rather than the seat's,
+        /// so it is never numbered and never enters the seat's ring.
         seq: Option<u64>,
         /// How many of the seat's numbers this frame stands for: 1 for a
         /// frame that is one update, and n for a run the batch folded into
@@ -1845,21 +1870,54 @@ mod tests {
     /// and the seat's own `slot` match is exactly what would otherwise carry
     /// the family there: a `covers` that only compared slots would hand every
     /// take frame to the seat subscription.
+    ///
+    /// **Every variant, not the first one.** The family is one list in
+    /// `SessionUpdate::take_initiator`, and a variant missing from it would
+    /// ride the seat, where the client's reducer keeps no arm and drops it.
     #[test]
-    fn a_take_is_the_dictate_subjects_and_no_seats() {
+    fn a_take_belongs_to_the_dictate_subject_and_no_seat() {
         let seat = SessionSlot::for_label("TestOrg", "proj", Some("lead"));
-        let update = SessionUpdate::DictateStarted {
-            key: seat.clone(),
-            floor_db: -50.0,
-            generation: 1,
-            initiator: None,
-        };
+        let updates = [
+            SessionUpdate::DictateStarted {
+                key: seat.clone(),
+                floor_db: -50.0,
+                generation: 1,
+                initiator: None,
+            },
+            SessionUpdate::DictateLevel {
+                key: seat.clone(),
+                peak_db: -20.0,
+                generation: 1,
+                initiator: None,
+            },
+            SessionUpdate::DictateTranscribing {
+                key: seat.clone(),
+                generation: 1,
+                initiator: None,
+            },
+            SessionUpdate::DictateProgress {
+                key: seat.clone(),
+                generation: 1,
+                done: 0,
+                total: None,
+                initiator: None,
+            },
+            SessionUpdate::DictateEnded {
+                key: seat.clone(),
+                outcome: crate::surface::DictateOutcome::Empty,
+                generation: 1,
+                surface: None,
+                initiator: None,
+            },
+        ];
 
-        assert!(
-            !Subject::Session(seat.clone()).covers(&update),
-            "the seat the take records for must not carry the take",
-        );
-        assert!(Subject::Dictate.covers(&update), "the dictate subject carries it");
-        assert!(is_dictate(&update), "and the routing classification names the same family");
+        for update in &updates {
+            assert!(
+                !Subject::Session(seat.clone()).covers(update),
+                "the seat a take records for must not carry {update:?}",
+            );
+            assert!(Subject::Dictate.covers(update), "the dictate subject carries {update:?}");
+            assert!(is_dictate(update), "and the routing classification names {update:?}");
+        }
     }
 }
