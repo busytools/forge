@@ -30,6 +30,11 @@ use crate::vault::session::VaultSession;
 /// or write buffers more than the vault accepts.
 const MAX_ATTACHMENT_BYTES: u64 = 525 * 1024 * 1024;
 
+/// A credential is a password, a key or a token, not a payload. The
+/// attachment ceiling would let a session point one input at a multi-GB file
+/// and have the server read it whole.
+const MAX_CREDENTIAL_BYTES: u64 = 64 * 1024;
+
 /// What a call settles with when the `[vault]` section reloaded while it was
 /// parked or reading: the account it was drawn against is gone.
 const SESSION_CHANGED: &str =
@@ -96,12 +101,20 @@ pub struct CreateInput {
     pub username: Option<String>,
     #[serde(default)]
     pub password: Option<String>,
+    /// A path to a file holding the password, resolved inside the session's
+    /// working directory. Mutually exclusive with `password`.
+    #[serde(default)]
+    pub password_file: Option<String>,
     #[serde(default)]
     pub uri: Option<String>,
     #[serde(default)]
     pub totp: Option<String>,
     #[serde(default)]
     pub notes: Option<String>,
+    /// A path to a file holding the note body, resolved inside the session's
+    /// working directory. Mutually exclusive with `notes`.
+    #[serde(default)]
+    pub notes_file: Option<String>,
     #[serde(default)]
     pub cardholder_name: Option<String>,
     #[serde(default)]
@@ -129,9 +142,11 @@ impl std::fmt::Debug for CreateInput {
             .field("name", &self.name)
             .field("username", &self.username)
             .field("password", &self.password.as_ref().map(|_| "[redacted]"))
+            .field("password_file", &self.password_file)
             .field("uri", &self.uri)
             .field("totp", &self.totp.as_ref().map(|_| "[redacted]"))
             .field("notes", &self.notes.as_ref().map(|_| "[redacted]"))
+            .field("notes_file", &self.notes_file)
             .field("cardholder_name", &self.cardholder_name)
             .field("number", &self.number.as_ref().map(|_| "[redacted]"))
             .field("exp_month", &self.exp_month)
@@ -226,6 +241,8 @@ pub trait VaultFacade: Send + Sync {
         caller: &SessionSlot,
         id: &str,
         patch: &PatchInput,
+        password_file: Option<&str>,
+        notes_file: Option<&str>,
     ) -> Result<Value, VaultToolError>;
     async fn trash(&self, caller: &SessionSlot, id: &str) -> Result<Value, VaultToolError>;
     async fn restore(&self, caller: &SessionSlot, id: &str) -> Result<Value, VaultToolError>;
@@ -711,6 +728,34 @@ impl VaultFacade for ProdVaultFacade {
         caller: &SessionSlot,
         input: &CreateInput,
     ) -> Result<Value, VaultToolError> {
+        // The file inputs are read before the card parks: the value reaches
+        // the vault from the file itself, so it never crosses the call. An
+        // inline-only call takes the same path it always did.
+        let resolved;
+        let input = if input.password_file.is_some() || input.notes_file.is_some() {
+            let host = self.host()?;
+            let mut copy = input.clone();
+            copy.password = resolve_credential_file(
+                host.as_ref(),
+                caller,
+                copy.password.as_deref(),
+                copy.password_file.as_deref(),
+                "password",
+            )
+            .await?;
+            copy.notes = resolve_credential_file(
+                host.as_ref(),
+                caller,
+                copy.notes.as_deref(),
+                copy.notes_file.as_deref(),
+                "notes",
+            )
+            .await?;
+            resolved = copy;
+            &resolved
+        } else {
+            input
+        };
         let kind = input.kind.as_deref().unwrap_or("login");
         if !matches!(kind, "login" | "note" | "card") {
             return Err(VaultToolError::Message(format!(
@@ -768,7 +813,37 @@ impl VaultFacade for ProdVaultFacade {
         caller: &SessionSlot,
         id: &str,
         patch: &PatchInput,
+        password_file: Option<&str>,
+        notes_file: Option<&str>,
     ) -> Result<Value, VaultToolError> {
+        // The file inputs are read before the card parks, as on create: the
+        // value never crosses the call. An inline-only patch takes the same
+        // path it always did.
+        let resolved;
+        let patch = if password_file.is_some() || notes_file.is_some() {
+            let host = self.host()?;
+            let mut copy = patch.clone();
+            copy.password = resolve_credential_file(
+                host.as_ref(),
+                caller,
+                copy.password.as_deref(),
+                password_file,
+                "password",
+            )
+            .await?;
+            copy.notes = resolve_credential_file(
+                host.as_ref(),
+                caller,
+                copy.notes.as_deref(),
+                notes_file,
+                "notes",
+            )
+            .await?;
+            resolved = copy;
+            &resolved
+        } else {
+            patch
+        };
         let changed = patch_fields(patch);
         if changed.is_empty() {
             return Err(VaultToolError::Message("the patch changes no fields".to_owned()));
@@ -948,7 +1023,7 @@ impl VaultFacade for ProdVaultFacade {
     ) -> Result<Value, VaultToolError> {
         let host = self.host()?;
         let session = self.session()?;
-        let source = resolve_source(host.as_ref(), caller, path)?;
+        let source = resolve_source(host.as_ref(), caller, path, "attachment file")?;
         // The size is checked from metadata before a byte is read, and the
         // read itself runs off the async thread.
         let read_path = source.clone();
@@ -1775,10 +1850,104 @@ fn resolve_destination(
     Ok(parent.join(name))
 }
 
+/// Resolve one secret field that may arrive inline or as a path. Inline and
+/// file are mutually exclusive so a caller never has to know a precedence
+/// rule; a file's single trailing newline is dropped because a generated
+/// file ends with one and a password must not carry it. The read runs off
+/// the async thread, as the attachment read does, so a blocking file cannot
+/// starve a runtime worker.
+async fn resolve_credential_file(
+    host: &dyn VaultHost,
+    caller: &SessionSlot,
+    inline: Option<&str>,
+    file: Option<&str>,
+    field: &str,
+) -> Result<Option<String>, VaultToolError> {
+    match (inline, file) {
+        (Some(_), Some(_)) => Err(VaultToolError::Message(format!(
+            "`{field}` and `{field}_file` are both set; pass one"
+        ))),
+        (Some(value), None) => Ok(Some(value.to_owned())),
+        (None, Some(path)) => {
+            let what = format!("{field} file");
+            let path = resolve_source(host, caller, path, &what)?;
+            let read = tokio::task::spawn_blocking(move || read_credential(&path, &what))
+                .await
+                .map_err(|error| VaultToolError::Io(format!("the {field} file read: {error}")))?;
+            Ok(Some(read?))
+        }
+        (None, None) => Ok(None),
+    }
+}
+
+/// A credential file is a small regular file. The path is opened once, with
+/// `O_NOFOLLOW | O_NONBLOCK`, and the handle is what is checked and read, so
+/// a swap between a stat and a reopen cannot turn it into a blocking FIFO or
+/// a symlink out of the tree. The read stops one byte past the cap, so an
+/// oversized file is refused without being read whole.
+fn read_credential(path: &Path, what: &str) -> Result<String, VaultToolError> {
+    use rustix::fs::{Mode, OFlags};
+    use std::io::Read;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| VaultToolError::Message(format!("the {what} has no parent directory")))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| VaultToolError::Message(format!("the {what} has no file name")))?;
+    let io =
+        |error: rustix::io::Errno| VaultToolError::Io(format!("the {what}: {}", errno_io(error)));
+    let expected = std::fs::canonicalize(parent)
+        .map_err(|error| VaultToolError::Io(format!("the {what}: {error}")))?;
+    let dir =
+        rustix::fs::open(&expected, OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty()).map_err(io)?;
+    let dir = std::fs::File::from(dir);
+    verify_dir_path(&dir, &expected)?;
+    let file = rustix::fs::openat(
+        &dir,
+        name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(io)?;
+    let file = std::fs::File::from(file);
+    let metadata =
+        file.metadata().map_err(|error| VaultToolError::Io(format!("the {what}: {error}")))?;
+    // A FIFO opens without a writer because of O_NONBLOCK, so the handle is
+    // checked rather than the path: a reader on a FIFO would never return.
+    if !metadata.file_type().is_file() {
+        return Err(VaultToolError::Message(format!("the {what} is not a regular file")));
+    }
+    let declared = metadata.len();
+    if declared > MAX_CREDENTIAL_BYTES {
+        return Err(VaultToolError::Message(format!(
+            "the {what} is {declared} bytes, over the {MAX_CREDENTIAL_BYTES} byte cap"
+        )));
+    }
+    let mut value = String::new();
+    let read = (&file)
+        .take(MAX_CREDENTIAL_BYTES + 1)
+        .read_to_string(&mut value)
+        .map_err(|error| VaultToolError::Io(format!("the {what}: {error}")))?;
+    // A `usize` wider than a `u64` cannot be under any cap this small.
+    if u64::try_from(read).unwrap_or(MAX_CREDENTIAL_BYTES + 1) > MAX_CREDENTIAL_BYTES {
+        return Err(VaultToolError::Message(format!(
+            "the {what} is over the {MAX_CREDENTIAL_BYTES} byte cap"
+        )));
+    }
+    if let Some(stripped) = value.strip_suffix("\r\n") {
+        value.truncate(stripped.len());
+    } else if let Some(stripped) = value.strip_suffix('\n') {
+        value.truncate(stripped.len());
+    }
+    Ok(value)
+}
+
 fn resolve_source(
     host: &dyn VaultHost,
     caller: &SessionSlot,
     path: &str,
+    what: &str,
 ) -> Result<PathBuf, VaultToolError> {
     let cwd = host.cwd(caller).ok_or_else(|| {
         VaultToolError::Message("the session has no working directory".to_owned())
@@ -1788,11 +1957,11 @@ fn resolve_source(
     let target = Path::new(path);
     let absolute = if target.is_absolute() { target.to_path_buf() } else { cwd.join(target) };
     let source = std::fs::canonicalize(&absolute)
-        .map_err(|error| VaultToolError::Io(format!("the attachment file: {error}")))?;
+        .map_err(|error| VaultToolError::Io(format!("the {what}: {error}")))?;
     if !source.starts_with(&cwd) {
-        return Err(VaultToolError::Message(
-            "the attachment file is outside this session's working directory".to_owned(),
-        ));
+        return Err(VaultToolError::Message(format!(
+            "the {what} is outside this session's working directory"
+        )));
     }
     Ok(source)
 }
@@ -1951,12 +2120,16 @@ fn verify_dir_path(dir: &std::fs::File, expected: &Path) -> Result<(), VaultTool
 }
 
 /// A mock facade for the tool tests: records each call and returns a fixed
-/// JSON acknowledgment. The error path can be armed for one call.
+/// JSON acknowledgment. The error path can be armed for one call. The create
+/// input and the update file arguments are recorded so a tool test can prove
+/// what the tool handed over.
 #[cfg(any(test, feature = "testing"))]
 #[derive(Default)]
 pub struct MockVaultFacade {
     calls: parking_lot::Mutex<Vec<String>>,
     failure: parking_lot::Mutex<Option<String>>,
+    creates: parking_lot::Mutex<Vec<CreateInput>>,
+    update_files: parking_lot::Mutex<Vec<(Option<String>, Option<String>)>>,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -1975,6 +2148,14 @@ impl MockVaultFacade {
 
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().clone()
+    }
+
+    pub fn creates(&self) -> Vec<CreateInput> {
+        self.creates.lock().clone()
+    }
+
+    pub fn update_files(&self) -> Vec<(Option<String>, Option<String>)> {
+        self.update_files.lock().clone()
     }
 
     fn record(&self, tool: VaultTool) -> Result<Value, VaultToolError> {
@@ -2010,6 +2191,7 @@ impl VaultFacade for MockVaultFacade {
         _caller: &SessionSlot,
         _input: &CreateInput,
     ) -> Result<Value, VaultToolError> {
+        self.creates.lock().push(_input.clone());
         self.record(VaultTool::Create)
     }
     async fn update(
@@ -2017,7 +2199,12 @@ impl VaultFacade for MockVaultFacade {
         _caller: &SessionSlot,
         _id: &str,
         _patch: &PatchInput,
+        password_file: Option<&str>,
+        notes_file: Option<&str>,
     ) -> Result<Value, VaultToolError> {
+        self.update_files
+            .lock()
+            .push((password_file.map(str::to_owned), notes_file.map(str::to_owned)));
         self.record(VaultTool::Update)
     }
     async fn trash(&self, _caller: &SessionSlot, _id: &str) -> Result<Value, VaultToolError> {
@@ -2465,7 +2652,7 @@ mod tests {
             let c = caller.clone();
             let patch = PatchInput { password: Some("x".to_owned()), ..Default::default() };
             held(&workspace, &caller, &mut rx, VaultTool::Update, async move {
-                f.update(&c, "item-1", &patch).await
+                f.update(&c, "item-1", &patch, None, None).await
             })
             .await;
         }
@@ -2873,12 +3060,12 @@ mod tests {
         std::fs::write(outside.path().join("secret"), b"x").expect("the outside file");
         std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).expect("symlink");
 
-        assert!(resolve_source(workspace.as_ref(), &caller, "ok.txt").is_ok());
+        assert!(resolve_source(workspace.as_ref(), &caller, "ok.txt", "attachment file").is_ok());
         assert!(resolve_destination(workspace.as_ref(), &caller, "out.txt").is_ok());
 
         for escape in ["../escape.txt", "/etc/hosts", "link/secret"] {
             assert!(
-                resolve_source(workspace.as_ref(), &caller, escape).is_err(),
+                resolve_source(workspace.as_ref(), &caller, escape, "attachment file").is_err(),
                 "the source {escape} escapes the tree",
             );
         }
@@ -4100,7 +4287,7 @@ mod tests {
             let facade = Arc::clone(&facade);
             tokio::spawn(async move {
                 let patch = PatchInput { password: Some("new".to_owned()), ..Default::default() };
-                facade.update(&asked, "item-1", &patch).await
+                facade.update(&asked, "item-1", &patch, None, None).await
             })
         };
         let draft = parked_draft(&mut rx).await;
@@ -4219,6 +4406,298 @@ mod tests {
         assert_eq!(body["encryptedFor"], "user-1", "{body}");
     }
 
+    /// **The whole point of the file inputs: the value comes from the file
+    /// itself.** The tool layer proves the arguments carry only a path; here
+    /// the vault reads that path and stores the value.
+    #[tokio::test]
+    async fn a_password_file_reaches_the_vault_from_the_file() {
+        use crate::vault::crypto::{decrypt_str, make_symmetric_key, sha256_hex};
+
+        const SECRET: &str = "correct horse battery staple";
+        let user_key = make_symmetric_key();
+        let sync =
+            serde_json::json!({ "profile": { "key": "unlocked-key", "id": "user-1" } }).to_string();
+        let (address, body) = serve_write_capture(sync, "/api/ciphers").await;
+        let (workspace, facade, caller, dir, mut rx, _session) =
+            unlocked_worker_workspace(address, user_key.clone(), sha256_hex(b"unlocked-key"));
+        std::fs::write(dir.path().join("pinterest.txt"), format!("{SECRET}\n"))
+            .expect("the password file");
+
+        let input = CreateInput {
+            name: "pinterest".to_owned(),
+            password_file: Some("pinterest.txt".to_owned()),
+            ..Default::default()
+        };
+
+        let asked = caller.clone();
+        let call = {
+            let facade = Arc::clone(&facade);
+            tokio::spawn(async move { facade.create(&asked, &input).await })
+        };
+        let draft = parked_draft(&mut rx).await;
+        approve(&workspace, &caller, draft.id);
+        let created = call.await.expect("the call finishes").expect("the create");
+
+        assert_eq!(created["id"], "new-item");
+        let body = body.await.expect("the create body");
+        let body: Value = serde_json::from_str(&body).expect("the body is JSON");
+        let stored = body["login"]["password"].as_str().expect("a password landed");
+        assert_eq!(
+            decrypt_str(stored, &user_key).expect("the password decrypts"),
+            SECRET,
+            "the file's value, with its trailing newline stripped",
+        );
+    }
+
+    /// The newline rule over every branch that matters: a CRLF is one
+    /// newline, a value without one is unchanged, and only one is dropped.
+    #[tokio::test]
+    async fn a_credential_file_strips_exactly_one_trailing_newline() {
+        let (workspace, _facade, caller, dir, _rx) = locked_worker_workspace();
+        for (contents, expected) in
+            [("x\r\n", "x"), ("x", "x"), ("x\n\n", "x\n"), ("x\ny\n", "x\ny")]
+        {
+            std::fs::write(dir.path().join("value.txt"), contents).expect("the file");
+            let value = resolve_credential_file(
+                workspace.as_ref(),
+                &caller,
+                None,
+                Some("value.txt"),
+                "password",
+            )
+            .await
+            .expect("the file resolves")
+            .expect("a value");
+            assert_eq!(value, expected, "contents {contents:?}");
+        }
+    }
+
+    /// The cap is a bound, not a threshold: exactly the cap is accepted.
+    #[tokio::test]
+    async fn a_credential_file_at_the_cap_is_accepted() {
+        let (workspace, _facade, caller, dir, _rx) = locked_worker_workspace();
+        let at_cap = usize::try_from(MAX_CREDENTIAL_BYTES).expect("the cap fits a usize");
+        std::fs::write(dir.path().join("full.txt"), vec![b'x'; at_cap]).expect("the file");
+        let value = resolve_credential_file(
+            workspace.as_ref(),
+            &caller,
+            None,
+            Some("full.txt"),
+            "password",
+        )
+        .await
+        .expect("the file resolves")
+        .expect("a value");
+        assert_eq!(value.len(), at_cap);
+    }
+
+    /// A credential file is small and regular: an oversized file is refused
+    /// before a byte is read, and a FIFO is refused rather than blocking the
+    /// read forever.
+    #[tokio::test]
+    async fn an_oversized_or_special_credential_file_is_refused() {
+        let (workspace, _facade, caller, dir, _rx) = locked_worker_workspace();
+        let over = usize::try_from(MAX_CREDENTIAL_BYTES + 1).expect("the cap fits a usize");
+        std::fs::write(dir.path().join("big.txt"), vec![b'x'; over]).expect("the file");
+        let error =
+            resolve_credential_file(workspace.as_ref(), &caller, None, Some("big.txt"), "password")
+                .await
+                .expect_err("over the cap is refused");
+        assert!(error.to_string().contains("cap"), "the cap is named: {error}");
+
+        let fifo = dir.path().join("pipe");
+        let status = std::process::Command::new("mkfifo").arg(&fifo).status().expect("mkfifo runs");
+        assert!(status.success(), "mkfifo makes the fifo");
+
+        // The control has to fail rather than hang: if the is_file guard went
+        // away, the read would block in the blocking pool forever, and a
+        // panic on a tokio timeout would wait on that pool at teardown. A
+        // plain thread with a channel timeout reports the wedge as red.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = Arc::clone(&workspace);
+        let seat = caller.clone();
+        let handle = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime");
+            let result = runtime.block_on(resolve_credential_file(
+                worker.as_ref(),
+                &seat,
+                None,
+                Some("pipe"),
+                "password",
+            ));
+            let _ = tx.send(result);
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(Err(error)) => {
+                assert!(error.to_string().contains("not a regular file"), "{error}");
+            }
+            Ok(Ok(_)) => panic!("a fifo is not refused"),
+            Err(error) => panic!("the fifo read did not return within 5s: {error}"),
+        }
+        let _ = handle.join();
+    }
+
+    /// One trailing newline is the file writer's, not the value's, so it is
+    /// dropped; a newline inside the value is kept.
+    #[tokio::test]
+    async fn a_file_strips_one_trailing_newline_and_keeps_the_rest() {
+        use crate::vault::crypto::{decrypt_str, make_symmetric_key, sha256_hex};
+
+        let user_key = make_symmetric_key();
+        let sync =
+            serde_json::json!({ "profile": { "key": "unlocked-key", "id": "user-1" } }).to_string();
+        let (address, body) = serve_write_capture(sync, "/api/ciphers").await;
+        let (workspace, facade, caller, dir, mut rx, _session) =
+            unlocked_worker_workspace(address, user_key.clone(), sha256_hex(b"unlocked-key"));
+        std::fs::write(dir.path().join("pw.txt"), b"first\nsecond\n").expect("the password file");
+        std::fs::write(dir.path().join("note.txt"), b"note body\n").expect("the note file");
+
+        let input = CreateInput {
+            name: "bank".to_owned(),
+            password_file: Some("pw.txt".to_owned()),
+            notes_file: Some("note.txt".to_owned()),
+            ..Default::default()
+        };
+        let asked = caller.clone();
+        let call = {
+            let facade = Arc::clone(&facade);
+            tokio::spawn(async move { facade.create(&asked, &input).await })
+        };
+        let draft = parked_draft(&mut rx).await;
+        approve(&workspace, &caller, draft.id);
+        call.await.expect("the call finishes").expect("the create");
+
+        let body = body.await.expect("the create body");
+        let body: Value = serde_json::from_str(&body).expect("the body is JSON");
+        let password = body["login"]["password"].as_str().expect("a password landed");
+        let notes = body["notes"].as_str().expect("the notes landed");
+        assert_eq!(decrypt_str(password, &user_key).expect("the password"), "first\nsecond");
+        assert_eq!(decrypt_str(notes, &user_key).expect("the notes"), "note body");
+    }
+
+    /// Inline and file are mutually exclusive so a caller never has to know
+    /// a precedence rule; the refusal names both.
+    #[tokio::test]
+    async fn inline_and_file_for_one_field_are_refused_naming_both() {
+        let (_workspace, facade, caller, dir, _rx) = locked_worker_workspace();
+        std::fs::write(dir.path().join("pw.txt"), b"x").expect("the file");
+
+        let input = CreateInput {
+            name: "bank".to_owned(),
+            password: Some("inline".to_owned()),
+            password_file: Some("pw.txt".to_owned()),
+            ..Default::default()
+        };
+        let error = facade.create(&caller, &input).await.expect_err("both is refused");
+        let text = error.to_string();
+        assert!(
+            text.contains("`password`") && text.contains("`password_file`"),
+            "the refusal names both: {text}",
+        );
+        assert!(text.contains("both set"), "the refusal says why: {text}");
+
+        let patch = PatchInput { notes: Some("inline".to_owned()), ..Default::default() };
+        let error = facade
+            .update(&caller, "item-1", &patch, None, Some("pw.txt"))
+            .await
+            .expect_err("both is refused");
+        let text = error.to_string();
+        assert!(
+            text.contains("`notes`") && text.contains("`notes_file`"),
+            "the refusal names both: {text}",
+        );
+    }
+
+    /// The same containment rule the attachment paths carry: a credential
+    /// file must resolve inside the session's working directory.
+    #[tokio::test]
+    async fn a_credential_file_outside_the_working_directory_is_refused() {
+        let (_workspace, facade, caller, _dir, _rx) = locked_worker_workspace();
+        let outside = tempfile::tempdir().expect("outside");
+        let path = outside.path().join("secret");
+        std::fs::write(&path, b"x").expect("the outside file");
+
+        let input = CreateInput {
+            name: "bank".to_owned(),
+            password_file: Some(path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let error = facade.create(&caller, &input).await.expect_err("outside is refused");
+        assert!(
+            error.to_string().contains("outside this session's working directory"),
+            "the attachment wording is reused: {error}",
+        );
+    }
+
+    /// Making `patch` optional must not turn an empty update into a no-op:
+    /// with no field and no file, the facade still refuses.
+    #[tokio::test]
+    async fn an_update_with_no_field_and_no_file_changes_nothing() {
+        let (_workspace, facade, caller, _dir, _rx) = locked_worker_workspace();
+        let error = facade
+            .update(&caller, "item-1", &PatchInput::default(), None, None)
+            .await
+            .expect_err("an empty patch is refused");
+        assert!(
+            error.to_string().contains("the patch changes no fields"),
+            "the existing refusal is kept: {error}",
+        );
+    }
+
+    /// Both file fields reach an update, and a patch that names neither
+    /// still behaves as today.
+    #[tokio::test]
+    async fn an_update_reads_both_file_fields() {
+        use crate::vault::crypto::{decrypt_str, encrypt_str, make_symmetric_key, sha256_hex};
+
+        let user_key = make_symmetric_key();
+        let name = encrypt_str("bank", &user_key).expect("the name");
+        let cipher =
+            serde_json::json!({ "id": "item-1", "type": 1, "name": name, "login": {} }).to_string();
+        let sync =
+            serde_json::json!({ "profile": { "key": "unlocked-key", "id": "user-1" } }).to_string();
+        let (address, body) = serve_capture(vec![
+            ("/api/ciphers/item-1", cipher),
+            ("/api/sync", sync),
+            ("/api/ciphers/item-1", "{}".to_owned()),
+        ])
+        .await;
+        let (workspace, facade, caller, dir, mut rx, _session) =
+            unlocked_worker_workspace(address, user_key.clone(), sha256_hex(b"unlocked-key"));
+        std::fs::write(dir.path().join("pw.txt"), b"pw-value\n").expect("the password file");
+        std::fs::write(dir.path().join("note.txt"), b"note-value\n").expect("the note file");
+
+        let asked = caller.clone();
+        let call = {
+            let facade = Arc::clone(&facade);
+            tokio::spawn(async move {
+                facade
+                    .update(
+                        &asked,
+                        "item-1",
+                        &PatchInput::default(),
+                        Some("pw.txt"),
+                        Some("note.txt"),
+                    )
+                    .await
+            })
+        };
+        let draft = parked_draft(&mut rx).await;
+        approve(&workspace, &caller, draft.id);
+        let updated = call.await.expect("the call finishes").expect("the update");
+        assert_eq!(updated["updated"], true);
+
+        let body = body.await.expect("the update body");
+        let body: Value = serde_json::from_str(&body).expect("the body is JSON");
+        let password = body["login"]["password"].as_str().expect("a password landed");
+        let notes = body["notes"].as_str().expect("the notes landed");
+        assert_eq!(decrypt_str(password, &user_key).expect("the password"), "pw-value");
+        assert_eq!(decrypt_str(notes, &user_key).expect("the notes"), "note-value");
+    }
+
     /// The PUT deserializes the same `CipherData`; Vaultwarden's cipher
     /// response carries no `encryptedFor`, so the update stamps it too.
     #[tokio::test]
@@ -4244,7 +4723,7 @@ mod tests {
             let facade = Arc::clone(&facade);
             tokio::spawn(async move {
                 let patch = PatchInput { password: Some("new".to_owned()), ..Default::default() };
-                facade.update(&asked, "item-1", &patch).await
+                facade.update(&asked, "item-1", &patch, None, None).await
             })
         };
         let draft = parked_draft(&mut rx).await;

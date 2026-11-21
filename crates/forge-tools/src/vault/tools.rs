@@ -54,14 +54,19 @@ impl VaultTools {
                  username, password, uri and totp (an otpauth:// URI or the bare base32 seed); \
                  a card sets cardholder_name, number, exp_month, exp_year, code and optionally \
                  brand; a note uses notes. Pass `custom_fields` as [{name, value, type?}] with \
-                 type text, hidden or boolean. The call is held; the card says what is being \
-                 created and masks every secret value."
+                 type text, hidden or boolean. Pass `password_file` or `notes_file` instead of \
+                 the inline value to read it from a file inside this session's working \
+                 directory, so the secret never crosses this call. The call is held; the card \
+                 says what is being created and masks every secret value."
             }
             VaultTool::Update => {
                 "Change fields on one item. `patch` accepts name, username, password, uri, \
                  totp, notes, cardholder_name, number, exp_month, exp_year, code, brand, \
-                 folder_id and custom_fields; only the fields present are changed. The call is \
-                 held; the card names the item and a masked diff, never the values."
+                 folder_id and custom_fields; only the fields present are changed. Pass \
+                 `password_file` or `notes_file` at the top level instead of the inline value \
+                 to read it from a file inside this session's working directory, so the secret \
+                 never crosses this call. The call is held; the card names the item and a \
+                 masked diff, never the values."
             }
             VaultTool::Trash => {
                 "Move one item to the trash (a soft delete). The call is held; the card names \
@@ -135,9 +140,19 @@ impl VaultTools {
                 for (key, description) in [
                     ("username", "Login username."),
                     ("password", "Login password."),
+                    (
+                        "password_file",
+                        "A path to a file holding the password, inside this session's working \
+                         directory. Mutually exclusive with password.",
+                    ),
                     ("uri", "Login URI."),
                     ("totp", "Login TOTP seed: an otpauth:// URI or the bare base32 seed."),
                     ("notes", "Notes for any type."),
+                    (
+                        "notes_file",
+                        "A path to a file holding the note body, inside this session's working \
+                         directory. Mutually exclusive with notes.",
+                    ),
                     ("cardholder_name", "Card cardholder."),
                     ("number", "Card number."),
                     ("exp_month", "Card expiry month."),
@@ -178,6 +193,14 @@ impl VaultTools {
                 "type": "object",
                 "properties": {
                     "id": { "type": "string", "description": "The item's id." },
+                    "password_file": {
+                        "type": "string",
+                        "description": "A path to a file holding the password, inside this session's working directory. Mutually exclusive with patch.password."
+                    },
+                    "notes_file": {
+                        "type": "string",
+                        "description": "A path to a file holding the note body, inside this session's working directory. Mutually exclusive with patch.notes."
+                    },
                     "patch": {
                         "type": "object",
                         "properties": {
@@ -211,7 +234,7 @@ impl VaultTools {
                         "additionalProperties": false,
                     }
                 },
-                "required": ["id", "patch"],
+                "required": ["id"],
                 "additionalProperties": false,
             }),
             VaultTool::Trash | VaultTool::Restore | VaultTool::TotpCode => serde_json::json!({
@@ -297,13 +320,28 @@ impl VaultTools {
                 #[derive(serde::Deserialize)]
                 struct Args {
                     id: String,
+                    #[serde(default)]
                     patch: PatchInput,
+                    #[serde(default)]
+                    password_file: Option<String>,
+                    #[serde(default)]
+                    notes_file: Option<String>,
                 }
                 let args = match parse::<Args>(input) {
                     Ok(args) => args,
                     Err(output) => return output,
                 };
-                reply(self.facade.update(&self.slot, &args.id, &args.patch).await)
+                reply(
+                    self.facade
+                        .update(
+                            &self.slot,
+                            &args.id,
+                            &args.patch,
+                            args.password_file.as_deref(),
+                            args.notes_file.as_deref(),
+                        )
+                        .await,
+                )
             }
             VaultTool::Trash | VaultTool::Restore | VaultTool::TotpCode => {
                 let args = match parse::<IdArgs>(input) {
@@ -536,6 +574,79 @@ mod tests {
         assert!(
             update["properties"]["patch"]["properties"].get("totp").is_some(),
             "update names totp",
+        );
+    }
+
+    /// A secret can arrive as a path, so both schemas name the file inputs;
+    /// a closed schema that omits one refuses the call before the facade.
+    #[test]
+    fn the_create_and_update_schemas_accept_credential_files() {
+        let create = VaultTools::schema(VaultTool::Create);
+        let update = VaultTools::schema(VaultTool::Update);
+
+        for field in ["password_file", "notes_file"] {
+            assert!(create["properties"].get(field).is_some(), "create names {field}");
+            assert!(update["properties"].get(field).is_some(), "update names {field}");
+        }
+    }
+
+    /// A file-only update is the call the feature exists for, so `patch`
+    /// must not be required.
+    #[test]
+    fn an_update_schema_does_not_require_a_patch() {
+        let schema = VaultTools::schema(VaultTool::Update);
+        assert_eq!(schema["required"], json!(["id"]));
+    }
+
+    /// The tool hands the facade a path, never a value: the arguments carry
+    /// `password_file` and the parsed input carries no password.
+    #[tokio::test]
+    async fn a_create_with_a_password_file_hands_the_facade_a_path() {
+        let facade = Arc::new(MockVaultFacade::new());
+        let family = VaultTools::new(
+            Arc::clone(&facade) as Arc<dyn VaultFacade>,
+            SessionSlot::lead("Default", "forge"),
+        );
+        let output = family
+            .call("vault__create", json!({ "name": "pinterest", "password_file": "pinterest.txt" }))
+            .await
+            .expect("the family owns the tool")
+            .expect("the call answers");
+        assert!(!output.is_error, "{output:?}");
+
+        let creates = facade.creates();
+        assert_eq!(creates.len(), 1);
+        assert_eq!(creates[0].password_file.as_deref(), Some("pinterest.txt"));
+        assert!(creates[0].password.is_none(), "no value crossed the call");
+    }
+
+    /// A file-only update needs no `patch` key, and each path lands in its
+    /// own slot: a positional swap would put the password file in
+    /// `notes_file` and vice versa, with every other test still passing.
+    #[tokio::test]
+    async fn a_file_only_update_keeps_each_path_in_its_own_field() {
+        let facade = Arc::new(MockVaultFacade::new());
+        let family = VaultTools::new(
+            Arc::clone(&facade) as Arc<dyn VaultFacade>,
+            SessionSlot::lead("Default", "forge"),
+        );
+        let output = family
+            .call(
+                "vault__update",
+                json!({
+                    "id": "item-1",
+                    "password_file": "pw.txt",
+                    "notes_file": "note.txt",
+                }),
+            )
+            .await
+            .expect("the family owns the tool")
+            .expect("the call answers");
+        assert!(!output.is_error, "{output:?}");
+
+        assert_eq!(
+            facade.update_files(),
+            vec![(Some("pw.txt".to_owned()), Some("note.txt".to_owned()))],
         );
     }
 
