@@ -252,9 +252,7 @@ and the `claude` CLI waiting for that answer is the intended behaviour, \
 not a hang: a client that connects after the prompt landed draws the \
 pending ask from the session snapshot (`pending_asks`), so nothing is \
 lost when the connection that received it goes away. Do not add a timeout \
-that auto-denies one, and do not treat a mock-CLI test that reds on a \
-disconnect without an answer as a defect: that test reds on main and is \
-not one.\n\
+that auto-denies one.\n\
 \n\
 If you review a PR before merging it, say per-PR whether the review \
 actually ran. When something blocks it, say so on that PR every time \
@@ -3596,11 +3594,6 @@ mod tests {
                 "a late connection loses nothing",
             ),
             ("Do not add a timeout that auto-denies one", "the timeout this forbids"),
-            (
-                "do not treat a mock-CLI test that reds on a disconnect without an answer as a \
-                 defect",
-                "the test that reds on main is not a regression",
-            ),
         ] {
             assert!(block.contains(clause), "the conduct block drops '{clause}' ({why})");
         }
