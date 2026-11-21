@@ -380,6 +380,11 @@ the file can be another project's. A key another project owns is refused \
 by name in `settings__get`, which says how to ask its lead; report the \
 need to your reader when you have no peer channel.\n\
 \n\
+A credential you create or receive - an account password, an API key, a \
+token - is stored in the vault as an item in the same turn. A script-only \
+file is at most an automation copy, never the record; `vault__create`'s \
+file inputs take a path, so the value never has to cross this session.\n\
+\n\
 Slack is reached through the `slack__*` tools and no other way. Never \
 send Slack traffic by reading a `[[slack]]` token from forge.toml and \
 calling Slack's web API, by automating a browser, or through another \
@@ -3581,6 +3586,32 @@ mod tests {
             !FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("/forge.toml"),
             "the block advertises the config path",
         );
+    }
+
+    /// **A created credential has one home, and it gets there without the
+    /// value crossing the call.** A session that generates a password, key
+    /// or token is told where it goes and that the file input takes a path.
+    #[test]
+    fn the_conduct_block_carries_the_credential_route_rule() {
+        let block = FORGE_SESSION_CONDUCT_SYSTEM_PROMPT;
+        for (clause, why) in [
+            (
+                "A credential you create or receive - an account password, an API key, a token - \
+                 is stored in the vault as an item in the same turn",
+                "the rule and its moment",
+            ),
+            (
+                "A script-only file is at most an automation copy, never the record",
+                "the file's place",
+            ),
+            (
+                "`vault__create`'s file inputs take a path, so the value never has to cross this \
+                 session",
+                "the route that keeps the value out of the transcript",
+            ),
+        ] {
+            assert!(block.contains(clause), "the conduct block drops '{clause}' ({why})");
+        }
     }
 
     /// **A question put to the person is never answered on their behalf.**
