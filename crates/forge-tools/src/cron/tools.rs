@@ -292,8 +292,9 @@ impl Tool for List {
          you have no crons registered; an unresolvable caller, or a run that could not read the \
          durable cron store, is an error rather than an empty list. A cron's prompt is read only \
          when it fires, so a forge tool rename leaves it instructing a call that no longer exists \
-         and nothing fails at rest: after any forge tool rename, read the prompts this lists for \
-         old tool names and for state they assert, not just the schedules. Takes no \
+         and nothing fails at rest: after any forge tool rename, read the prompts this returns \
+         for old tool names and for state they assert, not just the schedules. cron__create \
+         carries the only correction route, since a cron cannot be edited. Takes no \
          arguments. Any session in the project may call this."
     }
 
@@ -865,9 +866,13 @@ mod tests {
         for (clause, why) in [
             ("A cron's prompt is read only when it fires", "why a rename leaves it stale"),
             (
-                "after any forge tool rename, read the prompts this lists for old tool names \
+                "after any forge tool rename, read the prompts this returns for old tool names \
                  and for state they assert, not just the schedules",
                 "the audit a rename triggers",
+            ),
+            (
+                "cron__create carries the only correction route, since a cron cannot be edited",
+                "the correction route a reader is sent to",
             ),
         ] {
             assert!(list_desc.contains(clause), "cron__list drops '{clause}' ({why}): {list_desc}");

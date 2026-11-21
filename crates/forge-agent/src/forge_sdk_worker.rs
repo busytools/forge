@@ -93,7 +93,11 @@ across forge restarts and re-spawn this session if it isn't open at \
 fire time, unless it can no longer be started. Reach for this whenever \
 the user wants recurring or deferred \
 work - a morning summary, a reminder, a follow-up check later - rather \
-than assuming you can only act in the current turn.";
+than assuming you can only act in the current turn.\n\
+\n\
+After a forge tool rename, read the stored cron prompts for old tool \
+names: a prompt is only read when it fires, so a stale one keeps \
+instructing a call that no longer exists and nothing fails at rest.";
 
 /// Append-text for what forge's own surfaces depend on and the CLI
 /// cannot know: the tool tree labels a Bash card with the
@@ -2260,10 +2264,10 @@ pub(crate) fn reported_percentage(p: f64) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        FORGE_SESSION_CONDUCT_SYSTEM_PROMPT, PendingQuestions, PendingResponses, SessionId,
-        build_forge_system_prompt, deliver_permission_response, deliver_question_response,
-        frame_session_id, initial_mode_state, log_failed_mcp_servers, reported_percentage,
-        run_ask_user_question, synth_permission_request,
+        FORGE_CRON_SYSTEM_PROMPT, FORGE_SESSION_CONDUCT_SYSTEM_PROMPT, PendingQuestions,
+        PendingResponses, SessionId, build_forge_system_prompt, deliver_permission_response,
+        deliver_question_response, frame_session_id, initial_mode_state, log_failed_mcp_servers,
+        reported_percentage, run_ask_user_question, synth_permission_request,
     };
 
     /// Buffer tracing output so an emitted record can be read back.
@@ -3588,14 +3592,8 @@ mod tests {
         let block = FORGE_SESSION_CONDUCT_SYSTEM_PROMPT;
         for (clause, why) in [
             ("Never answer a question put to the person on their behalf", "the rule itself"),
-            (
-                "A person who is there gets no deadline",
-                "the parked ask has no timeout",
-            ),
-            (
-                "the turn fails rather than hanging",
-                "the fail-closed branch is deliberate",
-            ),
+            ("A person who is there gets no deadline", "the parked ask has no timeout"),
+            ("the turn fails rather than hanging", "the fail-closed branch is deliberate"),
             (
                 "draws the pending ask from the session snapshot (`pending_asks`)",
                 "a late connection loses nothing",
@@ -3603,6 +3601,21 @@ mod tests {
             ("Do not add a timeout that auto-denies one", "the timeout this forbids"),
         ] {
             assert!(block.contains(clause), "the conduct block drops '{clause}' ({why})");
+        }
+    }
+
+    /// **The cron block is always on, and a resumed seat keeps the tool
+    /// catalogue it was spawned with** - it never re-reads a changed
+    /// `cron__list` description, so the stale-prompt trigger lives here.
+    #[test]
+    fn the_cron_block_carries_the_stale_prompt_rule() {
+        let block = FORGE_CRON_SYSTEM_PROMPT;
+        for (clause, why) in [
+            ("After a forge tool rename", "the trigger"),
+            ("read the stored cron prompts for old tool names", "the audit"),
+            ("a prompt is only read when it fires", "why the prompt is stale"),
+        ] {
+            assert!(block.contains(clause), "the cron block drops '{clause}' ({why})");
         }
     }
 
