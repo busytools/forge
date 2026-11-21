@@ -96,12 +96,20 @@ pub struct CreateInput {
     pub username: Option<String>,
     #[serde(default)]
     pub password: Option<String>,
+    /// A path to a file holding the password, resolved inside the session's
+    /// working directory. Mutually exclusive with `password`.
+    #[serde(default)]
+    pub password_file: Option<String>,
     #[serde(default)]
     pub uri: Option<String>,
     #[serde(default)]
     pub totp: Option<String>,
     #[serde(default)]
     pub notes: Option<String>,
+    /// A path to a file holding the note body, resolved inside the session's
+    /// working directory. Mutually exclusive with `notes`.
+    #[serde(default)]
+    pub notes_file: Option<String>,
     #[serde(default)]
     pub cardholder_name: Option<String>,
     #[serde(default)]
@@ -129,9 +137,11 @@ impl std::fmt::Debug for CreateInput {
             .field("name", &self.name)
             .field("username", &self.username)
             .field("password", &self.password.as_ref().map(|_| "[redacted]"))
+            .field("password_file", &self.password_file)
             .field("uri", &self.uri)
             .field("totp", &self.totp.as_ref().map(|_| "[redacted]"))
             .field("notes", &self.notes.as_ref().map(|_| "[redacted]"))
+            .field("notes_file", &self.notes_file)
             .field("cardholder_name", &self.cardholder_name)
             .field("number", &self.number.as_ref().map(|_| "[redacted]"))
             .field("exp_month", &self.exp_month)
@@ -226,6 +236,8 @@ pub trait VaultFacade: Send + Sync {
         caller: &SessionSlot,
         id: &str,
         patch: &PatchInput,
+        password_file: Option<&str>,
+        notes_file: Option<&str>,
     ) -> Result<Value, VaultToolError>;
     async fn trash(&self, caller: &SessionSlot, id: &str) -> Result<Value, VaultToolError>;
     async fn restore(&self, caller: &SessionSlot, id: &str) -> Result<Value, VaultToolError>;
@@ -711,6 +723,28 @@ impl VaultFacade for ProdVaultFacade {
         caller: &SessionSlot,
         input: &CreateInput,
     ) -> Result<Value, VaultToolError> {
+        // The file inputs are read before the card parks: the value reaches
+        // the vault from the file itself, so it never crosses the call. An
+        // inline-only call takes the same path it always did.
+        let mut input = input.clone();
+        if input.password_file.is_some() || input.notes_file.is_some() {
+            let host = self.host()?;
+            input.password = resolve_credential_file(
+                host.as_ref(),
+                caller,
+                input.password.as_deref(),
+                input.password_file.as_deref(),
+                "password",
+            )?;
+            input.notes = resolve_credential_file(
+                host.as_ref(),
+                caller,
+                input.notes.as_deref(),
+                input.notes_file.as_deref(),
+                "notes",
+            )?;
+        }
+        let input = &input;
         let kind = input.kind.as_deref().unwrap_or("login");
         if !matches!(kind, "login" | "note" | "card") {
             return Err(VaultToolError::Message(format!(
@@ -768,7 +802,31 @@ impl VaultFacade for ProdVaultFacade {
         caller: &SessionSlot,
         id: &str,
         patch: &PatchInput,
+        password_file: Option<&str>,
+        notes_file: Option<&str>,
     ) -> Result<Value, VaultToolError> {
+        // The file inputs are read before the card parks, as on create: the
+        // value never crosses the call. An inline-only patch takes the same
+        // path it always did.
+        let mut patch = patch.clone();
+        if password_file.is_some() || notes_file.is_some() {
+            let host = self.host()?;
+            patch.password = resolve_credential_file(
+                host.as_ref(),
+                caller,
+                patch.password.as_deref(),
+                password_file,
+                "password",
+            )?;
+            patch.notes = resolve_credential_file(
+                host.as_ref(),
+                caller,
+                patch.notes.as_deref(),
+                notes_file,
+                "notes",
+            )?;
+        }
+        let patch = &patch;
         let changed = patch_fields(patch);
         if changed.is_empty() {
             return Err(VaultToolError::Message("the patch changes no fields".to_owned()));
@@ -948,7 +1006,7 @@ impl VaultFacade for ProdVaultFacade {
     ) -> Result<Value, VaultToolError> {
         let host = self.host()?;
         let session = self.session()?;
-        let source = resolve_source(host.as_ref(), caller, path)?;
+        let source = resolve_source(host.as_ref(), caller, path, "attachment file")?;
         // The size is checked from metadata before a byte is read, and the
         // read itself runs off the async thread.
         let read_path = source.clone();
@@ -1775,10 +1833,42 @@ fn resolve_destination(
     Ok(parent.join(name))
 }
 
+/// Resolve one secret field that may arrive inline or as a path. Inline and
+/// file are mutually exclusive so a caller never has to know a precedence
+/// rule; a file's single trailing newline is dropped because a generated
+/// file ends with one and a password must not carry it.
+fn resolve_credential_file(
+    host: &dyn VaultHost,
+    caller: &SessionSlot,
+    inline: Option<&str>,
+    file: Option<&str>,
+    field: &str,
+) -> Result<Option<String>, VaultToolError> {
+    match (inline, file) {
+        (Some(_), Some(_)) => Err(VaultToolError::Message(format!(
+            "`{field}` and `{field}_file` are both set; pass one"
+        ))),
+        (Some(value), None) => Ok(Some(value.to_owned())),
+        (None, Some(path)) => {
+            let path = resolve_source(host, caller, path, &format!("{field} file"))?;
+            let mut value = std::fs::read_to_string(&path)
+                .map_err(|error| VaultToolError::Io(format!("the {field} file: {error}")))?;
+            if let Some(stripped) = value.strip_suffix("\r\n") {
+                value.truncate(stripped.len());
+            } else if let Some(stripped) = value.strip_suffix('\n') {
+                value.truncate(stripped.len());
+            }
+            Ok(Some(value))
+        }
+        (None, None) => Ok(None),
+    }
+}
+
 fn resolve_source(
     host: &dyn VaultHost,
     caller: &SessionSlot,
     path: &str,
+    what: &str,
 ) -> Result<PathBuf, VaultToolError> {
     let cwd = host.cwd(caller).ok_or_else(|| {
         VaultToolError::Message("the session has no working directory".to_owned())
@@ -1788,11 +1878,11 @@ fn resolve_source(
     let target = Path::new(path);
     let absolute = if target.is_absolute() { target.to_path_buf() } else { cwd.join(target) };
     let source = std::fs::canonicalize(&absolute)
-        .map_err(|error| VaultToolError::Io(format!("the attachment file: {error}")))?;
+        .map_err(|error| VaultToolError::Io(format!("the {what}: {error}")))?;
     if !source.starts_with(&cwd) {
-        return Err(VaultToolError::Message(
-            "the attachment file is outside this session's working directory".to_owned(),
-        ));
+        return Err(VaultToolError::Message(format!(
+            "the {what} is outside this session's working directory"
+        )));
     }
     Ok(source)
 }
@@ -2017,6 +2107,8 @@ impl VaultFacade for MockVaultFacade {
         _caller: &SessionSlot,
         _id: &str,
         _patch: &PatchInput,
+        _password_file: Option<&str>,
+        _notes_file: Option<&str>,
     ) -> Result<Value, VaultToolError> {
         self.record(VaultTool::Update)
     }
@@ -2465,7 +2557,7 @@ mod tests {
             let c = caller.clone();
             let patch = PatchInput { password: Some("x".to_owned()), ..Default::default() };
             held(&workspace, &caller, &mut rx, VaultTool::Update, async move {
-                f.update(&c, "item-1", &patch).await
+                f.update(&c, "item-1", &patch, None, None).await
             })
             .await;
         }
@@ -2873,12 +2965,12 @@ mod tests {
         std::fs::write(outside.path().join("secret"), b"x").expect("the outside file");
         std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).expect("symlink");
 
-        assert!(resolve_source(workspace.as_ref(), &caller, "ok.txt").is_ok());
+        assert!(resolve_source(workspace.as_ref(), &caller, "ok.txt", "attachment file").is_ok());
         assert!(resolve_destination(workspace.as_ref(), &caller, "out.txt").is_ok());
 
         for escape in ["../escape.txt", "/etc/hosts", "link/secret"] {
             assert!(
-                resolve_source(workspace.as_ref(), &caller, escape).is_err(),
+                resolve_source(workspace.as_ref(), &caller, escape, "attachment file").is_err(),
                 "the source {escape} escapes the tree",
             );
         }
@@ -4100,7 +4192,7 @@ mod tests {
             let facade = Arc::clone(&facade);
             tokio::spawn(async move {
                 let patch = PatchInput { password: Some("new".to_owned()), ..Default::default() };
-                facade.update(&asked, "item-1", &patch).await
+                facade.update(&asked, "item-1", &patch, None, None).await
             })
         };
         let draft = parked_draft(&mut rx).await;
@@ -4219,6 +4311,193 @@ mod tests {
         assert_eq!(body["encryptedFor"], "user-1", "{body}");
     }
 
+    /// **The whole point of the file inputs: the secret never crosses the
+    /// call.** The arguments a session writes into its transcript are the
+    /// JSON the tool parses, so they carry a path and no value; the vault
+    /// reads the file itself and stores the value.
+    #[tokio::test]
+    async fn a_password_file_never_crosses_the_tool_arguments() {
+        use crate::vault::crypto::{decrypt_str, make_symmetric_key, sha256_hex};
+
+        const SECRET: &str = "correct horse battery staple";
+        let user_key = make_symmetric_key();
+        let sync =
+            serde_json::json!({ "profile": { "key": "unlocked-key", "id": "user-1" } }).to_string();
+        let (address, body) = serve_write_capture(sync, "/api/ciphers").await;
+        let (workspace, facade, caller, dir, mut rx, _session) =
+            unlocked_worker_workspace(address, user_key.clone(), sha256_hex(b"unlocked-key"));
+        std::fs::write(dir.path().join("pinterest.txt"), format!("{SECRET}\n"))
+            .expect("the password file");
+
+        let arguments =
+            serde_json::json!({ "name": "pinterest", "password_file": "pinterest.txt" });
+        let serialized = arguments.to_string();
+        assert!(!serialized.contains(SECRET), "the secret is in the tool arguments: {serialized}");
+        let input: CreateInput =
+            serde_json::from_value(arguments).expect("the tool's own arguments parse");
+
+        let asked = caller.clone();
+        let call = {
+            let facade = Arc::clone(&facade);
+            tokio::spawn(async move { facade.create(&asked, &input).await })
+        };
+        let draft = parked_draft(&mut rx).await;
+        approve(&workspace, &caller, draft.id);
+        let created = call.await.expect("the call finishes").expect("the create");
+
+        assert_eq!(created["id"], "new-item");
+        let body = body.await.expect("the create body");
+        let body: Value = serde_json::from_str(&body).expect("the body is JSON");
+        let stored = body["login"]["password"].as_str().expect("a password landed");
+        assert_eq!(
+            decrypt_str(stored, &user_key).expect("the password decrypts"),
+            SECRET,
+            "the file's value, with its trailing newline stripped",
+        );
+    }
+
+    /// One trailing newline is the file writer's, not the value's, so it is
+    /// dropped; a newline inside the value is kept.
+    #[tokio::test]
+    async fn a_file_strips_one_trailing_newline_and_keeps_the_rest() {
+        use crate::vault::crypto::{decrypt_str, make_symmetric_key, sha256_hex};
+
+        let user_key = make_symmetric_key();
+        let sync =
+            serde_json::json!({ "profile": { "key": "unlocked-key", "id": "user-1" } }).to_string();
+        let (address, body) = serve_write_capture(sync, "/api/ciphers").await;
+        let (workspace, facade, caller, dir, mut rx, _session) =
+            unlocked_worker_workspace(address, user_key.clone(), sha256_hex(b"unlocked-key"));
+        std::fs::write(dir.path().join("pw.txt"), b"first\nsecond\n").expect("the password file");
+        std::fs::write(dir.path().join("note.txt"), b"note body\n").expect("the note file");
+
+        let input = CreateInput {
+            name: "bank".to_owned(),
+            password_file: Some("pw.txt".to_owned()),
+            notes_file: Some("note.txt".to_owned()),
+            ..Default::default()
+        };
+        let asked = caller.clone();
+        let call = {
+            let facade = Arc::clone(&facade);
+            tokio::spawn(async move { facade.create(&asked, &input).await })
+        };
+        let draft = parked_draft(&mut rx).await;
+        approve(&workspace, &caller, draft.id);
+        call.await.expect("the call finishes").expect("the create");
+
+        let body = body.await.expect("the create body");
+        let body: Value = serde_json::from_str(&body).expect("the body is JSON");
+        let password = body["login"]["password"].as_str().expect("a password landed");
+        let notes = body["notes"].as_str().expect("the notes landed");
+        assert_eq!(decrypt_str(password, &user_key).expect("the password"), "first\nsecond");
+        assert_eq!(decrypt_str(notes, &user_key).expect("the notes"), "note body");
+    }
+
+    /// Inline and file are mutually exclusive so a caller never has to know
+    /// a precedence rule; the refusal names both.
+    #[tokio::test]
+    async fn inline_and_file_for_one_field_are_refused_naming_both() {
+        let (_workspace, facade, caller, dir, _rx) = locked_worker_workspace();
+        std::fs::write(dir.path().join("pw.txt"), b"x").expect("the file");
+
+        let input = CreateInput {
+            name: "bank".to_owned(),
+            password: Some("inline".to_owned()),
+            password_file: Some("pw.txt".to_owned()),
+            ..Default::default()
+        };
+        let error = facade.create(&caller, &input).await.expect_err("both is refused");
+        let text = error.to_string();
+        assert!(
+            text.contains("password") && text.contains("password_file"),
+            "the refusal names both: {text}",
+        );
+
+        let patch = PatchInput { notes: Some("inline".to_owned()), ..Default::default() };
+        let error = facade
+            .update(&caller, "item-1", &patch, None, Some("pw.txt"))
+            .await
+            .expect_err("both is refused");
+        let text = error.to_string();
+        assert!(
+            text.contains("notes") && text.contains("notes_file"),
+            "the refusal names both: {text}",
+        );
+    }
+
+    /// The same containment rule the attachment paths carry: a credential
+    /// file must resolve inside the session's working directory.
+    #[tokio::test]
+    async fn a_credential_file_outside_the_working_directory_is_refused() {
+        let (_workspace, facade, caller, _dir, _rx) = locked_worker_workspace();
+        let outside = tempfile::tempdir().expect("outside");
+        let path = outside.path().join("secret");
+        std::fs::write(&path, b"x").expect("the outside file");
+
+        let input = CreateInput {
+            name: "bank".to_owned(),
+            password_file: Some(path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let error = facade.create(&caller, &input).await.expect_err("outside is refused");
+        assert!(
+            error.to_string().contains("outside this session's working directory"),
+            "the attachment wording is reused: {error}",
+        );
+    }
+
+    /// Both file fields reach an update, and a patch that names neither
+    /// still behaves as today.
+    #[tokio::test]
+    async fn an_update_reads_both_file_fields() {
+        use crate::vault::crypto::{decrypt_str, encrypt_str, make_symmetric_key, sha256_hex};
+
+        let user_key = make_symmetric_key();
+        let name = encrypt_str("bank", &user_key).expect("the name");
+        let cipher =
+            serde_json::json!({ "id": "item-1", "type": 1, "name": name, "login": {} }).to_string();
+        let sync =
+            serde_json::json!({ "profile": { "key": "unlocked-key", "id": "user-1" } }).to_string();
+        let (address, body) = serve_capture(vec![
+            ("/api/ciphers/item-1", cipher),
+            ("/api/sync", sync),
+            ("/api/ciphers/item-1", "{}".to_owned()),
+        ])
+        .await;
+        let (workspace, facade, caller, dir, mut rx, _session) =
+            unlocked_worker_workspace(address, user_key.clone(), sha256_hex(b"unlocked-key"));
+        std::fs::write(dir.path().join("pw.txt"), b"pw-value\n").expect("the password file");
+        std::fs::write(dir.path().join("note.txt"), b"note-value\n").expect("the note file");
+
+        let asked = caller.clone();
+        let call = {
+            let facade = Arc::clone(&facade);
+            tokio::spawn(async move {
+                facade
+                    .update(
+                        &asked,
+                        "item-1",
+                        &PatchInput::default(),
+                        Some("pw.txt"),
+                        Some("note.txt"),
+                    )
+                    .await
+            })
+        };
+        let draft = parked_draft(&mut rx).await;
+        approve(&workspace, &caller, draft.id);
+        let updated = call.await.expect("the call finishes").expect("the update");
+        assert_eq!(updated["updated"], true);
+
+        let body = body.await.expect("the update body");
+        let body: Value = serde_json::from_str(&body).expect("the body is JSON");
+        let password = body["login"]["password"].as_str().expect("a password landed");
+        let notes = body["notes"].as_str().expect("the notes landed");
+        assert_eq!(decrypt_str(password, &user_key).expect("the password"), "pw-value");
+        assert_eq!(decrypt_str(notes, &user_key).expect("the notes"), "note-value");
+    }
+
     /// The PUT deserializes the same `CipherData`; Vaultwarden's cipher
     /// response carries no `encryptedFor`, so the update stamps it too.
     #[tokio::test]
@@ -4244,7 +4523,7 @@ mod tests {
             let facade = Arc::clone(&facade);
             tokio::spawn(async move {
                 let patch = PatchInput { password: Some("new".to_owned()), ..Default::default() };
-                facade.update(&asked, "item-1", &patch).await
+                facade.update(&asked, "item-1", &patch, None, None).await
             })
         };
         let draft = parked_draft(&mut rx).await;

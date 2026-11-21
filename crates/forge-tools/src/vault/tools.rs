@@ -54,14 +54,19 @@ impl VaultTools {
                  username, password, uri and totp (an otpauth:// URI or the bare base32 seed); \
                  a card sets cardholder_name, number, exp_month, exp_year, code and optionally \
                  brand; a note uses notes. Pass `custom_fields` as [{name, value, type?}] with \
-                 type text, hidden or boolean. The call is held; the card says what is being \
-                 created and masks every secret value."
+                 type text, hidden or boolean. Pass `password_file` or `notes_file` instead of \
+                 the inline value to read it from a file inside this session's working \
+                 directory, so the secret never crosses this call. The call is held; the card \
+                 says what is being created and masks every secret value."
             }
             VaultTool::Update => {
                 "Change fields on one item. `patch` accepts name, username, password, uri, \
                  totp, notes, cardholder_name, number, exp_month, exp_year, code, brand, \
-                 folder_id and custom_fields; only the fields present are changed. The call is \
-                 held; the card names the item and a masked diff, never the values."
+                 folder_id and custom_fields; only the fields present are changed. Pass \
+                 `password_file` or `notes_file` at the top level instead of the inline value \
+                 to read it from a file inside this session's working directory, so the secret \
+                 never crosses this call. The call is held; the card names the item and a \
+                 masked diff, never the values."
             }
             VaultTool::Trash => {
                 "Move one item to the trash (a soft delete). The call is held; the card names \
@@ -135,9 +140,19 @@ impl VaultTools {
                 for (key, description) in [
                     ("username", "Login username."),
                     ("password", "Login password."),
+                    (
+                        "password_file",
+                        "A path to a file holding the password, inside this session's working \
+                         directory. Mutually exclusive with password.",
+                    ),
                     ("uri", "Login URI."),
                     ("totp", "Login TOTP seed: an otpauth:// URI or the bare base32 seed."),
                     ("notes", "Notes for any type."),
+                    (
+                        "notes_file",
+                        "A path to a file holding the note body, inside this session's working \
+                         directory. Mutually exclusive with notes.",
+                    ),
                     ("cardholder_name", "Card cardholder."),
                     ("number", "Card number."),
                     ("exp_month", "Card expiry month."),
@@ -178,6 +193,14 @@ impl VaultTools {
                 "type": "object",
                 "properties": {
                     "id": { "type": "string", "description": "The item's id." },
+                    "password_file": {
+                        "type": "string",
+                        "description": "A path to a file holding the password, inside this session's working directory. Mutually exclusive with patch.password."
+                    },
+                    "notes_file": {
+                        "type": "string",
+                        "description": "A path to a file holding the note body, inside this session's working directory. Mutually exclusive with patch.notes."
+                    },
                     "patch": {
                         "type": "object",
                         "properties": {
@@ -298,12 +321,26 @@ impl VaultTools {
                 struct Args {
                     id: String,
                     patch: PatchInput,
+                    #[serde(default)]
+                    password_file: Option<String>,
+                    #[serde(default)]
+                    notes_file: Option<String>,
                 }
                 let args = match parse::<Args>(input) {
                     Ok(args) => args,
                     Err(output) => return output,
                 };
-                reply(self.facade.update(&self.slot, &args.id, &args.patch).await)
+                reply(
+                    self.facade
+                        .update(
+                            &self.slot,
+                            &args.id,
+                            &args.patch,
+                            args.password_file.as_deref(),
+                            args.notes_file.as_deref(),
+                        )
+                        .await,
+                )
             }
             VaultTool::Trash | VaultTool::Restore | VaultTool::TotpCode => {
                 let args = match parse::<IdArgs>(input) {
@@ -537,6 +574,19 @@ mod tests {
             update["properties"]["patch"]["properties"].get("totp").is_some(),
             "update names totp",
         );
+    }
+
+    /// A secret can arrive as a path, so both schemas name the file inputs;
+    /// a closed schema that omits one refuses the call before the facade.
+    #[test]
+    fn the_create_and_update_schemas_accept_credential_files() {
+        let create = VaultTools::schema(VaultTool::Create);
+        let update = VaultTools::schema(VaultTool::Update);
+
+        for field in ["password_file", "notes_file"] {
+            assert!(create["properties"].get(field).is_some(), "create names {field}");
+            assert!(update["properties"].get(field).is_some(), "update names {field}");
+        }
     }
 
     /// A malformed argument fails before the facade runs.
