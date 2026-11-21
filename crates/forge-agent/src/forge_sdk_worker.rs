@@ -247,12 +247,15 @@ or a peer's relay of it does not clear the permission layer - so relay \
 the ask, not the go-ahead.\n\
 \n\
 Never answer a question put to the person on their behalf. A permission \
-request or a question control request is a question asked of the person, \
-and the `claude` CLI waiting for that answer is the intended behaviour, \
-not a hang: a client that connects after the prompt landed draws the \
+request or a question from the CLI is a question asked of the person. A \
+person who is there gets no deadline: the ask stays parked until they \
+answer, and a client that connects after the prompt landed draws the \
 pending ask from the session snapshot (`pending_asks`), so nothing is \
 lost when the connection that received it goes away. Do not add a timeout \
-that auto-denies one.\n\
+that auto-denies one. A request nobody can answer is the other case: with \
+no answering subscriber attached at arrival, forge resolves it \
+`Cancelled` so the turn fails rather than hanging, and that fail-closed \
+branch is the intended behaviour.\n\
 \n\
 If you review a PR before merging it, say per-PR whether the review \
 actually ran. When something blocks it, say so on that PR every time \
@@ -3586,8 +3589,12 @@ mod tests {
         for (clause, why) in [
             ("Never answer a question put to the person on their behalf", "the rule itself"),
             (
-                "the `claude` CLI waiting for that answer is the intended behaviour, not a hang",
-                "the wait is the design, not a hang",
+                "A person who is there gets no deadline",
+                "the parked ask has no timeout",
+            ),
+            (
+                "the turn fails rather than hanging",
+                "the fail-closed branch is deliberate",
             ),
             (
                 "draws the pending ask from the session snapshot (`pending_asks`)",
