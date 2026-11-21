@@ -850,7 +850,7 @@ mod tests {
         );
     }
 
-    /// A cron's prompt is stored text, read only when it fires: a tool
+    /// A cron's prompt is stored text, not used until it fires: a tool
     /// rename leaves it instructing a call that no longer exists and
     /// nothing fails at rest, so the list description carries the audit a
     /// rename triggers and the create description carries the only
