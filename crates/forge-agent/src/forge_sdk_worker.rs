@@ -346,6 +346,12 @@ task board and reviews - use whichever fits instead of a hand-rolled \
 shell. When a person must perform a manual procedure, use \
 the `wizard` skill and drive it through the terminal.\n\
 \n\
+Before a hand-off or any ask that needs a login or a credential, search \
+the vault for the service when this session carries the vault family; \
+sign in with the stored item, and hand off only when the vault has no \
+entry or the step genuinely needs the person - a push approval, a device \
+confirmation, a CAPTCHA.\n\
+\n\
 To read or act on a real page - one a plain fetch cannot read (JS, \
 sign-in-walled, paginated), or where the work must happen in the page \
 itself - use the `browser_*` tools when your tool list carries them: \
@@ -3608,6 +3614,33 @@ mod tests {
                 "the vault tools' file inputs take a path, so the value never has to cross this \
                  session",
                 "the route that keeps the value out of the transcript",
+            ),
+        ] {
+            assert!(block.contains(clause), "the conduct block drops '{clause}' ({why})");
+        }
+    }
+
+    /// **A stored credential is looked up before the person is asked for
+    /// one.** The vault family, when the session carries it, is the first
+    /// door: a hand-off follows only when there is no entry or the step is
+    /// genuinely the person's own.
+    #[test]
+    fn the_conduct_block_looks_in_the_vault_before_a_hand_off() {
+        let block = FORGE_SESSION_CONDUCT_SYSTEM_PROMPT;
+        for (clause, why) in [
+            (
+                "Before a hand-off or any ask that needs a login or a credential, search the \
+                 vault for the service when this session carries the vault family",
+                "the rule, its moment and its guard",
+            ),
+            (
+                "sign in with the stored item, and hand off only when the vault has no entry",
+                "the stored item is used before the person is asked",
+            ),
+            (
+                "the step genuinely needs the person - a push approval, a device confirmation, a \
+                 CAPTCHA",
+                "the steps that stay the person's",
             ),
         ] {
             assert!(block.contains(clause), "the conduct block drops '{clause}' ({why})");
