@@ -146,7 +146,8 @@ impl TerminalTool {
             }
             Self::HandOff => {
                 "Hand this seat's terminal to the person at a client for the one thing only they \
-                 can do: a password, a sudo confirmation, a Y/N prompt, a device sign-in. \
+                 can do: a password the vault does not hold, a sudo confirmation, a Y/N prompt, \
+                 a device sign-in. \
                  Before any hand-off or ask that needs a login or a credential, search the \
                  vault for the service when this session carries the vault family and reveal \
                  what you need with `vault__get` (or `vault__totp_code`); sign in with the \
@@ -703,6 +704,14 @@ mod tests {
         ] {
             assert!(description.contains(phrase), "the vault-first rule is stated: {description}");
         }
+        assert!(
+            description.contains(
+                "for the one thing only they can do: a password the vault does not hold, a sudo \
+                 confirmation, a Y/N prompt, a device sign-in"
+            ),
+            "a stored password is not the person's alone, so the example is qualified: \
+             {description}",
+        );
     }
 
     /// A write carries the text and the named keys, parsed to their bytes,
