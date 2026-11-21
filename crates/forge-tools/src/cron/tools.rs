@@ -290,8 +290,8 @@ impl Tool for List {
         "List the durable crons you registered, in your project. Returns a JSON array of {id, \
          project, schedule, prompt, next_fire}. Use an id with cron__delete. An empty array means \
          you have no crons registered; an unresolvable caller, or a run that could not read the \
-         durable cron store, is an error rather than an empty list. A cron's prompt is read only \
-         when it fires, so a forge tool rename leaves it instructing a call that no longer exists \
+         durable cron store, is an error rather than an empty list. A cron's prompt is not used \
+         until it fires, so a forge tool rename leaves it instructing a call that no longer exists \
          and nothing fails at rest: after any forge tool rename, read the prompts this returns \
          for old tool names and for state they assert, not just the schedules. cron__create \
          carries the only correction route, since a cron cannot be edited. Takes no \
@@ -864,7 +864,7 @@ mod tests {
         let list_desc = list.description();
         let create_desc = create.description();
         for (clause, why) in [
-            ("A cron's prompt is read only when it fires", "why a rename leaves it stale"),
+            ("A cron's prompt is not used until it fires", "why a rename leaves it stale"),
             (
                 "after any forge tool rename, read the prompts this returns for old tool names \
                  and for state they assert, not just the schedules",

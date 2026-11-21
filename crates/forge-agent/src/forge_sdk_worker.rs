@@ -96,7 +96,7 @@ work - a morning summary, a reminder, a follow-up check later - rather \
 than assuming you can only act in the current turn.\n\
 \n\
 After a forge tool rename, read the stored cron prompts for old tool \
-names: a prompt is only read when it fires, so a stale one keeps \
+names: a prompt is not used until it fires, so a stale one keeps \
 instructing a call that no longer exists and nothing fails at rest.";
 
 /// Append-text for what forge's own surfaces depend on and the CLI
@@ -258,8 +258,8 @@ pending ask from the session snapshot (`pending_asks`), so nothing is \
 lost when the connection that received it goes away. Do not add a timeout \
 that auto-denies one. A request nobody can answer is the other case: with \
 no answering subscriber attached at arrival, forge resolves it \
-`Cancelled` so the turn fails rather than hanging, and that fail-closed \
-branch is the intended behaviour.\n\
+`Cancelled` so the request fails rather than hanging the turn, and that \
+fail-closed branch is the intended behaviour.\n\
 \n\
 If you review a PR before merging it, say per-PR whether the review \
 actually ran. When something blocks it, say so on that PR every time \
@@ -3593,7 +3593,10 @@ mod tests {
         for (clause, why) in [
             ("Never answer a question put to the person on their behalf", "the rule itself"),
             ("A person who is there gets no deadline", "the parked ask has no timeout"),
-            ("the turn fails rather than hanging", "the fail-closed branch is deliberate"),
+            (
+                "so the request fails rather than hanging the turn",
+                "the fail-closed branch is deliberate, and it fails the request, not the turn",
+            ),
             (
                 "draws the pending ask from the session snapshot (`pending_asks`)",
                 "a late connection loses nothing",
@@ -3613,7 +3616,7 @@ mod tests {
         for (clause, why) in [
             ("After a forge tool rename", "the trigger"),
             ("read the stored cron prompts for old tool names", "the audit"),
-            ("a prompt is only read when it fires", "why the prompt is stale"),
+            ("a prompt is not used until it fires", "why the prompt is stale"),
         ] {
             assert!(block.contains(clause), "the cron block drops '{clause}' ({why})");
         }
