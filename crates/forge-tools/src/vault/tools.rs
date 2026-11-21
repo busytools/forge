@@ -591,8 +591,7 @@ mod tests {
     }
 
     /// A file-only update is the call the feature exists for, so `patch`
-    /// must not be required; the facade sees a non-empty patch once the file
-    /// is resolved.
+    /// must not be required.
     #[test]
     fn an_update_schema_does_not_require_a_patch() {
         let schema = VaultTools::schema(VaultTool::Update);

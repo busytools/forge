@@ -1880,13 +1880,42 @@ async fn resolve_credential_file(
     }
 }
 
-/// A credential file is a small regular file. A FIFO canonicalises inside
-/// the working directory and would block the read forever, and an oversized
-/// file would be read whole, so both are refused before a byte is read.
+/// A credential file is a small regular file. The path is opened once, with
+/// `O_NOFOLLOW | O_NONBLOCK`, and the handle is what is checked and read, so
+/// a swap between a stat and a reopen cannot turn it into a blocking FIFO or
+/// a symlink out of the tree. The read stops one byte past the cap, so an
+/// oversized file is refused without being read whole.
 fn read_credential(path: &Path, what: &str) -> Result<String, VaultToolError> {
-    let metadata = std::fs::metadata(path)
+    use rustix::fs::{Mode, OFlags};
+    use std::io::Read;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| VaultToolError::Message(format!("the {what} has no parent directory")))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| VaultToolError::Message(format!("the {what} has no file name")))?;
+    let io =
+        |error: rustix::io::Errno| VaultToolError::Io(format!("the {what}: {}", errno_io(error)));
+    let expected = std::fs::canonicalize(parent)
         .map_err(|error| VaultToolError::Io(format!("the {what}: {error}")))?;
-    if !metadata.is_file() {
+    let dir =
+        rustix::fs::open(&expected, OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty()).map_err(io)?;
+    let dir = std::fs::File::from(dir);
+    verify_dir_path(&dir, &expected)?;
+    let file = rustix::fs::openat(
+        &dir,
+        name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(io)?;
+    let file = std::fs::File::from(file);
+    let metadata =
+        file.metadata().map_err(|error| VaultToolError::Io(format!("the {what}: {error}")))?;
+    // A FIFO opens without a writer because of O_NONBLOCK, so the handle is
+    // checked rather than the path: a reader on a FIFO would never return.
+    if !metadata.file_type().is_file() {
         return Err(VaultToolError::Message(format!("the {what} is not a regular file")));
     }
     let declared = metadata.len();
@@ -1895,12 +1924,15 @@ fn read_credential(path: &Path, what: &str) -> Result<String, VaultToolError> {
             "the {what} is {declared} bytes, over the {MAX_CREDENTIAL_BYTES} byte cap"
         )));
     }
-    let mut value = std::fs::read_to_string(path)
+    let mut value = String::new();
+    let read = (&file)
+        .take(MAX_CREDENTIAL_BYTES + 1)
+        .read_to_string(&mut value)
         .map_err(|error| VaultToolError::Io(format!("the {what}: {error}")))?;
-    if value.len() as u64 > MAX_CREDENTIAL_BYTES {
+    // A `usize` wider than a `u64` cannot be under any cap this small.
+    if u64::try_from(read).unwrap_or(MAX_CREDENTIAL_BYTES + 1) > MAX_CREDENTIAL_BYTES {
         return Err(VaultToolError::Message(format!(
-            "the {what} is {} bytes, over the {MAX_CREDENTIAL_BYTES} byte cap",
-            value.len()
+            "the {what} is over the {MAX_CREDENTIAL_BYTES} byte cap"
         )));
     }
     if let Some(stripped) = value.strip_suffix("\r\n") {
@@ -2167,12 +2199,12 @@ impl VaultFacade for MockVaultFacade {
         _caller: &SessionSlot,
         _id: &str,
         _patch: &PatchInput,
-        _password_file: Option<&str>,
-        _notes_file: Option<&str>,
+        password_file: Option<&str>,
+        notes_file: Option<&str>,
     ) -> Result<Value, VaultToolError> {
         self.update_files
             .lock()
-            .push((_password_file.map(str::to_owned), _notes_file.map(str::to_owned)));
+            .push((password_file.map(str::to_owned), notes_file.map(str::to_owned)));
         self.record(VaultTool::Update)
     }
     async fn trash(&self, _caller: &SessionSlot, _id: &str) -> Result<Value, VaultToolError> {
@@ -4440,6 +4472,25 @@ mod tests {
         }
     }
 
+    /// The cap is a bound, not a threshold: exactly the cap is accepted.
+    #[tokio::test]
+    async fn a_credential_file_at_the_cap_is_accepted() {
+        let (workspace, _facade, caller, dir, _rx) = locked_worker_workspace();
+        let at_cap = usize::try_from(MAX_CREDENTIAL_BYTES).expect("the cap fits a usize");
+        std::fs::write(dir.path().join("full.txt"), vec![b'x'; at_cap]).expect("the file");
+        let value = resolve_credential_file(
+            workspace.as_ref(),
+            &caller,
+            None,
+            Some("full.txt"),
+            "password",
+        )
+        .await
+        .expect("the file resolves")
+        .expect("a value");
+        assert_eq!(value.len(), at_cap);
+    }
+
     /// A credential file is small and regular: an oversized file is refused
     /// before a byte is read, and a FIFO is refused rather than blocking the
     /// read forever.
@@ -4458,14 +4509,35 @@ mod tests {
         let status = std::process::Command::new("mkfifo").arg(&fifo).status().expect("mkfifo runs");
         assert!(status.success(), "mkfifo makes the fifo");
 
-        let read = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            resolve_credential_file(workspace.as_ref(), &caller, None, Some("pipe"), "password"),
-        )
-        .await
-        .expect("the fifo read does not hang");
-        let error = read.expect_err("a fifo is refused");
-        assert!(error.to_string().contains("not a regular file"), "{error}");
+        // The control has to fail rather than hang: if the is_file guard went
+        // away, the read would block in the blocking pool forever, and a
+        // panic on a tokio timeout would wait on that pool at teardown. A
+        // plain thread with a channel timeout reports the wedge as red.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = Arc::clone(&workspace);
+        let seat = caller.clone();
+        let handle = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a runtime");
+            let result = runtime.block_on(resolve_credential_file(
+                worker.as_ref(),
+                &seat,
+                None,
+                Some("pipe"),
+                "password",
+            ));
+            let _ = tx.send(result);
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(Err(error)) => {
+                assert!(error.to_string().contains("not a regular file"), "{error}");
+            }
+            Ok(Ok(_)) => panic!("a fifo is not refused"),
+            Err(error) => panic!("the fifo read did not return within 5s: {error}"),
+        }
+        let _ = handle.join();
     }
 
     /// One trailing newline is the file writer's, not the value's, so it is
@@ -4557,6 +4629,21 @@ mod tests {
         assert!(
             error.to_string().contains("outside this session's working directory"),
             "the attachment wording is reused: {error}",
+        );
+    }
+
+    /// Making `patch` optional must not turn an empty update into a no-op:
+    /// with no field and no file, the facade still refuses.
+    #[tokio::test]
+    async fn an_update_with_no_field_and_no_file_changes_nothing() {
+        let (_workspace, facade, caller, _dir, _rx) = locked_worker_workspace();
+        let error = facade
+            .update(&caller, "item-1", &PatchInput::default(), None, None)
+            .await
+            .expect_err("an empty patch is refused");
+        assert!(
+            error.to_string().contains("the patch changes no fields"),
+            "the existing refusal is kept: {error}",
         );
     }
 
