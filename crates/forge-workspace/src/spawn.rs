@@ -11699,6 +11699,41 @@ mod lead_charter_tests {
         );
     }
 
+    /// Forge mints `worktree-<label>` for a worker by default, but a
+    /// worker may switch away from it: the merge gate must not read the
+    /// worktree's branch as the PR's head, because a fix pushed to the
+    /// wrong branch is silently absent after a squash merge.
+    #[test]
+    fn lead_charter_keeps_a_pr_head_apart_from_the_worktree_branch() {
+        for (token, why) in [
+            (
+                "A worker's PR head branch need not be its worktree's `worktree-<label>` branch",
+                "the default branch is not necessarily the PR's head",
+            ),
+            (
+                "forge mints that branch by default, but a worker may switch away",
+                "the default and the switch that departs from it",
+            ),
+            (
+                "a squash merge takes the worker's last head with the fix silently absent",
+                "what the merge then loses",
+            ),
+            (
+                "gh pr view <N> --json headRefName",
+                "read the head branch off the PR before pushing to it",
+            ),
+            (
+                "git show <merge-sha>:<path>",
+                "verify the merged content, not just that the merge succeeded",
+            ),
+        ] {
+            assert!(
+                DEFAULT_LEAD_CHARTER.contains(token),
+                "bundled lead charter drops '{token}' ({why})"
+            );
+        }
+    }
+
     /// A recreated worker tree can sit a day behind origin/main with a clean
     /// `git status`, because status answers "uncommitted changes", not
     /// "current". The re-spawn sentence carries the lineage check.

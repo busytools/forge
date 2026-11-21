@@ -180,7 +180,9 @@ impl Tool for Create {
          with cron__delete). Recurring crons repeat; run-once crons delete themselves after \
          firing. A run-once cron is a poor fit for retrying a transient failure - a rate limit \
          or a blip clears in seconds, so the retry fires later as a user turn into a session \
-         that has moved on. The cron is registered to you, and cron__list and cron__delete act \
+         that has moved on. There is no cron update tool: to correct a stored prompt, create the \
+         corrected cron first, confirm it exists, then delete the old one. The cron is registered \
+         to you, and cron__list and cron__delete act \
          on the crons you registered. Any session in the project may create crons."
     }
 
@@ -288,7 +290,11 @@ impl Tool for List {
         "List the durable crons you registered, in your project. Returns a JSON array of {id, \
          project, schedule, prompt, next_fire}. Use an id with cron__delete. An empty array means \
          you have no crons registered; an unresolvable caller, or a run that could not read the \
-         durable cron store, is an error rather than an empty list. Takes no \
+         durable cron store, is an error rather than an empty list. A cron's prompt is not used \
+         until it fires, so a forge tool rename leaves it instructing a call that no longer exists \
+         and nothing fails at rest: after any forge tool rename, read the prompts this returns \
+         for old tool names and for state they assert, not just the schedules. cron__create \
+         carries the only correction route, since a cron cannot be edited. Takes no \
          arguments. Any session in the project may call this."
     }
 
@@ -842,6 +848,47 @@ mod tests {
             desc.contains("the retry fires later as a user turn into a session that has moved on"),
             "the reason the retry is stale is pinned: {desc}",
         );
+    }
+
+    /// A cron's prompt is stored text, not used until it fires: a tool
+    /// rename leaves it instructing a call that no longer exists and
+    /// nothing fails at rest, so the list description carries the audit a
+    /// rename triggers and the create description carries the only
+    /// correction route.
+    #[test]
+    fn cron_descriptions_carry_the_stale_prompt_rule() {
+        let mock = MockCronFacade::new().into_arc();
+        let slot = caller_slot();
+        let create = Create { facade: mock.clone(), slot: slot.clone() };
+        let list = List { facade: mock, slot };
+        let list_desc = list.description();
+        let create_desc = create.description();
+        for (clause, why) in [
+            ("A cron's prompt is not used until it fires", "why a rename leaves it stale"),
+            (
+                "after any forge tool rename, read the prompts this returns for old tool names \
+                 and for state they assert, not just the schedules",
+                "the audit a rename triggers",
+            ),
+            (
+                "cron__create carries the only correction route, since a cron cannot be edited",
+                "the correction route a reader is sent to",
+            ),
+        ] {
+            assert!(list_desc.contains(clause), "cron__list drops '{clause}' ({why}): {list_desc}");
+        }
+        for (clause, why) in [
+            ("There is no cron update tool", "the missing capability"),
+            (
+                "create the corrected cron first, confirm it exists, then delete the old one",
+                "the only correction route",
+            ),
+        ] {
+            assert!(
+                create_desc.contains(clause),
+                "cron__create drops '{clause}' ({why}): {create_desc}"
+            );
+        }
     }
 
     /// Any-caller is an affordance a caller-scoped description cannot

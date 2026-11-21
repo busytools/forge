@@ -93,7 +93,11 @@ across forge restarts and re-spawn this session if it isn't open at \
 fire time, unless it can no longer be started. Reach for this whenever \
 the user wants recurring or deferred \
 work - a morning summary, a reminder, a follow-up check later - rather \
-than assuming you can only act in the current turn.";
+than assuming you can only act in the current turn.\n\
+\n\
+After a forge tool rename, read the stored cron prompts for old tool \
+names: a prompt is not used until it fires, so a stale one keeps \
+instructing a call that no longer exists and nothing fails at rest.";
 
 /// Append-text for what forge's own surfaces depend on and the CLI
 /// cannot know: the tool tree labels a Bash card with the
@@ -245,6 +249,17 @@ relayed approval is not an approval: the seat that executes a gated \
 action needs the user's approval in its own conversation, and a lead's \
 or a peer's relay of it does not clear the permission layer - so relay \
 the ask, not the go-ahead.\n\
+\n\
+Never answer a question put to the person on their behalf. A permission \
+request or a question from the CLI is a question asked of the person. A \
+person who is there gets no deadline: the ask stays parked until they \
+answer, and a client that connects after the prompt landed draws the \
+pending ask from the session snapshot (`pending_asks`), so nothing is \
+lost when the connection that received it goes away. Do not add a timeout \
+that auto-denies one. A request nobody can answer is the other case: with \
+no answering subscriber attached at arrival, forge resolves it \
+`Cancelled` so the request fails rather than hanging the turn, and that \
+fail-closed branch is the intended behaviour.\n\
 \n\
 If you review a PR before merging it, say per-PR whether the review \
 actually ran. When something blocks it, say so on that PR every time \
@@ -2249,10 +2264,10 @@ pub(crate) fn reported_percentage(p: f64) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        FORGE_SESSION_CONDUCT_SYSTEM_PROMPT, PendingQuestions, PendingResponses, SessionId,
-        build_forge_system_prompt, deliver_permission_response, deliver_question_response,
-        frame_session_id, initial_mode_state, log_failed_mcp_servers, reported_percentage,
-        run_ask_user_question, synth_permission_request,
+        FORGE_CRON_SYSTEM_PROMPT, FORGE_SESSION_CONDUCT_SYSTEM_PROMPT, PendingQuestions,
+        PendingResponses, SessionId, build_forge_system_prompt, deliver_permission_response,
+        deliver_question_response, frame_session_id, initial_mode_state, log_failed_mcp_servers,
+        reported_percentage, run_ask_user_question, synth_permission_request,
     };
 
     /// Buffer tracing output so an emitted record can be read back.
@@ -3566,6 +3581,45 @@ mod tests {
             !FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("/forge.toml"),
             "the block advertises the config path",
         );
+    }
+
+    /// **A question put to the person is never answered on their behalf.**
+    /// The CLI waiting is the design, a client that connects late draws the
+    /// ask from the session snapshot, and a timeout that auto-denies one is
+    /// the defect this rule exists to prevent.
+    #[test]
+    fn the_conduct_block_never_answers_a_question_put_to_the_person() {
+        let block = FORGE_SESSION_CONDUCT_SYSTEM_PROMPT;
+        for (clause, why) in [
+            ("Never answer a question put to the person on their behalf", "the rule itself"),
+            ("A person who is there gets no deadline", "the parked ask has no timeout"),
+            (
+                "so the request fails rather than hanging the turn",
+                "the fail-closed branch is deliberate, and it fails the request, not the turn",
+            ),
+            (
+                "draws the pending ask from the session snapshot (`pending_asks`)",
+                "a late connection loses nothing",
+            ),
+            ("Do not add a timeout that auto-denies one", "the timeout this forbids"),
+        ] {
+            assert!(block.contains(clause), "the conduct block drops '{clause}' ({why})");
+        }
+    }
+
+    /// **The cron block is always on, and a resumed seat keeps the tool
+    /// catalogue it was spawned with** - it never re-reads a changed
+    /// `cron__list` description, so the stale-prompt trigger lives here.
+    #[test]
+    fn the_cron_block_carries_the_stale_prompt_rule() {
+        let block = FORGE_CRON_SYSTEM_PROMPT;
+        for (clause, why) in [
+            ("After a forge tool rename", "the trigger"),
+            ("read the stored cron prompts for old tool names", "the audit"),
+            ("a prompt is not used until it fires", "why the prompt is stale"),
+        ] {
+            assert!(block.contains(clause), "the cron block drops '{clause}' ({why})");
+        }
     }
 
     #[test]
