@@ -146,7 +146,13 @@ impl TerminalTool {
             }
             Self::HandOff => {
                 "Hand this seat's terminal to the person at a client for the one thing only they \
-                 can do: a password, a sudo confirmation, a Y/N prompt, a device sign-in. The \
+                 can do: a password, a sudo confirmation, a Y/N prompt, a device sign-in. \
+                 Before any hand-off or ask that needs a login or a credential, search the \
+                 vault for the service when this session carries the vault family and reveal \
+                 what you need with `vault__get` (or `vault__totp_code`); sign in with the \
+                 stored item, and hand off only when the vault has no entry or the step \
+                 genuinely needs the person - a push approval, a device confirmation, a \
+                 CAPTCHA. The \
                  ask draws a card on the seat's strip and parks, with no timeout, until they \
                  answer; if the surface is not up, the card's Open terminal button raises it. \
                  **You are blind while it is parked**: terminal__read and terminal__write are \
@@ -678,6 +684,24 @@ mod tests {
         );
         for name in &names {
             assert!(name.starts_with("terminal__"), "{name} is under the terminal family");
+        }
+    }
+
+    /// **A stored credential is looked up before the terminal hands off for
+    /// one.** The description is read at the moment of the call, and it used
+    /// to offer a password as a thing to hand off with no vault-first rule.
+    #[test]
+    fn a_terminal_hand_off_looks_in_the_vault_before_asking_for_a_password() {
+        let description = TerminalTool::HandOff.description();
+        for phrase in [
+            "Before any hand-off or ask that needs a login or a credential, search the vault for \
+             the service when this session carries the vault family",
+            "reveal what you need with `vault__get` (or `vault__totp_code`)",
+            "sign in with the stored item, and hand off only when the vault has no entry",
+            "the step genuinely needs the person - a push approval, a device confirmation, a \
+             CAPTCHA",
+        ] {
+            assert!(description.contains(phrase), "the vault-first rule is stated: {description}");
         }
     }
 

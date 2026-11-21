@@ -756,7 +756,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "browser_hand_off",
-            description: "Ask the person at the client to act in the browser - solve a CAPTCHA, sign in, confirm something only they can - and wait for their word. Before a hand-off or any ask that needs a login or a credential, search the vault for the service when this session carries the vault family; sign in with the stored item, and hand off only when the vault has no entry or the step genuinely needs the person - a push approval, a device confirmation, a CAPTCHA. **A visual artifact - an HTML mockup, a PNG - is raised here**: navigate to it first, then hand off the tab it landed on; a document - Markdown, PDF, plain text - goes through `documents__hand_off`, never this tool. The prompt sits with no timeout, like any other ask; it returns once they are done, send you a message about the page, or decline. The raise shows the page this session has been driving, exactly as it stands, and their answer does not close it: prepare the page first, and the person acts on the very page you prepared.",
+            description: "Ask the person at the client to act in the browser - solve a CAPTCHA, sign in, confirm something only they can - and wait for their word. Before any hand-off or ask that needs a login or a credential, search the vault for the service when this session carries the vault family and reveal what you need with `vault__get` (or `vault__totp_code`); sign in with the stored item, and hand off only when the vault has no entry or the step genuinely needs the person - a push approval, a device confirmation, a CAPTCHA. **A visual artifact - an HTML mockup, a PNG - is raised here**: navigate to it first, then hand off the tab it landed on; a document - Markdown, PDF, plain text - goes through `documents__hand_off`, never this tool. The prompt sits with no timeout, like any other ask; it returns once they are done, send you a message about the page, or decline. The raise shows the page this session has been driving, exactly as it stands, and their answer does not close it: prepare the page first, and the person acts on the very page you prepared.",
             schema: json!({
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "type": "object",
@@ -890,8 +890,9 @@ mod tests {
         let spec =
             specs().into_iter().find(|spec| spec.name == "browser_hand_off").expect("the tool");
         for phrase in [
-            "Before a hand-off or any ask that needs a login or a credential, search the vault \
-             for the service when this session carries the vault family",
+            "Before any hand-off or ask that needs a login or a credential, search the vault for \
+             the service when this session carries the vault family",
+            "reveal what you need with `vault__get` (or `vault__totp_code`)",
             "sign in with the stored item, and hand off only when the vault has no entry",
             "the step genuinely needs the person - a push approval, a device confirmation, a \
              CAPTCHA",

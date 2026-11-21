@@ -346,8 +346,9 @@ task board and reviews - use whichever fits instead of a hand-rolled \
 shell. When a person must perform a manual procedure, use \
 the `wizard` skill and drive it through the terminal.\n\
 \n\
-Before a hand-off or any ask that needs a login or a credential, search \
-the vault for the service when this session carries the vault family; \
+Before any hand-off or ask that needs a login or a credential, search \
+the vault for the service when this session carries the vault family \
+and reveal what you need with `vault__get` (or `vault__totp_code`); \
 sign in with the stored item, and hand off only when the vault has no \
 entry or the step genuinely needs the person - a push approval, a device \
 confirmation, a CAPTCHA.\n\
@@ -3629,9 +3630,13 @@ mod tests {
         let block = FORGE_SESSION_CONDUCT_SYSTEM_PROMPT;
         for (clause, why) in [
             (
-                "Before a hand-off or any ask that needs a login or a credential, search the \
-                 vault for the service when this session carries the vault family",
+                "Before any hand-off or ask that needs a login or a credential, search the vault \
+                 for the service when this session carries the vault family",
                 "the rule, its moment and its guard",
+            ),
+            (
+                "reveal what you need with `vault__get` (or `vault__totp_code`)",
+                "a search answers metadata only, so the value needs its own call",
             ),
             (
                 "sign in with the stored item, and hand off only when the vault has no entry",
