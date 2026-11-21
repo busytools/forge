@@ -382,7 +382,7 @@ need to your reader when you have no peer channel.\n\
 \n\
 A credential you create or receive - an account password, an API key, a \
 token - is stored in the vault as an item in the same turn. A script-only \
-file is at most an automation copy, never the record; `vault__create`'s \
+file is at most an automation copy, never the record; the vault tools' \
 file inputs take a path, so the value never has to cross this session.\n\
 \n\
 Slack is reached through the `slack__*` tools and no other way. Never \
@@ -3605,7 +3605,7 @@ mod tests {
                 "the file's place",
             ),
             (
-                "`vault__create`'s file inputs take a path, so the value never has to cross this \
+                "the vault tools' file inputs take a path, so the value never has to cross this \
                  session",
                 "the route that keeps the value out of the transcript",
             ),

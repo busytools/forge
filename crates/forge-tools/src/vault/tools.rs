@@ -234,7 +234,7 @@ impl VaultTools {
                         "additionalProperties": false,
                     }
                 },
-                "required": ["id", "patch"],
+                "required": ["id"],
                 "additionalProperties": false,
             }),
             VaultTool::Trash | VaultTool::Restore | VaultTool::TotpCode => serde_json::json!({
@@ -320,6 +320,7 @@ impl VaultTools {
                 #[derive(serde::Deserialize)]
                 struct Args {
                     id: String,
+                    #[serde(default)]
                     patch: PatchInput,
                     #[serde(default)]
                     password_file: Option<String>,
@@ -587,6 +588,67 @@ mod tests {
             assert!(create["properties"].get(field).is_some(), "create names {field}");
             assert!(update["properties"].get(field).is_some(), "update names {field}");
         }
+    }
+
+    /// A file-only update is the call the feature exists for, so `patch`
+    /// must not be required; the facade sees a non-empty patch once the file
+    /// is resolved.
+    #[test]
+    fn an_update_schema_does_not_require_a_patch() {
+        let schema = VaultTools::schema(VaultTool::Update);
+        assert_eq!(schema["required"], json!(["id"]));
+    }
+
+    /// The tool hands the facade a path, never a value: the arguments carry
+    /// `password_file` and the parsed input carries no password.
+    #[tokio::test]
+    async fn a_create_with_a_password_file_hands_the_facade_a_path() {
+        let facade = Arc::new(MockVaultFacade::new());
+        let family = VaultTools::new(
+            Arc::clone(&facade) as Arc<dyn VaultFacade>,
+            SessionSlot::lead("Default", "forge"),
+        );
+        let output = family
+            .call("vault__create", json!({ "name": "pinterest", "password_file": "pinterest.txt" }))
+            .await
+            .expect("the family owns the tool")
+            .expect("the call answers");
+        assert!(!output.is_error, "{output:?}");
+
+        let creates = facade.creates();
+        assert_eq!(creates.len(), 1);
+        assert_eq!(creates[0].password_file.as_deref(), Some("pinterest.txt"));
+        assert!(creates[0].password.is_none(), "no value crossed the call");
+    }
+
+    /// A file-only update needs no `patch` key, and each path lands in its
+    /// own slot: a positional swap would put the password file in
+    /// `notes_file` and vice versa, with every other test still passing.
+    #[tokio::test]
+    async fn a_file_only_update_keeps_each_path_in_its_own_field() {
+        let facade = Arc::new(MockVaultFacade::new());
+        let family = VaultTools::new(
+            Arc::clone(&facade) as Arc<dyn VaultFacade>,
+            SessionSlot::lead("Default", "forge"),
+        );
+        let output = family
+            .call(
+                "vault__update",
+                json!({
+                    "id": "item-1",
+                    "password_file": "pw.txt",
+                    "notes_file": "note.txt",
+                }),
+            )
+            .await
+            .expect("the family owns the tool")
+            .expect("the call answers");
+        assert!(!output.is_error, "{output:?}");
+
+        assert_eq!(
+            facade.update_files(),
+            vec![(Some("pw.txt".to_owned()), Some("note.txt".to_owned()))],
+        );
     }
 
     /// A malformed argument fails before the facade runs.
