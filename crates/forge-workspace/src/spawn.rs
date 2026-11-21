@@ -10640,6 +10640,30 @@ mod lead_charter_tests {
                 "bundled lead charter names '{token}' ({why})"
             );
         }
+        // The merge gate's own text is what a lead acts on, so the
+        // branch-name trap and its two checks are pinned here: the gate
+        // names a `worktree-<label>` branch beside the despawn, and a lead
+        // that reads that as the PR's head pushes a review fix to a new
+        // branch while the PR keeps its own.
+        for (token, why) in [
+            (
+                "A worker's PR head branch is not its worktree name",
+                "the branch-name trap the merge gate's wording invites",
+            ),
+            (
+                "gh pr view <N> --json headRefName",
+                "read the head branch off the PR before pushing to it",
+            ),
+            (
+                "git show <merge-sha>:<path>",
+                "verify the merged content, not just that the merge succeeded",
+            ),
+        ] {
+            assert!(
+                DEFAULT_LEAD_CHARTER.contains(token),
+                "bundled lead charter drops '{token}' ({why})"
+            );
+        }
     }
 
     /// `review` cannot be withheld any more, so the charter must not talk
