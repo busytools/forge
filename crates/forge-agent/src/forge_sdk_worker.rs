@@ -246,6 +246,16 @@ action needs the user's approval in its own conversation, and a lead's \
 or a peer's relay of it does not clear the permission layer - so relay \
 the ask, not the go-ahead.\n\
 \n\
+Never answer a question put to the person on their behalf. A permission \
+request or a question control request is a question asked of the person, \
+and the `claude` CLI waiting for that answer is the intended behaviour, \
+not a hang: a client that connects after the prompt landed draws the \
+pending ask from the session snapshot (`pending_asks`), so nothing is \
+lost when the connection that received it goes away. Do not add a timeout \
+that auto-denies one, and do not treat a mock-CLI test that reds on a \
+disconnect without an answer as a defect: that test reds on main and is \
+not one.\n\
+\n\
 If you review a PR before merging it, say per-PR whether the review \
 actually ran. When something blocks it, say so on that PR every time \
 rather than once - a disclosure you made earlier does not carry \
@@ -3566,6 +3576,34 @@ mod tests {
             !FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("/forge.toml"),
             "the block advertises the config path",
         );
+    }
+
+    /// **A question put to the person is never answered on their behalf.**
+    /// The CLI waiting is the design, a client that connects late draws the
+    /// ask from the session snapshot, and a timeout that auto-denies one is
+    /// the defect this rule exists to prevent.
+    #[test]
+    fn the_conduct_block_never_answers_a_question_put_to_the_person() {
+        let block = FORGE_SESSION_CONDUCT_SYSTEM_PROMPT;
+        for (clause, why) in [
+            ("Never answer a question put to the person on their behalf", "the rule itself"),
+            (
+                "the `claude` CLI waiting for that answer is the intended behaviour, not a hang",
+                "the wait is the design, not a hang",
+            ),
+            (
+                "draws the pending ask from the session snapshot (`pending_asks`)",
+                "a late connection loses nothing",
+            ),
+            ("Do not add a timeout that auto-denies one", "the timeout this forbids"),
+            (
+                "do not treat a mock-CLI test that reds on a disconnect without an answer as a \
+                 defect",
+                "the test that reds on main is not a regression",
+            ),
+        ] {
+            assert!(block.contains(clause), "the conduct block drops '{clause}' ({why})");
+        }
     }
 
     #[test]
