@@ -2109,7 +2109,7 @@ port = 49201
 
     /// How many times the appended gate ran.
     fn gate_runs(marker: &std::path::Path) -> usize {
-        std::fs::read_to_string(marker).map(|text| text.lines().count()).unwrap_or(0)
+        std::fs::read_to_string(marker).map_or(0, |text| text.lines().count())
     }
 
     /// **The gate runs exactly once on the real boot path, before the
