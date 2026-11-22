@@ -288,6 +288,14 @@ at `~/.zsh/completions/_forge` (override the directory with
 shell picks it up. On macOS it also stages the browser host and its
 driver; `FORGE_INSTALL_BROWSER=0` skips that stage.
 
+On macOS the staged binary and its libraries are signed with a Developer
+ID identity before the install - the first `Developer ID Application`
+identity the machine holds, or `FORGE_SIGN_IDENTITY` to name one. A
+machine with no such identity installs ad-hoc, as before. The stable
+identity is what keeps a macOS privacy grant, Full Disk Access among
+them, across updates: an ad-hoc build gets a new cdhash on every install
+and macOS treats each one as a different app.
+
 `just release <version>` installs this binary too, and publishes the
 release. It bumps the workspace and the client's manifest to the same
 number, commits and tags them, then installs the server binary through

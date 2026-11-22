@@ -31,7 +31,7 @@ FORGE_REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help)
-            sed -n '2,22p' "$0"
+            sed -n '2,24p' "$0"
             exit 0
             ;;
         *)
@@ -184,16 +184,20 @@ fi
 # the same rename.
 mkdir -p "$FORGE_BIN_DIR"
 trap 'rm -f "$FORGE_BIN_DIR"/.*.new' EXIT
-for staged in "$FORGE_TRANSCRIBE_LIBS"/*; do
+# **The signed staging tree is the source, not the build tree.** Signing
+# happens on the staged copies, so installing from the build tree would ship
+# ad-hoc libraries beside a hardened binary and the start check would fail.
+for staged in "$STAGING_ROOT/bin"/*; do
     [ -e "$staged" ] || continue
     if [ -L "$staged" ]; then
         continue
     fi
+    [ "$staged" = "$STAGED_BIN" ] && continue
     name="${staged##*/}"
     cp "$staged" "$FORGE_BIN_DIR/.$name.new"
     mv -f "$FORGE_BIN_DIR/.$name.new" "$FORGE_BIN_DIR/$name"
 done
-for staged in "$FORGE_TRANSCRIBE_LIBS"/*; do
+for staged in "$STAGING_ROOT/bin"/*; do
     [ -L "$staged" ] || continue
     ln -sfn "$(readlink "$staged")" "$FORGE_BIN_DIR/${staged##*/}"
 done
@@ -207,7 +211,7 @@ run_binary "$FORGE_BIN" --version > /dev/null \
 # prefixes are the runtime libraries forge ships.
 for installed in "$FORGE_BIN_DIR"/libtranscribe* "$FORGE_BIN_DIR"/libggml*; do
     [ -e "$installed" ] || [ -L "$installed" ] || continue
-    staged="$FORGE_TRANSCRIBE_LIBS/${installed##*/}"
+    staged="$STAGING_ROOT/bin/${installed##*/}"
     [ -e "$staged" ] || [ -L "$staged" ] || rm -f "$installed"
 done
 trap - EXIT
