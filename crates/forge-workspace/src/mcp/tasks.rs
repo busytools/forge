@@ -616,8 +616,8 @@ impl Tool for List {
     }
 
     fn description(&self) -> &'static str {
-        "List the board of YOUR project. The default read is the rows still in play - \
-         pending, in_progress and waiting - as compact rows: id, subject, status, owner, \
+        "List the board of YOUR project. The default read returns pending, in_progress, \
+         waiting and failed rows as compact rows: id, subject, status, owner, \
          estimate, artifact, verify and reserved state, plus what the board derives: `worked` \
          time against the estimate, the marks (ready, in_review, overdue, no_movement, \
          waiting_too_long, stale, to_close), the wait it is on, and a parent's rollup - under \
@@ -2354,7 +2354,7 @@ mod tests {
     fn the_list_description_states_the_compact_default_and_the_detail_opt_in() {
         let tool = List { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
         for clause in [
-            "The default read is the rows still in play - pending, in_progress and waiting",
+            "The default read returns pending, in_progress, waiting and failed rows",
             "A completed or canceled row is left out",
             "the read ends with a line counting what was withheld by status",
             "a `status` filter overrides that default",
