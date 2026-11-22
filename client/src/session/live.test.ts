@@ -804,8 +804,8 @@ describe('the session page over a socket', () => {
     // **And the one subscribe is the page's own role.** Nothing else opens a
     // subscription for the seat - the conversation only folds its frames - so
     // the page that can answer is what opens it, as itself. A subscription
-    // opened as an observer first would cancel every prompt the page could
-    // have drawn at birth.
+    // opened as an observer first would leave this page unhanded a browser
+    // or terminal hand-off raised on the seat.
     expect(
       seatSubscribe()?.answering,
       'the seat was subscribed under a weaker role than the page declares',

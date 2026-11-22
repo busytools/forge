@@ -8535,9 +8535,10 @@ impl Workspace {
         // what leaves the PTY, its shell and its scrollback untouched.
         self.close_terminal(session_key);
         crate::dictate::teardown_for_closed_session(&self.dictate, session_key);
-        // **Every ask the gone session was holding ends with it**, whichever
-        // registry it sits in. The blocked tool handlers are detached control
-        // tasks, so nothing else answers them.
+        // **Every tool ask the gone session was holding ends with it**: the
+        // settings write, vault call, Slack draft and document hand-off
+        // registries. The blocked handlers are detached control tasks, so
+        // nothing else answers them.
         self.abandon_asks_for(session_key);
         // Anything parked for this session's owner was waiting on a
         // session that is now gone: fail the peer asks so their callers
@@ -8555,7 +8556,9 @@ impl Workspace {
         // answers it, and a shutdown may still be waiting on that answer.
     }
 
-    /// End every parked ask `slot` still holds, whichever registry it sits in.
+    /// End every parked tool ask `slot` still holds: the settings write,
+    /// vault call, Slack draft and document hand-off registries. The browser
+    /// and terminal hand-offs are their own paths and are not swept here.
     ///
     /// **A tool ask outlives the session that raised it.** The blocked tool
     /// handler is a detached control task, so its future is not dropped when
@@ -16304,9 +16307,21 @@ provider = "anthropic"
         assert_eq!(workspace.slack.held_drafts().len(), 0, "the draft is gone");
         assert!(!workspace.document_handoff_waiting(document_id, &slot), "the hand-off is gone");
         for (ended, name) in [
-            (settings.try_recv().is_err(), "settings write"),
-            (vault.try_recv().is_err(), "vault call"),
-            (slack.try_recv().is_err(), "Slack draft"),
+            (
+                matches!(
+                    settings.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+                ),
+                "settings write",
+            ),
+            (
+                matches!(vault.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Closed)),
+                "vault call",
+            ),
+            (
+                matches!(slack.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Closed)),
+                "Slack draft",
+            ),
             (
                 matches!(
                     document.try_recv(),

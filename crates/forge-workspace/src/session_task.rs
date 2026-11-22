@@ -10191,9 +10191,21 @@ provider = "anthropic"
         assert!(!workspace.document_handoff_waiting(document_id, &key), "the hand-off is gone");
         assert_eq!(workspace.slack.held_drafts().len(), 0, "the draft is gone");
         for (ended, name) in [
-            (settings.try_recv().is_err(), "settings write"),
-            (vault.try_recv().is_err(), "vault call"),
-            (slack.try_recv().is_err(), "Slack draft"),
+            (
+                matches!(
+                    settings.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+                ),
+                "settings write",
+            ),
+            (
+                matches!(vault.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Closed)),
+                "vault call",
+            ),
+            (
+                matches!(slack.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Closed)),
+                "Slack draft",
+            ),
             (
                 matches!(
                     document.try_recv(),

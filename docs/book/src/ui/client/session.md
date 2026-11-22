@@ -248,9 +248,10 @@ read as one system.
   while it waits**: the dock is its row. It draws as a card instead - the
   words the reader was asked, marked `unanswered`, with nothing picked or
   typed under them - the moment its own result lands with no answer on
-  record (the session went away with the ask still parked), or the turn
-  closes on it. A question whose result came back an error, or one the CLI
-  refused before it ran, keeps its call row instead.
+  record (the reader dismissing the dock), or the turn closes on it, which
+  is how a question parked when its session went away ends. A question
+  whose result came back an error, or one the CLI refused before it ran,
+  keeps its call row instead.
 - **A model swap, a memory recall, a local command and a project's
   development intent each draw a row of their own.** A model fallback (and a
   refusal retry, a refusal with no fallback, and the Fable consent gate) draws
