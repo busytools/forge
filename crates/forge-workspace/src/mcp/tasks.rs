@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use forge_sdk::mcp::server::McpServerBuilder;
-use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput};
+use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 
 use forge_primitives::tasks::{LinkKind, Task, TaskId, TaskStatus, WaitingKind};
 
@@ -705,12 +705,17 @@ impl Tool for List {
             .collect();
         match serde_json::to_string_pretty(&serde_json::Value::Array(arr)) {
             Ok(json) => {
-                let mut text = format!("now {}\n{json}", fmt_rfc3339(SystemTime::now()));
+                let mut blocks = vec![ToolOutputBlock::Text {
+                    text: format!("now {}\n{json}", fmt_rfc3339(SystemTime::now())),
+                }];
+                // The closing line is its OWN block: the first block stays
+                // the clock line plus the rows array, which is what a card
+                // parses, and the extra block is drawn beside it rather
+                // than swallowed.
                 if let Some(line) = withheld_line(&withheld) {
-                    text.push_str("\n\n");
-                    text.push_str(&line);
+                    blocks.push(ToolOutputBlock::Text { text: line });
                 }
-                ToolOutput::text(text)
+                ToolOutput { blocks, is_error: false }
             }
             Err(err) => tool_error(format!("task-list serialization failed: {err}")),
         }
@@ -1046,7 +1051,7 @@ impl Tool for Approve {
 mod tests {
     use super::*;
     use crate::mcp::tasks::facade::{MockTasksFacade, RemovedTaskTree};
-    use crate::mcp::test_support::text_of;
+    use crate::mcp::test_support::{block_text, text_of};
     use forge_primitives::tasks::{Attestation, Estimate, ReservedBy, TaskLink, Waiting};
 
     fn lead_slot() -> SessionSlot {
@@ -2129,16 +2134,15 @@ mod tests {
         row
     }
 
-    /// The rows array under the dated header line, and the closing line
-    /// when the default withheld terminal rows.
+    /// The rows array under the dated header line in the FIRST block, and
+    /// the closing line as its own second block when the default withheld
+    /// finished rows.
     fn listed(out: &ToolOutput) -> (serde_json::Value, Option<String>) {
         let text = text_of(out);
         let body = text.split_once('\n').expect("a header line then the rows").1;
-        let (json, tail) = match body.split_once("\n\n") {
-            Some((json, tail)) => (json, Some(tail.to_owned())),
-            None => (body, None),
-        };
-        (serde_json::from_str(json).expect("the body is the rows array"), tail)
+        let json = serde_json::from_str(body).expect("the body is the rows array");
+        let tail = out.blocks.get(1).map(block_text).map(str::to_owned);
+        (json, tail)
     }
 
     fn listed_json(out: &ToolOutput) -> serde_json::Value {
@@ -2161,6 +2165,7 @@ mod tests {
         facade.rows.lock().push(rich_row());
         let out = List { facade, slot: lead_slot() }.call(input(serde_json::json!({}))).await;
         assert!(!out.is_error, "list succeeds: {out:?}");
+        assert_eq!(out.blocks.len(), 1, "a read that withheld nothing is one block: {out:?}");
         let json = listed_json(&out);
         let row = &json[0];
         for (key, value) in [
@@ -2211,6 +2216,11 @@ mod tests {
         ]);
         let out = List { facade, slot: lead_slot() }.call(input(serde_json::json!({}))).await;
         assert!(!out.is_error, "list succeeds: {out:?}");
+        assert_eq!(
+            out.blocks.len(),
+            2,
+            "the withheld line is its own block, so the rows stay parseable: {out:?}",
+        );
         let (json, tail) = listed(&out);
         let ids: Vec<&str> = json
             .as_array()
@@ -2246,6 +2256,7 @@ mod tests {
             .call(input(serde_json::json!({ "status": "completed" })))
             .await;
         assert!(!out.is_error, "list succeeds: {out:?}");
+        assert_eq!(out.blocks.len(), 1, "a stated status withholds nothing: {out:?}");
         let (json, tail) = listed(&out);
         assert_eq!(json[0]["id"], "t-done", "the asked-for status is returned: {json}");
         assert_eq!(json.as_array().expect("an array").len(), 1);
