@@ -1028,6 +1028,49 @@ async fn a_second_instance_is_refused_with_the_holders_pid() {
     assert!(status.success(), "and it stops clean: {status}");
 }
 
+/// **A refusing gate exits the process non-zero**, through the real binary.
+/// The `?` at the boot site is what carries the gate's failure out: without
+/// it the boot continues and serves behind a gate that said no.
+#[tokio::test]
+async fn a_refusing_startup_gate_exits_the_process_non_zero() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (port, gateway) = two_free_ports();
+    let (home, config) = write_fixture(dir.path(), port, gateway);
+    let script = dir.path().join("forge-startup-gate.sh");
+    std::fs::write(&script, "#!/bin/sh\nexit 7\n").expect("write the gate");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let path = config.join("forge/forge.toml");
+    let raw = std::fs::read_to_string(&path).expect("read forge.toml");
+    std::fs::write(
+        &path,
+        raw.replace(
+            "[server]\nenabled = true",
+            &format!("[server]\nenabled = true\nstartup_gate = \"{}\"", script.display()),
+        ),
+    )
+    .expect("add the gate");
+
+    let log = home.join("server.log");
+    let boot = tokio::time::timeout(WEDGE, server_command(&home, &config, &log).output())
+        .await
+        .expect("the refused boot answers within the wedge")
+        .expect("the boot runs");
+
+    assert!(!boot.status.success(), "a refusing gate fails the process: {}", boot.status);
+    let stderr = String::from_utf8_lossy(&boot.stderr);
+    assert!(
+        stderr.contains("startup_gate") && stderr.contains("exited 7"),
+        "the exit names the gate and its code: {stderr}",
+    );
+    let logged = std::fs::read_to_string(&log).expect("the tracing log");
+    assert!(
+        logged.contains("startup_gate_failed") && logged.contains("exit_code"),
+        "the tracing record names the failure: {logged}",
+    );
+}
+
 /// **A port another process took between the pick and the bind is retried.**
 /// [`two_free_ports`] releases its listeners before the child binds, so a
 /// whole-workspace nextest run can lose that race; the boot's own bind

@@ -105,6 +105,74 @@ fn install_crypto_provider() {
     );
 }
 
+/// Run the `[server] startup_gate` command, once, before anything binds or
+/// serves.
+///
+/// **A configured path is never skipped.** A path that is missing, not
+/// executable, or otherwise unspawnable fails the boot the same way a
+/// non-zero exit does: a gate that silently did not run is worse than no
+/// gate, because the daemon that replaced the machine's own launcher now
+/// depends on it. An absent key is the only case that runs nothing.
+///
+/// **No timeout.** The gate may loop for minutes waiting on the machine's
+/// own infrastructure, and killing it would start that work over. The boot
+/// waits as long as the script takes.
+///
+/// **The child inherits the server's stdout and stderr**, so the gate's
+/// lines land wherever the server's own do - under the launchd daemon,
+/// the log its plist redirects the process's output to - and they appear
+/// as the gate writes them rather than after it exits.
+fn run_startup_gate(server: &forge_primitives::ServerConfig) -> anyhow::Result<()> {
+    let Some(command) = server.startup_gate.as_deref() else {
+        return Ok(());
+    };
+    tracing::info!(
+        target: crate::logging::targets::APP_LIFECYCLE,
+        event_name = "startup_gate_started",
+        command,
+        "the startup gate is running; the boot holds until it exits",
+    );
+    let status = std::process::Command::new(command)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .map_err(|error| {
+            tracing::error!(
+                target: crate::logging::targets::APP_LIFECYCLE,
+                event_name = "startup_gate_failed",
+                command,
+                error = %error,
+                consequence = "forge does not start",
+                "the startup gate could not be run",
+            );
+            anyhow::anyhow!(
+                "forge: the [server] startup_gate command {command:?} could not be run: {error}"
+            )
+        })?;
+    if status.success() {
+        tracing::info!(
+            target: crate::logging::targets::APP_LIFECYCLE,
+            event_name = "startup_gate_passed",
+            command,
+            "the startup gate allowed the boot",
+        );
+        return Ok(());
+    }
+    tracing::error!(
+        target: crate::logging::targets::APP_LIFECYCLE,
+        event_name = "startup_gate_failed",
+        command,
+        exit_code = status.code().unwrap_or(-1),
+        consequence = "forge exits non-zero; a supervisor's KeepAlive retries",
+        "the startup gate refused the boot",
+    );
+    let how = status
+        .code()
+        .map_or_else(|| "was killed by a signal".to_owned(), |code| format!("exited {code}"));
+    anyhow::bail!("forge: the [server] startup_gate command {command:?} {how}")
+}
+
 /// Build the workspace and start the whole subsystem wave, in the order the
 /// boot has always started it.
 ///
@@ -113,7 +181,8 @@ fn install_crypto_provider() {
 /// caller then DOES with it differs (the headless server starts that
 /// project's sessions).
 ///
-/// Not `async`: every step is a spawn, a store write or the skill install, and the await on
+/// Not `async`: every step is a spawn, a store write, the startup gate's
+/// child wait or the skill install, and the await on
 /// anything that actually does I/O belongs to `serve_socket`. Nothing here
 /// needs a `LocalSet` either - every task in this wave is a plain
 /// `tokio::spawn`, verified by the headless boot test exercising it
@@ -128,6 +197,12 @@ pub fn start_core(config_dir: &Path, project: Option<&str>) -> anyhow::Result<Ar
         Ok(w) => Arc::new(w),
         Err(err) => return Err(anyhow::anyhow!("forge: {err}")),
     };
+    // **The gate runs before anything binds or serves.** The subsystem wave
+    // below is where the gateway listener binds, and `serve_socket` is
+    // reached only after this function returns. The gate is on the boot
+    // path alone, so nothing that responds to a request or a config reload
+    // can run it again once serving has started.
+    run_startup_gate(&workspace.server_config())?;
     // The settings document carries the build that made it; this is the one
     // place the server's own version reaches the workspace. The short stamp
     // is the one the home's header draws as `server`.
@@ -915,7 +990,8 @@ pub fn stop_result(unready: &[forge_primitives::SessionSlot]) -> anyhow::Result<
 mod tests {
     use super::{
         BOOT_WAVE_WAIT, install_crypto_provider, install_shipped_skills, panic_record,
-        start_boot_wave, start_config_watch, start_subsystems, stop_result, wait_for_accounts,
+        run_startup_gate, start_boot_wave, start_config_watch, start_subsystems, stop_result,
+        wait_for_accounts,
     };
     #[cfg(target_os = "macos")]
     use super::{configure_fleet_profiles, reap_then_prune};
@@ -1815,6 +1891,383 @@ port = 49201
             started.elapsed() < Duration::from_secs(1),
             "and it does not wait the bound out: {:?}",
             started.elapsed(),
+        );
+    }
+
+    /// A gate config: the path under test, every other key at its default.
+    fn gate(command: &str) -> forge_primitives::ServerConfig {
+        forge_primitives::ServerConfig {
+            startup_gate: Some(command.to_owned()),
+            ..Default::default()
+        }
+    }
+
+    /// A real executable gate: a temporary script whose body is the test's,
+    /// carrying the executable bit an operator's gate script has. The
+    /// `TempDir` is returned so the script outlives the run.
+    fn gate_script(body: &str) -> (tempfile::TempDir, forge_primitives::ServerConfig) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("forge-startup-gate.sh");
+        std::fs::write(&path, body).expect("write the gate");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let config = gate(path.to_str().expect("the temp path is utf-8"));
+        (dir, config)
+    }
+
+    /// **The gate's zero exit lets the boot continue**, and both ends of the
+    /// run are named in the log so a reader can tell a gate that passed from
+    /// a key that was never set.
+    #[test]
+    fn a_startup_gate_that_passes_lets_the_boot_continue() {
+        let events = crate::test_support::logged(|| {
+            run_startup_gate(&gate("/usr/bin/true")).expect("a zero exit allows the boot");
+        });
+
+        for event in ["startup_gate_started", "startup_gate_passed"] {
+            assert!(
+                events.iter().any(|(level, fields)| {
+                    *level == tracing::Level::INFO
+                        && fields.contains(&format!("event_name=\"{event}\""))
+                        && fields.contains("command=\"/usr/bin/true\"")
+                }),
+                "the run names {event} and its command: {events:?}",
+            );
+        }
+    }
+
+    /// **A non-zero exit fails the boot**, naming the code and the command:
+    /// this is the refusal a supervisor's KeepAlive retries.
+    #[test]
+    fn a_startup_gate_that_fails_stops_the_boot() {
+        let (_dir, server) = gate_script("#!/bin/sh\nexit 7\n");
+        let events = crate::test_support::logged(|| {
+            let error = run_startup_gate(&server).expect_err("a non-zero exit stops it");
+            let rendered = format!("{error}");
+            assert!(rendered.contains("exited 7"), "the failure names the code: {rendered}");
+            assert!(
+                rendered.contains("forge-startup-gate.sh"),
+                "the failure names the command: {rendered}",
+            );
+        });
+
+        assert!(
+            events.iter().any(|(level, fields)| {
+                *level == tracing::Level::ERROR
+                    && fields.contains("event_name=\"startup_gate_failed\"")
+                    && fields.contains("exit_code=7")
+                    && fields.contains("forge-startup-gate.sh")
+            }),
+            "the refusal is one ERROR record naming the code and command: {events:?}",
+        );
+    }
+
+    /// **A configured path that does not exist fails the boot**, with a line
+    /// naming the path: the one case that must never read as a skipped gate.
+    #[test]
+    fn a_gate_path_that_does_not_exist_stops_the_boot() {
+        let missing = "/nonexistent/forge-startup-gate.sh";
+        let events = crate::test_support::logged(|| {
+            let error = run_startup_gate(&gate(missing)).expect_err("a missing gate fails");
+            let rendered = format!("{error}");
+            assert!(rendered.contains(missing), "the failure names the path: {rendered}");
+        });
+
+        assert!(
+            events.iter().any(|(level, fields)| {
+                *level == tracing::Level::ERROR
+                    && fields.contains("event_name=\"startup_gate_failed\"")
+                    && fields.contains(missing)
+                    && fields.contains("could not be run")
+            }),
+            "the missing gate is one ERROR record naming the path: {events:?}",
+        );
+    }
+
+    /// The same refusal for a path that exists but cannot be executed, which
+    /// is the other way a configured gate would otherwise be skipped.
+    #[test]
+    fn a_gate_path_that_is_not_executable_stops_the_boot() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("forge-startup-gate.sh");
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").expect("write without the executable bit");
+        let server = gate(path.to_str().expect("the temp path is utf-8"));
+
+        let events = crate::test_support::logged(|| {
+            let error = run_startup_gate(&server).expect_err("a non-executable gate fails");
+            assert!(
+                format!("{error}").contains("forge-startup-gate.sh"),
+                "the failure names the path: {error}",
+            );
+        });
+        assert!(
+            events.iter().any(|(level, fields)| {
+                *level == tracing::Level::ERROR
+                    && fields.contains("event_name=\"startup_gate_failed\"")
+                    && fields.contains("forge-startup-gate.sh")
+                    && fields.contains("could not be run")
+            }),
+            "the refusal is one ERROR record naming the path: {events:?}",
+        );
+    }
+
+    /// A gate killed by a signal has no exit code: the failure says so and
+    /// the record carries the sentinel code, rather than reading as a clean
+    /// zero.
+    #[test]
+    fn a_startup_gate_killed_by_a_signal_stops_the_boot() {
+        let (_dir, server) = gate_script("#!/bin/sh\nkill -KILL $$\n");
+        let events = crate::test_support::logged(|| {
+            let error = run_startup_gate(&server).expect_err("a killed gate stops the boot");
+            let rendered = format!("{error}");
+            assert!(
+                rendered.contains("was killed by a signal"),
+                "the failure names the signal death: {rendered}",
+            );
+        });
+
+        assert!(
+            events.iter().any(|(level, fields)| {
+                *level == tracing::Level::ERROR
+                    && fields.contains("event_name=\"startup_gate_failed\"")
+                    && fields.contains("exit_code=-1")
+            }),
+            "the refusal is one ERROR record with the sentinel code: {events:?}",
+        );
+    }
+
+    /// **An absent key is the only skip.** A blank value is a path that
+    /// cannot be run, so it fails the boot like any other unspawnable gate.
+    #[test]
+    fn only_an_absent_startup_gate_skips_the_run() {
+        let events = crate::test_support::logged(|| {
+            run_startup_gate(&forge_primitives::ServerConfig::default())
+                .expect("an absent key runs nothing");
+        });
+        assert!(
+            !events.iter().any(|(_, fields)| fields.contains("startup_gate_")),
+            "no gate record is written when the key is absent: {events:?}",
+        );
+
+        crate::test_support::logged(|| {
+            run_startup_gate(&gate("   ")).expect_err("a blank path is not absent");
+        });
+    }
+
+    /// The child this test spawns to prove the gate's streams are the
+    /// server's own: the env var names the gate script the child runs.
+    const GATE_STREAM_PROBE: &str = "FORGE_GATE_STREAM_PROBE";
+
+    /// **The gate's stdout and stderr are the server's own.** A gate's line
+    /// reaches the parent's pipe only through `Stdio::inherit`; with either
+    /// stream set to `null` the line is gone. The test re-runs itself as the
+    /// server stand-in so the child inherits the pipe this process reads.
+    #[test]
+    fn the_gates_stdout_and_stderr_are_the_servers_own() {
+        if let Some(path) = std::env::var_os(GATE_STREAM_PROBE) {
+            let server = gate(path.to_str().expect("the probe path is utf-8"));
+            run_startup_gate(&server).expect("the probe gate exits zero");
+            return;
+        }
+
+        let (_dir, server) =
+            gate_script("#!/bin/sh\necho gate-stdout-line\necho gate-stderr-line >&2\n");
+        let script = server.startup_gate.clone().expect("the probe names a script");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "boot::tests::the_gates_stdout_and_stderr_are_the_servers_own",
+                "--nocapture",
+            ])
+            .env(GATE_STREAM_PROBE, script)
+            .output()
+            .expect("the probe child ran");
+
+        assert!(output.status.success(), "the probe child failed: {output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stdout.contains("gate-stdout-line"),
+            "the gate's stdout reached the server's stdout: {stdout}",
+        );
+        assert!(
+            stderr.contains("gate-stderr-line"),
+            "the gate's stderr reached the server's stderr: {stderr}",
+        );
+    }
+
+    /// A gate script that appends one line to `marker` each time it runs,
+    /// so a second run is visible rather than idempotent.
+    fn appending_gate(dir: &std::path::Path, marker: &std::path::Path) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("forge-startup-gate.sh");
+        std::fs::write(&script, format!("#!/bin/sh\necho ran >> {}\n", marker.display()))
+            .expect("write the gate");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        script
+    }
+
+    /// How many times the appended gate ran.
+    fn gate_runs(marker: &std::path::Path) -> usize {
+        std::fs::read_to_string(marker).map_or(0, |text| text.lines().count())
+    }
+
+    /// **The gate runs exactly once on the real boot path, before the
+    /// subsystem wave.** A project name no config holds stops `start_core`
+    /// after the gate and before `start_subsystems`, so the marker proves
+    /// the boot ran it first - and holds exactly one line, so a duplicated
+    /// call at the boot site fails here. This is the functional pin the
+    /// source-order check cannot give.
+    #[tokio::test]
+    async fn the_startup_gate_runs_on_the_boot_path_before_the_wave() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("gate-ran");
+        let script = appending_gate(dir.path(), &marker);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        let gateway_port = listener.local_addr().expect("the port").port();
+        drop(listener);
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/");
+        std::fs::write(
+            forge.join("forge.toml"),
+            format!(
+                "\
+[[orgs]]
+name = \"TestOrg\"
+accounts = [\"Stub\"]
+
+[[orgs.projects]]
+name = \"forge\"
+path = \"/tmp\"
+
+[[accounts]]
+display_name = \"Stub\"
+token = \"t\"
+provider = \"openrouter\"
+base_url = \"http://127.0.0.1:9/api\"
+models = [\"claude-sonnet-5\"]
+
+[server]
+enabled = false
+startup_gate = \"{}\"
+
+[gateway]
+port = {gateway_port}
+",
+                script.display()
+            ),
+        )
+        .expect("write forge.toml");
+
+        let booted = super::start_core(dir.path(), Some("no-such-project"));
+
+        assert!(booted.is_err(), "the unknown project fails the boot");
+        assert_eq!(
+            gate_runs(&marker),
+            1,
+            "the gate ran once on the boot path before the project name was refused",
+        );
+    }
+
+    /// **A config reload never runs the gate again.** The boot path runs it
+    /// once; the watch that applies an edit re-reads the config without
+    /// invoking it, so the marker stays at one line across a reload. The
+    /// watch's macOS delivery stalls under a full gate for the same reason
+    /// the config-edit test's does; the macOS CI job runs ignored tests with
+    /// `--run-ignored ignored-only`.
+    #[cfg_attr(target_os = "macos", ignore = "fsevents stalls under a full gate")]
+    #[tokio::test]
+    async fn a_config_reload_does_not_run_the_startup_gate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("gate-ran");
+        let script = appending_gate(dir.path(), &marker);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        let gateway_port = listener.local_addr().expect("the port").port();
+        drop(listener);
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/");
+        std::fs::write(
+            forge.join("forge.toml"),
+            format!(
+                "\
+[[orgs]]
+name = \"TestOrg\"
+accounts = [\"Stub\"]
+
+[[orgs.projects]]
+name = \"forge\"
+path = \"/tmp\"
+
+[[accounts]]
+display_name = \"Stub\"
+token = \"t\"
+provider = \"openrouter\"
+base_url = \"http://127.0.0.1:9/api\"
+models = [\"claude-sonnet-5\"]
+
+[server]
+enabled = false
+startup_gate = \"{}\"
+
+[gateway]
+port = {gateway_port}
+",
+                script.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        super::run_startup_gate(&workspace.server_config()).expect("the boot's one run passes");
+        assert_eq!(gate_runs(&marker), 1, "the boot ran the gate once");
+
+        let mut updates = workspace.subscribe_answerer();
+        start_config_watch(&workspace, |_workspace| {});
+        let path = workspace.config_path();
+        let raw = std::fs::read_to_string(&path).expect("read");
+        std::fs::write(&path, raw.replace("Stub", "Renamed")).expect("write");
+
+        let applied = tokio::time::timeout(CONFIG_EDIT_WEDGE, async {
+            loop {
+                let frame = updates.recv().await.expect("the update stream stays open");
+                if matches!(&*frame.update, forge_workspace::SessionUpdate::AccountsChanged { .. })
+                {
+                    break;
+                }
+            }
+        })
+        .await;
+        assert!(
+            applied.is_ok(),
+            "the watched file's edit reaches the running workspace within {CONFIG_EDIT_WEDGE:?}",
+        );
+        assert_eq!(gate_runs(&marker), 1, "a reload never runs the gate again");
+    }
+
+    /// **The gate runs before any listener binds.** A functional test above
+    /// proves the gate precedes the subsystem wave, which is where the
+    /// gateway listener binds; the boot entry reaches `serve_socket` only
+    /// after `start_core` returns, so the gate precedes the socket too.
+    /// This pins that second half, and the split itself panics if the tests
+    /// module marker moves rather than silently reading the whole file.
+    #[test]
+    fn the_startup_gate_runs_before_the_socket() {
+        let source = include_str!("boot.rs");
+        let (production, _tests) = source
+            .split_once("\n#[cfg(test)]\nmod tests {")
+            .expect("boot.rs still carries its tests module marker at the top of the file");
+        let position = |text: &str, needle: &str| {
+            text.find(needle).unwrap_or_else(|| panic!("no longer carries {needle}"))
+        };
+        assert!(
+            position(production, "run_startup_gate(&workspace.server_config())?")
+                < position(production, "start_subsystems(&workspace)"),
+            "the gate must run before the wave that binds the gateway",
+        );
+        let bin = include_str!("bin/forge.rs");
+        assert!(
+            position(bin, "boot::start_core(") < position(bin, "boot::serve_socket("),
+            "the socket is served only after the core, and the gate inside it, returns",
         );
     }
 }
