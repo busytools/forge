@@ -2096,21 +2096,33 @@ port = 49201
         );
     }
 
-    /// **The gate runs on the real boot path before the subsystem wave.**
-    /// A project name no config holds stops `start_core` after the gate and
-    /// before `start_subsystems`, so a gate that writes a sentinel proves
-    /// the boot ran it first. This is the functional pin the source-order
-    /// check cannot give: a call moved below the wave never runs here.
-    #[tokio::test]
-    async fn the_startup_gate_runs_on_the_boot_path_before_the_wave() {
+    /// A gate script that appends one line to `marker` each time it runs,
+    /// so a second run is visible rather than idempotent.
+    fn appending_gate(dir: &std::path::Path, marker: &std::path::Path) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let marker = dir.path().join("gate-ran");
-        let script = dir.path().join("forge-startup-gate.sh");
-        std::fs::write(&script, format!("#!/bin/sh\ntouch {}\n", marker.display()))
+        let script = dir.join("forge-startup-gate.sh");
+        std::fs::write(&script, format!("#!/bin/sh\necho ran >> {}\n", marker.display()))
             .expect("write the gate");
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        script
+    }
+
+    /// How many times the appended gate ran.
+    fn gate_runs(marker: &std::path::Path) -> usize {
+        std::fs::read_to_string(marker).map(|text| text.lines().count()).unwrap_or(0)
+    }
+
+    /// **The gate runs exactly once on the real boot path, before the
+    /// subsystem wave.** A project name no config holds stops `start_core`
+    /// after the gate and before `start_subsystems`, so the marker proves
+    /// the boot ran it first - and holds exactly one line, so a duplicated
+    /// call at the boot site fails here. This is the functional pin the
+    /// source-order check cannot give.
+    #[tokio::test]
+    async fn the_startup_gate_runs_on_the_boot_path_before_the_wave() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("gate-ran");
+        let script = appending_gate(dir.path(), &marker);
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
         let gateway_port = listener.local_addr().expect("the port").port();
         drop(listener);
@@ -2150,10 +2162,86 @@ port = {gateway_port}
         let booted = super::start_core(dir.path(), Some("no-such-project"));
 
         assert!(booted.is_err(), "the unknown project fails the boot");
-        assert!(
-            marker.exists(),
-            "the gate ran on the boot path before the project name was refused",
+        assert_eq!(
+            gate_runs(&marker),
+            1,
+            "the gate ran once on the boot path before the project name was refused",
         );
+    }
+
+    /// **A config reload never runs the gate again.** The boot path runs it
+    /// once; the watch that applies an edit re-reads the config without
+    /// invoking it, so the marker stays at one line across a reload. The
+    /// watch's macOS delivery stalls under a full gate for the same reason
+    /// the config-edit test's does; the macOS CI job runs ignored tests with
+    /// `--run-ignored ignored-only`.
+    #[cfg_attr(target_os = "macos", ignore = "fsevents stalls under a full gate")]
+    #[tokio::test]
+    async fn a_config_reload_does_not_run_the_startup_gate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("gate-ran");
+        let script = appending_gate(dir.path(), &marker);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        let gateway_port = listener.local_addr().expect("the port").port();
+        drop(listener);
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/");
+        std::fs::write(
+            forge.join("forge.toml"),
+            format!(
+                "\
+[[orgs]]
+name = \"TestOrg\"
+accounts = [\"Stub\"]
+
+[[orgs.projects]]
+name = \"forge\"
+path = \"/tmp\"
+
+[[accounts]]
+display_name = \"Stub\"
+token = \"t\"
+provider = \"openrouter\"
+base_url = \"http://127.0.0.1:9/api\"
+models = [\"claude-sonnet-5\"]
+
+[server]
+enabled = false
+startup_gate = \"{}\"
+
+[gateway]
+port = {gateway_port}
+",
+                script.display()
+            ),
+        )
+        .expect("write forge.toml");
+        let workspace =
+            Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace"));
+        super::run_startup_gate(&workspace.server_config()).expect("the boot's one run passes");
+        assert_eq!(gate_runs(&marker), 1, "the boot ran the gate once");
+
+        let mut updates = workspace.subscribe_answerer();
+        start_config_watch(&workspace, |_workspace| {});
+        let path = workspace.config_path();
+        let raw = std::fs::read_to_string(&path).expect("read");
+        std::fs::write(&path, raw.replace("Stub", "Renamed")).expect("write");
+
+        let applied = tokio::time::timeout(CONFIG_EDIT_WEDGE, async {
+            loop {
+                let frame = updates.recv().await.expect("the update stream stays open");
+                if matches!(&*frame.update, forge_workspace::SessionUpdate::AccountsChanged { .. })
+                {
+                    break;
+                }
+            }
+        })
+        .await;
+        assert!(
+            applied.is_ok(),
+            "the watched file's edit reaches the running workspace within {CONFIG_EDIT_WEDGE:?}",
+        );
+        assert_eq!(gate_runs(&marker), 1, "a reload never runs the gate again");
     }
 
     /// **The gate runs before any listener binds.** A functional test above
