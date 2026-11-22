@@ -672,6 +672,9 @@ fn sent_back_refusal(
 fn format_post_error(err: &SlackPostError, target: &SentBackTarget) -> String {
     match err {
         SlackPostError::Rejected => "the post was not approved, so nothing was sent".to_owned(),
+        SlackPostError::Abandoned => {
+            "the client went away before answering the draft, so nothing was sent".to_owned()
+        }
         SlackPostError::SentBack { note } => {
             sent_back_refusal("the post was not sent", "slack__post", Some(target), note)
         }
@@ -691,6 +694,10 @@ fn format_edit_error(err: &SlackEditError, target: &SentBackTarget) -> String {
         SlackEditError::Rejected => {
             "the replacement was not approved, so the message is untouched".to_owned()
         }
+        SlackEditError::Abandoned => {
+            "the client went away before answering the draft, so the message is untouched"
+                .to_owned()
+        }
         SlackEditError::SentBack { note } => {
             sent_back_refusal("the change was not made", "slack__edit", Some(target), note)
         }
@@ -703,6 +710,10 @@ fn format_react_error(err: &SlackReactError, target: &SentBackTarget) -> String 
     match err {
         SlackReactError::Rejected => {
             "the reaction was not approved, so nothing was added or removed".to_owned()
+        }
+        SlackReactError::Abandoned => {
+            "the client went away before answering the draft, so nothing was added or removed"
+                .to_owned()
         }
         SlackReactError::SentBack { note } => {
             sent_back_refusal("the reaction was not applied", "slack__react", Some(target), note)
@@ -958,6 +969,9 @@ fn format_attachment_error(err: &SlackAttachmentError, target: Option<&SentBackT
         SlackAttachmentError::Io(message) => format!("file error: {message}"),
         SlackAttachmentError::Rejected => {
             "the upload was not approved, so nothing was sent".to_owned()
+        }
+        SlackAttachmentError::Abandoned => {
+            "the client went away before answering the draft, so nothing was sent".to_owned()
         }
         SlackAttachmentError::SentBack { note } => {
             sent_back_refusal("the upload was not sent", "slack__attachment", target, note)

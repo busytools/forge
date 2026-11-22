@@ -53,9 +53,7 @@ pub enum VaultToolError {
     Locked,
     #[error("the vault is not configured: add a [vault] section to forge.toml")]
     NotConfigured,
-    #[error("no client is attached to answer the vault call")]
-    NoClient,
-    #[error("the answerer went away before the vault call was settled")]
+    #[error("the client went away before the vault call was answered")]
     Abandoned,
     #[error("vault request failed: {0}")]
     Vault(#[from] VaultError),
@@ -380,11 +378,7 @@ impl ProdVaultFacade {
         field: Option<&str>,
     ) -> Result<Approved, VaultToolError> {
         let session = self.session()?;
-        let (id, receiver, answerable) =
-            self.asks.register(caller, draft.clone(), session.is_locked());
-        if !answerable {
-            return Err(VaultToolError::NoClient);
-        }
+        let (id, receiver) = self.asks.register(caller, draft.clone(), session.is_locked());
         let mut guard =
             SettleOnDrop { asks: Arc::clone(&self.asks), id, caller: caller.clone(), armed: true };
         let Ok(mut answer) = receiver.await else {
@@ -4143,7 +4137,7 @@ mod tests {
         .await;
         let (workspace, facade, caller, _dir, mut rx, session) =
             unlocked_worker_workspace(address, make_symmetric_key(), String::new());
-        let (other, _held, _) = workspace.asks.register(
+        let (other, _held) = workspace.asks.register(
             &caller,
             VaultDraft::new(VaultTool::Search, "another call"),
             false,
@@ -4791,7 +4785,7 @@ mod tests {
         let address = serve_steps(Vec::new()).await;
         let (workspace, facade, caller, _dir, mut rx, session) =
             unlocked_worker_workspace(address, make_symmetric_key(), String::new());
-        let (other, _held, _) = workspace.asks.register(
+        let (other, _held) = workspace.asks.register(
             &caller,
             VaultDraft::new(VaultTool::Search, "another call"),
             false,
@@ -4863,7 +4857,7 @@ mod tests {
         let (workspace, mut rx) = test_host(Path::new("/tmp"));
         *workspace.vault.write() = Some(Arc::clone(&session));
         let caller = SessionSlot::lead("Default", "forge");
-        let (other, _held, _) = workspace.asks.register(
+        let (other, _held) = workspace.asks.register(
             &caller,
             VaultDraft::new(VaultTool::Search, "another call"),
             false,

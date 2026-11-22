@@ -32,26 +32,21 @@ impl Workspace {
         &self,
         caller: &SessionSlot,
         ask: SettingsWriteAsk,
-    ) -> (Uuid, tokio::sync::oneshot::Receiver<bool>, bool) {
+    ) -> (Uuid, tokio::sync::oneshot::Receiver<bool>) {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let id = ask.id;
         self.settings_writes.lock().insert(id, (caller.clone(), ask.clone(), Some(sender)));
-        let answerable = self
+        // Delivered to whoever is attached; the send's report on whether an
+        // answering subscriber took it no longer decides the write. It stays
+        // parked until the person answers or the session goes, and a client
+        // that attaches later reads it from `pending_asks`.
+        let _ = self
             .update_sender()
             .send_answering(SessionUpdate::SettingsWritePending { key: caller.clone(), ask });
-        if !answerable {
-            // No subscriber can answer this - either none is attached or none
-            // renders a dock - so holding the caller would park it for ever.
-            // Drop the write; the awaiting caller reads the flag and fails
-            // closed.
-            self.settings_writes.lock().remove(&id);
-            let (_ignored_sender, dead_receiver) = tokio::sync::oneshot::channel();
-            return (id, dead_receiver, false);
-        }
         // **A second write is a second ask.** The number is the ask's identity
         // on the wire, so a write that never moves it is never announced.
         self.note_ask(caller);
-        (id, receiver, true)
+        (id, receiver)
     }
 
     /// Whether a write with this id is still registered to `caller`, without
@@ -156,8 +151,8 @@ mod tests {
         }
     }
 
-    /// A stub workspace whose answering subscriber stays alive, which is what
-    /// makes a registration answerable at all.
+    /// A stub workspace with a subscriber attached, so a test can tell what
+    /// the raise delivered from what the registry holds.
     fn stub() -> (Arc<Workspace>, tokio::sync::mpsc::UnboundedReceiver<crate::SeatUpdate>) {
         Workspace::testing_stub()
     }
@@ -190,7 +185,7 @@ mod tests {
         let (ws, _rx) = stub();
         let mut ask = an_ask("orgs.Default.projects.forge.max_workers");
         ask.id = Uuid::new_v4();
-        let (id, _held, _) = ws.register_settings_write(&caller(), ask);
+        let (id, _held) = ws.register_settings_write(&caller(), ask);
 
         let asks = ws.pending_asks(&caller());
         assert!(
@@ -210,7 +205,7 @@ mod tests {
         let (ws, _rx) = stub();
         let mut ask = an_ask("server.port");
         ask.id = Uuid::new_v4();
-        let (id, mut held, _) = ws.register_settings_write(&caller(), ask);
+        let (id, mut held) = ws.register_settings_write(&caller(), ask);
 
         assert!(ws.settings_write_waiting(id, &caller()));
         assert!(ws.resolve_settings_write(id, &caller(), true));
@@ -230,26 +225,43 @@ mod tests {
         let (ws, _rx) = stub();
         let mut ask = an_ask("server.port");
         ask.id = Uuid::new_v4();
-        let (id, _held, _) = ws.register_settings_write(&caller(), ask);
+        let (id, _held) = ws.register_settings_write(&caller(), ask);
 
         let elsewhere = SessionSlot::worker("Default", "forge", "someone-else");
         assert!(!ws.resolve_settings_write(id, &elsewhere, true));
         assert!(ws.settings_write_waiting(id, &caller()), "the write is still the asker's");
     }
 
-    /// No client to answer: the registry must not hold the write, and the
-    /// awaiting caller sees a dead receiver - the fail-closed read.
+    /// **A write with no client attached waits for one.** The registry
+    /// keeps it, the seat's `pending_asks` read carries it to a client that
+    /// attaches later, and that client's answer resolves the parked caller -
+    /// no raise-time check ends it.
     #[tokio::test]
-    async fn a_write_with_no_ui_to_answer_it_fails_closed() {
+    async fn a_write_with_no_ui_to_answer_it_waits_for_one() {
         let (ws, rx) = Workspace::testing_stub();
         drop(rx);
         let mut ask = an_ask("server.port");
         ask.id = Uuid::new_v4();
 
-        let (_id, held, _) = ws.register_settings_write(&caller(), ask);
+        let (id, mut held) = ws.register_settings_write(&caller(), ask);
 
-        assert!(ws.settings_writes.lock().is_empty(), "an unanswerable write is dropped");
-        assert!(held.await.is_err(), "a dead receiver reads as not-approved");
+        assert!(ws.settings_write_waiting(id, &caller()), "the write stays parked with no client");
+        assert!(
+            ws.pending_asks(&caller()).iter().any(|waiting| matches!(
+                waiting,
+                PendingAsk::SettingsWrite(write) if write.id == id
+            )),
+            "a client that attaches after the raise reads it",
+        );
+
+        let _answerer = ws.subscribe_answerer();
+        ws.dispatch(crate::protocol::Command::RespondSettingsWrite {
+            key: caller(),
+            id,
+            approved: true,
+        })
+        .expect("the later client's answer lands");
+        assert_eq!(held.try_recv(), Ok(true), "and resolves the parked caller");
     }
 
     /// Through `Workspace::dispatch`, the route a view's dock answer takes -
@@ -261,7 +273,7 @@ mod tests {
         let (ws, _rx) = stub();
         let mut ask = an_ask("server.port");
         ask.id = Uuid::new_v4();
-        let (id, decision, _) = ws.register_settings_write(&caller(), ask);
+        let (id, decision) = ws.register_settings_write(&caller(), ask);
 
         ws.dispatch(crate::protocol::Command::RespondSettingsWrite {
             key: caller(),
@@ -283,7 +295,7 @@ mod tests {
         let (ws, _rx) = stub();
         let mut ask = an_ask("server.port");
         ask.id = Uuid::new_v4();
-        let (id, _decision, _) = ws.register_settings_write(&caller(), ask);
+        let (id, _decision) = ws.register_settings_write(&caller(), ask);
         assert!(ws.resolve_settings_write(id, &caller(), true));
 
         let refused = ws.dispatch(crate::protocol::Command::RespondSettingsWrite {
@@ -307,7 +319,7 @@ mod tests {
         let other = SessionSlot::worker("Default", "forge", "another-worker");
         let mut ask = an_ask("server.port");
         ask.id = Uuid::new_v4();
-        let (id, _decision, _) = ws.register_settings_write(&asker, ask);
+        let (id, _decision) = ws.register_settings_write(&asker, ask);
 
         let refused = ws.dispatch(crate::protocol::Command::RespondSettingsWrite {
             key: other,
@@ -332,7 +344,7 @@ mod tests {
         let (ws, mut rx) = Workspace::testing_stub();
         let mut ask = an_ask("server.port");
         ask.id = Uuid::new_v4();
-        let (_id, mut held, _) = ws.register_settings_write(&caller(), ask);
+        let (_id, mut held) = ws.register_settings_write(&caller(), ask);
 
         ws.abandon_settings_writes(&caller());
 
@@ -357,7 +369,7 @@ mod tests {
         let (ws, mut rx) = Workspace::testing_stub();
         let mut ask = an_ask("server.port");
         ask.id = Uuid::new_v4();
-        let (id, mut held, _) = ws.register_settings_write(&caller(), ask);
+        let (id, mut held) = ws.register_settings_write(&caller(), ask);
 
         assert!(ws.settle_settings_write(id, &caller(), SettingsWriteEnding::Abandoned));
         assert!(held.try_recv().is_err(), "abandoned is not an approval");

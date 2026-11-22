@@ -433,22 +433,23 @@ browser is not a capability a client declares: it lives on the server, and a
 client attaches to it as a viewer (`browser_view` below).
 
 **`answering` declares whether this client can answer a prompt, and it is
-off unless you say otherwise.** The core parks a turn on the reply of
-whoever registered as answering, so a client that says so must be able to
-show what it is handed: one counted as able to answer and unable to draw
-would leave the turn waiting on a reply that never comes. A read-only
-dashboard says nothing and still READS the prompts - every update reaches
-every subscriber whatever its role, and no turn hangs on it, because the
-core asks only the answerers whether a prompt can be answered. A client with
-a dock to answer from sets this true, usually in its first subscribe, and
-the connection registers with the core accordingly before it forwards
+off unless you say otherwise.** Every update reaches every subscriber
+whatever its role, and a permission, question or tool ask parks for the
+person whoever is attached - a client that connects later reads it from
+the seat's `pending_asks`, so a read-only dashboard loses nothing by
+declaring nothing. The role decides only the browser and terminal
+hand-offs: a client that says it can answer must be able to draw what it
+is handed, because with no answerer attached those two fail closed rather
+than park a tab or a keyboard nobody can take. A client with a dock to
+answer from sets this true, usually in its first subscribe, and the
+connection registers with the core accordingly before it forwards
 anything.
 
 **The declaration sticks for the connection, and it only goes one way.**
 A later `subscribe` that leaves `answering` false does not take it back:
 the connection keeps the answering stream it already has, because the role
-is what the core counts when it decides whether a prompt can be answered,
-and a client that has drawn a dock once is not made an observer again by a
+is what the core counts when it raises a browser or terminal hand-off, and
+a client that has drawn a dock once is not made an observer again by a
 second message. So say it on the first subscribe and expect it to stand.
 
 **`review` asks for the review page's own read, and it is off unless you say

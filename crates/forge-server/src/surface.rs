@@ -370,18 +370,6 @@ impl ViewSurface {
         self.workspace.cli_version()
     }
 
-    /// Register this connection as an attached client for as long as it
-    /// lives, so a document hand-off can tell a viewer exists to open on.
-    /// The transport's per-connection guard calls these two.
-    pub fn client_attached(&self) {
-        self.workspace.note_client_attached();
-    }
-
-    /// The counterpart of [`Self::client_attached`].
-    pub fn client_detached(&self) {
-        self.workspace.note_client_detached();
-    }
-
     /// The live `[server]` snapshot, read by the socket's origin gate on
     /// every upgrade so a reload's new allowances apply to the next
     /// connection without a restart.
@@ -650,12 +638,14 @@ mod tests {
     /// `UpdateFanout`, whose own test pins its two halves; what this pins
     /// is which half each one calls.
     ///
-    /// **The role decides whether the core may park a prompt on a reply.**
-    /// A view that draws a dock while declaring itself an observer draws
-    /// prompts that are already dead - the workspace resolves a permission,
-    /// question or Slack draft `Cancelled` when no subscriber can answer -
-    /// and nothing in a build or a test would say so. This is the one place
-    /// in the tree that tells the two apart.
+    /// **The role decides what the two viewer hand-offs can claim.** Every
+    /// prompt reaches every subscriber, and a permission, question or tool
+    /// ask parks for the person however the subscribers declared
+    /// themselves. The browser and terminal hand-offs fail closed without an
+    /// answerer, so a view that draws a dock while declaring itself an
+    /// observer is handed a hand-off the core has already let go - and
+    /// nothing in a build or a test would say so. This is the one place in
+    /// the tree that tells the two apart.
     #[tokio::test]
     async fn a_surface_client_subscribes_with_the_role_it_declared() {
         let (workspace, _dir) = crate::surface::testing::workspace();

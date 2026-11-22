@@ -52,9 +52,10 @@ pub enum DraftResolution {
 /// One update the subsystem produces, in its own vocabulary. The host maps
 /// each onto its wire frame.
 pub enum SlackUpdate {
-    /// A composed message is held; the draft is the card a view draws. An
-    /// emit that returns `false` for this variant means no attached client
-    /// could answer it, which is what makes the caller fail closed.
+    /// A composed message is held; the draft is the card a view draws. The
+    /// emit's report says whether an answering subscriber took it; the
+    /// draft parks either way, and a client that attaches later reads it
+    /// from `pending_asks`.
     PostPending { key: SessionSlot, draft: SlackDraft },
     /// A held draft ended, with the ending every client draws.
     DraftResolved { key: SessionSlot, id: Uuid, ending: SlackDraftEnding },
@@ -63,9 +64,9 @@ pub enum SlackUpdate {
 /// Where the subsystem emits its updates and reaches the two host actions
 /// that are not a wire frame of its own.
 pub trait SlackEmit: Send + Sync {
-    /// Emit one update. `false` means no subscriber would take it - for a
-    /// held draft that no client can answer, which ends it rather than
-    /// holding it for ever.
+    /// Emit one update, reporting whether a subscriber that can answer it
+    /// took it. The report does not decide a held draft: the draft waits
+    /// for the person however many subscribers are attached.
     fn emit(&self, update: SlackUpdate) -> bool;
 
     /// A subscription write moved `project`'s set. The frame carries both
@@ -584,16 +585,11 @@ impl Slack {
         self.slack_drafts
             .lock()
             .insert(id, ParkedSlackDraft { owner: caller.clone(), draft: draft.clone(), sender });
-        let answerable = self.emit.emit(SlackUpdate::PostPending { key: caller.clone(), draft });
-        if !answerable {
-            // No subscriber can answer this draft - either none is
-            // attached or none renders one - so holding the caller
-            // would park it forever. Drop the draft; the awaiting
-            // caller sees the dropped receiver and fails closed.
-            self.slack_drafts.lock().remove(&id);
-            let (_ignored_sender, dead_receiver) = oneshot::channel();
-            return (id, dead_receiver);
-        }
+        // Delivered to whoever is attached; the emit's report on whether an
+        // answering subscriber took it no longer decides the draft. It stays
+        // parked until the person answers or the session goes, and a client
+        // that attaches later reads it from `pending_asks`.
+        let _ = self.emit.emit(SlackUpdate::PostPending { key: caller.clone(), draft });
         // **A second draft is a second ask.** The number is the ask's identity
         // on the wire, so a draft that never moves it is never announced.
         self.sink.note(caller, PendingInteractionKind::SlackDraft);
@@ -691,11 +687,7 @@ impl Slack {
     ///
     /// The removal is the one point every removal a view could have parked
     /// on funnels through - an answer, or a dead waiter - so the stand-down
-    /// is emitted here. The one other removal,
-    /// `register_slack_draft`'s no-answerable-subscriber path, drops a draft
-    /// the update may already have reached an observer with: a subscriber
-    /// that could ANSWER is what makes a draft answerable at all, and an
-    /// observer draws no dock to stand down.
+    /// is emitted here.
     pub fn resolve_slack_draft(
         &self,
         id: Uuid,
@@ -3104,39 +3096,28 @@ mod tests {
         assert!(!h.slack.resolve_slack_draft(Uuid::new_v4(), &caller(), answered(true)));
     }
 
-    /// No UI to answer the draft: the registry must not hold it, and the
-    /// awaiting caller sees a dead receiver - the fail-closed read.
+    /// **A draft with no UI to answer it waits for one.** The registry
+    /// keeps it, the raise still crosses for whoever attaches next, and the
+    /// answer a later client gives releases the parked caller - no
+    /// raise-time check drops the draft.
     #[tokio::test]
-    async fn a_draft_with_no_ui_to_answer_it_fails_closed() {
+    async fn a_draft_with_no_ui_to_answer_it_waits_for_one() {
         let h = harness();
         h.emit.answerable.store(false, Ordering::SeqCst);
-        let (_id, decision) = h.slack.register_slack_draft(&caller(), draft("acme", "C1"));
-        assert!(
-            h.slack.held_drafts().is_empty(),
-            "an unanswerable draft is dropped, not held forever",
-        );
-        assert!(decision.await.is_err(), "a dead receiver reads as not-approved");
-    }
+        let (id, decision) = h.slack.register_slack_draft(&caller(), draft("acme", "C1"));
 
-    /// A draft only an observer can see must fail closed the way one with no
-    /// subscriber does. The emit still records the frame - an observer draws
-    /// the ask it cannot answer - so this is what catches pointing the guard
-    /// at a plain send.
-    #[tokio::test]
-    async fn a_draft_with_only_an_observer_fails_closed() {
-        let h = harness();
-        h.emit.answerable.store(false, Ordering::SeqCst);
-        let (_id, decision) = h.slack.register_slack_draft(&caller(), draft("acme", "C1"));
-
-        assert!(
-            h.slack.held_drafts().is_empty(),
-            "a draft only an observer can see is dropped, not held forever",
-        );
+        assert_eq!(h.slack.held_drafts().len(), 1, "the draft stays parked with no UI");
         assert!(
             matches!(h.emit.take_updates().as_slice(), [SlackUpdate::PostPending { .. }]),
-            "the observer is still delivered the draft it cannot answer",
+            "and the raise crossed for whoever attaches next",
         );
-        assert!(decision.await.is_err(), "the awaiting caller sees a dead receiver");
+
+        h.emit.answerable.store(true, Ordering::SeqCst);
+        assert!(
+            h.slack.resolve_slack_draft(id, &caller(), answered(true)),
+            "the later answer lands",
+        );
+        assert_eq!(decision.await.expect("the parked caller answers"), SlackDraftAnswer::Approve);
     }
 
     #[test]

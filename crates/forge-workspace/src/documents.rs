@@ -6,7 +6,9 @@
 //! awaits its ending; a client answers **not now** to decline, and the
 //! viewer's **approve** or **feedback** - after the reader's comments were
 //! filed - releases it with the decision and the note the reader gave.
-//! Nothing parks without a client attached to draw the ask.
+//! **The ask parks whether or not a client is attached**: a client that
+//! attaches later reads it from the seat's `pending_asks`, and the call
+//! waits for its answer.
 
 use forge_primitives::document::{DocumentHandOffAsk, DocumentHandOffEnding};
 use tokio::sync::oneshot;
@@ -14,10 +16,6 @@ use tokio::sync::oneshot;
 use crate::SessionSlot;
 use crate::protocol::SessionUpdate;
 use crate::workspace::Workspace;
-
-/// What a hand-off answers when no client is attached to draw its ask.
-pub const NO_VIEWER_CLIENT: &str =
-    "no client is connected, so the document cannot open - no view is attached to draw it";
 
 /// One parked call, under its id: who handed it, the ask as the read
 /// surface carries it, and the sender the awaiting tool holds.
@@ -31,39 +29,31 @@ impl Workspace {
     /// Hold a document hand-off for the reader, and hand back its id plus
     /// the receiver the caller awaits.
     ///
-    /// **No client, no park.** A forge with no attached client returns
-    /// `None` rather than a receiver: holding a session on an ask no view
-    /// can draw would park it for ever, which is the failure this refuses.
-    /// The raise goes out as an ANSWERING prompt, the same way a browser
-    /// hand-off's does - the ask needs a client that can answer it.
+    /// **The park is unconditional.** Whether a client is attached when the
+    /// ask is raised does not decide it: the ask waits for the person, and a
+    /// client that attaches later reads it from the seat's `pending_asks`.
     pub(crate) fn register_document_hand_off(
         &self,
         seat: &SessionSlot,
         path: &str,
         reviewable: bool,
-    ) -> Option<(uuid::Uuid, oneshot::Receiver<DocumentHandOffEnding>)> {
+    ) -> (uuid::Uuid, oneshot::Receiver<DocumentHandOffEnding>) {
         let id = uuid::Uuid::new_v4();
         let (sender, receiver) = oneshot::channel();
-        if !self.client_attached() {
-            return None;
-        }
         let ask = DocumentHandOffAsk { id, path: path.to_owned(), reviewable };
         self.document_handoffs
             .lock()
             .insert(id, ParkedDocument { seat: seat.clone(), ask, sender });
-        let answerable =
-            self.update_sender().send_answering(SessionUpdate::DocumentHandOffPending {
-                key: seat.clone(),
-                id,
-                path: path.to_owned(),
-                reviewable,
-            });
-        if !answerable {
-            self.document_handoffs.lock().remove(&id);
-            return None;
-        }
+        // Delivered to whoever is attached; the send's report on whether an
+        // answering subscriber took it no longer decides the hand-off.
+        let _ = self.update_sender().send_answering(SessionUpdate::DocumentHandOffPending {
+            key: seat.clone(),
+            id,
+            path: path.to_owned(),
+            reviewable,
+        });
         self.note_ask(seat);
-        Some((id, receiver))
+        (id, receiver)
     }
 
     /// Whether a hand-off with this id is still registered to `seat`,
@@ -128,10 +118,7 @@ impl Workspace {
         // reviewability: a reader can comment on any document a client can
         // read, so the flag is the hand-off's own fact and nothing gates on
         // the read's answer.
-        let Some((id, ending)) = self.register_document_hand_off(seat, &resolved, reviewable)
-        else {
-            return Err(NO_VIEWER_CLIENT.to_owned());
-        };
+        let (id, ending) = self.register_document_hand_off(seat, &resolved, reviewable);
         // A waiter that goes away releases the park. Resolving an id the
         // normal path already removed is a no-op, so the guard needs no
         // arming flag: it only ever fires on the drop.
@@ -213,7 +200,6 @@ mod tests {
         std::fs::create_dir_all(base.join("tree/docs")).expect("the tree");
         std::fs::write(base.join("tree/docs/readme.md"), b"# hi\n").expect("the document");
         let (ws, seat) = ws_with_project(&base.join("tree").to_string_lossy(), Vec::new());
-        ws.note_client_attached();
         let mut updates = ws.subscribe_answerer();
 
         let task = tokio::spawn({
@@ -260,10 +246,10 @@ mod tests {
     }
 
     /// The hand-off consults the seat's PROJECT's document_roots: a file
-    /// under one gets past the containment check - with no client
-    /// attached the park is what refuses it - while the same call on a
-    /// project declaring none is the outside-the-tree sentence, the
-    /// control that the roots are what carried it.
+    /// under one gets past the containment check and parks with no client
+    /// attached, while the same call on a project declaring none is the
+    /// outside-the-tree sentence - the control that the roots are what
+    /// carried it.
     #[tokio::test]
     async fn the_hand_off_reads_through_the_seats_projects_document_roots() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -275,11 +261,23 @@ mod tests {
         let plan = base.join("vault/plan.md").to_string_lossy().into_owned();
 
         let (ws, seat) = ws_with_project(&tree.to_string_lossy(), vec![base.join("vault")]);
-        let refusal = ws
-            .hand_off_document(&seat, &plan, false)
-            .await
-            .expect_err("no client is attached, so the park is what refuses");
-        assert_eq!(refusal, super::NO_VIEWER_CLIENT, "the read got past containment");
+        let handed = {
+            let ws = Arc::clone(&ws);
+            let seat = seat.clone();
+            let plan = plan.clone();
+            tokio::spawn(async move { ws.hand_off_document(&seat, &plan, false).await })
+        };
+        let mut parked = false;
+        for _ in 0..400 {
+            if !ws.document_handoffs.lock().is_empty() {
+                parked = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(parked, "the read got past containment and the hand-off parked");
+        handed.abort();
+        let _ = handed.await;
 
         let (no_roots, no_roots_seat) = ws_with_project(&tree.to_string_lossy(), Vec::new());
         let refusal = no_roots

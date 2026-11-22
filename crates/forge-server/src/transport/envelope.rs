@@ -245,26 +245,25 @@ pub enum ClientMessage {
         what: Subject,
         /// Whether this client can answer the prompts it is shown.
         ///
-        /// Off unless the client says otherwise, because the core parks a
-        /// turn on the reply of whoever registered as answering: a client
-        /// counted as able to answer a prompt it has no surface to draw hangs
-        /// the turn rather than failing it. A client with a dock to answer
-        /// from says so here; the connection registers with the core
-        /// accordingly before it forwards anything.
+        /// Off unless the client says otherwise, because the browser and
+        /// terminal hand-offs raise only where a view can draw them: a
+        /// client counted as able to answer one it has no surface to draw
+        /// would leave the call parked on a card nobody sees. A client with
+        /// a dock to answer from says so here; the connection registers with
+        /// the core accordingly before it forwards anything.
         ///
         /// **It is the CONNECTION's role, not the subject's.** The core keeps
         /// one role per connection and it only ever rises, so a client that
         /// can answer states it on the first subscribe it makes - usually the
         /// home - and not only while a seat it could draw is showing.
         ///
-        /// **What it guards is an install with no answerer anywhere.** Every
-        /// update is delivered to every subscriber regardless of role; the
-        /// role decides only what the core may PARK on. A forge with an
-        /// answering client attached already has an answerer, so a
-        /// second client that says nothing is a guest beside one that can.
-        /// Where nobody can answer, an ask is cancelled at birth rather than
-        /// held for a reply that could not come. Declaring this means that
-        /// case never arises while this client is attached.
+        /// **What it guards is the two viewer hand-offs.** Every update is
+        /// delivered to every subscriber regardless of role, and a
+        /// permission, question or tool ask parks for the person whoever is
+        /// attached - a client that attaches later reads it from
+        /// `pending_asks`. The role decides only whether the browser and
+        /// terminal hand-off may raise: with no answerer they fail closed
+        /// rather than park a tab or a keyboard nobody can take.
         #[serde(default)]
         answering: bool,
         /// The review page's own read: refresh the branch diff's base before

@@ -869,8 +869,8 @@ pub struct TestEmit {
 
 #[cfg(any(test, feature = "testing"))]
 impl TestEmit {
-    /// An emit that reports no subscriber would take the update, which is
-    /// the fail-closed path a parked call takes with no client attached.
+    /// An emit that reports no answering subscriber would take the update,
+    /// so a test can tell what the report says from what was delivered.
     pub fn refusing() -> Self {
         Self { sent: parking_lot::Mutex::new(Vec::new()), refuse: true }
     }

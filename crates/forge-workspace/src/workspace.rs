@@ -736,10 +736,6 @@ pub struct Workspace {
     /// capture can be opened across a seat change. Test-only.
     #[cfg(any(test, feature = "testing"))]
     live_seats_gate: Mutex<Option<LiveSeatsGate>>,
-    /// How many client connections are attached, noted by the transport per
-    /// connection. A document hand-off reads it before claiming an open: only
-    /// a client that draws a document viewer is counted.
-    pub(crate) attached_clients: std::sync::atomic::AtomicUsize,
     /// The parked document hand-offs, under their ids: each holds the
     /// awaiting tool's sender until the reader's answer releases it.
     pub(crate) document_handoffs:
@@ -2528,7 +2524,6 @@ impl Workspace {
             live_seats_generation: std::sync::atomic::AtomicU64::new(0),
             #[cfg(any(test, feature = "testing"))]
             live_seats_gate: Mutex::new(None),
-            attached_clients: std::sync::atomic::AtomicUsize::new(0),
             document_handoffs,
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
             dictate_install: Mutex::new(crate::install::InstallState::default()),
@@ -3099,23 +3094,6 @@ impl Workspace {
     /// read, which refuses a document over it.
     pub fn document_max_bytes(&self) -> u64 {
         self.config_arc().document_max_bytes
-    }
-
-    /// Note a client connection attached, and give it back when it goes.
-    /// The transport's per-connection guard calls these.
-    pub fn note_client_attached(&self) {
-        self.attached_clients.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// The counterpart of [`Self::note_client_attached`].
-    pub fn note_client_detached(&self) {
-        self.attached_clients.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Whether any client connection is attached. Only a client that draws a
-    /// document viewer counts: a hand-off's ask needs one that does.
-    pub(crate) fn client_attached(&self) -> bool {
-        self.attached_clients.load(std::sync::atomic::Ordering::Relaxed) > 0
     }
 
     /// Install the server's browser fleet. **Boot-time and once**: the fleet
@@ -5782,19 +5760,16 @@ impl Workspace {
     /// is emitted after this call; a subscriber reads what it missed from
     /// the subject's snapshot instead.
     ///
-    /// The distinction from [`Self::subscribe_answerer`] is load-bearing
-    /// rather than descriptive. A permission, question or Slack-draft
-    /// request is parked on a reply, and the paths that raise one resolve it
-    /// `Cancelled` instead when no subscriber can answer, so that a request
-    /// nobody will reply to fails the turn rather than hanging it. A
-    /// subscriber that declares itself an observer is not counted as an
-    /// answer.
+    /// The distinction from [`Self::subscribe_answerer`] is narrow rather
+    /// than descriptive. Every prompt reaches both roles, and a permission,
+    /// question or tool ask parks until the person answers or the session
+    /// goes - an observer attached at the raise costs it nothing, and a
+    /// client that attaches later reads the ask from `pending_asks`.
     ///
-    /// **A browser hand-off fails closed differently**: nothing parks a
-    /// decision for it to cancel, so its registration hands the blocked call
-    /// a dead receiver instead and the tool answers the reason - no attached
-    /// client can show the hand-off - rather than holding a session on a
-    /// prompt no view can draw.
+    /// **The browser and terminal hand-offs still fail closed**: neither
+    /// has an ask to hold when no view can draw it, so its registration
+    /// hands the blocked call a dead receiver and the tool answers the
+    /// reason rather than parking a session on a prompt nothing can draw.
     ///
     /// Every frame arrives as a [`SeatUpdate`], carrying the number its
     /// seat minted for it.
@@ -19064,13 +19039,11 @@ mod worker_activity_tests {
                     .expect("the terminal hand-off parks");
             }
             PendingInteractionKind::DocumentHandOff => {
-                ws.note_client_attached();
-                let (_id, _ending) = ws
-                    .register_document_hand_off(&seat, "/proj/docs/plan.md", true)
-                    .expect("the document hand-off parks");
+                let (_id, _ending) =
+                    ws.register_document_hand_off(&seat, "/proj/docs/plan.md", true);
             }
             PendingInteractionKind::SettingsWrite => {
-                let (_id, _answer, _) = ws.register_settings_write(
+                let (_id, _answer) = ws.register_settings_write(
                     &seat,
                     forge_primitives::settings::SettingsWriteAsk {
                         id: uuid::Uuid::new_v4(),
@@ -19084,8 +19057,7 @@ mod worker_activity_tests {
                 );
             }
             PendingInteractionKind::Vault => {
-                ws.note_client_attached();
-                let (_id, _answer, _) = ws.vault_asks.register(
+                let (_id, _answer) = ws.vault_asks.register(
                     &seat,
                     forge_primitives::vault::VaultDraft::new(
                         forge_primitives::vault::VaultTool::Search,
@@ -19227,10 +19199,7 @@ mod worker_activity_tests {
 
         let other = SessionSlot::from_str_for_test("precedence-other");
         ws.register_domain_session(other.clone(), None).lock().turn_pending = true;
-        ws.note_client_attached();
-        let (_id, _ending) = ws
-            .register_document_hand_off(&other, "/proj/docs/plan.md", true)
-            .expect("the document hand-off parks");
+        let (_id, _ending) = ws.register_document_hand_off(&other, "/proj/docs/plan.md", true);
         ws.seed_test_pending_interaction(&other, PendingInteractionKind::SlackDraft);
         assert_eq!(
             ws.pending_interaction(&other),
@@ -19289,7 +19258,7 @@ mod worker_activity_tests {
         let (_id, _decision) = ws.slack.register_slack_draft(&seat, draft("second"));
         assert_eq!(ws.pending_request_seq(&seat), 2, "a second draft is a second ask");
 
-        let (_id, _answer, _) = ws.register_settings_write(
+        let (_id, _answer) = ws.register_settings_write(
             &seat,
             forge_primitives::settings::SettingsWriteAsk {
                 id: uuid::Uuid::new_v4(),
@@ -19302,7 +19271,7 @@ mod worker_activity_tests {
             },
         );
         assert_eq!(ws.pending_request_seq(&seat), 3, "a settings write is an ask");
-        let (_id, _answer, _) = ws.vault_asks.register(
+        let (_id, _answer) = ws.vault_asks.register(
             &seat,
             forge_primitives::vault::VaultDraft::new(
                 forge_primitives::vault::VaultTool::Search,
@@ -19856,10 +19825,7 @@ mod worker_activity_tests {
         assert_eq!(ws.session_activity(&seat), L::Running, "the control, mid-turn");
         assert_eq!(ws.pending_interaction(&seat), None, "and no ask is held yet");
 
-        ws.note_client_attached();
-        let (id, _ending) = ws
-            .register_document_hand_off(&seat, "/proj/docs/plan.md", true)
-            .expect("the park lands with a client attached");
+        let (id, _ending) = ws.register_document_hand_off(&seat, "/proj/docs/plan.md", true);
 
         assert_eq!(
             ws.session_activity(&seat),
@@ -19896,12 +19862,11 @@ mod worker_activity_tests {
         domain.lock().turn_pending = true;
         assert_eq!(ws.session_activity(&seat), L::Running, "the control, mid-turn");
 
-        ws.note_client_attached();
         let draft = forge_primitives::vault::VaultDraft::new(
             forge_primitives::vault::VaultTool::Search,
             "search for 'bank'",
         );
-        let (id, _held, _) = ws.vault_asks.register(&seat, draft, false);
+        let (id, _held) = ws.vault_asks.register(&seat, draft, false);
         assert_eq!(
             ws.session_activity(&seat),
             L::Attention,
@@ -25343,7 +25308,6 @@ mod git_scan_cwd_tests {
         // The read answers the CANONICAL path (the `/var` -> `/private/var`
         // case on this machine), which is what a viewer deep-links by.
         let expected = cwd.canonicalize().expect("canonical").join("docs/readme.md");
-        ws.note_client_attached();
 
         let handed = {
             let ws = Arc::clone(&ws);
@@ -25427,14 +25391,12 @@ mod git_scan_cwd_tests {
         );
     }
 
-    /// **A hand-off claims an open only where something can draw it.** With
-    /// no client attached, the ask would cross the fan-out and reach nothing
-    /// that draws a document viewer - so the tool refuses with
-    /// the reason instead of parking on an ask nothing can draw. A client
-    /// attaching (the transport notes each connection) is what makes the
-    /// same hand-off land, and its leaving takes the claim back.
+    /// **A hand-off parks with no client attached and waits for one.** No
+    /// connection count decides it: the ask is held, the seat's
+    /// `pending_asks` read carries it to a client that attaches later, and
+    /// that client's answer releases the call.
     #[tokio::test]
-    async fn a_hand_off_claims_an_open_only_with_a_client_attached() {
+    async fn a_hand_off_waits_for_a_client_to_attach() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().to_str().expect("utf8").to_owned();
         let (ws, mut updates) = Workspace::testing_stub();
@@ -25450,20 +25412,6 @@ mod git_scan_cwd_tests {
         std::fs::create_dir_all(cwd.join("docs")).expect("the worktree");
         std::fs::write(cwd.join("docs/readme.md"), b"# hi\n").expect("the document");
 
-        let refused = ws
-            .hand_off_document(&session_key, "docs/readme.md", false)
-            .await
-            .expect_err("no client, so nothing to open on");
-        assert_eq!(refused, crate::documents::NO_VIEWER_CLIENT, "the refusal is the named one");
-        assert!(
-            std::iter::from_fn(|| updates.try_recv().ok()).all(|frame| !matches!(
-                &*frame.update,
-                SessionUpdate::DocumentHandOffPending { .. }
-            )),
-            "and nothing was asked of the terminal",
-        );
-
-        ws.note_client_attached();
         let handed = {
             let ws = Arc::clone(&ws);
             let seat = session_key.clone();
@@ -25483,20 +25431,20 @@ mod git_scan_cwd_tests {
             }
         })
         .await
-        .expect("an attached client is what the hand-off waits for");
+        .expect("the ask is raised with no client attached");
+        assert!(
+            ws.pending_asks(&session_key).iter().any(|waiting| matches!(
+                waiting,
+                crate::protocol::PendingAsk::DocumentHandOff(held) if held.id == ask
+            )),
+            "a client that attaches later reads the ask from the seat",
+        );
         ws.resolve_document_hand_off(
             ask,
             &session_key,
             DocumentHandOffEnding::Approve { review_id: None, note: None },
         );
         handed.await.expect("the task joins").expect("and the park releases");
-
-        ws.note_client_detached();
-        let refused = ws
-            .hand_off_document(&session_key, "docs/readme.md", false)
-            .await
-            .expect_err("the client left, so the open is unclaimed again");
-        assert_eq!(refused, crate::documents::NO_VIEWER_CLIENT);
     }
 
     /// **A document deleted between the hand-off and a later open of its

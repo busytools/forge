@@ -10,9 +10,9 @@
 //! agent reads it back like any review. A session spawned without the
 //! `review` family still hands off, but its description and answer name the
 //! family it lacks instead of telling it to call a tool it does not have.
-//! `NotNow` ends the call with the reader's decline. A detached client
-//! leaves the call parked, and the ask is re-readable when a client
-//! returns; only the waiter's own drop abandons it.
+//! `NotNow` ends the call with the reader's decline. A detached client - or
+//! no client at all - leaves the call parked, and the ask is re-readable
+//! when a client returns; only the waiter's own drop abandons it.
 //!
 //! **Any-caller and not toggleable, like the browser**: every session may
 //! hand a document out of its own tree, and the read resolves against that
@@ -222,7 +222,7 @@ impl HandOffTool {
                 return Err("the reader said not now, so nothing opened".to_owned());
             }
             DocumentHandOffEnding::Abandoned => {
-                return Err("The hand-off ended without an answer.".to_owned());
+                return Err("The client went away before answering the hand-off.".to_owned());
             }
         })
     }
@@ -479,7 +479,7 @@ mod tests {
         let out = tool.call(ToolInput { value: json!({ "path": "docs/readme.md" }) }).await;
         assert!(out.is_error, "an abandoned hand-off is not a success: {:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
-        assert_eq!(text, "The hand-off ended without an answer.", "{text}");
+        assert_eq!(text, "The client went away before answering the hand-off.", "{text}");
     }
 
     /// `reviewable` is off unless asked for: everything the agent did not

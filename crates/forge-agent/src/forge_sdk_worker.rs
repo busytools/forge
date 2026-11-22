@@ -256,10 +256,9 @@ person who is there gets no deadline: the ask stays parked until they \
 answer, and a client that connects after the prompt landed draws the \
 pending ask from the session snapshot (`pending_asks`), so nothing is \
 lost when the connection that received it goes away. Do not add a timeout \
-that auto-denies one. A request nobody can answer is the other case: with \
-no answering subscriber attached at arrival, forge resolves it \
-`Cancelled` so the request fails rather than hanging the turn, and that \
-fail-closed branch is the intended behaviour.\n\
+that auto-denies one. **That holds with no client attached at all**: the \
+ask parks and waits for one to come back, with no deadline, and a request \
+nobody has answered is never cancelled on the person's behalf.\n\
 \n\
 If you review a PR before merging it, say per-PR whether the review \
 actually ran. When something blocks it, say so on that PR every time \
@@ -3663,8 +3662,12 @@ mod tests {
             ("Never answer a question put to the person on their behalf", "the rule itself"),
             ("A person who is there gets no deadline", "the parked ask has no timeout"),
             (
-                "so the request fails rather than hanging the turn",
-                "the fail-closed branch is deliberate, and it fails the request, not the turn",
+                "the ask parks and waits for one to come back, with no deadline",
+                "no client attached leaves the ask parked, not cancelled",
+            ),
+            (
+                "never cancelled on the person's behalf",
+                "the person's answer or decline is the only ending",
             ),
             (
                 "draws the pending ask from the session snapshot (`pending_asks`)",

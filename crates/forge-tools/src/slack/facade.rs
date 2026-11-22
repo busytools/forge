@@ -167,6 +167,9 @@ pub struct SlackPostRequest {
 pub enum SlackPostError {
     /// The user rejected the draft. Nothing was posted.
     Rejected,
+    /// The draft was let go before anyone answered it - the asking session
+    /// went away, or the server shut down. Nothing was posted.
+    Abandoned,
     /// The user sent it back with words to revise from. Nothing was posted.
     SentBack { note: String },
     /// Some parts of a split draft are live and the rest is not. Carries
@@ -209,6 +212,9 @@ pub enum SlackEditError {
     NotOwnMessage,
     /// The user rejected the replacement. The message is untouched.
     Rejected,
+    /// The replacement was let go before anyone answered it. The message is
+    /// untouched.
+    Abandoned,
     /// The user sent it back with words to revise from. The message is
     /// untouched.
     SentBack {
@@ -232,6 +238,9 @@ pub struct SlackReactRequest {
 pub enum SlackReactError {
     /// The user rejected the reaction. Nothing was added or removed.
     Rejected,
+    /// The reaction was let go before anyone answered it. Nothing was added
+    /// or removed.
+    Abandoned,
     /// The user sent it back with words to revise from. Nothing was added or
     /// removed.
     SentBack {
@@ -276,6 +285,8 @@ pub enum SlackAttachmentError {
     Io(String),
     /// The user rejected the upload. Nothing was sent.
     Rejected,
+    /// The upload was let go before anyone answered it. Nothing was sent.
+    Abandoned,
     /// The user sent it back with words to revise from. Nothing was sent.
     SentBack {
         note: String,
@@ -541,6 +552,9 @@ impl ProdSlackFacade {
 enum GateDecision {
     Approved,
     Rejected,
+    /// The draft was let go before anyone answered it - the asking session
+    /// went away, or the server shut down.
+    Abandoned,
     /// The reader did not send it, and wrote words for the agent to revise
     /// from.
     SentBack {
@@ -802,11 +816,10 @@ impl ProdSlackFacade {
             Ok(forge_primitives::slack::SlackDraftAnswer::SendBack { note }) => {
                 GateDecision::SentBack { note }
             }
-            // A dead waiter is the abandoned path, and it fails closed on
-            // the same side a decline does.
-            Ok(forge_primitives::slack::SlackDraftAnswer::Decline) | Err(_) => {
-                GateDecision::Rejected
-            }
+            Ok(forge_primitives::slack::SlackDraftAnswer::Decline) => GateDecision::Rejected,
+            // A dead waiter is the teardown: the draft was let go before
+            // anyone answered it.
+            Err(_) => GateDecision::Abandoned,
         };
         drop(guard);
         resolved
@@ -853,6 +866,7 @@ impl SlackFacade for ProdSlackFacade {
         match Self::await_approval(&slack, caller, draft.clone()).await {
             GateDecision::Approved => {}
             GateDecision::Rejected => return Err(SlackPostError::Rejected),
+            GateDecision::Abandoned => return Err(SlackPostError::Abandoned),
             GateDecision::SentBack { note } => return Err(SlackPostError::SentBack { note }),
         }
         // The agent-facing result names the channel the bare way every other
@@ -986,6 +1000,7 @@ impl SlackFacade for ProdSlackFacade {
         match Self::await_approval(&slack, caller, draft).await {
             GateDecision::Approved => {}
             GateDecision::Rejected => return Err(SlackEditError::Rejected),
+            GateDecision::Abandoned => return Err(SlackEditError::Abandoned),
             GateDecision::SentBack { note } => return Err(SlackEditError::SentBack { note }),
         }
 
@@ -1047,6 +1062,7 @@ impl SlackFacade for ProdSlackFacade {
         match Self::await_approval(&slack, caller, draft).await {
             GateDecision::Approved => {}
             GateDecision::Rejected => return Err(SlackReactError::Rejected),
+            GateDecision::Abandoned => return Err(SlackReactError::Abandoned),
             GateDecision::SentBack { note } => return Err(SlackReactError::SentBack { note }),
         }
 
@@ -1288,6 +1304,7 @@ impl SlackFacade for ProdSlackFacade {
         match Self::await_approval(&slack, caller, draft).await {
             GateDecision::Approved => {}
             GateDecision::Rejected => return Err(SlackAttachmentError::Rejected),
+            GateDecision::Abandoned => return Err(SlackAttachmentError::Abandoned),
             GateDecision::SentBack { note } => {
                 return Err(SlackAttachmentError::SentBack { note });
             }

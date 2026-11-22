@@ -45,9 +45,8 @@ impl VaultPorts {
 impl VaultEmit for VaultPorts {
     fn emit(&self, update: VaultUpdate) -> bool {
         match update {
-            // A parked call is only answerable by a subscriber that renders a
-            // dock, so this is the answering send: `false` is what makes the
-            // blocked handler fail closed instead of parking for ever.
+            // The answering send reports whether a dock took the card; the
+            // call parks either way, so the report ends nothing.
             VaultUpdate::AskPending { key, draft } => {
                 self.updates.send_answering(SessionUpdate::VaultAskPending { key, draft })
             }
@@ -195,7 +194,7 @@ mod tests {
         let (workspace, _rx) = Workspace::testing_stub();
         let seat = SessionSlot::lead("Default", "forge");
         let draft = VaultDraft::new(VaultTool::Get, "read the password for 'bank'");
-        let (id, decision, _) = workspace.vault_asks.register(&seat, draft, false);
+        let (id, decision) = workspace.vault_asks.register(&seat, draft, false);
         let answer = VaultAskAnswer {
             decision: VaultAskDecision::Approve,
             master_password: None,
@@ -216,10 +215,10 @@ mod tests {
     }
 
     /// **Every one of the family's updates crosses to its own wire frame**,
-    /// and the parked-call arm uses the ANSWERING send. With only an
-    /// observer attached that arm must report "nobody can answer" - swapped
-    /// to the plain send, a draft would look answerable while no dock could
-    /// ever open, and the blocked handler would park forever.
+    /// and the parked-call arm uses the answering send. The report says
+    /// whether a dock took the card; the call parks either way, so an
+    /// observer alone is reported as no answerer while still receiving the
+    /// frame.
     #[test]
     fn the_family_updates_cross_to_their_wire_frames() {
         use crate::update_fanout::SubscriberRole;
@@ -237,8 +236,7 @@ mod tests {
             "an observer alone cannot answer a parked call",
         );
         // The frame still reaches the observer - it draws no dock, and the
-        // answering send's report is what fails the call closed rather than
-        // parking it forever.
+        // report says none took it; the call parks regardless.
         assert!(observer.try_recv().is_ok(), "the observer still sees the ask was raised");
 
         let mut answerer = updates.subscribe(SubscriberRole::Answering);

@@ -117,13 +117,19 @@ fn remember(numbers: &mut VecDeque<u64>, seq: u64, cap: usize) {
 /// What a subscriber can do with what it is sent.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SubscriberRole {
-    /// Renders the workspace's prompts - permission, question, Slack
-    /// draft - and answers them. The answering view's role, and the one
-    /// [`UpdateFanout::send_answering`] reports on.
+    /// Renders the workspace's prompts and answers them. The answering
+    /// view's role, and the one [`UpdateFanout::send_answering`] reports
+    /// on.
+    ///
+    /// **It no longer decides whether an ask can park.** Permission,
+    /// question and tool asks park for every subscriber, and a client that
+    /// attaches later reads them from `pending_asks`. The one raise the
+    /// report still decides is the browser and terminal hand-off, which
+    /// fails closed when no view can draw it.
     Answering,
-    /// Reads the stream only. A prompt delivered to observers alone is
-    /// one nobody will answer, so a path that parks a turn on an answer
-    /// must not count this subscriber.
+    /// Reads the stream only - a logger, a mirror, a page with no dock. A
+    /// frame reaches it the same way; only the answering send's report
+    /// tells the two apart.
     Observing,
 }
 
@@ -456,15 +462,15 @@ impl UpdateFanout {
     }
 
     /// Deliver `update` to every subscriber, and report whether one that
-    /// can ANSWER it took it. A path that parks a turn on an answer uses
-    /// this rather than [`Self::send`]: an observer takes the update and
-    /// never replies, so counting it would leave the turn waiting on a
-    /// response nobody will send.
+    /// can ANSWER it took it.
     ///
-    /// An update emitted before anything attached reaches nobody: a
-    /// subscriber takes what follows its own subscribe. So a caller must
-    /// fail its turn closed on a `false` return; one that parked the
-    /// turn anyway belongs on [`Self::send`].
+    /// **The report is the raise's, not the ask's, wherever an ask parks.**
+    /// An update emitted before anything attached reaches nobody, and that
+    /// no longer ends a permission, question or tool ask: each parks until
+    /// the person answers or the session goes, and a client that attaches
+    /// later reads it from `pending_asks`. The report still decides the one
+    /// raise that fails closed - the browser and terminal hand-off, which
+    /// has no ask to hold when no view can draw it.
     pub(crate) fn send_answering(&self, update: SessionUpdate) -> bool {
         self.deliver(update, Some(SubscriberRole::Answering))
     }

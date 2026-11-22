@@ -63,7 +63,7 @@ impl VaultAsks {
         caller: &SessionSlot,
         draft: VaultDraft,
         needs_unlock: bool,
-    ) -> (Uuid, tokio::sync::oneshot::Receiver<VaultAskAnswer>, bool) {
+    ) -> (Uuid, tokio::sync::oneshot::Receiver<VaultAskAnswer>) {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let id = draft.id;
         self.parked.lock().insert(
@@ -71,17 +71,13 @@ impl VaultAsks {
             ParkedVaultAsk { seat: caller.clone(), draft: draft.clone(), sender: Some(sender) },
         );
         let stamped = draft.with_unlock_state(needs_unlock);
-        let answerable =
-            self.emit.emit(VaultUpdate::AskPending { key: caller.clone(), draft: stamped });
-        if !answerable {
-            // No subscriber can answer this - either none is attached or none
-            // renders a dock - so holding the caller would park it for ever.
-            self.parked.lock().remove(&id);
-            let (_ignored_sender, dead_receiver) = tokio::sync::oneshot::channel();
-            return (id, dead_receiver, false);
-        }
+        // Delivered to whoever is attached; the emit's report on whether an
+        // answering subscriber took it no longer decides the call. It stays
+        // parked until the person answers or the session goes, and a client
+        // that attaches later reads it from `pending_asks`.
+        let _ = self.emit.emit(VaultUpdate::AskPending { key: caller.clone(), draft: stamped });
         self.sink.note(caller, PendingInteractionKind::Vault);
-        (id, receiver, true)
+        (id, receiver)
     }
 
     /// Whether a vault call with this id is still registered to `caller`,
@@ -355,7 +351,7 @@ mod tests {
         let (asks, _emit, _sink) =
             harness_with(std::sync::Arc::new(TestEmit::default()), Some(Arc::clone(&session)));
         let draft = a_draft();
-        let (id, _held, _) = asks.register(&caller(), draft, true);
+        let (id, _held) = asks.register(&caller(), draft, true);
 
         unlocked(&session);
         let held = asks.asks(&caller());
@@ -374,7 +370,7 @@ mod tests {
     #[test]
     fn the_record_read_reports_the_held_call() {
         let (asks, _emit, _sink) = harness();
-        let (id, _held, _) = asks.register(&caller(), a_draft(), false);
+        let (id, _held) = asks.register(&caller(), a_draft(), false);
         assert!(
             asks.asks(&caller())
                 .iter()
@@ -392,8 +388,8 @@ mod tests {
         let session = a_session();
         let (asks, _emit, _sink) =
             harness_with(std::sync::Arc::new(TestEmit::default()), Some(Arc::clone(&session)));
-        let (first, _held_first, _) = asks.register(&caller(), a_draft(), true);
-        let (second, _held_second, _) = asks.register(&caller(), a_draft(), true);
+        let (first, _held_first) = asks.register(&caller(), a_draft(), true);
+        let (second, _held_second) = asks.register(&caller(), a_draft(), true);
 
         let locked = asks.asks(&caller());
         assert_eq!(locked.len(), 2);
@@ -429,8 +425,8 @@ mod tests {
     fn unlocking_pushes_a_restamped_frame_for_the_other_cards() {
         let (asks, emit, _sink) = harness();
         let seat = caller();
-        let (answered, _held, _) = asks.register(&seat, a_draft(), true);
-        let (other, _other_held, _) = asks.register(&seat, a_draft(), true);
+        let (answered, _held) = asks.register(&seat, a_draft(), true);
+        let (other, _other_held) = asks.register(&seat, a_draft(), true);
         emit.take();
 
         asks.settle(answered, &seat, VaultAskEnding::Approved);
@@ -453,7 +449,7 @@ mod tests {
     #[test]
     fn a_relock_pushes_a_restamped_frame() {
         let (asks, emit, _sink) = harness();
-        let (id, _held, _) = asks.register(&caller(), a_draft(), false);
+        let (id, _held) = asks.register(&caller(), a_draft(), false);
         emit.take();
 
         asks.rebase(true);
@@ -475,7 +471,7 @@ mod tests {
     fn an_answer_resolves_the_waiter_exactly_once() {
         let (asks, _emit, _sink) = harness();
         let draft = a_draft();
-        let (id, mut held, _) = asks.register(&caller(), draft, false);
+        let (id, mut held) = asks.register(&caller(), draft, false);
 
         assert!(asks.is_waiting(id, &caller()));
         let answer = VaultAskAnswer {
@@ -507,7 +503,7 @@ mod tests {
     #[test]
     fn another_seat_cannot_answer_this_call() {
         let (asks, _emit, _sink) = harness();
-        let (id, _held, _) = asks.register(&caller(), a_draft(), false);
+        let (id, _held) = asks.register(&caller(), a_draft(), false);
         let elsewhere = SessionSlot::worker("Default", "forge", "someone-else");
 
         assert!(!asks.resolve(
@@ -523,24 +519,37 @@ mod tests {
         assert!(asks.is_waiting(id, &caller()), "the call is still the asker's");
     }
 
-    /// No client to answer: the registry must not hold the call, and the
-    /// awaiting caller sees a dead receiver - the fail-closed read.
+    /// **A call with no UI to answer it waits for one.** The registry keeps
+    /// it, and the answer a later client gives releases the parked caller -
+    /// no raise-time check drops the call.
     #[tokio::test]
-    async fn a_call_with_no_ui_to_answer_it_fails_closed() {
+    async fn a_call_with_no_ui_to_answer_it_waits_for_one() {
         let (asks, _emit, _sink) = harness_with(std::sync::Arc::new(TestEmit::refusing()), None);
 
-        let (_id, held, answerable) = asks.register(&caller(), a_draft(), false);
+        let (id, held) = asks.register(&caller(), a_draft(), false);
 
-        assert!(!answerable, "an unanswerable call reports itself");
-        assert!(asks.asks(&caller()).is_empty(), "an unanswerable call is dropped");
-        assert!(held.await.is_err(), "a dead receiver reads as not-approved");
+        assert_eq!(asks.asks(&caller()).len(), 1, "the call stays parked with no UI");
+        assert!(
+            asks.resolve(
+                id,
+                &caller(),
+                VaultAskAnswer {
+                    decision: VaultAskDecision::Approve,
+                    master_password: None,
+                    two_factor: None,
+                    released: None,
+                }
+            ),
+            "the later answer lands",
+        );
+        assert!(held.await.is_ok(), "and releases the parked caller");
     }
 
     /// A session going away ends every call it holds.
     #[test]
     fn a_session_teardown_abandons_the_calls_it_holds() {
         let (asks, emit, sink) = harness();
-        let (id, mut held, _) = asks.register(&caller(), a_draft(), false);
+        let (id, mut held) = asks.register(&caller(), a_draft(), false);
 
         asks.abandon(&caller());
 

@@ -253,10 +253,8 @@ impl SlackStore for SlackPorts {
 impl SlackEmit for SlackPorts {
     fn emit(&self, update: SlackUpdate) -> bool {
         match update {
-            // A composed draft is only answerable by a subscriber that
-            // renders a dock, so this is the answering send: `false` is what
-            // makes the blocked tool call fail closed instead of parking for
-            // ever.
+            // The answering send reports whether a dock took the card; the
+            // draft parks either way, so the report ends nothing.
             SlackUpdate::PostPending { key, draft } => {
                 self.updates.send_answering(SessionUpdate::SlackPostPending { key, draft })
             }
@@ -652,10 +650,10 @@ mod tests {
     }
 
     /// **Every one of the subsystem's updates crosses to its own wire
-    /// frame**, and the draft arm uses the ANSWERING send. With only an
-    /// observer attached that arm must report "nobody can answer" - swapped
-    /// to the plain send, a draft would look answerable while no dock could
-    /// ever open, and the blocked tool call would park forever.
+    /// frame**, and the draft arm uses the answering send. The report says
+    /// whether a dock took the card; the draft parks either way, so an
+    /// observer alone is reported as no answerer while still receiving the
+    /// frame.
     #[test]
     fn the_draft_updates_cross_to_their_wire_frames() {
         use crate::update_fanout::{SubscriberRole, UpdateFanout};
@@ -672,8 +670,7 @@ mod tests {
             "an observer alone cannot answer a held draft",
         );
         // The frame still reaches the observer - it draws no dock, and the
-        // answering send's report is what fails the call closed rather than
-        // parking it forever.
+        // report says none took it; the draft parks regardless.
         assert!(observer.try_recv().is_ok(), "the observer still sees the draft was raised");
 
         let mut answerer = updates.subscribe(SubscriberRole::Answering);
