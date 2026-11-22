@@ -16302,7 +16302,7 @@ provider = "anthropic"
         assert!(!workspace.settings_write_waiting(settings_id, &slot), "the write is gone");
         assert!(!workspace.vault_asks.is_waiting(vault_id, &slot), "the vault call is gone");
         assert_eq!(workspace.slack.held_drafts().len(), 0, "the draft is gone");
-        assert!(!workspace.document_handoff_waiting(document_id, &slot), "the hand-off is gone",);
+        assert!(!workspace.document_handoff_waiting(document_id, &slot), "the hand-off is gone");
         for (ended, name) in [
             (settings.try_recv().is_err(), "settings write"),
             (vault.try_recv().is_err(), "vault call"),
