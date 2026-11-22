@@ -216,6 +216,12 @@ impl Tool for Set {
                                 "description": "The new value in the key's own type (string, \
                                                 number, boolean or list of strings). \
                                                 settings__index states it.",
+                                "anyOf": [
+                                    { "type": "string" },
+                                    { "type": "number" },
+                                    { "type": "boolean" },
+                                    { "type": "array", "items": { "type": "string" } },
+                                ],
                             },
                         },
                         "required": ["key", "value"],
@@ -522,6 +528,58 @@ mod tests {
         let description = set.description();
         assert!(description.contains("one validated save"), "{description}");
         assert!(description.contains("mutually required"), "{description}");
+    }
+
+    /// #3024: the `value` property names the types it accepts, a number
+    /// among them, so the schema no longer leaves a numeric value untyped.
+    #[test]
+    fn set_schema_names_the_value_types_it_accepts() {
+        let set = Set { facade: MockSettingsFacade::new().into_arc(), slot: slot() };
+        let value = &set.input_schema()["properties"]["edits"]["items"]["properties"]["value"];
+        let branches = value["anyOf"].as_array().expect("the value names its accepted types");
+        let accepted =
+            branches.iter().filter_map(|branch| branch["type"].as_str()).collect::<Vec<_>>();
+        for named in ["string", "number", "boolean", "array"] {
+            assert!(accepted.contains(&named), "the value does not accept `{named}`: {value}");
+        }
+        let list =
+            branches.iter().find(|branch| branch["type"] == "array").expect("the list branch");
+        assert_eq!(list["items"]["type"], "string", "a list value is strings: {value}");
+    }
+
+    /// #3024: `settings__set` hands a numeric value to the facade as a
+    /// number. The encoder that stringified it runs in the `claude`
+    /// process, outside this crate, so this pins only that the tool does
+    /// not coerce; a live `settings__set` after release is what confirms
+    /// the encoder honours the schema.
+    #[tokio::test]
+    async fn a_numeric_value_is_not_coerced_by_the_tool() {
+        let mock = Arc::new(MockSettingsFacade::new());
+        *mock.write_result.lock() = Some(Ok(SettingsWriteOutcome::Applied {
+            effects: vec![forge_primitives::EffectClass::Live],
+        }));
+        let facade: Arc<dyn SettingsFacade> = mock.clone();
+        let server = server(facade);
+
+        let (text, is_error) = call(
+            &server,
+            "settings__set",
+            serde_json::json!({
+                "edits": [
+                    { "key": "orgs.Personal.projects.playground.max_workers", "value": 8 },
+                ],
+            }),
+        )
+        .await;
+
+        assert!(!is_error, "{text}");
+        let calls = mock.set_calls.lock();
+        assert_eq!(calls.len(), 1, "the batch reached the facade once");
+        assert_eq!(
+            calls[0].1[0].value,
+            serde_json::json!(8),
+            "the tool hands the number through as a number, not a string",
+        );
     }
 
     #[tokio::test]
