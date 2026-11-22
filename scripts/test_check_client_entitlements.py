@@ -97,7 +97,9 @@ class CheckClientEntitlementsTest(unittest.TestCase):
         result = self.run_gate()
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("[OK]", result.stdout)
+        # The success line names the entitlement, so the positive path makes
+        # the same claim the check does rather than passing on a bare OK.
+        self.assertIn(f"[OK] {self.bundle.name} declares {ENTITLEMENT}", result.stdout)
         # The read-back has to be the signature's own entitlements, not the
         # config file's intent, so the argv names codesign's display mode.
         calls = self.codesign_calls()
@@ -109,7 +111,8 @@ class CheckClientEntitlementsTest(unittest.TestCase):
 
         result = self.run_gate()
 
-        self.assertNotEqual(result.returncode, 0, "a bundle with no entitlements passed")
+        self.assertEqual(result.returncode, 1, "a bundle with no entitlements passed")
+        self.assertIn("[ERROR]", result.stderr)
         self.assertIn(ENTITLEMENT, result.stderr)
         self.assertTrue(self.codesign_calls(), "the refusal did not come from a signature read")
 
@@ -118,15 +121,29 @@ class CheckClientEntitlementsTest(unittest.TestCase):
 
         result = self.run_gate()
 
-        self.assertNotEqual(result.returncode, 0, "an entitlement declared false passed")
-        self.assertIn(ENTITLEMENT, result.stderr)
+        self.assertEqual(result.returncode, 1, "an entitlement declared false passed")
+        self.assertIn("[ERROR]", result.stderr)
+        self.assertIn(f"{ENTITLEMENT} is declared False", result.stderr)
+
+    def test_an_entitlement_set_without_the_audio_key_is_refused(self) -> None:
+        # A plist that parses and carries other entitlements is the absent-key
+        # path, which an empty read does not reach.
+        self.write_entitlements({"com.apple.security.cs.allow-jit": True})
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 1, "a set without the audio key passed")
+        self.assertIn("[ERROR]", result.stderr)
+        self.assertIn(f"{ENTITLEMENT} is absent, expected true", result.stderr)
+        self.assertTrue(self.codesign_calls(), "the refusal did not come from a signature read")
 
     def test_a_bundle_without_the_usage_string_is_refused(self) -> None:
         self.write_info({"CFBundleIdentifier": "dev.vedhavyas.forge"})
 
         result = self.run_gate()
 
-        self.assertNotEqual(result.returncode, 0, "a bundle with no usage string passed")
+        self.assertEqual(result.returncode, 1, "a bundle with no usage string passed")
+        self.assertIn("[ERROR]", result.stderr)
         self.assertIn(USAGE, result.stderr)
 
     def test_an_unsigned_bundle_is_refused(self) -> None:
@@ -135,7 +152,8 @@ class CheckClientEntitlementsTest(unittest.TestCase):
             CODESIGN_STDERR=f"{self.bundle}: code object is not signed at all",
         )
 
-        self.assertNotEqual(result.returncode, 0, "an unsigned bundle passed")
+        self.assertEqual(result.returncode, 1, "an unsigned bundle passed")
+        self.assertIn("[ERROR]", result.stderr)
         self.assertIn("code object is not signed at all", result.stderr)
 
     def test_entitlements_that_do_not_parse_are_refused(self) -> None:
@@ -143,13 +161,15 @@ class CheckClientEntitlementsTest(unittest.TestCase):
 
         result = self.run_gate()
 
-        self.assertNotEqual(result.returncode, 0, "unreadable entitlements passed")
+        self.assertEqual(result.returncode, 1, "unreadable entitlements passed")
+        self.assertIn("[ERROR]", result.stderr)
         self.assertIn("do not parse", result.stderr)
 
     def test_a_missing_bundle_is_refused(self) -> None:
         result = self.run_gate(bundle=self.root / "nothing.app")
 
-        self.assertNotEqual(result.returncode, 0, "a missing bundle passed")
+        self.assertEqual(result.returncode, 1, "a missing bundle passed")
+        self.assertIn("[ERROR]", result.stderr)
         self.assertIn("no app bundle", result.stderr)
         self.assertEqual(self.codesign_calls(), [], "codesign ran for a bundle that is not there")
 
