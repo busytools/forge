@@ -49,6 +49,7 @@ script-tests:
     python3 scripts/test_check_client_wasm.py
     python3 scripts/test_browser_stack_patch.py
     python3 scripts/test_browser_host_focus.py
+    python3 scripts/test_check_client_entitlements.py
 
 # Rewrite files to match rustfmt. The shell is a workspace root of its own,
 # so it takes its own invocation.
@@ -606,6 +607,13 @@ client-release version: sync-main client-release-deps
         echo "[ERROR] the built client is version $got, expected {{version}}" >&2
         exit 1
     fi
+
+    # **The hardened runtime silences the microphone without the entitlement,
+    # and the block is silent.** v1.2.18 shipped signed with no entitlements:
+    # the device opened, the client believed it was delivering, and every take
+    # landed empty. The signature itself is read back, not the config's intent,
+    # so a build that lost the entitlements file cannot ship quietly.
+    ./scripts/check_client_entitlements.py "$built"
 
     # The CLI signs with whatever key the environment names and only warns
     # when it is not the pinned one, so the pair is read back here - before

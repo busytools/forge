@@ -168,6 +168,12 @@ pub enum WorkspaceError {
     ServerPortTakenByGateway { path: PathBuf, port: u16 },
 
     #[error(
+        "server startup_gate = \"{value}\" in forge.toml at {} is not an absolute path; the boot executes it directly, and a relative path would name a different program depending on where forge was launched",
+        path.display()
+    )]
+    ServerStartupGateNotAbsolute { path: PathBuf, value: String },
+
+    #[error(
         "client {key} = \"{value}\" in forge.toml at {} names nothing forge ships; this key picks by name, never by path",
         path.display()
     )]

@@ -5,8 +5,8 @@ use std::net::{IpAddr, Ipv4Addr};
 use serde::Deserialize;
 
 /// The `[server]` block of `forge.toml`: whether the socket's listener
-/// starts with forge, where it binds, and how large a served page's
-/// structured tool record may be.
+/// starts with forge, where it binds, how large a served page's structured
+/// tool record may be, and the startup gate the boot runs first.
 ///
 /// On unless it is turned off, so a restart leaves the socket serving
 /// without a key being added first.
@@ -58,6 +58,21 @@ pub struct ServerConfig {
     /// https, in every build. A web client served from another address is one
     /// only the operator knows; an empty list allows none.
     pub allowed_origins: Vec<String>,
+    /// An executable forge runs at startup, before any listener binds, and
+    /// waits on with no timeout; a non-zero exit fails the boot and forge
+    /// exits non-zero.
+    ///
+    /// **The one reason this key exists is macOS Transparency, Consent, and
+    /// Control (TCC).** TCC attributes a file access to the process launchd
+    /// spawned, so a daemon launched through `bash` makes every worker's
+    /// Bash tool attribute to bash and a Full Disk Access grant on the forge
+    /// binary never applies. Running forge directly as the daemon's program
+    /// fixes that, and this key is what lets the machine's own infra gate
+    /// still run first. The value is a path to an executable script the
+    /// operator supplies; forge only runs it, and the child inherits forge's
+    /// stdout and stderr. It runs once, on the boot path, and never again
+    /// once serving has started.
+    pub startup_gate: Option<String>,
 }
 
 /// The port the server binds when `[server] port` is absent. Distinct
@@ -86,6 +101,7 @@ impl Default for ServerConfig {
             first_frame_cap_kb: DEFAULT_FIRST_FRAME_CAP_KB,
             more_page_cap_kb: DEFAULT_MORE_PAGE_CAP_KB,
             allowed_origins: Vec::new(),
+            startup_gate: None,
         }
     }
 }
@@ -129,5 +145,15 @@ mod tests {
         let parsed: ServerConfig =
             serde_json::from_str(r#"{"first_frame_cap_kb": 0}"#).expect("the key parses");
         assert_eq!(parsed.first_frame_cap_kb, 0);
+    }
+
+    /// The gate is opt-in: an absent key runs nothing, and a set one carries
+    /// the path the boot executes.
+    #[test]
+    fn the_startup_gate_is_unset_until_the_file_sets_one() {
+        assert_eq!(ServerConfig::default().startup_gate, None, "absent means no gate");
+        let parsed: ServerConfig =
+            serde_json::from_str(r#"{"startup_gate": "/opt/gate.sh"}"#).expect("the key parses");
+        assert_eq!(parsed.startup_gate.as_deref(), Some("/opt/gate.sh"));
     }
 }

@@ -191,12 +191,12 @@ again to every connection after each applied reload:
     "version": "1.1.34+abc1234",
     "source": "/home/me/.claude/forge/forge.toml",
     "fingerprint": "0123456789abcdef",
-    "totals": { "keys": 232, "areas": 12 },
+    "totals": { "keys": 232, "areas": 13 },
     "areas": [
       {
         "id": "server",
         "name": "server",
-        "note": "the socket a client reads through, and the browser the server hosts",
+        "note": "the socket a client reads through, the browser the server hosts, the seat's terminal, and the gate the boot runs first",
         "keys": [
           {
             "path": "server.port",
