@@ -536,6 +536,13 @@ mod tests {
     fn set_schema_names_the_value_types_it_accepts() {
         let set = Set { facade: MockSettingsFacade::new().into_arc(), slot: slot() };
         let value = &set.input_schema()["properties"]["edits"]["items"]["properties"]["value"];
+        // A competing top-level `type` would undo the point: a reader that
+        // sees `string` there can ignore the `anyOf`, so the property names
+        // its types through `anyOf` alone.
+        assert!(
+            value.get("type").is_none(),
+            "the value names its types through anyOf alone: {value}"
+        );
         let branches = value["anyOf"].as_array().expect("the value names its accepted types");
         let accepted =
             branches.iter().filter_map(|branch| branch["type"].as_str()).collect::<Vec<_>>();
@@ -548,10 +555,11 @@ mod tests {
     }
 
     /// #3024: `settings__set` hands a numeric value to the facade as a
-    /// number. The encoder that stringified it runs in the `claude`
-    /// process, outside this crate, so this pins only that the tool does
-    /// not coerce; a live `settings__set` after release is what confirms
-    /// the encoder honours the schema.
+    /// number. Nothing in forge coerces it - `forge-sdk` passes a call's
+    /// `arguments` through verbatim, and the quoted value in the reported
+    /// failure came from the model's own `tool_use` input. So this pins
+    /// only that the tool stays out of the way; whether a model picks the
+    /// schema's number branch is provable only by a live call after release.
     #[tokio::test]
     async fn a_numeric_value_is_not_coerced_by_the_tool() {
         let mock = Arc::new(MockSettingsFacade::new());
