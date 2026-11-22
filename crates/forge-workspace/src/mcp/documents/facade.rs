@@ -21,8 +21,8 @@ pub trait DocumentFacade: Send + Sync {
     /// **park until the reader answers** - answering with the resolved
     /// path and the ending the park released on.
     ///
-    /// A refused read raises nothing and parks on nothing; a forge with no
-    /// attached client is the read's sibling failure, its own sentence.
+    /// A refused read raises nothing and parks on nothing; with no client
+    /// attached the ask simply waits for one.
     async fn hand_off(
         &self,
         seat: &SessionSlot,

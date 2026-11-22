@@ -241,11 +241,11 @@ each client takes `subscribe_client()` through the surface with the role it
 declared.
 
 A subscriber declares whether it can answer the workspace's prompts.
-A view that renders a dock does, so a permission or question request
-delivered to it keeps its turn alive; a consumer that only reads takes
-an observing subscription instead, and a request that reaches no answering
-subscriber is resolved `Cancelled` rather than parked on a reply nobody will
-send.
+Every prompt reaches both roles, and a permission, question or tool ask
+parks for the person whoever is attached - a client that connects later
+reads it from the seat's `pending_asks`. The role decides only the browser
+and terminal hand-offs, which fail closed when no answerer is attached
+rather than park a tab or a keyboard nobody can take.
 
 That is the whole contract. There are no callback hooks, and no state shared
 between a view and the core. Query-style refreshes such

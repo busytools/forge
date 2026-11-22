@@ -341,25 +341,6 @@ impl Keepalive {
     }
 }
 
-/// Counts this connection among the attached clients for as long as it
-/// lives, so a document hand-off can tell a viewer exists to open on. A
-/// guard, for the same reason [`Holds`] is one: the count must come back
-/// down however the connection ends, a dropped socket included.
-struct AttachedClient(Arc<ViewSurface>);
-
-impl AttachedClient {
-    fn new(surface: &Arc<ViewSurface>) -> Self {
-        surface.client_attached();
-        Self(Arc::clone(surface))
-    }
-}
-
-impl Drop for AttachedClient {
-    fn drop(&mut self) {
-        self.0.client_detached();
-    }
-}
-
 /// One tab this connection is viewing: its profile, its id, its frames and
 /// its state.
 struct Viewing {
@@ -1102,9 +1083,6 @@ where
     // reap path as well as this one.
     let me = life.me;
     let caller = Caller { id: me, peer };
-    // This connection is a client that can draw the viewer for as long as it
-    // lives; the guard hands the count back on the way out.
-    let _attached = AttachedClient::new(&state.surface);
     // The seats THIS connection is holding, which is not the same list as the
     // seats it watches: every session subscribe holds - a sessionless seat's
     // watch waits for its session (#1706) - and a release is counted per seat,
@@ -1115,8 +1093,8 @@ where
     // this connection answers - not its first message, so a client whose first
     // word is a `more` or a command is not locked into observing. Registering
     // as answering before a client says so would count one that cannot show a
-    // prompt as able to answer it, and the core parks a turn on that reply
-    // rather than failing it.
+    // browser or terminal hand-off as able to answer it, and the card would be
+    // handed to a page with nothing to draw it.
     let mut updates: Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)> = None;
     // The browser tab this connection is viewing (and the seat's tab rows it
     // follows) and the terminal it is attached to, each once the client asks.
@@ -7833,15 +7811,12 @@ mod tests {
         super::boundary_candidates(window).into_iter().next()
     }
 
-    /// **The transport is what makes a hand-off's ask claimable.** The
-    /// per-connection guard is the only thing that moves the attached count,
-    /// so a regression that skipped it would refuse every hand-off with
-    /// NO_VIEWER_CLIENT - and only a live run would catch it. The guard's
-    /// whole life is pinned here: no connection refuses with the reason, an
-    /// attached one parks the call on its ask, the answer command releases
-    /// it, and the guard's drop takes the claim back.
+    /// **A hand-off raised with no client attached waits for one.** The
+    /// transport's attached count no longer decides it: the ask parks, a
+    /// connection that attaches later reads it from the seat's
+    /// `pending_asks`, and the answer command releases the call.
     #[tokio::test]
-    async fn an_attached_connection_is_what_a_hand_off_claims_its_open_on() {
+    async fn a_hand_off_raised_with_no_client_waits_for_one() {
         let dir = tempfile::tempdir().expect("tempdir");
         let fleet = crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])])
             .expect("the fleet builds");
@@ -7858,40 +7833,44 @@ mod tests {
             browser_host: None,
             heartbeat: Heartbeat::default(),
         };
-        // The ask needs a subscriber that can ANSWER it to land on - the
-        // raise is a parked prompt, so an observing stream alone fails it
-        // closed; a connection's own answering stream stands in for one.
-        let mut updates = state.surface.subscribe_client(true);
         let seat = SessionSlot::lead("TestOrg", "proj");
-
-        let refused = fleet
-            .workspace()
-            .hand_off_document(&seat, "docs/readme.md", false)
-            .await
-            .expect_err("no connection, so nothing to open on");
-        assert_eq!(refused, forge_workspace::documents::NO_VIEWER_CLIENT);
-
-        let attached = AttachedClient::new(&state.surface);
         let handed = {
             let ws = fleet.workspace();
             let seat = seat.clone();
             tokio::spawn(async move { ws.hand_off_document(&seat, "docs/readme.md", false).await })
         };
+        // The late connection: nothing was subscribed when the ask was
+        // raised, so the seat's own record is what carries it.
         let id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                match updates
-                    .recv()
-                    .await
-                    .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                if let Some(id) = state.surface.pending_asks(&seat).iter().find_map(|ask| match ask
                 {
-                    Some(SessionUpdate::DocumentHandOffPending { id, .. }) => break id,
-                    Some(_) => {}
-                    None => panic!("the stream ended before the ask"),
+                    forge_primitives::PendingAsk::DocumentHandOff(held) => Some(held.id),
+                    _ => None,
+                }) {
+                    break id;
                 }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
         })
         .await
-        .expect("an attached connection is what the hand-off parks on");
+        .expect("the ask parks with no client attached and reads from the seat");
+
+        // **The record a late client actually reads carries the ask.** The
+        // core verb above is not the delivery path; a client that attaches
+        // after the raise reads the seat's snapshot, so the record's own
+        // `pending_asks` is what has to hold it.
+        let record =
+            crate::transport::wire::encode_subject(&state, &Subject::Session(seat.clone()))
+                .await
+                .expect("the seat record encodes");
+        assert!(
+            record["pending_asks"]
+                .as_array()
+                .is_some_and(|asks| asks.iter().any(|ask| ask["kind"] == "document_hand_off"
+                    && ask["request"]["id"] == id.to_string())),
+            "the held hand-off is on the seat record a late client reads: {record}",
+        );
 
         // The answer rides the command a client's approve sends, so the
         // dispatch guard and the registry are both on this path.
@@ -7908,13 +7887,30 @@ mod tests {
             .expect("the answer lands on the parked ask");
         handed.await.expect("the task joins").expect("and the park releases");
 
-        drop(attached);
-        let refused = fleet
-            .workspace()
-            .hand_off_document(&seat, "docs/readme.md", false)
-            .await
-            .expect_err("the connection went, so the claim goes with it");
-        assert_eq!(refused, forge_workspace::documents::NO_VIEWER_CLIENT);
+        // A later raise is not a refusal either: it parks and waits for the
+        // next client.
+        let again = {
+            let ws = fleet.workspace();
+            let seat = seat.clone();
+            tokio::spawn(async move { ws.hand_off_document(&seat, "docs/readme.md", false).await })
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if fleet
+                    .workspace()
+                    .pending_asks(&seat)
+                    .iter()
+                    .any(|ask| matches!(ask, forge_primitives::PendingAsk::DocumentHandOff(_)))
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the raise parks again with no client");
+        again.abort();
+        let _ = again.await;
     }
 
     /// Escalating from observing to answering opens a new stream - and what

@@ -53,9 +53,10 @@ use uuid::Uuid;
 /// lock state and a rotated refresh token.
 #[derive(Clone)]
 pub enum VaultUpdate {
-    /// A call is held; the draft is the card a view draws. An emit that
-    /// returns `false` for this variant means no attached client could
-    /// answer it, which is what makes the caller fail closed.
+    /// A call is held; the draft is the card a view draws. The emit's
+    /// report says whether an answering subscriber took it; the call parks
+    /// either way, and a client that attaches later reads it from
+    /// `pending_asks`.
     AskPending { key: SessionSlot, draft: VaultDraft },
     /// A held call ended, with the ending every client draws.
     AskResolved { key: SessionSlot, id: Uuid, ending: VaultAskEnding },
@@ -96,9 +97,9 @@ impl std::fmt::Debug for VaultUpdate {
 /// Where the family emits its updates. The embedding host implements this;
 /// the family never reaches past it.
 pub trait VaultEmit: Send + Sync {
-    /// Emit one update. `false` means no subscriber would take it - for a
-    /// parked call that no client can answer, which ends the call rather
-    /// than holding it for ever.
+    /// Emit one update, reporting whether a subscriber that can answer it
+    /// took it. The report does not decide a parked call: the call waits
+    /// for the person however many subscribers are attached.
     fn emit(&self, update: VaultUpdate) -> bool;
 }
 
