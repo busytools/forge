@@ -2515,11 +2515,34 @@ max_size_mib = 0
                 ),
             );
             let err = load_from_dir(dir.path()).expect_err("a relative gate must not load");
-            assert!(
-                err.to_string().contains("startup_gate"),
-                "the error names the key for {gate:?} with the socket {socket}: {err}",
-            );
+            let crate::error::WorkspaceError::ServerStartupGateNotAbsolute { value, .. } = &err
+            else {
+                panic!("the refusal names a relative gate for {gate:?} with {socket}: {err}");
+            };
+            assert_eq!(value.as_str(), gate, "the offending value is named");
         }
+    }
+
+    /// **A disabled socket keeps its gate.** The gate runs on the boot path
+    /// whatever the listener does, so the load must carry an absolute one
+    /// through the early return rather than dropping it.
+    #[test]
+    fn a_disabled_server_keeps_an_absolute_startup_gate() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!(
+                "{}\n[server]\nenabled = false\nstartup_gate = \"/opt/forge/gate.sh\"\n",
+                minimal_config()
+            ),
+        );
+        let config = load_from_dir(dir.path()).expect("the disabled section loads");
+        assert!(!config.server.enabled);
+        assert_eq!(
+            config.server.startup_gate.as_deref(),
+            Some("/opt/forge/gate.sh"),
+            "the gate is retained though the socket is off",
+        );
     }
 
     /// An absent `[client]` leaves every name unset, and unset means the

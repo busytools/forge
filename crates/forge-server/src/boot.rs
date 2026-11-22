@@ -1993,10 +1993,46 @@ port = 49201
         std::fs::write(&path, "#!/bin/sh\nexit 0\n").expect("write without the executable bit");
         let server = gate(path.to_str().expect("the temp path is utf-8"));
 
-        let error = run_startup_gate(&server).expect_err("a non-executable gate fails");
+        let events = crate::test_support::logged(|| {
+            let error = run_startup_gate(&server).expect_err("a non-executable gate fails");
+            assert!(
+                format!("{error}").contains("forge-startup-gate.sh"),
+                "the failure names the path: {error}",
+            );
+        });
         assert!(
-            format!("{error}").contains("forge-startup-gate.sh"),
-            "the failure names the path: {error}",
+            events.iter().any(|(level, fields)| {
+                *level == tracing::Level::ERROR
+                    && fields.contains("event_name=\"startup_gate_failed\"")
+                    && fields.contains("forge-startup-gate.sh")
+                    && fields.contains("could not be run")
+            }),
+            "the refusal is one ERROR record naming the path: {events:?}",
+        );
+    }
+
+    /// A gate killed by a signal has no exit code: the failure says so and
+    /// the record carries the sentinel code, rather than reading as a clean
+    /// zero.
+    #[test]
+    fn a_startup_gate_killed_by_a_signal_stops_the_boot() {
+        let (_dir, server) = gate_script("#!/bin/sh\nkill -KILL $$\n");
+        let events = crate::test_support::logged(|| {
+            let error = run_startup_gate(&server).expect_err("a killed gate stops the boot");
+            let rendered = format!("{error}");
+            assert!(
+                rendered.contains("was killed by a signal"),
+                "the failure names the signal death: {rendered}",
+            );
+        });
+
+        assert!(
+            events.iter().any(|(level, fields)| {
+                *level == tracing::Level::ERROR
+                    && fields.contains("event_name=\"startup_gate_failed\"")
+                    && fields.contains("exit_code=-1")
+            }),
+            "the refusal is one ERROR record with the sentinel code: {events:?}",
         );
     }
 
@@ -2018,15 +2054,120 @@ port = 49201
         });
     }
 
-    /// **The gate runs before any listener binds.** The call in `start_core`
-    /// precedes the subsystem wave, which is where the gateway listener
-    /// binds, and the boot entry reaches `serve_socket` only after
-    /// `start_core` returns. Both orders are the pin. Mutant: move the call
-    /// below `start_subsystems`, or serve the socket before the core starts.
+    /// The child this test spawns to prove the gate's streams are the
+    /// server's own: the env var names the gate script the child runs.
+    const GATE_STREAM_PROBE: &str = "FORGE_GATE_STREAM_PROBE";
+
+    /// **The gate's stdout and stderr are the server's own.** A gate's line
+    /// reaches the parent's pipe only through `Stdio::inherit`; with either
+    /// stream set to `null` the line is gone. The test re-runs itself as the
+    /// server stand-in so the child inherits the pipe this process reads.
     #[test]
-    fn the_startup_gate_runs_before_anything_binds() {
+    fn the_gates_stdout_and_stderr_are_the_servers_own() {
+        if let Some(path) = std::env::var_os(GATE_STREAM_PROBE) {
+            let server = gate(path.to_str().expect("the probe path is utf-8"));
+            run_startup_gate(&server).expect("the probe gate exits zero");
+            return;
+        }
+
+        let (_dir, server) =
+            gate_script("#!/bin/sh\necho gate-stdout-line\necho gate-stderr-line >&2\n");
+        let script = server.startup_gate.clone().expect("the probe names a script");
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "boot::tests::the_gates_stdout_and_stderr_are_the_servers_own",
+                "--nocapture",
+            ])
+            .env(GATE_STREAM_PROBE, script)
+            .output()
+            .expect("the probe child ran");
+
+        assert!(output.status.success(), "the probe child failed: {output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stdout.contains("gate-stdout-line"),
+            "the gate's stdout reached the server's stdout: {stdout}",
+        );
+        assert!(
+            stderr.contains("gate-stderr-line"),
+            "the gate's stderr reached the server's stderr: {stderr}",
+        );
+    }
+
+    /// **The gate runs on the real boot path before the subsystem wave.**
+    /// A project name no config holds stops `start_core` after the gate and
+    /// before `start_subsystems`, so a gate that writes a sentinel proves
+    /// the boot ran it first. This is the functional pin the source-order
+    /// check cannot give: a call moved below the wave never runs here.
+    #[tokio::test]
+    async fn the_startup_gate_runs_on_the_boot_path_before_the_wave() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("gate-ran");
+        let script = dir.path().join("forge-startup-gate.sh");
+        std::fs::write(&script, format!("#!/bin/sh\ntouch {}\n", marker.display()))
+            .expect("write the gate");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        let gateway_port = listener.local_addr().expect("the port").port();
+        drop(listener);
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/");
+        std::fs::write(
+            forge.join("forge.toml"),
+            format!(
+                "\
+[[orgs]]
+name = \"TestOrg\"
+accounts = [\"Stub\"]
+
+[[orgs.projects]]
+name = \"forge\"
+path = \"/tmp\"
+
+[[accounts]]
+display_name = \"Stub\"
+token = \"t\"
+provider = \"openrouter\"
+base_url = \"http://127.0.0.1:9/api\"
+models = [\"claude-sonnet-5\"]
+
+[server]
+enabled = false
+startup_gate = \"{}\"
+
+[gateway]
+port = {gateway_port}
+",
+                script.display()
+            ),
+        )
+        .expect("write forge.toml");
+
+        let booted = super::start_core(dir.path(), Some("no-such-project"));
+
+        assert!(booted.is_err(), "the unknown project fails the boot");
+        assert!(
+            marker.exists(),
+            "the gate ran on the boot path before the project name was refused",
+        );
+    }
+
+    /// **The gate runs before any listener binds.** A functional test above
+    /// proves the gate precedes the subsystem wave, which is where the
+    /// gateway listener binds; the boot entry reaches `serve_socket` only
+    /// after `start_core` returns, so the gate precedes the socket too.
+    /// This pins that second half, and the split itself panics if the tests
+    /// module marker moves rather than silently reading the whole file.
+    #[test]
+    fn the_startup_gate_runs_before_the_socket() {
         let source = include_str!("boot.rs");
-        let production = source.split("\n#[cfg(test)]\nmod tests {").next().unwrap_or(source);
+        let (production, _tests) = source
+            .split_once("\n#[cfg(test)]\nmod tests {")
+            .expect("boot.rs still carries its tests module marker at the top of the file");
         let position = |text: &str, needle: &str| {
             text.find(needle).unwrap_or_else(|| panic!("no longer carries {needle}"))
         };

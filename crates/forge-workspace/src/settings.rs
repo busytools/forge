@@ -2866,6 +2866,10 @@ env_file = "/tmp/two.env"
             assert!(text.contains(key.path), "`{}` is missing from the index", key.path);
         }
         assert!(
+            text.lines().any(|line| line.trim_start().starts_with("server.startup_gate  ")),
+            "the boot gate is a key a reader can address: {text}",
+        );
+        assert!(
             !text.contains("https://openrouter.ai/api"),
             "a value leaked into the index: {text}",
         );
