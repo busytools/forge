@@ -19,6 +19,9 @@
 # Env overrides:
 #   FORGE_ZSH_COMPLETION_DIR    zsh completion dir   (default: ~/.zsh/completions)
 #   FORGE_INSTALL_BROWSER       0 skips the macOS browser stage (default: 1)
+#   FORGE_SIGN_IDENTITY         the codesigning identity (default: the first
+#                               Developer ID Application identity the machine
+#                               holds; with none, the binary stays ad-hoc)
 
 set -euo pipefail
 
@@ -28,7 +31,7 @@ FORGE_REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help)
-            sed -n '2,22p' "$0"
+            sed -n '2,24p' "$0"
             exit 0
             ;;
         *)
@@ -131,22 +134,70 @@ run_binary() {
 run_binary "$STAGED_BIN" --version > /dev/null \
     || die "the staged binary does not start - run $STAGED_BIN directly for the loader's error"
 
+# **A stable code identity is what keeps macOS privacy grants across
+# updates.** An ad-hoc build gets a new cdhash on every install, so macOS
+# treats each one as a different app and every Full Disk Access grant has to
+# be given again; signing with a Developer ID makes the code requirement
+# stable, so the grant survives. **Signed in the staging tree, before the
+# live install is touched**, so a signing failure leaves the previous install
+# in place. A machine with no identity keeps working ad-hoc, and the log says
+# so rather than failing the install.
+if [ "$(uname -s)" = "Darwin" ]; then
+    sign_identity="${FORGE_SIGN_IDENTITY:-}"
+    if [ -z "$sign_identity" ]; then
+        # `|| true`: a locked or unavailable keychain makes this exit non-zero,
+        # and an optional probe must not take the install down under `set -e`.
+        sign_identity=$(security find-identity -v -p codesigning 2>/dev/null \
+            | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1 || true)
+    fi
+    if [ -n "$sign_identity" ]; then
+        # The libraries first: hardened runtime enforces library validation at
+        # load, so a signed binary beside an ad-hoc library cannot start. A
+        # symlink is skipped - codesign follows it and re-signs the target,
+        # which the real file's own pass already covers.
+        for lib in "$STAGING_ROOT/bin"/*.dylib; do
+            [ -e "$lib" ] || continue
+            [ -L "$lib" ] && continue
+            codesign --force --options runtime --timestamp --sign "$sign_identity" "$lib" \
+                >/dev/null 2>&1 \
+                || codesign --force --options runtime --timestamp=none --sign "$sign_identity" "$lib" \
+                || die "signing $lib with $sign_identity failed"
+        done
+        if codesign --force --options runtime --timestamp \
+            --sign "$sign_identity" "$STAGED_BIN" 2>/dev/null \
+            || codesign --force --options runtime --timestamp=none \
+                --sign "$sign_identity" "$STAGED_BIN"; then
+            log_success "signed the binary and its libraries with $sign_identity"
+        else
+            die "signing $STAGED_BIN with $sign_identity failed"
+        fi
+        run_binary "$STAGED_BIN" --version > /dev/null \
+            || die "the signed binary does not start - run $STAGED_BIN directly for the loader's error"
+    else
+        log_info "no Developer ID identity on this machine; the binary stays ad-hoc signed"
+    fi
+fi
+
 # The live install is replaced only now. Real files get a fresh inode through
 # a temp name and a rename, so a forge already running keeps its mapped copy;
 # the SONAME and link names are repointed after them; the binary follows by
 # the same rename.
 mkdir -p "$FORGE_BIN_DIR"
 trap 'rm -f "$FORGE_BIN_DIR"/.*.new' EXIT
-for staged in "$FORGE_TRANSCRIBE_LIBS"/*; do
+# **The signed staging tree is the source, not the build tree.** Signing
+# happens on the staged copies, so installing from the build tree would ship
+# ad-hoc libraries beside a hardened binary and the start check would fail.
+for staged in "$STAGING_ROOT/bin"/*; do
     [ -e "$staged" ] || continue
     if [ -L "$staged" ]; then
         continue
     fi
+    [ "$staged" = "$STAGED_BIN" ] && continue
     name="${staged##*/}"
     cp "$staged" "$FORGE_BIN_DIR/.$name.new"
     mv -f "$FORGE_BIN_DIR/.$name.new" "$FORGE_BIN_DIR/$name"
 done
-for staged in "$FORGE_TRANSCRIBE_LIBS"/*; do
+for staged in "$STAGING_ROOT/bin"/*; do
     [ -L "$staged" ] || continue
     ln -sfn "$(readlink "$staged")" "$FORGE_BIN_DIR/${staged##*/}"
 done
@@ -160,7 +211,7 @@ run_binary "$FORGE_BIN" --version > /dev/null \
 # prefixes are the runtime libraries forge ships.
 for installed in "$FORGE_BIN_DIR"/libtranscribe* "$FORGE_BIN_DIR"/libggml*; do
     [ -e "$installed" ] || [ -L "$installed" ] || continue
-    staged="$FORGE_TRANSCRIBE_LIBS/${installed##*/}"
+    staged="$STAGING_ROOT/bin/${installed##*/}"
     [ -e "$staged" ] || [ -L "$staged" ] || rm -f "$installed"
 done
 trap - EXIT
