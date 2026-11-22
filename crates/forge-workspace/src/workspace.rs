@@ -8524,21 +8524,6 @@ impl Workspace {
     ///
     /// Use `release_session_with_cascade` instead when the caller is
     /// the lead-row close gesture.
-    /// End every parked ask `slot` still holds, whichever registry it sits in.
-    ///
-    /// **A tool ask outlives the session that raised it.** The blocked tool
-    /// handler is a detached control task, so its future is not dropped when
-    /// the session goes and the handler's own drop guard never fires. The
-    /// sweep is what answers the waiter, tells every view the card is over,
-    /// and keeps a later occupant of the slot from inheriting an ask it never
-    /// raised.
-    pub(crate) fn abandon_asks_for(&self, slot: &SessionSlot) {
-        self.abandon_settings_writes(slot);
-        self.vault_asks.abandon(slot);
-        self.slack.abandon_drafts_for(slot);
-        self.abandon_document_handoffs(slot);
-    }
-
     pub(crate) fn release_session(self: &Arc<Self>, session_key: &SessionSlot) {
         // **A closed seat is gone now, not at the next sweep.** The fleet
         // hears the tombstone before the close work, so a hand-off resolved
@@ -8568,6 +8553,21 @@ impl Workspace {
         // The task this signal belonged to is exiting (its command channel
         // just closed). Its teardown entry stays: the task's drop is what
         // answers it, and a shutdown may still be waiting on that answer.
+    }
+
+    /// End every parked ask `slot` still holds, whichever registry it sits in.
+    ///
+    /// **A tool ask outlives the session that raised it.** The blocked tool
+    /// handler is a detached control task, so its future is not dropped when
+    /// the session goes and the handler's own drop guard never fires. The
+    /// sweep is what answers the waiter, tells every view the card is over,
+    /// and keeps a later occupant of the slot from inheriting an ask it never
+    /// raised.
+    pub(crate) fn abandon_asks_for(&self, slot: &SessionSlot) {
+        self.abandon_settings_writes(slot);
+        self.vault_asks.abandon(slot);
+        self.slack.abandon_drafts_for(slot);
+        self.abandon_document_handoffs(slot);
     }
 
     /// Whether a session task still exists for `key`, which is what
