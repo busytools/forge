@@ -81,8 +81,8 @@ fn target_error_message(err: &TargetError, known: &[PeerStatus]) -> String {
              where label names a worker and may be omitted for a project's own agent."
         ),
         TargetError::UnknownProject { org, project } => format!(
-            "no project '{project}' is configured under org '{org}'. Call agents__list to see \
-             the agents you can reach. Configured: {}.",
+            "no project '{project}' is configured under org '{org}'. Call agents__list with \
+             `all_projects: true` to see every configured project. Configured: {}.",
             known.iter().map(|p| format!("{}/{}", p.org, p.name)).collect::<Vec<_>>().join(", "),
         ),
     }
@@ -121,8 +121,8 @@ impl TargetArgs {
         let (Some(org), Some(project)) = (self.org.as_deref(), self.project.as_deref()) else {
             return Err(
                 "a message needs a target: pass `org` and `project`, and `label` to reach a \
-                 worker rather than the project's own agent. Call agents__list to see who you \
-                 can reach."
+                 worker rather than the project's own agent. Call agents__list with \
+                 `all_projects: true` to see who you can reach."
                     .to_owned(),
             );
         };
@@ -310,9 +310,13 @@ impl Tool for List {
          the other agent. The constraint is only on writes / state \
          changes. \
          \
-         Takes no arguments for your own project; `project` and \
-         `all_projects` are the two wideners, and they are mutually \
-         exclusive."
+         An empty array means your project has no own agent or live \
+         workers, or that your project could not be resolved, or that \
+         this run could not read the roster. \
+         \
+         Takes no arguments for your own project; pass `project` to name \
+         one project, or `all_projects: true` for every configured \
+         project. They are mutually exclusive."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -321,7 +325,7 @@ impl Tool for List {
             "properties": {
                 "project": {
                     "type": "string",
-                    "description": "Optional. Project name to narrow the list to. Case-sensitive. Omit it, and omit `all_projects`, to list your own project.",
+                    "description": "Optional. Project name to list instead of your own. Case-sensitive. Omit it, and omit `all_projects`, to list your own project.",
                 },
                 "all_projects": {
                     "type": "boolean",
@@ -407,8 +411,9 @@ impl Tool for SendMessage {
          `org` and `project` name it, and `label` names the seat inside \
          that project. Omit `label` to reach the project's own agent; \
          set it to a worker's label to reach that worker. Run \
-         agents__list for a label in any project; a worker is addressed \
-         by its slot. \
+         agents__list with `all_projects: true` for a label in any \
+         project, or `project` for one; a worker is addressed by its \
+         slot. \
          \
          Every message is the same kind of thing, including a reply: to \
          answer an agent that sent you one, address it by its own slot \
@@ -472,11 +477,11 @@ impl Tool for SendMessage {
             "properties": {
                 "org": {
                     "type": "string",
-                    "description": "Org the target project belongs to, as shown by agents__list. Case-sensitive.",
+                    "description": "Org the target project belongs to. Case-sensitive; call agents__list with `all_projects: true` to see every configured org and project.",
                 },
                 "project": {
                     "type": "string",
-                    "description": "Project name of the target, as shown by agents__list. Case-sensitive. Your own project's name addresses a seat in your own project.",
+                    "description": "Project name of the target. Case-sensitive. Your own project's name addresses a seat in your own project; another project appears in agents__list only with `all_projects: true`.",
                 },
                 "label": {
                     "type": "string",
@@ -572,7 +577,7 @@ fn format_despawn_error(err: &WorkerDespawnError) -> String {
             "could not resolve caller to a known project (forge bug)".to_owned()
         }
         WorkerDespawnError::UnknownLabel { label, project_key } => format!(
-            "no live worker with label '{label}' in project '{project_key}'. Call agents__list for the project's live workers."
+            "no live worker with label '{label}' in project '{project_key}'. Call agents__list for your project's live workers."
         ),
         WorkerDespawnError::DispatchFailed { message } => {
             format!("worker despawn failed: {message}")
@@ -1578,6 +1583,37 @@ mod tests {
         );
     }
 
+    /// Every agents text that points a caller at the roster has to name
+    /// the opt-in that widens it: the default lists the caller's own
+    /// project, so "as shown by agents__list" alone sends a caller to a
+    /// list that cannot show another project's row.
+    #[test]
+    fn the_send_texts_name_the_all_projects_opt_in() {
+        let host = host();
+        let tool = SendMessage { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
+        assert!(
+            tool.description()
+                .contains("agents__list with `all_projects: true` for a label in any project"),
+            "the send description names the widening: {}",
+            tool.description(),
+        );
+        let schema = tool.input_schema();
+        for field in ["org", "project"] {
+            let text = schema["properties"][field]["description"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{field} carries a description"));
+            assert!(text.contains("all_projects"), "the {field} argument names it: {text}");
+        }
+        let absent = format_despawn_error(&WorkerDespawnError::UnknownLabel {
+            label: "w1".to_owned(),
+            project_key: "core".to_owned(),
+        });
+        assert!(
+            absent.contains("Call agents__list for your project's live workers"),
+            "the despawn refusal scopes the roster it points at: {absent}",
+        );
+    }
+
     /// A `sent` is the queue's receipt, not the target's read, and a
     /// session replaced under an unread message loses it with no error.
     /// "Not read yet" keeps it from contradicting the held-delivery
@@ -1721,6 +1757,16 @@ mod tests {
         }
     }
 
+    /// A caller whose slot names a project the catalogue no longer holds
+    /// gets an empty list, never a fallback to every project: the default
+    /// narrowing is the whole point.
+    #[tokio::test]
+    async fn a_caller_whose_project_is_gone_lists_nothing_rather_than_every_project() {
+        let host = host();
+        let rows = call_list(&host, SessionSlot::lead("acme", "removed"), None, false).await;
+        assert!(rows.is_empty(), "an unconfigured caller project lists nothing: {rows:?}");
+    }
+
     /// Every project stays reachable, but only when the caller asks for
     /// every project: the widening is explicit, not the default.
     #[tokio::test]
@@ -1749,8 +1795,8 @@ mod tests {
         assert!(output.is_error, "the two scopes together are refused");
         let text = text_of(&output);
         assert!(
-            text.contains("project") && text.contains("all_projects"),
-            "the refusal names both arguments: {text}"
+            text.contains("not both") && text.contains("all_projects"),
+            "the refusal names the conflict: {text}"
         );
     }
 
@@ -1765,6 +1811,8 @@ mod tests {
         for clause in [
             "By default this lists YOUR project's own agent and its workers",
             "Pass `all_projects: true` to list every configured project",
+            "An empty array means your project has no own agent or live workers",
+            "or that this run could not read the roster",
         ] {
             assert!(
                 tool.description().contains(clause),
