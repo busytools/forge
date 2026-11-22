@@ -62,15 +62,16 @@ pub struct ServerConfig {
     /// waits on with no timeout; a non-zero exit fails the boot and forge
     /// exits non-zero.
     ///
-    /// **The one reason this key exists is TCC.** macOS attributes a file
-    /// access to the process launchd spawned, so a daemon launched through
-    /// `bash` makes every worker's Bash tool attribute to bash and a Full
-    /// Disk Access grant on the forge binary never applies. Running forge
-    /// directly as the daemon's program fixes that, and this key is what
-    /// lets the machine's own infra gate still run first. The value is a
-    /// path to an executable script - the dotfiles repo owns it, forge only
-    /// runs it - and the child inherits forge's stdout and stderr. It runs
-    /// once, on the boot path, and never again once serving has started.
+    /// **The one reason this key exists is macOS Transparency, Consent, and
+    /// Control (TCC).** TCC attributes a file access to the process launchd
+    /// spawned, so a daemon launched through `bash` makes every worker's
+    /// Bash tool attribute to bash and a Full Disk Access grant on the forge
+    /// binary never applies. Running forge directly as the daemon's program
+    /// fixes that, and this key is what lets the machine's own infra gate
+    /// still run first. The value is a path to an executable script the
+    /// operator supplies; forge only runs it, and the child inherits forge's
+    /// stdout and stderr. It runs once, on the boot path, and never again
+    /// once serving has started.
     pub startup_gate: Option<String>,
 }
 

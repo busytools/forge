@@ -1289,13 +1289,15 @@ fn read_config(config_dir: &Path) -> Result<(PathBuf, String), WorkspaceError> {
     }
 }
 
-/// The `[server]` section, refusing the two ports that cannot work: 0, which
-/// is OS-assigned and so unguessable, and the gateway's own port, where the
-/// listener that binds second loses at boot.
+/// The `[server]` section, refusing a gate path the boot could not execute
+/// and the two ports that cannot work: 0, which is OS-assigned and so
+/// unguessable, and the gateway's own port, where the listener that binds
+/// second loses at boot.
 ///
-/// A disabled listener is not validated at all. Nothing will bind that port,
-/// so a stale one left in a hand-authored file is not worth refusing the
-/// boot over.
+/// A disabled listener's ports are not validated at all. Nothing will bind
+/// one, so a stale one left in a hand-authored file is not worth refusing
+/// the boot over. The gate is validated whatever `enabled` says: it runs on
+/// the boot path whether or not the socket binds.
 fn resolve_server(
     server: ServerConfig,
     gateway_port: u16,

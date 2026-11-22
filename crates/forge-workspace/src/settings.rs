@@ -55,8 +55,8 @@ pub const AREAS: &[AreaSpec] = &[
     AreaSpec {
         id: "server",
         name: "server",
-        note: "the socket a client reads through, the browser the server hosts, and the \
-               seat's terminal",
+        note: "the socket a client reads through, the browser the server hosts, the seat's \
+               terminal, and the gate the boot runs first",
     },
     AreaSpec { id: "client", name: "client", note: "the sets a client draws with" },
     AreaSpec {
