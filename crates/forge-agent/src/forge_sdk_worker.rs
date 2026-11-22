@@ -39,8 +39,9 @@ It exposes agent-coordination tools: agents__whoami, agents__list and \
 agents__send_message. Every forge session is addressed by its \
 slot - org, project and label - so these tools reach another project's \
 own agent, a worker on your team, or a worker in another project the \
-user is running side-by-side with this one. agents__list names every \
-project's own agent and every project's worker, each under its slot.";
+user is running side-by-side with this one. agents__list names your own \
+project's agent and workers, each under its slot; pass \
+`all_projects: true` to see every project.";
 
 /// Append-text the spawned session's system prompt receives when the
 /// `forge` in-process MCP server is attached. Tells the recipient
@@ -4578,6 +4579,21 @@ mod tests {
         for tool in ["agents__whoami", "agents__list", "agents__send_message"] {
             assert!(with_tools.contains(tool), "the append names {tool}: {with_tools}");
         }
+        // The default listing is the caller's own project (#3030); the
+        // append must not claim a cross-project list the tool no longer
+        // returns unasked, and must name the opt-in that widens it.
+        assert!(
+            with_tools.contains("agents__list names your own project's agent and workers"),
+            "the append states the listing's default scope: {with_tools}",
+        );
+        assert!(
+            with_tools.contains("`all_projects: true` to see every project"),
+            "the append names the widening: {with_tools}",
+        );
+        assert!(
+            !with_tools.contains("names every project's own agent"),
+            "the append no longer promises the full list unasked: {with_tools}",
+        );
 
         let worker = build_forge_system_prompt(false, None, None);
         assert!(
