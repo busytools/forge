@@ -1289,10 +1289,10 @@ fn read_config(config_dir: &Path) -> Result<(PathBuf, String), WorkspaceError> {
     }
 }
 
-/// The `[server]` section, refusing a gate path the boot could not execute
-/// and the two ports that cannot work: 0, which is OS-assigned and so
-/// unguessable, and the gateway's own port, where the listener that binds
-/// second loses at boot.
+/// The `[server]` section, refusing a gate path that is not absolute and the
+/// two ports that cannot work: 0, which is OS-assigned and so unguessable,
+/// and the gateway's own port, where the listener that binds second loses at
+/// boot.
 ///
 /// A disabled listener's ports are not validated at all. Nothing will bind
 /// one, so a stale one left in a hand-authored file is not worth refusing

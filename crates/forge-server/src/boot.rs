@@ -1903,7 +1903,7 @@ port = 49201
     }
 
     /// A real executable gate: a temporary script whose body is the test's,
-    /// marked executable the way the dotfiles repo's own gate is. The
+    /// carrying the executable bit an operator's gate script has. The
     /// `TempDir` is returned so the script outlives the run.
     fn gate_script(body: &str) -> (tempfile::TempDir, forge_primitives::ServerConfig) {
         use std::os::unix::fs::PermissionsExt;
