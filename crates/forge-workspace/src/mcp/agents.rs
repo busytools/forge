@@ -33,7 +33,7 @@ pub(crate) fn add_shared_tools(
     slot: SessionSlot,
 ) -> forge_sdk::mcp::server::McpServerBuilder {
     let whoami = Whoami { dispatcher: dispatcher.clone(), slot: slot.clone() };
-    let list = List { dispatcher: dispatcher.clone() };
+    let list = List { dispatcher: dispatcher.clone(), slot: slot.clone() };
     let handoff = Handoff { dispatcher: dispatcher.clone(), slot: slot.clone() };
     let send = SendMessage { dispatcher, slot };
     builder.tool(whoami).tool(list).tool(send).tool(handoff)
@@ -81,8 +81,8 @@ fn target_error_message(err: &TargetError, known: &[PeerStatus]) -> String {
              where label names a worker and may be omitted for a project's own agent."
         ),
         TargetError::UnknownProject { org, project } => format!(
-            "no project '{project}' is configured under org '{org}'. Call agents__list to see \
-             the agents you can reach. Configured: {}.",
+            "no project '{project}' is configured under org '{org}'. Call agents__list with \
+             `all_projects: true` to see every configured project. Configured: {}.",
             known.iter().map(|p| format!("{}/{}", p.org, p.name)).collect::<Vec<_>>().join(", "),
         ),
     }
@@ -121,8 +121,8 @@ impl TargetArgs {
         let (Some(org), Some(project)) = (self.org.as_deref(), self.project.as_deref()) else {
             return Err(
                 "a message needs a target: pass `org` and `project`, and `label` to reach a \
-                 worker rather than the project's own agent. Call agents__list to see who you \
-                 can reach."
+                 worker rather than the project's own agent. Call agents__list with \
+                 `all_projects: true` to see who you can reach."
                     .to_owned(),
             );
         };
@@ -254,16 +254,19 @@ impl Tool for Whoami {
     }
 }
 
-/// `agents__list` - every seat you can address, optionally narrowed to
-/// one project. No target args.
+/// `agents__list` - the seats you can address, the caller's own project
+/// by default and every project on an explicit ask. No target args.
 pub(crate) struct List {
     pub(crate) dispatcher: Arc<AgentDispatcher>,
+    pub(crate) slot: SessionSlot,
 }
 
 #[derive(serde::Deserialize)]
 struct ListArgs {
     #[serde(default)]
     project: Option<String>,
+    #[serde(default)]
+    all_projects: bool,
 }
 
 #[async_trait::async_trait]
@@ -274,10 +277,11 @@ impl Tool for List {
 
     fn description(&self) -> &'static str {
         "List the agents you can reach, one row per seat, each addressed \
-         by its slot (org, project, label). Two kinds of row: every \
-         project's own agent, which has label 'lead', and every \
-         project's workers, each under its own label. Pass \
-         `project` to narrow the list to one project. \
+         by its slot (org, project, label). By default this lists YOUR \
+         project's own agent and its workers - the set a session acts \
+         with. Pass `all_projects: true` to list every configured \
+         project, or `project` to name one. A project's own agent has \
+         label 'lead'; its workers each sit under their own label. \
          \
          A project's own agent is reachable whether or not it is \
          currently running: a sleeping project's agent is spawned by the \
@@ -293,8 +297,10 @@ impl Tool for List {
          CROSS-PROJECT RULE (mutations only): whenever the user asks you \
          to CHANGE state in a project other than your own - edit files, \
          run a command, file an issue, push a branch, anything with side \
-         effects - call this tool FIRST. If the target project appears \
-         here, do NOT cd into it and mutate its files directly. Hand the \
+         effects - call this tool FIRST, with `all_projects: true` when \
+         the target is another project, since your own is all the \
+         default lists. If the target project appears here, do NOT cd \
+         into it and mutate its files directly. Hand the \
          work off with agents__send_message, which delivers it to that \
          project's own agent. Each agent owns its own repo; stay in \
          your lane and let the other project's agent execute the change. \
@@ -304,7 +310,13 @@ impl Tool for List {
          the other agent. The constraint is only on writes / state \
          changes. \
          \
-         Takes no arguments unless you want the `project` filter."
+         An empty array means your project has no own agent or live \
+         workers, or that your project could not be resolved, or that \
+         this run could not read the roster. \
+         \
+         Takes no arguments for your own project; pass `project` to name \
+         one project, or `all_projects: true` for every configured \
+         project. They are mutually exclusive."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -313,7 +325,11 @@ impl Tool for List {
             "properties": {
                 "project": {
                     "type": "string",
-                    "description": "Optional. Project name to narrow the list to. Case-sensitive; omit to list every project.",
+                    "description": "Optional. Project name to list instead of your own. Case-sensitive. Omit it, and omit `all_projects`, to list your own project.",
+                },
+                "all_projects": {
+                    "type": "boolean",
+                    "description": "Optional. Set true to list every configured project instead of your own. Off by default: your own project's agent and workers are the set a session acts with, and every project at once is more than a first read fits.",
                 },
             },
             "additionalProperties": false,
@@ -325,7 +341,23 @@ impl Tool for List {
             Ok(a) => a,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        let filter = args.project.as_deref();
+        if args.all_projects && args.project.is_some() {
+            return tool_error(
+                "pass either `project` or `all_projects`, not both: `project` names one \
+                 project and `all_projects` lists every configured project, while the default \
+                 already lists your own"
+                    .to_owned(),
+            );
+        }
+        // The default is the caller's own project. A new session's first
+        // orientation call is this one, and listing every project at once
+        // is what overflowed that read (#3030); the full list is an
+        // explicit ask.
+        let filter: Option<&str> = if args.all_projects {
+            None
+        } else {
+            Some(args.project.as_deref().unwrap_or(self.slot.project()))
+        };
 
         let mut rows = Vec::new();
         for project in self.dispatcher.peers().list_peers() {
@@ -379,8 +411,9 @@ impl Tool for SendMessage {
          `org` and `project` name it, and `label` names the seat inside \
          that project. Omit `label` to reach the project's own agent; \
          set it to a worker's label to reach that worker. Run \
-         agents__list for a label in any project; a worker is addressed \
-         by its slot. \
+         agents__list with `all_projects: true` for a label in any \
+         project, or `project` for one; a worker is addressed by its \
+         slot. \
          \
          Every message is the same kind of thing, including a reply: to \
          answer an agent that sent you one, address it by its own slot \
@@ -444,11 +477,11 @@ impl Tool for SendMessage {
             "properties": {
                 "org": {
                     "type": "string",
-                    "description": "Org the target project belongs to, as shown by agents__list. Case-sensitive.",
+                    "description": "Org the target project belongs to. Case-sensitive; call agents__list with `all_projects: true` to see every configured org and project.",
                 },
                 "project": {
                     "type": "string",
-                    "description": "Project name of the target, as shown by agents__list. Case-sensitive. Your own project's name addresses a seat in your own project.",
+                    "description": "Project name of the target. Case-sensitive. Your own project's name addresses a seat in your own project; another project appears in agents__list only with `all_projects: true`.",
                 },
                 "label": {
                     "type": "string",
@@ -544,7 +577,7 @@ fn format_despawn_error(err: &WorkerDespawnError) -> String {
             "could not resolve caller to a known project (forge bug)".to_owned()
         }
         WorkerDespawnError::UnknownLabel { label, project_key } => format!(
-            "no live worker with label '{label}' in project '{project_key}'. Call agents__list for the project's live workers."
+            "no live worker with label '{label}' in project '{project_key}'. Call agents__list for your project's live workers."
         ),
         WorkerDespawnError::DispatchFailed { message } => {
             format!("worker despawn failed: {message}")
@@ -1318,11 +1351,19 @@ mod tests {
         }
     }
 
-    async fn call_list(host: &Host, project_filter: Option<&str>) -> Vec<serde_json::Value> {
-        let tool = List { dispatcher: Arc::clone(&host.dispatcher) };
+    async fn call_list(
+        host: &Host,
+        slot: SessionSlot,
+        project_filter: Option<&str>,
+        all_projects: bool,
+    ) -> Vec<serde_json::Value> {
+        let tool = List { dispatcher: Arc::clone(&host.dispatcher), slot };
         let mut args = serde_json::json!({});
         if let Some(name) = project_filter {
             args["project"] = serde_json::json!(name);
+        }
+        if all_projects {
+            args["all_projects"] = serde_json::json!(true);
         }
         let output = tool.call(ToolInput { value: args }).await;
         assert!(!output.is_error, "list must not error: {:?}", output.blocks);
@@ -1542,6 +1583,37 @@ mod tests {
         );
     }
 
+    /// Every agents text that points a caller at the roster has to name
+    /// the opt-in that widens it: the default lists the caller's own
+    /// project, so "as shown by agents__list" alone sends a caller to a
+    /// list that cannot show another project's row.
+    #[test]
+    fn the_send_texts_name_the_all_projects_opt_in() {
+        let host = host();
+        let tool = SendMessage { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
+        assert!(
+            tool.description()
+                .contains("agents__list with `all_projects: true` for a label in any project"),
+            "the send description names the widening: {}",
+            tool.description(),
+        );
+        let schema = tool.input_schema();
+        for field in ["org", "project"] {
+            let text = schema["properties"][field]["description"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{field} carries a description"));
+            assert!(text.contains("all_projects"), "the {field} argument names it: {text}");
+        }
+        let absent = format_despawn_error(&WorkerDespawnError::UnknownLabel {
+            label: "w1".to_owned(),
+            project_key: "core".to_owned(),
+        });
+        assert!(
+            absent.contains("Call agents__list for your project's live workers"),
+            "the despawn refusal scopes the roster it points at: {absent}",
+        );
+    }
+
     /// A `sent` is the queue's receipt, not the target's read, and a
     /// session replaced under an unread message loses it with no error.
     /// "Not read yet" keeps it from contradicting the held-delivery
@@ -1644,7 +1716,7 @@ mod tests {
     #[tokio::test]
     async fn list_filters_by_project() {
         let host = host();
-        let rows = call_list(&host, Some("proj")).await;
+        let rows = call_list(&host, caller(), Some("proj"), false).await;
         let slots: Vec<(&str, &str)> = rows
             .iter()
             .map(|row| {
@@ -1659,32 +1731,109 @@ mod tests {
             [("lead", "proj"), ("w1", "proj")],
             "the filter keeps that project's own agent and its worker"
         );
-        assert!(call_list(&host, None).await.len() > 1, "without it, the list is flat");
+        assert!(
+            call_list(&host, caller(), None, true).await.len() > 1,
+            "every project is an explicit ask"
+        );
+    }
+
+    /// A new session's first orientation call is this one, and the full
+    /// cross-project list is what overflowed the read (#3030). The default
+    /// is the caller's own project, for a lead and a worker alike.
+    #[tokio::test]
+    async fn list_defaults_to_the_callers_own_project() {
+        let host = host();
+        for slot in [caller(), worker_caller()] {
+            let rows = call_list(&host, slot, None, false).await;
+            assert!(!rows.is_empty(), "the caller's own project is listed");
+            assert!(
+                rows.iter().all(|row| row["slot"]["project"] == "core"),
+                "the default lists the caller's project and nothing else: {rows:?}"
+            );
+            assert!(
+                rows.iter().any(|row| row["slot"]["label"] == "w1"),
+                "its own workers are rows: {rows:?}"
+            );
+        }
+    }
+
+    /// A caller whose slot names a project the catalogue no longer holds
+    /// gets an empty list, never a fallback to every project: the default
+    /// narrowing is the whole point.
+    #[tokio::test]
+    async fn a_caller_whose_project_is_gone_lists_nothing_rather_than_every_project() {
+        let host = host();
+        let rows = call_list(&host, SessionSlot::lead("acme", "removed"), None, false).await;
+        assert!(rows.is_empty(), "an unconfigured caller project lists nothing: {rows:?}");
+    }
+
+    /// Every project stays reachable, but only when the caller asks for
+    /// every project: the widening is explicit, not the default.
+    #[tokio::test]
+    async fn list_names_every_project_only_when_asked() {
+        let host = host();
+        let rows = call_list(&host, caller(), None, true).await;
+        for project in ["core", "proj"] {
+            assert!(
+                rows.iter().any(|row| row["slot"]["project"] == project),
+                "asked for every project, the list names {project}: {rows:?}"
+            );
+        }
+    }
+
+    /// The two scopes answer different questions, so asking for both in
+    /// one call is refused by name rather than one silently winning.
+    #[tokio::test]
+    async fn list_refuses_a_named_project_with_all_projects() {
+        let host = host();
+        let tool = List { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({ "project": "proj", "all_projects": true }),
+            })
+            .await;
+        assert!(output.is_error, "the two scopes together are refused");
+        let text = text_of(&output);
+        assert!(
+            text.contains("not both") && text.contains("all_projects"),
+            "the refusal names the conflict: {text}"
+        );
     }
 
     /// The listing scope is shipped text a session reads when it decides
-    /// whether a label is knowable, so the caller-only paragraph it
-    /// replaced must not come back silently.
+    /// whether a label is knowable. The default is the caller's own
+    /// project - the full list is what overflowed a first orientation -
+    /// and every project is an explicit ask the caller has to see named.
     #[test]
-    fn list_description_names_every_projects_workers() {
+    fn list_description_states_the_own_project_default_and_the_full_list_opt_in() {
         let host = host();
-        let tool = List { dispatcher: Arc::clone(&host.dispatcher) };
+        let tool = List { dispatcher: Arc::clone(&host.dispatcher), slot: caller() };
+        for clause in [
+            "By default this lists YOUR project's own agent and its workers",
+            "Pass `all_projects: true` to list every configured project",
+            "An empty array means your project has no own agent or live workers",
+            "or that this run could not read the roster",
+        ] {
+            assert!(
+                tool.description().contains(clause),
+                "the listing scope stays stated ({clause}): {}",
+                tool.description()
+            );
+        }
+        let schema = tool.input_schema();
+        let all_projects = schema["properties"]["all_projects"]["description"]
+            .as_str()
+            .expect("the opt-in carries a description");
         assert!(
-            tool.description().contains("every project's workers, each under its own label"),
-            "the listing scope stays stated: {}",
-            tool.description()
-        );
-        assert!(
-            !tool.description().contains("Only your own project's workers are listed"),
-            "the caller-only paragraph stays gone: {}",
-            tool.description()
+            all_projects.contains("every configured project"),
+            "the opt-in says what it widens to: {all_projects}"
         );
     }
 
     #[tokio::test]
     async fn list_addresses_every_row_by_its_slot() {
         let host = host();
-        for row in call_list(&host, None).await {
+        for row in call_list(&host, caller(), None, false).await {
             assert!(row["slot"]["org"].is_string(), "row carries its org: {row}");
             assert!(row["slot"]["project"].is_string(), "row carries its project: {row}");
             assert!(row["slot"]["label"].is_string(), "row carries its label: {row}");
@@ -1714,7 +1863,7 @@ mod tests {
     #[tokio::test]
     async fn list_carries_the_callers_own_team() {
         let host = host();
-        let rows = call_list(&host, None).await;
+        let rows = call_list(&host, caller(), None, false).await;
         let row = rows
             .iter()
             .find(|row| row["slot"]["label"] == "w1" && row["slot"]["project"] == "core")
@@ -1727,7 +1876,7 @@ mod tests {
     #[tokio::test]
     async fn list_carries_every_projects_live_workers_under_their_slots() {
         let host = host();
-        let rows = call_list(&host, None).await;
+        let rows = call_list(&host, caller(), None, true).await;
         let row = rows
             .iter()
             .find(|row| {
@@ -1750,7 +1899,7 @@ mod tests {
         let mut failed = worker("other", "proj", "crashed");
         failed.status = WorkerLiveness::Failed;
         host.workers.workers.lock().entry("proj".to_owned()).or_default().push(failed);
-        let rows = call_list(&host, None).await;
+        let rows = call_list(&host, caller(), None, true).await;
         assert!(
             rows.iter()
                 .any(|row| row["slot"]["project"] == "proj" && row["slot"]["label"] == "crashed"),
@@ -1762,7 +1911,7 @@ mod tests {
     async fn a_project_without_live_workers_keeps_its_lead_row() {
         let host = host();
         host.workers.workers.lock().remove("proj");
-        let rows = call_list(&host, None).await;
+        let rows = call_list(&host, caller(), None, true).await;
         assert!(
             rows.iter()
                 .any(|row| row["slot"]["project"] == "proj" && row["slot"]["label"] == LEAD_LABEL),
@@ -1870,7 +2019,7 @@ mod tests {
             "and the three-way outcome stays machine-readable",
         );
         assert_eq!(parsed["worktree"], "/repo/.claude/worktrees/reviewer");
-        let listed = call_list(&host, None).await;
+        let listed = call_list(&host, caller(), None, false).await;
         let row = listed
             .iter()
             .find(|row| row["slot"]["label"] == "reviewer")

@@ -59,8 +59,8 @@ impl AgentDispatcher {
             return match self.peers.deliver_peer_prompt(caller, target.project(), wrapped) {
                 Ok(()) => Ok(()),
                 Err(DeliverError::UnknownTarget { .. }) => Err(format!(
-                    "project '{}' is no longer reachable; call agents__list to see who you can \
-                     reach.",
+                    "project '{}' is no longer reachable; call agents__list with \
+                     `all_projects: true` to see who you can reach.",
                     target.project(),
                 )),
                 Err(DeliverError::DispatchFailed { message }) => Err(format!(
@@ -109,8 +109,8 @@ fn worker_deliver_message(target: &AgentTarget, err: &WorkerDeliverError) -> Str
     match err {
         WorkerDeliverError::UnknownLabel { project_key, label } => format!(
             "worker '{label}' is not available (no live worker by that label in '{project_key}', \
-             the project you addressed as '{}'/'{}'). Call agents__list for the project's live \
-             workers.",
+             the project you addressed as '{}'/'{}'). Call agents__list with `all_projects: \
+             true` for the live workers.",
             target.org(),
             target.project(),
         ),
@@ -121,8 +121,8 @@ fn worker_deliver_message(target: &AgentTarget, err: &WorkerDeliverError) -> Str
         ),
         WorkerDeliverError::DispatchFailed { message } => format!(
             "worker '{}' did not take the message ({message}). Nothing was delivered, so do not \
-             wait on an answer from it; check agents__list and send again if the label is still \
-             there.",
+             wait on an answer from it; check agents__list with `all_projects: true` and send \
+             again if the label is still there.",
             target.label(),
         ),
     }

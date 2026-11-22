@@ -5,8 +5,11 @@ import { describe, expect, it } from 'vitest';
 import { forgeCardOf, forgeRowTitle, type ForgeCard } from './forge';
 
 /** A tool result as the wire delivers one: text parts, and whether it failed. */
-function result(text: string, is_error = false) {
-  return { content: [{ type: 'text', text }], is_error };
+function result(text: string, is_error = false, trailing: string[] = []) {
+  return {
+    content: [{ type: 'text', text }, ...trailing.map((line) => ({ type: 'text', text: line }))],
+    is_error,
+  };
 }
 
 /** A task record as the tools echo one. */
@@ -863,6 +866,23 @@ describe('the tasks card', () => {
         when: 'unclaimed',
       },
     ]);
+  });
+
+  it('draws the withheld-row line beside the card instead of parsing it', () => {
+    // The default read ends with a second text block when it left finished
+    // rows out: the first block is still the clock line plus the rows
+    // array, and the closing line is drawn beside the card (rule 25).
+    const rows = [{ ...RECORD, worked: '3h', marks: [] }];
+    const body = `now 2026-10-13T06:23:51.696933Z\n${JSON.stringify(rows, null, 2)}`;
+    const withheld =
+      '2 finished rows withheld by status: 1 completed, 1 canceled. Pass status: "completed" or status: "canceled" to read them.';
+    const card = forgeCardOf('mcp__forge__tasks__list', {}, result(body, false, [withheld]));
+    expect(card?.title, 'the extra block does not cost the card').toBe('tasks');
+    expect(itemsOf(card), 'the rows still draw').toHaveLength(1);
+    const drawn = (card?.pieces ?? []).flatMap((piece) =>
+      piece.kind === 'text' ? [piece.text] : [],
+    );
+    expect(drawn, 'the closing line is shown, not dropped').toEqual([withheld]);
   });
 
   it('falls to the raw row for a body past the clock line that is not JSON', () => {
