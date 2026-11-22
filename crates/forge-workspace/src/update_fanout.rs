@@ -449,8 +449,8 @@ impl UpdateFanout {
     }
 
     /// How many subscribers could answer a prompt. Test-only: the role decides
-    /// whether the core parks a turn on a subscriber's reply, and nothing else
-    /// reports it.
+    /// whether a browser or terminal hand-off may raise on a subscriber, and
+    /// nothing else reports it.
     #[cfg(any(test, feature = "testing"))]
     pub(crate) fn answering_count(&self) -> usize {
         self.shared

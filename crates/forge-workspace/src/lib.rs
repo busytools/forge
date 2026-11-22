@@ -27,7 +27,7 @@
 //!   emitted after it subscribes. The socket's own fold takes the mirror;
 //!   each client takes the answering or mirror role it declared, through
 //!   `ViewSurface::subscribe_client`. The role decides one thing: whether
-//!   the core may park a prompt on that subscriber's reply.
+//!   the browser and terminal hand-offs may raise on that subscriber.
 //!
 //! No callback hooks, and no state shared between a view and the core. A view
 //! does not hold an

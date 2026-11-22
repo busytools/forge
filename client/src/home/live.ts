@@ -272,13 +272,13 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     // CONNECTION - a host or an answerer that only claimed the role on a
     // session page would not hold it while the reader sits on the home.
     //
-    // **`answering` is a safeguard here, not a cure.** The core cancels an ask
-    // at birth when NO subscriber can answer it anywhere, and a client that
-    // says nothing is a guest while another subscriber can answer. What makes
-    // an unshown seat wear its glyph is the ask itself, read in the client's
-    // own `stateOf`; this declaration is for the install with no other
-    // answerer, where an ask raised while this page is away would be cancelled
-    // unseen.
+    // **`answering` here is for the two viewer hand-offs.** Every prompt
+    // reaches every subscriber and a permission, question or tool ask parks
+    // for the person whoever is attached, so a client that says nothing loses
+    // no ask: a client that connects later reads it from the seat's
+    // `pending_asks`. The role decides only whether a browser or terminal
+    // hand-off may raise, and what makes an unshown seat wear its glyph is the
+    // ask itself, read in the client's own `stateOf`.
     held = connection.subscribe('home', { answering: true });
     reading = false;
     // **Registered with the watch, not the store**, so a re-watch after the

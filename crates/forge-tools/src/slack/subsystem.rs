@@ -596,6 +596,26 @@ impl Slack {
         (id, receiver)
     }
 
+    /// End every draft `seat` still holds as abandoned.
+    ///
+    /// **A held draft outlives the session that raised it.** The blocked tool
+    /// handler is a detached control task, so its future is not dropped when
+    /// the session goes and the facade's own drop never fires; this sweep
+    /// answers it, tells every view the card is over, and keeps a later
+    /// occupant of the slot from inheriting a draft it never raised.
+    pub fn abandon_drafts_for(&self, seat: &SessionSlot) {
+        let ids: Vec<Uuid> = self
+            .slack_drafts
+            .lock()
+            .iter()
+            .filter(|(_, held)| &held.owner == seat)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            self.resolve_slack_draft(id, seat, DraftResolution::Abandoned);
+        }
+    }
+
     /// Whether a draft with this id is still registered to `caller`, without
     /// removing it - the read the dispatch guard makes before an answer.
     pub fn slack_draft_waiting(&self, id: Uuid, caller: &SessionSlot) -> bool {

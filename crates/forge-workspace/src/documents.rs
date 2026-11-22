@@ -86,6 +86,26 @@ impl Workspace {
         true
     }
 
+    /// End every document hand-off `seat` still holds as abandoned.
+    ///
+    /// **A parked hand-off outlives the session that raised it.** The blocked
+    /// tool handler is a detached control task, so its future is not dropped
+    /// when the session goes and the caller's own drop never fires; this
+    /// sweep answers it, tells every view the card is over, and keeps a later
+    /// occupant of the slot from inheriting a hand-off it never raised.
+    pub(crate) fn abandon_document_handoffs(&self, seat: &SessionSlot) {
+        let ids: Vec<uuid::Uuid> = self
+            .document_handoffs
+            .lock()
+            .iter()
+            .filter(|(_, held)| &held.seat == seat)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            self.resolve_document_hand_off(id, seat, DocumentHandOffEnding::Abandoned);
+        }
+    }
+
     /// Hand one document to the reader: read it out of `seat`'s own tree,
     /// ask the clients drawing that seat to open it, and park until the
     /// reader answers.

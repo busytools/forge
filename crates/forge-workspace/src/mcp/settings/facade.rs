@@ -58,7 +58,7 @@ impl SettingsError {
             ),
             Self::Wanted(message) => message.clone(),
             Self::Abandoned => {
-                "the client went away before answering the approval prompt; nothing was written"
+                "the session went away before the approval prompt was answered; nothing was written"
                     .to_owned()
             }
             Self::Refused(message) => {

@@ -2266,10 +2266,10 @@ async fn a_revised_call_after_a_send_back_parks_its_own_draft() {
     assert_eq!(api.posts()[0].1, "staging is down", "the revised words are what went out");
 }
 
-/// A prompt let go without an answer must read as the client going away,
+/// A prompt let go without an answer must read as the session going away,
 /// never as an approval and never as the user declining. Dropping the
-/// sender is how that happens - the session went away, or the dock prompt
-/// was cleared without a decision.
+/// sender is how that happens - the session stopped, or the dock prompt was
+/// cleared without a decision.
 #[tokio::test]
 async fn a_draft_whose_answer_never_comes_posts_nothing() {
     let (facade, ws, api, _rx) = facade_with_recording_slack();

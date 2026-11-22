@@ -222,7 +222,7 @@ impl HandOffTool {
                 return Err("the reader said not now, so nothing opened".to_owned());
             }
             DocumentHandOffEnding::Abandoned => {
-                return Err("The client went away before answering the hand-off.".to_owned());
+                return Err("The session went away before the hand-off was answered.".to_owned());
             }
         })
     }
@@ -479,7 +479,7 @@ mod tests {
         let out = tool.call(ToolInput { value: json!({ "path": "docs/readme.md" }) }).await;
         assert!(out.is_error, "an abandoned hand-off is not a success: {:?}", out.blocks);
         let text = crate::mcp::test_support::block_text(&out.blocks[0]);
-        assert_eq!(text, "The client went away before answering the hand-off.", "{text}");
+        assert_eq!(text, "The session went away before the hand-off was answered.", "{text}");
     }
 
     /// `reviewable` is off unless asked for: everything the agent did not

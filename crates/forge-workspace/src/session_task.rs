@@ -476,11 +476,18 @@ impl SessionTask {
                             answered_with: None,
                         });
                     }
-                    // Everything parked for the replaced identity has no
-                    // session left to drain it, so the bucket is dropped
-                    // and any message in it is acknowledged back to its
-                    // sender.
+                    // **The replaced identity's tool asks go with it.** They
+                    // sit in registries keyed by the slot, and their waiting
+                    // handlers are detached tasks nothing drops - so without
+                    // this sweep the next occupant would inherit a config
+                    // write, Slack post, vault call or document open it never
+                    // raised, and could answer it in the dead occupant's name.
                     if let Some(workspace) = self.workspace.upgrade() {
+                        workspace.abandon_asks_for(&self.key);
+                        // Everything parked for the replaced identity has no
+                        // session left to drain it, so the bucket is dropped
+                        // and any message in it is acknowledged back to its
+                        // sender.
                         workspace.expire_parked_for_slot(
                             &self.key,
                             crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
@@ -10091,6 +10098,110 @@ provider = "anthropic"
             vec!["stale_tool_id".to_owned()],
             "a dropped prompt is announced with its own tool id",
         );
+    }
+
+    /// **The replaced identity's tool asks end with it.** They sit in
+    /// registries keyed by the slot, so without the sweep the next occupant
+    /// would be drawn a config write, a Slack post, a vault call or a
+    /// document hand-off it never raised - and could answer it in the dead
+    /// occupant's name.
+    #[tokio::test]
+    async fn a_second_connected_drops_the_replaced_identitys_tool_asks() {
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
+        let (handle, _commands_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let update_tx = UpdateFanout::default();
+        let key = SessionSlot::from_str_for_test("tools-replaced");
+
+        let ask = forge_primitives::settings::SettingsWriteAsk {
+            id: uuid::Uuid::new_v4(),
+            edits: vec![forge_primitives::settings::SettingsWriteChange {
+                key: "sessions.heal_attempts".to_owned(),
+                current: serde_json::json!(2),
+                proposed: serde_json::json!(4),
+                unset: false,
+            }],
+        };
+        let (settings_id, mut settings) = workspace.register_settings_write(&key, ask);
+        let (vault_id, mut vault) = workspace.vault_asks.register(
+            &key,
+            forge_primitives::vault::VaultDraft::new(
+                forge_primitives::vault::VaultTool::Search,
+                "search for 'bank'",
+            ),
+            false,
+        );
+        let (_draft_id, mut slack) = workspace.slack.register_slack_draft(
+            &key,
+            forge_primitives::slack::SlackDraft {
+                id: uuid::Uuid::new_v4(),
+                workspace: "acme".to_owned(),
+                conversation: "C1".to_owned(),
+                conversation_label: "#acme".to_owned(),
+                thread_ts: None,
+                text: "hello".to_owned(),
+                operation: forge_primitives::slack::SlackDraftOperation::Post,
+                thread: None,
+                tagged: Vec::new(),
+            },
+        );
+        let (document_id, mut document) =
+            workspace.register_document_hand_off(&key, "/proj/docs/plan.md", true);
+        assert_eq!(workspace.pending_asks(&key).len(), 4, "the control: four asks are parked");
+
+        let mut task = SessionTask {
+            key: key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::new(Mutex::new(empty_domain())),
+            update_tx,
+            connected_once: true,
+            workspace: Arc::downgrade(&workspace),
+            compaction_count: 0,
+            successor: None,
+            teardown_done: None,
+        };
+        task.translate_event(AgentEvent::Connected {
+            session_id: "successor-uuid".to_owned(),
+            cwd: "/proj".to_owned(),
+            current_model: forge_primitives::CurrentModel {
+                resolved_id: "claude".to_owned(),
+                display_name_short: "claude".to_owned(),
+                display_name_long: "claude".to_owned(),
+                requested_id: None,
+                catalog_id: None,
+                supports_effort: false,
+                supported_effort_levels: Vec::new(),
+                supports_auto_mode: None,
+                supports_adaptive_thinking: None,
+                is_authoritative: true,
+            },
+            available_models: Vec::new(),
+            mode: None,
+            history_updates: None,
+            compaction_count: 0,
+        });
+
+        assert!(workspace.pending_asks(&key).is_empty(), "the successor inherits nothing");
+        assert!(!workspace.settings_write_waiting(settings_id, &key), "the write is gone");
+        assert!(!workspace.vault_asks.is_waiting(vault_id, &key), "the vault call is gone");
+        assert!(!workspace.document_handoff_waiting(document_id, &key), "the hand-off is gone",);
+        assert_eq!(workspace.slack.held_drafts().len(), 0, "the draft is gone");
+        for (ended, name) in [
+            (settings.try_recv().is_err(), "settings write"),
+            (vault.try_recv().is_err(), "vault call"),
+            (slack.try_recv().is_err(), "Slack draft"),
+            (
+                matches!(
+                    document.try_recv(),
+                    Ok(forge_primitives::document::DocumentHandOffEnding::Abandoned)
+                ),
+                "document hand-off",
+            ),
+        ] {
+            assert!(ended, "the dead occupant's blocked {name} handler is released");
+        }
     }
 
     /// First-Connected drains the slot's parked peer prompts in FIFO

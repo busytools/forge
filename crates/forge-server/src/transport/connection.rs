@@ -1093,8 +1093,8 @@ where
     // this connection answers - not its first message, so a client whose first
     // word is a `more` or a command is not locked into observing. Registering
     // as answering before a client says so would count one that cannot show a
-    // prompt as able to answer it, and the core parks a turn on that reply
-    // rather than failing it.
+    // browser or terminal hand-off as able to answer it, and the card would be
+    // handed to a page with nothing to draw it.
     let mut updates: Option<(mpsc::UnboundedReceiver<SeatUpdate>, bool)> = None;
     // The browser tab this connection is viewing (and the seat's tab rows it
     // follows) and the terminal it is attached to, each once the client asks.

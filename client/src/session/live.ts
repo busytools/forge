@@ -363,13 +363,12 @@ export function watchSession(
   /**
    * Whether this page can ANSWER the prompts it draws.
    *
-   * **It is not a client's preference, and getting it wrong loses a turn
+   * **It is not a client's preference, and getting it wrong loses a card
    * either way.** A client counted as answering with no surface to draw a
-   * prompt on hangs the turn, because the core parks it on a reply that never
-   * comes; a client that HAS the surface while subscribing as an observer
-   * leans on whoever else can answer. So the caller states what it has: the
-   * page says yes exactly when its composer - the thing with the dock in it -
-   * is wired in.
+   * browser or terminal hand-off on is handed one nobody sees; a client that
+   * HAS the surface while subscribing as an observer leans on whoever else
+   * can answer. So the caller states what it has: the page says yes exactly
+   * when its composer - the thing with the dock in it - is wired in.
    *
    * **The role belongs to the connection rather than to this seat**, so this
    * is a second statement of it rather than the first: the home's own
@@ -377,11 +376,11 @@ export function watchSession(
    * covers a page that reaches a seat before that subscribe lands. Either
    * statement is enough, because the role only ever rises.
    *
-   * **It is a safeguard rather than what keeps an ask alive.** Every update
-   * reaches every subscriber whatever its role, and the role decides only
-   * what the core may park on. What this covers is a serve with no answerer
-   * anywhere, where an ask raised while no page could draw it would be
-   * cancelled at birth.
+   * **Tool asks do not wait on this.** Every update reaches every subscriber
+   * whatever its role, and a permission, question or tool ask parks for the
+   * person whoever is attached - a client that connects later reads it from
+   * the seat's `pending_asks`. The role decides only whether a browser or
+   * terminal hand-off may raise.
    */
   answering: boolean,
   /**

@@ -1191,8 +1191,8 @@ mod tests {
     }
 
     /// A subscribe that says nothing about answering reads as one that cannot
-    /// answer: the core parks a turn on an answering client, so the default
-    /// has to be the safe one.
+    /// answer: the browser and terminal hand-offs raise on an answering
+    /// client, so the default has to be the safe one.
     #[test]
     fn a_subscribe_defaults_to_not_answering() {
         let older: ClientMessage = serde_json::from_str(r#"{"kind":"subscribe","what":"home"}"#)

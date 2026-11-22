@@ -279,9 +279,8 @@ impl ViewSurface {
     /// answering.
     ///
     /// **The caller this exists for is a process-wide fold.** It folds into
-    /// state of its own and never replies, so the answering role would park
-    /// a permission, question or Slack draft waiting on an answer nobody
-    /// sends.
+    /// state of its own and never replies, so the answering role would hand
+    /// it the browser and terminal hand-offs it has no surface to draw.
     ///
     /// A view with a dock to answer from takes [`Self::subscribe_client`].
     pub fn subscribe_mirror(&self) -> tokio::sync::mpsc::UnboundedReceiver<SeatUpdate> {
@@ -295,9 +294,9 @@ impl ViewSurface {
     /// before it**, whatever the role: a client that attaches late reads what
     /// it missed from the subject's snapshot.
     ///
-    /// The role decides one thing: whether the core may park a prompt on this
-    /// connection's reply. `answering` is the client's own statement that it
-    /// can show and answer a prompt.
+    /// The role decides one thing: whether the browser and terminal hand-offs
+    /// may raise on this connection. `answering` is the client's own statement
+    /// that it can show and answer one.
     pub fn subscribe_client(
         &self,
         answering: bool,

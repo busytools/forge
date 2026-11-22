@@ -53,7 +53,7 @@ pub enum VaultToolError {
     Locked,
     #[error("the vault is not configured: add a [vault] section to forge.toml")]
     NotConfigured,
-    #[error("the client went away before the vault call was answered")]
+    #[error("the session went away before the vault call was answered")]
     Abandoned,
     #[error("vault request failed: {0}")]
     Vault(#[from] VaultError),
