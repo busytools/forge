@@ -25508,12 +25508,12 @@ mod git_scan_cwd_tests {
     /// **A hand-off parks with no client attached and waits for one.** No
     /// connection count decides it: the ask is held, the seat's
     /// `pending_asks` read carries it to a client that attaches later, and
-    /// that client's answer releases the call.
-    #[tokio::test]
+    /// that client's answer releases the call. No clock ends it either.
+    #[tokio::test(start_paused = true)]
     async fn a_hand_off_waits_for_a_client_to_attach() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().to_str().expect("utf8").to_owned();
-        let (ws, mut updates) = Workspace::testing_stub();
+        let (ws, _updates) = Workspace::testing_stub();
         let (project_root, session_key) = seed_project_and_worker(
             &ws,
             "forge",
@@ -25533,15 +25533,15 @@ mod git_scan_cwd_tests {
         };
         let ask = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                match updates
-                    .recv()
-                    .await
-                    .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
+                if let Some(id) =
+                    ws.pending_asks(&session_key).iter().find_map(|waiting| match waiting {
+                        crate::protocol::PendingAsk::DocumentHandOff(held) => Some(held.id),
+                        _ => None,
+                    })
                 {
-                    Some(SessionUpdate::DocumentHandOffPending { id, .. }) => break id,
-                    Some(_) => {}
-                    None => panic!("the stream ended before the ask"),
+                    break id;
                 }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
         })
         .await
@@ -25552,6 +25552,16 @@ mod git_scan_cwd_tests {
                 crate::protocol::PendingAsk::DocumentHandOff(held) if held.id == ask
             )),
             "a client that attaches later reads the ask from the seat",
+        );
+
+        tokio::time::advance(std::time::Duration::from_secs(24 * 60 * 60)).await;
+        assert!(!handed.is_finished(), "a hand-off waits for the reader, not a clock");
+        assert!(
+            ws.pending_asks(&session_key).iter().any(|waiting| matches!(
+                waiting,
+                crate::protocol::PendingAsk::DocumentHandOff(held) if held.id == ask
+            )),
+            "and the ask is still parked after a day",
         );
         ws.resolve_document_hand_off(
             ask,

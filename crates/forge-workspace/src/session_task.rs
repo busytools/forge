@@ -8498,7 +8498,7 @@ mod tests {
     /// no longer cancels it: the ask stays in the session's pending set, the
     /// seat's `pending_asks` read carries it to a client that attaches
     /// later, and that client's answer resolves the parked oneshot.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_permission_request_with_only_an_observer_waits_for_an_answerer() {
         let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
         let (handle, mut agent_rx) = Agent::testing_stub();
@@ -8531,6 +8531,7 @@ mod tests {
             request: permission_request_fixture("tu-obs"),
         });
 
+        tokio::time::advance(std::time::Duration::from_secs(24 * 60 * 60)).await;
         assert!(
             domain.lock().pending_interactions.contains_key("tu-obs"),
             "the slot stays parked with no answerer",
@@ -8589,7 +8590,7 @@ mod tests {
     /// in the session's pending set, the seat's `pending_asks` read carries
     /// it to a client that attaches later, and that client's answer
     /// resolves the parked oneshot.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_question_request_with_no_subscriber_waits_for_an_answerer() {
         let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
         let (handle, mut agent_rx) = Agent::testing_stub();
@@ -8621,6 +8622,7 @@ mod tests {
             request: question_request_fixture("tu-q-obs"),
         });
 
+        tokio::time::advance(std::time::Duration::from_secs(24 * 60 * 60)).await;
         assert!(
             domain.lock().pending_interactions.contains_key("tu-q-obs"),
             "the question slot stays parked with no answerer",

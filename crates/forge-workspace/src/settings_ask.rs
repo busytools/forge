@@ -236,7 +236,7 @@ mod tests {
     /// keeps it, the seat's `pending_asks` read carries it to a client that
     /// attaches later, and that client's answer resolves the parked caller -
     /// no raise-time check ends it.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_write_with_no_ui_to_answer_it_waits_for_one() {
         let (ws, rx) = Workspace::testing_stub();
         drop(rx);
@@ -245,6 +245,7 @@ mod tests {
 
         let (id, mut held) = ws.register_settings_write(&caller(), ask);
 
+        tokio::time::advance(std::time::Duration::from_secs(24 * 60 * 60)).await;
         assert!(ws.settings_write_waiting(id, &caller()), "the write stays parked with no client");
         assert!(
             ws.pending_asks(&caller()).iter().any(|waiting| matches!(

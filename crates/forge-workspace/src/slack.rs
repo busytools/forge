@@ -650,10 +650,9 @@ mod tests {
     }
 
     /// **Every one of the subsystem's updates crosses to its own wire
-    /// frame**, and the draft arm uses the answering send. The report says
-    /// whether a dock took the card; the draft parks either way, so an
-    /// observer alone is reported as no answerer while still receiving the
-    /// frame.
+    /// frame**, and the draft arm uses the answering send. An observer alone
+    /// receives the frame and is reported as no answerer; the parking itself
+    /// is pinned by the subsystem's own test.
     #[test]
     fn the_draft_updates_cross_to_their_wire_frames() {
         use crate::update_fanout::{SubscriberRole, UpdateFanout};
@@ -670,7 +669,7 @@ mod tests {
             "an observer alone cannot answer a held draft",
         );
         // The frame still reaches the observer - it draws no dock, and the
-        // report says none took it; the draft parks regardless.
+        // report says none took it.
         assert!(observer.try_recv().is_ok(), "the observer still sees the draft was raised");
 
         let mut answerer = updates.subscribe(SubscriberRole::Answering);

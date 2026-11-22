@@ -2203,6 +2203,31 @@ mod tests {
         }
     }
 
+    /// **An abandoned ask names the ender that took it.** The session went
+    /// away - not the client, which no longer ends anything - and the agent
+    /// reads that sentence rather than a decline it never gave.
+    #[test]
+    fn an_abandoned_ask_names_the_session_as_its_ender() {
+        let target =
+            SentBackTarget::Draft { conversation: "C0123456789".to_owned(), thread_ts: None };
+        assert_eq!(
+            format_post_error(&SlackPostError::Abandoned, &target),
+            "the session went away before the draft was answered, so nothing was sent",
+        );
+        assert_eq!(
+            format_edit_error(&SlackEditError::Abandoned, &target),
+            "the session went away before the draft was answered, so the message is untouched",
+        );
+        assert_eq!(
+            format_react_error(&SlackReactError::Abandoned, &target),
+            "the session went away before the draft was answered, so nothing was added or removed",
+        );
+        assert_eq!(
+            format_attachment_error(&SlackAttachmentError::Abandoned, Some(&target)),
+            "the session went away before the draft was answered, so nothing was sent",
+        );
+    }
+
     /// The reader's words are what the agent revises from, so the refusal
     /// has to carry them whole and say what is expected next: a bare "not
     /// approved" leaves it guessing at the change, which is the loop this

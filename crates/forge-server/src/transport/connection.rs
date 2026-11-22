@@ -7856,6 +7856,22 @@ mod tests {
         .await
         .expect("the ask parks with no client attached and reads from the seat");
 
+        // **The record a late client actually reads carries the ask.** The
+        // core verb above is not the delivery path; a client that attaches
+        // after the raise reads the seat's snapshot, so the record's own
+        // `pending_asks` is what has to hold it.
+        let record =
+            crate::transport::wire::encode_subject(&state, &Subject::Session(seat.clone()))
+                .await
+                .expect("the seat record encodes");
+        assert!(
+            record["pending_asks"]
+                .as_array()
+                .is_some_and(|asks| asks.iter().any(|ask| ask["kind"] == "document_hand_off"
+                    && ask["request"]["id"] == id.to_string())),
+            "the held hand-off is on the seat record a late client reads: {record}",
+        );
+
         // The answer rides the command a client's approve sends, so the
         // dispatch guard and the registry are both on this path.
         state
@@ -7878,15 +7894,21 @@ mod tests {
             let seat = seat.clone();
             tokio::spawn(async move { ws.hand_off_document(&seat, "docs/readme.md", false).await })
         };
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        assert!(
-            fleet
-                .workspace()
-                .pending_asks(&seat)
-                .iter()
-                .any(|ask| matches!(ask, forge_primitives::PendingAsk::DocumentHandOff(_))),
-            "the raise parks again with no client",
-        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if fleet
+                    .workspace()
+                    .pending_asks(&seat)
+                    .iter()
+                    .any(|ask| matches!(ask, forge_primitives::PendingAsk::DocumentHandOff(_)))
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the raise parks again with no client");
         again.abort();
         let _ = again.await;
     }

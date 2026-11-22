@@ -296,6 +296,12 @@ mod tests {
             tokio::task::yield_now().await;
         }
         assert!(parked, "the read got past containment and the hand-off parked");
+        assert!(
+            ws.pending_asks(&seat)
+                .iter()
+                .any(|ask| matches!(ask, crate::protocol::PendingAsk::DocumentHandOff(_))),
+            "and a client that attaches later reads it from the seat",
+        );
         handed.abort();
         let _ = handed.await;
 

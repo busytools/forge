@@ -522,12 +522,13 @@ mod tests {
     /// **A call with no UI to answer it waits for one.** The registry keeps
     /// it, and the answer a later client gives releases the parked caller -
     /// no raise-time check drops the call.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_call_with_no_ui_to_answer_it_waits_for_one() {
         let (asks, _emit, _sink) = harness_with(std::sync::Arc::new(TestEmit::refusing()), None);
 
         let (id, held) = asks.register(&caller(), a_draft(), false);
 
+        tokio::time::advance(std::time::Duration::from_secs(24 * 60 * 60)).await;
         assert_eq!(asks.asks(&caller()).len(), 1, "the call stays parked with no UI");
         assert!(
             asks.resolve(
