@@ -542,11 +542,11 @@ jobs:
       # fsevents delivery; Ubuntu runs them on inotify, which is a different
       # backend. This quiet runner covers single-file `NonRecursive` delivery,
       # the debounce and `slow_rearm` on FSEvents, and the boot edit reaching
-      # a running workspace; the re-arm stays Linux-only, since macOS survives
-      # a rename-over without it. Scoped to the family so no other ignored or
-      # live test is swept in.
+      # a running workspace without re-running the startup gate; the re-arm
+      # stays Linux-only, since macOS survives a rename-over without it.
+      # Scoped to the family so no other ignored or live test is swept in.
       - run: cargo nextest run -p forge-agent --lib --run-ignored ignored-only -E 'test(config_watch)'
-      - run: cargo nextest run -p forge-server --lib --run-ignored ignored-only -E 'test(a_config_edit_reaches_the_running_workspace)'
+      - run: cargo nextest run -p forge-server --lib --run-ignored ignored-only -E 'test(a_config_edit_reaches_the_running_workspace) or test(a_config_reload_does_not_run_the_startup_gate)'
       # The host's own tests are macOS-gated, so the Ubuntu workspace job
       # skips them by name; this is where they run. One of them identifies a
       # host by the INSTALLED bundle's path, so this job stages one where
