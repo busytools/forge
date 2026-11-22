@@ -1289,18 +1289,32 @@ fn read_config(config_dir: &Path) -> Result<(PathBuf, String), WorkspaceError> {
     }
 }
 
-/// The `[server]` section, refusing the two ports that cannot work: 0, which
-/// is OS-assigned and so unguessable, and the gateway's own port, where the
-/// listener that binds second loses at boot.
+/// The `[server]` section, refusing a gate path that is not absolute and the
+/// two ports that cannot work: 0, which is OS-assigned and so unguessable,
+/// and the gateway's own port, where the listener that binds second loses at
+/// boot.
 ///
-/// A disabled listener is not validated at all. Nothing will bind that port,
-/// so a stale one left in a hand-authored file is not worth refusing the
-/// boot over.
+/// A disabled listener's ports are not validated at all. Nothing will bind
+/// one, so a stale one left in a hand-authored file is not worth refusing
+/// the boot over. The gate is validated whatever `enabled` says: it runs on
+/// the boot path whether or not the socket binds.
 fn resolve_server(
     server: ServerConfig,
     gateway_port: u16,
     path: &Path,
 ) -> Result<ServerConfig, WorkspaceError> {
+    // **The gate is validated even when the socket is disabled.** It runs on
+    // the boot path whatever the listener does, and a relative path would
+    // resolve against the launch directory - a different program depending
+    // on where forge started, which hard rule 14 refuses.
+    if let Some(value) = server.startup_gate.as_deref()
+        && !Path::new(value).is_absolute()
+    {
+        return Err(WorkspaceError::ServerStartupGateNotAbsolute {
+            path: path.to_path_buf(),
+            value: value.to_owned(),
+        });
+    }
     if !server.enabled {
         return Ok(server);
     }
@@ -2464,6 +2478,71 @@ max_size_mib = 0
         assert!(!config.server.enabled);
         assert_eq!(config.server.port, 9100);
         assert_eq!(config.server.bind, "10.0.0.5".parse::<IpAddr>().expect("ip"));
+    }
+
+    /// The startup gate is one string the boot runs before anything binds;
+    /// absent is the default and means no gate.
+    #[test]
+    fn server_section_reads_its_startup_gate() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!("{}\n[server]\nstartup_gate = \"/opt/forge/gate.sh\"\n", minimal_config()),
+        );
+        let config = load_from_dir(dir.path()).expect("section loads");
+        assert_eq!(config.server.startup_gate.as_deref(), Some("/opt/forge/gate.sh"));
+    }
+
+    /// **A gate path is absolute or the load fails.** The boot executes it
+    /// directly, so a relative value would name whatever the launch
+    /// directory happened to hold; a disabled socket does not exempt it,
+    /// because the gate runs whatever the listener does.
+    #[test]
+    fn a_startup_gate_that_is_not_an_absolute_path_fails_the_load() {
+        for (socket, gate) in [
+            ("true", ""),
+            ("true", "   "),
+            ("true", "scripts/gate.sh"),
+            ("true", "forge-startup-gate.sh"),
+            ("false", "scripts/gate.sh"),
+        ] {
+            let dir = tempdir().expect("tempdir");
+            write_config(
+                dir.path(),
+                &format!(
+                    "{}\n[server]\nenabled = {socket}\nstartup_gate = \"{gate}\"\n",
+                    minimal_config()
+                ),
+            );
+            let err = load_from_dir(dir.path()).expect_err("a relative gate must not load");
+            let crate::error::WorkspaceError::ServerStartupGateNotAbsolute { value, .. } = &err
+            else {
+                panic!("the refusal names a relative gate for {gate:?} with {socket}: {err}");
+            };
+            assert_eq!(value.as_str(), gate, "the offending value is named");
+        }
+    }
+
+    /// **A disabled socket keeps its gate.** The gate runs on the boot path
+    /// whatever the listener does, so the load must carry an absolute one
+    /// through the early return rather than dropping it.
+    #[test]
+    fn a_disabled_server_keeps_an_absolute_startup_gate() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!(
+                "{}\n[server]\nenabled = false\nstartup_gate = \"/opt/forge/gate.sh\"\n",
+                minimal_config()
+            ),
+        );
+        let config = load_from_dir(dir.path()).expect("the disabled section loads");
+        assert!(!config.server.enabled);
+        assert_eq!(
+            config.server.startup_gate.as_deref(),
+            Some("/opt/forge/gate.sh"),
+            "the gate is retained though the socket is off",
+        );
     }
 
     /// An absent `[client]` leaves every name unset, and unset means the
