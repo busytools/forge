@@ -476,11 +476,18 @@ impl SessionTask {
                             answered_with: None,
                         });
                     }
-                    // Everything parked for the replaced identity has no
-                    // session left to drain it, so the bucket is dropped
-                    // and any message in it is acknowledged back to its
-                    // sender.
+                    // **The replaced identity's tool asks go with it.** They
+                    // sit in registries keyed by the slot, and their waiting
+                    // handlers are detached tasks nothing drops - so without
+                    // this sweep the next occupant would inherit a config
+                    // write, Slack post, vault call or document open it never
+                    // raised, and could answer it in the dead occupant's name.
                     if let Some(workspace) = self.workspace.upgrade() {
+                        workspace.abandon_asks_for(&self.key);
+                        // Everything parked for the replaced identity has no
+                        // session left to drain it, so the bucket is dropped
+                        // and any message in it is acknowledged back to its
+                        // sender.
                         workspace.expire_parked_for_slot(
                             &self.key,
                             crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
@@ -877,47 +884,25 @@ impl SessionTask {
                 if let Some(workspace) = self.workspace.upgrade() {
                     workspace.note_ask(&self.key);
                 }
-                let answerable = self.update_tx.send_answering(SessionUpdate::PermissionRequest {
+                // Delivered to whoever is attached; the send's report on
+                // whether an answering subscriber took it no longer decides
+                // the ask. It stays parked until the person answers or the
+                // occupant goes, and a client that attaches later reads it
+                // from `pending_asks`.
+                let _ = self.update_tx.send_answering(SessionUpdate::PermissionRequest {
                     key: self.key.clone(),
                     tool_id: tool_call_id.clone(),
                     request: wire_request,
                 });
-                // Spawned for both outcomes: the forwarder is the only
-                // consumer of `response_rx`, so without it a `Cancelled`
-                // sent below is discarded and the bridge waits for ever.
+                // The forwarder is the only consumer of `response_rx`: it
+                // carries the person's answer, or the teardown's, to the
+                // bridge.
                 spawn_permission_response_forwarder(
                     Arc::clone(&self.handle),
                     response_rx,
                     session_id,
                     tool_call_id.clone(),
                 );
-                if !answerable {
-                    // No subscriber can answer a permission prompt -
-                    // either none is attached or none renders one.
-                    // Send Cancelled through the forwarder's oneshot so
-                    // the SDK callback unblocks rather than hanging the
-                    // `claude` subprocess turn forever.
-                    if let Some(pending) =
-                        self.domain.lock().pending_interactions.remove(&tool_call_id)
-                        && let PendingInteractionSlot::Permission { tx, .. } = pending
-                    {
-                        let _ = tx.send(forge_primitives::PermissionOutcome::Cancelled);
-                        // An observer that folded the request keeps drawing
-                        // it otherwise, and its answer reaches nothing.
-                        self.emit(SessionUpdate::PendingInteractionResolved {
-                            key: self.key.clone(),
-                            tool_id: tool_call_id.clone(),
-                            question_index: None,
-                            answered_with: None,
-                        });
-                    }
-                    tracing::warn!(
-                        target: "forge_workspace::session_task",
-                        slot = %self.key.display(),
-                        tool_id = %tool_call_id,
-                        "no subscriber can answer the PermissionRequest; orphaned oneshot cancelled"
-                    );
-                }
             }
             AgentEvent::QuestionRequest { session_id, request } => {
                 let tool_call_id = request.tool_call.tool_call_id.clone();
@@ -937,46 +922,25 @@ impl SessionTask {
                 if let Some(workspace) = self.workspace.upgrade() {
                     workspace.note_ask(&self.key);
                 }
-                let answerable = self.update_tx.send_answering(SessionUpdate::QuestionRequest {
+                // Delivered to whoever is attached; the send's report on
+                // whether an answering subscriber took it no longer decides
+                // the ask. It stays parked until the person answers or the
+                // occupant goes, and a client that attaches later reads it
+                // from `pending_asks`.
+                let _ = self.update_tx.send_answering(SessionUpdate::QuestionRequest {
                     key: self.key.clone(),
                     tool_id: tool_call_id.clone(),
                     request: wire_request,
                 });
-                // Spawned for both outcomes: the forwarder is the only
-                // consumer of `response_rx`, so without it a `Cancelled`
-                // sent below is discarded and the bridge waits for ever.
+                // The forwarder is the only consumer of `response_rx`: it
+                // carries the person's answer, or the teardown's, to the
+                // bridge.
                 spawn_question_response_forwarder(
                     Arc::clone(&self.handle),
                     response_rx,
                     session_id,
                     tool_call_id.clone(),
                 );
-                if !answerable {
-                    // No subscriber can answer a question - either none
-                    // is attached or none renders one. Send Cancelled
-                    // through the forwarder's oneshot so the SDK callback
-                    // unblocks rather than hanging the turn.
-                    if let Some(pending) =
-                        self.domain.lock().pending_interactions.remove(&tool_call_id)
-                        && let PendingInteractionSlot::Question { tx, request, .. } = pending
-                    {
-                        let _ = tx.send(forge_primitives::QuestionOutcome::Cancelled);
-                        // An observer that folded the request keeps drawing
-                        // it otherwise, and its answer reaches nothing.
-                        self.emit(SessionUpdate::PendingInteractionResolved {
-                            key: self.key.clone(),
-                            tool_id: tool_call_id.clone(),
-                            question_index: Some(request.question_index),
-                            answered_with: None,
-                        });
-                    }
-                    tracing::warn!(
-                        target: "forge_workspace::session_task",
-                        slot = %self.key.display(),
-                        tool_id = %tool_call_id,
-                        "no subscriber can answer the QuestionRequest; orphaned oneshot cancelled"
-                    );
-                }
             }
             AgentEvent::McpOperationError { error, .. } => {
                 self.emit(SessionUpdate::McpOperationError { key: self.key.clone(), error });
@@ -8530,14 +8494,12 @@ mod tests {
         );
     }
 
-    /// A subscriber that only reads must not keep a permission request
-    /// parked. With no subscriber that can answer it, the guard resolves
-    /// the slot `Cancelled` rather than leaving the turn waiting on a
-    /// reply nobody will send. Catches the guard keying on "somebody
-    /// took the update" instead of "somebody can answer it", which the
-    /// observer's arrival would otherwise turn into a hang.
-    #[tokio::test]
-    async fn a_permission_request_with_only_an_observer_fails_closed() {
+    /// **A permission request parks with no answerer.** An observer alone
+    /// no longer cancels it: the ask stays in the session's pending set, the
+    /// seat's `pending_asks` read carries it to a client that attaches
+    /// later, and that client's answer resolves the parked oneshot.
+    #[tokio::test(start_paused = true)]
+    async fn a_permission_request_with_only_an_observer_waits_for_an_answerer() {
         let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
         let (handle, mut agent_rx) = Agent::testing_stub();
         let handle = Arc::new(handle);
@@ -8545,14 +8507,17 @@ mod tests {
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
         let update_tx = UpdateFanout::default();
         let mut observer = update_tx.subscribe(SubscriberRole::Observing);
+        let late = update_tx.clone();
+        let domain =
+            Arc::new(Mutex::new(DomainSession::new(key.clone(), Some(Arc::clone(&handle)))));
+        // The workspace reads a seat's asks from the domain it registered,
+        // so the task's own domain is the one it must hold.
+        workspace.domain_handles.lock().insert(key.clone(), Arc::clone(&domain));
         let mut task = SessionTask {
             key: key.clone(),
             handle: Arc::clone(&handle),
             command_rx,
-            domain: Arc::new(Mutex::new(DomainSession::new(
-                key.clone(),
-                Some(Arc::clone(&handle)),
-            ))),
+            domain: Arc::clone(&domain),
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
@@ -8566,9 +8531,10 @@ mod tests {
             request: permission_request_fixture("tu-obs"),
         });
 
+        tokio::time::advance(std::time::Duration::from_secs(24 * 60 * 60)).await;
         assert!(
-            !task.domain.lock().pending_interactions.contains_key("tu-obs"),
-            "the slot is resolved rather than parked, so the turn cannot hang",
+            domain.lock().pending_interactions.contains_key("tu-obs"),
+            "the slot stays parked with no answerer",
         );
         assert!(
             matches!(
@@ -8578,51 +8544,71 @@ mod tests {
             ),
             "the observer is still delivered the request it cannot answer",
         );
+        assert!(
+            workspace.pending_asks(&key).iter().any(|ask| matches!(
+                ask,
+                crate::protocol::PendingAsk::Permission(request)
+                    if request.tool_call.tool_call_id == "tu-obs"
+            )),
+            "a client that attaches later reads the ask from the seat",
+        );
+
+        let _answerer = late.subscribe(SubscriberRole::Answering);
+        task.execute_command(Command::RespondPermission {
+            key: key.clone(),
+            tool_id: "tu-obs".to_owned(),
+            outcome: forge_primitives::PermissionOutcome::Selected {
+                option_id: "allow".to_owned(),
+                action: forge_primitives::permission_interaction::PermissionAction::Allow,
+                notes_text: None,
+                edited_input: None,
+            },
+        });
         let cmd = tokio::time::timeout(std::time::Duration::from_secs(2), agent_rx.recv())
             .await
-            .expect("the cancelled outcome reaches the agent")
+            .expect("the answer reaches the agent")
             .expect("command channel open");
         assert!(
             matches!(
                 &cmd,
                 forge_primitives::AgentCommand::PermissionResponse {
                     tool_call_id,
-                    outcome: forge_primitives::PermissionOutcome::Cancelled,
+                    outcome: forge_primitives::PermissionOutcome::Selected { .. },
                     ..
                 } if tool_call_id == "tu-obs"
             ),
-            "the orphaned permission answers the bridge Cancelled, got {cmd:?}",
+            "the parked oneshot releases with the person's answer, got {cmd:?}",
         );
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(200), agent_rx.recv())
-                .await
-                .is_err(),
-            "a second permission response is the duplicate this catches",
+            !domain.lock().pending_interactions.contains_key("tu-obs"),
+            "and the slot is consumed",
         );
     }
 
-    /// The question guard keys on an answering subscriber the same way
-    /// the permission one does. Catches pointing this site back at
-    /// `send`: the permission test drives a different event, so an
-    /// observer's arrival here would park the question on a reply nobody
-    /// will send and no other test would notice.
-    #[tokio::test]
-    async fn a_question_request_with_only_an_observer_fails_closed() {
+    /// **A question request parks with no subscriber at all**, the same
+    /// rule the permission one carries from the other side: the ask stays
+    /// in the session's pending set, the seat's `pending_asks` read carries
+    /// it to a client that attaches later, and that client's answer
+    /// resolves the parked oneshot.
+    #[tokio::test(start_paused = true)]
+    async fn a_question_request_with_no_subscriber_waits_for_an_answerer() {
         let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
         let (handle, mut agent_rx) = Agent::testing_stub();
         let handle = Arc::new(handle);
-        let key = SessionSlot::from_str_for_test("question-observer");
+        let key = SessionSlot::from_str_for_test("question-unheard");
         let (_cmd_tx, command_rx) = mpsc::unbounded_channel();
         let update_tx = UpdateFanout::default();
-        let mut observer = update_tx.subscribe(SubscriberRole::Observing);
+        let late = update_tx.clone();
+        let domain =
+            Arc::new(Mutex::new(DomainSession::new(key.clone(), Some(Arc::clone(&handle)))));
+        // The workspace reads a seat's asks from the domain it registered,
+        // so the task's own domain is the one it must hold.
+        workspace.domain_handles.lock().insert(key.clone(), Arc::clone(&domain));
         let mut task = SessionTask {
             key: key.clone(),
             handle: Arc::clone(&handle),
             command_rx,
-            domain: Arc::new(Mutex::new(DomainSession::new(
-                key.clone(),
-                Some(Arc::clone(&handle)),
-            ))),
+            domain: Arc::clone(&domain),
             update_tx,
             connected_once: false,
             workspace: Arc::downgrade(&workspace),
@@ -8636,38 +8622,47 @@ mod tests {
             request: question_request_fixture("tu-q-obs"),
         });
 
+        tokio::time::advance(std::time::Duration::from_secs(24 * 60 * 60)).await;
         assert!(
-            !task.domain.lock().pending_interactions.contains_key("tu-q-obs"),
-            "the question slot is resolved rather than parked, so the turn cannot hang",
+            domain.lock().pending_interactions.contains_key("tu-q-obs"),
+            "the question slot stays parked with no answerer",
         );
         assert!(
-            matches!(
-                observer.try_recv(),
-                Ok(frame)
-                    if matches!(&*frame.update, SessionUpdate::QuestionRequest { tool_id, .. } if tool_id == "tu-q-obs")
-            ),
-            "the observer is still delivered the question it cannot answer",
+            workspace.pending_asks(&key).iter().any(|ask| matches!(
+                ask,
+                crate::protocol::PendingAsk::Question(request)
+                    if request.tool_call.tool_call_id == "tu-q-obs"
+            )),
+            "a client that attaches later reads the ask from the seat",
         );
+
+        let _answerer = late.subscribe(SubscriberRole::Answering);
+        task.execute_command(Command::RespondQuestion {
+            key: key.clone(),
+            tool_id: "tu-q-obs".to_owned(),
+            outcome: forge_primitives::QuestionOutcome::Answered {
+                selected_option_ids: vec!["opt-1".to_owned()],
+                annotation: None,
+            },
+        });
         let cmd = tokio::time::timeout(std::time::Duration::from_secs(2), agent_rx.recv())
             .await
-            .expect("the cancelled outcome reaches the agent")
+            .expect("the answer reaches the agent")
             .expect("command channel open");
         assert!(
             matches!(
                 &cmd,
                 forge_primitives::AgentCommand::QuestionResponse {
                     tool_call_id,
-                    outcome: forge_primitives::QuestionOutcome::Cancelled,
+                    outcome: forge_primitives::QuestionOutcome::Answered { .. },
                     ..
                 } if tool_call_id == "tu-q-obs"
             ),
-            "the orphaned question answers the bridge Cancelled, got {cmd:?}",
+            "the parked oneshot releases with the person's answer, got {cmd:?}",
         );
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(200), agent_rx.recv())
-                .await
-                .is_err(),
-            "a second question response is the duplicate this catches",
+            !domain.lock().pending_interactions.contains_key("tu-q-obs"),
+            "and the question slot is consumed",
         );
     }
 
@@ -10105,6 +10100,122 @@ provider = "anthropic"
             vec!["stale_tool_id".to_owned()],
             "a dropped prompt is announced with its own tool id",
         );
+    }
+
+    /// **The replaced identity's tool asks end with it.** They sit in
+    /// registries keyed by the slot, so without the sweep the next occupant
+    /// would be drawn a config write, a Slack post, a vault call or a
+    /// document hand-off it never raised - and could answer it in the dead
+    /// occupant's name.
+    #[tokio::test]
+    async fn a_second_connected_drops_the_replaced_identitys_tool_asks() {
+        let (_dir, workspace) = workspace_with_account_config_dir("/tmp/forge-testing-stub");
+        let (handle, _commands_rx) = Agent::testing_stub();
+        let (_cmd_tx, command_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::protocol::Command>();
+        let update_tx = UpdateFanout::default();
+        let key = SessionSlot::from_str_for_test("tools-replaced");
+
+        let ask = forge_primitives::settings::SettingsWriteAsk {
+            id: uuid::Uuid::new_v4(),
+            edits: vec![forge_primitives::settings::SettingsWriteChange {
+                key: "sessions.heal_attempts".to_owned(),
+                current: serde_json::json!(2),
+                proposed: serde_json::json!(4),
+                unset: false,
+            }],
+        };
+        let (settings_id, mut settings) = workspace.register_settings_write(&key, ask);
+        let (vault_id, mut vault) = workspace.vault_asks.register(
+            &key,
+            forge_primitives::vault::VaultDraft::new(
+                forge_primitives::vault::VaultTool::Search,
+                "search for 'bank'",
+            ),
+            false,
+        );
+        let (_draft_id, mut slack) = workspace.slack.register_slack_draft(
+            &key,
+            forge_primitives::slack::SlackDraft {
+                id: uuid::Uuid::new_v4(),
+                workspace: "acme".to_owned(),
+                conversation: "C1".to_owned(),
+                conversation_label: "#acme".to_owned(),
+                thread_ts: None,
+                text: "hello".to_owned(),
+                operation: forge_primitives::slack::SlackDraftOperation::Post,
+                thread: None,
+                tagged: Vec::new(),
+            },
+        );
+        let (document_id, mut document) =
+            workspace.register_document_hand_off(&key, "/proj/docs/plan.md", true);
+        assert_eq!(workspace.pending_asks(&key).len(), 4, "the control: four asks are parked");
+
+        let mut task = SessionTask {
+            key: key.clone(),
+            handle: Arc::new(handle),
+            command_rx,
+            domain: Arc::new(Mutex::new(empty_domain())),
+            update_tx,
+            connected_once: true,
+            workspace: Arc::downgrade(&workspace),
+            compaction_count: 0,
+            successor: None,
+            teardown_done: None,
+        };
+        task.translate_event(AgentEvent::Connected {
+            session_id: "successor-uuid".to_owned(),
+            cwd: "/proj".to_owned(),
+            current_model: forge_primitives::CurrentModel {
+                resolved_id: "claude".to_owned(),
+                display_name_short: "claude".to_owned(),
+                display_name_long: "claude".to_owned(),
+                requested_id: None,
+                catalog_id: None,
+                supports_effort: false,
+                supported_effort_levels: Vec::new(),
+                supports_auto_mode: None,
+                supports_adaptive_thinking: None,
+                is_authoritative: true,
+            },
+            available_models: Vec::new(),
+            mode: None,
+            history_updates: None,
+            compaction_count: 0,
+        });
+
+        assert!(workspace.pending_asks(&key).is_empty(), "the successor inherits nothing");
+        assert!(!workspace.settings_write_waiting(settings_id, &key), "the write is gone");
+        assert!(!workspace.vault_asks.is_waiting(vault_id, &key), "the vault call is gone");
+        assert!(!workspace.document_handoff_waiting(document_id, &key), "the hand-off is gone");
+        assert_eq!(workspace.slack.held_drafts().len(), 0, "the draft is gone");
+        for (ended, name) in [
+            (
+                matches!(
+                    settings.try_recv(),
+                    Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+                ),
+                "settings write",
+            ),
+            (
+                matches!(vault.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Closed)),
+                "vault call",
+            ),
+            (
+                matches!(slack.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Closed)),
+                "Slack draft",
+            ),
+            (
+                matches!(
+                    document.try_recv(),
+                    Ok(forge_primitives::document::DocumentHandOffEnding::Abandoned)
+                ),
+                "document hand-off",
+            ),
+        ] {
+            assert!(ended, "the dead occupant's blocked {name} handler is released");
+        }
     }
 
     /// First-Connected drains the slot's parked peer prompts in FIFO

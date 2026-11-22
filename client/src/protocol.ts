@@ -319,10 +319,11 @@ export type ClientMessage =
       /**
        * Whether this client can answer the prompts it is shown.
        *
-       * Off unless the client says otherwise, because the core parks a turn
-       * on the reply of whoever registered as answering, so a client counted
-       * as able to answer a prompt it cannot display hangs the turn rather
-       * than failing it. It is declared on the FIRST subscribe and stands
+       * Off unless the client says otherwise. Every prompt reaches every
+       * subscriber and a permission, question or tool ask parks for the
+       * person whoever is attached, so declaring nothing only means this
+       * client is not handed the browser or terminal hand-offs that need a
+       * view to draw them. It is declared on the FIRST subscribe and stands
        * for the connection.
        */
       answering: boolean;

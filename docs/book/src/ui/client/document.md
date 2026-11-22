@@ -59,8 +59,8 @@ which reach the agent verbatim with the answer, and the review the finish
 filed; an empty press on send feedback draws the requirement and sends
 nothing rather than disabling the button.
 A detached client leaves the call parked, and the ask is re-readable when a
-client returns; only the waiter's own drop abandons it. A forge with no
-client attached never parks at all: the tool answers that nothing can open.
+client returns; the same holds for a hand-off raised with no client
+attached at all. Only the waiter's own drop abandons it.
 
 **The loop is the shipped text's.** The tool description and the session
 conduct block both state it: feedback means revise the document and hand it

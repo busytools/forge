@@ -30,9 +30,7 @@ pub(crate) enum SettingsError {
     ForeignOrg { key: String, org: String, caller_org: String },
     /// The key, value or batch was refused before any reader was asked.
     Wanted(String),
-    /// No client is attached to answer the approval prompt.
-    NoReader,
-    /// The approval prompt closed without an answer.
+    /// The approval prompt was let go without an answer.
     Abandoned,
     /// The reader approved but the write did not land.
     Refused(String),
@@ -59,11 +57,9 @@ impl SettingsError {
                  report the need to your reader instead"
             ),
             Self::Wanted(message) => message.clone(),
-            Self::NoReader => "no client is attached to approve a configuration write, so \
-                               nothing was written; the write needs the reader at a client"
-                .to_owned(),
             Self::Abandoned => {
-                "the approval prompt closed without an answer; nothing was written".to_owned()
+                "the session went away before the approval prompt was answered; nothing was written"
+                    .to_owned()
             }
             Self::Refused(message) => {
                 format!("the write was approved but did not land: {message}")
@@ -255,10 +251,7 @@ impl ProdSettingsFacade {
         })?;
 
         let ask = SettingsWriteAsk { id: Uuid::new_v4(), edits: changes };
-        let (id, decision, answerable) = ws.register_settings_write(caller, ask);
-        if !answerable {
-            return Err(SettingsError::NoReader);
-        }
+        let (id, decision) = ws.register_settings_write(caller, ask);
         // The guard outlives the await: dropping the future (a cancelled
         // tool call, a session that died) settles the registry as abandoned
         // rather than leaving the prompt to be answered after its asker is
@@ -810,19 +803,35 @@ provider = "anthropic"
         );
     }
 
-    /// No client to answer: the write fails closed and nothing is written.
+    /// **A write with no reader waits for one.** The registry keeps it, the
+    /// seat's `pending_asks` read carries it to a client that attaches
+    /// later, and that client's approval is what applies it.
     #[tokio::test]
-    async fn a_write_with_no_reader_fails_closed() {
+    async fn a_write_with_no_reader_waits_for_one() {
         let (ws, _dir) = fixture();
 
-        let error = facade(&ws)
-            .set(&caller(), vec![item("orgs.Default.projects.forge.max_workers", json!(4))])
-            .await
-            .expect_err("no reader means no write");
+        let task = tokio::spawn({
+            let ws = Arc::clone(&ws);
+            async move {
+                facade(&ws)
+                    .set(&caller(), vec![item("orgs.Default.projects.forge.max_workers", json!(4))])
+                    .await
+            }
+        });
+        let id = wait_for_write(&ws).await;
+        assert!(
+            ws.pending_asks(&caller()).iter().any(|waiting| matches!(
+                waiting,
+                forge_primitives::PendingAsk::SettingsWrite(write) if write.id == id
+            )),
+            "a client that attaches after the raise reads the write",
+        );
 
-        assert_eq!(error, SettingsError::NoReader);
-        assert!(ws.settings_writes.lock().is_empty());
-        assert_eq!(read_config(&ws), CONFIG, "nothing was written");
+        let _answerer = ws.subscribe_answerer();
+        assert!(ws.resolve_settings_write(id, &caller(), true));
+        let outcome = task.await.expect("no panic").expect("the write applies");
+        assert!(matches!(outcome, SettingsWriteOutcome::Applied { .. }));
+        assert!(read_config(&ws).contains("max_workers"), "the write landed: {}", read_config(&ws));
     }
 
     /// A write shown against one file does not land on a file that moved

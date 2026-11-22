@@ -234,8 +234,8 @@ impl Workspace {
     }
 
     /// How many subscribers could answer a prompt right now. Test-only: the
-    /// role decides whether the core parks a turn on a reply, and a test that
-    /// watches a client declare it has nothing else to read.
+    /// role decides whether a browser or terminal hand-off may raise, and a
+    /// test that watches a client declare it has nothing else to read.
     #[cfg(any(test, feature = "testing"))]
     pub fn test_answering_count(&self) -> usize {
         self.update_tx.answering_count()
@@ -499,7 +499,6 @@ impl Workspace {
             live_seats_lock: std::sync::Mutex::new(()),
             live_seats_generation: std::sync::atomic::AtomicU64::new(0),
             live_seats_gate: Mutex::new(None),
-            attached_clients: std::sync::atomic::AtomicUsize::new(0),
             document_handoffs,
             dictate_catalogue: Mutex::new(crate::catalogue::CatalogueState::default()),
             dictate_install: Mutex::new(crate::install::InstallState::default()),
@@ -1130,7 +1129,6 @@ impl Workspace {
             }
             PendingInteractionKind::DocumentHandOff => {
                 // The registration parks the ask and takes its number.
-                self.note_client_attached();
                 for _ in 0..count {
                     let _ = self.register_document_hand_off(slot, TEST_DOCUMENT_PATH, true);
                 }

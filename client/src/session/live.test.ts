@@ -804,8 +804,8 @@ describe('the session page over a socket', () => {
     // **And the one subscribe is the page's own role.** Nothing else opens a
     // subscription for the seat - the conversation only folds its frames - so
     // the page that can answer is what opens it, as itself. A subscription
-    // opened as an observer first would cancel every prompt the page could
-    // have drawn at birth.
+    // opened as an observer first would leave this page unhanded a browser
+    // or terminal hand-off raised on the seat.
     expect(
       seatSubscribe()?.answering,
       'the seat was subscribed under a weaker role than the page declares',
@@ -1644,8 +1644,8 @@ describe('the session page over a socket', () => {
    * **A seat's role only ever rises, and a page that gains its dock later has
    * to say so.** Every seat the app makes is subscribed answering, so this is
    * the path a seat subscribed as an observer takes when a page with a dock
-   * arrives at it - and without it that page keeps the observer's role, which
-   * cancels every prompt it shows rather than hanging a turn.
+   * arrives at it - and without it that page keeps the observer's role, so a
+   * browser or terminal hand-off raised on the seat is not handed to it.
    */
   it('re-asks a seat under the answering role when a page arrives with a dock', async () => {
     await open(sessionFixture);

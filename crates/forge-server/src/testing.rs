@@ -212,9 +212,9 @@ impl Fleet {
     }
 
     /// How many subscribers could answer a prompt right now. The role decides
-    /// whether the core parks a turn on a reply rather than resolving it
-    /// `Cancelled`, and nothing on the wire reports it - so a test that watches
-    /// a client declare `answering` reads this.
+    /// whether a browser or terminal hand-off may raise rather than being
+    /// refused, and nothing on the wire reports it - so a test that watches a
+    /// client declare `answering` reads this.
     pub fn answering_count(&self) -> usize {
         self.workspace.test_answering_count()
     }

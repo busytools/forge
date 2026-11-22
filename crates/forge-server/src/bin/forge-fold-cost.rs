@@ -335,9 +335,9 @@ async fn attach(
     let mut socket = a_socket(args).await?;
     let opening = ClientMessage::Subscribe {
         what: Subject::Session(seat.clone()),
-        // Not answering: registering as one that can answer parks a turn on
-        // this client's reply, and a measurement must not change the thing it
-        // measures.
+        // Not answering: registering as one that can answer would hand this
+        // client the browser and terminal hand-offs, and a measurement must
+        // not change the thing it measures.
         answering: false,
         // Not hosting either, for the same reason.
         review: false,
