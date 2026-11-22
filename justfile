@@ -578,13 +578,19 @@ client-release version: sync-main client-release-deps
     # signs the bundle when APPLE_SIGNING_IDENTITY is set, and notarises when
     # APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID are set beside it.
     if [ -z "${APPLE_SIGNING_IDENTITY:-}" ]; then
+        # `|| true`: a locked keychain must not take the release down on an
+        # optional probe under `set -e`.
         APPLE_SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
-            | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)
-        export APPLE_SIGNING_IDENTITY
+            | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1 || true)
     fi
     if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+        # **Exported only when non-empty.** Tauri reads a set-but-empty
+        # variable as a real identity and runs `codesign -s ""`, which fails;
+        # the ad-hoc fallback needs the variable genuinely unset.
+        export APPLE_SIGNING_IDENTITY
         echo "[OK] signing the client with $APPLE_SIGNING_IDENTITY"
     else
+        unset APPLE_SIGNING_IDENTITY
         echo "[WARN] no Developer ID identity on this machine: the client stays ad-hoc signed" >&2
     fi
 

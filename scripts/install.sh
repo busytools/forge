@@ -19,6 +19,9 @@
 # Env overrides:
 #   FORGE_ZSH_COMPLETION_DIR    zsh completion dir   (default: ~/.zsh/completions)
 #   FORGE_INSTALL_BROWSER       0 skips the macOS browser stage (default: 1)
+#   FORGE_SIGN_IDENTITY         the codesigning identity (default: the first
+#                               Developer ID Application identity the machine
+#                               holds; with none, the binary stays ad-hoc)
 
 set -euo pipefail
 
@@ -131,6 +134,50 @@ run_binary() {
 run_binary "$STAGED_BIN" --version > /dev/null \
     || die "the staged binary does not start - run $STAGED_BIN directly for the loader's error"
 
+# **A stable code identity is what keeps macOS privacy grants across
+# updates.** An ad-hoc build gets a new cdhash on every install, so macOS
+# treats each one as a different app and every Full Disk Access grant has to
+# be given again; signing with a Developer ID makes the code requirement
+# stable, so the grant survives. **Signed in the staging tree, before the
+# live install is touched**, so a signing failure leaves the previous install
+# in place. A machine with no identity keeps working ad-hoc, and the log says
+# so rather than failing the install.
+if [ "$(uname -s)" = "Darwin" ]; then
+    sign_identity="${FORGE_SIGN_IDENTITY:-}"
+    if [ -z "$sign_identity" ]; then
+        # `|| true`: a locked or unavailable keychain makes this exit non-zero,
+        # and an optional probe must not take the install down under `set -e`.
+        sign_identity=$(security find-identity -v -p codesigning 2>/dev/null \
+            | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1 || true)
+    fi
+    if [ -n "$sign_identity" ]; then
+        # The libraries first: hardened runtime enforces library validation at
+        # load, so a signed binary beside an ad-hoc library cannot start. A
+        # symlink is skipped - codesign follows it and re-signs the target,
+        # which the real file's own pass already covers.
+        for lib in "$STAGING_ROOT/bin"/*.dylib; do
+            [ -e "$lib" ] || continue
+            [ -L "$lib" ] && continue
+            codesign --force --options runtime --timestamp --sign "$sign_identity" "$lib" \
+                >/dev/null 2>&1 \
+                || codesign --force --options runtime --timestamp=none --sign "$sign_identity" "$lib" \
+                || die "signing $lib with $sign_identity failed"
+        done
+        if codesign --force --options runtime --timestamp \
+            --sign "$sign_identity" "$STAGED_BIN" 2>/dev/null \
+            || codesign --force --options runtime --timestamp=none \
+                --sign "$sign_identity" "$STAGED_BIN"; then
+            log_success "signed the binary and its libraries with $sign_identity"
+        else
+            die "signing $STAGED_BIN with $sign_identity failed"
+        fi
+        run_binary "$STAGED_BIN" --version > /dev/null \
+            || die "the signed binary does not start - run $STAGED_BIN directly for the loader's error"
+    else
+        log_info "no Developer ID identity on this machine; the binary stays ad-hoc signed"
+    fi
+fi
+
 # The live install is replaced only now. Real files get a fresh inode through
 # a temp name and a rename, so a forge already running keeps its mapped copy;
 # the SONAME and link names are repointed after them; the binary follows by
@@ -152,42 +199,6 @@ for staged in "$FORGE_TRANSCRIBE_LIBS"/*; do
 done
 cp "$STAGED_BIN" "$FORGE_BIN_DIR/.forge.new"
 mv -f "$FORGE_BIN_DIR/.forge.new" "$FORGE_BIN"
-# **A stable code identity is what keeps macOS privacy grants across
-# updates.** An ad-hoc build gets a new cdhash on every install, so macOS
-# treats each one as a different app and every Full Disk Access grant has to
-# be given again; signing with a Developer ID makes the code requirement
-# stable, so the grant survives. A machine with no identity keeps working
-# ad-hoc, and the log says so rather than failing the install.
-if [ "$(uname -s)" = "Darwin" ]; then
-    sign_identity="${FORGE_SIGN_IDENTITY:-}"
-    if [ -z "$sign_identity" ]; then
-        sign_identity=$(security find-identity -v -p codesigning 2>/dev/null \
-            | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)
-    fi
-    if [ -n "$sign_identity" ]; then
-        # **The shipped dylibs first, then the binary.** Hardened runtime
-        # enforces library validation: a signed binary refuses to load a
-        # dylib whose Team ID differs, and the libraries arrive ad-hoc. The
-        # order matters - signing the binary alone leaves it unable to start.
-        for lib in "$FORGE_BIN_DIR"/*.dylib; do
-            [ -e "$lib" ] || continue
-            codesign --force --options runtime --timestamp --sign "$sign_identity" "$lib" \
-                >/dev/null 2>&1 \
-                || codesign --force --options runtime --timestamp=none --sign "$sign_identity" "$lib" \
-                || die "signing $lib with $sign_identity failed"
-        done
-        if codesign --force --options runtime --timestamp \
-            --sign "$sign_identity" "$FORGE_BIN" 2>/dev/null \
-            || codesign --force --options runtime --timestamp=none \
-                --sign "$sign_identity" "$FORGE_BIN"; then
-            log_success "signed $FORGE_BIN and its libraries with $sign_identity"
-        else
-            die "signing $FORGE_BIN with $sign_identity failed"
-        fi
-    else
-        log_info "no Developer ID identity on this machine; $FORGE_BIN stays ad-hoc signed"
-    fi
-fi
 run_binary "$FORGE_BIN" --version > /dev/null \
     || die "the installed binary does not start - run $FORGE_BIN directly for the loader's error"
 # Drop a library this build no longer ships, dangling links included. The
