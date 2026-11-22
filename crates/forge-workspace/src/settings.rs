@@ -1014,6 +1014,12 @@ const SERVER_KEYS: &[ConfigKey] = &[
         rows: |config| vec![number("server.tool_record_cap_kb", config.server.tool_record_cap_kb)],
     },
     ConfigKey {
+        path: "server.startup_gate",
+        area: "server",
+        class: EffectClass::Restart,
+        rows: |config| vec![text_set("server.startup_gate", config.server.startup_gate.clone())],
+    },
+    ConfigKey {
         path: "browser.fps",
         area: "server",
         class: EffectClass::NextSession,
@@ -1998,6 +2004,7 @@ no_reset_cooldown_secs = 20
 enabled = true
 port = 8790
 bind = "127.0.0.1"
+startup_gate = "/opt/forge/gate.sh"
 first_frame_cap_kb = 64
 more_page_cap_kb = 64
 tool_record_cap_kb = 8
@@ -2622,7 +2629,11 @@ models = ["m"]
             .replace("auto_update = true", "auto_update = false")
             .replace("https://gotify.test", "https://gotify.example")
             .replace("shell = \"/bin/zsh\"", "shell = \"/bin/bash\"")
-            .replace("idle_minutes = 15", "idle_minutes = 20");
+            .replace("idle_minutes = 15", "idle_minutes = 20")
+            .replace(
+                "startup_gate = \"/opt/forge/gate.sh\"",
+                "startup_gate = \"/opt/forge/next-gate.sh\"",
+            );
         let next = load(&changed);
         let reload = diff(&previous, &next);
         assert!(
@@ -2644,6 +2655,15 @@ models = ["m"]
         assert!(
             !reload.changed.iter().any(|key| key == "server.port"),
             "the port is not live: {reload:?}",
+        );
+        assert!(
+            reload.restart_only.iter().any(|key| key == "server.startup_gate"),
+            "the gate runs only on the boot path, so an edit needs a restart: {reload:?}",
+        );
+        assert!(
+            !reload.changed.iter().any(|key| key == "server.startup_gate"),
+            "an edited gate is never reported as applied, because it is not run again: \
+             {reload:?}",
         );
         assert!(
             !reload.changed.iter().any(|key| key.contains("plugins")),

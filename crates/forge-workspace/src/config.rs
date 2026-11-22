@@ -1301,6 +1301,18 @@ fn resolve_server(
     gateway_port: u16,
     path: &Path,
 ) -> Result<ServerConfig, WorkspaceError> {
+    // **The gate is validated even when the socket is disabled.** It runs on
+    // the boot path whatever the listener does, and a relative path would
+    // resolve against the launch directory - a different program depending
+    // on where forge started, which hard rule 14 refuses.
+    if let Some(value) = server.startup_gate.as_deref()
+        && !Path::new(value).is_absolute()
+    {
+        return Err(WorkspaceError::ServerStartupGateNotAbsolute {
+            path: path.to_path_buf(),
+            value: value.to_owned(),
+        });
+    }
     if !server.enabled {
         return Ok(server);
     }
@@ -2464,6 +2476,48 @@ max_size_mib = 0
         assert!(!config.server.enabled);
         assert_eq!(config.server.port, 9100);
         assert_eq!(config.server.bind, "10.0.0.5".parse::<IpAddr>().expect("ip"));
+    }
+
+    /// The startup gate is one string the boot runs before anything binds;
+    /// absent is the default and means no gate.
+    #[test]
+    fn server_section_reads_its_startup_gate() {
+        let dir = tempdir().expect("tempdir");
+        write_config(
+            dir.path(),
+            &format!("{}\n[server]\nstartup_gate = \"/opt/forge/gate.sh\"\n", minimal_config()),
+        );
+        let config = load_from_dir(dir.path()).expect("section loads");
+        assert_eq!(config.server.startup_gate.as_deref(), Some("/opt/forge/gate.sh"));
+    }
+
+    /// **A gate path is absolute or the load fails.** The boot executes it
+    /// directly, so a relative value would name whatever the launch
+    /// directory happened to hold; a disabled socket does not exempt it,
+    /// because the gate runs whatever the listener does.
+    #[test]
+    fn a_startup_gate_that_is_not_an_absolute_path_fails_the_load() {
+        for (socket, gate) in [
+            ("true", ""),
+            ("true", "   "),
+            ("true", "scripts/gate.sh"),
+            ("true", "forge-startup-gate.sh"),
+            ("false", "scripts/gate.sh"),
+        ] {
+            let dir = tempdir().expect("tempdir");
+            write_config(
+                dir.path(),
+                &format!(
+                    "{}\n[server]\nenabled = {socket}\nstartup_gate = \"{gate}\"\n",
+                    minimal_config()
+                ),
+            );
+            let err = load_from_dir(dir.path()).expect_err("a relative gate must not load");
+            assert!(
+                err.to_string().contains("startup_gate"),
+                "the error names the key for {gate:?} with the socket {socket}: {err}",
+            );
+        }
     }
 
     /// An absent `[client]` leaves every name unset, and unset means the
