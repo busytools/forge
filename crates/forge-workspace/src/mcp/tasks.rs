@@ -74,6 +74,15 @@ fn status_str(status: TaskStatus) -> &'static str {
     }
 }
 
+/// The artifact a caller read before links existed: the first
+/// pull-request or path link, by its label when it has one.
+fn artifact(task: &Task) -> Option<&str> {
+    task.links
+        .iter()
+        .find(|l| matches!(l.kind, LinkKind::Pr | LinkKind::Path))
+        .map(|l| l.label.as_deref().unwrap_or(l.target.as_str()))
+}
+
 /// Readable JSON for one task (the tool-output shape the LLM sees).
 /// Absent optional fields are omitted rather than sent as null.
 fn task_to_json(task: &Task) -> serde_json::Value {
@@ -86,18 +95,10 @@ fn task_to_json(task: &Task) -> serde_json::Value {
     // caller that reads the field back and filters on it would otherwise
     // find none, and a session actually labelled `unclaimed` would read the
     // same as nobody.
-    //
-    // The artifact a caller read before links existed: the first
-    // pull-request or path link, by its label when it has one.
-    let artifact = task
-        .links
-        .iter()
-        .find(|l| matches!(l.kind, LinkKind::Pr | LinkKind::Path))
-        .map(|l| l.label.clone().unwrap_or_else(|| l.target.clone()));
     for (key, value) in [
         ("active_form", task.active_form.as_deref()),
         ("detail", task.detail.as_deref()),
-        ("artifact", artifact.as_deref()),
+        ("artifact", artifact(task)),
         ("estimate", task.estimate.as_ref().map(|e| e.words.as_str())),
         ("parent", task.parent.as_ref().map(TaskId::as_str)),
         ("owner", task.owner.as_ref().map(SessionSlot::label)),
@@ -462,6 +463,8 @@ struct ListArgs {
     status: Option<TaskStatus>,
     #[serde(default)]
     ready: Option<bool>,
+    #[serde(default)]
+    detail: Option<bool>,
 }
 
 fn waiting_kind_str(kind: WaitingKind) -> &'static str {
@@ -470,6 +473,25 @@ fn waiting_kind_str(kind: WaitingKind) -> &'static str {
         WaitingKind::Dependency => "dependency",
         WaitingKind::Resource => "resource",
     }
+}
+
+/// The board's marks in the order the description names them.
+fn mark_names(marks: crate::board::Marks) -> Vec<&'static str> {
+    let mut names = Vec::new();
+    for (on, name) in [
+        (marks.ready, "ready"),
+        (marks.in_review, "in_review"),
+        (marks.overdue, "overdue"),
+        (marks.no_movement, "no_movement"),
+        (marks.waiting_too_long, "waiting_too_long"),
+        (marks.stale, "stale"),
+        (marks.to_close, "to_close"),
+    ] {
+        if on {
+            names.push(name);
+        }
+    }
+    names
 }
 
 /// One board row as the tool output reads it: the record, what the board
@@ -484,35 +506,66 @@ fn board_row_to_json(row: &crate::board::BoardRow) -> serde_json::Value {
         "updated_ago".to_owned(),
         serde_json::json!(crate::board::fmt_secs(row.updated_secs_ago)),
     );
-    let mut marks: Vec<&str> = Vec::new();
-    if row.marks.ready {
-        marks.push("ready");
-    }
-    if row.marks.in_review {
-        marks.push("in_review");
-    }
-    if row.marks.overdue {
-        marks.push("overdue");
-    }
-    if row.marks.no_movement {
-        marks.push("no_movement");
-    }
-    if row.marks.waiting_too_long {
-        marks.push("waiting_too_long");
-    }
-    if row.marks.stale {
-        marks.push("stale");
-    }
-    if row.marks.to_close {
-        marks.push("to_close");
-    }
-    map.insert("marks".to_owned(), serde_json::json!(marks));
+    map.insert("marks".to_owned(), serde_json::json!(mark_names(row.marks)));
     if let Some(wait) = &row.task.waiting_on {
         map.insert(
             "waiting".to_owned(),
             serde_json::json!({
                 "kind": wait.kind.map(waiting_kind_str),
                 "detail": wait.detail,
+                "on": wait.on.as_ref().map(TaskId::as_str),
+                "verification": wait.verification,
+                "parked": wait.parked,
+            }),
+        );
+    }
+    if let Some((done, total)) = row.rollup {
+        map.insert("rollup".to_owned(), serde_json::json!(format!("{done}/{total}")));
+    }
+    if let Some(parent_subject) = &row.parent_subject {
+        map.insert("parent_subject".to_owned(), serde_json::json!(parent_subject));
+    }
+    serde_json::Value::Object(map)
+}
+
+/// One board row at the size a first orientation reads it: identity,
+/// live state and the derived facts, without the prose or the raw
+/// timestamps. `tasks__list {detail: true}` returns
+/// [`board_row_to_json`] instead.
+fn board_row_compact(row: &crate::board::BoardRow) -> serde_json::Value {
+    let task = &row.task;
+    let mut map = serde_json::Map::new();
+    map.insert("id".to_owned(), serde_json::json!(task.id.as_str()));
+    map.insert("subject".to_owned(), serde_json::json!(task.subject));
+    map.insert("status".to_owned(), serde_json::json!(status_str(task.status)));
+    for (key, value) in [
+        ("artifact", artifact(task)),
+        ("estimate", task.estimate.as_ref().map(|e| e.words.as_str())),
+        ("parent", task.parent.as_ref().map(TaskId::as_str)),
+        ("owner", task.owner.as_ref().map(SessionSlot::label)),
+    ] {
+        if let Some(value) = value {
+            map.insert(key.to_owned(), serde_json::json!(value));
+        }
+    }
+    for (key, value) in
+        [("verify", task.verify.map(verify_str)), ("reserved", task.reserved.map(|_| "user"))]
+    {
+        if let Some(value) = value {
+            map.insert(key.to_owned(), serde_json::json!(value));
+        }
+    }
+    map.insert("worked".to_owned(), serde_json::json!(crate::board::fmt_secs(row.worked_secs)));
+    map.insert(
+        "updated_ago".to_owned(),
+        serde_json::json!(crate::board::fmt_secs(row.updated_secs_ago)),
+    );
+    map.insert("marks".to_owned(), serde_json::json!(mark_names(row.marks)));
+    if let Some(wait) = &task.waiting_on {
+        map.insert(
+            "waiting".to_owned(),
+            serde_json::json!({
+                "kind": wait.kind.map(waiting_kind_str),
                 "on": wait.on.as_ref().map(TaskId::as_str),
                 "verification": wait.verification,
                 "parked": wait.parked,
@@ -535,13 +588,18 @@ impl Tool for List {
     }
 
     fn description(&self) -> &'static str {
-        "List the board of YOUR project: every live row as a whole record, plus what the board \
-         derives - `worked` time against the estimate, how long since any touch, and the marks \
-         (ready, in_review, overdue, no_movement, waiting_too_long, stale, to_close) - under a \
-         dated line, so no session does date arithmetic. Narrow with `owner` (a session label), \
-         `parent` (a task id), `status`, or `ready` (true = pending with nothing waiting on \
-         it and not reserved for the user; ownership is NOT part of the mark, so read `owner` \
-         too when the question is an unowned row). \
+        "List the board of YOUR project: every live row, compact by default - id, subject, \
+         status, owner, parent, estimate, artifact, verify and reserved state, plus what the \
+         board derives: `worked` time against the estimate, how long since any touch, the \
+         marks (ready, in_review, overdue, no_movement, waiting_too_long, stale, to_close), \
+         the wait it is on, and a parent's rollup - under a dated line, so no session does \
+         date arithmetic. A compact row leaves the prose behind, which is what lets a first \
+         orientation read fit; pass `detail: true` for each row's whole record - the `detail` \
+         prose, `active_form`, the wait's detail words, any attestation quote, and the \
+         created/updated timestamps. Narrow with `owner` (a session label), `parent` (a task \
+         id), `status`, or `ready` (true = pending with nothing waiting on it and not \
+         reserved for the user; ownership is NOT part of the mark, so read `owner` too when \
+         the question is an unowned row). \
          An empty array means your project has no tasks in flight, or that your project could \
          not be resolved, or that this run could not read its stored tasks. Any session in the \
          project may call this."
@@ -572,6 +630,14 @@ impl Tool for List {
                                     user. Ownership is not part of the mark: read `owner` \
                                     for an unowned row.",
                 },
+                "detail": {
+                    "type": "boolean",
+                    "description": "Optional. Set true to return each row's whole record \
+                                    instead of the compact row: the `detail` prose, \
+                                    `active_form`, the wait's detail words, any attestation \
+                                    quote, and the created/updated timestamps. Off by \
+                                    default; read the compact row first.",
+                },
             },
             "additionalProperties": false,
         })
@@ -590,7 +656,14 @@ impl Tool for List {
             args.status,
             args.ready,
         );
-        let arr: Vec<serde_json::Value> = rows.iter().map(board_row_to_json).collect();
+        // Compact is the default because a first orientation read has to
+        // fit (#3030): the board's prose is most of its weight, and the
+        // whole record is an explicit ask.
+        let full = args.detail.unwrap_or(false);
+        let arr: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|row| if full { board_row_to_json(row) } else { board_row_compact(row) })
+            .collect();
         match serde_json::to_string_pretty(&serde_json::Value::Array(arr)) {
             Ok(json) => ToolOutput::text(format!("now {}\n{json}", fmt_rfc3339(SystemTime::now()))),
             Err(err) => tool_error(format!("task-list serialization failed: {err}")),
@@ -928,7 +1001,7 @@ mod tests {
     use super::*;
     use crate::mcp::tasks::facade::{MockTasksFacade, RemovedTaskTree};
     use crate::mcp::test_support::text_of;
-    use forge_primitives::tasks::{Estimate, TaskLink};
+    use forge_primitives::tasks::{Attestation, Estimate, TaskLink, Waiting};
 
     fn lead_slot() -> SessionSlot {
         SessionSlot::lead("TestOrg", "myproj")
@@ -1936,6 +2009,114 @@ mod tests {
             history: Vec::new(),
             history_total: 0,
         }
+    }
+
+    /// A row carrying every prose field the compact default is meant to
+    /// leave behind, so a compact row that quietly kept one fails.
+    fn rich_row() -> crate::board::BoardRow {
+        let mut row = board_row(Task {
+            active_form: Some("Merging peers and workers".to_owned()),
+            detail: Some("the long why a sibling reads in full".to_owned()),
+            estimate: Some(Estimate { words: "2h".to_owned(), secs: 7_200 }),
+            parent: Some(TaskId::from("epic")),
+            owner: Some(SessionSlot::worker("TestOrg", "myproj", "w-1")),
+            verify: Some(forge_primitives::tasks::Verify::User),
+            waiting_on: Some(Waiting {
+                kind: Some(WaitingKind::Decision),
+                detail: Some("the words the user answers".to_owned()),
+                on: None,
+                verification: true,
+                parked: false,
+                since: None,
+            }),
+            attested: Some(Attestation {
+                evidence: "looks good".to_owned(),
+                at: SystemTime::UNIX_EPOCH,
+            }),
+            ..sample_task()
+        });
+        row.worked_secs = 3_600;
+        row.updated_secs_ago = 60;
+        row
+    }
+
+    /// The rows array under the dated header line.
+    fn listed_json(out: &ToolOutput) -> serde_json::Value {
+        let text = text_of(out);
+        let body = text.split_once('\n').expect("a header line then the rows").1;
+        serde_json::from_str(body).expect("the body is the rows array")
+    }
+
+    /// The first orientation call has to fit (#3030): by default a row is
+    /// the identity and live state a session acts on, and the prose is
+    /// what `detail: true` is for.
+    #[tokio::test]
+    async fn the_list_returns_compact_rows_by_default() {
+        let facade = Arc::new(MockTasksFacade::default());
+        facade.rows.lock().push(rich_row());
+        let out = List { facade, slot: lead_slot() }.call(input(serde_json::json!({}))).await;
+        assert!(!out.is_error, "list succeeds: {out:?}");
+        let json = listed_json(&out);
+        let row = &json[0];
+        for (key, value) in [
+            ("id", "t-1"),
+            ("subject", "Merge peers and workers"),
+            ("status", "pending"),
+            ("owner", "w-1"),
+            ("parent", "epic"),
+            ("estimate", "2h"),
+            ("worked", "1h"),
+            ("updated_ago", "1m"),
+        ] {
+            assert_eq!(row[key], value, "the compact row carries {key}: {row}");
+        }
+        assert_eq!(row["waiting"]["kind"], "decision", "the wait's state stays: {row}");
+        assert_eq!(row["waiting"]["verification"], true, "including the look gate: {row}");
+        for prose in ["detail", "active_form", "attested", "created_at", "updated_at"] {
+            assert!(
+                row.get(prose).is_none(),
+                "the compact row leaves {prose} for `detail: true`: {row}",
+            );
+        }
+        assert!(row["waiting"].get("detail").is_none(), "the wait's words are prose too: {row}");
+    }
+
+    /// `detail: true` is the whole record, byte for byte what the board
+    /// already drew - the escape hatch, not a second shape to learn.
+    #[tokio::test]
+    async fn detail_returns_each_rows_whole_record() {
+        let facade = Arc::new(MockTasksFacade::default());
+        facade.rows.lock().push(rich_row());
+        let out = List { facade, slot: lead_slot() }
+            .call(input(serde_json::json!({ "detail": true })))
+            .await;
+        assert!(!out.is_error, "list succeeds: {out:?}");
+        let json = listed_json(&out);
+        assert_eq!(
+            json[0],
+            board_row_to_json(&rich_row()),
+            "the opt-in returns the whole record, not a trimmed variant",
+        );
+    }
+
+    /// The compact default and its escape hatch are shipped text a
+    /// session reads as it reaches for the tool, so the lever is named
+    /// where the caller meets it.
+    #[test]
+    fn the_list_description_states_the_compact_default_and_the_detail_opt_in() {
+        let tool = List { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
+        for clause in ["compact by default", "`detail: true`"] {
+            assert!(
+                tool.description().contains(clause),
+                "the list description states ({clause}): {}",
+                tool.description(),
+            );
+        }
+        let detail = tool.input_schema()["properties"]["detail"]["description"]
+            .as_str()
+            .expect("the opt-in carries a description")
+            .to_owned();
+        assert!(detail.contains("whole record"), "the opt-in says what it returns: {detail}");
     }
 
     /// The list opens with the date, so a session reading it never does
