@@ -635,14 +635,20 @@ client-release version: sync-main client-release-deps
         codesign --force --options runtime --timestamp \
             --entitlements client/src-tauri/entitlements.plist \
             --sign "$APPLE_SIGNING_IDENTITY" "$built"
+        # The seal is read back before the tarball is packed from the bundle:
+        # the re-sign is what covers the embedded profile, so a broken seal
+        # must stop the release here rather than at the first launch.
+        codesign --verify --deep --strict "$built"
 
         # **Notarisation runs after this recipe, not inside the build.** Tauri
         # 2.12 notarises and staples inside `bundle_project` when APPLE_ID,
-        # APPLE_PASSWORD and APPLE_TEAM_ID are set, and the embed and re-sign
-        # above invalidate that staple. When notarisation is turned on, either
-        # build with `--skip-stapling` and notarise after this recipe, or accept
-        # that the shipped app's staple is stale. It does not fire today: no
-        # APPLE_* variables are set on this machine.
+        # APPLE_PASSWORD and APPLE_TEAM_ID are set - the APPLE_* variables
+        # turn it on, `--skip-stapling` only omits the staple - and the embed
+        # and re-sign above invalidate that staple. A notarised build
+        # therefore builds with `--skip-stapling` and notarises the final
+        # signature after this recipe, or accepts that the shipped app's
+        # staple is stale. It does not fire today: no APPLE_* variables are
+        # set on this machine.
 
         # **The updater tarball must carry the re-signed app.** Tauri creates
         # the tarball during the build, before the profile is embedded and the
@@ -658,6 +664,11 @@ client-release version: sync-main client-release-deps
         # expand `~`, so a leading `~/` is replaced with `$HOME` first. The
         # tarball argument is absolute because `npm --prefix client run` runs
         # with `client/` as its cwd.
+        #
+        # **The env variable must be absent for this call.** clap reads
+        # `TAURI_SIGNING_PRIVATE_KEY` as `--private-key` and refuses it beside
+        # `--private-key-path` (exit 2), which would abort the release after
+        # the build, the embed and the re-sign. The password stays exported.
         key_file=$(sed -n 's/^keyFile=//p' "$up" 2>/dev/null || true)
         case "$key_file" in
             "~/"*) key_file="$HOME/${key_file#\~/}" ;;
@@ -665,9 +676,17 @@ client-release version: sync-main client-release-deps
         bundle_dir="$(cd "$(dirname "$built")" && pwd)"
         tarball="$bundle_dir/forge.app.tar.gz"
         rm -f "$tarball" "$tarball.sig"
-        tar -czf "$tarball" -C "$bundle_dir" forge.app
-        npm --prefix client run tauri -- signer sign --app-version "{{version}}" \
-            --private-key-path "$key_file" "$tarball"
+        # **No AppleDouble members.** macOS tar stores extended attributes
+        # (the real app's Info.plist carries com.apple.provenance) as `._`
+        # members and writes them first; tauri-plugin-updater extracts each
+        # entry with its first path component skipped, so a leading
+        # `._forge.app` yields an empty path, unpacks onto the temp dir itself
+        # and every desktop update fails. COPYFILE_DISABLE makes tar skip the
+        # metadata, giving the same 9-member layout Tauri's own tarball has.
+        COPYFILE_DISABLE=1 tar -czf "$tarball" -C "$bundle_dir" forge.app
+        env -u TAURI_SIGNING_PRIVATE_KEY \
+            npm --prefix client run tauri -- signer sign --app-version "{{version}}" \
+                --private-key-path "$key_file" "$tarball"
     fi
 
     got=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$built/Contents/Info.plist")
