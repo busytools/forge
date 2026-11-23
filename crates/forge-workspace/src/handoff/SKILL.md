@@ -77,15 +77,29 @@ line is what the next session actually sees; the file is only reachable through 
 
 A worker writes no index line: its file is its own seat's, reached by the worker itself.
 
-## Forge: close out and exit
+## Forge: hand over and exit
 
-When forge hands the seat over, three things happen on top of the steps above.
+When forge hands the seat over, these steps sit on top of the ones above.
 
-**Close out what is running.** Anything this session started and did not finish must not outlive
-it: a live sub-agent, a background command, a monitor, a process it spawned. For each one,
-record in memory what it is and how to resume it - the command, the id it ran under, where its
-output goes - then stop it. A successor that finds half-finished work and no record of the
-process that owns it cannot tell the two apart.
+**Capture the live state.** Before writing the note, list what this session started and what the
+project is still running, and put each one in the note with its id and how to resume it:
+
+- every live worker, from `agents__list`, by label and slot - resume it with
+  `agents__send_message`;
+- every subagent this session dispatched, by its task and its transcript - resume it with
+  `agents__spawn` and `resume_session`;
+- every running background command or monitor, by the command and where its output goes -
+  resume it by re-running the command;
+- every live cron, from `cron__list`, by id and next fire - it fires on its own, so name it
+  rather than restarting it;
+- every open board row, from `tasks__list`, by id and owner - the successor picks it up from
+  the row;
+- every worktree, from `git worktree list`, by path and branch - the successor enters it.
+
+**Hand over, do not stop.** A live process belongs to the successor now: do not kill it on the
+way out. Stopping it throws away the run it holds, and a restarted copy is not the same work. A
+process that cannot be resumed - a subagent whose transcript is gone, a command whose output
+nothing can read - is named as such with the reason, so the successor is not left expecting it.
 
 **Leave nothing unfinished unrecorded.** List what this session was expected to handle and could
 not finish in this turn - a blocked ask, a deferred fix, a call that was refused, a question left
@@ -95,6 +109,6 @@ where this one stopped; anything left out is lost when the turn ends.
 **Exit through the tool.** Forge takes the note as you wrote it - there are no headings to fill
 in, and your Step 2 document is the note. Write it where the seat section and Step 2 say, then
 pass the same text to
-`agents__handoff` as `brief` as the turn's last act. Memory first, then close out what is
+`agents__handoff` as `brief` as the turn's last act. Memory first, then hand over what is
 running, then the note. Do not call `agents__handoff` for any other reason - a handoff starts at
 `/handoff` or at the automatic trigger (fill or compaction).
