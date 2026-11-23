@@ -376,6 +376,16 @@ export type WorkRow =
   | ({ tag: 'nudge' } & NudgeLeaf)
   | ({ tag: 'procedure' } & ProcedureLeaf);
 
+/**
+ * What identifies a row: its own key, or a card's id under its own prefix.
+ *
+ * A card's key is its id's, which is why it takes a prefix: a card and a call
+ * share the list, and the prefix keeps the two namespaces apart.
+ */
+export function workRowKey(row: WorkRow): string {
+  return row.tag === 'card' ? `p-${row.card.id}` : row.key;
+}
+
 /** What one turn's hooks did. */
 export interface HookInfo {
   command: string;

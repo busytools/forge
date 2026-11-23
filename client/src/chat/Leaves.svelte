@@ -9,7 +9,7 @@
   import PeerRow from './PeerRow.svelte';
   import Procedure from './Procedure.svelte';
   import Thought from './Thought.svelte';
-  import type { WorkRow } from './units';
+  import { workRowKey, type WorkRow } from './units';
 
   /**
    * A stretch of the turn's work: every call, message and thought on its own
@@ -39,11 +39,6 @@
     onreadoutput?: ((callId: string) => void) | null;
   } = $props();
 
-  /** What identifies a row: its own key, or a card's id under its own prefix. */
-  function rowKey(row: WorkRow): string {
-    return row.tag === 'card' ? `p-${row.card.id}` : row.key;
-  }
-
   /** Whether a call's body is drawn without being asked for: the leaf's own rule. */
   function opens(call: ToolLeaf): boolean {
     return opensByDefault(call.name, call.body, call.decision);
@@ -51,7 +46,7 @@
 </script>
 
 <div class="leaves">
-  {#each rows as row (rowKey(row))}
+  {#each rows as row (workRowKey(row))}
     {#if row.tag === 'call'}
       <Call call={row.leaf} k={row.key} open={opens(row.leaf)} {turns} {onreadoutput} />
     {:else if row.tag === 'hook'}

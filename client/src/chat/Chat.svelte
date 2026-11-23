@@ -35,6 +35,7 @@
   import { glideTo as glideToward, wantsMotion } from './glide';
   import { echoes, ownWords } from './echoes.svelte';
   import { pinnedRow } from './pinnedRow.svelte';
+  import { chatRows, firstRowOf, rowOfKey, SPLIT_AT, type ChatRow } from './rows';
   import Turn from './Turn.svelte';
   import { turnOfDispatch } from './dispatch-jump';
   import { callRow, reachableIds, reveal, subagents } from './subagents.svelte';
@@ -297,6 +298,44 @@
   const stops = $derived(stopsOf(held.turns));
   /** The newest turn's key: the row the carried beat and the reader's echo ride. */
   const newest = $derived(newestTurn?.key ?? null);
+  /**
+   * How many messages a turn carries before the column folds it to see whether
+   * the list must take it apart.
+   *
+   * **Folding is not free and a page may hold megabytes of turns**, so the
+   * column does not fold every turn it holds: folding is what the turn's own
+   * component does when it is drawn, and the column only pays it early for a
+   * turn that could be taller than a reader scrolls in one pass. A turn under
+   * this is handed to the list whole, exactly as it always was.
+   *
+   * **Messages are the cheap proxy for rows**, and rows are what the split
+   * measures: a turn's rows are cut from its frames, so a turn of fewer
+   * frames than the split is a turn of few rows and is not worth folding to
+   * find out. The count costs nothing to read; counting rows costs the fold.
+   */
+  const FOLD_AT = SPLIT_AT;
+  /**
+   * The list's items: one per turn, except a turn too tall to draw whole,
+   * whose units become items of their own (`chat/rows.ts`).
+   *
+   * **A turn taller than any reader scrolls in one pass must not be one
+   * item**, because the list virtualises ITEMS: one 90,000-pixel turn is one
+   * item drawn in full whenever any part of it is on screen, which is the
+   * whole transcript of that page in the DOM at once, laid out on the main
+   * thread, and the black a reader meets scrolling up through it. Taken
+   * apart, the list draws the slice they are looking at and the rest stays
+   * data - what every other turn already gets.
+   *
+   * The fold handed here is the turn's own (`turnFold`), so a turn the list
+   * has taken apart is folded once per frame rather than once per item.
+   */
+  const rows = $derived(
+    chatRows(held.turns, (turn) =>
+      turn.messages.length < FOLD_AT
+        ? null
+        : turnFold(turn, slot, inFlight(turn), !inFlight(turn), stops),
+    ),
+  );
   /**
    * The row keys each turn has already shown, by the row's own `data-k`, and
    * the turns seen at all.
@@ -879,12 +918,19 @@
   /**
    * Record what a turn's row measures, so a row the send's pull-and-return
    * keeps mounted holds its own space while it draws nothing (#1890).
+   *
+   * **`foot` is what the turn's own height is, now that a tall turn is not one
+   * row.** A turn taken apart draws as several items and only its last one is
+   * where the turn ends, so that is the height the column keeps under the
+   * turn's key: the reserve a held row comes back at, the page's median and
+   * the follow's height term all still read one number per turn, and the one
+   * that moves as a live turn grows is the foot's.
    */
-  function measureTurn(node: HTMLElement, turn: HeldTurn): () => void {
+  function measureTurn(node: HTMLElement, key: string, foot: boolean): () => void {
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const height = entry.contentRect.height;
-        rowSizes.remember(turn.key, height);
+        if (foot) rowSizes.remember(key, height);
         // **The open's painted mark is the first row with a box** (#2733,
         // #2752). The drawn mark is the model and lands before this flush's
         // DOM exists, so only this one can say when a reader first had a row
@@ -895,7 +941,7 @@
         // its wrapper mounted and reserves a height while it draws nothing,
         // so it is skipped rather than read as the reader's first row. The
         // lookup runs only until this open has its mark.
-        if (!paintNoted && height > 0 && !turnIsHeld(turn.key)) {
+        if (!paintNoted && height > 0 && !turnIsHeld(key)) {
           paintNoted = true;
           notePainted();
         }
@@ -1418,8 +1464,10 @@
     // frame lands many times a second and a scroll height read per frame is
     // the cost #1710 removed. Only a held set over the window pays one.
     if (held.bytes <= HISTORY_WINDOW_BYTES) return;
+    // The list answers an ITEM, which is a turn except where a tall turn has
+    // been taken apart: the item names its own turn either way.
     const at = viewport === null || list === null ? null : list.findItemIndex(viewport.scrollTop);
-    working?.trim(at === null ? null : (held.turns[at]?.key ?? null));
+    working?.trim(at === null ? null : (rows[at]?.turn.key ?? null));
   }
 
   $effect(() => {
@@ -1821,12 +1869,14 @@
       // **The turn is read again in the frame it is scrolled in**: a prepend
       // can land between this schedule and its frame, and an index from the
       // earlier read would name a different turn.
-      const at = held.turns.findIndex((turn) => turnHasRow(turn, place.anchor.key));
-      if (at < 0) {
+      const turn = held.turns.find((one) => turnHasRow(one, place.anchor.key));
+      if (turn === undefined) {
         giveUpRestore();
         return;
       }
-      handle.scrollToIndex(at, { align: 'start' });
+      // The ITEM that draws the row, which a taken-apart turn's first item may
+      // be tens of thousands of pixels above.
+      handle.scrollToIndex(rowOfKey(rows, turn.key, place.anchor.key), { align: 'start' });
       restoreFrame = requestAnimationFrame(placeRestored);
     });
   });
@@ -1869,7 +1919,7 @@
         giveUpRestore();
         return;
       }
-      const at = held.turns.findIndex((one) => one.key === turn.key);
+      const at = rowOfKey(rows, turn.key, place.anchor.key);
       if (at >= 0) handle.scrollToIndex(at, { align: 'start' });
       restoreFrame = requestAnimationFrame(placeRestored);
       return;
@@ -2313,7 +2363,9 @@
    */
   function undrawnOverhang(): number {
     if (viewport === null || newest === null) return 0;
-    const wrapper = viewport.querySelector(`[data-t="${CSS.escape(newest)}"]`);
+    // The item that ENDS the turn: a turn taken apart is several items, and
+    // the foot is the last of them (`data-tend`), not the first.
+    const wrapper = viewport.querySelector(`[data-t="${CSS.escape(newest)}"][data-tend]`);
     const item = wrapper?.parentElement;
     const container = item?.parentElement;
     if (!(item instanceof HTMLElement) || !(container instanceof HTMLElement)) return 0;
@@ -2574,9 +2626,13 @@
     if (ask?.what === 'dispatch' && ask.call !== undefined) {
       const wanted = ask.call;
       const at = turnOfDispatch(held.turns, wanted);
-      if (at !== null) {
+      const turn = at === null ? undefined : held.turns[at];
+      if (turn !== undefined) {
         asking = false;
-        list?.scrollToIndex(at, { align: 'start' });
+        // The item that draws the dispatch's own call row: a taken-apart turn
+        // may hold it far below its first item, and landing on the turn's head
+        // would leave the reveal chasing a row the window never reaches.
+        list?.scrollToIndex(rowOfKey(rows, turn.key, `call-c-${wanted}`), { align: 'start' });
         // The row mounts with the turn, and a tall turn takes real time to
         // draw: the chase runs on a wall-clock budget rather than frames, so
         // a slow mount is not mistaken for a dispatch that is not there.
@@ -2645,9 +2701,12 @@
       return;
     }
     const at = latestCompaction(held.turns);
-    if (at !== null) {
+    const cut = at === null ? undefined : held.turns[at];
+    if (cut !== undefined) {
       asking = false;
-      list?.scrollToIndex(at, { align: 'start' });
+      // The cut is a row at the turn's edge, so the turn's first item is the
+      // item that draws it.
+      list?.scrollToIndex(firstRowOf(rows, cut.key), { align: 'start' });
       return;
     }
     if (!loadOlder(MORE_TURNS)) asking = false;
@@ -3341,8 +3400,8 @@
     <VList
       class="conv"
       style="display:flex;flex-direction:column"
-      data={held.turns}
-      getKey={(turn: HeldTurn) => turn.key}
+      data={rows}
+      getKey={(row: ChatRow<HeldTurn>) => row.key}
       itemProps={() => ({
         // **A row the list has not measured is drawn, not hidden.** virtua
         // paints the slot and sets `visibility: hidden` until a row reports its
@@ -3359,28 +3418,38 @@
       {@attach scrollViewport}
       bind:this={list}
     >
-      {#snippet children(turn: HeldTurn)}
+      {#snippet children(row: ChatRow<HeldTurn>)}
         <!-- `data-t` names the wrapper for the turn it draws, which is how the
              foot's reservation check finds the newest row's box - the row's own
-             keys ride its units, and a held turn has none. -->
+             keys ride its units, and a held turn has none. Every item of a
+             taken-apart turn carries it, so a row's turn is readable wherever
+             it is; `data-tend` marks the one that ENDS the turn, which is the
+             only item whose box is the turn's foot. -->
         <div
           class="turn"
-          data-t={turn.key}
-          style:min-height={turn.held ? heldReserve(rowSizes.sizeOf(turn.key)) : undefined}
-          {@attach (node: HTMLElement) => measureTurn(node, turn)}
+          class:part={row.part !== null}
+          class:first={row.part?.first === true}
+          class:last={row.part?.last === true}
+          data-t={row.turn.key}
+          data-tend={row.part === null || row.part.last ? '' : undefined}
+          style:min-height={row.turn.held ? heldReserve(rowSizes.sizeOf(row.turn.key)) : undefined}
+          {@attach (node: HTMLElement) =>
+            measureTurn(node, row.turn.key, row.part === null || row.part.last)}
         >
           <Turn
-            {turn}
+            turn={row.turn}
+            part={row.part}
             {slot}
             turns={held.turns}
             {stops}
-            carried={turn.key === newest ? (pinned?.key ?? null) : null}
+            carried={row.turn.key === newest ? (pinned?.key ?? null) : null}
             onreadoutput={readOutput}
           />
           <!-- The echo rides the newest row, which is where the words will land:
                the row it is drawn in is the one the core's own copy opens or
-               joins, so nothing moves when the send is taken. -->
-          {#if echo !== undefined && turn.key === newest}
+               joins, so nothing moves when the send is taken. A turn taken apart
+               lands its words at its own foot, which is its last item. -->
+          {#if echo !== undefined && row.turn.key === newest && (row.part === null || row.part.last)}
             <Echo {echo} onretry={retry} />
           {/if}
         </div>
