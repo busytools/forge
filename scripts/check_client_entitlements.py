@@ -14,13 +14,15 @@ file cannot ship. `client-release` runs this after the bundle is built and
 signed, before anything is installed.
 
 The same signature is read for the keychain pair the data-protection keychain
-needs: `com.apple.application-identifier` and `keychain-access-groups`. A
-Developer ID-signed bundle must carry an embedded profile at
-`Contents/embedded.provisionprofile`: its team and application identifier must
-match the signature, its `ExpirationDate` must be a future date, its keychain
-groups must cover the signed group, and its `DeveloperCertificates` must carry
-the certificate the signature was made with. A build carrying a wrong, stale
-or absent profile cannot ship quietly.
+needs: `com.apple.application-identifier` and `keychain-access-groups`. The
+pair is only honoured on a Developer ID signature, so a bundle declaring it
+must also carry an embedded profile at `Contents/embedded.provisionprofile`;
+an ad-hoc or unsigned bundle with the pair is refused rather than passed as
+the dev path. The profile's team and application identifier must match the
+signature, its `ExpirationDate` must be a future date, its keychain groups
+must cover the signed group, and its `DeveloperCertificates` must carry the
+certificate the signature was made with. A build carrying a wrong, stale or
+absent profile cannot ship quietly.
 
 Prints `[OK]` and exits 0 when everything is present; prints `[ERROR]` naming
 what is missing and exits 1 otherwise. `codesign` prints nothing for a signed
@@ -91,7 +93,12 @@ def read_entitlements(bundle: Path) -> dict:
 
 
 def read_team_identifier(bundle: Path) -> str:
-    """The TeamIdentifier the signature carries, or empty when ad-hoc signed."""
+    """The TeamIdentifier the signature carries; empty only when ad-hoc.
+
+    `not set` is the ad-hoc answer. A verbose read that prints no
+    TeamIdentifier line, or an empty one, is not ad-hoc - it fails, so a
+    changed codesign output cannot skip the profile requirement.
+    """
     try:
         result = subprocess.run(
             ["codesign", "-d", "--verbose=4", str(bundle)],
@@ -105,8 +112,12 @@ def read_team_identifier(bundle: Path) -> str:
     for line in result.stderr.decode(errors="replace").splitlines():
         if line.startswith("TeamIdentifier="):
             team = line.split("=", 1)[1].strip()
-            return "" if team == "not set" else team
-    return ""
+            if team == "not set":
+                return ""
+            if not team:
+                fail(f"{bundle}'s signature carries an empty TeamIdentifier")
+            return team
+    fail(f"{bundle}'s signature carries no TeamIdentifier line")
 
 
 def read_profile(bundle: Path) -> "dict | None":
@@ -167,19 +178,26 @@ def check_keychain_entitlements(declared: dict) -> str:
 
 
 def check_profile(bundle: Path, app_id: str) -> None:
-    """Refuse a Developer ID-signed bundle with no matching embedded profile."""
+    """Refuse a bundle whose keychain pair has no matching Developer ID profile.
+
+    This runs only after the pair has been required, so the pair is present on
+    every call: a signature with no Developer ID team cannot honour it and is
+    refused, not passed as the ad-hoc dev path.
+    """
     team = read_team_identifier(bundle)
+    if not team:
+        fail(
+            f"{bundle} declares the keychain pair but is not Developer "
+            "ID-signed; macOS honours the pair only on a Developer ID "
+            "signature with an embedded profile"
+        )
     profile = read_profile(bundle)
     if profile is None:
-        if team:
-            fail(
-                f"{bundle} is Developer ID-signed (team {team}) and declares the "
-                f"keychain pair, but no {PROFILE} is embedded; macOS refuses the "
-                "keychain without a matching profile"
-            )
-        return
-    if not team:
-        fail(f"{PROFILE} is embedded but the bundle is not Developer ID-signed")
+        fail(
+            f"{bundle} is Developer ID-signed (team {team}) and declares the "
+            f"keychain pair, but no {PROFILE} is embedded; macOS refuses the "
+            "keychain without a matching profile"
+        )
     app_team = app_id.split(".", 1)[0]
     if app_team != team:
         fail(f"{APPLICATION_IDENTIFIER} names team {app_team!r}, not {team!r}")
@@ -209,18 +227,19 @@ def check_profile(bundle: Path, app_id: str) -> None:
     if not authorized:
         fail(f"{PROFILE} keychain-access-groups {groups!r} do not authorise {app_id!r}")
     certificates = profile.get("DeveloperCertificates")
-    if isinstance(certificates, list) and certificates:
-        signing = read_signing_certificate(bundle)
-        carried = {
-            hashlib.sha1(cert).hexdigest()
-            for cert in certificates
-            if isinstance(cert, bytes)
-        }
-        if signing not in carried:
-            fail(
-                f"{PROFILE} does not carry the signing certificate ({signing}); "
-                "the profile was minted for a different identity"
-            )
+    if not isinstance(certificates, list) or not certificates:
+        fail(f"{PROFILE} carries no DeveloperCertificates, so it cannot pin the signing identity")
+    signing = read_signing_certificate(bundle)
+    carried = {
+        hashlib.sha1(cert).hexdigest()
+        for cert in certificates
+        if isinstance(cert, bytes)
+    }
+    if signing not in carried:
+        fail(
+            f"{PROFILE} does not carry the signing certificate ({signing}); "
+            "the profile was minted for a different identity"
+        )
 
 
 def main() -> None:

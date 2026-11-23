@@ -75,6 +75,7 @@ esac
 # way a corrupt blob does.
 OPENSSL = """\
 #!/bin/sh
+printf '%s\\n' "---" >> "$OPENSSL_LOG"
 for arg in "$@"; do
     printf '%s\\n' "$arg"
 done >> "$OPENSSL_LOG"
@@ -154,14 +155,16 @@ class CheckClientEntitlementsTest(unittest.TestCase):
     def write_profile(self, entries: dict) -> None:
         """Embed a profile in the bundle and give the stand-in its plist.
 
-        A valid ExpirationDate is filled in unless the case supplies one, so
-        the expiry branch is exercised only by the case that means to.
+        A valid ExpirationDate and the stand-in certificate are filled in
+        unless the case supplies its own, so the expiry and certificate
+        branches are exercised only by the cases that mean to.
         """
         entries = dict(entries)
         entries.setdefault(
             "ExpirationDate",
             datetime.datetime(2044, 11, 18, 7, 57, 50, tzinfo=datetime.timezone.utc),
         )
+        entries.setdefault("DeveloperCertificates", [self.cert.read_bytes()])
         (self.bundle / "Contents" / "embedded.provisionprofile").write_bytes(b"stand-in")
         self.write_profile_plist(entries)
 
@@ -188,10 +191,22 @@ class CheckClientEntitlementsTest(unittest.TestCase):
             invocations.append(current)
         return invocations
 
-    def openssl_calls(self) -> "list[str]":
+    def openssl_calls(self) -> "list[list[str]]":
+        """Each openssl invocation's argv, split on the stand-in's marker."""
         if not self.openssl_log.exists():
             return []
-        return self.openssl_log.read_text().splitlines()
+        invocations = []
+        current = []
+        for line in self.openssl_log.read_text().splitlines():
+            if line == "---":
+                if current:
+                    invocations.append(current)
+                current = []
+            else:
+                current.append(line)
+        if current:
+            invocations.append(current)
+        return invocations
 
     def run_gate(
         self, bundle: "Path | None" = None, **env: str
@@ -303,14 +318,29 @@ class CheckClientEntitlementsTest(unittest.TestCase):
         self.assertIn("embedded.provisionprofile", result.stderr)
         self.assertTrue(self.codesign_calls(), "the refusal did not come from a signature read")
 
-    def test_an_ad_hoc_bundle_with_no_profile_passes(self) -> None:
-        # The dev path: no Developer ID team, so no profile is owed.
+    def test_an_ad_hoc_bundle_with_no_profile_is_refused(self) -> None:
+        # The dormant shape the gate exists to refuse: the keychain pair is
+        # declared, the bundle is ad-hoc signed and no profile is embedded.
+        # Nothing can honour the pair, so the build cannot ship.
         self.remove_profile()
         self.verbose = "TeamIdentifier=not set"
 
         result = self.run_gate()
 
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 1, "an ad-hoc bundle with the pair passed")
+        self.assertIn("[ERROR]", result.stderr)
+        self.assertIn("Developer ID", result.stderr)
+
+    def test_a_signature_with_no_team_line_is_refused(self) -> None:
+        # A verbose read that stops printing TeamIdentifier= is not an ad-hoc
+        # signature; reading it as one would skip the profile requirement.
+        self.verbose = "Identifier=dev.vedhavyas.forge"
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 1, "a signature with no team line passed")
+        self.assertIn("[ERROR]", result.stderr)
+        self.assertIn("TeamIdentifier", result.stderr)
 
     def test_a_profile_embedded_but_not_signed_is_refused(self) -> None:
         # A profile is present but the bundle is ad-hoc signed: the profile
@@ -409,6 +439,27 @@ class CheckClientEntitlementsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1, "a profile with the wrong app id passed")
         self.assertIn("[ERROR]", result.stderr)
         self.assertIn("embedded.provisionprofile", result.stderr)
+
+    def test_a_profile_without_developer_certificates_is_refused(self) -> None:
+        # The docstring and the release notes require the profile to pin the
+        # signing certificate; a profile that carries none cannot be checked
+        # against the signature, so it is refused rather than skipped.
+        self.write_profile(
+            {
+                "TeamIdentifier": [TEAM],
+                "Entitlements": {
+                    APPLICATION_IDENTIFIER: APP_ID,
+                    KEYCHAIN_ACCESS_GROUPS: [APP_ID],
+                },
+                "DeveloperCertificates": [],
+            }
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 1, "a profile with no certificates passed")
+        self.assertIn("[ERROR]", result.stderr)
+        self.assertIn("DeveloperCertificates", result.stderr)
 
     def test_a_profile_minted_for_another_certificate_is_refused(self) -> None:
         # The team and app id match, but the profile's DeveloperCertificates
@@ -572,10 +623,12 @@ class CheckClientEntitlementsTest(unittest.TestCase):
 
         self.run_gate()
 
-        calls = self.openssl_calls()
-        self.assertTrue(calls, "the gate passed without decoding the profile")
-        for arg in ("cms", "-verify", "-inform", "DER", "-noverify"):
-            self.assertIn(arg, calls)
+        profile = self.bundle / "Contents" / "embedded.provisionprofile"
+        self.assertIn(
+            ["cms", "-verify", "-inform", "DER", "-in", str(profile), "-noverify"],
+            self.openssl_calls(),
+            "the profile decode did not pass the exact argv and profile path",
+        )
 
     def test_a_bundle_without_the_usage_string_is_refused(self) -> None:
         self.write_info({"CFBundleIdentifier": "dev.vedhavyas.forge"})
