@@ -752,9 +752,9 @@ fn context_snapshot(body: &Value) -> Value {
 /// the same cache state on both engines instead of depending on which binary
 /// ran first. The turn's prompt-token total, its output-token counts and the
 /// transcript's own usage entry are compared; the output counts only as
-/// counts, since thinking is sampling and moves them (see
-/// [`within_measured_noise`]). The cache split, the session cost derived from
-/// it and the `modelUsage` aggregate are printed but excluded from the diff:
+/// counts, since thinking is sampling and moves them (see the noise rules on
+/// `within_measured_noise`). The cache split, the session cost derived from it
+/// and the `modelUsage` aggregate are printed but excluded from the diff:
 /// whether a token is an uncached input or a cache read depends on run order
 /// against the shared account cache rather than on the engine.
 pub async fn capture_usage_and_cost(binary: &str) -> Result<Value, String> {
