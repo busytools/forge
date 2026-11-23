@@ -20,6 +20,7 @@ version the artifact was signed for.
 
 import base64
 import json
+import os
 import plistlib
 import re
 import subprocess
@@ -55,24 +56,63 @@ def key_id(lines: list[str], what: str) -> bytes:
     return blob[2:10]
 
 
-def check_extracted_app(tarball: Path) -> None:
-    """Extract the tarball and require the app's keychain pair on its signature.
+def extract_safely(archive: tarfile.TarFile, target: str) -> None:
+    """Extract every member, refusing one that would land outside the target."""
+    root = Path(target).resolve()
+    for member in archive.getmembers():
+        member_path = (root / member.name).resolve()
+        if not str(member_path).startswith(str(root) + os.sep):
+            fail(f"the updater tarball carries a path outside the archive: {member.name}")
+        archive.extract(member, target)
+
+
+def read_team_identifier(app: Path) -> str:
+    """The TeamIdentifier the extracted app's signature carries, or empty."""
+    try:
+        result = subprocess.run(
+            ["codesign", "-d", "--verbose=4", str(app)],
+            capture_output=True,
+        )
+    except OSError as err:
+        fail(f"codesign could not be run on the extracted app: {err}")
+    if result.returncode != 0:
+        detail = result.stderr.decode(errors="replace").strip()
+        fail(f"the extracted app's signature could not be read: {detail}")
+    for line in result.stderr.decode(errors="replace").splitlines():
+        if line.startswith("TeamIdentifier="):
+            team = line.split("=", 1)[1].strip()
+            return "" if team == "not set" else team
+    return ""
+
+
+def check_extracted_app(tarball: Path, names: set[str]) -> None:
+    """Extract the tarball and require the profile and keychain pair when signed.
 
     The tarball's app must be the re-signed one: the recipe embeds the profile
-    and signs the app again before the tarball is regenerated. Reading the
-    pair back off the extracted app proves the tarball carries that signature,
-    not the build's pre-embed one.
+    and signs the app again before the tarball is regenerated. The keychain
+    pair is on both the pre-embed and the re-signed build, so the pair alone
+    does not prove the tarball is the re-signed one. The embedded profile is
+    the discriminator: require it whenever the extracted app is Developer ID
+    signed. The pair read is a fail-closed sanity check on top of that.
     """
     with tempfile.TemporaryDirectory() as scratch:
         try:
             with tarfile.open(tarball, "r:gz") as archive:
-                archive.extractall(scratch, filter="data")
+                extract_safely(archive, scratch)
         except (OSError, tarfile.TarError) as err:
             fail(f"the updater tarball could not be extracted: {err}")
         app = Path(scratch) / "forge.app"
+        team = read_team_identifier(app)
+        if team:
+            profile = "forge.app/Contents/embedded.provisionprofile"
+            if profile not in names:
+                fail(
+                    "the extracted app is Developer ID signed but the update "
+                    f"tarball carries no profile ({profile} is missing)"
+                )
         try:
             result = subprocess.run(
-                ["codesign", "-d", "--entitlements", "-", str(app)],
+                ["codesign", "-d", "--entitlements", "-", "--xml", str(app)],
                 capture_output=True,
             )
         except OSError as err:
@@ -153,24 +193,14 @@ def main() -> None:
     if app_binary not in names:
         fail(f"the update tarball carries no client binary ({app_binary} is missing)")
 
-    # **The tarball must carry the app's embedded profile.** The release
-    # embeds the profile in the app bundle and signs the app again, but
-    # tauri's build creates the tarball before that. A stale tarball ships a
-    # gate-dormant app through the desktop updater while a fresh install
-    # works. The app bundle's profile is the source of truth: when it has
-    # one, the tarball must too.
-    app = bundle / "forge.app"
-    if (app / "Contents" / "embedded.provisionprofile").exists():
-        profile = "forge.app/Contents/embedded.provisionprofile"
-        if profile not in names:
-            fail(
-                "the app bundle carries an embedded profile but the update "
-                f"tarball does not ({profile} is missing)"
-            )
-        # The tarball's app must be the re-signed one. Extract it and read the
-        # keychain pair back off its signature, so a tarball carrying the
-        # build's pre-embed app cannot pass on the name check alone.
-        check_extracted_app(tarball)
+    # **The tarball's app must be the re-signed one.** The release embeds the
+    # profile in the app bundle and signs the app again, but tauri's build
+    # creates the tarball before that. A stale tarball ships a gate-dormant
+    # app through the desktop updater while a fresh install works. Extract
+    # unconditionally: a Developer ID signed app must carry the profile, and
+    # the keychain pair must be on its signature. The pair is on both the
+    # pre-embed and the re-signed build, so the profile is the discriminator.
+    check_extracted_app(tarball, names)
 
     forbidden = [
         "forge.app/Contents/Frameworks/Chromium Embedded Framework.framework/"

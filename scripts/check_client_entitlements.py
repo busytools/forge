@@ -14,10 +14,13 @@ file cannot ship. `client-release` runs this after the bundle is built and
 signed, before anything is installed.
 
 The same signature is read for the keychain pair the data-protection keychain
-needs: `com.apple.application-identifier` and `keychain-access-groups`. When a
-provisioning profile is embedded at `Contents/embedded.provisionprofile`, its
-team and application identifier are read back and must match the signature, so
-a build carrying the wrong profile cannot ship quietly.
+needs: `com.apple.application-identifier` and `keychain-access-groups`. A
+Developer ID-signed bundle must carry an embedded profile at
+`Contents/embedded.provisionprofile`: its team and application identifier must
+match the signature, its `ExpirationDate` must be a future date, its keychain
+groups must cover the signed group, and its `DeveloperCertificates` must carry
+the certificate the signature was made with. A build carrying a wrong, stale
+or absent profile cannot ship quietly.
 
 Prints `[OK]` and exits 0 when everything is present; prints `[ERROR]` naming
 what is missing and exits 1 otherwise. `codesign` prints nothing for a signed
@@ -26,9 +29,11 @@ pass.
 """
 
 import datetime
+import hashlib
 import plistlib
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ENTITLEMENT = "com.apple.security.device.audio-input"
@@ -128,6 +133,26 @@ def read_profile(bundle: Path) -> "dict | None":
     return plist
 
 
+def read_signing_certificate(bundle: Path) -> str:
+    """The SHA-1 fingerprint of the leaf certificate the signature carries."""
+    with tempfile.TemporaryDirectory() as scratch:
+        prefix = Path(scratch) / "cert"
+        try:
+            result = subprocess.run(
+                ["codesign", "-d", f"--extract-certificates={prefix}", str(bundle)],
+                capture_output=True,
+            )
+        except OSError as err:
+            fail(f"codesign could not be run: {err}")
+        if result.returncode != 0:
+            detail = result.stderr.decode(errors="replace").strip()
+            fail(f"codesign could not extract the signing certificate: {detail}")
+        leaf = Path(f"{prefix}0")
+        if not leaf.exists():
+            fail(f"codesign extracted no signing certificate from {bundle}")
+        return hashlib.sha1(leaf.read_bytes()).hexdigest()
+
+
 def check_keychain_entitlements(declared: dict) -> str:
     """Refuse a signature without the keychain pair, returning its application id."""
     app_id = declared.get(APPLICATION_IDENTIFIER)
@@ -162,12 +187,13 @@ def check_profile(bundle: Path, app_id: str) -> None:
     if not isinstance(teams, list) or team not in teams:
         fail(f"{PROFILE} names team {teams!r}, not {team!r}")
     expiration = profile.get("ExpirationDate")
-    if isinstance(expiration, datetime.datetime):
-        now = datetime.datetime.now(datetime.timezone.utc)
-        if expiration.tzinfo is None:
-            expiration = expiration.replace(tzinfo=datetime.timezone.utc)
-        if expiration <= now:
-            fail(f"{PROFILE} expired on {expiration.date().isoformat()}")
+    if not isinstance(expiration, datetime.datetime):
+        fail(f"{PROFILE} carries no readable ExpirationDate")
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if expiration.tzinfo is None:
+        expiration = expiration.replace(tzinfo=datetime.timezone.utc)
+    if expiration <= now:
+        fail(f"{PROFILE} expired on {expiration.date().isoformat()}")
     entitlements = profile.get("Entitlements")
     profile_app_id = (
         entitlements.get(APPLICATION_IDENTIFIER) if isinstance(entitlements, dict) else None
@@ -182,6 +208,19 @@ def check_profile(bundle: Path, app_id: str) -> None:
     authorized = app_id in groups or f"{team}.*" in groups
     if not authorized:
         fail(f"{PROFILE} keychain-access-groups {groups!r} do not authorise {app_id!r}")
+    certificates = profile.get("DeveloperCertificates")
+    if isinstance(certificates, list) and certificates:
+        signing = read_signing_certificate(bundle)
+        carried = {
+            hashlib.sha1(cert).hexdigest()
+            for cert in certificates
+            if isinstance(cert, bytes)
+        }
+        if signing not in carried:
+            fail(
+                f"{PROFILE} does not carry the signing certificate ({signing}); "
+                "the profile was minted for a different identity"
+            )
 
 
 def main() -> None:

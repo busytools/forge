@@ -349,8 +349,16 @@ the Android keystore do. After the build it embeds the profile at
 `client/src-tauri/entitlements.plist` and a secure timestamp, and reads the
 signature back.
 
+Notarisation runs after this recipe, not inside it. Tauri 2.12 notarises and
+staples inside the build, and the embed and re-sign above would invalidate
+that staple. Turn notarisation on with `--skip-stapling` and notarise the
+final signature, or accept that the shipped app's staple is stale.
+
 A release publishes five assets: `forge.app.tar.gz` and its `.sig`, the arm64
 APK, the web archive, and `latest.json` - the manifest all three halves read.
+The tarball is regenerated from the re-signed bundle after the profile is
+embedded, so the desktop updater installs the app that carries the profile
+and the keychain pair, not the build's pre-embed one.
 `scripts/update_manifest.py` writes the manifest with the `.sig`'s content
 (only its trailing newline trimmed, because the plugin base64-decodes the
 value whole), the web archive's sha256, and the release URLs; the `android`

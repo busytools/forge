@@ -50,6 +50,7 @@ script-tests:
     python3 scripts/test_browser_stack_patch.py
     python3 scripts/test_browser_host_focus.py
     python3 scripts/test_check_client_entitlements.py
+    python3 scripts/test_check_updater_signature.py
 
 # Rewrite files to match rustfmt. The shell is a workspace root of its own,
 # so it takes its own invocation.
@@ -609,9 +610,10 @@ client-release version: sync-main client-release-deps
     else
         unset APPLE_SIGNING_IDENTITY
         # Tauri 2.12 skips signing when no identity is set, so the build is
-        # unsigned, not ad-hoc signed. The entitlement check below fails on an
+        # unsigned, not ad-hoc signed. The entitlement check fails on an
         # unsigned bundle (fail-closed, the way #3029 shipped it), so a release
-        # without an identity stops here rather than shipping a dormant gate.
+        # without an identity stops at the entitlement gate after the build
+        # rather than shipping a dormant gate.
         echo "[WARN] no Developer ID identity on this machine: the client stays unsigned" >&2
     fi
 
@@ -649,11 +651,23 @@ client-release version: sync-main client-release-deps
         # from the re-signed bundle and sign it with the updater key, replacing
         # the build's pair. A desktop auto-update installs this tarball, so a
         # stale one would land a gate-dormant app while a fresh install works.
-        bundle_dir="$(dirname "$built")"
-        rm -f "$bundle_dir/forge.app.tar.gz" "$bundle_dir/forge.app.tar.gz.sig"
-        tar -czf "$bundle_dir/forge.app.tar.gz" -C "$bundle_dir" forge.app
+        #
+        # The signer reads the key by path: in CLI 2.12
+        # `TAURI_SIGNING_PRIVATE_KEY` is the literal base64 key, not a path, so
+        # the path form goes through `--private-key-path`. The path does not
+        # expand `~`, so a leading `~/` is replaced with `$HOME` first. The
+        # tarball argument is absolute because `npm --prefix client run` runs
+        # with `client/` as its cwd.
+        key_file=$(sed -n 's/^keyFile=//p' "$up" 2>/dev/null || true)
+        case "$key_file" in
+            "~/"*) key_file="$HOME/${key_file#\~/}" ;;
+        esac
+        bundle_dir="$(cd "$(dirname "$built")" && pwd)"
+        tarball="$bundle_dir/forge.app.tar.gz"
+        rm -f "$tarball" "$tarball.sig"
+        tar -czf "$tarball" -C "$bundle_dir" forge.app
         npm --prefix client run tauri -- signer sign --app-version "{{version}}" \
-            "$bundle_dir/forge.app.tar.gz"
+            --private-key-path "$key_file" "$tarball"
     fi
 
     got=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$built/Contents/Info.plist")
@@ -1391,6 +1405,8 @@ publish version:
         exit 1
     fi
 
+    ./scripts/check_client_entitlements.py \
+        client/src-tauri/target/release/bundle/macos/forge.app
     ./scripts/check_updater_signature.py . {{version}}
     ./scripts/update_manifest.py . {{version}}
 

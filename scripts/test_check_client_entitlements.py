@@ -35,9 +35,13 @@ USAGE = "NSMicrophoneUsageDescription"
 # `CODESIGN_EXIT` makes the stand-in fail the way codesign does for an unsigned
 # bundle; otherwise it prints whatever `CODESIGN_PLIST` holds for the
 # entitlements read and `CODESIGN_VERBOSE` for the team read. The team read
-# goes to stderr, where codesign writes its verbose output.
+# goes to stderr, where codesign writes its verbose output. A
+# `--extract-certificates=<prefix>` call writes `CODESIGN_CERT` to `<prefix>0`
+# and prints an `Executable=` line, the way codesign does when it extracts the
+# chain.
 CODESIGN = """\
 #!/bin/sh
+printf '%s\\n' "---" >> "$CODESIGN_LOG"
 for arg in "$@"; do
     printf '%s\\n' "$arg"
 done >> "$CODESIGN_LOG"
@@ -46,6 +50,16 @@ if [ -n "${CODESIGN_EXIT:-}" ]; then
     exit "$CODESIGN_EXIT"
 fi
 case " $* " in
+  *" --extract-certificates="*)
+    prefix=""
+    for arg in "$@"; do
+        case "$arg" in
+          --extract-certificates=*) prefix="${arg#--extract-certificates=}" ;;
+        esac
+    done
+    cat "$CODESIGN_CERT" > "${prefix}0"
+    printf '%s\\n' "Executable=$CODESIGN_EXECUTABLE"
+    ;;
   *" --verbose=4 "*)
     printf '%s\\n' "$CODESIGN_VERBOSE" >&2
     ;;
@@ -106,13 +120,19 @@ class CheckClientEntitlementsTest(unittest.TestCase):
         # a matching profile. A case opts into the ad-hoc path with a "not set"
         # team, or removes the profile to exercise the refusal.
         self.verbose = f"TeamIdentifier={TEAM}"
+        self.cert = self.root / "cert.der"
+        self.cert.write_bytes(b"stand-in certificate")
         self.write_profile(
             {
                 "TeamIdentifier": [TEAM],
+                "ExpirationDate": datetime.datetime(
+                    2044, 11, 18, 7, 57, 50, tzinfo=datetime.timezone.utc
+                ),
                 "Entitlements": {
                     APPLICATION_IDENTIFIER: APP_ID,
                     KEYCHAIN_ACCESS_GROUPS: [APP_ID],
                 },
+                "DeveloperCertificates": [self.cert.read_bytes()],
             }
         )
 
@@ -132,7 +152,16 @@ class CheckClientEntitlementsTest(unittest.TestCase):
             plistlib.dump(entries, handle)
 
     def write_profile(self, entries: dict) -> None:
-        """Embed a profile in the bundle and give the stand-in its plist."""
+        """Embed a profile in the bundle and give the stand-in its plist.
+
+        A valid ExpirationDate is filled in unless the case supplies one, so
+        the expiry branch is exercised only by the case that means to.
+        """
+        entries = dict(entries)
+        entries.setdefault(
+            "ExpirationDate",
+            datetime.datetime(2044, 11, 18, 7, 57, 50, tzinfo=datetime.timezone.utc),
+        )
         (self.bundle / "Contents" / "embedded.provisionprofile").write_bytes(b"stand-in")
         self.write_profile_plist(entries)
 
@@ -142,10 +171,22 @@ class CheckClientEntitlementsTest(unittest.TestCase):
         if path.exists():
             path.unlink()
 
-    def codesign_calls(self) -> "list[str]":
+    def codesign_calls(self) -> "list[list[str]]":
+        """Each codesign invocation's argv, split on the stand-in's marker."""
         if not self.log.exists():
             return []
-        return self.log.read_text().splitlines()
+        invocations = []
+        current = []
+        for line in self.log.read_text().splitlines():
+            if line == "---":
+                if current:
+                    invocations.append(current)
+                current = []
+            else:
+                current.append(line)
+        if current:
+            invocations.append(current)
+        return invocations
 
     def openssl_calls(self) -> "list[str]":
         if not self.openssl_log.exists():
@@ -161,6 +202,8 @@ class CheckClientEntitlementsTest(unittest.TestCase):
             "CODESIGN_LOG": str(self.log),
             "CODESIGN_PLIST": str(self.plist),
             "CODESIGN_VERBOSE": self.verbose,
+            "CODESIGN_CERT": str(self.cert),
+            "CODESIGN_EXECUTABLE": str(self.bundle / "Contents" / "MacOS" / "forge-client"),
             "OPENSSL_LOG": str(self.openssl_log),
             "OPENSSL_PLIST": str(self.profile_plist),
         }
@@ -183,8 +226,11 @@ class CheckClientEntitlementsTest(unittest.TestCase):
         # config file's intent, so the argv names codesign's display mode.
         calls = self.codesign_calls()
         self.assertTrue(calls, "the gate passed without reading the signature")
-        for arg in ("-d", "--entitlements", "-", "--xml", str(self.bundle)):
-            self.assertIn(arg, calls)
+        self.assertIn(
+            ["-d", "--entitlements", "-", "--xml", str(self.bundle)],
+            calls,
+            "the entitlements read did not pass the exact argv",
+        )
 
     def test_a_bundle_with_no_entitlements_is_refused(self) -> None:
         self.write_entitlements(None)
@@ -266,6 +312,17 @@ class CheckClientEntitlementsTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_a_profile_embedded_but_not_signed_is_refused(self) -> None:
+        # A profile is present but the bundle is ad-hoc signed: the profile
+        # cannot authorise the keychain pair, so the build is refused.
+        self.verbose = "TeamIdentifier=not set"
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 1, "an ad-hoc build with a profile passed")
+        self.assertIn("[ERROR]", result.stderr)
+        self.assertIn("not Developer ID-signed", result.stderr)
+
     def test_an_expired_profile_is_refused(self) -> None:
         self.write_profile(
             {
@@ -282,6 +339,24 @@ class CheckClientEntitlementsTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1, "an expired profile passed")
         self.assertIn("expired", result.stderr)
+
+    def test_a_non_date_expiration_is_refused(self) -> None:
+        # A string expiry is not a date the gate can read, so it fails closed.
+        self.write_profile(
+            {
+                "TeamIdentifier": [TEAM],
+                "ExpirationDate": "2020-01-01",
+                "Entitlements": {
+                    APPLICATION_IDENTIFIER: APP_ID,
+                    KEYCHAIN_ACCESS_GROUPS: [APP_ID],
+                },
+            }
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 1, "a non-date expiry passed")
+        self.assertIn("ExpirationDate", result.stderr)
 
     def test_a_profile_with_the_wrong_team_is_refused(self) -> None:
         self.write_profile(
@@ -300,6 +375,24 @@ class CheckClientEntitlementsTest(unittest.TestCase):
         self.assertIn("[ERROR]", result.stderr)
         self.assertIn("embedded.provisionprofile", result.stderr)
 
+    def test_an_application_identifier_for_another_team_is_refused(self) -> None:
+        # The signature's application-identifier names a team the certificate
+        # does not, so the pair cannot be honoured even though the profile
+        # matches its own team.
+        self.write_entitlements(
+            {
+                ENTITLEMENT: True,
+                APPLICATION_IDENTIFIER: "OTHERTEAM.dev.vedhavyas.forge",
+                KEYCHAIN_ACCESS_GROUPS: ["OTHERTEAM.dev.vedhavyas.forge"],
+            }
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 1, "an application id for another team passed")
+        self.assertIn("[ERROR]", result.stderr)
+        self.assertIn("names team", result.stderr)
+
     def test_a_profile_with_the_wrong_app_id_is_refused(self) -> None:
         self.write_profile(
             {
@@ -316,6 +409,26 @@ class CheckClientEntitlementsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1, "a profile with the wrong app id passed")
         self.assertIn("[ERROR]", result.stderr)
         self.assertIn("embedded.provisionprofile", result.stderr)
+
+    def test_a_profile_minted_for_another_certificate_is_refused(self) -> None:
+        # The team and app id match, but the profile's DeveloperCertificates
+        # does not carry the certificate the signature was made with.
+        self.write_profile(
+            {
+                "TeamIdentifier": [TEAM],
+                "Entitlements": {
+                    APPLICATION_IDENTIFIER: APP_ID,
+                    KEYCHAIN_ACCESS_GROUPS: [APP_ID],
+                },
+                "DeveloperCertificates": [b"a different certificate"],
+            }
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 1, "a profile for another certificate passed")
+        self.assertIn("[ERROR]", result.stderr)
+        self.assertIn("does not carry the signing certificate", result.stderr)
 
     def test_a_profile_whose_groups_do_not_authorise_the_app_id_is_refused(self) -> None:
         self.write_profile(
@@ -345,7 +458,7 @@ class CheckClientEntitlementsTest(unittest.TestCase):
         result = self.run_gate()
 
         self.assertEqual(result.returncode, 1, "a profile with no groups passed")
-        self.assertIn(KEYCHAIN_ACCESS_GROUPS, result.stderr)
+        self.assertIn(f"embedded.provisionprofile carries no {KEYCHAIN_ACCESS_GROUPS}", result.stderr)
 
     def test_a_profile_whose_team_wildcard_authorises_the_app_id_passes(self) -> None:
         self.write_profile(
@@ -390,7 +503,7 @@ class CheckClientEntitlementsTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1, "an empty group list passed")
         self.assertIn("[ERROR]", result.stderr)
-        self.assertIn(KEYCHAIN_ACCESS_GROUPS, result.stderr)
+        self.assertIn(f"{KEYCHAIN_ACCESS_GROUPS} is absent", result.stderr)
 
     def test_an_empty_application_identifier_is_refused(self) -> None:
         self.write_entitlements(
