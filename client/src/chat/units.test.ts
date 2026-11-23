@@ -72,6 +72,10 @@ const rowsOf = (unit: Unit | undefined): WorkRow[] => (unit?.kind === 'leaves' ?
 const callsOf = (unit: Unit | undefined): Extract<WorkRow, { tag: 'call' }>[] =>
   rowsOf(unit).filter((row): row is Extract<WorkRow, { tag: 'call' }> => row.tag === 'call');
 
+/** What a call row's body says, joined into one line. */
+const outputOf = (call: Extract<WorkRow, { tag: 'call' }>): string =>
+  call.leaf.body.map((piece) => (piece.kind === 'text' ? piece.text : '')).join('');
+
 /** The peer cards of a unit, in the order they arrived. */
 const cardsOf = (unit: Unit | undefined): PeerCard[] =>
   rowsOf(unit).flatMap((row) => (row.tag === 'card' ? [row.card] : []));
@@ -255,27 +259,75 @@ describe('one turn folded into the units a view draws', () => {
     );
   });
 
-  it('keys each call by the fold own name, which an id-less block cannot collide on', () => {
+  it('keys each call by the fold own name, which no repeated id can collide on', () => {
     // The view keys the rows by this, and the wire's tool_use id is what
-    // names a call - but the wire does not always give one. A row keyed on an
-    // empty id is a duplicate the moment a family holds two such calls, and a
-    // duplicate key stops the whole turn drawing at mount. So a block without
-    // an id takes the frame and block it arrived in, which cannot move, and the
-    // view lists by that rather than by the id alone.
+    // names a call - but the wire does not always give one, and an engine
+    // behind the CLI can REPEAT one across calls. A duplicate key stops the
+    // whole turn drawing at mount (Svelte's keyed each rejects it; measured on
+    // the litep2p-backend seat, whose turn carried one id four times). So every
+    // call takes the frame and block it arrived in beside its id - that pair
+    // cannot repeat - and the view lists by that.
     const idLess = (uuid: string): unknown =>
       said([{ type: 'tool_use', name: 'Bash', input: { command: 'just check' } }], { uuid });
     const units = fold([
       idLess('a1'),
       idLess('a2'),
       said([use('toolu_01', 'Bash', { command: 'just check' })], { uuid: 'a3' }),
+      said([use('toolu_01', 'Bash', { command: 'just check' })], { uuid: 'a4' }),
     ]);
 
     const calls = callsOf(units[0]);
 
     expect(
       calls.map((call) => call.key),
-      'two id-less calls take their frames, and a named one takes the fold own name',
-    ).toEqual(['a1#0', 'a2#0', 'c-toolu_01']);
+      'id-less calls take their frames, and a repeated id takes the frame beside it',
+    ).toEqual(['a1#0', 'a2#0', 'c-toolu_01#a3#0', 'c-toolu_01#a4#0']);
+  });
+
+  it('answers every call with its own result when an id repeats', () => {
+    // **The id is the wire's pairing key, and an engine can reuse it.** Each
+    // call is followed by its own result; a fold that kept only the last one
+    // per id drew the newest output on every earlier row.
+    const units = fold([
+      said([use('call_0_x', 'Bash', { command: 'first' })], { uuid: 'a1' }),
+      heard([{ type: 'tool_result', tool_use_id: 'call_0_x', content: 'first out' }], {
+        uuid: 'u1',
+      }),
+      said([use('call_0_x', 'Bash', { command: 'second' })], { uuid: 'a2' }),
+      heard([{ type: 'tool_result', tool_use_id: 'call_0_x', content: 'second out' }], {
+        uuid: 'u2',
+      }),
+    ]);
+
+    const calls = callsOf(units[0]);
+    const outputs = calls.map(outputOf);
+
+    expect(
+      calls.map((call) => call.key),
+      'two rows, two keys',
+    ).toEqual(['c-call_0_x#a1#0', 'c-call_0_x#a2#0']);
+    expect(outputs[0], 'the first call keeps its own output').toContain('first out');
+    expect(outputs[0], 'and not the later one').not.toContain('second out');
+    expect(outputs[1], 'the second call keeps its own output').toContain('second out');
+  });
+
+  it('leaves a result-less call unanswered when a later call shares its id', () => {
+    // **What the pairing exists for.** The first call never came back; the
+    // second, under the same id, did. Handing results out per id in order
+    // would answer the first call with the second's output; pairing each
+    // result with the call before it leaves the first row without one.
+    const units = fold([
+      said([use('call_0_x', 'Bash', { command: 'first' })], { uuid: 'a1' }),
+      said([use('call_0_x', 'Bash', { command: 'second' })], { uuid: 'a2' }),
+      heard([{ type: 'tool_result', tool_use_id: 'call_0_x', content: 'second out' }], {
+        uuid: 'u2',
+      }),
+    ]);
+
+    const outputs = callsOf(units[0]).map(outputOf);
+    expect(outputs, 'both calls drew').toHaveLength(2);
+    expect(outputs[0], 'the first took no answer').not.toContain('second out');
+    expect(outputs[1], 'the second keeps its own').toContain('second out');
   });
 
   it('titles a failed forge call by its subject, never by the tool', () => {
@@ -379,6 +431,87 @@ describe('one turn folded into the units a view draws', () => {
     const units = fold([call('read', 0), ...question, call('read', 1)]);
     expect(units, 'the run splits around a call drawn on its own').toHaveLength(3);
     expect(kinds(units)[1], 'and that call is the unit in the middle').toBe('question');
+  });
+
+  it('keeps two questions that share a call id apart, each on its own answer', () => {
+    // **The id is the wire's pairing key, and an engine can reuse it.** Two
+    // questions under one id are two cards with two distinct keys, and each
+    // reads ITS OWN record: answers handed out per id in order would paint the
+    // first card with the second's pick.
+    const asked = (uuid: string, question: string, pick: string): unknown[] => [
+      said(
+        [
+          use('call_0_q', 'AskUserQuestion', {
+            questions: [
+              {
+                question,
+                options: [{ label: pick }],
+              },
+            ],
+          }),
+        ],
+        {
+          uuid,
+        },
+      ),
+      heard([result('call_0_q', 'answered')], {
+        uuid: `r-${uuid}`,
+        tool_use_result: { answers: { [question]: pick } },
+      }),
+    ];
+
+    const units = fold([...asked('a1', 'First?', 'a'), ...asked('a2', 'Second?', 'b')]);
+    const questions = units.filter(
+      (unit): unit is Extract<Unit, { kind: 'question' }> => unit.kind === 'question',
+    );
+
+    expect(questions, 'both questions drew').toHaveLength(2);
+    expect(
+      questions.map((unit) => unit.key),
+      'and each carries its own occurrence',
+    ).toEqual(['q-call_0_q#a1#0', 'q-call_0_q#a2#0']);
+    expect(
+      questions.map((unit) => unit.asked[0]?.picked_labels),
+      'each card reads its own record',
+    ).toEqual([['a'], ['b']]);
+  });
+
+  it('leaves the first card unanswered when only the second call has its record', () => {
+    // **The record half of the pairing.** The first question never came back;
+    // the second, under the same id, did. A record handed out per id would put
+    // the second question's pick on the first card; the fold pairs each
+    // record with the call before it.
+    const asked = (uuid: string, question: string): unknown =>
+      said(
+        [
+          use('call_0_q', 'AskUserQuestion', {
+            questions: [{ question, options: [{ label: 'b' }] }],
+          }),
+        ],
+        { uuid },
+      );
+    const answered = heard([result('call_0_q', 'answered')], {
+      uuid: 'r2',
+      tool_use_result: { answers: { 'Second?': 'b' } },
+    });
+
+    // The turn has ended, which is what draws the unanswered card rather than
+    // leaving it to the dock.
+    const units = fold(
+      [asked('a1', 'First?'), asked('a2', 'Second?'), answered],
+      null,
+      false,
+      true,
+    );
+    const questions = units.filter(
+      (unit): unit is Extract<Unit, { kind: 'question' }> => unit.kind === 'question',
+    );
+
+    expect(questions, 'both cards drew').toHaveLength(2);
+    expect(questions[0]?.asked[0]?.state, 'the first was never answered').toBe('unanswered');
+    expect(questions[0]?.asked[0]?.picked_labels, 'and carries no pick of its own').toEqual([]);
+    expect(questions[1]?.asked[0]?.state, 'the second keeps its answer').toBe('answered');
+    expect(questions[1]?.asked[0]?.picked_labels, 'which is its own').toEqual(['b']);
   });
 
   it('draws a capped question as its own row, opening on the omission', () => {
@@ -1034,7 +1167,7 @@ describe('one turn folded into the units a view draws', () => {
     expect(units, 'one batch, not two').toHaveLength(1);
     const [group] = units;
     expect(group?.key, 'named by the first message, which is data the turn cannot move').toBe(
-      'p-toolu_tell_1',
+      'p-toolu_tell_1#a1#0',
     );
     const cards = cardsOf(group);
     expect(cards, 'with both messages in it').toHaveLength(2);

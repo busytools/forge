@@ -247,6 +247,17 @@ export interface PeerCard {
    * never has to be derived from a name two messages can share.
    */
   id: string;
+  /**
+   * The name the LIST keys this row by, where the wire's id can repeat.
+   *
+   * A `tool_use` id an engine reuses names two cards, and an envelope id can
+   * repeat across a replay - while a turn's units are keyed by their first
+   * row's name, so two same-named cards split by prose would throw before
+   * either drew. The fold records the frame and block the card arrived in
+   * beside the id here; a card built outside a turn's rows leaves it off and
+   * `id` is the name.
+   */
+  key?: string;
   /** The row it draws as. */
   row: PeerRow;
   /**
@@ -375,6 +386,32 @@ export type WorkRow =
   | ({ tag: 'inbound' } & InboundLeaf)
   | ({ tag: 'nudge' } & NudgeLeaf)
   | ({ tag: 'procedure' } & ProcedureLeaf);
+
+/** What names a row for the list: its own key, or a card's below its prefix. */
+export function rowKey(row: WorkRow): string {
+  return row.tag === 'card' ? `p-${row.card.key ?? row.card.id}` : row.key;
+}
+
+/**
+ * The names a list keys its rows by, each one unique.
+ *
+ * **A repeated name is a blank turn.** Svelte's keyed each throws
+ * `each_key_duplicate` on two rows sharing a key, and the thrown update leaves
+ * everything in that list undrawn. The fold names calls and cards by the
+ * occurrence they arrived in, so a repeat should not reach here - but a row
+ * kind that names itself by a wire id could, so the list takes the name it is
+ * given and gives a repeat an ordinal: the first keeps its name, and a second
+ * carrying it draws beside it.
+ */
+export function rowKeys(rows: readonly WorkRow[]): string[] {
+  const seen = new Map<string, number>();
+  return rows.map((row) => {
+    const name = rowKey(row);
+    const at = seen.get(name) ?? 0;
+    seen.set(name, at + 1);
+    return at === 0 ? name : `${name}#${at}`;
+  });
+}
 
 /** What one turn's hooks did. */
 export interface HookInfo {
@@ -2005,10 +2042,33 @@ export function fold(
   stops: PageStops = NO_STOPS,
 ): Unit[] {
   const frames = messages as Frame[];
-  /** Every result the turn holds, by the call it answers. */
-  const results = new Map<string, ReturnType<typeof blocksOf>[number]>();
-  /** The result's own record, by the call it answers: a question's answer, and a mutation's hunks and marks. */
-  const records = new Map<string, unknown>();
+  /**
+   * Every result the turn holds, by the call it answers, in arrival order.
+   *
+   * **A queue, not one value.** A tool_use id is not unique in a transcript:
+   * the engine behind the CLI reuses `call_...` ids across separate calls -
+   * measured on the litep2p-backend seat, where one id carried four Read calls
+   * with four different results - and a map keeping only the last one would
+   * answer every earlier row with the newest result.
+   *
+   * **A result names the OCCURRENCE of the call it answers**, not only the
+   * id: it pairs with the most recent `tool_use` carrying that id before it,
+   * which is the one whose call it belongs to. That also leaves a call with
+   * no result of its own (a refused call records the refusal, not a result)
+   * from taking the next call's.
+   */
+  const results = new Map<
+    string,
+    { result: ReturnType<typeof blocksOf>[number]; record: unknown }
+  >();
+  /**
+   * The occurrence of the most recent call each id named, by that id.
+   *
+   * **Last-wins within one frame.** Two same-id `tool_use` blocks in a single
+   * assistant message would leave only the second as the pairing point; the
+   * CLI emits one block per call frame, so that shape is unreachable.
+   */
+  const callAt = new Map<string, string>();
   /**
    * The LAST frame the turn failed on, which is what bounds the sweep.
    *
@@ -2122,6 +2182,17 @@ export function fold(
       }
       continue;
     }
+    // **A call is remembered where it opened**, so the result that follows it
+    // can name that occurrence. An assistant frame's calls are not rows in
+    // this pass, only the pairing points a user frame's results attach to.
+    if (frame.type === 'assistant') {
+      for (const [blockAt, block] of blocksOf(frame.message?.content).entries()) {
+        if (block.type !== 'tool_use' && block.type !== 'server_tool_use') continue;
+        const id = typeof block.id === 'string' ? block.id : '';
+        if (id !== '') callAt.set(id, `${at}#${blockAt}`);
+      }
+      continue;
+    }
     if (frame.type !== 'user') continue;
     for (const block of blocksOf(frame.message?.content)) {
       // The transcript's own ending for a backgrounded call, which arrives as
@@ -2150,13 +2221,17 @@ export function fold(
         continue;
       }
       if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
-        results.set(block.tool_use_id, block);
-        // The result's own record rides beside the block, keyed the same way:
-        // a question is drawn from it rather than from the result's text -
-        // which is the CLI saying it was answered - and a mutation's hunks and
-        // its marks are in it too.
-        if (frame.tool_use_result !== undefined) {
-          records.set(block.tool_use_id, frame.tool_use_result);
+        // **The result belongs to the call before it**, so it names that
+        // occurrence: two calls under one id are two rows, and each keeps its
+        // own answer. A result with no call above it in this turn has nothing
+        // to answer here.
+        const owner = callAt.get(block.tool_use_id);
+        if (owner !== undefined) {
+          // The result's own record rides beside the block: a question is
+          // drawn from it rather than from the result's text - which is the
+          // CLI saying it was answered - and a mutation's hunks and its marks
+          // are in it too.
+          results.set(owner, { result: block, record: frame.tool_use_result });
         }
       }
     }
@@ -2166,6 +2241,20 @@ export function fold(
   const keyOf = (at: number, frame: Frame, part: string | number): string => {
     const id = typeof frame.uuid === 'string' ? frame.uuid : `f${at}`;
     return `${id}#${part}`;
+  };
+
+  /**
+   * The name of one OCCURRENCE of a row: the id it is named by, and the frame
+   * and block it arrived in.
+   *
+   * **An id is not unique in a transcript.** An engine can reuse a `tool_use`
+   * id across separate calls, so a name built from the id alone lands on two
+   * rows and Svelte's keyed each throws before either draws. The frame and
+   * block cannot repeat, so the pair makes the id safe to keep in the name.
+   */
+  const occurrenceOf = (id: string, at: number, frame: Frame, blockAt: number): string => {
+    const place = keyOf(at, frame, blockAt);
+    return id !== '' ? `${id}#${place}` : place;
   };
 
   const units: Unit[] = [];
@@ -2507,7 +2596,7 @@ export function fold(
     if (first === undefined) return;
     units.push({
       kind: 'leaves',
-      key: first.tag === 'card' ? `p-${first.card.id}` : first.key,
+      key: rowKey(first),
       rows: items,
     });
   };
@@ -3214,6 +3303,7 @@ export function fold(
                 card: {
                   ...envelope.card,
                   id: envelope.card.id !== '' ? envelope.card.id : keyOf(at, frame, blockAt),
+                  key: occurrenceOf(envelope.card.id, at, frame, blockAt),
                 },
               });
             } else if (envelope.kind === 'inbound') {
@@ -3401,6 +3491,7 @@ export function fold(
               card: {
                 ...envelope.card,
                 id: envelope.card.id !== '' ? envelope.card.id : keyOf(at, frame, blockAt),
+                key: occurrenceOf(envelope.card.id, at, frame, blockAt),
               },
             });
           } else if (envelope.kind === 'inbound') {
@@ -3457,6 +3548,16 @@ export function fold(
         const name = typeof block.name === 'string' ? block.name : 'tool';
         const id = typeof block.id === 'string' ? block.id : '';
 
+        // **This call's own answer, not its id's last one.** The pass above
+        // paired each result with the occurrence of the call before it, so a
+        // repeated id answers each row with its own result - and a call with
+        // no result of its own (a refusal is recorded, not answered) takes
+        // nothing from a later call.
+        const refused = id !== '' && refusals.has(id);
+        const pair = results.get(`${at}#${blockAt}`);
+        const result = pair?.result;
+        const record = pair?.record;
+
         // A stop whose call the page holds draws as that call's own mark, in
         // the call's turn, rather than as a second row beside it.
         if (name === 'TaskStop' && id !== '' && stops.drawn.has(id)) continue;
@@ -3465,28 +3566,29 @@ export function fold(
           name,
           block.input,
           self,
-          results.get(id),
+          result,
           id !== '' ? id : keyOf(at, frame, blockAt),
         );
         if (card !== null) {
-          pending.push({ tag: 'card', card });
+          pending.push({
+            tag: 'card',
+            // The row and the unit above it are both keyed by this name.
+            card: { ...card, key: occurrenceOf(id, at, frame, blockAt) },
+          });
           continue;
         }
         if (isQuestion(name)) {
-          const record = records.get(id);
-          const result = results.get(id);
           // The leaf is this call's own row wherever the card cannot carry it:
           // a record the page capped has no answers to read (#2374), a refusal
           // never ran, and a failure's words are the result's own.
-          const ownLeaf =
-            omittedRecord(record) !== null || refusals.has(id) || result?.is_error === true;
+          const ownLeaf = omittedRecord(record) !== null || refused || result?.is_error === true;
           // A question is settled once its own result lands or the turn
           // closes; until then the dock holds it.
           const settled = abandoned || result !== undefined;
           const card = questionCard(
             block.input,
             record,
-            id !== '' ? `q-${id}` : keyOf(at, frame, blockAt),
+            id !== '' ? `q-${occurrenceOf(id, at, frame, blockAt)}` : keyOf(at, frame, blockAt),
             settled && !ownLeaf,
           );
           if (card !== null) {
@@ -3503,12 +3605,12 @@ export function fold(
           id,
           name,
           block.input,
-          results.get(id),
-          records.get(id),
+          result,
+          record,
           tasks.get(id),
           // A call the CLI refused on permission grounds is settled by that
           // refusal: no result frame follows it.
-          abandoned || refusals.has(id),
+          abandoned || refused,
           stops.settled.get(id) ?? null,
           refusals.get(id) ?? null,
         );
@@ -3523,7 +3625,12 @@ export function fold(
         }
         pending.push({
           tag: 'call',
-          key: id !== '' ? `c-${id}` : keyOf(at, frame, blockAt),
+          // **The id alone does not name a row.** An engine can repeat a
+          // tool_use id across calls, and two rows with one key stop the whole
+          // turn drawing (Svelte's keyed each rejects the duplicate). The
+          // frame and block are what make an occurrence unique, so a repeated
+          // id takes them beside its own name.
+          key: id !== '' ? `c-${occurrenceOf(id, at, frame, blockAt)}` : keyOf(at, frame, blockAt),
           leaf,
         });
         continue;
