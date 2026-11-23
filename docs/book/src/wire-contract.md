@@ -59,10 +59,10 @@ that differs fails naming both values,
 `rawMaxTokens: reference=1048576 port=200000`. Prompt and context token
 counters are compared with a narrow tolerance the control run measured;
 output-token counts only as counts both sides reported, because thinking
-moves them between identical runs. Every other value must match exactly.
-Turn cost and the cache-read/cache-creation split are printed for the
-record rather than compared: they move with which engine warmed the
-shared prompt cache first.
+moves them between identical runs; context percentages within one point.
+Every other value must match exactly. Turn cost and the
+cache-read/cache-creation split are printed for the record rather than
+compared: they move with which engine warmed the shared prompt cache first.
 The matrix inherits the operator's `CLAUDE_CONFIG_DIR` (or `~/.claude`) on
 purpose, so the port is judged on the commands, skills, agents and hooks the
 operator actually has; the same run can green differently on another

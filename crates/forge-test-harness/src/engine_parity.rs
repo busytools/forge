@@ -19,7 +19,8 @@
 //! reference spawns legitimately disagree on are compared with a narrow
 //! tolerance measured by the control run; output-token counters only as "both
 //! sides reported a count", because thinking moves them between identical
-//! runs; every other value must match exactly.
+//! runs; context percentages are compared within one point; every other value
+//! must match exactly.
 //!
 //! **The matrix runs under the operator's Claude config on purpose.** It
 //! inherits `CLAUDE_CONFIG_DIR` (or `~/.claude`) so the port is judged on the
@@ -392,7 +393,7 @@ fn diff_at(path: &str, reference: &Value, port: &Value, out: &mut Vec<Difference
 ///
 /// Output-token counts get no band. The control measured identical reference
 /// runs at 106 and 3 output tokens: one turn spent 104 thinking tokens and the
-/// other none, and the turn's output count inherits them. Thinking has no
+/// other none, so the text itself differed by one token too. Thinking has no
 /// budget under the trivial prompt, so a band wide enough for one control run
 /// is a guess about the next one; what two engines can meaningfully agree on
 /// is that both reported a count. Prompt tokens keep their measured band, and
@@ -1500,8 +1501,9 @@ mod tests {
 
     /// The after-turn snapshot carries what the turn produced, so its measured
     /// control spread sets its band; the pre-turn snapshot is the bare context
-    /// and stays tight. A 5,018-token pre-turn move fails although the widened
-    /// after-turn band would have accepted it.
+    /// and stays tight. Both bands are pinned from above as well as below: a
+    /// move past 10% fails on the after-turn total, and a 1,018-token pre-turn
+    /// move fails even though a five-percent band would have accepted it.
     #[test]
     fn after_turn_measured_control_spread_passes_while_before_turn_stays_tight() {
         let first = context_capture(89_982, 69_371);
@@ -1509,11 +1511,37 @@ mod tests {
         let after_differences = differences(&first, &second);
         assert!(after_differences.is_empty(), "{after_differences:?}");
 
-        let narrowed = context_capture(89_982, 69_371);
-        let widened = context_capture(95_000, 69_371);
-        let before_differences = differences(&narrowed, &widened);
-        assert_eq!(before_differences.len(), 1, "{before_differences:?}");
-        assert_eq!(before_differences[0].field, "before_turn.totalTokens");
+        let within_band = context_capture(89_982, 69_371);
+        let beyond_band = context_capture(89_982, 80_000);
+        let after_differences = differences(&within_band, &beyond_band);
+        assert_eq!(after_differences.len(), 1, "{after_differences:?}");
+        assert_eq!(after_differences[0].field, "after_turn.totalTokens");
+
+        for widened_total in [91_000, 95_000] {
+            let narrowed = context_capture(89_982, 69_371);
+            let widened = context_capture(widened_total, 69_371);
+            let before_differences = differences(&narrowed, &widened);
+            assert_eq!(before_differences.len(), 1, "{before_differences:?}");
+            assert_eq!(before_differences[0].field, "before_turn.totalTokens");
+        }
+    }
+
+    /// The percentage arm is a one-point band on its own: identical totals with
+    /// percentages one point apart pass, two points apart fail.
+    #[test]
+    fn percentage_band_is_one_point() {
+        let zero = context_capture(89_982, 69_371);
+
+        let mut one_point = context_capture(89_982, 69_371);
+        one_point["before_turn"]["percentage"] = json!(10);
+        let within_band = differences(&zero, &one_point);
+        assert!(within_band.is_empty(), "{within_band:?}");
+
+        let mut two_points = context_capture(89_982, 69_371);
+        two_points["before_turn"]["percentage"] = json!(11);
+        let beyond_band = differences(&zero, &two_points);
+        assert_eq!(beyond_band.len(), 1, "{beyond_band:?}");
+        assert_eq!(beyond_band[0].field, "before_turn.percentage");
     }
 
     /// The output-token rule is not a free pass: a count that is absent or
