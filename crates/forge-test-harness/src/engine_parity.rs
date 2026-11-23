@@ -15,9 +15,12 @@
 //! entry says why. Values that merely happen to be unstable (model prose,
 //! sampling) are not compared at all: a check projects the frames it owns
 //! into stable fields rather than dumping raw lines, so an unlisted key that
-//! starts differing is a failure. The few token counters two reference
-//! spawns legitimately disagree on are compared with a narrow tolerance
-//! measured by the control run; every other value must match exactly.
+//! starts differing is a failure. The prompt and context token counters two
+//! reference spawns legitimately disagree on are compared with a narrow
+//! tolerance measured by the control run; output-token counters only as "both
+//! sides reported a count", because thinking moves them between identical
+//! runs; context percentages are compared within one point; every other value
+//! must match exactly.
 //!
 //! **The matrix runs under the operator's Claude config on purpose.** It
 //! inherits `CLAUDE_CONFIG_DIR` (or `~/.claude`) so the port is judged on the
@@ -377,27 +380,60 @@ fn diff_at(path: &str, reference: &Value, port: &Value, out: &mut Vec<Difference
 }
 
 /// Fields whose values two reference spawns legitimately differ on, measured
-/// by `just engine-parity-control`, and the tolerance each is compared with.
+/// by `just engine-parity-control`, and what each is compared with.
 ///
 /// Token counters are estimates: the same prompt and the same model answered
-/// twice on `claude` differ by a few dozen prompt tokens and by a point of
-/// percentage, because the conversation's own round-trip is counted slightly
-/// differently each time. The matrix's real findings are orders of magnitude
-/// larger than this band (a 200k window against 1M moves `percentage` by
-/// several points and `totalTokens` by tens of thousands), so a narrow
-/// tolerance keeps the diff honest without making the matrix flake on its own
-/// control. A field absent from this list must match exactly.
+/// twice on `claude` differ by a few percent, because the conversation's own
+/// round-trip and the turn's sampling are counted slightly differently each
+/// time. The bands below come from the control's measured spread rather than a
+/// guess, and the matrix's real findings still sit outside them: the accepted
+/// port's context gap is 16% (69,568 against 58,397), against a measured
+/// reference-vs-reference spread under 5%. A field absent from this list must
+/// match exactly.
+///
+/// Output-token counts get no band. The control measured identical reference
+/// runs at 106 and 3 output tokens: one turn spent 104 thinking tokens and the
+/// other none, so the text itself differed by one token too. Thinking has no
+/// budget under the trivial prompt, so a band wide enough for one control run
+/// is a guess about the next one; what two engines can meaningfully agree on
+/// is that both reported a count. Prompt tokens keep their measured band, and
+/// the real finding still fails there (16% against the measured 4.8%).
 fn within_measured_noise(field: &str, reference: &Value, port: &Value) -> bool {
     let (Some(reference), Some(port)) = (reference.as_f64(), port.as_f64()) else {
         return false;
     };
     match field {
-        "usage.prompt_tokens" | "before_turn.totalTokens" | "after_turn.totalTokens" => {
-            // One percent, and never less than 100 tokens, of the larger value.
+        "usage.prompt_tokens" => {
+            // Ten percent, and never less than 100 tokens, of the larger
+            // value: `just engine-parity-control` measured identical reference
+            // runs up to 4.8% apart (73,157 against 69,640) across seven
+            // control runs on 2026-11-23, so this is about twice the worst
+            // measured spread. The accepted port's context gap is 16% (69,568
+            // against 58,397), which still fails.
+            let scale = reference.abs().max(port.abs());
+            (reference - port).abs() <= (scale * 0.10).max(100.0)
+        }
+        "before_turn.totalTokens" => {
+            // One percent, and never less than 100 tokens, of the larger
+            // value. The pre-turn snapshot is the bare context, which two
+            // reference spawns reported identically on 2026-11-23.
             let scale = reference.abs().max(port.abs());
             (reference - port).abs() <= (scale * 0.01).max(100.0)
         }
+        "after_turn.totalTokens" => {
+            // Ten percent, and never less than 100 tokens, of the larger
+            // value: the after-turn snapshot includes what the turn produced,
+            // so thinking moves it as it moves the prompt and output counts.
+            // `just engine-parity-control` measured identical reference runs
+            // 4.5% apart (69,371 against 72,661).
+            let scale = reference.abs().max(port.abs());
+            (reference - port).abs() <= (scale * 0.10).max(100.0)
+        }
         "before_turn.percentage" | "after_turn.percentage" => (reference - port).abs() <= 1.0,
+        // Thinking is sampling and lands in both the result's aggregate and the
+        // assistant frame's own count, so which count a turn reports is not an
+        // engine fact. That a count was reported at all is.
+        "usage.output_tokens" | "assistant_usage.output_tokens" => reference >= 0.0 && port >= 0.0,
         _ => false,
     }
 }
@@ -715,12 +751,13 @@ fn context_snapshot(body: &Value) -> Value {
 /// Two identical turns run per side and the SECOND is compared: the first
 /// warms that session's own prompt cache, so the compared turn starts from
 /// the same cache state on both engines instead of depending on which binary
-/// ran first. The turn's prompt-token total, its output tokens and the
-/// transcript's own usage entry are compared. The cache split, the session
-/// cost derived from it and the `modelUsage` aggregate are printed but
-/// excluded from the diff: whether a token is an uncached input or a cache
-/// read depends on run order against the shared account cache rather than on
-/// the engine.
+/// ran first. The turn's prompt-token total, its output-token counts and the
+/// transcript's own usage entry are compared; the output counts only as
+/// counts, since thinking is sampling and moves them (see the noise rules on
+/// `within_measured_noise`). The cache split, the session cost derived from it
+/// and the `modelUsage` aggregate are printed but excluded from the diff:
+/// whether a token is an uncached input or a cache read depends on run order
+/// against the shared account cache rather than on the engine.
 pub async fn capture_usage_and_cost(binary: &str) -> Result<Value, String> {
     let (wire, ()) = session(binary, base_options().max_turns(4), |client, events| async move {
         let mut events = events;
@@ -1366,4 +1403,161 @@ fn sorted_by_name(value: Value) -> Value {
         left.get("name").and_then(Value::as_str).cmp(&right.get("name").and_then(Value::as_str))
     });
     Value::Array(items)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `usage_and_cost` capture reduced to the fields the check compares,
+    /// enough to drive `differences` the way the control run does.
+    fn usage_capture(prompt_tokens: u64, output_tokens: u64, assistant_output: u64) -> Value {
+        json!({
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "output_tokens": output_tokens,
+            },
+            "assistant_usage": {
+                "input_tokens": 4,
+                "output_tokens": assistant_output,
+            },
+            "model_facts": {
+                "claude-opus-4-1[1m]": {
+                    "contextWindow": 1_000_000,
+                    "maxOutputTokens": 32_000,
+                },
+            },
+        })
+    }
+
+    /// The `context_usage` capture reduced to the fields the check compares.
+    fn context_capture(before_total: u64, after_total: u64) -> Value {
+        json!({
+            "before_turn": {
+                "rawMaxTokens": 1_000_000,
+                "maxTokens": 1_000_000,
+                "percentage": 9,
+                "totalTokens": before_total,
+                "model": "deepseek-v4.1-flash[1m]",
+            },
+            "after_turn": {
+                "rawMaxTokens": 1_000_000,
+                "maxTokens": 1_000_000,
+                "percentage": 7,
+                "totalTokens": after_total,
+                "model": "deepseek-v4.1-flash[1m]",
+            },
+        })
+    }
+
+    fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+        payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|text| (*text).to_owned()))
+            .unwrap_or_default()
+    }
+
+    /// The shape `just engine-parity-control` failed on: identical reference
+    /// runs whose output-token counts differ only by whether the turn thought.
+    /// Both counters move together here, because thinking lands in whichever
+    /// message carries it and the result aggregates it.
+    #[test]
+    fn control_shape_passes_when_only_output_tokens_move() {
+        let first = usage_capture(69_609, 106, 106);
+        let second = usage_capture(69_483, 3, 3);
+
+        let differences = differences(&first, &second);
+        assert!(differences.is_empty(), "{differences:?}");
+    }
+
+    /// The prompt-token band comes from the control's own measurement: its
+    /// worst pair moved 4.8% between identical reference runs, and a band
+    /// tighter than that is what failed the control.
+    #[test]
+    fn prompt_tokens_measured_control_spread_passes() {
+        let first = usage_capture(73_157, 3, 0);
+        let second = usage_capture(69_640, 3, 0);
+
+        let differences = differences(&first, &second);
+        assert!(differences.is_empty(), "{differences:?}");
+    }
+
+    /// The accepted port run's real finding must still fail, and the report
+    /// must name the field and both values.
+    #[test]
+    fn prompt_token_context_gap_fails_naming_the_field_and_both_values() {
+        let reference = usage_capture(69_568, 4, 4);
+        let port = usage_capture(58_397, 4, 4);
+
+        let panic =
+            std::panic::catch_unwind(|| compare("control:usage_and_cost", &reference, &port))
+                .expect_err("a prompt-token gap must fail");
+        let message = panic_message(panic.as_ref());
+        for expected in ["usage.prompt_tokens", "69568", "58397"] {
+            assert!(message.contains(expected), "report is missing `{expected}`: {message}");
+        }
+    }
+
+    /// The after-turn snapshot carries what the turn produced, so its measured
+    /// control spread sets its band; the pre-turn snapshot is the bare context
+    /// and stays tight. Both bands are pinned from above as well as below: a
+    /// move past 10% fails on the after-turn total, and a 1,018-token pre-turn
+    /// move fails even though a five-percent band would have accepted it.
+    #[test]
+    fn after_turn_measured_control_spread_passes_while_before_turn_stays_tight() {
+        let first = context_capture(89_982, 69_371);
+        let second = context_capture(89_982, 72_661);
+        let after_differences = differences(&first, &second);
+        assert!(after_differences.is_empty(), "{after_differences:?}");
+
+        let within_band = context_capture(89_982, 69_371);
+        let beyond_band = context_capture(89_982, 80_000);
+        let after_differences = differences(&within_band, &beyond_band);
+        assert_eq!(after_differences.len(), 1, "{after_differences:?}");
+        assert_eq!(after_differences[0].field, "after_turn.totalTokens");
+
+        for widened_total in [91_000, 95_000] {
+            let narrowed = context_capture(89_982, 69_371);
+            let widened = context_capture(widened_total, 69_371);
+            let before_differences = differences(&narrowed, &widened);
+            assert_eq!(before_differences.len(), 1, "{before_differences:?}");
+            assert_eq!(before_differences[0].field, "before_turn.totalTokens");
+        }
+    }
+
+    /// The percentage arm is a one-point band on its own: identical totals with
+    /// percentages one point apart pass, two points apart fail.
+    #[test]
+    fn percentage_band_is_one_point() {
+        let zero = context_capture(89_982, 69_371);
+
+        let mut one_point = context_capture(89_982, 69_371);
+        one_point["before_turn"]["percentage"] = json!(10);
+        let within_band = differences(&zero, &one_point);
+        assert!(within_band.is_empty(), "{within_band:?}");
+
+        let mut two_points = context_capture(89_982, 69_371);
+        two_points["before_turn"]["percentage"] = json!(11);
+        let beyond_band = differences(&zero, &two_points);
+        assert_eq!(beyond_band.len(), 1, "{beyond_band:?}");
+        assert_eq!(beyond_band[0].field, "before_turn.percentage");
+    }
+
+    /// The output-token rule is not a free pass: a count that is absent or
+    /// negative is still a difference.
+    #[test]
+    fn output_tokens_must_be_present_and_non_negative() {
+        let reference = usage_capture(100, 10, 10);
+        let mut negative = usage_capture(100, 10, 10);
+        negative["usage"]["output_tokens"] = json!(-1);
+        let mut absent = usage_capture(100, 10, 10);
+        absent["usage"].as_object_mut().expect("usage object").remove("output_tokens");
+
+        for capture in [&negative, &absent] {
+            let differences = differences(&reference, capture);
+            assert_eq!(differences.len(), 1, "{differences:?}");
+            assert_eq!(differences[0].field, "usage.output_tokens");
+        }
+    }
 }
