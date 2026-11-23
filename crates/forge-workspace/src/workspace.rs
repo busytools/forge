@@ -2174,7 +2174,12 @@ impl Workspace {
                 tasks_load_failed = true;
                 Vec::new()
             }),
-            None => Vec::new(),
+            None => {
+                // The same arm as the cron load: a boot with no store has
+                // not read the board, so it must not report "none open".
+                tasks_load_failed = true;
+                Vec::new()
+            }
         };
         let gotify_subs = match &db {
             Some(db) => crate::store::gotify::list(db).unwrap_or_else(|error| {

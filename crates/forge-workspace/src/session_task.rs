@@ -4421,6 +4421,32 @@ mod tests {
             team_role: None,
             wake: true,
         });
+        // **An open board row must reach PART 1.** The build reads the board
+        // the caller already holds, so a row is seeded; deleting the
+        // `&board` wiring fails this.
+        workspace.with_tasks_mut(|tasks| {
+            tasks.push(forge_primitives::Task {
+                id: forge_primitives::TaskId::from("board-row-1"),
+                project_name: "forge".to_owned(),
+                subject: "the open board row".to_owned(),
+                active_form: None,
+                detail: None,
+                status: forge_primitives::TaskStatus::Pending,
+                owner: None,
+                parent: None,
+                waiting_on: None,
+                estimate: None,
+                rank: None,
+                verify: None,
+                attested: None,
+                reserved: None,
+                links: Vec::new(),
+                attempt: 0,
+                archived_at: None,
+                created_at: std::time::SystemTime::UNIX_EPOCH,
+                updated_at: std::time::SystemTime::UNIX_EPOCH,
+            });
+        });
         // **A live task must reach PART 1.** The build reads the seat's own
         // domain, so the domain is registered and a background task seeded;
         // deleting `sections.extend(live)` fails this.
@@ -4503,6 +4529,17 @@ mod tests {
             crons.lines.iter().any(|line| line.contains("cron-1")),
             "the cron is named with its id: {:?}",
             crons.lines,
+        );
+        let rows = record
+            .brief
+            .ground_truth
+            .iter()
+            .find(|section| section.label == "open board rows")
+            .expect("the open board rows reach PART 1");
+        let rows_text = rows.lines.join("\n");
+        assert!(
+            rows_text.contains("board-row-1") && rows_text.contains("the open board row"),
+            "the open board row is named: {rows_text}",
         );
 
         let dispatched = workspace.drain_test_dispatch_buffer();

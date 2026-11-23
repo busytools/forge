@@ -82,11 +82,12 @@ A worker writes no index line: its file is its own seat's, reached by the worker
 When forge hands the seat over, these steps sit on top of the ones above.
 
 **Capture the live state.** Before writing the note, list what this session started and what is
-still running, and put each in the note with its id and where the successor resumes it:
+still running, and put each in the note with its id and where the successor picks it up:
 
 - every other live worker, from `agents__list`, by label and slot - a live worker takes
-  `agents__send_message`; a failed one is spawned again with `agents__spawn` and
-  `resume_session: true`; a restarting one is already being healed, so wait for its next attempt;
+  `agents__send_message`; a failed one is the lead's to spawn again with `agents__spawn`, reusing
+  the charter `agents__list` reports; a restarting one is already being healed, so wait for its
+  next attempt;
 - every subagent this session dispatched, by its task and where its transcript lives - a
   subagent cannot be resumed: the swap kills it. Name the task and transcript so the successor
   re-dispatches the work; when the transcript is gone, say so - there is nothing to re-dispatch
@@ -95,8 +96,9 @@ still running, and put each in the note with its id and where the successor resu
   swap stops it too, so name where it got to and how to restart it;
 - every live cron, from `cron__list`, by id and next fire - each fires on its own;
 - every open board row this session owns or is still running, from `tasks__list`, by id and
-  owner - the successor resumes it with `tasks__claim`; PART 1 carries the project's open rows,
-  so point at it rather than repeating them;
+  owner - a row the successor owns is its to continue; an unowned pending row takes
+  `tasks__claim`; a row another seat holds is that seat's to move; PART 1 carries the project's
+  open rows, so point at it rather than repeating them;
 - every worktree this session created, from `git worktree list`, by path and branch - a worker
   successor cannot enter one, so name the path to read from or the move the successor can make.
 
