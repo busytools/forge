@@ -963,6 +963,12 @@ pub struct Workspace {
     /// path. `pub(crate)` so the impl block in [`crate::tasks`] can reach
     /// it.
     pub(crate) tasks: Mutex<Vec<forge_primitives::tasks::Task>>,
+    /// Whether this run's boot could not load the durable board. The
+    /// in-memory set is empty while rows may be on disk, so a reader must
+    /// not report "none open" for a board it could not read. Set once at
+    /// boot, beside the load that failed.
+    pub(crate) tasks_load_failed: std::sync::atomic::AtomicBool,
+
     /// Payloads addressed to a slot that had no live session when they
     /// arrived - a peer prompt, a fired cron, a Gotify notification, a
     /// Slack message - keyed by `(org, project, label)` (`None` = lead),
@@ -2157,6 +2163,7 @@ impl Workspace {
             crons_load_failed = true;
             Vec::new()
         };
+        let mut tasks_load_failed = false;
         let tasks = match &db {
             Some(db) => crate::store::tasks::list(db).unwrap_or_else(|error| {
                 tracing::warn!(
@@ -2164,6 +2171,7 @@ impl Workspace {
                     %error,
                     "loading durable tasks failed; starting with none this run",
                 );
+                tasks_load_failed = true;
                 Vec::new()
             }),
             None => Vec::new(),
@@ -2572,6 +2580,7 @@ impl Workspace {
             cron,
             cron_ports,
             tasks: Mutex::new(tasks),
+            tasks_load_failed: std::sync::atomic::AtomicBool::new(tasks_load_failed),
             parked_by_slot: Mutex::new(HashMap::new()),
             pending_handoffs: Mutex::new(HashMap::new()),
             swapping: Mutex::new(HashMap::new()),

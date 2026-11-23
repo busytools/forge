@@ -81,25 +81,33 @@ A worker writes no index line: its file is its own seat's, reached by the worker
 
 When forge hands the seat over, these steps sit on top of the ones above.
 
-**Capture the live state.** Before writing the note, list what this session started and what the
-project is still running, and put each one in the note with its id and how to resume it:
+**Capture the live state.** Before writing the note, list what this session started and what is
+still running, and put each in the note with its id and where the successor resumes it:
 
-- every live worker, from `agents__list`, by label and slot - resume it with
-  `agents__send_message`;
-- every subagent this session dispatched, by its task and its transcript - resume it with
-  `agents__spawn` and `resume_session`;
-- every running background command or monitor, by the command and where its output goes -
-  resume it by re-running the command;
-- every live cron, from `cron__list`, by id and next fire - it fires on its own, so name it
-  rather than restarting it;
-- every open board row, from `tasks__list`, by id and owner - the successor picks it up from
-  the row;
-- every worktree, from `git worktree list`, by path and branch - the successor enters it.
+- every other live worker, from `agents__list`, by label and slot - a live worker takes
+  `agents__send_message`; a failed one is spawned again with `agents__spawn` and
+  `resume_session: true`; a restarting one is already being healed, so wait for its next attempt;
+- every subagent this session dispatched, by its task and where its transcript lives - a
+  subagent cannot be resumed: the swap kills it. Name the task and transcript so the successor
+  re-dispatches the work; when the transcript is gone, say so - there is nothing to re-dispatch
+  from;
+- every running background command or monitor, by the command and where its output goes - the
+  swap stops it too, so name where it got to and how to restart it;
+- every live cron, from `cron__list`, by id and next fire - each fires on its own;
+- every open board row this session owns or is still running, from `tasks__list`, by id and
+  owner - the successor resumes it with `tasks__claim`; PART 1 carries the project's open rows,
+  so point at it rather than repeating them;
+- every worktree this session created, from `git worktree list`, by path and branch - a worker
+  successor cannot enter one, so name the path to read from or the move the successor can make.
 
-**Hand over, do not stop.** A live process belongs to the successor now: do not kill it on the
-way out. Stopping it throws away the run it holds, and a restarted copy is not the same work. A
-process that cannot be resumed - a subagent whose transcript is gone, a command whose output
-nothing can read - is named as such with the reason, so the successor is not left expecting it.
+**Durable state hands over; the session's own children stop.** Workers, crons, board rows and the
+on-disk worktree outlive the swap and belong to the successor. Subagents, background commands
+and monitors are the session's own children: the swap stops them, so name where each got to and
+how to restart it. When a subagent's transcript is gone, or a command's output is gone, say so:
+the successor cannot pick up where it stopped.
+
+**Verify before you wait.** A registry row can outlive its process. Check `agents__list` before
+the successor waits on any worker the note names.
 
 **Leave nothing unfinished unrecorded.** List what this session was expected to handle and could
 not finish in this turn - a blocked ask, a deferred fix, a call that was refused, a question left

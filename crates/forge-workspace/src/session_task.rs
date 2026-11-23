@@ -4386,6 +4386,41 @@ mod tests {
         workspace.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
+        // **The project's live state must reach PART 1.** A worker that is
+        // not the seat and a cron are seeded; deleting the
+        // `live_state_sections` call leaves the brief without them. The
+        // seat's own row is seeded too, so the filter that keeps the
+        // successor from messaging itself is exercised.
+        workspace.seed_test_project("forge", "/tmp/handoff-cut-project");
+        let project = workspace.project_key_for_name("forge").expect("the seeded project");
+        let worker = |label: &str, session: &str| crate::mcp::workers::types::WorkerEntry {
+            label: label.to_owned(),
+            charter: format!("charter for {label}"),
+            slot: SessionSlot::worker("TestOrg", "forge", label),
+            session_id: Some(forge_primitives::SessionId::new(session)),
+            status: forge_primitives::WorkerLiveness::Running,
+            spawned_at: std::time::SystemTime::UNIX_EPOCH,
+            spawned_by: SessionSlot::lead("TestOrg", "forge"),
+            needs_tag: false,
+            is_git_repo_at_spawn: false,
+            cwd: None,
+            diagnostic: None,
+            kick: None,
+        };
+        workspace.insert_live_worker(&project, worker("builder", "builder-session"));
+        workspace.insert_live_worker(&project, worker("handoff-cut", "old-session-id"));
+        workspace.seed_test_cron(forge_primitives::cron::CronEntry {
+            id: forge_primitives::cron::CronId::from("cron-1"),
+            project_name: "forge".to_owned(),
+            kind: forge_primitives::cron::CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: "morning summary".to_owned(),
+            description: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+            team_role: None,
+            wake: true,
+        });
         // **A live task must reach PART 1.** The build reads the seat's own
         // domain, so the domain is registered and a background task seeded;
         // deleting `sections.extend(live)` fails this.
@@ -4442,6 +4477,32 @@ mod tests {
             record.brief.judgment.iter().any(|section| section.label == "Now"),
             "the caller's brief is the judgment half: {:?}",
             record.brief.judgment,
+        );
+        let workers = record
+            .brief
+            .ground_truth
+            .iter()
+            .find(|section| section.label == "live workers")
+            .expect("the other live workers reach PART 1");
+        let workers_text = workers.lines.join("\n");
+        assert!(
+            workers_text.contains("TestOrg/forge/builder"),
+            "a worker that is not the seat is named: {workers_text}",
+        );
+        assert!(
+            !workers_text.contains("TestOrg/forge/handoff-cut"),
+            "the seat handing over is not a worker to message: {workers_text}",
+        );
+        let crons = record
+            .brief
+            .ground_truth
+            .iter()
+            .find(|section| section.label == "live crons")
+            .expect("the project's crons reach PART 1");
+        assert!(
+            crons.lines.iter().any(|line| line.contains("cron-1")),
+            "the cron is named with its id: {:?}",
+            crons.lines,
         );
 
         let dispatched = workspace.drain_test_dispatch_buffer();

@@ -313,12 +313,15 @@ by default, after a compaction, or when one is asked for - the successor's
 transcript opens with the brief forge delivered, and that prompt draws as
 the handoff procedure: the row wears the handoff's own mark, names itself,
 and holds the whole brief behind its open. The brief is the ground truth
-forge read off the transcript, git and the board - the seat, the working
-directory, the branch, the role, the files read and changed, the rows the
-seat owns and their links, the transcript the record names, and what was
-still running when the seat changed: the live agents, background tasks,
-monitors and the session's process tree, so the successor knows what to
-resume - then the note the handing-over session wrote, or its closing text
+forge read off the transcript, git, the board, the worker registry and the
+cron store - the seat, the working directory, the branch, the role, the
+files read and changed, the rows the seat owns and their links, the
+transcript the record names, and what was still running when the seat
+changed: the other live workers, the project's crons and its open board
+rows, each with the door that resumes it, beside the live agents,
+background tasks, monitors and the session's process tree this seat started,
+so the successor knows what to resume and what the swap stopped - then the
+note the handing-over session wrote, or its closing text
 under a `source` label when the exit call carried none: where things stand,
 what is in flight with the id that names it, what failed, and the exact next
 action with the file, command or row it starts at, so the successor opens
