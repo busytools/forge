@@ -640,15 +640,14 @@ client-release version: sync-main client-release-deps
         # must stop the release here rather than at the first launch.
         codesign --verify --deep --strict "$built"
 
-        # **Notarisation runs after this recipe, not inside the build.** Tauri
-        # 2.12 notarises and staples inside `bundle_project` when APPLE_ID,
-        # APPLE_PASSWORD and APPLE_TEAM_ID are set - the APPLE_* variables
-        # turn it on, `--skip-stapling` only omits the staple - and the embed
-        # and re-sign above invalidate that staple. A notarised build
-        # therefore builds with `--skip-stapling` and notarises the final
-        # signature after this recipe, or accepts that the shipped app's
-        # staple is stale. It does not fire today: no APPLE_* variables are
-        # set on this machine.
+        # **Nothing in this recipe notarises.** Tauri 2.12 notarises and
+        # staples inside `bundle_project` when APPLE_ID, APPLE_PASSWORD and
+        # APPLE_TEAM_ID are set - the APPLE_* variables turn it on,
+        # `--skip-stapling` only omits the staple - and the embed and re-sign
+        # above invalidate that staple. A notarised build therefore builds
+        # with `--skip-stapling` and notarises the final signature after this
+        # recipe, or accepts that the shipped app's staple is stale. It does
+        # not fire today: no APPLE_* variables are set on this machine.
 
         # **The updater tarball must carry the re-signed app.** Tauri creates
         # the tarball during the build, before the profile is embedded and the
@@ -681,8 +680,9 @@ client-release version: sync-main client-release-deps
         # members and writes them first; tauri-plugin-updater extracts each
         # entry with its first path component skipped, so a leading
         # `._forge.app` yields an empty path, unpacks onto the temp dir itself
-        # and every desktop update fails. COPYFILE_DISABLE makes tar skip the
-        # metadata, giving the same 9-member layout Tauri's own tarball has.
+        # and every desktop update fails. COPYFILE_DISABLE skips the AppleDouble
+        # member (the extended attributes still ride the pax headers), giving
+        # the same 9-member layout Tauri's own tarball has.
         COPYFILE_DISABLE=1 tar -czf "$tarball" -C "$bundle_dir" forge.app
         env -u TAURI_SIGNING_PRIVATE_KEY \
             npm --prefix client run tauri -- signer sign --app-version "{{version}}" \

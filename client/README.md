@@ -354,12 +354,12 @@ the Android keystore do. After the build it embeds the profile at
 `client/src-tauri/entitlements.plist` and a secure timestamp, and reads the
 signature back.
 
-Notarisation runs after this recipe, not inside it. Tauri 2.12 notarises and
-staples inside the build when `APPLE_ID`, `APPLE_PASSWORD` and
-`APPLE_TEAM_ID` are set; `--skip-stapling` only leaves the staple off, it
-does not turn notarisation on. The embed and re-sign above would invalidate
-a staple, so a notarised build needs the final signature notarised and
-stapled after this recipe, or the shipped app carries a stale staple.
+Nothing in this recipe notarises. Tauri 2.12 notarises and staples inside
+the build when `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID` are set;
+`--skip-stapling` only leaves the staple off, it does not turn notarisation
+on. The embed and re-sign above would invalidate a staple, so a notarised
+build needs the final signature notarised and stapled after this recipe, or
+the shipped app carries a stale staple.
 
 A release publishes five assets: `forge.app.tar.gz` and its `.sig`, the arm64
 APK, the web archive, and `latest.json` - the manifest all three halves read.
