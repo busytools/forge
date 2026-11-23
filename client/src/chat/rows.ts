@@ -21,8 +21,8 @@ import { workRowKey } from './units';
  * of the turn lands in exactly one slice, in its own order: the transcript a
  * reader scrolls through is the same one a whole row would have drawn.
  *
- * **The seams are drawn by `Chat.svelte`'s stylesheet**, as `.turn.part`,
- * `.first` and `.last`, so a turn taken apart still reads as one turn.
+ * **The seams are drawn by the app's stylesheet** (`assets/web.css`, the
+ * `.turn.part` rules), so a turn taken apart still reads as one turn.
  */
 
 /** One slice of a turn's fold, as an item of the list. */
@@ -86,18 +86,19 @@ function rowsIn(units: readonly Unit[]): number {
 /**
  * A run of work cut into slices of at most `limit` rows, as leaves units.
  *
- * **A run is cut only when it alone overflows a slice**, and each slice keeps
- * the run's own key with the first row's key after it: a slice is named by
- * where it starts, which does not move while rows land at the end of the run -
- * the fold never reorders a run, so an arriving frame cannot rename a slice
- * the reader is looking at.
+ * **The first slice keeps the run's own key**, so a turn that crosses the
+ * split while it is live does not remount the unit the reader is on - the
+ * fold named the run by its first row, and that name stays with the slice
+ * holding that row. Every later slice is named by the row it starts at, which
+ * does not move while rows land at the end of the run: the fold never reorders
+ * a run, so an arriving frame cannot rename a slice the reader is looking at.
  */
 function cut(unit: Extract<Unit, { kind: 'leaves' }>, limit: number): Unit[] {
   const out: Unit[] = [];
   for (let at = 0; at < unit.rows.length; at += limit) {
     const slice = unit.rows.slice(at, at + limit);
     const first = slice[0];
-    const key = first === undefined ? `${unit.key}~${at}` : `${unit.key}~${workRowKey(first)}`;
+    const key = at === 0 || first === undefined ? unit.key : `${unit.key}~${workRowKey(first)}`;
     out.push({ kind: 'leaves', key, rows: slice });
   }
   return out;
@@ -149,12 +150,44 @@ export function partDraws(part: Part, turnKey: string, key: string): boolean {
     if (`${turnKey}:${unit.key}` === key) return true;
     if (unit.kind !== 'leaves') continue;
     for (const row of unit.rows) {
-      // A call's own mark is `call-` and the row's key; nothing else in a run
-      // draws one.
-      if (row.tag === 'call' && `call-${row.key}` === key) return true;
+      // A call's own mark is `call-` and the row's name; nothing else in a run
+      // draws one. The `#<n>` suffix is a repeated name's ordinal (the list
+      // gives a duplicate an ordinal so it still draws), so it is matched too.
+      if (row.tag === 'call') {
+        const drawn = `call-${row.key}`;
+        if (key === drawn || key.startsWith(`${drawn}#`)) return true;
+      }
     }
   }
   return false;
+}
+
+/**
+ * The item of `rows` that draws the call `callId`, or the turn's first item.
+ *
+ * **Matched by the call's identity, not by its DOM name.** The fold names a
+ * call row after the occurrence it arrived in (`c-<id>#<frame>#<block>`), and
+ * a name built by spelling that from the id alone would stop matching the
+ * moment the fold's naming changes - which is exactly how a dispatch jump
+ * silently lands on the turn's head. The tool_use id is the identity a caller
+ * holds, so it is what is matched.
+ */
+export function rowOfCall<T extends { key: string }>(
+  rows: readonly ChatRow<T>[],
+  turnKey: string,
+  callId: string,
+): number {
+  const exact = rows.findIndex(
+    (row) =>
+      row.turn.key === turnKey &&
+      row.part !== null &&
+      row.part.units.some(
+        (unit) =>
+          unit.kind === 'leaves' &&
+          unit.rows.some((held) => held.tag === 'call' && held.leaf.id === callId),
+      ),
+  );
+  return exact >= 0 ? exact : firstRowOf(rows, turnKey);
 }
 
 /** The first item of the turn `turnKey` names, or -1 for a turn not held. */

@@ -28,8 +28,9 @@ vi.mock('virtua/svelte', async () => {
 
 const { default: Chat } = await import('./Chat.svelte');
 const { installResizeObserver } = await import('./testing/viewport');
-const { records } = await import('./testing/records');
+const { moves, records } = await import('./testing/records');
 const { PART_ROWS } = await import('./rows');
+const { scrollAsk } = await import('../session/scroll-ask');
 
 installResizeObserver();
 
@@ -102,8 +103,14 @@ const call = (at: number): unknown[] => [
   },
 ];
 
-/** How many calls the giant turn holds, which is what its items are cut from. */
-const CALLS = 240;
+/**
+ * How many calls the giant turn holds, which is what its items are cut from.
+ *
+ * **Not a multiple of the part size**, so the last slice is a remainder: a
+ * slicer that dropped a tail would lose its rows silently, and a multiple
+ * fixture would never draw one.
+ */
+const CALLS = 241;
 
 /** One turn of `CALLS` answered calls: the oversized turn a seat can open to. */
 function giant(): unknown[] {
@@ -117,6 +124,8 @@ afterEach(() => {
   app = null;
   document.body.innerHTML = '';
   records.length = 0;
+  moves.length = 0;
+  scrollAsk.set(null);
 });
 
 describe('a turn too tall to draw as one item', () => {
@@ -197,6 +206,32 @@ describe('a turn too tall to draw as one item', () => {
       const wanted = Math.min(PART_ROWS, CALLS - at * PART_ROWS);
       expect(count, `slice ${at} draws its own rows`).toBe(wanted);
     }
+    // **The final slice is the remainder and is drawn**: a tail dropped here
+    // would be a row missing from the transcript with nothing saying so.
+    expect(counts.at(-1), 'the last slice draws the tail').toBe(CALLS % PART_ROWS);
     expect(Math.max(...counts), 'no item draws the whole turn').toBeLessThan(CALLS);
+  });
+
+  it('sends a dispatch jump to the item that draws its call', () => {
+    const server = stub();
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([{ key: 't-big', messages: giant() }]);
+    moves.length = 0;
+
+    // A call deep in the run: its item is several slices below the turn's
+    // head, which is where a jump that could not name it would land.
+    const wanted = 1 + Math.floor(200 / PART_ROWS);
+    scrollAsk.set({ what: 'dispatch', token: 1, call: 'toolu_200' });
+    flushSync();
+
+    expect(moves.at(-1)?.at, 'the jump lands on the item that draws the call').toBe(wanted);
+    const items = [...document.querySelectorAll('.conv [data-t]')];
+    const row = document.querySelector('.conv details.leaf[data-k="call-c-toolu_200"]');
+    expect(row, 'the call drew').not.toBeNull();
+    expect(row?.closest('[data-t]'), 'and it is the item the jump asked for').toBe(items[wanted]);
   });
 });

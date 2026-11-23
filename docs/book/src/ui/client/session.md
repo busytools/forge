@@ -340,12 +340,16 @@ absorb it, so the place the reader holds does not move under the reader.
 virtualises its items, so a turn of tens of thousands of pixels handed over
 as one item is laid out in full whenever any part of it is on screen, which
 is the whole of a long turn built in one frame and the black a reader meets
-scrolling up through it. A turn whose fold passes a threshold of drawn rows
-reaches the list as slices of its rows instead, each its own item, so the
-list draws the slice the reader is looking at and the rest stays data. The
-slices keep the turn's own spacing at its head and foot and none at the
-seams between them, so a split turn still reads as the one turn it is, and
-nothing is dropped: the same rows in the same order, however tall the turn.
+scrolling up through it. The column reads two thresholds: a turn carrying at
+least as many frames as the split is folded, and one whose fold then draws
+more rows than the split reaches the list as slices of those rows, each its
+own item of about thirty rows, so the list draws the slices around the reader
+and the rest stays data. A turn under the frame count is handed over whole
+and drawn as before. The slices keep the turn's own spacing at its head and
+foot; a work run, a stretch of leaves and the reader's own block drop their
+margins at a seam, while a card or a compaction point landing there keeps its
+own. Nothing is dropped: the same rows in the same order, however tall the
+turn.
 
 **A conversation with a saved place opens at it; everything else opens at
 the latest.** A place is the row the reader held and how far into it they

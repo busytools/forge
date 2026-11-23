@@ -35,7 +35,7 @@
   import { glideTo as glideToward, wantsMotion } from './glide';
   import { echoes, ownWords } from './echoes.svelte';
   import { pinnedRow } from './pinnedRow.svelte';
-  import { chatRows, firstRowOf, rowOfKey, SPLIT_AT, type ChatRow } from './rows';
+  import { chatRows, firstRowOf, rowOfCall, rowOfKey, SPLIT_AT, type ChatRow } from './rows';
   import Turn from './Turn.svelte';
   import { turnOfDispatch } from './dispatch-jump';
   import { callRow, reachableIds, reveal, subagents } from './subagents.svelte';
@@ -255,6 +255,14 @@
   let restoreTries = 0;
   /** When the restore being placed began, against [`RESTORE_MS`]. */
   let restoreStarted = 0;
+  /**
+   * The list item the restore last asked for, so a wait is not a re-ask.
+   *
+   * A row whose item has not drawn yet is waited for, not re-scrolled frame
+   * after frame: the ask repeated is the same offset, and the model only
+   * moves it when a slice boundary does.
+   */
+  let restoreAsked: number | null = null;
   /**
    * Whether the entry's placement has settled.
    *
@@ -919,12 +927,12 @@
    * Record what a turn's row measures, so a row the send's pull-and-return
    * keeps mounted holds its own space while it draws nothing (#1890).
    *
-   * **`foot` is what the turn's own height is, now that a tall turn is not one
-   * row.** A turn taken apart draws as several items and only its last one is
-   * where the turn ends, so that is the height the column keeps under the
-   * turn's key: the reserve a held row comes back at, the page's median and
-   * the follow's height term all still read one number per turn, and the one
-   * that moves as a live turn grows is the foot's.
+   * **`foot` is what a tall turn reports, now that it is not one row.** A turn
+   * taken apart draws as several items and only its last one is where the turn
+   * ends, so the height kept under the turn's key is that last slice's - and
+   * a whole turn's is its own. The reserve a held row comes back at, the
+   * page's median and the follow's height term all still read one number per
+   * turn, and the one that moves as a live turn grows is the foot's slice.
    */
   function measureTurn(node: HTMLElement, key: string, foot: boolean): () => void {
     const observer = new ResizeObserver((entries) => {
@@ -1824,11 +1832,12 @@
    * Take a returning reader back to the row their place names.
    *
    * **A fresh list mounts at its start**, so the row may be outside the drawn
-   * window until the list is moved to its turn. A turn is the list's item, so
-   * scrolling to it draws every row in it - and the ordinary anchor restore
-   * then puts the reader exactly back. A restore that cannot land is given up
-   * and the reader goes to the foot, rather than staying at the turn the
-   * scroll reached with the follow off.
+   * window until the list is moved to the item that draws it - the turn
+   * itself for an ordinary one, and the turn's slice holding the row for a
+   * turn taken apart. The ordinary anchor restore then puts the reader
+   * exactly back. A restore that cannot land is given up and the reader goes
+   * to the foot, rather than staying at the turn the scroll reached with the
+   * follow off.
    */
   $effect(() => {
     const place = restoring;
@@ -1865,6 +1874,7 @@
       return;
     }
     restoreStarted = Date.now();
+    restoreAsked = null;
     restoreFrame = requestAnimationFrame(() => {
       // **The turn is read again in the frame it is scrolled in**: a prepend
       // can land between this schedule and its frame, and an index from the
@@ -1876,7 +1886,9 @@
       }
       // The ITEM that draws the row, which a taken-apart turn's first item may
       // be tens of thousands of pixels above.
-      handle.scrollToIndex(rowOfKey(rows, turn.key, place.anchor.key), { align: 'start' });
+      const at = rowOfKey(rows, turn.key, place.anchor.key);
+      if (at >= 0) restoreAsked = at;
+      handle.scrollToIndex(at, { align: 'start' });
       restoreFrame = requestAnimationFrame(placeRestored);
     });
   });
@@ -1902,30 +1914,32 @@
       return;
     }
     const turn = held.turns.find((one) => turnHasRow(one, place.anchor.key));
-    /** Whether the row's TURN is drawn, whatever the row is doing. */
-    const drawn =
+    // **The row not being drawn is not the row being gone, where the item that
+    // draws it has not been drawn either.** After a jump the list lands on its
+    // estimate and re-places itself as the items measure, and a turn taken
+    // apart draws as several items of which the row's own is just one - so a
+    // row in a later slice can be outside the drawn window for more than a
+    // couple of frames. That state is waited out within the budget a whole
+    // turn gets, asking again only when the item it names has moved.
+    //
+    // **The turn's own head is the exception**: when the row was due in the
+    // head and the head is drawn, the row was re-keyed or taken, and the place
+    // goes to the foot by the rules - waiting would only keep the reader at
+    // the wrong row for the whole budget.
+    const handle = list;
+    const at = turn === undefined ? -1 : rowOfKey(rows, turn.key, place.anchor.key);
+    const head = turn === undefined ? -1 : firstRowOf(rows, turn.key);
+    const headDrawn =
       turn !== undefined && viewport.querySelector(`[data-t="${CSS.escape(turn.key)}"]`) !== null;
-    // **The turn not being drawn is not the row being gone.** A huge live turn
-    // is the list's one item: after a jump the list lands on its estimate,
-    // measures it, and re-places it, so the turn can be outside the window for
-    // more than a couple of frames. The row is not re-keyed or taken - the
-    // window has not reached it - and giving up here drops the reader to the
-    // foot for a merely slow mount. The list is asked again, within a budget;
-    // past the budget the reader goes to the foot rather than waiting on a
-    // mount that never comes.
-    if (!drawn) {
-      const handle = list;
-      if (Date.now() - restoreStarted >= RESTORE_MS || turn === undefined || handle === null) {
-        giveUpRestore();
-        return;
+    const waiting = at >= 0 && (at !== head || !headDrawn);
+    if (handle !== null && waiting && Date.now() - restoreStarted < RESTORE_MS) {
+      if (at !== restoreAsked) {
+        restoreAsked = at;
+        handle.scrollToIndex(at, { align: 'start' });
       }
-      const at = rowOfKey(rows, turn.key, place.anchor.key);
-      if (at >= 0) handle.scrollToIndex(at, { align: 'start' });
       restoreFrame = requestAnimationFrame(placeRestored);
       return;
     }
-    // The turn is here and the row is not: the row was re-keyed or taken, and
-    // the place goes the way the rules say - to the latest.
     restoreTries += 1;
     restoreFrame = restoreTries < RESTORE_TRIES ? requestAnimationFrame(placeRestored) : null;
     if (restoreFrame === null) giveUpRestore();
@@ -1945,6 +1959,7 @@
     restoring = null;
     restoreTries = 0;
     restoreStarted = 0;
+    restoreAsked = null;
     anchor = null;
     placeKept = keepPlace;
     if (!keepPlace) rememberPlace();
@@ -2014,6 +2029,10 @@
    * geometry is what tells the two apart - a black column is one whose model
    * holds turns and whose viewport has no row with a box, or whose pin refused
    * itself on an undrawn newest row. Written once per open, never per frame.
+   *
+   * **`rows` counts the list's items**, which is one per turn except where a
+   * turn was taken apart for height: the mark says the column drew something,
+   * and the item count is the honest size of what it drew.
    */
   function drawnGeometry(): DrawnGeometry {
     // **No list is a reading, not an absence.** A conversation mark with no
@@ -2631,8 +2650,11 @@
         asking = false;
         // The item that draws the dispatch's own call row: a taken-apart turn
         // may hold it far below its first item, and landing on the turn's head
-        // would leave the reveal chasing a row the window never reaches.
-        list?.scrollToIndex(rowOfKey(rows, turn.key, `call-c-${wanted}`), { align: 'start' });
+        // would leave the reveal chasing a row the window never reaches. The
+        // call is matched by its tool_use id, not by a name spelled from it:
+        // the fold's own naming carries the occurrence, and a spelled name
+        // would silently stop matching it.
+        list?.scrollToIndex(rowOfCall(rows, turn.key, wanted), { align: 'start' });
         // The row mounts with the turn, and a tall turn takes real time to
         // draw: the chase runs on a wall-clock budget rather than frames, so
         // a slow mount is not mistaken for a dispatch that is not there.
@@ -2704,8 +2726,9 @@
     const cut = at === null ? undefined : held.turns[at];
     if (cut !== undefined) {
       asking = false;
-      // The cut is a row at the turn's edge, so the turn's first item is the
-      // item that draws it.
+      // A compaction boundary sits where the conversation was cut, so the cut
+      // is a row of the turn the search names; the turn's first item is the
+      // nearest item to it, and the reader's own walk to the row follows.
       list?.scrollToIndex(firstRowOf(rows, cut.key), { align: 'start' });
       return;
     }

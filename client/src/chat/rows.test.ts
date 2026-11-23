@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { chatRows, drawnRows, firstRowOf, partDraws, rowOfKey, SPLIT_AT } from './rows';
+import { chatRows, drawnRows, firstRowOf, partDraws, rowOfCall, rowOfKey, SPLIT_AT } from './rows';
 import type { Unit } from './units';
 
 /** A run of `count` thoughts, which draws one row each. */
@@ -69,17 +69,70 @@ describe('the items a page of turns becomes', () => {
     expect(split.filter((row) => row.part?.last === true).length, 'exactly one last item').toBe(1);
   });
 
+  it('splits at the threshold and not a row earlier', () => {
+    const whole = chatRows(turns(SPLIT_AT), unitsOf);
+    expect(whole.length, 'exactly the threshold is one item').toBe(1);
+    expect(whole[0]?.part, 'and it is drawn whole').toBeNull();
+
+    const over = chatRows(turns(SPLIT_AT + 1), unitsOf);
+    expect(over.length, 'a row over it is taken apart').toBeGreaterThan(1);
+    expect(over[0]?.part?.first, 'the first item says so').toBe(true);
+    expect(over.at(-1)?.part?.last, 'and the last').toBe(true);
+    // **The last slice is the remainder**, which a slicer that dropped a tail
+    // would not draw: the turn ends exactly one row past the threshold.
+    const tail = over.at(-1)?.part?.units.at(-1);
+    expect(tail?.kind).toBe('leaves');
+    if (tail?.kind === 'leaves') expect(tail.rows.length, 'the tail is drawn').toBe(1);
+    // **The head keeps both its names**: the turn's first item keeps the
+    // turn's key and its run keeps the run's, so a live turn crossing the
+    // split does not remount the block the reader is on.
+    expect(over[0]?.key, "the first item keeps the turn's key").toBe('t0');
+    expect(over[0]?.part?.units[0]?.key, "and the first slice keeps the run's").toBe('t0-run');
+  });
+
   it('keeps every row and its order across the cut', () => {
     const page = turns(SPLIT_AT * 3);
     const rows = chatRows(page, unitsOf);
-    const keys = drawn(rows);
-    expect(keys, 'each slice of the run is drawn once').toEqual([...new Set(keys)]);
+    // **The ordered keys, not a de-duplication of them**: a comparison against
+    // the list's own set passes in any order, which is the property this test
+    // exists to deny. The first slice keeps the run's key, and each later one
+    // is named by the row it starts at.
+    expect(drawn(rows), "the slices, in the run's order").toEqual(
+      Array.from({ length: (SPLIT_AT * 3) / 30 }, (_, slice) =>
+        slice === 0 ? 't0-run' : `t0-run~t0-run-${slice * 30}`,
+      ),
+    );
     const rowsDrawn = rows.reduce((total, row) => {
       const part = row.part;
       if (part === null) return total;
       return total + part.units.reduce((held, unit) => held + drawnRows(unit), 0);
     }, 0);
     expect(rowsDrawn, 'no row is dropped by the cut').toBe(SPLIT_AT * 3);
+  });
+
+  it('keeps the prose between two runs whole, on its own key', () => {
+    // A run is cut through, but a unit between two runs is not: the prose
+    // lands whole in a slice of its own, and the key it is found by is the
+    // unit's own - the path `partDraws` and `rowOfKey` take for every unit
+    // that is not a slice of a run.
+    const prose: Unit = { kind: 'text', key: 'mid', text: 'between' };
+    const units: Unit[] = [run('a', 100), prose, run('b', 100)];
+    const rows = chatRows(turns(1), () => units, SPLIT_AT, 30);
+    const at = rows.findIndex((row) => row.part?.units.some((unit) => unit.key === 'mid'));
+    expect(at, 'the prose has an item of its own').toBeGreaterThan(0);
+    expect(
+      rows[at]?.part?.units.map((unit) => unit.kind),
+      'and nothing else in it',
+    ).toEqual(['text']);
+    const part = rows[at]?.part;
+    expect(part, 'the item is a slice').not.toBeNull();
+    if (part === null || part === undefined) return;
+    expect(partDraws(part, 't0', 't0:mid'), 'the unit key finds it').toBe(true);
+    expect(rowOfKey(rows, 't0', 't0:mid'), 'and the list is sent to it').toBe(at);
+    // The runs either side are sliced, so the prose sits between slices of
+    // two different runs rather than inside one.
+    expect(rows[0]?.part?.units[0]?.kind, 'a run leads').toBe('leaves');
+    expect(rows.at(-1)?.part?.units.at(-1)?.kind, 'and another closes').toBe('leaves');
   });
 
   it('names each item by the unit it starts at, which appends cannot move', () => {
@@ -142,5 +195,11 @@ describe('the items a page of turns becomes', () => {
     // The call lands in the second item, which is the one a dispatch jump
     // must reach: `call-` and the row's key is what the DOM draws.
     expect(rowOfKey(rows, 't0', 'call-c-abc')).toBe(rows.length - 1);
+    // **A dispatch jump asks by the call's identity, not by a name spelled
+    // from it.** The fold's own naming carries the occurrence, so a jump that
+    // spelled the name from the id would stop matching the moment that naming
+    // changed; the tool_use id is what the caller holds.
+    expect(rowOfCall(rows, 't0', 'abc'), 'the call is found by its id').toBe(rows.length - 1);
+    expect(rowOfCall(rows, 't0', 'not-a-call'), 'an unknown call lands on the turn').toBe(0);
   });
 });
