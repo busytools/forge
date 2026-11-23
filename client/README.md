@@ -319,6 +319,32 @@ names and only warns when that is not the pinned one, so
 `tauri.conf.json`'s pubkey and the signed version with the release's, the way
 `client-android-release` reads the APK's signer back.
 
+### The keychain profile
+
+The app's keychain entitlements - `com.apple.application-identifier` and
+`keychain-access-groups` - are only honoured when a Developer ID provisioning
+profile carrying the same team and application identifier is embedded in the
+bundle. The profile is a separate artifact from the codesign identity and the
+updater key, and it lives outside the repo beside them:
+
+```sh
+~/.tauri/forge.provisionprofile
+```
+
+Mint it once in the Developer portal: Certificates, Identifiers & Profiles ->
+Profiles -> + -> Developer ID, pick the `dev.vedhavyas.forge` app id and the
+Developer ID Application certificate, and download it. The profile carries the
+team's keychain wildcard (`KALKD5L7NF.*`), which authorizes the literal group
+the app's entitlements name.
+
+`client-release` reads `FORGE_PROVISION_PROFILE`, else
+`~/.tauri/forge.provisionprofile`. When a Developer ID identity is present it
+fails rather than skip if the profile is missing, the way the updater key and
+the Android keystore do. After the build it embeds the profile at
+`Contents/embedded.provisionprofile`, signs the app again with
+`client/src-tauri/entitlements.plist` and a secure timestamp, and reads the
+signature back.
+
 A release publishes five assets: `forge.app.tar.gz` and its `.sig`, the arm64
 APK, the web archive, and `latest.json` - the manifest all three halves read.
 `scripts/update_manifest.py` writes the manifest with the `.sig`'s content

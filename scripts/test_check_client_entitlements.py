@@ -25,6 +25,9 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("check_client_entitlements.py")
 ENTITLEMENT = "com.apple.security.device.audio-input"
+APPLICATION_IDENTIFIER = "com.apple.application-identifier"
+KEYCHAIN_ACCESS_GROUPS = "keychain-access-groups"
+APP_ID = "KALKD5L7NF.dev.vedhavyas.forge"
 USAGE = "NSMicrophoneUsageDescription"
 
 # `CODESIGN_EXIT` makes the stand-in fail the way codesign does for an unsigned
@@ -39,6 +42,14 @@ if [ -n "${CODESIGN_EXIT:-}" ]; then
     exit "$CODESIGN_EXIT"
 fi
 cat "$CODESIGN_PLIST"
+"""
+
+# The gate decodes an embedded profile with `openssl cms -verify`; the
+# stand-in prints whatever `OPENSSL_PLIST` holds, so a case can supply the
+# profile's plist without a real CMS blob.
+OPENSSL = """\
+#!/bin/sh
+cat "$OPENSSL_PLIST"
 """
 
 
@@ -57,10 +68,20 @@ class CheckClientEntitlementsTest(unittest.TestCase):
         codesign = self.bin / "codesign"
         codesign.write_text(CODESIGN)
         codesign.chmod(0o755)
+        openssl = self.bin / "openssl"
+        openssl.write_text(OPENSSL)
+        openssl.chmod(0o755)
 
         self.log = self.root / "codesign.log"
         self.plist = self.root / "entitlements.plist"
-        self.write_entitlements({ENTITLEMENT: True})
+        self.profile_plist = self.root / "profile.plist"
+        self.write_entitlements(
+            {
+                ENTITLEMENT: True,
+                APPLICATION_IDENTIFIER: APP_ID,
+                KEYCHAIN_ACCESS_GROUPS: [APP_ID],
+            }
+        )
 
     def write_info(self, entries: dict) -> None:
         with (self.bundle / "Contents" / "Info.plist").open("wb") as handle:
@@ -71,6 +92,12 @@ class CheckClientEntitlementsTest(unittest.TestCase):
             self.plist.write_bytes(b"")
             return
         with self.plist.open("wb") as handle:
+            plistlib.dump(entries, handle)
+
+    def write_profile(self, entries: dict) -> None:
+        """Embed a profile in the bundle and give the stand-in its plist."""
+        (self.bundle / "Contents" / "embedded.provisionprofile").write_bytes(b"stand-in")
+        with self.profile_plist.open("wb") as handle:
             plistlib.dump(entries, handle)
 
     def codesign_calls(self) -> "list[str]":
@@ -84,6 +111,7 @@ class CheckClientEntitlementsTest(unittest.TestCase):
             "PATH": f"{self.bin}{os.pathsep}{os.environ.get('PATH', '')}",
             "CODESIGN_LOG": str(self.log),
             "CODESIGN_PLIST": str(self.plist),
+            "OPENSSL_PLIST": str(self.profile_plist),
         }
         environ.update(env)
         return subprocess.run(
@@ -136,6 +164,44 @@ class CheckClientEntitlementsTest(unittest.TestCase):
         self.assertIn("[ERROR]", result.stderr)
         self.assertIn(f"{ENTITLEMENT} is absent, expected true", result.stderr)
         self.assertTrue(self.codesign_calls(), "the refusal did not come from a signature read")
+
+    def test_a_build_missing_the_keychain_entitlements_is_refused(self) -> None:
+        # The audio entitlement is present and the keychain pair is not: the
+        # shape of a build that would leave the biometric gate dormant.
+        self.write_entitlements({ENTITLEMENT: True})
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 1, "a build without the keychain entitlements passed")
+        self.assertIn("[ERROR]", result.stderr)
+        self.assertIn(APPLICATION_IDENTIFIER, result.stderr)
+        self.assertTrue(self.codesign_calls(), "the refusal did not come from a signature read")
+
+    def test_a_matching_embedded_profile_passes(self) -> None:
+        self.write_profile(
+            {
+                "TeamIdentifier": ["KALKD5L7NF"],
+                "Entitlements": {APPLICATION_IDENTIFIER: APP_ID},
+            }
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_an_embedded_profile_that_does_not_match_is_refused(self) -> None:
+        self.write_profile(
+            {
+                "TeamIdentifier": ["WRONGTEAM"],
+                "Entitlements": {APPLICATION_IDENTIFIER: "WRONGTEAM.dev.vedhavyas.forge"},
+            }
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 1, "a mismatched embedded profile passed")
+        self.assertIn("[ERROR]", result.stderr)
+        self.assertIn("embedded.provisionprofile", result.stderr)
 
     def test_a_bundle_without_the_usage_string_is_refused(self) -> None:
         self.write_info({"CFBundleIdentifier": "dev.vedhavyas.forge"})

@@ -13,9 +13,16 @@ trusted from `tauri.conf.json`, so a signature made without the entitlements
 file cannot ship. `client-release` runs this after the bundle is built and
 signed, before anything is installed.
 
-Prints `[OK]` and exits 0 when both are present; prints `[ERROR]` naming what
-is missing and exits 1 otherwise. `codesign` prints nothing for a signed bundle
-that declares no entitlements, so an empty read is a failure, not a pass.
+The same signature is read for the keychain pair the data-protection keychain
+needs: `com.apple.application-identifier` and `keychain-access-groups`. When a
+provisioning profile is embedded at `Contents/embedded.provisionprofile`, its
+team and application identifier are read back and must match the signature, so
+a build carrying the wrong profile cannot ship quietly.
+
+Prints `[OK]` and exits 0 when everything is present; prints `[ERROR]` naming
+what is missing and exits 1 otherwise. `codesign` prints nothing for a signed
+bundle that declares no entitlements, so an empty read is a failure, not a
+pass.
 """
 
 import plistlib
@@ -24,7 +31,10 @@ import sys
 from pathlib import Path
 
 ENTITLEMENT = "com.apple.security.device.audio-input"
+APPLICATION_IDENTIFIER = "com.apple.application-identifier"
+KEYCHAIN_ACCESS_GROUPS = "keychain-access-groups"
 USAGE = "NSMicrophoneUsageDescription"
+PROFILE = "embedded.provisionprofile"
 
 
 def fail(message: str) -> None:
@@ -74,6 +84,60 @@ def read_entitlements(bundle: Path) -> dict:
     return plist
 
 
+def read_profile(bundle: Path) -> "dict | None":
+    """The embedded provisioning profile's plist, or None when none is embedded."""
+    path = bundle / "Contents" / PROFILE
+    if not path.exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["openssl", "cms", "-verify", "-inform", "DER", "-in", str(path), "-noverify"],
+            capture_output=True,
+        )
+    except OSError as err:
+        fail(f"openssl could not be run to read {path}: {err}")
+    if result.returncode != 0:
+        detail = result.stderr.decode(errors="replace").strip()
+        fail(f"{path} could not be decoded: {detail}")
+    try:
+        plist = plistlib.loads(result.stdout)
+    except Exception as err:
+        fail(f"{path} is not a readable plist: {err}")
+    if not isinstance(plist, dict):
+        fail(f"{path} is not a dictionary")
+    return plist
+
+
+def check_keychain_entitlements(declared: dict) -> str:
+    """Refuse a signature without the keychain pair, returning its application id."""
+    app_id = declared.get(APPLICATION_IDENTIFIER)
+    if not isinstance(app_id, str) or not app_id.strip():
+        fail(f"{APPLICATION_IDENTIFIER} is absent, so the keychain gate cannot work")
+    groups = declared.get(KEYCHAIN_ACCESS_GROUPS)
+    if not isinstance(groups, list) or not groups:
+        fail(f"{KEYCHAIN_ACCESS_GROUPS} is absent, so the keychain gate cannot work")
+    if app_id not in groups:
+        fail(f"{KEYCHAIN_ACCESS_GROUPS} does not carry {app_id}")
+    return app_id
+
+
+def check_profile(bundle: Path, app_id: str) -> None:
+    """Refuse an embedded profile whose team or application id does not match."""
+    profile = read_profile(bundle)
+    if profile is None:
+        return
+    team = app_id.split(".", 1)[0]
+    teams = profile.get("TeamIdentifier")
+    if not isinstance(teams, list) or team not in teams:
+        fail(f"{PROFILE} names team {teams!r}, not {team!r}")
+    entitlements = profile.get("Entitlements")
+    profile_app_id = (
+        entitlements.get(APPLICATION_IDENTIFIER) if isinstance(entitlements, dict) else None
+    )
+    if profile_app_id != app_id:
+        fail(f"{PROFILE} carries application identifier {profile_app_id!r}, not {app_id!r}")
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         fail("usage: check_client_entitlements.py <path/to/forge.app>")
@@ -88,7 +152,10 @@ def main() -> None:
         state = "absent" if ENTITLEMENT not in declared else f"declared {value!r}"
         fail(f"{bundle}: {ENTITLEMENT} is {state}, expected true")
 
-    print(f"[OK] {bundle.name} declares {ENTITLEMENT} and its microphone usage string")
+    app_id = check_keychain_entitlements(declared)
+    check_profile(bundle, app_id)
+
+    print(f"[OK] {bundle.name} declares {ENTITLEMENT} and the keychain entitlements")
 
 
 if __name__ == "__main__":

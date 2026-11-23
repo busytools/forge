@@ -590,6 +590,22 @@ client-release version: sync-main client-release-deps
         # the ad-hoc fallback needs the variable genuinely unset.
         export APPLE_SIGNING_IDENTITY
         echo "[OK] signing the client with $APPLE_SIGNING_IDENTITY"
+
+        # **The keychain entitlements need a matching provisioning profile.**
+        # The application identifier and keychain access group are only
+        # honoured when a Developer ID profile carrying the same team and
+        # application identifier is embedded beside them. The profile is
+        # minted in the Developer portal and lives outside the repo
+        # (`client/README.md`, the keychain profile). Fail rather than skip,
+        # the way the updater key and the Android keystore do.
+        profile="${FORGE_PROVISION_PROFILE:-$HOME/.tauri/forge.provisionprofile}"
+        if [ ! -f "$profile" ]; then
+            echo "[ERROR] the provisioning profile is not set up: $profile" >&2
+            echo "        mint a Developer ID profile for dev.vedhavyas.forge in the" >&2
+            echo "        Developer portal and save it there, or name it with" >&2
+            echo "        FORGE_PROVISION_PROFILE (client/README.md, the keychain profile)" >&2
+            exit 1
+        fi
     else
         unset APPLE_SIGNING_IDENTITY
         echo "[WARN] no Developer ID identity on this machine: the client stays ad-hoc signed" >&2
@@ -600,6 +616,18 @@ client-release version: sync-main client-release-deps
     if [ ! -e "$built" ]; then
         echo "[ERROR] the build produced no app bundle at $built" >&2
         exit 1
+    fi
+
+    if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+        # **Embed the profile and sign again.** Tauri signs the app with the
+        # entitlements file but cannot embed a provisioning profile, and the
+        # keychain pair is refused without one (-34018). The profile goes in
+        # first so the signature seals it, then the app is signed again with
+        # the same entitlements, hardened runtime and a secure timestamp.
+        ditto "$profile" "$built/Contents/embedded.provisionprofile"
+        codesign --force --options runtime --timestamp \
+            --entitlements client/src-tauri/entitlements.plist \
+            --sign "$APPLE_SIGNING_IDENTITY" "$built"
     fi
 
     got=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$built/Contents/Info.plist")
