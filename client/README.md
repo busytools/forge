@@ -339,7 +339,12 @@ Mint it once in the Developer portal: Certificates, Identifiers & Profiles ->
 Profiles -> + -> Developer ID, pick the `dev.vedhavyas.forge` app id and the
 Developer ID Application certificate, and download it. The profile carries the
 team's keychain wildcard (`KALKD5L7NF.*`), which authorizes the literal group
-the app's entitlements name.
+the app's entitlements name. It also pins the Developer ID Application
+certificate it was minted with, so it must be re-minted when that certificate
+renews (the current one renews on 2027-12-22; the profile itself runs to
+2044). `check_client_entitlements.py` refuses a profile whose
+`DeveloperCertificates` does not carry the certificate the app is signed
+with.
 
 `client-release` reads `FORGE_PROVISION_PROFILE`, else
 `~/.tauri/forge.provisionprofile`. When a Developer ID identity is present it
@@ -350,9 +355,11 @@ the Android keystore do. After the build it embeds the profile at
 signature back.
 
 Notarisation runs after this recipe, not inside it. Tauri 2.12 notarises and
-staples inside the build, and the embed and re-sign above would invalidate
-that staple. Turn notarisation on with `--skip-stapling` and notarise the
-final signature, or accept that the shipped app's staple is stale.
+staples inside the build when `APPLE_ID`, `APPLE_PASSWORD` and
+`APPLE_TEAM_ID` are set; `--skip-stapling` only leaves the staple off, it
+does not turn notarisation on. The embed and re-sign above would invalidate
+a staple, so a notarised build needs the final signature notarised and
+stapled after this recipe, or the shipped app carries a stale staple.
 
 A release publishes five assets: `forge.app.tar.gz` and its `.sig`, the arm64
 APK, the web archive, and `latest.json` - the manifest all three halves read.

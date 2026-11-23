@@ -99,8 +99,9 @@ word-count gate, and the scripts' own tests, `script-tests`: the release
 manifest's, the client-dependency bootstrap's, the client-quit script's,
 the main-checkout preflight's, the check-group orchestrator's, the gate
 lock's, the book's client-page word-count test's, the client-wasm check's,
-the browser-stack patch's, the browser-host focus test's and the
-client-entitlement read-back's), the Rust workspace
+the browser-stack patch's, the browser-host focus test's, the
+client-entitlement read-back's and the updater signature read-back's), the
+Rust workspace
 (`cargo clippy --all-targets --workspace -- -D warnings`
 once per feature set, with and without `--all-features`,
 `cargo nextest run --workspace --all-features`,
