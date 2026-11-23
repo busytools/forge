@@ -309,15 +309,19 @@ client would need a manual reinstall onto a new key. The same discipline the
 release keystore carries, for the same reason.
 
 `bundle.createUpdaterArtifacts` makes the app bundle target emit
-`forge.app.tar.gz` and its `.sig` beside it. The release recipes fail rather
-than skip when the key is missing, the way the Android half fails on its
-keystore, because a release that publishes no signed tarball is a release
+`forge.app.tar.gz` and its `.sig` beside it. Tauri creates that pair during
+the build, before the profile is embedded and the app signed again, so
+`client-release` regenerates the tarball from the re-signed bundle and signs
+it with the updater key, replacing the build's pair. The release recipes fail
+rather than skip when the key is missing, the way the Android half fails on
+its keystore, because a release that publishes no signed tarball is a release
 no client can update from. And `client-release` reads the built pair back
 before swapping anything in: the CLI signs with whatever key the environment
 names and only warns when that is not the pinned one, so
 `scripts/check_updater_signature.py` compares the signature's key id with
-`tauri.conf.json`'s pubkey and the signed version with the release's, the way
-`client-android-release` reads the APK's signer back.
+`tauri.conf.json`'s pubkey and the signed version with the release's, and
+checks that the tarball carries the app's embedded profile and keychain pair,
+the way `client-android-release` reads the APK's signer back.
 
 ### The keychain profile
 

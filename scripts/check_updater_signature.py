@@ -20,9 +20,12 @@ version the artifact was signed for.
 
 import base64
 import json
+import plistlib
 import re
+import subprocess
 import sys
 import tarfile
+import tempfile
 from pathlib import Path
 
 
@@ -50,6 +53,46 @@ def key_id(lines: list[str], what: str) -> bytes:
     if len(blob) < 10:
         fail(f"{what}'s blob is too short to carry a key id")
     return blob[2:10]
+
+
+def check_extracted_app(tarball: Path) -> None:
+    """Extract the tarball and require the app's keychain pair on its signature.
+
+    The tarball's app must be the re-signed one: the recipe embeds the profile
+    and signs the app again before the tarball is regenerated. Reading the
+    pair back off the extracted app proves the tarball carries that signature,
+    not the build's pre-embed one.
+    """
+    with tempfile.TemporaryDirectory() as scratch:
+        try:
+            with tarfile.open(tarball, "r:gz") as archive:
+                archive.extractall(scratch, filter="data")
+        except (OSError, tarfile.TarError) as err:
+            fail(f"the updater tarball could not be extracted: {err}")
+        app = Path(scratch) / "forge.app"
+        try:
+            result = subprocess.run(
+                ["codesign", "-d", "--entitlements", "-", str(app)],
+                capture_output=True,
+            )
+        except OSError as err:
+            fail(f"codesign could not be run on the extracted app: {err}")
+        if result.returncode != 0:
+            detail = result.stderr.decode(errors="replace").strip()
+            fail(f"the extracted app's entitlements could not be read: {detail}")
+        try:
+            entitlements = plistlib.loads(result.stdout)
+        except Exception as err:
+            fail(f"the extracted app's entitlements do not parse: {err}")
+        app_id = entitlements.get("com.apple.application-identifier")
+        groups = entitlements.get("keychain-access-groups")
+        if not isinstance(app_id, str) or not app_id.strip():
+            fail("the extracted app declares no com.apple.application-identifier")
+        if not isinstance(groups, list) or app_id not in groups:
+            fail(
+                "the extracted app's keychain-access-groups does not carry its "
+                "application identifier"
+            )
 
 
 def main() -> None:
@@ -109,6 +152,25 @@ def main() -> None:
     app_binary = "forge.app/Contents/MacOS/forge-client"
     if app_binary not in names:
         fail(f"the update tarball carries no client binary ({app_binary} is missing)")
+
+    # **The tarball must carry the app's embedded profile.** The release
+    # embeds the profile in the app bundle and signs the app again, but
+    # tauri's build creates the tarball before that. A stale tarball ships a
+    # gate-dormant app through the desktop updater while a fresh install
+    # works. The app bundle's profile is the source of truth: when it has
+    # one, the tarball must too.
+    app = bundle / "forge.app"
+    if (app / "Contents" / "embedded.provisionprofile").exists():
+        profile = "forge.app/Contents/embedded.provisionprofile"
+        if profile not in names:
+            fail(
+                "the app bundle carries an embedded profile but the update "
+                f"tarball does not ({profile} is missing)"
+            )
+        # The tarball's app must be the re-signed one. Extract it and read the
+        # keychain pair back off its signature, so a tarball carrying the
+        # build's pre-embed app cannot pass on the name check alone.
+        check_extracted_app(tarball)
 
     forbidden = [
         "forge.app/Contents/Frameworks/Chromium Embedded Framework.framework/"

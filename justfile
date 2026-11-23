@@ -608,7 +608,11 @@ client-release version: sync-main client-release-deps
         fi
     else
         unset APPLE_SIGNING_IDENTITY
-        echo "[WARN] no Developer ID identity on this machine: the client stays ad-hoc signed" >&2
+        # Tauri 2.12 skips signing when no identity is set, so the build is
+        # unsigned, not ad-hoc signed. The entitlement check below fails on an
+        # unsigned bundle (fail-closed, the way #3029 shipped it), so a release
+        # without an identity stops here rather than shipping a dormant gate.
+        echo "[WARN] no Developer ID identity on this machine: the client stays unsigned" >&2
     fi
 
     npm --prefix client run tauri -- build --bundles app --ci -- --locked
@@ -620,14 +624,36 @@ client-release version: sync-main client-release-deps
 
     if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
         # **Embed the profile and sign again.** Tauri signs the app with the
-        # entitlements file but cannot embed a provisioning profile, and the
-        # keychain pair is refused without one (-34018). The profile goes in
-        # first so the signature seals it, then the app is signed again with
-        # the same entitlements, hardened runtime and a secure timestamp.
+        # entitlements file but cannot embed a provisioning profile. With the
+        # pair present and no profile, AMFI rejects the exec or strips the
+        # pair; the keychain is not reached. The profile goes in first so the
+        # signature seals it, then the app is signed again with the same
+        # entitlements, hardened runtime and a secure timestamp.
         ditto "$profile" "$built/Contents/embedded.provisionprofile"
         codesign --force --options runtime --timestamp \
             --entitlements client/src-tauri/entitlements.plist \
             --sign "$APPLE_SIGNING_IDENTITY" "$built"
+
+        # **Notarisation runs after this recipe, not inside the build.** Tauri
+        # 2.12 notarises and staples inside `bundle_project` when APPLE_ID,
+        # APPLE_PASSWORD and APPLE_TEAM_ID are set, and the embed and re-sign
+        # above invalidate that staple. When notarisation is turned on, either
+        # build with `--skip-stapling` and notarise after this recipe, or accept
+        # that the shipped app's staple is stale. It does not fire today: no
+        # APPLE_* variables are set on this machine.
+
+        # **The updater tarball must carry the re-signed app.** Tauri creates
+        # the tarball during the build, before the profile is embedded and the
+        # app is signed again, so the build's pair carries an app without the
+        # profile and with the pre-re-sign signature. Regenerate the tarball
+        # from the re-signed bundle and sign it with the updater key, replacing
+        # the build's pair. A desktop auto-update installs this tarball, so a
+        # stale one would land a gate-dormant app while a fresh install works.
+        bundle_dir="$(dirname "$built")"
+        rm -f "$bundle_dir/forge.app.tar.gz" "$bundle_dir/forge.app.tar.gz.sig"
+        tar -czf "$bundle_dir/forge.app.tar.gz" -C "$bundle_dir" forge.app
+        npm --prefix client run tauri -- signer sign --app-version "{{version}}" \
+            "$bundle_dir/forge.app.tar.gz"
     fi
 
     got=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$built/Contents/Info.plist")

@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 """Tests for `check_client_entitlements.py`, the read-back that keeps a client
-bundle without the microphone entitlement from shipping. Run:
-python3 scripts/test_check_client_entitlements.py
+bundle without the microphone entitlement or the keychain pair from shipping.
+Run: python3 scripts/test_check_client_entitlements.py
 
-`codesign` is macOS-only, so every case here puts a stand-in first on PATH and
-pins the argv the gate hands it. What the real tool returns was checked by hand
-against the signed build and against an ad-hoc bundle carrying the hardened
-runtime with no entitlements.
+`codesign` and `openssl` are macOS-only, so every case here puts stand-ins
+first on PATH and pins the argv the gate hands them. What the real tools
+return was checked by hand against the signed build and against an ad-hoc
+bundle carrying the hardened runtime with no entitlements.
 
-The stand-in logs each call, so a case can prove the gate actually reached
-codesign rather than passing without reading anything.
+The stand-ins log each call, so a case can prove the gate actually reached
+codesign and openssl rather than passing without reading anything.
 
 Stdlib only, like the other script tests: python3 ships with the gate's
 runners, macOS and ubuntu alike.
 """
 
+import datetime
 import os
 import plistlib
 import subprocess
@@ -28,10 +29,13 @@ ENTITLEMENT = "com.apple.security.device.audio-input"
 APPLICATION_IDENTIFIER = "com.apple.application-identifier"
 KEYCHAIN_ACCESS_GROUPS = "keychain-access-groups"
 APP_ID = "KALKD5L7NF.dev.vedhavyas.forge"
+TEAM = "KALKD5L7NF"
 USAGE = "NSMicrophoneUsageDescription"
 
 # `CODESIGN_EXIT` makes the stand-in fail the way codesign does for an unsigned
-# bundle; otherwise it prints whatever `CODESIGN_PLIST` holds, empty included.
+# bundle; otherwise it prints whatever `CODESIGN_PLIST` holds for the
+# entitlements read and `CODESIGN_VERBOSE` for the team read. The team read
+# goes to stderr, where codesign writes its verbose output.
 CODESIGN = """\
 #!/bin/sh
 for arg in "$@"; do
@@ -41,14 +45,29 @@ if [ -n "${CODESIGN_EXIT:-}" ]; then
     printf '%s\\n' "$CODESIGN_STDERR" >&2
     exit "$CODESIGN_EXIT"
 fi
-cat "$CODESIGN_PLIST"
+case " $* " in
+  *" --verbose=4 "*)
+    printf '%s\\n' "$CODESIGN_VERBOSE" >&2
+    ;;
+  *)
+    cat "$CODESIGN_PLIST"
+    ;;
+esac
 """
 
 # The gate decodes an embedded profile with `openssl cms -verify`; the
 # stand-in prints whatever `OPENSSL_PLIST` holds, so a case can supply the
-# profile's plist without a real CMS blob.
+# profile's plist without a real CMS blob. `OPENSSL_EXIT` makes it fail the
+# way a corrupt blob does.
 OPENSSL = """\
 #!/bin/sh
+for arg in "$@"; do
+    printf '%s\\n' "$arg"
+done >> "$OPENSSL_LOG"
+if [ -n "${OPENSSL_EXIT:-}" ]; then
+    printf '%s\\n' "${OPENSSL_STDERR:-openssl failed}" >&2
+    exit "$OPENSSL_EXIT"
+fi
 cat "$OPENSSL_PLIST"
 """
 
@@ -73,6 +92,7 @@ class CheckClientEntitlementsTest(unittest.TestCase):
         openssl.chmod(0o755)
 
         self.log = self.root / "codesign.log"
+        self.openssl_log = self.root / "openssl.log"
         self.plist = self.root / "entitlements.plist"
         self.profile_plist = self.root / "profile.plist"
         self.write_entitlements(
@@ -80,6 +100,19 @@ class CheckClientEntitlementsTest(unittest.TestCase):
                 ENTITLEMENT: True,
                 APPLICATION_IDENTIFIER: APP_ID,
                 KEYCHAIN_ACCESS_GROUPS: [APP_ID],
+            }
+        )
+        # A valid Developer ID build by default: signed by the team and carrying
+        # a matching profile. A case opts into the ad-hoc path with a "not set"
+        # team, or removes the profile to exercise the refusal.
+        self.verbose = f"TeamIdentifier={TEAM}"
+        self.write_profile(
+            {
+                "TeamIdentifier": [TEAM],
+                "Entitlements": {
+                    APPLICATION_IDENTIFIER: APP_ID,
+                    KEYCHAIN_ACCESS_GROUPS: [APP_ID],
+                },
             }
         )
 
@@ -94,23 +127,41 @@ class CheckClientEntitlementsTest(unittest.TestCase):
         with self.plist.open("wb") as handle:
             plistlib.dump(entries, handle)
 
+    def write_profile_plist(self, entries: dict) -> None:
+        with self.profile_plist.open("wb") as handle:
+            plistlib.dump(entries, handle)
+
     def write_profile(self, entries: dict) -> None:
         """Embed a profile in the bundle and give the stand-in its plist."""
         (self.bundle / "Contents" / "embedded.provisionprofile").write_bytes(b"stand-in")
-        with self.profile_plist.open("wb") as handle:
-            plistlib.dump(entries, handle)
+        self.write_profile_plist(entries)
+
+    def remove_profile(self) -> None:
+        """Take the embedded profile back out, the shape a stale build ships."""
+        path = self.bundle / "Contents" / "embedded.provisionprofile"
+        if path.exists():
+            path.unlink()
 
     def codesign_calls(self) -> "list[str]":
         if not self.log.exists():
             return []
         return self.log.read_text().splitlines()
 
-    def run_gate(self, bundle: "Path | None" = None, **env: str) -> "subprocess.CompletedProcess[str]":
+    def openssl_calls(self) -> "list[str]":
+        if not self.openssl_log.exists():
+            return []
+        return self.openssl_log.read_text().splitlines()
+
+    def run_gate(
+        self, bundle: "Path | None" = None, **env: str
+    ) -> "subprocess.CompletedProcess[str]":
         environ = {
             **os.environ,
             "PATH": f"{self.bin}{os.pathsep}{os.environ.get('PATH', '')}",
             "CODESIGN_LOG": str(self.log),
             "CODESIGN_PLIST": str(self.plist),
+            "CODESIGN_VERBOSE": self.verbose,
+            "OPENSSL_LOG": str(self.openssl_log),
             "OPENSSL_PLIST": str(self.profile_plist),
         }
         environ.update(env)
@@ -132,7 +183,8 @@ class CheckClientEntitlementsTest(unittest.TestCase):
         # config file's intent, so the argv names codesign's display mode.
         calls = self.codesign_calls()
         self.assertTrue(calls, "the gate passed without reading the signature")
-        self.assertEqual(calls[-5:], ["-d", "--entitlements", "-", "--xml", str(self.bundle)])
+        for arg in ("-d", "--entitlements", "-", "--xml", str(self.bundle)):
+            self.assertIn(arg, calls)
 
     def test_a_bundle_with_no_entitlements_is_refused(self) -> None:
         self.write_entitlements(None)
@@ -180,8 +232,129 @@ class CheckClientEntitlementsTest(unittest.TestCase):
     def test_a_matching_embedded_profile_passes(self) -> None:
         self.write_profile(
             {
-                "TeamIdentifier": ["KALKD5L7NF"],
+                "TeamIdentifier": [TEAM],
+                "Entitlements": {
+                    APPLICATION_IDENTIFIER: APP_ID,
+                    KEYCHAIN_ACCESS_GROUPS: [APP_ID],
+                },
+            }
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.openssl_calls(), "the gate passed without decoding the profile")
+
+    def test_a_developer_id_bundle_with_no_profile_is_refused(self) -> None:
+        # The build the updater tarball shipped: keychain pair declared,
+        # Developer ID signed, no profile. macOS refuses the keychain.
+        self.remove_profile()
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 1, "a signed bundle with no profile passed")
+        self.assertIn("[ERROR]", result.stderr)
+        self.assertIn("embedded.provisionprofile", result.stderr)
+        self.assertTrue(self.codesign_calls(), "the refusal did not come from a signature read")
+
+    def test_an_ad_hoc_bundle_with_no_profile_passes(self) -> None:
+        # The dev path: no Developer ID team, so no profile is owed.
+        self.remove_profile()
+        self.verbose = "TeamIdentifier=not set"
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_an_expired_profile_is_refused(self) -> None:
+        self.write_profile(
+            {
+                "TeamIdentifier": [TEAM],
+                "ExpirationDate": datetime.datetime(2020, 1, 1),
+                "Entitlements": {
+                    APPLICATION_IDENTIFIER: APP_ID,
+                    KEYCHAIN_ACCESS_GROUPS: [APP_ID],
+                },
+            }
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 1, "an expired profile passed")
+        self.assertIn("expired", result.stderr)
+
+    def test_a_profile_with_the_wrong_team_is_refused(self) -> None:
+        self.write_profile(
+            {
+                "TeamIdentifier": ["WRONGTEAM"],
+                "Entitlements": {
+                    APPLICATION_IDENTIFIER: APP_ID,
+                    KEYCHAIN_ACCESS_GROUPS: [APP_ID],
+                },
+            }
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 1, "a profile with the wrong team passed")
+        self.assertIn("[ERROR]", result.stderr)
+        self.assertIn("embedded.provisionprofile", result.stderr)
+
+    def test_a_profile_with_the_wrong_app_id_is_refused(self) -> None:
+        self.write_profile(
+            {
+                "TeamIdentifier": [TEAM],
+                "Entitlements": {
+                    APPLICATION_IDENTIFIER: "KALKD5L7NF.dev.other",
+                    KEYCHAIN_ACCESS_GROUPS: [APP_ID],
+                },
+            }
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 1, "a profile with the wrong app id passed")
+        self.assertIn("[ERROR]", result.stderr)
+        self.assertIn("embedded.provisionprofile", result.stderr)
+
+    def test_a_profile_whose_groups_do_not_authorise_the_app_id_is_refused(self) -> None:
+        self.write_profile(
+            {
+                "TeamIdentifier": [TEAM],
+                "Entitlements": {
+                    APPLICATION_IDENTIFIER: APP_ID,
+                    KEYCHAIN_ACCESS_GROUPS: ["KALKD5L7NF.other"],
+                },
+            }
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 1, "a narrow profile passed")
+        self.assertIn("[ERROR]", result.stderr)
+        self.assertIn("do not authorise", result.stderr)
+
+    def test_a_profile_with_no_groups_is_refused(self) -> None:
+        self.write_profile(
+            {
+                "TeamIdentifier": [TEAM],
                 "Entitlements": {APPLICATION_IDENTIFIER: APP_ID},
+            }
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 1, "a profile with no groups passed")
+        self.assertIn(KEYCHAIN_ACCESS_GROUPS, result.stderr)
+
+    def test_a_profile_whose_team_wildcard_authorises_the_app_id_passes(self) -> None:
+        self.write_profile(
+            {
+                "TeamIdentifier": [TEAM],
+                "Entitlements": {
+                    APPLICATION_IDENTIFIER: APP_ID,
+                    KEYCHAIN_ACCESS_GROUPS: [f"{TEAM}.*"],
+                },
             }
         )
 
@@ -189,19 +362,107 @@ class CheckClientEntitlementsTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_an_embedded_profile_that_does_not_match_is_refused(self) -> None:
-        self.write_profile(
+    def test_a_group_list_that_excludes_the_app_id_is_refused(self) -> None:
+        self.write_entitlements(
             {
-                "TeamIdentifier": ["WRONGTEAM"],
-                "Entitlements": {APPLICATION_IDENTIFIER: "WRONGTEAM.dev.vedhavyas.forge"},
+                ENTITLEMENT: True,
+                APPLICATION_IDENTIFIER: APP_ID,
+                KEYCHAIN_ACCESS_GROUPS: ["KALKD5L7NF.other"],
             }
         )
 
         result = self.run_gate()
 
-        self.assertEqual(result.returncode, 1, "a mismatched embedded profile passed")
+        self.assertEqual(result.returncode, 1, "a group list without the app id passed")
         self.assertIn("[ERROR]", result.stderr)
-        self.assertIn("embedded.provisionprofile", result.stderr)
+        self.assertIn(KEYCHAIN_ACCESS_GROUPS, result.stderr)
+
+    def test_an_empty_group_list_is_refused(self) -> None:
+        self.write_entitlements(
+            {
+                ENTITLEMENT: True,
+                APPLICATION_IDENTIFIER: APP_ID,
+                KEYCHAIN_ACCESS_GROUPS: [],
+            }
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 1, "an empty group list passed")
+        self.assertIn("[ERROR]", result.stderr)
+        self.assertIn(KEYCHAIN_ACCESS_GROUPS, result.stderr)
+
+    def test_an_empty_application_identifier_is_refused(self) -> None:
+        self.write_entitlements(
+            {
+                ENTITLEMENT: True,
+                APPLICATION_IDENTIFIER: "   ",
+                KEYCHAIN_ACCESS_GROUPS: [APP_ID],
+            }
+        )
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 1, "a whitespace app id passed")
+        self.assertIn("[ERROR]", result.stderr)
+        self.assertIn(APPLICATION_IDENTIFIER, result.stderr)
+
+    def test_an_openssl_failure_is_refused(self) -> None:
+        self.write_profile(
+            {
+                "TeamIdentifier": [TEAM],
+                "Entitlements": {
+                    APPLICATION_IDENTIFIER: APP_ID,
+                    KEYCHAIN_ACCESS_GROUPS: [APP_ID],
+                },
+            }
+        )
+
+        result = self.run_gate(
+            OPENSSL_EXIT="1",
+            OPENSSL_STDERR="cms: verification failure",
+        )
+
+        self.assertEqual(result.returncode, 1, "an undecodable profile passed")
+        self.assertIn("[ERROR]", result.stderr)
+        self.assertIn("could not be decoded", result.stderr)
+        self.assertTrue(self.openssl_calls(), "the refusal did not come from a profile read")
+
+    def test_profile_bytes_that_are_not_a_plist_are_refused(self) -> None:
+        self.write_profile(
+            {
+                "TeamIdentifier": [TEAM],
+                "Entitlements": {
+                    APPLICATION_IDENTIFIER: APP_ID,
+                    KEYCHAIN_ACCESS_GROUPS: [APP_ID],
+                },
+            }
+        )
+        self.profile_plist.write_text("not a plist")
+
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 1, "unreadable profile bytes passed")
+        self.assertIn("[ERROR]", result.stderr)
+        self.assertIn("not a readable plist", result.stderr)
+
+    def test_openssl_is_handed_the_cms_verify_argv(self) -> None:
+        self.write_profile(
+            {
+                "TeamIdentifier": [TEAM],
+                "Entitlements": {
+                    APPLICATION_IDENTIFIER: APP_ID,
+                    KEYCHAIN_ACCESS_GROUPS: [APP_ID],
+                },
+            }
+        )
+
+        self.run_gate()
+
+        calls = self.openssl_calls()
+        self.assertTrue(calls, "the gate passed without decoding the profile")
+        for arg in ("cms", "-verify", "-inform", "DER", "-noverify"):
+            self.assertIn(arg, calls)
 
     def test_a_bundle_without_the_usage_string_is_refused(self) -> None:
         self.write_info({"CFBundleIdentifier": "dev.vedhavyas.forge"})

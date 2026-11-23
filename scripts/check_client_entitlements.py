@@ -25,6 +25,7 @@ bundle that declares no entitlements, so an empty read is a failure, not a
 pass.
 """
 
+import datetime
 import plistlib
 import subprocess
 import sys
@@ -84,6 +85,25 @@ def read_entitlements(bundle: Path) -> dict:
     return plist
 
 
+def read_team_identifier(bundle: Path) -> str:
+    """The TeamIdentifier the signature carries, or empty when ad-hoc signed."""
+    try:
+        result = subprocess.run(
+            ["codesign", "-d", "--verbose=4", str(bundle)],
+            capture_output=True,
+        )
+    except OSError as err:
+        fail(f"codesign could not be run: {err}")
+    if result.returncode != 0:
+        detail = result.stderr.decode(errors="replace").strip()
+        fail(f"{bundle} is not signed, so its team cannot be read: {detail}")
+    for line in result.stderr.decode(errors="replace").splitlines():
+        if line.startswith("TeamIdentifier="):
+            team = line.split("=", 1)[1].strip()
+            return "" if team == "not set" else team
+    return ""
+
+
 def read_profile(bundle: Path) -> "dict | None":
     """The embedded provisioning profile's plist, or None when none is embedded."""
     path = bundle / "Contents" / PROFILE
@@ -122,20 +142,46 @@ def check_keychain_entitlements(declared: dict) -> str:
 
 
 def check_profile(bundle: Path, app_id: str) -> None:
-    """Refuse an embedded profile whose team or application id does not match."""
+    """Refuse a Developer ID-signed bundle with no matching embedded profile."""
+    team = read_team_identifier(bundle)
     profile = read_profile(bundle)
     if profile is None:
+        if team:
+            fail(
+                f"{bundle} is Developer ID-signed (team {team}) and declares the "
+                f"keychain pair, but no {PROFILE} is embedded; macOS refuses the "
+                "keychain without a matching profile"
+            )
         return
-    team = app_id.split(".", 1)[0]
+    if not team:
+        fail(f"{PROFILE} is embedded but the bundle is not Developer ID-signed")
+    app_team = app_id.split(".", 1)[0]
+    if app_team != team:
+        fail(f"{APPLICATION_IDENTIFIER} names team {app_team!r}, not {team!r}")
     teams = profile.get("TeamIdentifier")
     if not isinstance(teams, list) or team not in teams:
         fail(f"{PROFILE} names team {teams!r}, not {team!r}")
+    expiration = profile.get("ExpirationDate")
+    if isinstance(expiration, datetime.datetime):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        if expiration.tzinfo is None:
+            expiration = expiration.replace(tzinfo=datetime.timezone.utc)
+        if expiration <= now:
+            fail(f"{PROFILE} expired on {expiration.date().isoformat()}")
     entitlements = profile.get("Entitlements")
     profile_app_id = (
         entitlements.get(APPLICATION_IDENTIFIER) if isinstance(entitlements, dict) else None
     )
     if profile_app_id != app_id:
         fail(f"{PROFILE} carries application identifier {profile_app_id!r}, not {app_id!r}")
+    groups = (
+        entitlements.get(KEYCHAIN_ACCESS_GROUPS) if isinstance(entitlements, dict) else None
+    )
+    if not isinstance(groups, list) or not groups:
+        fail(f"{PROFILE} carries no {KEYCHAIN_ACCESS_GROUPS}")
+    authorized = app_id in groups or f"{team}.*" in groups
+    if not authorized:
+        fail(f"{PROFILE} keychain-access-groups {groups!r} do not authorise {app_id!r}")
 
 
 def main() -> None:
