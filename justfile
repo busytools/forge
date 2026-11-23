@@ -156,6 +156,39 @@ conformance-record-socket:
 bench:
     RUSTFLAGS="-D warnings" cargo nextest run -p forge-workspace --test bench --run-ignored all --no-capture -E 'test(=bench_corpus)'
 
+# The weekly dictation exploration sweep. Refreshes the transcribe.cpp
+# catalogue feed, diffs `(variant, quant)` against the tested state under
+# the bench cache, takes at most two ASR candidates within the budget
+# (`DICTATE_SWEEP_BUDGET_BYTES`, default 2 GiB), downloads each into
+# `<app-support>/forge/dictate-bench/` - never the models directory - and
+# benches it over the saved takes and the known-word tiers.
+#
+# The table prints one row per model: tier, clips, WER where the words are
+# known, mean divergence on the takes, realtime factor, and the takes where
+# the candidate's words differ from the in-use model's, with both texts.
+# The one-model question is answered for every candidate and for the live
+# ASR alone. A candidate that fails the load smoke is reported unloadable
+# and deleted, never benched; one that beats the live pair is reported as a
+# proposal and kept. Nothing here switches a role, and nothing writes the
+# live redb: the results land in `results.json` under the bench cache.
+#
+# Ignored by CI, like `just bench`: it needs the live models on disk and the
+# network. A run that finds nothing new downloads nothing and says so.
+dictate-sweep:
+    RUSTFLAGS="-D warnings" cargo nextest run -p forge-workspace --test dictate_sweep --run-ignored all --no-capture -E 'test(=dictate_sweep)'
+
+# The sweep's discovery dry run: refresh the feed, diff it against the
+# tested state, and print the candidates and the reasons for what was left
+# out. Downloads nothing.
+dictate-sweep-dry:
+    RUSTFLAGS="-D warnings" cargo nextest run -p forge-workspace --test dictate_sweep --run-ignored all --no-capture -E 'test(=dictate_sweep_discovery)'
+
+# The live-model bench alone: the installed ASR+normalizer pair and the ASR
+# without its normalizer, over the saved takes and the known-word tiers.
+# No feed refresh and no download.
+dictate-sweep-live:
+    RUSTFLAGS="-D warnings" cargo nextest run -p forge-workspace --test dictate_sweep --run-ignored all --no-capture -E 'test(=dictate_sweep_live)'
+
 # Mutation-test the client with Stryker: break each line the tests claim to
 # cover and see whether anything fails. `vitest` reports what ran and never
 # whether a passing assertion discriminates, so this is the client's only

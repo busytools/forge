@@ -95,6 +95,7 @@ mod slack;
 mod spawn;
 pub mod store;
 pub mod subagent_cards;
+pub mod sweep;
 mod systemone;
 mod target;
 mod tasks;

@@ -507,8 +507,19 @@ fn walk(
 pub fn run(
     cfg: &Config,
     corpus: &Corpus,
-    mut on_clip: impl FnMut(&ClipRun) -> std::ops::ControlFlow<()>,
+    on_clip: impl FnMut(&ClipRun) -> std::ops::ControlFlow<()>,
 ) -> Result<Metrics, Error> {
+    run_with_clips(cfg, corpus, on_clip).map(|(metrics, _)| metrics)
+}
+
+/// [`run`], keeping each clip's own outcome: the headless sweep has to name
+/// the takes where a candidate's words differ from the model in use, and a
+/// table of metrics alone cannot say which clip moved.
+pub fn run_with_clips(
+    cfg: &Config,
+    corpus: &Corpus,
+    mut on_clip: impl FnMut(&ClipRun) -> std::ops::ControlFlow<()>,
+) -> Result<(Metrics, Vec<ClipRun>), Error> {
     let engine = crate::Engine::new(cfg.clone())?;
     engine.wait_ready()?;
 
@@ -581,16 +592,19 @@ pub fn run(
         (agreed, scored.len())
     });
 
-    Ok(Metrics {
-        clips: runs.len(),
-        audio_seconds,
-        wall_seconds,
-        xrt_wall: if wall_seconds > 0.0 { audio_seconds / wall_seconds } else { 0.0 },
-        term_accuracy,
-        wer,
-        matched,
-        stages_ms,
-    })
+    Ok((
+        Metrics {
+            clips: runs.len(),
+            audio_seconds,
+            wall_seconds,
+            xrt_wall: if wall_seconds > 0.0 { audio_seconds / wall_seconds } else { 0.0 },
+            term_accuracy,
+            wer,
+            matched,
+            stages_ms,
+        },
+        runs,
+    ))
 }
 
 /// Decode one 16-bit mono wav at the model's own rate, refusing anything
