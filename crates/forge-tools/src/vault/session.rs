@@ -280,7 +280,7 @@ impl VaultSession {
     /// The settings page's password door: the master password with the
     /// optional 2FA code. **The strings are taken by value and zeroized
     /// here**, because this crate owns the secret discipline the held-call
-    /// path already keeps. Idempotent like [`Self::unlock`].
+    /// path already keeps. Idempotent like the private unlock it wraps.
     pub async fn unlock_with_password(
         &self,
         password: String,
