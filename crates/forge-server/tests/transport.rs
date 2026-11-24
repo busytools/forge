@@ -4842,11 +4842,14 @@ async fn the_configured_first_frame_budget_is_completed_by_the_walk_above_it() {
     assert_eq!(reached, every, "the first frame and its walk reach every turn");
 }
 
-/// **A newest turn larger than the whole budget is served whole.** A budget
-/// that answered with no page would draw the seat empty, and one that split
-/// the turn would hand a client half of it.
+/// **A newest turn larger than the whole budget is paged within, not served
+/// whole.** A budget that answered with no page would draw the seat empty; one
+/// that served the turn whole spent the reader's fold on a single turn and cut
+/// the history above it (#3035). So the page carries the turn's newest rows
+/// that fit and its cursor names the row above them, and a walk of the pages
+/// reaches every row of the conversation exactly once.
 #[tokio::test]
-async fn a_newest_turn_over_the_budget_is_served_whole() {
+async fn a_newest_turn_over_the_budget_is_paged_within() {
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = Fleet::in_dir_with_server(
         dir.path(),
@@ -4877,12 +4880,229 @@ async fn a_newest_turn_over_the_budget_is_served_whole() {
     let ServerMessage::Snapshot { data, .. } = next_server(&mut socket).await else {
         panic!("a snapshot is the answer to a subscribe")
     };
-    let first = said_words(&data["conversation"]["turns"]);
-    assert_eq!(first, vec!["turn 5".to_owned()], "the oversized newest turn is the whole page");
-    assert!(
-        data["conversation"]["cursor"].as_str().is_some(),
-        "with the history above it still askable",
+    let turns = data["conversation"]["turns"].as_array().expect("the page carries turns");
+    assert_eq!(turns.len(), 1, "the oversized newest turn is the page, in pieces");
+    let frames = turns[0]["messages"].as_array().expect("the piece carries frames");
+    assert_eq!(
+        frames.len(),
+        1,
+        "the 4 KB turn is cut to the rows a 1 KB page fits, and the newest rides it",
     );
+    assert_eq!(
+        frames[0]["uuid"].as_str(),
+        Some("a5"),
+        "the newest row of the turn, which is the page's own tail",
+    );
+
+    // A walk from the handle reaches every row of the conversation, in order,
+    // exactly once: the rest of the turn, then the history above it.
+    let mut cursor = data["conversation"]["cursor"].as_str().map(str::to_owned);
+    assert!(cursor.is_some(), "the cut page carries the handle above it");
+    let page_uuids = |frames: &[serde_json::Value]| -> Vec<String> {
+        frames.iter().filter_map(|frame| frame["uuid"].as_str().map(str::to_owned)).collect()
+    };
+    let mut pages: Vec<Vec<String>> = vec![page_uuids(frames)];
+    let mut walks = 0;
+    while let Some(before) = cursor.take() {
+        walks += 1;
+        assert!(walks < 30, "the walk terminates rather than cycling");
+        send(
+            &mut socket,
+            ClientMessage::More { conversation: lead_seat(), before: Some(before), turns: 20 },
+        )
+        .await;
+        let ServerMessage::Page { turns, cursor: next, .. } = next_server(&mut socket).await else {
+            panic!("a page is the answer to a request for more")
+        };
+        let uuids = turns
+            .iter()
+            .flat_map(|turn| turn.messages.iter())
+            .filter_map(|frame| frame["uuid"].as_str().map(str::to_owned))
+            .collect();
+        pages.push(uuids);
+        cursor = next;
+    }
+    let mut served: Vec<String> = Vec::new();
+    for page in pages.iter().rev() {
+        served.extend(page.iter().cloned());
+    }
+    // A transcript carries no `result` frame, so a turn read from one is its
+    // prompt and its answer.
+    let every: Vec<String> =
+        (0..6).flat_map(|turn| [format!("u{turn}"), format!("a{turn}")]).collect();
+    assert_eq!(served, every, "every row is served once, in the conversation's order");
+}
+
+/// **A long agentic turn is served by pages its reader can fold.**
+///
+/// The shape measured on the Playground Lead seat (#3035): one still-open turn
+/// of ~1,900 frames, 1,669 of them `thinking_tokens` ticks interleaved through
+/// the turn's work. Nothing pruned the ticks, so the turn grew past the whole
+/// page budget and the page could neither cut it nor carry history.
+///
+/// Here the turn is a prompt, a handshake and 40 blocks of eight ticks, a call
+/// and its result. The page must be served WITHIN its budget, carry some of the
+/// turn's own rows, and a walk from its handle must serve every real row
+/// exactly once while the ticks still sum to the storm's growth.
+#[tokio::test]
+async fn a_long_turns_page_is_bounded_and_its_walk_reaches_every_row() {
+    const BLOCKS: usize = 40;
+    const TICKS_PER_BLOCK: usize = 8;
+    const BUDGET: usize = 2 * 1024;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fleet = Fleet::in_dir_with_server(
+        dir.path(),
+        &[("TestOrg", &["proj"])],
+        "[server]\nfirst_frame_cap_kb = 2\n",
+    )
+    .expect("the fleet builds");
+    let (url, state) = serve_fleet(&fleet, Heartbeat::default()).await;
+    fleet.start("TestOrg", "proj").expect("a live lead session");
+
+    let mut rows: Vec<serde_json::Value> = vec![
+        a_turn_row("turn0-user", "turn 0"),
+        a_text_row("turn0-answer", "answer 0"),
+        a_turn_row("long-open", "the long turn"),
+        ({
+            let mut init = a_tickless_frame("system", "init-long-1");
+            init["subtype"] = serde_json::json!("init");
+            init
+        }),
+        ({
+            let mut init = a_tickless_frame("system", "init-long-2");
+            init["subtype"] = serde_json::json!("init");
+            init
+        }),
+    ];
+    // The held conversation carries the ticks interleaved through the work,
+    // which is the shape the CLI streams: the transcript holds the rows and
+    // none of the ticks.
+    let mut history: Vec<forge_primitives::Message> = rows.iter().map(a_frame).collect();
+    for block in 0..BLOCKS {
+        for tick in 0..TICKS_PER_BLOCK {
+            history.push(a_frame(&a_tick_frame(&format!("t{block}-{tick}"))));
+        }
+        let call = a_calling_row(&format!("call{block}"), block);
+        let result = an_answering_row(&format!("result{block}"), block);
+        history.push(a_frame(&call));
+        history.push(a_frame(&result));
+        rows.push(call);
+        rows.push(result);
+    }
+
+    let rows_json: Vec<String> = rows.iter().map(serde_json::Value::to_string).collect();
+    let lines: Vec<&str> = rows_json.iter().map(String::as_str).collect();
+    fleet.seed_transcript("TestOrg", "proj", "lead", &lines).expect("the session's transcript");
+    state.conversations.insert(
+        &lead_seat(),
+        forge_server::transport::conversation::Conversation::new(history, 0, 0),
+    );
+
+    let mut socket = connect(&url).await;
+    send(
+        &mut socket,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: false,
+            review: false,
+        },
+    )
+    .await;
+    let ServerMessage::Snapshot { data, .. } = next_server(&mut socket).await else {
+        panic!("a snapshot is the answer to a subscribe")
+    };
+    let served_bytes = |turns: &[serde_json::Value]| -> usize {
+        turns
+            .iter()
+            .map(|turn| serde_json::to_string(turn).expect("a turn serialises").len() + 1)
+            .sum()
+    };
+    let turns = data["conversation"]["turns"].as_array().expect("the page carries turns");
+    assert!(
+        served_bytes(turns) <= BUDGET,
+        "the page is served within its budget: {} bytes",
+        served_bytes(turns),
+    );
+    let frames: Vec<serde_json::Value> = turns
+        .iter()
+        .flat_map(|turn| turn["messages"].as_array().into_iter().flatten())
+        .cloned()
+        .collect();
+    assert!(
+        frames.iter().any(|frame| {
+            frame["uuid"]
+                .as_str()
+                .is_some_and(|uuid| uuid.starts_with("call") || uuid.starts_with("result"))
+        }),
+        "the page carries some of the turn's own rows: {frames:?}",
+    );
+    assert!(
+        frames.len() <= 30,
+        "and its frames are bounded by the budget, not by the storm: {}",
+        frames.len(),
+    );
+
+    // The walk serves every real row exactly once, in order, and its ticks add
+    // up to the storm's growth: the fold is per piece, and no piece's fold
+    // covers counters another piece serves.
+    let page_frames = |frames: &[serde_json::Value]| -> Vec<serde_json::Value> { frames.to_vec() };
+    let mut pages: Vec<Vec<serde_json::Value>> = vec![page_frames(&frames)];
+    let mut cursor = data["conversation"]["cursor"].as_str().map(str::to_owned);
+    assert!(cursor.is_some(), "the cut page carries the handle above it");
+    let mut walks = 0;
+    while let Some(before) = cursor.take() {
+        walks += 1;
+        assert!(walks < 60, "the walk terminates rather than cycling");
+        send(
+            &mut socket,
+            ClientMessage::More { conversation: lead_seat(), before: Some(before), turns: 20 },
+        )
+        .await;
+        let ServerMessage::Page { turns, cursor: next, .. } = next_server(&mut socket).await else {
+            panic!("a page is the answer to a request for more")
+        };
+        let frames: Vec<serde_json::Value> =
+            turns.iter().flat_map(|turn| turn.messages.iter().cloned()).collect();
+        pages.push(frames);
+        cursor = next;
+    }
+    let mut served: Vec<serde_json::Value> = Vec::new();
+    for page in pages.iter().rev() {
+        served.extend(page.iter().cloned());
+    }
+    let ticks: i64 = served
+        .iter()
+        .filter(|frame| frame["subtype"] == "thinking_tokens")
+        .filter_map(|frame| frame["estimated_tokens_delta"].as_i64())
+        .sum();
+    assert_eq!(
+        ticks,
+        i64::try_from(BLOCKS * TICKS_PER_BLOCK * 50).expect("the storm's sum"),
+        "the storm's growth is served once across the pieces",
+    );
+    let rows_served: Vec<String> = served
+        .iter()
+        .filter(|frame| frame["subtype"] != "thinking_tokens")
+        .filter_map(|frame| frame["uuid"].as_str().map(str::to_owned))
+        .collect();
+    let mut every: Vec<String> =
+        vec!["turn0-user".to_owned(), "turn0-answer".to_owned(), "long-open".to_owned()];
+    every.push("init-long-2".to_owned());
+    for block in 0..BLOCKS {
+        every.push(format!("call{block}"));
+        every.push(format!("result{block}"));
+    }
+    assert_eq!(
+        rows_served, every,
+        "every real row is served once, in order; the ticks are the only frames folded",
+    );
+}
+
+/// A frame of `kind` with an id and nothing else, for a system line whose
+/// shape the test only needs the id of.
+fn a_tickless_frame(kind: &str, uuid: &str) -> serde_json::Value {
+    serde_json::json!({"type": kind, "uuid": uuid, "session_id": "s1"})
 }
 
 /// **`first_frame_cap_kb = 0` serves the count's page.** The opt-out is the
@@ -10353,7 +10573,9 @@ fn an_answering_row(uuid: &str, block: usize) -> serde_json::Value {
 }
 
 /// One thinking-token frame: a frame the CLI streams and never writes a row
-/// for, so a copy holding it counts a frame no transcript row carries.
+/// for, so a copy holding it counts a frame no transcript row carries. The CLI
+/// stamps every frame, and the page's own fold of a counter storm reads those
+/// stamps, so this carries one.
 fn a_tick_frame(uuid: &str) -> serde_json::Value {
     serde_json::json!({
         "type": "system",
@@ -10362,6 +10584,7 @@ fn a_tick_frame(uuid: &str) -> serde_json::Value {
         "estimated_tokens_delta": 50,
         "uuid": uuid,
         "session_id": "s1",
+        "timestamp": "2026-10-24T09:00:00.000000Z",
     })
 }
 
@@ -10444,7 +10667,12 @@ async fn a_walk_pages_back_through_a_running_turn_to_its_first_message() {
         panic!("the newest page is answered");
     };
     assert_eq!(newest.len(), 1, "the window is one running turn");
-    assert_eq!(newest[0].messages.len(), 4_000, "carrying every frame the seat holds");
+    assert_eq!(
+        newest[0].messages.len(),
+        2_003,
+        "carrying every frame the seat holds: its 2,000 thinking ticks are three frames, the \
+         leading pair the front cut keeps as themselves and the other 1,998 folded into one",
+    );
     assert_eq!(cursor.as_deref(), Some("1203"), "and the cursor above it names the window's front");
 
     // The walk: every page below the floor, taken with the cursor the page
@@ -10781,11 +11009,21 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
 
 /// **A thought-heavy resume serves its whole thinking sum through the
 /// socket.** The handover cuts the window and folds the shed thinking into
-/// the first counter it carries; the record the client reads must then sum
-/// the whole turn, not only the suffix the window kept. This rides the
-/// production serve path, not a test's own call to `page_within`.
+/// the first counter it carries; a client that reads the conversation must
+/// then see the whole turn, not only the suffix the window kept. The turn is
+/// over the page budget, so the record is its newest piece and the walk above
+/// it carries the rest: the sum is over both. This rides the production serve
+/// path, not a test's own call to `page_within`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_thought_heavy_resume_serves_its_whole_thinking_sum() {
+    /// The thinking a stretch of frames adds up to.
+    fn spent<'a>(frames: impl Iterator<Item = &'a serde_json::Value>) -> i64 {
+        frames
+            .filter(|frame| frame["subtype"] == "thinking_tokens")
+            .filter_map(|frame| frame["estimated_tokens_delta"].as_i64())
+            .sum()
+    }
+
     let (url, fleet, state) = a_server_with_state().await;
     let mut socket = connect_unbounded(&url).await;
     let seat = lead_seat();
@@ -10833,7 +11071,9 @@ async fn a_thought_heavy_resume_serves_its_whole_thinking_sum() {
         "waited for the fold to take the handover, and it never marked it",
     );
 
-    // The record a client reads, through the same serve path.
+    // The record a client reads, through the same serve path, and the pages it
+    // walks above it: the turn is over the page budget, so it arrives in
+    // pieces and the whole sum is what the record and the walk add up to.
     send(
         &mut socket,
         ClientMessage::Subscribe {
@@ -10844,18 +11084,34 @@ async fn a_thought_heavy_resume_serves_its_whole_thinking_sum() {
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
-    let sum: i64 = data["conversation"]["turns"]
-        .as_array()
-        .expect("the record's turns")
-        .iter()
-        .flat_map(|turn| turn["messages"].as_array().into_iter().flatten())
-        .filter(|frame| frame["subtype"] == "thinking_tokens")
-        .filter_map(|frame| frame["estimated_tokens_delta"].as_i64())
-        .sum();
+    let mut sum = spent(
+        data["conversation"]["turns"]
+            .as_array()
+            .expect("the record's turns")
+            .iter()
+            .flat_map(|turn| turn["messages"].as_array().into_iter().flatten()),
+    );
+    let mut cursor = data["conversation"]["cursor"].as_str().map(str::to_owned);
+    assert!(cursor.is_some(), "a turn over the budget is served in pieces");
+    let mut walks = 0;
+    while let Some(before) = cursor.take() {
+        walks += 1;
+        assert!(walks < 40, "the walk terminates rather than cycling");
+        send(
+            &mut socket,
+            ClientMessage::More { conversation: seat.clone(), before: Some(before), turns: 20 },
+        )
+        .await;
+        let ServerMessage::Page { turns, cursor: next, .. } = next_server(&mut socket).await else {
+            panic!("a page is the answer to a request for more")
+        };
+        sum += spent(turns.iter().flat_map(|turn| turn.messages.iter()));
+        cursor = next;
+    }
     assert_eq!(
         sum,
         i64::try_from(counters).expect("the test's count fits"),
-        "the served record carries the whole turn",
+        "the record and the walk carry the whole turn",
     );
 }
 
