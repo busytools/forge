@@ -1026,12 +1026,13 @@ writes it at all - because the command is fire-and-forget: its effect
 arrives through the subscription, which is why a client subscribes before
 it acts.
 
-**`reply_to` is required on exactly nine of them**: a worker spawn, a
-despawn, the three review writes, and the four biometric commands - a
-release, an enrolment, a rotation's update-only rewrite, and the vault's
-material request. Their outcome rides the reply and no update carries it, so
-a client that omitted `reply_to` would not be declining a reply - it would be
-declining to learn whether the work happened.
+**`reply_to` is required on exactly ten of them**: a worker spawn, a
+despawn, the three review writes, and the five vault and biometric commands -
+a release, an enrolment, a rotation's update-only rewrite, the vault's
+material request, and the settings page's vault unlock. Their outcome rides
+the reply and no update carries it, so a client that omitted `reply_to`
+would not be declining a reply - it would be declining to learn whether the
+work happened.
 
 **Both mismatches are refused, with a sentence naming the field**, and
 refused before the command runs: a required field left off, and a
@@ -1039,15 +1040,16 @@ refused before the command runs: a required field left off, and a
 for the same reason the first does - a client that set it is waiting on a
 channel nothing will ever come down.
 
-**Each of the nine answers with its own type**: a spawn with a
+**Each of the ten answers with its own type**: a spawn with a
 worker-spawn reply, a despawn with a despawn result, the review writes with a
-`bool` and a review set, and the biometric four with the released blob, the
-enrolment's `true`, the rewrite's `true`/`false`, and the vault's released
-material. One channel cannot carry nine different answers, so the reply type
-follows the command. A refusal arrives in that same reply, as the body of the
-answer rather than as an `error` - which is what the nine are for. A command
-that is _not_ one of the nine refuses as an `error` like anything else the
-core declines, whether or not a reply was asked for.
+`bool` and a review set, and the five vault and biometric commands with the
+released blob, the enrolment's `true`, the rewrite's `true`/`false`, the
+vault's released material, and the unlock's `VaultUnlockOutcome`. One channel
+cannot carry ten different answers, so the reply type follows the command. A
+refusal arrives in that same reply, as the body of the answer rather than as
+an `error` - which is what the ten are for. A command that is _not_ one of
+the ten refuses as an `error` like anything else the core declines, whether
+or not a reply was asked for.
 
 **`read_call_output` answers a call's own output**: the newest lines of
 the file the CLI streamed the task's output to, or a named reason there is
