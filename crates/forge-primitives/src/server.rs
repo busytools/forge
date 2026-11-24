@@ -38,19 +38,29 @@ pub struct ServerConfig {
     /// turns of a large conversation are megabytes: seconds over a network,
     /// from a frame a client spends milliseconds on locally. The newest
     /// turns are kept while they fit and the rest is paged through `more` as
-    /// it always was, so nothing is dropped and the order does not move.
-    /// `0` serves the page the turn count asks for, for a reader who would
+    /// it always was, so no turn is dropped and the order does not move. A
+    /// turn that alone is over the budget is served in pages of its own
+    /// rather than whole, so the reader's fold is bounded and the history
+    /// above stays reachable through `more`. The bytes counted are the bytes
+    /// SERVED: a turn's repeated progress frames are pruned to one copy each
+    /// before the cut, while every lifecycle frame and a workflow's
+    /// `task_progress` tick are served every time because the live path draws
+    /// a row for each.
+    /// `0` turns off the byte cut (no turn is split), not the pruning, and
+    /// serves the page the turn count asks for, for a reader who would
     /// rather have the whole window in one frame.
     pub first_frame_cap_kb: u64,
     /// How many bytes of conversation a `more` page carries, in KB.
     ///
     /// **A page past the first frame is unbounded by its turn count alone**:
-    /// the page contract is whole turns, so one large turn crossed whole and
-    /// a `more` answer could be tens of megabytes. The newest whole turns are
-    /// kept while they fit, the newest rides even when it alone is over, and
-    /// the cursor names the history above the page as it always did - nothing
-    /// is dropped and the walk above it still reaches every turn.
-    /// `0` serves the page the turn count asks for.
+    /// one large turn could cross a `more` answer as tens of megabytes. The
+    /// newest turns are kept while they fit; a turn over the budget is served
+    /// in pages of its own, its newest frames first, and the cursor names the
+    /// row above the page - no turn is dropped, and the walk reaches every
+    /// turn and every row the pages serve. The bytes counted are the bytes
+    /// served, after the repeated progress frames are pruned.
+    /// `0` serves the page the turn count asks for, whole and unsplit, with
+    /// the pruning still applied.
     pub more_page_cap_kb: u64,
     /// Extra browser origins allowed to open the socket, beside the shell's
     /// own, the server's own, and any page served on the user's own machine -

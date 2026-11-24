@@ -95,6 +95,8 @@ mod slack;
 mod spawn;
 pub mod store;
 pub mod subagent_cards;
+#[cfg(any(test, feature = "testing"))]
+pub mod sweep;
 mod systemone;
 mod target;
 mod tasks;

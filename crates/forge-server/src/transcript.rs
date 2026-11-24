@@ -22,9 +22,9 @@ use crate::envelope::detect_inbound;
 /// Where one turn sits in the conversation it was folded from, and what names
 /// it.
 ///
-/// **In MESSAGE terms**, because a page crosses as whole turns: a client is
-/// handed each turn's messages and folds them itself, so the boundary a page
-/// is cut on has to name a message.
+/// **In MESSAGE terms**, because a page crosses as turns (or pieces of one):
+/// a client is handed each turn's messages and folds them itself, so the
+/// boundary a page is cut on has to name a message.
 pub struct TurnSpan {
     /// The message the turn opens at.
     pub opens_at: usize,
