@@ -102,7 +102,21 @@ impl TurnScan {
                             if self.calls && is_image_note(text) {
                                 continue;
                             }
+                            // **A background completion opens the turn the
+                            // CLI ran for it.** The fold opens one, and a
+                            // head this walk cannot start on leaves the
+                            // turn's rows above the window's floor. Except at
+                            // a call still waiting on its result: pressed into
+                            // a running turn, the notice stays there, and the
+                            // window must not start inside it.
                             if is_task_notice(text) {
+                                if !self.open.is_empty() {
+                                    continue;
+                                }
+                                self.skills.clear();
+                                self.boundary = false;
+                                self.calls = false;
+                                opens = true;
                                 continue;
                             }
                             // The bracket fallback below would catch the
@@ -138,6 +152,20 @@ impl TurnScan {
                             self.boundary = false;
                             self.calls = false;
                             self.open.clear();
+                            opens = true;
+                        }
+                        // **The completion notice's other carrier**, and the
+                        // same rule as the text one above: it opens the turn
+                        // unless it was pressed into a running turn.
+                        ContentBlock::QueuedCommand { prompt, command_mode, .. }
+                            if is_completion_notice(command_mode.as_deref(), prompt) =>
+                        {
+                            if !self.open.is_empty() {
+                                continue;
+                            }
+                            self.skills.clear();
+                            self.boundary = false;
+                            self.calls = false;
                             opens = true;
                         }
                         other => self.calls_in(std::slice::from_ref(other)),
@@ -251,6 +279,46 @@ pub fn is_dispatched(message: &Message) -> bool {
 /// here and not elsewhere.
 pub fn is_task_notice(text: &str) -> bool {
     text.trim_start().starts_with("<task-notification>")
+}
+
+/// The text a `queued_command` block carries: a plain string for a typed
+/// prompt, or a content-block array for a multi-modal one, where only the
+/// text blocks are the words the user typed. An image or document is not
+/// text: a view draws it as an attachment row, from the block itself. Every
+/// other block renders as a `[type]` placeholder so the reader sees
+/// something rather than a blank.
+pub fn queued_command_text(prompt: &serde_json::Value) -> String {
+    if let Some(text) = prompt.as_str() {
+        return text.to_owned();
+    }
+    let Some(blocks) = prompt.as_array() else {
+        return serde_json::to_string(prompt).unwrap_or_else(|_| String::from("[unrenderable]"));
+    };
+    blocks
+        .iter()
+        .filter_map(|block| match block.get("type").and_then(serde_json::Value::as_str) {
+            Some("text") => {
+                block.get("text").and_then(serde_json::Value::as_str).map(str::to_owned)
+            }
+            // `image` and `document` draw in a view's attachment row, not as
+            // words.
+            Some("image" | "document") | None => None,
+            Some(other) => Some(format!("[{other}]")),
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+/// Whether a queued block is the harness's background-completion notice
+/// rather than anything a person said.
+///
+/// **The mode is the field that says which of the three kinds arrived, and
+/// the text's own prefix is the other signal.** Both are read, because a
+/// reader keyed on one of them drifts from the other the first time either
+/// moves. One copy serves the fold's two carriers and the scan, so a turn
+/// opened by one walk is a turn the other can start on.
+pub fn is_completion_notice(command_mode: Option<&str>, prompt: &serde_json::Value) -> bool {
+    command_mode == Some("task-notification") || is_task_notice(&queued_command_text(prompt))
 }
 
 /// Whether `text` is the harness's own line about an image it just read.
