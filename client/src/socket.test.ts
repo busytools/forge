@@ -869,6 +869,10 @@ describe('the connection', () => {
    */
   it('sends the vault unlock with a reply and its own longer bound', () => {
     expect(ANSWERS_THROUGH_A_REPLY.has('vault_unlock')).toBe(true);
+    // **The number is pinned here and in the Rust `UNLOCK_BOUND`**, so a
+    // drift on either side reds its own suite rather than leaving the two
+    // halves disagreeing only in production.
+    expect(VAULT_UNLOCK_BOUND_MS).toBe(900_000);
     expect(replyBoundFor('vault_unlock', REPLY_BOUND_MS)).toBe(VAULT_UNLOCK_BOUND_MS);
     expect(replyBoundFor('cancel', REPLY_BOUND_MS)).toBe(REPLY_BOUND_MS);
   });

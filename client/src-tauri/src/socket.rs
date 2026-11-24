@@ -3998,14 +3998,19 @@ pub(crate) mod tests {
         }
     }
 
-    /// **An upload's end outlives the shipping bound.** The end flushes and
-    /// links every file of a share before it answers, so a 200 MB share on a
-    /// phone's storage takes seconds; a timeout there would make the sheet's
-    /// retry start over and write the files again. Everything else keeps the
-    /// shipping bound, and a despawn stays unbounded.
+    /// **An upload's end and the vault unlock outlive the shipping bound.**
+    /// The end flushes and links every file of a share before it answers, so
+    /// a 200 MB share on a phone's storage takes seconds; the unlock is
+    /// prelogin, login and sync against Vaultwarden. A timeout there would
+    /// make the sheet's retry start over, or draw a false failure the session
+    /// then contradicts. Everything else keeps the shipping bound, and a
+    /// despawn stays unbounded.
     #[test]
-    fn an_uploads_end_gets_the_long_bound_and_nothing_else_does() {
+    fn the_uploads_end_and_the_vault_unlock_get_their_own_bounds() {
         let bound = Duration::from_secs(30);
+        assert_eq!(REPLY_BOUND, Duration::from_secs(10), "the shipping bound is 10 s");
+        let plain = json!({ "cancel": {} });
+        assert_eq!(reply_bound_for(&plain, REPLY_BOUND), Some(REPLY_BOUND));
         let end = json!({ "file_upload_end": { "key": {}, "upload_id": 1 } });
         assert_eq!(reply_bound_for(&end, bound), Some(Duration::from_secs(120)));
         let begin = json!({ "file_upload_begin": { "key": {}, "files": [] } });

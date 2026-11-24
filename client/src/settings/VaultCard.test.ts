@@ -14,6 +14,8 @@ import type { BiometricEnrolment } from '../wire/home';
 
 const AT = { secs_since_epoch: 1_790_000_000, nanos_since_epoch: 0 };
 const LOCAL_ID = '11111111-2222-4333-8444-555555555555';
+/** The key the client mints its enrolment id under, as the module keeps it. */
+const ENROLMENT_KEY = 'forge.biometric.enrolment.vault';
 
 let app: Record<string, unknown> | null = null;
 
@@ -77,7 +79,7 @@ describe('the merged vault card', () => {
   });
 
   it('offers unlock only while an enrolled client faces a locked vault', () => {
-    localStorage.setItem('forge.biometric.enrolment.vault', LOCAL_ID);
+    localStorage.setItem(ENROLMENT_KEY, LOCAL_ID);
     draw({
       device: { outcome: 'enrolled', biometric: true },
       locked: true,
@@ -87,7 +89,7 @@ describe('the merged vault card', () => {
     expect(button('unlock')).not.toBeNull();
 
     document.body.innerHTML = '';
-    localStorage.setItem('forge.biometric.enrolment.vault', LOCAL_ID);
+    localStorage.setItem(ENROLMENT_KEY, LOCAL_ID);
     draw({
       device: { outcome: 'enrolled', biometric: true },
       locked: false,
@@ -141,7 +143,7 @@ describe('the merged vault card', () => {
   });
 
   it('marks this client in the list and revokes by its enrolment id', () => {
-    localStorage.setItem('forge.biometric.enrolment.vault', LOCAL_ID);
+    localStorage.setItem(ENROLMENT_KEY, LOCAL_ID);
     const onrevoke = vi.fn();
     app = mount(VaultCard, {
       target: document.body,
@@ -161,6 +163,10 @@ describe('the merged vault card', () => {
 
     expect(document.body.textContent).toContain('this client');
     expect(document.body.textContent).toContain('the other mac');
+    // **The clients block wears the page's own head vocabulary**, not a bare
+    // class: the head band, its name and the count.
+    expect(document.querySelector('.settings-card-name')?.textContent).toBe('clients');
+    expect(document.querySelector('.settings-card-count')?.textContent).toBe('2');
 
     const revokes = [...document.querySelectorAll<HTMLButtonElement>('button')].filter(
       (element) => element.textContent?.trim() === 'revoke',

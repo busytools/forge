@@ -120,6 +120,58 @@ describe('the vault unlock dialog', () => {
     expect(button('Unlock with the device password')).toBeDefined();
   });
 
+  /**
+   * **The error line is the actions' own sibling, not their spacer.** The
+   * gap before the actions is the actions' margin (pinned in `sheet.test.ts`);
+   * this pins the order that lets it stay constant: with a reason, the line
+   * sits immediately before the actions; without one, the fields do.
+   */
+  it('keeps the error line immediately before the actions in both variants', () => {
+    for (const variant of ['unlock', 'enrol'] as const) {
+      draw({
+        variant,
+        reason: 'The username or password is incorrect.',
+        ongesture: vi.fn(),
+        onpassword: vi.fn(),
+        oncancel: vi.fn(),
+      });
+      const alert = document.querySelector('[role="alert"]');
+      const acts = document.querySelector('.acts.vault-acts');
+      expect(alert, `${variant} draws the reason`).not.toBeNull();
+      expect(alert?.nextElementSibling, `${variant}: the actions follow the reason`).toBe(acts);
+      if (app) {
+        void unmount(app);
+        app = null;
+      }
+      document.body.innerHTML = '';
+    }
+  });
+
+  it('keeps the fields immediately before the actions when no reason is drawn', () => {
+    draw({ variant: 'enrol', ongesture: vi.fn(), onpassword: vi.fn(), oncancel: vi.fn() });
+
+    const acts = document.querySelector('.acts.vault-acts');
+    expect(document.querySelector('[role="alert"]'), 'no reason is drawn').toBeNull();
+    expect(
+      acts?.previousElementSibling?.classList.contains('fields'),
+      'the fields touch the actions through their own gap',
+    ).toBe(true);
+  });
+
+  it('keeps Tab inside the dialog', () => {
+    draw({ variant: 'enrol', ongesture: vi.fn(), onpassword: vi.fn(), oncancel: vi.fn() });
+    const focusable = [
+      ...document.querySelectorAll<HTMLElement>('.settings-dialog button, .settings-dialog input'),
+    ].filter((element) => !element.hasAttribute('disabled'));
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+
+    last?.focus();
+    dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab' }));
+
+    expect(document.activeElement).toBe(first);
+  });
+
   it('closes on Escape through the page that owns the history entry', () => {
     const oncancel = vi.fn();
     draw({ variant: 'unlock', ongesture: vi.fn(), onpassword: vi.fn(), oncancel });

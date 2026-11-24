@@ -68,4 +68,25 @@ describe("the settings page's rules", () => {
       'a rule hides the only way into edit mode',
     ).toBe(false);
   });
+
+  /**
+   * **The unlock dialog's fields-to-actions gap is the actions' own.**
+   * jsdom performs no layout, so the one thing that keeps the gap from
+   * collapsing to nothing when the error line is absent - `margin-top` on
+   * the actions and no bottom margin on the error - is a fact about the
+   * sheet. Without it the dialog closes up until a refusal appears and
+   * opens again after Cancel, which is the defect measured live.
+   */
+  it("keeps the unlock dialog's actions gap whether or not the error line is drawn", () => {
+    expect(
+      /\.settings-dialog \.vault-acts[^{}]*\{[^{}]*margin-top:\s*16px/.test(section),
+      'the actions lost their own gap',
+    ).toBe(true);
+    const why = /\.settings-dialog \.why[^{}]*\{([^{}]*)\}/.exec(section)?.[1] ?? '';
+    expect(why, 'the error line rule exists').not.toBe('');
+    expect(
+      /margin-bottom|margin:/.test(why),
+      'the error line supplies the gap instead of its own height only',
+    ).toBe(false);
+  });
 });
