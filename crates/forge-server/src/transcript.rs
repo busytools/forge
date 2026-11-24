@@ -695,7 +695,6 @@ mod tests {
         UserEnvelope,
     };
 
-    use super::turns::result_frame;
     use super::{Rendered, TaskEnding, render, settled, task_ending};
 
     /// An assistant message carrying `content`.
@@ -1330,7 +1329,11 @@ mod tests {
         let queued = queued_notice("Task bj5g0t2kq done");
         let by_text = reader_row(&notice_xml("tu-open", "Task done", "completed"));
 
-        for (notice, signal) in [(queued, "the queued carrier"), (by_text, "the text carrier")] {
+        for (notice, signal) in [
+            (queued, "the queued carrier"),
+            (by_text, "the text carrier"),
+            (completion_frame("tu-open"), "the live frame"),
+        ] {
             let answered =
                 settled(&[reader_row("go"), open_call.clone(), notice.clone(), answer.clone()]);
             assert_eq!(
@@ -1391,39 +1394,42 @@ mod tests {
     /// two harnesses cannot import each other, so the twins are the pin.
     #[test]
     fn background_completion_opens_the_read_turn_at_the_same_boundary() {
-        let dispatch = assistant(vec![ContentBlock::ToolUse {
-            id: "toolu_task".to_owned(),
-            name: "Task".to_owned(),
-            input: serde_json::json!({ "description": "Review" }),
-            extras: serde_json::Map::new(),
-        }]);
-        let events = vec![
-            reader_row("go"),
-            dispatch,
-            tool_result("toolu_task", false),
-            result_frame(Some("r-1")),
-            queued_notice(&notice_xml("toolu_task", "Agent \"Review\" finished", "completed")),
-            assistant(vec![ContentBlock::Text {
-                text: "the review is back".to_owned(),
-                extras: serde_json::Map::new(),
-            }]),
-            queued_notice(&notice_xml(
-                "call_bg",
-                "Background command \"Watch CI\" completed",
-                "completed",
-            )),
-            assistant(vec![ContentBlock::Text {
-                text: "the watch ended".to_owned(),
-                extras: serde_json::Map::new(),
-            }]),
-            result_frame(Some("r-2")),
-        ];
+        // **Both folds read the same bytes**: `client/src/chat/testing/
+        // parity-events.json`, the file the client's twin consumes. Each event
+        // carries the carriers that have it, and says `head` when it opens a
+        // turn - so neither side restates the boundaries and the two cannot
+        // drift on what the story is.
+        const PATH: &str = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../client/src/chat/testing/parity-events.json"
+        );
+        let raw = std::fs::read_to_string(PATH)
+            .unwrap_or_else(|err| panic!("the shared parity fixture is readable at {PATH}: {err}"));
+        let fixture: Vec<serde_json::Value> =
+            serde_json::from_str(&raw).expect("the shared parity fixture parses");
+
+        let mut events: Vec<Message> = Vec::new();
+        let mut heads: Vec<usize> = Vec::new();
+        for event in &fixture {
+            let Some(frame) = event.get("frame").or_else(|| event.get("read")) else {
+                continue;
+            };
+            if event.get("head").and_then(serde_json::Value::as_bool) == Some(true) {
+                heads.push(events.len());
+            }
+            events.push(
+                serde_json::from_value(frame.clone())
+                    .unwrap_or_else(|err| panic!("a parity frame decodes: {err}: {frame}")),
+            );
+        }
+        assert!(!heads.is_empty(), "the fixture parsed and marked its heads");
 
         let opened: Vec<usize> = settled(&events).turns.iter().map(|span| span.opens_at).collect();
         assert_eq!(
-            opened,
-            vec![0, 6],
-            "the prompt and the command's completion are the heads; the agent's ending is not",
+            opened, heads,
+            "the read fold heads exactly the fixture's head events: the prompt, the mid-stream \
+             completion (no call out) and the command's completion - never the agent's ending in \
+             either carrier, and never the completion that found a call out",
         );
     }
 
@@ -1997,9 +2003,8 @@ mod turns {
     }
 
     /// One result frame, as the wire sends it: the turn it closes, and the
-    /// id that frame carries. Shared with the fold's own tests, which build
-    /// settled conversations with one.
-    pub(super) fn result_frame(uuid: Option<&str>) -> Message {
+    /// id that frame carries.
+    fn result_frame(uuid: Option<&str>) -> Message {
         Message::Result {
             subtype: "success".to_owned(),
             session_id: "session".to_owned(),

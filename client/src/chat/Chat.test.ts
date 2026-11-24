@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Chat as HandedChat, type Conversation } from './conversation';
 import { conversationsFor } from './conversations';
+import parityEvents from './testing/parity-events.json';
 import { fold, pageFactsOf } from './units';
 import { echoes } from './echoes.svelte';
 import { git } from './git.svelte';
@@ -274,56 +275,37 @@ const completed = (call: string, task: string): unknown => ({
 });
 
 /**
- * The parity event list: one background story in the live wire's carriers.
+ * The parity event list, shared with the read fold: one background story.
  *
  * **The twin lives in `crates/forge-server/src/transcript.rs`**
- * (`background_completion_opens_the_read_turn_at_the_same_boundary`), written
- * in the read path's carriers - a user notice row where this has the system
- * frame. The boundaries are literal in both: one at the prompt, none at the
- * agent's ending (its row is the dispatch row), and one at the command's
- * completion. A change to either list is a change to both.
+ * (`background_completion_opens_the_read_turn_at_the_same_boundary`), and both
+ * read the SAME BYTES - `testing/parity-events.json`. Each event carries the
+ * carriers it has (`live` for the wire's `system/task_notification`, `read`
+ * for the notice row a transcript persists, `frame` for both), and says
+ * `head` when the event opens a turn. Neither side restates the boundaries:
+ * each is asked to find exactly the events marked as heads.
  */
-const PARITY_EVENTS: unknown[] = [
-  typed('go'),
-  {
-    type: 'assistant',
-    uuid: 'a-dispatch',
-    message: {
-      id: 'm-dispatch',
-      role: 'assistant',
-      model: 'claude-opus-5',
-      content: [
-        {
-          type: 'tool_use',
-          id: 'toolu_task',
-          name: 'Task',
-          input: { description: 'Review', subagent_type: 'Explore' },
-        },
-      ],
-    },
-  },
-  {
-    type: 'user',
-    uuid: 'u-ack',
-    message: {
-      role: 'user',
-      content: [
-        {
-          type: 'tool_result',
-          tool_use_id: 'toolu_task',
-          content: 'Async agent launched successfully',
-          is_error: false,
-        },
-      ],
-    },
-  },
-  { type: 'result', uuid: 'r-1', is_error: false },
-  completed('toolu_task', 't-agent'),
-  prose('the review is back', 'a-react'),
-  completed('call_bg', 't-cmd'),
-  prose('the watch ended', 'a-work'),
-  { type: 'result', uuid: 'r-2', is_error: false },
-];
+interface ParityEvent {
+  head?: boolean;
+  frame?: unknown;
+  live?: unknown;
+  read?: unknown;
+}
+
+const PARITY: ParityEvent[] = parityEvents;
+
+/** The events this fold consumes, in order, and the ones that head a turn. */
+function paritySide(side: 'live' | 'read'): { events: unknown[]; heads: number[] } {
+  const events: unknown[] = [];
+  const heads: number[] = [];
+  for (const event of PARITY) {
+    const frame = event.frame ?? (side === 'live' ? event.live : event.read);
+    if (frame === undefined) continue;
+    if (event.head === true) heads.push(events.length);
+    events.push(frame);
+  }
+  return { events, heads };
+}
 
 /** One assistant frame, whose usage the running row draws. */
 const frame = (uuid: string, input: number): unknown => ({
@@ -679,10 +661,12 @@ describe('the chat column as it draws', () => {
     expect(drawn(), "the turn's own work draws").toContain('the watch ended');
   });
 
-  it('keeps a completion inside a turn that is still being written', async () => {
-    // **Pressed into a running turn**, the live face of the guard the read
-    // fold keeps: the CLI absorbs a completion into a turn whose call is still
-    // out, and a turn opened here would cut that call off from its answer.
+  it('joins a completion exactly when the turn it lands in waits on a call', async () => {
+    // **The read fold's pressed guard, not "the turn is writing".** A
+    // completion stays in the turn above only while that turn has a call still
+    // out; a turn being written with no call out takes the completion as a
+    // head, which is what a re-read cuts. Guarding on "writing" joined the
+    // second case live and cut it on the read - the divergence this removes.
     const server = stub();
     draw({}, server);
     server.answer([{ key: 't1', messages: [prose('armed the watch', 'a1')] }]);
@@ -696,27 +680,49 @@ describe('the chat column as it draws', () => {
       stop();
       return count;
     };
+    const send = async (msg: unknown): Promise<void> => {
+      server.send({ kind: 'update', update: { chat_appended: { key: LEAD, msg } } });
+      await painted();
+    };
 
-    // A prompt opens a turn and leaves it being written: no result has landed.
-    server.send({ kind: 'update', update: { chat_appended: { key: LEAD, msg: typed('go') } } });
-    await painted();
+    // A prompt opens a turn and leaves it being written, with a call out.
+    await send(typed('go'));
+    await send({
+      type: 'assistant',
+      uuid: 'a-call',
+      message: {
+        id: 'm-call',
+        role: 'assistant',
+        model: 'claude-opus-5',
+        content: [{ type: 'tool_use', id: 'toolu_open', name: 'Bash', input: { command: 'ls' } }],
+      },
+    });
     expect(turns(), 'the prompt opened a turn').toBe(2);
 
-    server.send({
-      kind: 'update',
-      update: { chat_appended: { key: LEAD, msg: completed('call_bg', 't-cmd') } },
+    await send(completed('call_bg', 't-cmd'));
+    expect(turns(), 'a call still out keeps the completion in that turn').toBe(2);
+
+    await send({
+      type: 'user',
+      uuid: 'u-result',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'toolu_open', content: 'ok', is_error: false },
+        ],
+      },
     });
-    await painted();
-    expect(turns(), 'the completion stays in the running turn').toBe(2);
+    await send(completed('call_bg2', 't-cmd2'));
+    expect(turns(), 'with the call answered, the next completion opens a turn of its own').toBe(3);
   });
 
   it('cuts the same turn boundaries live as the read fold does', async () => {
     // **The parity this fix exists for.** One event list, two folds: this one
     // (the live `Chat`) and the read fold's twin in
     // `crates/forge-server/src/transcript.rs`,
-    // `background_completion_opens_the_read_turn_at_the_same_boundary`. The
-    // boundary list is literal in both and must move together; neither harness
-    // reaches the other language, so the twins are the pin.
+    // `background_completion_opens_the_read_turn_at_the_same_boundary`. Both
+    // consume the same fixture, and it names its own heads.
+    const { events, heads } = paritySide('live');
     const server = stub();
     draw({}, server);
     server.answer([]);
@@ -729,25 +735,19 @@ describe('the chat column as it draws', () => {
       await painted();
     };
 
-    for (const frame of PARITY_EVENTS) await send(frame);
+    for (const frame of events) await send(frame);
 
     let turns: readonly { messages: readonly unknown[] }[] = [];
     const stop = held.chat.value.subscribe((value) => (turns = value.turns));
     stop();
 
-    expect(turns.length, 'two turns, as the read fold cuts them').toBe(2);
     expect(
-      (turns[0]?.messages[0] as { uuid?: unknown } | undefined)?.uuid,
-      'the first at the prompt',
-    ).toBe('u-prompt');
-    expect(
-      (turns[1]?.messages[0] as { subtype?: unknown } | undefined)?.subtype,
-      'the second at the completion',
-    ).toBe('task_notification');
-    expect(
-      (turns[1]?.messages[0] as { task_id?: unknown } | undefined)?.task_id,
-      "and at the command's completion, not the agent's ending - which owns no head",
-    ).toBe('t-cmd');
+      turns.map((turn) => events.indexOf(turn.messages[0])),
+      'the frames that head a turn, exactly as the fixture marks them: the prompt, the ' +
+        "mid-stream completion (no call out), and the command's completion - never the agent's " +
+        'ending, and never the completion that found a call out',
+    ).toEqual(heads);
+    expect(turns.length, 'and one turn per head').toBe(heads.length);
 
     // **No drawn turn is empty.** A completion the page suppresses can leave a
     // headless turn if the cut does not know it, and the list draws every turn

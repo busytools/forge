@@ -2340,12 +2340,14 @@ describe('one turn folded into the units a view draws', () => {
   it('draws no ending row when the page holds the dispatch it names', () => {
     // Ved's one-row rule: the sub-agent's own row is the finish row. The
     // ending is what that row already carries, the way a tool_result is what
-    // its call's row carries - so it draws nothing of its own.
+    // its call's row carries - so it draws nothing of its own. The turn holds
+    // the work the completion woke, as a real page's does.
     const dispatched = said([
       use('toolu_task_1', 'Task', { description: 'Review PR', subagent_type: 'Explore' }),
     ]);
     const finished = ending('toolu_task_1', 'Agent "Review PR" finished');
-    const finishedTurn = { messages: [finished] };
+    const worked = said([text('picking the review up')]);
+    const finishedTurn = { messages: [finished, worked] };
     const turns = [{ messages: [dispatched] }, finishedTurn];
     expect(
       noticesOf(fold(finishedTurn.messages, null, false, false, pageFactsOf(turns))),
@@ -2364,13 +2366,14 @@ describe('one turn folded into the units a view draws', () => {
     // **The memo compares the dispatch set by value**, and this is the case
     // that needs it: the same ending, the same frames, a page that no longer
     // holds the dispatch it names. Answered from the stale fold, the notice
-    // would stay suppressed on a page whose call row is gone - the frame
-    // hidden with no row carrying it, which is rule 25's opposite.
+    // would stay suppressed on a page whose call row is gone - a completion
+    // the page never draws, which is rule 25's opposite.
     const dispatched = said([
       use('toolu_task_3', 'Task', { description: 'Review', subagent_type: 'Explore' }),
     ]);
     const finished = ending('toolu_task_3', 'Agent "Review" finished');
-    const finishedTurn = { messages: [finished] };
+    const worked = said([text('picking the review up')]);
+    const finishedTurn = { messages: [finished, worked] };
     const withDispatch = pageFactsOf([{ messages: [dispatched] }, finishedTurn]);
     expect(
       noticesOf(turnFold(finishedTurn, null, false, false, withDispatch)),
@@ -2378,11 +2381,35 @@ describe('one turn folded into the units a view draws', () => {
     ).toEqual([]);
 
     // The same head frame and the same messages, on a page that lost it.
-    const without = { messages: [finished] };
+    const without = { messages: finishedTurn.messages };
     expect(
       noticesOf(turnFold(without, null, false, false, pageFactsOf([without]))),
       'and drawn once the page no longer holds the call',
     ).toEqual(['Agent "Review" finished']);
+  });
+
+  it('keeps the ending as a marker when a late page brings the dispatch', () => {
+    // **The dispatch set can GROW under a held turn.** An older page landing
+    // brings the dispatch a notice was drawn without, and the suppression
+    // then takes the only line the turn had - a turn that draws nothing is
+    // the list's 24px blank band. The ending stays as that turn's marker.
+    const finished = ending('toolu_task_5', 'Agent "Review PR" finished');
+    const finishedTurn = { messages: [finished] };
+    const alone = [finishedTurn];
+    expect(
+      noticesOf(fold(finishedTurn.messages, null, false, false, pageFactsOf(alone))),
+      'drawn while the page holds no dispatch',
+    ).toEqual(['Agent "Review PR" finished']);
+
+    const dispatched = said([
+      use('toolu_task_5', 'Task', { description: 'Review PR', subagent_type: 'Explore' }),
+    ]);
+    const gained = pageFactsOf([{ messages: [dispatched] }, finishedTurn]);
+    expect(gained.dispatches.has('toolu_task_5'), 'precondition: the dispatch arrived').toBe(true);
+    expect(
+      noticesOf(fold(finishedTurn.messages, null, false, false, gained)),
+      'and the turn is never left blank',
+    ).toEqual(['Agent "Review PR" finished']);
   });
 
   it('keeps a background command ending, whose call is no dispatch', () => {
@@ -2416,7 +2443,10 @@ describe('one turn folded into the units a view draws', () => {
           '</task-notification>',
       },
     ]);
-    const finishedTurn = { messages: [finished] };
+    // The turn holds the work the completion woke, as a real page's does; a
+    // turn holding only the ending keeps it as its marker (below).
+    const worked = said([text('picking the review up')]);
+    const finishedTurn = { messages: [finished, worked] };
     const turns = [{ messages: [dispatched] }, finishedTurn];
     expect(
       noticesOf(fold(finishedTurn.messages, null, false, false, pageFactsOf(turns))),

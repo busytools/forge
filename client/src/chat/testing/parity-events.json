@@ -1,0 +1,220 @@
+[
+  {
+    "head": true,
+    "frame": {
+      "type": "user",
+      "uuid": "u-prompt",
+      "session_id": "s",
+      "message": { "role": "user", "content": [{ "type": "text", "text": "go" }] }
+    }
+  },
+  {
+    "frame": {
+      "type": "assistant",
+      "uuid": "a-mid",
+      "session_id": "s",
+      "message": {
+        "id": "m-mid",
+        "role": "assistant",
+        "model": "claude-opus-5",
+        "content": [{ "type": "text", "text": "thinking it over" }]
+      }
+    }
+  },
+  {
+    "head": true,
+    "live": {
+      "type": "system",
+      "subtype": "task_notification",
+      "session_id": "s",
+      "task_id": "t-mid",
+      "tool_use_id": "call_mid",
+      "status": "completed",
+      "summary": "Background command \"Mid\" completed"
+    },
+    "read": {
+      "type": "user",
+      "uuid": "u-mid",
+      "session_id": "s",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "queued_command",
+            "commandMode": "task-notification",
+            "prompt": "<task-notification>\n<tool-use-id>call_mid</tool-use-id>\n<status>completed</status>\n<summary>Background command \"Mid\" completed</summary>\n</task-notification>"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "frame": {
+      "type": "assistant",
+      "uuid": "a-call",
+      "session_id": "s",
+      "message": {
+        "id": "m-call",
+        "role": "assistant",
+        "model": "claude-opus-5",
+        "content": [
+          { "type": "tool_use", "id": "toolu_open", "name": "Bash", "input": { "command": "ls" } }
+        ]
+      }
+    }
+  },
+  {
+    "live": {
+      "type": "system",
+      "subtype": "task_notification",
+      "session_id": "s",
+      "task_id": "t-out",
+      "tool_use_id": "call_out",
+      "status": "completed",
+      "summary": "Background command \"Out\" completed"
+    },
+    "read": {
+      "type": "user",
+      "uuid": "u-out",
+      "session_id": "s",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "queued_command",
+            "commandMode": "task-notification",
+            "prompt": "<task-notification>\n<tool-use-id>call_out</tool-use-id>\n<status>completed</status>\n<summary>Background command \"Out\" completed</summary>\n</task-notification>"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "frame": {
+      "type": "user",
+      "uuid": "u-answer",
+      "session_id": "s",
+      "message": {
+        "role": "user",
+        "content": [
+          { "type": "tool_result", "tool_use_id": "toolu_open", "content": "ok", "is_error": false }
+        ]
+      }
+    }
+  },
+  {
+    "frame": {
+      "type": "assistant",
+      "uuid": "a-dispatch",
+      "session_id": "s",
+      "message": {
+        "id": "m-dispatch",
+        "role": "assistant",
+        "model": "claude-opus-5",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "toolu_task",
+            "name": "Task",
+            "input": { "description": "Review", "subagent_type": "Explore" }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "frame": {
+      "type": "user",
+      "uuid": "u-ack",
+      "session_id": "s",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "tool_result",
+            "tool_use_id": "toolu_task",
+            "content": "Async agent launched successfully",
+            "is_error": false
+          }
+        ]
+      }
+    }
+  },
+  {
+    "live": {
+      "type": "system",
+      "subtype": "task_notification",
+      "session_id": "s",
+      "task_id": "t-agent",
+      "tool_use_id": "toolu_task",
+      "status": "completed",
+      "summary": "Agent \"Review\" finished"
+    },
+    "read": {
+      "type": "user",
+      "uuid": "u-agent-queued",
+      "session_id": "s",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "queued_command",
+            "commandMode": "task-notification",
+            "prompt": "<task-notification>\n<tool-use-id>toolu_task</tool-use-id>\n<status>completed</status>\n<summary>Agent \"Review\" finished</summary>\n</task-notification>"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "read": {
+      "type": "user",
+      "uuid": "u-agent-text",
+      "session_id": "s",
+      "message": {
+        "role": "user",
+        "content": "<task-notification>\n<tool-use-id>toolu_task</tool-use-id>\n<status>completed</status>\n<summary>Agent \"Review\" finished</summary>\n</task-notification>"
+      }
+    }
+  },
+  {
+    "head": true,
+    "live": {
+      "type": "system",
+      "subtype": "task_notification",
+      "session_id": "s",
+      "task_id": "t-cmd",
+      "tool_use_id": "call_cmd",
+      "status": "completed",
+      "summary": "Background command \"Watch CI\" completed"
+    },
+    "read": {
+      "type": "user",
+      "uuid": "u-cmd",
+      "session_id": "s",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "type": "queued_command",
+            "commandMode": "task-notification",
+            "prompt": "<task-notification>\n<tool-use-id>call_cmd</tool-use-id>\n<status>completed</status>\n<summary>Background command \"Watch CI\" completed</summary>\n</task-notification>"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "frame": {
+      "type": "assistant",
+      "uuid": "a-work",
+      "session_id": "s",
+      "message": {
+        "id": "m-work",
+        "role": "assistant",
+        "model": "claude-opus-5",
+        "content": [{ "type": "text", "text": "the watch ended" }]
+      }
+    }
+  }
+]

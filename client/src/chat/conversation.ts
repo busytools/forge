@@ -1124,6 +1124,43 @@ function completedCall(message: unknown): string | null {
 }
 
 /**
+ * Whether a turn still waits on a tool call: a call with no result answering
+ * it, read off the turn's own frames.
+ *
+ * **This is the read fold's pressed guard, and the live fold joins by it.**
+ * `render` keeps a completion in the turn it landed in only while that turn
+ * has a call still out; the live side asks the newest turn. A turn being
+ * written with NO call out therefore takes the completion as a head, exactly
+ * as the read does - the case a "the turn is writing" guard got wrong, where
+ * the live fold joined what a re-read would cut.
+ *
+ * **The crash shape is the read's own asymmetry.** A call answered nowhere in
+ * the file opens a turn on a settled read, while a live fold had already
+ * joined the completion to the turn it was running in; no list can settle
+ * that one for both.
+ */
+function waitsOnACall(turn: { messages: readonly unknown[] }): boolean {
+  const open = new Set<string>();
+  for (const message of turn.messages) {
+    for (const block of blocksIn(message)) {
+      const held = block as { type?: unknown; id?: unknown; tool_use_id?: unknown };
+      if (
+        (held.type === 'tool_use' || held.type === 'server_tool_use') &&
+        typeof held.id === 'string'
+      ) {
+        open.add(held.id);
+      } else if (
+        (held.type === 'tool_result' || held.type === 'server_tool_result') &&
+        typeof held.tool_use_id === 'string'
+      ) {
+        open.delete(held.tool_use_id);
+      }
+    }
+  }
+  return open.size > 0;
+}
+
+/**
  * Whether a frame is the CLI's interrupt marker: a `user` row it writes
  * INSIDE the turn it ended, right before the failing result. It opens no
  * turn - a turn opened for it separates the call it killed from the report
@@ -4130,16 +4167,20 @@ export class Chat {
       // completion opens one: its notice is the row the turn starts from.
       const endedCall = completesTask(message) ? completedCall(message) : null;
       const agentEnding = endedCall !== null && pageFactsOf(held.turns).dispatches.has(endedCall);
+      // **The read fold's pressed guard, not "the turn is writing".** A
+      // completion stays in the turn above only while that turn has a call
+      // still out; with no call out it is a head on both paths. Guarding on
+      // `writing` instead joined completions arriving mid-stream that a
+      // re-read cuts, which is the live/read divergence this cut removes.
+      const pressed = completesTask(message) && last !== undefined && waitsOnACall(last);
       const opens =
         (draws &&
           !isSystem(message) &&
           !joinsBoundary &&
           (last === undefined || (!writing && opensATurn(message)))) ||
         // **A background completion opens the turn the CLI ran for it**, the
-        // live face of the read fold's cut. `writing` is the pressed-in guard:
-        // a turn still waiting on its call absorbs the completion, as every
-        // other pressed row does (#2379).
-        (completesTask(message) && !agentEnding && !writing);
+        // live face of the read fold's cut and under the same pressed guard.
+        (completesTask(message) && !agentEnding && !pressed);
       // **The core's own line is the one `system` frame that opens a row**, and
       // only where there is no turn to join. Its only copy is this frame - the
       // CLI wrote none - so on a seat with no turn yet, which is every fresh

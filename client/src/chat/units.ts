@@ -2407,6 +2407,17 @@ export function fold(
    * silent and went into `pending` as its own row.
    */
   const silentBatches: HookBatchLeaf[] = [];
+  /**
+   * The endings this fold suppressed because the page holds the dispatch
+   * they name.
+   *
+   * **A turn must never draw as a blank band**, and the page facts can change
+   * under a held turn: an older page landing can bring a dispatch the turn's
+   * ending was drawn without. The suppression is right - the dispatch row is
+   * the finish - but a turn left with nothing at all still needs its marker,
+   * so the suppressed line is kept until the fold can tell.
+   */
+  const suppressed: { key: string; text: string }[] = [];
   let model: string | null = null;
   let thinking: number | null = null;
   /**
@@ -3229,9 +3240,15 @@ export function fold(
       // its dispatch row instead, so its notice stays off the page.
       if (system === 'task_notification') {
         const call = str(frame, 'tool_use_id');
-        if (call !== null && page.dispatches.has(call)) continue;
         const summary = str(frame, 'summary');
-        if (summary !== null && summary.trim() !== '') {
+        const shown = summary !== null && summary.trim() !== '';
+        if (shown && call !== null && page.dispatches.has(call)) {
+          // The ending's row is the dispatch row; kept only as this turn's
+          // marker should the turn otherwise draw nothing (below).
+          suppressed.push({ key: keyOf(at, frame, 'notice'), text: summary });
+          continue;
+        }
+        if (shown) {
           push({
             kind: 'notice',
             key: keyOf(at, frame, 'notice'),
@@ -3426,10 +3443,14 @@ export function fold(
             // carries. A call the page does not hold keeps the notice, which
             // is then the only row the fact has (rule 25).
             const said = noticeFields(stripEscapes(stripped));
-            if (said.call !== null && page.dispatches.has(said.call)) continue;
+            const key = keyOf(at, frame, blockAt);
+            if (said.call !== null && page.dispatches.has(said.call)) {
+              suppressed.push({ key, text: taskEnd });
+              continue;
+            }
             push({
               kind: 'notice',
-              key: keyOf(at, frame, blockAt),
+              key,
               notice: { severity: 'info', text: taskEnd },
             });
             continue;
@@ -3629,10 +3650,14 @@ export function fold(
           if (said.summary !== null && said.summary !== '') {
             // The dispatch row is the finish row here too: the text and
             // queued carriers are one fact, and both read the same field.
-            if (said.call !== null && page.dispatches.has(said.call)) continue;
+            const key = keyOf(at, frame, blockAt);
+            if (said.call !== null && page.dispatches.has(said.call)) {
+              suppressed.push({ key, text: said.summary });
+              continue;
+            }
             push({
               kind: 'notice',
-              key: keyOf(at, frame, blockAt),
+              key,
               notice: { severity: 'info', text: said.summary },
             });
             continue;
@@ -3846,6 +3871,16 @@ export function fold(
       units.splice(at - 1, 1, { ...held, rows: [...held.rows, foot] });
     } else {
       units.splice(at, 0, { kind: 'leaves', key: foot.key, rows: [foot] });
+    }
+  }
+  // **A turn with nothing else keeps its endings' markers.** The suppression
+  // above is the dispatch-row rule; a page that later gains the dispatch can
+  // take away the only line a held turn had, and a turn drawing nothing is
+  // the 24px blank band the list gives every turn. A live turn is not blank -
+  // its running report is its row - so only a settled fold takes markers.
+  if (units.length === 0 && suppressed.length > 0 && !(live && !sawResult)) {
+    for (const held of suppressed) {
+      push({ kind: 'notice', key: held.key, notice: { severity: 'info', text: held.text } });
     }
   }
   // A live turn that has not settled draws its own row from what its frames
