@@ -418,6 +418,22 @@ impl UpdateFanout {
         self.shared.lock().epoch_opened_with_rows(slot)
     }
 
+    /// Drop everything this seat's ring holds, for a budget that evicted its
+    /// held conversation.
+    ///
+    /// **The ring and the held copy are one seat's retained memory**, so a
+    /// budget that evicts one drops both. The sequence counter stays: a
+    /// client still subscribed to the seat reads the next frame by its
+    /// number, and a rewind would read as a repeat and be dropped. A cold
+    /// read that follows sends a seal, whose own mint resets the counter.
+    pub(crate) fn evict_ring(&self, slot: &SessionSlot) {
+        let mut shared = self.shared.lock();
+        shared.rings.remove(slot);
+        shared.ring_bytes.remove(slot);
+        shared.unringed.remove(slot);
+        shared.sealed_with_rows.remove(slot);
+    }
+
     /// Drive the ring's cap down, so a test reaches the transcript fallback
     /// without emitting a window's worth of frames.
     #[cfg(any(test, feature = "testing"))]
@@ -436,6 +452,11 @@ impl UpdateFanout {
     #[cfg(test)]
     pub(crate) fn ring_bytes(&self, slot: &SessionSlot) -> usize {
         self.shared.lock().ring_bytes.get(slot).copied().unwrap_or(0)
+    }
+
+    /// What all the rings weigh in total, for the budget's accounting.
+    pub(crate) fn total_ring_bytes(&self) -> usize {
+        self.shared.lock().ring_bytes.values().sum()
     }
 
     /// How many subscribers are attached.

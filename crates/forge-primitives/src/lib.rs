@@ -166,7 +166,7 @@ pub use runtime::{
     RuntimeSessionState, SessionLifecycleState, SessionTurnState, SettingsParseErrorUpdate,
     TerminalReason,
 };
-pub use server::{DEFAULT_SERVER_PORT, ServerConfig};
+pub use server::{ConversationEvictor, DEFAULT_SERVER_PORT, ServerConfig};
 pub use session_meta::PromptChunk;
 pub use session_slot::SessionSlot;
 pub use session_update::{

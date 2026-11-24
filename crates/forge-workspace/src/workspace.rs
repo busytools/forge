@@ -1911,6 +1911,26 @@ mod record_session_tool_surface_tests {
     }
 }
 
+/// The transport's seam onto the workspace's per-seat ring.
+///
+/// The transport owns the conversation budget and decides when a seat's held
+/// copy goes; the ring lives in the fan-out the workspace owns. This struct
+/// carries the fan-out's handle across that boundary so the eviction drops
+/// both halves of one seat's retained memory.
+struct WorkspaceRingEvictor {
+    update_tx: UpdateFanout,
+}
+
+impl forge_primitives::ConversationEvictor for WorkspaceRingEvictor {
+    fn evict_ring(&self, slot: &forge_primitives::SessionSlot) {
+        self.update_tx.evict_ring(slot);
+    }
+
+    fn total_ring_bytes(&self) -> usize {
+        self.update_tx.total_ring_bytes()
+    }
+}
+
 impl Workspace {
     /// Builds a Workspace, kicks off the background catalog scan and the
     /// claude version probe, and loads `<config_dir>/forge.toml`. Errors if
@@ -2649,6 +2669,15 @@ impl Workspace {
     /// socket - the workspace never does.
     pub fn server_config(&self) -> forge_primitives::ServerConfig {
         self.config_arc().server.clone()
+    }
+
+    /// The evictor the transport's conversation budget uses to drop a seat's
+    /// retained ring when it evicts that seat's held conversation.
+    ///
+    /// The transport owns the budget and the eviction; the workspace owns the
+    /// ring. This seam hands the ring's drop across so the two go together.
+    pub fn conversation_evictor(&self) -> Arc<dyn forge_primitives::ConversationEvictor> {
+        Arc::new(WorkspaceRingEvictor { update_tx: self.update_tx.clone() })
     }
 
     /// The live config as one owned snapshot. A reload swaps the whole

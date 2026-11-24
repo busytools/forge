@@ -52,6 +52,21 @@ pub struct ServerConfig {
     /// is dropped and the walk above it still reaches every turn.
     /// `0` serves the page the turn count asks for.
     pub more_page_cap_kb: u64,
+    /// The total bytes of conversation the transport keeps cached across all
+    /// seats, in bytes.
+    ///
+    /// **The per-seat window is bounded; the total across seats is not.**
+    /// Each seat's copy is capped at 64 MB, but every seat that opens a
+    /// conversation keeps its own copy for the process's life, so N seats
+    /// cost N windows. This budget bounds the sum: when the total retained
+    /// bytes pass it, the least recently touched seat is evicted and its copy
+    /// dropped. The seat reopens cold on its next read. `0` means no total
+    /// budget.
+    ///
+    /// The default is 2 GiB: enough for 25 ~80 MB windows, leaving ~1 GB
+    /// headroom under the 3 GB the live server reached before this bound,
+    /// and evicting only idle seats.
+    pub conversation_memory_budget_bytes: u64,
     /// Extra browser origins allowed to open the socket, beside the shell's
     /// own, the server's own, and any page served on the user's own machine -
     /// the `localhost` name or any loopback IP address, any port, http or
@@ -91,6 +106,11 @@ pub const DEFAULT_FIRST_FRAME_CAP_KB: u64 = 512;
 /// absent. See `ServerConfig::more_page_cap_kb`.
 pub const DEFAULT_MORE_PAGE_CAP_KB: u64 = 512;
 
+/// The total retained-conversation budget when `[server]
+/// conversation_memory_budget_bytes` is absent. See
+/// `ServerConfig::conversation_memory_budget_bytes`.
+pub const DEFAULT_CONVERSATION_MEMORY_BUDGET_BYTES: u64 = 2_147_483_648;
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -100,10 +120,32 @@ impl Default for ServerConfig {
             tool_record_cap_kb: DEFAULT_TOOL_RECORD_CAP_KB,
             first_frame_cap_kb: DEFAULT_FIRST_FRAME_CAP_KB,
             more_page_cap_kb: DEFAULT_MORE_PAGE_CAP_KB,
+            conversation_memory_budget_bytes: DEFAULT_CONVERSATION_MEMORY_BUDGET_BYTES,
             allowed_origins: Vec::new(),
             startup_gate: None,
         }
     }
+}
+
+/// Drops a seat's retained ring when the transport evicts its conversation.
+///
+/// **The two are one seat's retained memory, so they go together.** A seat's
+/// held copy and its repair ring both hold frames for the same seat, and a
+/// budget that drops one without the other leaves the seat half-evicted: a
+/// cold read that finds no held copy still finds a ring, and a repair that
+/// finds no ring still finds a held copy. The transport owns the budget and
+/// the eviction; the workspace owns the ring, so it hands this seam down.
+pub trait ConversationEvictor: Send + Sync {
+    /// Drop whatever retained memory this seat's ring holds.
+    fn evict_ring(&self, slot: &crate::SessionSlot);
+
+    /// What all the rings weigh in total, for the budget's accounting.
+    ///
+    /// **The budget covers both maps, not just the held copies.** A seat's
+    /// held conversation and its frame ring are one seat's retained memory;
+    /// counting only the held copy would let the rings grow past the budget
+    /// while the held copies stay under it.
+    fn total_ring_bytes(&self) -> usize;
 }
 
 #[cfg(test)]
@@ -145,6 +187,26 @@ mod tests {
         let parsed: ServerConfig =
             serde_json::from_str(r#"{"first_frame_cap_kb": 0}"#).expect("the key parses");
         assert_eq!(parsed.first_frame_cap_kb, 0);
+    }
+
+    /// The shipped default, and the opt-out: absent means 2 GiB, and `0`
+    /// means no total budget. Pinned as a literal for the same reason as the
+    /// other caps'.
+    #[test]
+    fn the_conversation_memory_budget_defaults_to_2_gib_and_zero_means_unbounded() {
+        assert_eq!(
+            ServerConfig::default().conversation_memory_budget_bytes,
+            2_147_483_648,
+            "the documented default"
+        );
+        assert_eq!(
+            DEFAULT_CONVERSATION_MEMORY_BUDGET_BYTES, 2_147_483_648,
+            "and the constant the default is built from"
+        );
+        let parsed: ServerConfig =
+            serde_json::from_str(r#"{"conversation_memory_budget_bytes": 0}"#)
+                .expect("the key parses");
+        assert_eq!(parsed.conversation_memory_budget_bytes, 0);
     }
 
     /// The gate is opt-in: an absent key runs nothing, and a set one carries

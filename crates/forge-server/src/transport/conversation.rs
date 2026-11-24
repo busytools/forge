@@ -411,6 +411,11 @@ impl Conversation {
     pub fn dropped_thinking(&self) -> i64 {
         self.dropped_thinking
     }
+
+    /// What this copy weighs, as the total budget counts it.
+    pub fn bytes(&self) -> usize {
+        self.window.bytes()
+    }
 }
 
 /// The id a frame carries, for the frames that carry one.
@@ -459,11 +464,48 @@ fn live_of_seed(messages: &[Message]) -> bool {
 pub struct Held {
     conversation: Mutex<Conversation>,
     folded: Condvar,
+    /// What this copy weighs, kept beside the conversation so the total
+    /// budget reads it without locking the seat.
+    bytes: std::sync::atomic::AtomicUsize,
+    /// When this seat was last touched, for the total budget's LRU.
+    ///
+    /// **A monotonic counter rather than a clock**, so two seats touched in
+    /// the same instant still order. The counter lives on [`Conversations`].
+    last_touch: std::sync::atomic::AtomicU64,
 }
 
 impl Held {
     pub fn new(conversation: Conversation) -> Self {
-        Self { conversation: Mutex::new(conversation), folded: Condvar::new() }
+        let bytes = conversation.bytes();
+        Self {
+            conversation: Mutex::new(conversation),
+            folded: Condvar::new(),
+            bytes: std::sync::atomic::AtomicUsize::new(bytes),
+            last_touch: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// What this copy weighs, without locking the seat.
+    pub fn bytes(&self) -> usize {
+        self.bytes.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// When this seat was last touched, without locking the seat.
+    pub fn last_touch(&self) -> u64 {
+        self.last_touch.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Say this seat was just touched, at `seq`.
+    pub fn touch(&self, seq: u64) {
+        self.last_touch.store(seq, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Re-read the seat's weight from its conversation, answering the delta
+    /// against what the budget last counted.
+    fn reweigh(&self, conversation: &Conversation) -> isize {
+        let new = conversation.bytes();
+        let old = self.bytes.swap(new, std::sync::atomic::Ordering::Relaxed);
+        new.cast_signed() - old.cast_signed()
     }
 
     /// Whether this copy belongs to the seat's current occupant.
@@ -604,17 +646,42 @@ impl Drop for Folding<'_> {
 
 /// The conversations the transport is holding, one per seat it has heard of.
 ///
-/// **Every live seat, not only the watched ones, and no seat is let go.** A
-/// conversation has no read behind it any more, so releasing one is not a
-/// bound - nothing could rebuild it, and the next ask for that seat would
-/// have no answer. What it holds is therefore proportional to what is
-/// RUNNING plus the sleeping seats someone has opened: a sleeping seat's
-/// copy is seeded from its transcript and kept, which is what makes the
-/// read land before any spawn. What one seat costs is the window the
-/// ceilings keep rather than its transcript, and the window is the bound.
+/// **Every live seat, not only the watched ones, and a seat is let go only
+/// when the total budget forces it.** A conversation's window is bounded,
+/// but nothing bounds the SUM across seats: every seat that opens a
+/// conversation keeps its copy for the process's life, so a server with
+/// hundreds of seats holds hundreds of windows. A total budget evicts the
+/// least recently touched seat when the sum passes it. An evicted seat
+/// reopens through the cold read path - its transcript seed - so the only
+/// visible difference is that one read.
+///
+/// What it holds is proportional to what is RUNNING plus the sleeping seats
+/// someone has opened: a sleeping seat's copy is seeded from its transcript
+/// and kept, which is what makes the read land before any spawn. What one
+/// seat costs is the window the ceilings keep rather than its transcript,
+/// and the window is the per-seat bound. The total budget is the cross-seat
+/// bound.
 #[derive(Default)]
 pub struct Conversations {
     held: Mutex<HashMap<SessionSlot, Arc<Held>>>,
+    /// How many bytes of conversation the held copies may total, or `0` for
+    /// no total budget.
+    ///
+    /// **The per-seat window is bounded; the total across seats is not.** A
+    /// seat's copy is capped at its window, but every seat that opens a
+    /// conversation keeps its copy for the process's life. This budget bounds
+    /// the sum: when the total passes it, the least recently touched seat is
+    /// evicted. [`forge_primitives::ServerConfig::conversation_memory_budget_bytes`]
+    /// carries the why.
+    budget_bytes: usize,
+    /// The running total of what the held copies weigh.
+    total_bytes: std::sync::atomic::AtomicUsize,
+    /// A monotonic touch counter, so two seats touched in one instant still
+    /// order for the LRU.
+    touch_seq: std::sync::atomic::AtomicU64,
+    /// Drops a seat's ring when its held copy is evicted, so the two go
+    /// together. `None` in tests and wherever the ring lives elsewhere.
+    ring_evictor: Option<Arc<dyn forge_primitives::ConversationEvictor>>,
     /// Fires when a seat's copy is first held or reseeded, so a read waiting
     /// for it to become current knows it moved.
     seeded: tokio::sync::Notify,
@@ -671,6 +738,123 @@ impl Default for SeedHold {
 impl Conversations {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A set of conversations bounded by a total byte budget, whose evicted
+    /// seats also drop their ring through `evictor`.
+    ///
+    /// **`0` means no total budget**, the same as the shipped key's opt-out.
+    pub fn with_budget(
+        budget_bytes: usize,
+        evictor: Option<Arc<dyn forge_primitives::ConversationEvictor>>,
+    ) -> Self {
+        Self { budget_bytes, ring_evictor: evictor, ..Self::default() }
+    }
+
+    /// What the held copies weigh in total.
+    pub fn total_bytes(&self) -> usize {
+        self.total_bytes.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// What the held copies and the rings weigh together.
+    ///
+    /// **The budget's actual subject.** The eviction checks this, and a test
+    /// reads it to see the sum the budget bounds.
+    pub fn total_retained_bytes(&self) -> usize {
+        let held = self.total_bytes.load(std::sync::atomic::Ordering::Relaxed);
+        let rings = self.ring_evictor.as_ref().map_or(0, |evictor| evictor.total_ring_bytes());
+        held.saturating_add(rings)
+    }
+
+    /// The budget the held copies are held to, or `0` for none.
+    pub fn budget_bytes(&self) -> usize {
+        self.budget_bytes
+    }
+
+    /// Move the running total by `delta`, saturating at zero.
+    ///
+    /// **A negative delta larger than the total would wrap**, and a wrapped
+    /// total reads as a budget already blown, so every seat gets evicted on
+    /// the next apply. Saturating keeps the accounting honest when a copy
+    /// shrinks more than it grew.
+    fn adjust_total(&self, delta: isize) {
+        if delta > 0 {
+            self.total_bytes.fetch_add(delta.unsigned_abs(), std::sync::atomic::Ordering::Relaxed);
+        } else if delta < 0 {
+            self.subtract_total(delta.unsigned_abs());
+        }
+    }
+
+    /// Take `bytes` off the running total, saturating at zero.
+    ///
+    /// **A compare-and-swap loop rather than `fetch_update`**, which is
+    /// deprecated in favour of `try_update`, while `try_update` is newer than
+    /// the workspace's MSRV. The loop saturates so a copy that shrank more
+    /// than the total claims cannot wrap the total around.
+    fn subtract_total(&self, bytes: usize) {
+        let mut current = self.total_bytes.load(std::sync::atomic::Ordering::Relaxed);
+        loop {
+            let next = current.saturating_sub(bytes);
+            match self.total_bytes.compare_exchange_weak(
+                current,
+                next,
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    /// Evict least-recently-touched seats until the total is under budget,
+    /// never touching `protect`.
+    ///
+    /// **The seat being served stays**, however old its touch: a read or an
+    /// apply is actively using it, and evicting it would answer the caller
+    /// with a copy that is already gone.
+    ///
+    /// **The budget covers the rings as well as the held copies.** A seat's
+    /// retained memory is its held window and its frame ring together, so
+    /// counting only the held copies would let the rings grow past the budget
+    /// while the held copies stayed under it.
+    fn evict_over_budget(&self, protect: &SessionSlot) {
+        if self.budget_bytes == 0 {
+            return;
+        }
+        if self.total_retained_bytes() <= self.budget_bytes {
+            return;
+        }
+        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            let total = self.total_retained_bytes();
+            if total <= self.budget_bytes {
+                break;
+            }
+            let victim = held
+                .iter()
+                .filter(|(slot, _)| *slot != protect)
+                .min_by_key(|(_, held)| held.last_touch())
+                .map(|(slot, _)| slot.clone());
+            let Some(victim) = victim else {
+                break;
+            };
+            let Some(evicted) = held.remove(&victim) else {
+                break;
+            };
+            let bytes = evicted.bytes();
+            self.subtract_total(bytes);
+            tracing::debug!(
+                target: "forge::server::conversations",
+                event_name = "conversation_evicted",
+                victim = ?victim,
+                bytes,
+                "evicted a seat's held conversation over the total budget"
+            );
+            if let Some(evictor) = &self.ring_evictor {
+                evictor.evict_ring(&victim);
+            }
+        }
     }
 
     /// The newest number the fold loop has consumed for `slot`.
@@ -766,9 +950,15 @@ impl Conversations {
         }
     }
 
-    /// The seat's conversation if one is held.
+    /// The seat's conversation if one is held, touched as the LRU's youngest.
     pub fn get(&self, slot: &SessionSlot) -> Option<Arc<Held>> {
-        self.held.lock().unwrap_or_else(PoisonError::into_inner).get(slot).map(Arc::clone)
+        let held =
+            self.held.lock().unwrap_or_else(PoisonError::into_inner).get(slot).map(Arc::clone);
+        if let Some(held) = &held {
+            let seq = self.touch_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            held.touch(seq);
+        }
+        held
     }
 
     /// Whether the seat's turn is in flight right now, from its own frames.
@@ -784,11 +974,22 @@ impl Conversations {
     pub fn insert(&self, slot: &SessionSlot, conversation: Conversation) -> Arc<Held> {
         let held = {
             let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
-            Arc::clone(
+            let existed = held.contains_key(slot);
+            let entry = Arc::clone(
                 held.entry(slot.clone()).or_insert_with(|| Arc::new(Held::new(conversation))),
-            )
+            );
+            if !existed {
+                self.adjust_total(entry.bytes().cast_signed());
+            }
+            // **A seat just held or just read is the LRU's youngest**, so the
+            // next eviction does not take the seat this call is serving. A
+            // fresh `Held` starts at zero, which would read as the oldest.
+            let seq = self.touch_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            entry.touch(seq);
+            entry
         };
         self.seeded.notify_waiters();
+        self.evict_over_budget(slot);
         held
     }
 
@@ -798,13 +999,21 @@ impl Conversations {
     /// there, and the stretch replaces it so the frames after it apply to the
     /// copy the read is served from.
     pub fn replace(&self, slot: &SessionSlot, conversation: Conversation) -> Arc<Held> {
-        let held = {
+        let (held, delta) = {
             let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
             let fresh = Arc::new(Held::new(conversation));
-            held.insert(slot.clone(), Arc::clone(&fresh));
-            fresh
+            let fresh_bytes = fresh.bytes();
+            let old = held.insert(slot.clone(), Arc::clone(&fresh));
+            let old_bytes = old.as_ref().map_or(0, |held| held.bytes());
+            // **A seat just replaced is the LRU's youngest**, the same as a
+            // seat just inserted: the replacement is being served now.
+            let seq = self.touch_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            fresh.touch(seq);
+            (fresh, fresh_bytes.cast_signed() - old_bytes.cast_signed())
         };
+        self.adjust_total(delta);
         self.seeded.notify_waiters();
+        self.evict_over_budget(slot);
         held
     }
 
@@ -830,6 +1039,7 @@ impl Conversations {
         let Some(slot) = update.slot() else {
             return;
         };
+        let mut delta = 0isize;
         match update {
             // A connect and a resume say the same thing about this seat -
             // here is its conversation - so they RESEED it, materialising it
@@ -860,6 +1070,7 @@ impl Conversations {
                     if let Some(seq) = seq {
                         conversation.set_watermark(seq);
                     }
+                    delta = held.reweigh(&conversation);
                 }
             }
             // The delivery-failure notice is a row a CONNECTION forges per
@@ -894,8 +1105,11 @@ impl Conversations {
                 if let Some(seq) = seq {
                     conversation.set_watermark(seq);
                 }
+                delta = held.reweigh(&conversation);
             }
         }
+        self.adjust_total(delta);
+        self.evict_over_budget(slot);
     }
 
     /// Put `history` on `slot`, materialising the seat when this is the first
@@ -916,17 +1130,20 @@ impl Conversations {
         occupant: Option<&forge_primitives::SessionId>,
     ) {
         if let Some(held) = self.get(slot) {
-            {
+            let delta = {
                 let mut conversation = held.lock();
                 conversation.seed(history.to_vec(), compaction_count, carried);
                 conversation.set_watermark(0);
                 if let Some(occupant) = occupant {
                     conversation.set_occupant(Some(occupant.clone()));
                 }
-            }
+                held.reweigh(&conversation)
+            };
             // A reader waiting for a copy of another occupant is waiting for
             // exactly this, and it landed in place.
             self.seeded.notify_waiters();
+            self.adjust_total(delta);
+            self.evict_over_budget(slot);
         } else {
             let mut conversation = Conversation::new(history.to_vec(), compaction_count, carried);
             conversation.set_watermark(0);
@@ -949,7 +1166,7 @@ impl Conversations {
 
 #[cfg(test)]
 mod tests {
-    use forge_primitives::{ContentBlock, SessionId};
+    use forge_primitives::{ContentBlock, ConversationEvictor, SessionId};
     use forge_workspace::conversation_window::{CONVERSATION_CAP, CONVERSATION_SLACK};
 
     use super::*;
@@ -2053,6 +2270,148 @@ mod tests {
         assert!(
             floor.cursor.is_none(),
             "and with no page above it to ask for: the turn it named is not held any more",
+        );
+    }
+
+    /// A `ConversationEvictor` that records which seats it was asked to drop,
+    /// so a test can see the held copy and the ring go together.
+    #[derive(Default)]
+    struct RecordingEvictor {
+        evicted: Mutex<Vec<SessionSlot>>,
+        ring_bytes: Mutex<HashMap<SessionSlot, usize>>,
+    }
+
+    impl RecordingEvictor {
+        fn evicted(&self) -> Vec<SessionSlot> {
+            self.evicted.lock().unwrap_or_else(PoisonError::into_inner).clone()
+        }
+
+        fn set_ring_bytes(&self, slot: &SessionSlot, bytes: usize) {
+            self.ring_bytes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(slot.clone(), bytes);
+        }
+    }
+
+    impl forge_primitives::ConversationEvictor for RecordingEvictor {
+        fn evict_ring(&self, slot: &SessionSlot) {
+            self.evicted.lock().unwrap_or_else(PoisonError::into_inner).push(slot.clone());
+            self.ring_bytes.lock().unwrap_or_else(PoisonError::into_inner).remove(slot);
+        }
+
+        fn total_ring_bytes(&self) -> usize {
+            self.ring_bytes.lock().unwrap_or_else(PoisonError::into_inner).values().sum()
+        }
+    }
+
+    fn a_connect_for(slot: &SessionSlot, history: Vec<Message>) -> SessionUpdate {
+        SessionUpdate::Connected {
+            key: slot.clone(),
+            session_id: SessionId::new("5b1c2d3e-4f50-4a61-b728-9c0d1e2f3a45"),
+            cwd: "/tmp".to_owned(),
+            current_model: a_model(),
+            available_models: Vec::new(),
+            mode: None,
+            history,
+            dropped: 0,
+            compaction_count: 0,
+        }
+    }
+
+    /// **The total budget bounds the sum across seats, and the LRU goes
+    /// first.** A seat's window is bounded per seat, but the sum across seats
+    /// is not: a server with hundreds of seats retains hundreds of windows.
+    /// The budget evicts the least recently touched seat when the sum passes
+    /// it, dropping its held copy and its ring together. The seat being
+    /// served stays, and an evicted seat reopens through the cold read path.
+    #[test]
+    fn the_total_budget_evicts_the_least_recently_touched_seat() {
+        let history = |n: usize| -> Vec<Message> {
+            (0..n).map(|i| a_frame(&format!("message {i}"))).collect()
+        };
+        let seat = |project: &str| SessionSlot::lead("TestOrg", project);
+
+        // Measure one seat's weight first, so the budget is arithmetic rather
+        // than a guess. The budget is set so the held copies alone fit two
+        // seats but the held copies plus their rings do not: the ring bytes
+        // are what pushes the total over.
+        let weight = Conversation::new(history(40), 0, 0).bytes();
+        let ring_weight = weight / 4;
+        assert!(weight > 0, "a seat with forty messages weighs something");
+        assert!(ring_weight > 0, "and its ring weighs something too");
+        let budget = weight * 2 + weight / 4;
+
+        let seat_a = seat("proj-a");
+        let seat_b = seat("proj-b");
+        let seat_c = seat("proj-c");
+
+        // Two held copies alone fit the budget: the total without the rings
+        // is two seats' weight, which is under the budget.
+        let no_ring_evictor = Arc::new(RecordingEvictor::default());
+        let no_ring = Conversations::with_budget(
+            budget,
+            Some(Arc::clone(&no_ring_evictor) as Arc<dyn forge_primitives::ConversationEvictor>),
+        );
+        no_ring.apply(&a_connect_for(&seat_a, history(40)), None);
+        no_ring.apply(&a_connect_for(&seat_b, history(40)), None);
+        assert_eq!(no_ring.len(), 2, "two held copies fit under the budget");
+        assert!(
+            no_ring.total_bytes() <= budget,
+            "two held copies alone are under the budget: {} <= {budget}",
+            no_ring.total_bytes(),
+        );
+        assert!(
+            no_ring_evictor.evicted().is_empty(),
+            "nothing is evicted while the held copies fit",
+        );
+
+        // The rings push the total over: two seats' rings are added, and the
+        // total now exceeds the budget even though the held copies do not.
+        let evictor = Arc::new(RecordingEvictor::default());
+        evictor.set_ring_bytes(&seat_a, ring_weight);
+        evictor.set_ring_bytes(&seat_b, ring_weight);
+        let held = Conversations::with_budget(
+            budget,
+            Some(Arc::clone(&evictor) as Arc<dyn forge_primitives::ConversationEvictor>),
+        );
+        held.apply(&a_connect_for(&seat_a, history(40)), None);
+        held.apply(&a_connect_for(&seat_b, history(40)), None);
+        assert_eq!(held.len(), 1, "the ring bytes evict one seat, leaving one");
+        assert_eq!(
+            evictor.evicted(),
+            vec![seat_a.clone()],
+            "the least recently touched seat's ring went with its held copy",
+        );
+        assert_eq!(
+            evictor.total_ring_bytes(),
+            ring_weight,
+            "the evicted seat's ring is gone, the survivor's ring remains",
+        );
+
+        // The third seat also pushes the total over, and the LRU goes.
+        evictor.set_ring_bytes(&seat_c, ring_weight);
+        held.apply(&a_connect_for(&seat_c, history(40)), None);
+        assert!(
+            held.total_retained_bytes() <= budget,
+            "the total stays under the budget after the third seat: {} <= {budget}",
+            held.total_retained_bytes(),
+        );
+        assert!(held.get(&seat_b).is_none(), "the LRU seat was evicted");
+        assert!(held.get(&seat_c).is_some(), "the seat being served survives");
+
+        // Re-open the evicted seat through the cold read path: it serves the
+        // same conversation, and the budget holds again.
+        evictor.set_ring_bytes(&seat_a, ring_weight);
+        let reopened = held.insert(&seat_a, Conversation::new(history(40), 0, 0));
+        assert!(
+            !reopened.lock().messages().is_empty(),
+            "the cold read serves the same conversation",
+        );
+        assert!(
+            held.total_retained_bytes() <= budget,
+            "the total stays under the budget after the re-open: {} <= {budget}",
+            held.total_retained_bytes(),
         );
     }
 }
