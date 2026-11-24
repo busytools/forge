@@ -2038,6 +2038,13 @@ provider = "anthropic"
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace boots"));
         let facade = prod_cron_facade(&ws);
 
+        // The board takes the same arm for the same reason: a boot with no
+        // store has not read it, so the handoff brief must say "not read"
+        // rather than "none open".
+        assert!(
+            ws.durable_tasks_unavailable(),
+            "a boot with no store has not read the board either",
+        );
         assert_eq!(
             facade.list_crons(&SessionSlot::lead("TestOrg", "forge")),
             Err(CronListError::Unavailable),
@@ -2143,6 +2150,10 @@ provider = "anthropic"
         assert!(
             !ws.durable_crons_unavailable(),
             "a boot whose store opened is not an unavailable run",
+        );
+        assert!(
+            !ws.durable_tasks_unavailable(),
+            "and its board was read, so an empty board is a real answer",
         );
         assert_eq!(
             facade.list_crons(&SessionSlot::lead("TestOrg", "forge")),

@@ -606,13 +606,7 @@ pub(crate) fn live_state_sections(
         for task in open.iter().take(LIVE_STATE_CAP) {
             let owner =
                 task.owner.as_ref().map_or_else(|| "unowned".to_owned(), SessionSlot::display);
-            let door = if task.owner.as_ref() == Some(seat) {
-                "yours to continue"
-            } else if task.status == TaskStatus::Pending && task.owner.is_none() {
-                "claim with `tasks__claim`"
-            } else {
-                "held by its owner"
-            };
+            let door = board_door(task, seat);
             lines.push(format!(
                 "{} - {} [{}], owner {owner} - {door}",
                 task.id.as_str(),
@@ -629,9 +623,47 @@ pub(crate) fn live_state_sections(
     sections
 }
 
+/// The door a board row's own state takes. `tasks__claim` takes a row only
+/// when it is pending, unowned, unwaiting and unreserved, so a reserved
+/// pick, a wait and a row already moving each get the door that actually
+/// opens: claiming the first two is refused, and an unowned row past pending
+/// is moved with `tasks__update`.
+fn board_door(task: &Task, seat: &SessionSlot) -> &'static str {
+    if task.reserved.is_some() {
+        return "reserved for you";
+    }
+    if task.owner.as_ref() == Some(seat) {
+        return if task.status == TaskStatus::Waiting {
+            waiting_door(task)
+        } else {
+            "yours to continue"
+        };
+    }
+    if task.owner.is_none() {
+        return if task.status == TaskStatus::Pending && task.waiting_on.is_none() {
+            "claim with `tasks__claim`"
+        } else {
+            "nobody holds it - take it with `tasks__update`"
+        };
+    }
+    "held by its owner"
+}
+
+/// What a waiting row of the successor's own waits on, so its line names the
+/// block rather than reading as work to continue.
+fn waiting_door(task: &Task) -> &'static str {
+    use forge_primitives::tasks::WaitingKind;
+    match task.waiting_on.as_ref().and_then(|waiting| waiting.kind) {
+        Some(WaitingKind::Decision) => "yours - waiting on the user's decision",
+        Some(WaitingKind::Dependency) => "yours - waiting on its dependency",
+        Some(WaitingKind::Resource) => "yours - waiting on a resource",
+        None => "yours - waiting; the kind is unstated",
+    }
+}
+
 /// One live worker as the brief names it: the slot addresses it, and the
-/// state decides the door. A failed or restarting worker is the lead's to
-/// spawn again; a live one takes a message.
+/// state decides the door. A failed worker is the lead's to spawn again; a
+/// restarting one is already being healed; a live one takes a message.
 fn worker_live_line(status: &WorkerStatus) -> String {
     let slot = status.slot.display();
     let activity = status.activity.map_or("unknown", activity_name);
@@ -642,8 +674,8 @@ fn worker_live_line(status: &WorkerStatus) -> String {
     if failed {
         let why = status.diagnostic.as_deref().unwrap_or("no diagnostic captured");
         format!(
-            "{slot} [{activity}: {why}] - the lead spawns it again with `agents__spawn`, \
-             reusing the charter `agents__list` reports"
+            "{slot} [{activity}: {why}] - the lead spawns it again with `agents__spawn` and \
+             `resume_session: true`, reusing the charter `agents__list` reports"
         )
     } else if restarting {
         format!("{slot} [{activity}] - its heal is scheduled; wait for the next attempt")
@@ -682,9 +714,10 @@ fn capped(mut lines: Vec<String>, empty: &str, kind: &str) -> Vec<String> {
 }
 
 /// "and 1 more row" / "and 3 more rows": the cut states the count and the
-/// noun agrees with it, so a one-line cut never reads "and 1 more rows".
+/// noun agrees with it, so a one-line cut never reads "and 1 more rows". The
+/// kinds are regular plurals, so a count of one drops their final `s`.
 fn cut_line(extra: usize, kind: &str) -> String {
-    let noun = if extra == 1 { kind.trim_end_matches('s') } else { kind };
+    let noun = if extra == 1 { kind.strip_suffix('s').unwrap_or(kind) } else { kind };
     format!("and {extra} more {noun}")
 }
 
@@ -2449,10 +2482,24 @@ mod tests {
         finished.status = TaskStatus::Completed;
         let mut waiting = task("the blocked row", Some(mine.clone()), None);
         waiting.status = TaskStatus::Waiting;
+        waiting.waiting_on = Some(forge_primitives::tasks::Waiting {
+            kind: Some(forge_primitives::tasks::WaitingKind::Decision),
+            detail: None,
+            on: None,
+            verification: false,
+            parked: false,
+            since: None,
+        });
+        let mut reserved = task("the reserved row", None, None);
+        reserved.status = TaskStatus::Pending;
+        reserved.reserved = Some(forge_primitives::tasks::ReservedBy::User);
+        let unowned_moving = task("the unowned cut", None, None);
         let rows = vec![
             task("the handoff cut", Some(mine.clone()), None),
             task("the auth fix", Some(SessionSlot::worker("Busytools", "forge", "builder")), None),
             waiting,
+            reserved,
+            unowned_moving,
             finished,
         ];
         let live = LiveState {
@@ -2476,7 +2523,11 @@ mod tests {
             "open board rows: yours to continue; an unowned pending row takes `tasks__claim`",
             "the handoff cut [in progress], owner Busytools/forge/handoff-cut - yours to continue",
             "the auth fix [in progress], owner Busytools/forge/builder - held by its owner",
-            "the blocked row [waiting], owner Busytools/forge/handoff-cut - yours to continue",
+            "the blocked row [waiting], owner Busytools/forge/handoff-cut - yours - waiting on \
+             the user's decision",
+            "the reserved row [pending], owner unowned - reserved for you",
+            "the unowned cut [in progress], owner unowned - nobody holds it - take it with \
+             `tasks__update`",
         ] {
             assert!(text.contains(clause), "the live state drops '{clause}': {text}");
         }
@@ -2516,6 +2567,14 @@ mod tests {
         let board = &sections[2];
         assert_eq!(board.lines.len(), LIVE_STATE_CAP + 2, "the truth, 20 lines and the cut");
         assert_eq!(board.lines.last().unwrap(), "and 1 more open row");
+
+        // The plural branch states the count against the plural noun.
+        let live = LiveState {
+            workers: (0..22).map(|at| format!("worker {at}")).collect(),
+            ..LiveState::default()
+        };
+        let sections = live_state_sections(Some(&live), &[], &seat);
+        assert_eq!(sections[0].lines.last().unwrap(), "and 2 more live workers");
     }
 
     /// **A worker's line carries its state and the door that state takes.**
@@ -2560,8 +2619,11 @@ mod tests {
         assert!(failed.contains("No conversation found"), "{failed}");
         assert!(failed.contains("the lead spawns it again"), "{failed}");
         assert!(failed.contains("`agents__spawn`"), "{failed}");
+        assert!(
+            failed.contains("`resume_session: true`"),
+            "a same-label spawn without it starts fresh and loses the transcript: {failed}",
+        );
         assert!(failed.contains("reusing the charter"), "{failed}");
-        assert!(!failed.contains("`resume_session: true`"), "{failed}");
 
         // A live spawn whose activity has died takes the spawn door, not the
         // message door: the registry's status is the spawn outcome and does
@@ -3398,6 +3460,7 @@ fix the parser, then the client row.";
             "every worktree this session created by path and branch",
             "each with the door that continues or restarts it",
             "PART 1 carries the project's own state",
+            "the other live workers, the live crons and the open board rows, capped",
             "so point at it rather than repeating it",
             "Point at what you recorded instead of retelling it",
             "the memory files by name",
@@ -3448,12 +3511,20 @@ fix the parser, then the client row.";
             ("SHIPPED / IN FLIGHT / BLOCKED", "the index token"),
             ("## Forge: hand over and exit", "the forge addition"),
             ("Capture the live state", "the live state is captured"),
+            (
+                "list what this session started and put each in the note with its id",
+                "the note carries what the session started",
+            ),
             ("every other live worker, from `agents__list`, by label and slot", "workers"),
             ("a live worker takes `agents__send_message`", "a worker's resume"),
             (
-                "a failed one is the lead's to spawn again with `agents__spawn`, reusing the \
-                 charter `agents__list` reports",
+                "a failed one is the lead's to spawn again with `agents__spawn` and \
+                 `resume_session: true`, reusing the charter `agents__list` reports",
                 "a failed worker's resume",
+            ),
+            (
+                "PART 1 carries the live workers, so point at it rather than repeating them",
+                "the workers are PART 1's",
             ),
             ("a restarting one is already being healed", "a restarting worker's heal"),
             (
@@ -3468,11 +3539,21 @@ fix the parser, then the client row.";
             ),
             ("every live cron, from `cron__list`, by id and next fire", "crons"),
             (
+                "PART 1 carries the live crons, so point at it rather than repeating them",
+                "the crons are PART 1's",
+            ),
+            (
                 "every open board row this session owns or is still running, from `tasks__list`, \
                  by id and owner",
                 "board rows",
             ),
+            ("a reserved row is the user's pick", "a reserved row's door"),
+            ("a waiting one names what it waits on", "a waiting row's kind"),
             ("an unowned pending row takes `tasks__claim`", "a pending row's claim door"),
+            (
+                "an unowned row past pending is taken with `tasks__update`",
+                "an unowned moving row's door",
+            ),
             (
                 "every worktree this session created, from `git worktree list`, by path and branch",
                 "worktrees",
@@ -3482,6 +3563,7 @@ fix the parser, then the client row.";
                 "the split between durable state and the session's children",
             ),
             ("Verify before you wait", "the successor checks liveness"),
+            ("any worker PART 1 names", "the liveness check reads PART 1"),
             ("Leave nothing unfinished unrecorded", "unfinished work is named, not dropped"),
             ("pass the same text to `agents__handoff` as `brief`", "the exit call"),
             ("there are no headings to fill in", "forge prescribes no headings"),

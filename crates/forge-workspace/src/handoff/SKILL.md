@@ -81,24 +81,27 @@ A worker writes no index line: its file is its own seat's, reached by the worker
 
 When forge hands the seat over, these steps sit on top of the ones above.
 
-**Capture the live state.** Before writing the note, list what this session started and what is
-still running, and put each in the note with its id and where the successor picks it up:
+**Capture the live state.** Before writing the note, list what this session started and put each
+in the note with its id and where the successor picks it up:
 
 - every other live worker, from `agents__list`, by label and slot - a live worker takes
-  `agents__send_message`; a failed one is the lead's to spawn again with `agents__spawn`, reusing
-  the charter `agents__list` reports; a restarting one is already being healed, so wait for its
-  next attempt;
+  `agents__send_message`; a failed one is the lead's to spawn again with `agents__spawn` and
+  `resume_session: true`, reusing the charter `agents__list` reports; a restarting one is
+  already being healed, so wait for its next attempt; PART 1 carries the live workers, so point
+  at it rather than repeating them;
 - every subagent this session dispatched, by its task and where its transcript lives - a
   subagent cannot be resumed: the swap kills it. Name the task and transcript so the successor
   re-dispatches the work; when the transcript is gone, say so - there is nothing to re-dispatch
   from;
 - every running background command or monitor, by the command and where its output goes - the
   swap stops it too, so name where it got to and how to restart it;
-- every live cron, from `cron__list`, by id and next fire - each fires on its own;
+- every live cron, from `cron__list`, by id and next fire - each fires on its own; PART 1
+  carries the live crons, so point at it rather than repeating them;
 - every open board row this session owns or is still running, from `tasks__list`, by id and
-  owner - a row the successor owns is its to continue; an unowned pending row takes
-  `tasks__claim`; a row another seat holds is that seat's to move; PART 1 carries the project's
-  open rows, so point at it rather than repeating them;
+  owner - a reserved row is the user's pick; a row the successor owns is its to continue, and a
+  waiting one names what it waits on; an unowned pending row takes `tasks__claim`; an unowned
+  row past pending is taken with `tasks__update`; a row another seat holds is that seat's to
+  move; PART 1 carries the project's open rows, so point at it rather than repeating them;
 - every worktree this session created, from `git worktree list`, by path and branch - a worker
   successor cannot enter one, so name the path to read from or the move the successor can make.
 
@@ -109,7 +112,7 @@ how to restart it. When a subagent's transcript is gone, or a command's output i
 the successor cannot pick up where it stopped.
 
 **Verify before you wait.** A registry row can outlive its process. Check `agents__list` before
-the successor waits on any worker the note names.
+the successor waits on any worker PART 1 names.
 
 **Leave nothing unfinished unrecorded.** List what this session was expected to handle and could
 not finish in this turn - a blocked ask, a deferred fix, a call that was refused, a question left

@@ -2164,8 +2164,8 @@ impl Workspace {
             Vec::new()
         };
         let mut tasks_load_failed = false;
-        let tasks = match &db {
-            Some(db) => crate::store::tasks::list(db).unwrap_or_else(|error| {
+        let tasks = if let Some(db) = &db {
+            crate::store::tasks::list(db).unwrap_or_else(|error| {
                 tracing::warn!(
                     target: "forge_workspace::workspace",
                     %error,
@@ -2173,13 +2173,12 @@ impl Workspace {
                 );
                 tasks_load_failed = true;
                 Vec::new()
-            }),
-            None => {
-                // The same arm as the cron load: a boot with no store has
-                // not read the board, so it must not report "none open".
-                tasks_load_failed = true;
-                Vec::new()
-            }
+            })
+        } else {
+            // The same arm as the cron load: a boot with no store has
+            // not read the board, so it must not report "none open".
+            tasks_load_failed = true;
+            Vec::new()
         };
         let gotify_subs = match &db {
             Some(db) => crate::store::gotify::list(db).unwrap_or_else(|error| {
