@@ -206,7 +206,7 @@ pub fn render(messages: &[Message], live: bool) -> Rendered {
                 // came last: a long background session drew hours of stop-hook
                 // batches and agent endings as ONE turn at the page's edge
                 // (#3054's lump). The live client opens a turn at this same
-                // row, so this is the read path moving to the cut the console
+                // row, so this is the read path moving to the cut the client
                 // already draws.
                 //
                 // **Except where it was pressed into a running turn**: a call
