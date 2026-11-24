@@ -9,15 +9,18 @@
   import Prose from './Prose.svelte';
   import Report from './Report.svelte';
   import Skill from './Skill.svelte';
+  import type { Part } from './rows';
   import { NO_STOPS, turnFold, type PageStops, type Self, type Unit } from './units';
 
   /**
    * One turn of the conversation, as the page draws it: what the reader said,
    * then everything the assistant did about it.
    *
-   * **The turn is a ROW of the virtualised list**, and its key comes from the
+   * **The turn is a row of the virtualised list**, and its key comes from the
    * conversation rather than from where it sits, so a turn prepended above it
-   * neither re-measures it nor closes what the reader has open.
+   * neither re-measures it nor closes what the reader has open. A turn too
+   * tall to draw as one row is handed over in slices instead (`chat/rows.ts`),
+   * and then each item draws the `part` it was given rather than the fold.
    *
    * **The fold is not this component's.** `fold` decides what the turn's
    * messages are - one flat list of rows per stretch of work, a card for a
@@ -25,6 +28,7 @@
    */
   let {
     turn,
+    part = null,
     slot = null,
     turns = null,
     carried = null,
@@ -32,6 +36,17 @@
     stops = NO_STOPS,
   }: {
     turn: HeldTurn;
+    /**
+     * The slice of the turn this row draws, where the list has taken a turn
+     * too tall for one item apart.
+     *
+     * **The fold is not this component's for a part.** The column folded the
+     * turn to cut it, and handing the same units back is what keeps one
+     * arriving frame folded once: a part that folded the turn again would
+     * put the giant turn's fold back on every item of it. Null is the
+     * ordinary turn, which folds itself as it always has.
+     */
+    part?: Part | null;
     slot?: Self | null;
     /**
      * The page's turns, for a dispatch row's own timeline.
@@ -68,7 +83,9 @@
     stops?: PageStops;
   } = $props();
 
-  const folded = $derived(turnFold(turn, slot, inFlight(turn), !inFlight(turn), stops));
+  const folded = $derived(
+    part === null ? turnFold(turn, slot, inFlight(turn), !inFlight(turn), stops) : part.units,
+  );
 
   /**
    * The fold's units, less the one row the pin is carrying.
