@@ -10649,9 +10649,9 @@ async fn a_walk_pages_back_through_a_running_turn_to_its_first_message() {
     assert_eq!(newest.len(), 1, "the window is one running turn");
     assert_eq!(
         newest[0].messages.len(),
-        2_002,
-        "carrying every frame the seat holds: its 2,000 thinking ticks are two frames, the \
-         leading one the front cut keeps as itself and the other 1,999 folded into one",
+        2_003,
+        "carrying every frame the seat holds: its 2,000 thinking ticks are three frames, the \
+         leading pair the front cut keeps as themselves and the other 1,998 folded into one",
     );
     assert_eq!(cursor.as_deref(), Some("1203"), "and the cursor above it names the window's front");
 
@@ -10989,11 +10989,21 @@ async fn a_giant_seats_history_crosses_bounded_and_the_connection_survives() {
 
 /// **A thought-heavy resume serves its whole thinking sum through the
 /// socket.** The handover cuts the window and folds the shed thinking into
-/// the first counter it carries; the record the client reads must then sum
-/// the whole turn, not only the suffix the window kept. This rides the
-/// production serve path, not a test's own call to `page_within`.
+/// the first counter it carries; a client that reads the conversation must
+/// then see the whole turn, not only the suffix the window kept. The turn is
+/// over the page budget, so the record is its newest piece and the walk above
+/// it carries the rest: the sum is over both. This rides the production serve
+/// path, not a test's own call to `page_within`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_thought_heavy_resume_serves_its_whole_thinking_sum() {
+    /// The thinking a stretch of frames adds up to.
+    fn spent<'a>(frames: impl Iterator<Item = &'a serde_json::Value>) -> i64 {
+        frames
+            .filter(|frame| frame["subtype"] == "thinking_tokens")
+            .filter_map(|frame| frame["estimated_tokens_delta"].as_i64())
+            .sum()
+    }
+
     let (url, fleet, state) = a_server_with_state().await;
     let mut socket = connect_unbounded(&url).await;
     let seat = lead_seat();
@@ -11041,7 +11051,9 @@ async fn a_thought_heavy_resume_serves_its_whole_thinking_sum() {
         "waited for the fold to take the handover, and it never marked it",
     );
 
-    // The record a client reads, through the same serve path.
+    // The record a client reads, through the same serve path, and the pages it
+    // walks above it: the turn is over the page budget, so it arrives in
+    // pieces and the whole sum is what the record and the walk add up to.
     send(
         &mut socket,
         ClientMessage::Subscribe {
@@ -11052,18 +11064,34 @@ async fn a_thought_heavy_resume_serves_its_whole_thinking_sum() {
     )
     .await;
     let (_, data, _) = snapshot_answering(&mut socket).await;
-    let sum: i64 = data["conversation"]["turns"]
-        .as_array()
-        .expect("the record's turns")
-        .iter()
-        .flat_map(|turn| turn["messages"].as_array().into_iter().flatten())
-        .filter(|frame| frame["subtype"] == "thinking_tokens")
-        .filter_map(|frame| frame["estimated_tokens_delta"].as_i64())
-        .sum();
+    let mut sum = spent(
+        data["conversation"]["turns"]
+            .as_array()
+            .expect("the record's turns")
+            .iter()
+            .flat_map(|turn| turn["messages"].as_array().into_iter().flatten()),
+    );
+    let mut cursor = data["conversation"]["cursor"].as_str().map(str::to_owned);
+    assert!(cursor.is_some(), "a turn over the budget is served in pieces");
+    let mut walks = 0;
+    while let Some(before) = cursor.take() {
+        walks += 1;
+        assert!(walks < 40, "the walk terminates rather than cycling");
+        send(
+            &mut socket,
+            ClientMessage::More { conversation: seat.clone(), before: Some(before), turns: 20 },
+        )
+        .await;
+        let ServerMessage::Page { turns, cursor: next, .. } = next_server(&mut socket).await else {
+            panic!("a page is the answer to a request for more")
+        };
+        sum += spent(turns.iter().flat_map(|turn| turn.messages.iter()));
+        cursor = next;
+    }
     assert_eq!(
         sum,
         i64::try_from(counters).expect("the test's count fits"),
-        "the served record carries the whole turn",
+        "the record and the walk carry the whole turn",
     );
 }
 

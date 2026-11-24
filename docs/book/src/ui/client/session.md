@@ -432,7 +432,12 @@ fills the room or ends.
 seat keeps whatever the reader pulls, and the server answers every page below
 its own window from the transcript under the same `[server] more_page_cap_kb`
 byte budget as any other `more` page, so a page is never a whole transcript
-read. A turn over the budget arrives in pages. A long walk
+read. A turn over the budget arrives in pages. **Its pieces draw as separate
+turns today**: the page above holds a turn's head and the newest page its
+tail, and the list names each piece as its own turn, so one exchange reads as
+a prompt turn and a continuation below it. Merging a turn's pieces into one
+row is owed on this page, and until it lands the seam is stated rather than
+hidden. A long walk
 can still hold more than 8 MiB, and when the reader comes back to the latest,
 the oldest pages are dropped until the held set fits 8 MiB; a seat the reader
 has left settles on each page that lands while it is away. Dropping is by whole

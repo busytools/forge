@@ -1006,20 +1006,22 @@ pub(crate) fn placement_wire(placement: AnchorPlacement) -> ThreadResolutionWire
 /// **The messages, not a drawing of them.** How a run of tool calls groups
 /// inside a turn is a drawing decision, so it belongs to whoever draws; what
 /// crosses is the turn's own boundary, and that stays here because the paging
-/// contract is built on it - `more` asks for turns, and a page above the
-/// window's floor
-/// cuts on them rather than leaving a client to stitch half a turn to half.
+/// contract is built on it - `more` asks for turns, and a page cuts on them
+/// rather than leaving a client to stitch half a turn to half.
 ///
-/// **Below that floor a page can carry a stretch inside a turn**, which is
-/// what a running turn's older rows are: a session whose life is one unended
-/// turn has no boundary to cut on, and its rows reach a late-attaching view
-/// only in runs. What a client is owed there is the pair: a page never opens
-/// on a tool result without the call that produced it.
+/// **A turn larger than the page's budget is served in pieces**, each a
+/// `TurnWire` of its own: the newest rows that fit, then the rest of it on the
+/// page above, with the cursor naming the row a piece opened at. So a page can
+/// carry a stretch inside a turn: below the window's floor a running turn's
+/// older rows are one, a budget cut inside an over-budget turn is another, and
+/// a piece is why a page can open on a tool result whose call sits on the page
+/// above.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct TurnWire {
     /// `None` when nothing named the turn: the key comes from a `Result`
-    /// frame, and a conversation read from a transcript carries none.
+    /// frame, and a conversation read from a transcript carries none. A piece
+    /// of a turn that does not carry the `Result` is named as no turn is.
     pub key: Option<String>,
     /// The frames this turn ran as, which is the same shape the session
     /// record's `conversation` carries.
@@ -1027,7 +1029,8 @@ pub struct TurnWire {
 }
 
 /// One page of history: the newest turns, in conversation order, and the
-/// handle that asks for the ones above them.
+/// handle that asks for the ones above them. **A turn over the page's byte
+/// budget arrives as several of these**, newest piece first across pages.
 pub struct Page {
     pub turns: Vec<TurnWire>,
     /// `None` means there is nothing above this page, which is the one case
@@ -1038,10 +1041,8 @@ pub struct Page {
 /// Where each turn opens, one entry per turn, and what names it.
 ///
 /// **One message opens one turn**, so a user row carrying two blocks does not
-/// put two boundaries at one index. A cursor names a message and resolves to
-/// the first match, so two entries sharing an index would leave a walk a page
-/// of its own to hand back before it moved - an empty one, since both
-/// boundaries are that message.
+/// put two boundaries at one index - which is what keeps a page's cut on a
+/// turn boundary from preferring one of two openings at the same message.
 fn opens_of(spans: &[TurnSpan]) -> Vec<(usize, Option<&str>)> {
     let mut opens: Vec<(usize, Option<&str>)> = Vec::with_capacity(spans.len());
     for span in spans {
@@ -1085,9 +1086,10 @@ fn turn_wire(
 /// their first one is. `None` marks a frame forge forged (the ending carried
 /// into its call's turn), which names no row of its own.
 ///
-/// **A turn is pruned as it is built**, so every reader of [`TurnWire`] - a
-/// page, the whole-conversation list, the fold-cost bench - serves the same
-/// frames. What the pruning keeps and why is stated at [`prune_transients`].
+/// **A turn is pruned as it is built**, so the repeated progress frames it
+/// carries are served once wherever its frames come from; a page then applies
+/// its own per-page pruning and its byte cut on top. What the turn-level
+/// pruning keeps, and why, is stated at `prune_transients`.
 fn turn_wire_rows(
     messages: &[Message],
     from: usize,
@@ -1159,23 +1161,42 @@ fn counted(frame: &Value) -> u64 {
 ///
 /// **Only the latest copy of one speaks for the turn.** A reader folds a
 /// `thinking_tokens` frame for its growth and its stamp and draws no row for
-/// it; a workflow's `task_progress` carries the whole phase tree on every
-/// tick, a `tool_progress` heartbeat carries the running call's elapsed time,
-/// and a `hook_progress` the run's latest state. Earlier copies of the same
-/// one say nothing the page's reader can still use, so the page keeps the
-/// last of each and drops the rest - a long agentic turn measured 1,669
-/// counter frames and 65 progress ticks of one turn's 1.31 MB (#3035).
+/// it; a `tool_progress` heartbeat carries the running call's elapsed time,
+/// a sub-agent's `task_progress` tick says nothing its card does not, and a
+/// `hook_progress` the run's latest state. Earlier copies of the same one say
+/// nothing the page's reader can still use, so the page keeps the last of
+/// each and drops the rest - a long agentic turn measured 1,669 counter
+/// frames and 65 progress ticks of one turn's 1.31 MB (#3035).
+///
+/// **A frame the live path draws a row for is not pruned** (rule 25's parity).
+/// A workflow's `task_progress` carries the whole phase tree on every tick and
+/// the chat fold draws each one as its own row, so every tick is served; the
+/// lifecycle frames (`task_started`, `task_updated`, `task_notification`, the
+/// hook pair) are events whose every copy is a fact, and no rule here may drop
+/// one. The `tool_progress` heartbeat is the one stated asymmetry: its live row
+/// is the fold's provisional fallback rather than a face, the beat is an
+/// elapsed-time snapshot whose latest subsumes the rest, and the live path
+/// still crosses every beat - see `docs/book/src/socket.md`.
 ///
 /// **Per owner rather than per kind**, because two runs of one kind are two
 /// facts: a sub-agent's counters are its own (the chat fold skips them), two
-/// tasks keep their own phase trees, and two calls keep their own clocks.
+/// calls keep their own clocks, and two hook runs keep their own progress.
 ///
-/// A frame this does not name is served as it stands: the lifecycle frames
-/// (`task_started`, `task_updated`, `task_notification`, the hook pair) are
-/// events whose every copy is a fact, and no rule here may drop one.
+/// A heartbeat names its call in `parent_tool_use_id` and suffixes its own id
+/// (`...-heartbeat-3`); a beat without a parent falls back to the id minus the
+/// suffix, so two beats of one call never read as two calls.
 fn turn_transient_key(frame: &Value) -> Option<String> {
     if frame["type"] == "tool_progress" {
-        let owner = frame.get("tool_use_id").and_then(Value::as_str).unwrap_or_default();
+        let parent = frame
+            .get("parent_tool_use_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty());
+        let owner = if let Some(call) = parent {
+            call.to_owned()
+        } else {
+            let beat = frame.get("tool_use_id").and_then(Value::as_str).unwrap_or_default();
+            beat.split("-heartbeat-").next().unwrap_or_default().to_owned()
+        };
         return Some(format!("tool_progress:{owner}"));
     }
     if frame["type"] != "system" {
@@ -1186,7 +1207,14 @@ fn turn_transient_key(frame: &Value) -> Option<String> {
         "thinking_tokens" => {
             frame.get("parent_tool_use_id").and_then(Value::as_str).unwrap_or_default()
         }
-        "task_progress" => frame.get("task_id").and_then(Value::as_str).unwrap_or_default(),
+        "task_progress" => {
+            // A workflow's tick is a drawn row on both paths: the phase tree
+            // it carries is the only place that tree is drawn.
+            if frame.get("workflow_progress").is_some_and(Value::is_array) {
+                return None;
+            }
+            frame.get("task_id").and_then(Value::as_str).unwrap_or_default()
+        }
         "hook_progress" => frame.get("hook_id").and_then(Value::as_str).unwrap_or_default(),
         _ => return None,
     };
@@ -1230,11 +1258,13 @@ fn page_transient_kind(frame: &Value) -> Option<&'static str> {
 /// that sums `estimated_tokens_delta` reads the same figure as over the whole
 /// storm.
 ///
-/// **A turn that OPENS on a counter keeps that one as itself.** The window's
-/// front can cut inside a running turn, and the client pairs such a page with
-/// the copy it already holds by the first counter's own stamp - a folded frame
-/// is stamped at its newest member, which is the wrong end of the range for
-/// that pairing. One raw frame is the whole cost.
+/// **A turn that OPENS on counters keeps that whole leading run as it came.**
+/// The window's front can cut inside a running turn, and a client that holds
+/// the same run live dedupes counters by their own ids and pairs a page to its
+/// held copy by the run's stamps. A fold over part of the run would be neither
+/// carried by the held raw counters nor cover them - the client's containment
+/// check would count both - so the run is served raw and the counters after the
+/// first non-counter frame are the ones folded.
 ///
 /// **A counter group with a frame that carries no stamp is left whole.** The
 /// coverage a landing reads is a stamp range: frames that cannot be placed
@@ -1251,15 +1281,19 @@ fn prune_transients(frames: &mut Vec<Value>, rows: &mut Vec<Option<usize>>) {
     }
     let mut latest: HashMap<String, usize> = HashMap::new();
     let mut folds: HashMap<String, Fold> = HashMap::new();
-    // A turn whose first carried frame is a counter is the window's front
-    // cutting inside a running turn: the fold has no proven start to record.
-    let leading = frames.first().is_some_and(is_counter);
+    // How many counters the piece OPENS on: the window's front cut can land
+    // inside a running turn's storm, and that run is served as it came (see
+    // the doc above).
+    let mut leading = 0usize;
+    while frames.get(leading).is_some_and(is_counter) {
+        leading += 1;
+    }
     for (at, frame) in frames.iter().enumerate() {
         let Some(key) = turn_transient_key(frame) else {
             continue;
         };
         latest.insert(key.clone(), at);
-        if !is_counter(frame) || (leading && at == 0) {
+        if !is_counter(frame) || at < leading {
             continue;
         }
         let fold = folds.entry(key).or_insert_with(|| Fold {
@@ -1286,10 +1320,10 @@ fn prune_transients(frames: &mut Vec<Value>, rows: &mut Vec<Option<usize>>) {
             let last = latest.get(&key).copied().unwrap_or(at);
             if last != at {
                 let counter = is_counter(&frame);
-                let raw_leading = leading && at == 0;
+                let raw_leading = at < leading;
                 // A group that cannot be placed is served as it came; a
                 // non-counter keeps only its latest; a counter keeps only its
-                // latest unless this frame is the leading one.
+                // latest unless it opens the piece's leading run.
                 if counter && (!foldable || raw_leading) {
                     kept_frames.push(frame);
                     kept_rows.push(held_rows[at]);
@@ -3577,6 +3611,12 @@ mod tests {
     /// latest heartbeat, a hook its own latest state, and the turn keeps one
     /// handshake and one status line. A page that served every copy spent the
     /// reader's fold on frames no row draws (#3035).
+    ///
+    /// **A workflow's tick is not one of them**: the chat fold draws each as
+    /// its own row, so every tick is served. The heartbeat here carries the
+    /// shape the CLI sends - the call in `parent_tool_use_id` and the beat's
+    /// own id suffixed (`...-heartbeat-1`) - which is what makes two beats one
+    /// call rather than two.
     #[test]
     fn a_turn_serves_one_copy_of_each_transient_frame() {
         let messages = vec![
@@ -3586,26 +3626,36 @@ mod tests {
             a_system("task_progress", "p-1", serde_json::json!({"task_id": "t1"})),
             a_system("task_progress", "p-2", serde_json::json!({"task_id": "t1"})),
             a_system("task_progress", "p-3", serde_json::json!({"task_id": "t2"})),
+            a_system(
+                "task_progress",
+                "w-1",
+                serde_json::json!({"task_id": "wf", "workflow_progress": []}),
+            ),
+            a_system(
+                "task_progress",
+                "w-2",
+                serde_json::json!({"task_id": "wf", "workflow_progress": []}),
+            ),
             a_system("hook_progress", "k-1", serde_json::json!({"hook_id": "h1"})),
             a_system("hook_progress", "k-2", serde_json::json!({"hook_id": "h1"})),
             a_system("status", "s-1", serde_json::json!({"status": "requesting"})),
             a_system("status", "s-2", serde_json::json!({"status": "thinking"})),
             Message::ToolProgress {
-                tool_use_id: "c1".to_owned(),
+                tool_use_id: "toolu-c1-heartbeat-0".to_owned(),
                 tool_name: "Bash".to_owned(),
                 elapsed_time_seconds: 30.0,
                 heartbeat: true,
-                parent_tool_use_id: None,
+                parent_tool_use_id: Some("toolu-c1".to_owned()),
                 session_id: Some("s".to_owned()),
                 uuid: Some("h-1".to_owned()),
                 extras: serde_json::Map::new(),
             },
             Message::ToolProgress {
-                tool_use_id: "c1".to_owned(),
+                tool_use_id: "toolu-c1-heartbeat-1".to_owned(),
                 tool_name: "Bash".to_owned(),
                 elapsed_time_seconds: 60.0,
                 heartbeat: true,
-                parent_tool_use_id: None,
+                parent_tool_use_id: Some("toolu-c1".to_owned()),
                 session_id: Some("s".to_owned()),
                 uuid: Some("h-2".to_owned()),
                 extras: serde_json::Map::new(),
@@ -3618,8 +3668,8 @@ mod tests {
 
         assert_eq!(
             uuids_of(&page),
-            ["u-1", "i-2", "p-2", "p-3", "k-2", "s-2", "h-2", "a-1"],
-            "the latest of each kind and owner, and the frames nothing repeats",
+            ["u-1", "i-2", "p-2", "p-3", "w-1", "w-2", "k-2", "s-2", "h-2", "a-1"],
+            "the latest of each kind and owner, the workflow's drawn ticks, and what nothing repeats",
         );
     }
 
@@ -3689,13 +3739,13 @@ mod tests {
         );
     }
 
-    /// **A turn that opens on a counter keeps that frame as itself.** The
-    /// window's front can cut inside a running turn, and a client pairs such a
-    /// page with the copy it already holds by the first counter's own stamp -
-    /// a folded frame is stamped at its newest member, the wrong end for that
-    /// pairing. The rest of the storm still folds.
+    /// **A turn that opens on counters keeps that whole run as it came.** The
+    /// window's front can cut inside a running turn, and a client holding the
+    /// same run live dedupes by the counters' own ids and pairs the page by
+    /// their stamps - a fold over part of the run would be counted on top of
+    /// the held raw ones. The counters after the first non-counter still fold.
     #[test]
-    fn a_leading_counter_of_a_cut_turn_is_not_folded() {
+    fn a_leading_run_of_a_cut_turn_is_served_raw() {
         let messages = vec![
             counter(1, 10),
             counter(2, 20),
@@ -3711,12 +3761,13 @@ mod tests {
 
         assert_eq!(
             counters_on(&page),
-            vec![(10, None), (35, Some(4))],
-            "the leading frame keeps its own stamp, and the other four counters are one",
+            vec![(10, None), (20, None), (15, Some(3))],
+            "the leading run keeps its own frames, and the three counters after it are one",
         );
         assert_eq!(
-            page.turns[0].messages[0]["uuid"], "t-1",
-            "the page opens on the frame a client pairs by",
+            uuids_of(&page)[..2],
+            ["t-1", "t-2"],
+            "the page opens on the frames a client dedupes by id",
         );
     }
 
