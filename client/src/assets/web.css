@@ -5360,17 +5360,21 @@ details[open] > summary .arw { opacity: 1; }
   margin: 8px 0 16px; }
 .settings-dialog .acts { display: flex; justify-content: flex-end; gap: 8px; }
 /* The vault unlock's one extra: the password path under the gesture, and the
-   server's own refusal in place. */
+   server's own refusal in place. **The gap before the actions is the actions'
+   own**, so it is the same whether or not the error line is drawn; the line
+   supplies only its own height, never the spacing. */
 .settings-dialog .reveal { margin-top: 10px; }
-.settings-dialog .fields { display: flex; flex-direction: column; gap: 10px;
+.settings-dialog .fields { display: flex; flex-direction: column; gap: 6px;
   margin-top: 14px; }
-.settings-dialog .fields label { display: flex; flex-direction: column; gap: 4px;
-  font-family: var(--mono); font-size: 10.5px; color: var(--dim); }
+.settings-dialog .fields label { font-family: var(--mono); font-size: 10.5px;
+  color: var(--dim); }
+.settings-dialog .fields label:not(:first-child) { margin-top: 4px; }
 .settings-dialog .fields input { font-family: var(--mono); font-size: 13px;
   color: var(--text); background: var(--bg); border: 1px solid var(--ctl);
   border-radius: 7px; padding: 8px 9px; }
 .settings-dialog .why { font-family: var(--mono); font-size: var(--fs-label);
   color: var(--bad); margin-top: 12px; }
+.settings-dialog .vault-acts { margin-top: 16px; }
 
 @media (pointer: coarse) {
   .settings-dialog .fields input { min-height: 44px; }

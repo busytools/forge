@@ -23,6 +23,7 @@ function draw(props: {
   variant: 'unlock' | 'enrol';
   busy?: boolean;
   reason?: string | null;
+  biometric?: boolean;
   ongesture?: () => void;
   onpassword?: (password: string, code: string) => void;
   oncancel: () => void;
@@ -105,6 +106,18 @@ describe('the vault unlock dialog', () => {
 
     expect(document.querySelector('[role="alert"]')?.textContent).toContain('incorrect');
     expect(document.querySelector('input[type="password"]')).not.toBeNull();
+  });
+
+  it('names the device password when the gate has no biometric', () => {
+    draw({
+      variant: 'unlock',
+      biometric: false,
+      ongesture: vi.fn(),
+      onpassword: vi.fn(),
+      oncancel: vi.fn(),
+    });
+
+    expect(button('Unlock with the device password')).toBeDefined();
   });
 
   it('closes on Escape through the page that owns the history entry', () => {
