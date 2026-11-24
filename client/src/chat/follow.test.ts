@@ -4288,6 +4288,96 @@ describe('a return to the seat the reader left', () => {
    * foot. (The half where the row lands on a later frame needs a live list:
    * the stub draws every row it holds.)
    */
+  /**
+   * A turn the list takes apart, so its rows are several items.
+   *
+   * `calls` answered calls draw one row each in a single run, which is what
+   * crosses the split; the reader's own words stay one row of their own.
+   */
+  const splitTurn = (key: string, calls: number): unknown => ({
+    key,
+    messages: [
+      {
+        type: 'user',
+        uuid: `u-${key}`,
+        message: { role: 'user', content: [{ type: 'text', text: `${key} said` }] },
+      },
+      ...Array.from({ length: calls }, (_, at) => [
+        {
+          type: 'assistant',
+          uuid: `a-${key}-${at}`,
+          message: {
+            id: `m-${key}-${at}`,
+            role: 'assistant',
+            model: 'claude-opus-5',
+            content: [
+              {
+                type: 'tool_use',
+                id: `toolu_${key}_${at}`,
+                name: 'Read',
+                input: { file_path: `src/${at}.rs` },
+              },
+            ],
+          },
+        },
+        {
+          type: 'user',
+          uuid: `r-${key}-${at}`,
+          message: {
+            role: 'user',
+            content: [{ type: 'tool_result', tool_use_id: `toolu_${key}_${at}`, content: `${at}` }],
+          },
+        },
+      ]).flat(),
+    ],
+  });
+
+  /**
+   * A place inside a LATER slice of a split turn is restored to that slice.
+   *
+   * The first item of a taken-apart turn is its head, tens of thousands of
+   * pixels above rows further down: a restore that asked for the turn's head
+   * would leave the reader at the top of the turn with the follow off, which
+   * is the failure this pins. (The RESTORE_MS wait the placer does while a
+   * slice draws is live-only: the test list draws every item it holds, so the
+   * withheld-item timing cannot be produced here.)
+   */
+  it('restores a place inside a later slice of a split turn to that slice', async () => {
+    const server = stub();
+    clear();
+    clearObservers();
+    const total = 6000;
+    setMeasured(total, VIEWPORT);
+    app = mount(Chat, {
+      target: document.body,
+      props: { slot: LEAD, connection: server.connection },
+    });
+    flushSync();
+    server.page([splitTurn('t-big', 130)]);
+    await settle();
+
+    // The row the reader left: a unit of the fourth slice's run. The reader's
+    // own words are item 0, so the run's slices are items 1 onwards.
+    const items = [...document.querySelectorAll('.conv [data-t]')];
+    expect(items.length, 'precondition: the turn is taken apart').toBe(6);
+    const anchor = items[4]?.querySelector('.unit')?.getAttribute('data-k');
+    expect(anchor, 'precondition: the fourth slice draws a row').toBeTruthy();
+    if (anchor === null || anchor === undefined) return;
+
+    // The place is the harness's own seam: what a parked reader would have
+    // recorded, without the follow's disarm arithmetic in the way.
+    places.keep(subjectKey({ session: LEAD }), null, { key: anchor, into: 10 });
+
+    await ontoDocument();
+    returned(server);
+    await settle();
+    await settle();
+
+    // The restore asked the list for the slice that draws the row, not for
+    // the turn's head - the whole of what the placer's item lookup does.
+    expect(moved().at(-1)?.at, 'the restore asked for the slice, not the head').toBe(4);
+  });
+
   it('gives up a place whose row is gone while its turn survives', async () => {
     const server = stub();
     await parked(server);

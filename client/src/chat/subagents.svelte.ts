@@ -115,9 +115,12 @@ export function reachableIds(
  * The chat row a call drew, by the one of two names it wears.
  *
  * A dispatch's row carries `data-sg` (the card's id); every tool call's
- * carries `data-k="call-c-<tool_use_id>"`. The card wins where both exist,
- * and the plain call row is the fallback that lets a backgrounded bash
- * answer the same ask.
+ * carries `data-callid`, the raw `tool_use` id, beside the list key it draws
+ * in `data-k`. The card wins where both exist, and the plain call row is the
+ * fallback that lets a backgrounded bash answer the same ask. **The fallback
+ * reads `data-callid` rather than `data-k`**: the list key names an
+ * OCCURRENCE (it carries the frame and block a repeated id arrived in), so it
+ * is no longer `call-c-<id>`.
  */
 export function callRow(callId: string, root: ParentNode = document): HTMLDetailsElement | null {
   // Escaped, because a wire id is interpolated into a selector and one with a
@@ -125,7 +128,7 @@ export function callRow(callId: string, root: ParentNode = document): HTMLDetail
   const escaped = callId.replace(/["\\]/g, '\\$&');
   return (
     root.querySelector<HTMLDetailsElement>(`details[data-sg="${escaped}"]`) ??
-    root.querySelector<HTMLDetailsElement>(`details[data-k="call-c-${escaped}"]`)
+    root.querySelector<HTMLDetailsElement>(`details[data-callid="${escaped}"]`)
   );
 }
 

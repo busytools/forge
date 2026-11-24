@@ -162,8 +162,9 @@ describe('revealing the row a dispatch drew', () => {
   });
 
   it('falls back to the plain call row when no card names the id', () => {
-    // A backgrounded bash has no subagent card; its row carries the fold's
-    // own name, `call-c-<tool_use_id>`, which is what the fallback finds.
+    // A backgrounded bash has no subagent card; its row carries the raw
+    // `tool_use` id in `data-callid`, which is what the fallback finds. The
+    // real DOM case is the mounted one in `subagents.reveal.mount.test.ts`.
     const held = {
       open: false,
       offsetWidth: 0,
@@ -171,7 +172,8 @@ describe('revealing the row a dispatch drew', () => {
       classList: { remove: () => {}, add: () => {} },
     };
     const root = {
-      querySelector: (selector: string) => (selector.includes('call-c-tu_bash') ? held : null),
+      querySelector: (selector: string) =>
+        selector.includes('data-callid="tu_bash"') ? held : null,
     } as unknown as ParentNode;
 
     expect(reveal('tu_bash', root), 'a bash call reveals by its own row').toBe(true);

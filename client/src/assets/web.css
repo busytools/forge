@@ -3808,6 +3808,18 @@ details.leaf.cmd > summary .tn { min-width: 0; white-space: normal;
    changed, and a row that can start at zero makes the list jump every time a
    frame lands. */
 .turn { min-height: 24px; }
+/* A turn the list has taken apart draws as several items of the conversation
+   (`chat/rows.ts`): each carries `part`, and the first and last of them keep
+   the turn's own edge spacing while the seams between them carry none, so a
+   split turn still reads as the one turn it is. */
+.turn.part > .work { padding-top: 0; padding-bottom: 0; }
+.turn.part.first > .work { padding-top: 2px; }
+.turn.part.last > .work { padding-bottom: 2px; }
+.turn.part > .work > .unit > .leaves { margin-top: 0; margin-bottom: 0; padding-bottom: 0; }
+.turn.part.first > .work > .unit > .leaves { margin-top: 4px; }
+.turn.part.last > .work > .unit > .leaves { margin-bottom: 4px; padding-bottom: 4px; }
+.turn.part:not(.first) > .mine { margin-top: 0; }
+.turn.part:not(.last) > .mine { margin-bottom: 0; }
 /* ---------- arriving at the foot ----------
    A row enters the first time its key is drawn in the turn being written:
    a 260ms fade and a 6px rise over 220ms, both on one gentle ease. The mark is put on the row itself
