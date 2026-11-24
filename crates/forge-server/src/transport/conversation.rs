@@ -845,7 +845,6 @@ impl Conversations {
             let bytes = evicted.bytes();
             self.subtract_total(bytes);
             tracing::debug!(
-                target: "forge::server::conversations",
                 event_name = "conversation_evicted",
                 victim = ?victim,
                 bytes,
