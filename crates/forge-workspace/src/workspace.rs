@@ -7940,6 +7940,11 @@ impl Workspace {
                         let _ = respond.send(material);
                     }
                 }
+                // The settings page's own unlock: the session's network work
+                // runs in its spawned task and the outcome rides the reply.
+                Command::VaultUnlock { password, two_factor, released, respond } => {
+                    self.start_vault_unlock(password, two_factor, released, respond);
+                }
                 // **The socket's own.** A file upload's registry, its
                 // partials and its inbox write live on the transport,
                 // which answers these before dispatch because the chunks

@@ -277,6 +277,30 @@ impl VaultSession {
         Ok(())
     }
 
+    /// The settings page's password door: the master password with the
+    /// optional 2FA code. **The strings are taken by value and zeroized
+    /// here**, because this crate owns the secret discipline the held-call
+    /// path already keeps. Idempotent like [`Self::unlock`].
+    pub async fn unlock_with_password(
+        &self,
+        password: String,
+        two_factor: Option<String>,
+    ) -> Result<(), VaultError> {
+        let password = Zeroizing::new(password);
+        let two_factor = two_factor.map(Zeroizing::new);
+        self.unlock(
+            password.as_str(),
+            two_factor.as_deref().map(String::as_str).filter(|code| !code.is_empty()),
+        )
+        .await
+    }
+
+    /// The settings page's gesture door: material a client released through
+    /// its platform authenticator.
+    pub async fn unlock_with_released(&self, released: VaultReleased) -> Result<(), VaultError> {
+        self.unlock_released(&released.refresh_token, &released.user_key).await
+    }
+
     /// Unlock from material a client released through its platform
     /// authenticator: the enrolment's refresh token and the account's user
     /// key.

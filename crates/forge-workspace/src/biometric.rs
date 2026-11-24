@@ -288,6 +288,59 @@ impl Workspace {
         true
     }
 
+    /// The settings page's unlock: spawn the shared session's own unlock and
+    /// answer the command's reply with the tagged outcome. **The reply is the
+    /// success signal**, not the `VaultLockChanged` frame: a frame also
+    /// arrives for an unlock another view performed.
+    ///
+    /// The password and the code are taken by value and zeroized inside
+    /// `forge-tools`, which owns the secret discipline the held-call path
+    /// already keeps.
+    pub(crate) fn start_vault_unlock(
+        &self,
+        password: Option<String>,
+        two_factor: Option<String>,
+        released: Option<forge_primitives::vault::VaultReleased>,
+        respond: Option<
+            tokio::sync::oneshot::Sender<forge_primitives::vault::VaultUnlockOutcome>,
+        >,
+    ) {
+        let session = self.vault.read().clone();
+        let Some(session) = session else {
+            if let Some(respond) = respond {
+                let _ = respond.send(forge_primitives::vault::VaultUnlockOutcome::Refused {
+                    reason: "no [vault] is configured".to_owned(),
+                });
+            }
+            return;
+        };
+        tokio::spawn(async move {
+            let answer = match (released, password.filter(|password| !password.trim().is_empty()))
+            {
+                (Some(released), _) => match session.unlock_with_released(released).await {
+                    Ok(()) => forge_primitives::vault::VaultUnlockOutcome::Unlocked,
+                    Err(error) => forge_primitives::vault::VaultUnlockOutcome::Refused {
+                        reason: error.to_string(),
+                    },
+                },
+                (None, Some(password)) => {
+                    match session.unlock_with_password(password, two_factor).await {
+                        Ok(()) => forge_primitives::vault::VaultUnlockOutcome::Unlocked,
+                        Err(error) => forge_primitives::vault::VaultUnlockOutcome::Refused {
+                            reason: error.to_string(),
+                        },
+                    }
+                }
+                (None, None) => forge_primitives::vault::VaultUnlockOutcome::Refused {
+                    reason: "the master password is required".to_owned(),
+                },
+            };
+            if let Some(respond) = respond {
+                let _ = respond.send(answer);
+            }
+        });
+    }
+
     /// Tell every view the enrolment set moved, as the whole set the core
     /// holds. A write that cannot be read back announces nothing and says so;
     /// the next read still answers the truth.
@@ -632,6 +685,94 @@ mod tests {
         let material = receiver.try_recv().expect("answered").expect("the material");
         assert_eq!(material.refresh_token, "test-refresh");
         assert!(!material.user_key.is_empty(), "the user key rides with it");
+    }
+
+    /// The settings page's unlock: no session refuses by name; an unlocked
+    /// session answers `Unlocked` at once (the unlock is idempotent); an
+    /// empty password refuses before a network call.
+    #[tokio::test]
+    async fn the_unlock_command_answers_the_session_or_a_refusal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _updates) =
+            Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        workspace
+            .dispatch(crate::protocol::Command::VaultUnlock {
+                password: Some("open sesame".to_owned()),
+                two_factor: None,
+                released: None,
+                respond: Some(sender),
+            })
+            .expect("the command routes");
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
+            .await
+            .expect("answered in time")
+            .expect("answered");
+        match answer {
+            forge_primitives::vault::VaultUnlockOutcome::Refused { reason } => {
+                assert!(reason.contains("[vault]"), "no vault refuses by name: {reason}");
+            }
+            other => panic!("no vault answered {other:?}"),
+        }
+
+        let config = crate::config::VaultConfig {
+            url: "http://127.0.0.1:1".to_owned(),
+            email: "a@b.c".to_owned(),
+            idle_minutes: None,
+        };
+        let session = Arc::new(
+            forge_tools::vault::session::test_session(&config, None, "test").expect("a session"),
+        );
+        forge_tools::vault::session::test_install_unlocked(
+            &session,
+            forge_tools::vault::crypto::Unlocked {
+                user_key: forge_tools::vault::crypto::make_symmetric_key(),
+                private_key: None,
+                org_keys: std::collections::HashMap::new(),
+                failed_orgs: Vec::new(),
+                user_key_fingerprint: String::new(),
+            },
+        );
+        *workspace.vault.write() = Some(session);
+
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        workspace
+            .dispatch(crate::protocol::Command::VaultUnlock {
+                password: Some("open sesame".to_owned()),
+                two_factor: None,
+                released: None,
+                respond: Some(sender),
+            })
+            .expect("the command routes");
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
+            .await
+            .expect("answered in time")
+            .expect("answered");
+        assert!(matches!(
+            answer,
+            forge_primitives::vault::VaultUnlockOutcome::Unlocked
+        ));
+
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        workspace
+            .dispatch(crate::protocol::Command::VaultUnlock {
+                password: Some("   ".to_owned()),
+                two_factor: None,
+                released: None,
+                respond: Some(sender),
+            })
+            .expect("the command routes");
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
+            .await
+            .expect("answered in time")
+            .expect("answered");
+        match answer {
+            forge_primitives::vault::VaultUnlockOutcome::Refused { reason } => {
+                assert!(reason.contains("password"), "the empty password is named: {reason}");
+            }
+            other => panic!("an empty password answered {other:?}"),
+        }
     }
 
     /// A blob that is not base64, an empty one, an oversized one and a
