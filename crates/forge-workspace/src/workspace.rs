@@ -5862,6 +5862,13 @@ impl Workspace {
         self.update_tx.oldest_kept(key)
     }
 
+    /// How many times `key`'s stream has compacted: what a copy rebuilt from
+    /// the seat's window reports, since the window holds only the boundaries
+    /// after its front.
+    pub fn seat_compaction_count(&self, key: &SessionSlot) -> u32 {
+        self.update_tx.compactions(key)
+    }
+
     /// How many of the numbers in `from..=to` on `key`'s stream no window
     /// holds: the frames that close an epoch are numbered but kept out of the
     /// ring, so a reader measuring whether a copy covers a stretch leaves them
