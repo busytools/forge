@@ -2360,6 +2360,31 @@ describe('one turn folded into the units a view draws', () => {
     ]);
   });
 
+  it('re-folds a turn when the page loses the dispatch its ending names', () => {
+    // **The memo compares the dispatch set by value**, and this is the case
+    // that needs it: the same ending, the same frames, a page that no longer
+    // holds the dispatch it names. Answered from the stale fold, the notice
+    // would stay suppressed on a page whose call row is gone - the frame
+    // hidden with no row carrying it, which is rule 25's opposite.
+    const dispatched = said([
+      use('toolu_task_3', 'Task', { description: 'Review', subagent_type: 'Explore' }),
+    ]);
+    const finished = ending('toolu_task_3', 'Agent "Review" finished');
+    const finishedTurn = { messages: [finished] };
+    const withDispatch = pageFactsOf([{ messages: [dispatched] }, finishedTurn]);
+    expect(
+      noticesOf(turnFold(finishedTurn, null, false, false, withDispatch)),
+      'suppressed while the page holds the dispatch',
+    ).toEqual([]);
+
+    // The same head frame and the same messages, on a page that lost it.
+    const without = { messages: [finished] };
+    expect(
+      noticesOf(turnFold(without, null, false, false, pageFactsOf([without]))),
+      'and drawn once the page no longer holds the call',
+    ).toEqual(['Agent "Review" finished']);
+  });
+
   it('keeps a background command ending, whose call is no dispatch', () => {
     // A backgrounded Bash finishes the same way, but its row is a command's,
     // not an agent's - and the ending carries the exit the command's row does

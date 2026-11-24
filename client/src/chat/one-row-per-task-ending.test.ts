@@ -86,13 +86,17 @@ const carrier = {
   },
 };
 
-/** The page a seat loads with: the call's turn and the row's own turn. */
+/**
+ * The page a seat loads with: one turn, because an agent's ending opens none.
+ *
+ * The carrier sits in the call's own turn, which is the cut the server makes:
+ * the ending's row is the dispatch row, so it is not a head - and a page that
+ * opened a turn at it would draw an empty one once the fold puts the ending
+ * back on that row.
+ */
 const loaded = {
   cursor: '1',
-  turns: [
-    { key: '2026-10-21T09:19:52.497Z', messages: [opening, call, forged] },
-    { key: '2026-10-21T12:39:05.390Z', messages: [carrier] },
-  ],
+  turns: [{ key: '2026-10-21T09:19:52.497Z', messages: [opening, call, forged, carrier] }],
 };
 
 /**
@@ -104,8 +108,7 @@ const recut = {
   cursor: '2',
   turns: [
     { key: '2026-10-21T09:19:52.497Z', messages: [opening] },
-    { key: '2026-10-21T12:31:53.555Z', messages: [call, forged] },
-    { key: '2026-10-21T12:39:05.390Z', messages: [carrier] },
+    { key: '2026-10-21T12:31:53.555Z', messages: [call, forged, carrier] },
   ],
 };
 
@@ -131,6 +134,21 @@ function drawn(chat: Chat, text = ENDING): number {
       ).length,
     0,
   );
+}
+
+/**
+ * Every held turn's fold, with the page's facts: the drawn turn count and
+ * whether any turn draws nothing. **A headless turn is a blank band** - the
+ * list gives every turn a 24px floor - so a page that draws one is the defect
+ * this file's cut exists to prevent.
+ */
+function drawnTurns(chat: Chat): { turns: number; empty: number } {
+  const facts = factsOf(chat);
+  let empty = 0;
+  for (const turn of get(chat.value).turns) {
+    if (fold(turn.messages, null, false, false, facts).length === 0) empty += 1;
+  }
+  return { turns: get(chat.value).turns.length, empty };
 }
 
 /** Every call row's own status, in the order the conversation draws them. */
@@ -282,6 +300,7 @@ describe('a task ending over repeated reads', () => {
     await waitFor('the load', () => pages(chat) >= 1);
     expect(drawn(chat), 'the dispatch row is the finish row, so no notice draws').toBe(0);
     expect(statuses(chat), 'and the call reads finished').toEqual(['completed']);
+    expect(drawnTurns(chat), 'one drawn turn, none of them empty').toEqual({ turns: 1, empty: 0 });
     const loadedFrames = frames(chat);
 
     // The restart: the socket drops, the seat is asked again, and the page it
@@ -292,6 +311,7 @@ describe('a task ending over repeated reads', () => {
     await waitFor('the reconnect page', () => pages(chat) >= 2);
     expect(drawn(chat), 'and still none over the page the reconnect lands').toBe(0);
     expect(statuses(chat), 'the one finish, however the page is cut').toEqual(['completed']);
+    expect(drawnTurns(chat).empty, 'and no turn draws empty over the re-cut').toBe(0);
     expect(frames(chat), 'the re-cut page adds no copy of the ending it holds').toBe(loadedFrames);
 
     // A return lands the window again, which is the other way a page repeats.
@@ -420,5 +440,9 @@ describe('a task ending over repeated reads', () => {
     await waitFor('the page', () => pages(chat) >= 2);
     expect(drawn(chat, says), 'both endings draw, one row each').toBe(2);
     expect(statuses(chat), 'and both calls read finished').toEqual(['completed', 'completed']);
+    expect(drawnTurns(chat), 'and no turn on the re-read draws empty').toEqual({
+      turns: 2,
+      empty: 0,
+    });
   });
 });

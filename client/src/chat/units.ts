@@ -821,11 +821,17 @@ function brief(value: unknown): string {
  * **The transcript read filters the same list** (its own
  * `SYSTEM_ROWS_DRAWN_ELSEWHERE`), because the read and the live path are one
  * obligation - a subtype added here belongs there, and the other way round.
+ *
+ * **`task_notification` is the one the lists divide on, and the division is
+ * the carriers'.** A transcript never holds the frame - the CLI persists the
+ * same event as a user notice row, which the read draws - so the read's list
+ * still names it. The live wire sends the frame and no user row at all, so
+ * the live fold draws the notice itself (the arm below); leaving it in this
+ * set would silence the only carrier the live path has.
  */
 const SYSTEM_DRAWN_ELSEWHERE: ReadonlySet<string> = new Set([
   'task_started',
   'task_updated',
-  'task_notification',
   'background_tasks_changed',
   'commands_changed',
   'init',
@@ -3216,6 +3222,25 @@ export function fold(
       // card, so its phase and agent tree has no other surface and keeps the
       // row below - a tick drawn nowhere is a tick the reader never sees.
       if (system === 'task_progress' && !Array.isArray(frame['workflow_progress'])) continue;
+      // **The live carrier of a background completion.** The wire sends this
+      // frame and no user row, so drawing it here is what keeps the live and
+      // read paths one obligation: the read's carrier is the notice row the
+      // CLI persisted, and both draw the same line. An agent's ending draws on
+      // its dispatch row instead, so its notice stays off the page.
+      if (system === 'task_notification') {
+        const call = str(frame, 'tool_use_id');
+        if (call !== null && page.dispatches.has(call)) continue;
+        const summary = str(frame, 'summary');
+        if (summary !== null && summary.trim() !== '') {
+          push({
+            kind: 'notice',
+            key: keyOf(at, frame, 'notice'),
+            notice: { severity: 'info', text: summary },
+          });
+          continue;
+        }
+        // No summary: the frame falls through and draws as itself (rule 25).
+      }
       if (system === null || !SYSTEM_DRAWN_ELSEWHERE.has(system)) {
         push({
           kind: 'notice',

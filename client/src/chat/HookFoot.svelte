@@ -26,8 +26,10 @@
   /** Whether the chip is open; a closed one carries its count and nothing else. */
   let opened = $state(untrack(() => open));
 
+  /** The batches, and the hooks they counted: what one glance has to say. */
   const label = $derived(
-    `hooks \u{b7} ${foot.batches.length} ${foot.batches.length === 1 ? 'batch' : 'batches'}`,
+    `hooks \u{b7} ${foot.batches.length} ${foot.batches.length === 1 ? 'batch' : 'batches'}` +
+      ` \u{b7} ${foot.actions} ${foot.actions === 1 ? 'hook' : 'hooks'}`,
   );
 </script>
 

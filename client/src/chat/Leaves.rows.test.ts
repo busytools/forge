@@ -415,7 +415,9 @@ describe("a turn's hook batch row", () => {
       },
     ]);
 
-    expect(drawn, 'the batches the chip counts').toContain('hooks \u{b7} 2 batches');
+    expect(drawn, 'the batches and the hooks the chip counts').toContain(
+      'hooks \u{b7} 2 batches \u{b7} 6 hooks',
+    );
     expect(drawn, 'the hook family mark').toContain('#i-hook');
     expect(drawn, 'and the shared disclosure chevron').toContain('class="ic arw"');
   });
