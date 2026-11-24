@@ -2038,6 +2038,13 @@ provider = "anthropic"
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace boots"));
         let facade = prod_cron_facade(&ws);
 
+        // The board takes the same arm for the same reason: a boot with no
+        // store has not read it, so the handoff brief must say "not read"
+        // rather than "none open".
+        assert!(
+            ws.durable_tasks_unavailable(),
+            "a boot with no store has not read the board either",
+        );
         assert_eq!(
             facade.list_crons(&SessionSlot::lead("TestOrg", "forge")),
             Err(CronListError::Unavailable),
@@ -2086,6 +2093,49 @@ provider = "anthropic"
             Err(CronListError::Unavailable),
             "a boot whose store opened but whose cron read failed must not answer as empty",
         );
+        // The handoff brief copies the flag: a failed cron read must reach
+        // the live-state section as "not read", not "none scheduled".
+        let live = ws
+            .project_live_state(&SessionSlot::lead("TestOrg", "forge"))
+            .expect("the seeded project resolves");
+        assert!(live.crons_unreadable, "the failed cron read is carried into the live state");
+    }
+
+    /// The board's failing arm: the store opens, but its task read fails.
+    /// The boot marks the board unavailable, so the handoff brief says
+    /// "not read" rather than "none open".
+    #[test]
+    fn a_failed_task_read_marks_the_board_unavailable() {
+        use redb::TableDefinition;
+
+        // The right table name under the wrong key/value types: the store
+        // opens, but opening it as the task table fails.
+        const WRONG_TASKS: TableDefinition<u64, u64> = TableDefinition::new("tasks");
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let forge = dir.path().join("forge");
+        std::fs::create_dir_all(&forge).expect("forge/");
+        std::fs::write(forge.join("forge.toml"), ONE_PROJECT_CONFIG).expect("write forge.toml");
+        let app_support = dir.path().join("app-support");
+        std::fs::create_dir_all(app_support.join("stores")).expect("stores/");
+        let canonical = dir.path().canonicalize().expect("canonical config dir");
+        let db_path = crate::store::path_for(&app_support, &canonical);
+        {
+            let db = crate::store::Db::open(&db_path).expect("open db");
+            let txn = db.database().begin_write().expect("write txn");
+            {
+                txn.open_table(WRONG_TASKS).expect("create the mis-typed tasks table");
+            }
+            txn.commit().expect("commit");
+        }
+
+        let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace boots"));
+        assert!(ws.db.lock().is_some(), "the store opened; only its task read fails");
+        assert!(ws.durable_tasks_unavailable(), "a failed task read marks the board unavailable");
+        let live = ws
+            .project_live_state(&SessionSlot::lead("TestOrg", "forge"))
+            .expect("the seeded project resolves");
+        assert!(live.board_unreadable, "the failed task read is carried into the live state");
     }
 
     /// The negative control for the refusals above: a healthy boot opens
@@ -2100,6 +2150,10 @@ provider = "anthropic"
         assert!(
             !ws.durable_crons_unavailable(),
             "a boot whose store opened is not an unavailable run",
+        );
+        assert!(
+            !ws.durable_tasks_unavailable(),
+            "and its board was read, so an empty board is a real answer",
         );
         assert_eq!(
             facade.list_crons(&SessionSlot::lead("TestOrg", "forge")),
