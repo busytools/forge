@@ -6888,7 +6888,7 @@ mode = \"toggle\"
             (0..6).map(|i| format!("turn {i}")).collect::<Vec<_>>(),
             "the transcript's own rows, in order",
         );
-        assert_eq!(held.lock().watermark(), want, "the copy covers the number the answer carries",);
+        assert_eq!(held.lock().watermark(), want, "the copy covers the number the answer carries");
         assert_eq!(
             state.conversations.consumed_for(&seat),
             want,
