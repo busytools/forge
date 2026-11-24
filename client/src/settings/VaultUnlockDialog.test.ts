@@ -24,6 +24,7 @@ function draw(props: {
   busy?: boolean;
   reason?: string | null;
   biometric?: boolean;
+  fallback?: string | null;
   ongesture?: () => void;
   onpassword?: (password: string, code: string) => void;
   oncancel: () => void;
@@ -170,6 +171,67 @@ describe('the vault unlock dialog', () => {
     dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab' }));
 
     expect(document.activeElement).toBe(first);
+  });
+
+  /** Enter submits the password path, the way the dock's unlock card does;
+   *  a busy dialog does not send a second one. */
+  it('submits on Enter, once, and not while busy', async () => {
+    const onpassword = vi.fn();
+    draw({ variant: 'enrol', ongesture: vi.fn(), onpassword, oncancel: vi.fn() });
+    await Promise.resolve();
+    document
+      .querySelector<HTMLInputElement>('input[type="password"]')
+      ?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(onpassword).toHaveBeenCalledTimes(1);
+
+    document.body.innerHTML = '';
+    if (app) {
+      void unmount(app);
+      app = null;
+    }
+    const busy = vi.fn();
+    draw({ variant: 'enrol', busy: true, ongesture: vi.fn(), onpassword: busy, oncancel: vi.fn() });
+    await Promise.resolve();
+    document
+      .querySelector<HTMLInputElement>('input[type="password"]')
+      ?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(busy, 'a busy dialog does not submit again').not.toHaveBeenCalled();
+  });
+
+  it('starts the enrol variant in the password box', async () => {
+    draw({ variant: 'enrol', ongesture: vi.fn(), onpassword: vi.fn(), oncancel: vi.fn() });
+    await Promise.resolve();
+
+    expect(document.activeElement?.getAttribute('type')).toBe('password');
+  });
+
+  /** **A close with the opener gone lands on the card head**, which is why
+   *  its heading takes `tabindex="-1"`: `focus()` on a plain heading is a
+   *  no-op and the keyboard fell back to `body`. */
+  it('returns focus to the card head when the opener is gone', () => {
+    const head = document.createElement('h3');
+    head.id = 'vault-lock';
+    head.tabIndex = -1;
+    head.textContent = 'vault';
+    document.body.append(head);
+    const opener = document.createElement('button');
+    document.body.append(opener);
+    opener.focus();
+
+    draw({
+      variant: 'unlock',
+      fallback: 'vault-lock',
+      ongesture: vi.fn(),
+      onpassword: vi.fn(),
+      oncancel: vi.fn(),
+    });
+    opener.remove();
+    if (app) {
+      void unmount(app);
+      app = null;
+    }
+
+    expect(document.activeElement).toBe(head);
   });
 
   it('closes on Escape through the page that owns the history entry', () => {

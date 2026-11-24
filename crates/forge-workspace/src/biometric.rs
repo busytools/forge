@@ -334,9 +334,21 @@ impl Workspace {
             let answer = match unlock {
                 Ok(Ok(())) => forge_primitives::vault::VaultUnlockOutcome::Unlocked,
                 Ok(Err(reason)) => forge_primitives::vault::VaultUnlockOutcome::Refused { reason },
-                Err(_) => forge_primitives::vault::VaultUnlockOutcome::Refused {
-                    reason: "the vault did not answer the unlock in time".to_owned(),
-                },
+                Err(_) => {
+                    // **A timed-out unlock is forge's own problem**: the
+                    // settings page was left waiting for the full bound with
+                    // nothing else naming why, so the log carries the bound
+                    // and the purpose beside the refusal the reader sees.
+                    tracing::warn!(
+                        event_name = "vault_unlock_timed_out",
+                        bound_secs = forge_tools::vault::UNLOCK_BOUND.as_secs(),
+                        purpose = "vault",
+                        "the settings page's vault unlock passed its bound without an answer"
+                    );
+                    forge_primitives::vault::VaultUnlockOutcome::Refused {
+                        reason: "the vault did not answer the unlock in time".to_owned(),
+                    }
+                }
             };
             if let Some(respond) = respond {
                 let _ = respond.send(answer);
