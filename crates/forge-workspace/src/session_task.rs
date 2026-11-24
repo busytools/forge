@@ -3054,7 +3054,8 @@ pub(crate) fn execute_command_via_handle(
         | Command::BiometricRelease { .. }
         | Command::BiometricRevoke { .. }
         | Command::VaultLock
-        | Command::VaultEnrolmentMaterial { .. }) => {
+        | Command::VaultEnrolmentMaterial { .. }
+        | Command::VaultUnlock { .. }) => {
             tracing::warn!(
                 target: "forge_workspace::session_task",
                 slot = %key.display(),

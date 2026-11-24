@@ -271,6 +271,17 @@ impl std::fmt::Debug for VaultAskAnswer {
     }
 }
 
+/// What the settings page's direct unlock ended as.
+///
+/// The dialog draws a refusal in place; a success needs no payload, because
+/// the session's own `VaultLockChanged` frame redraws the card.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum VaultUnlockOutcome {
+    Unlocked,
+    Refused { reason: String },
+}
+
 /// What ended a held vault call, which a view that did not answer it has no
 /// other way to learn. The tool result carries the operation's own outcome;
 /// this says only how the card was settled.
@@ -385,5 +396,19 @@ mod tests {
         assert!(draft.needs_unlock);
         let rebased = draft.with_unlock_state(false);
         assert!(!rebased.needs_unlock);
+    }
+
+    /// The settings page's unlock answer crosses with its tag, so the dialog
+    /// reads one shape for both endings.
+    #[test]
+    fn the_unlock_outcome_crosses_with_its_tag() {
+        let done = serde_json::to_value(VaultUnlockOutcome::Unlocked).expect("encodes");
+        assert_eq!(done["outcome"], "unlocked");
+        let refused = serde_json::to_value(VaultUnlockOutcome::Refused {
+            reason: "wrong password".to_owned(),
+        })
+        .expect("encodes");
+        assert_eq!(refused["outcome"], "refused");
+        assert_eq!(refused["reason"], "wrong password");
     }
 }

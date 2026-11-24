@@ -333,7 +333,7 @@ pub mod wire;
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it
 /// always drew, and nothing it sends changes.
-pub const PROTOCOL_VERSION: u32 = 34;
+pub const PROTOCOL_VERSION: u32 = 35;
 
 /// The socket's keepalive: how often a connection is asked to prove it is
 /// still there, how long it may stay silent before it is reaped, and how long

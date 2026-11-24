@@ -473,6 +473,26 @@ pub enum Command {
         #[serde(skip)]
         respond: Option<oneshot::Sender<Option<forge_primitives::vault::VaultReleased>>>,
     },
+    /// The settings page's direct unlock of the shared vault: the master
+    /// password with the optional 2FA code, or the material a platform
+    /// authenticator released. The held-call answer carries the same two
+    /// paths; this is the card's own door.
+    ///
+    /// **The password and the code are secrets.** They cross the local
+    /// socket, are zeroized in the handler, and never appear in `Debug`.
+    /// Answers through `respond` with the outcome; a failed unlock answers
+    /// `Refused`, never a dispatch refusal, so the dialog can draw it.
+    VaultUnlock {
+        /// The master password, when the dialog sent the password path.
+        password: Option<String>,
+        /// The 2FA code, only with a password.
+        two_factor: Option<String>,
+        /// The material a platform authenticator released, when the dialog
+        /// sent the gesture path.
+        released: Option<forge_primitives::vault::VaultReleased>,
+        #[serde(skip)]
+        respond: Option<oneshot::Sender<forge_primitives::vault::VaultUnlockOutcome>>,
+    },
     RespondQuestion {
         key: SessionSlot,
         tool_id: String,
@@ -1074,7 +1094,8 @@ impl Command {
             | Self::BiometricRevoke { .. }
             | Self::BiometricRewrite { .. }
             | Self::VaultLock
-            | Self::VaultEnrolmentMaterial { .. } => None,
+            | Self::VaultEnrolmentMaterial { .. }
+            | Self::VaultUnlock { .. } => None,
         }
     }
 
@@ -1199,6 +1220,12 @@ impl std::fmt::Debug for Command {
                 .finish_non_exhaustive(),
             Self::VaultLock => f.write_str("VaultLock"),
             Self::VaultEnrolmentMaterial { .. } => f.write_str("VaultEnrolmentMaterial"),
+            Self::VaultUnlock { password, two_factor, released, .. } => f
+                .debug_struct("VaultUnlock")
+                .field("password", &password.as_ref().map(|_| "[redacted]"))
+                .field("two_factor", &two_factor.as_ref().map(|_| "[redacted]"))
+                .field("released", &released.as_ref().map(|_| "[redacted]"))
+                .finish(),
             Self::AnswerDocumentHandOff { key, id, answer } => f
                 .debug_struct("AnswerDocumentHandOff")
                 .field("key", key)
@@ -3838,5 +3865,55 @@ mod workers_command_tests {
             }
             other => panic!("parsed as {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod vault_unlock_command_tests {
+    use super::*;
+
+    #[test]
+    fn the_unlock_command_round_trips_both_paths() {
+        let password = Command::VaultUnlock {
+            password: Some("open sesame".to_owned()),
+            two_factor: Some("123456".to_owned()),
+            released: None,
+            respond: None,
+        };
+        let encoded = serde_json::to_value(&password).expect("encodes");
+        assert!(encoded.get("vault_unlock").is_some(), "the command names its variant");
+        assert_eq!(encoded["vault_unlock"]["password"], "open sesame");
+        let back: Command = serde_json::from_value(encoded).expect("decodes");
+        assert!(matches!(back, Command::VaultUnlock { password: Some(_), .. }));
+
+        let released = Command::VaultUnlock {
+            password: None,
+            two_factor: None,
+            released: Some(forge_primitives::vault::VaultReleased {
+                refresh_token: "refresh".to_owned(),
+                user_key: "user-key".to_owned(),
+            }),
+            respond: None,
+        };
+        let encoded = serde_json::to_value(&released).expect("encodes");
+        assert_eq!(encoded["vault_unlock"]["released"]["refresh_token"], "refresh");
+    }
+
+    #[test]
+    fn the_unlock_command_debug_redacts_every_secret() {
+        let command = Command::VaultUnlock {
+            password: Some("open sesame".to_owned()),
+            two_factor: Some("123456".to_owned()),
+            released: Some(forge_primitives::vault::VaultReleased {
+                refresh_token: "refresh-secret".to_owned(),
+                user_key: "user-key-secret".to_owned(),
+            }),
+            respond: None,
+        };
+        let shown = format!("{command:?}");
+        for secret in ["open sesame", "123456", "refresh-secret", "user-key-secret"] {
+            assert!(!shown.contains(secret), "the Debug line carries {secret}");
+        }
+        assert!(shown.contains("VaultUnlock"), "the variant still names itself");
     }
 }
