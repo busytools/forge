@@ -3,6 +3,7 @@ import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Chat as HandedChat, type Conversation } from './conversation';
+import { conversationsFor } from './conversations';
 import { echoes } from './echoes.svelte';
 import { git } from './git.svelte';
 import { freeze } from './testing/frozen';
@@ -546,6 +547,81 @@ describe('the chat column as it draws', () => {
     expect(drawn(), 'the turn the reader was reading is still drawn').toContain('the first answer');
     expect(drawn(), 'and the refusal is said beside it').toContain(
       'the conversation is not held yet',
+    );
+  });
+
+  it('opens a turn when a background completion wakes one', async () => {
+    // **The live cut is the truthful one.** The CLI runs a turn for a task
+    // notice - nobody typed it - and the read path's fold was moved to open
+    // at the same row (#3054). A notification that joined the turn above
+    // would draw the two cuts differently, and a page landing would then
+    // re-cut what the reader watched live into one much larger turn.
+    //
+    // A background command's ending, not an agent's: an agent's ending draws
+    // on its own dispatch row and opens no row of its own.
+    const server = stub();
+    draw({}, server);
+    server.answer([
+      {
+        key: 't1',
+        messages: [
+          {
+            type: 'assistant',
+            uuid: 'a1',
+            message: {
+              id: 'm-1',
+              role: 'assistant',
+              model: 'claude-opus-5',
+              content: [{ type: 'text', text: 'armed the watch' }],
+            },
+          },
+        ],
+      },
+    ]);
+    flushSync();
+
+    const held = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }));
+    if (held === undefined) throw new Error('the column opened no conversation');
+    const turns = (): number => {
+      let count = 0;
+      const stop = held.chat.value.subscribe((value) => (count = value.turns.length));
+      stop();
+      return count;
+    };
+    expect(turns(), 'the page is one turn').toBe(1);
+
+    server.send({
+      kind: 'update',
+      update: {
+        chat_appended: {
+          key: LEAD,
+          msg: {
+            type: 'user',
+            uuid: 'u-notice',
+            message: {
+              role: 'user',
+              content: [
+                {
+                  type: 'queued_command',
+                  commandMode: 'task-notification',
+                  prompt:
+                    '<task-notification>\n<tool-use-id>call_bg</tool-use-id>\n' +
+                    '<status>completed</status>\n' +
+                    '<summary>Background command "Watch CI" completed</summary>\n' +
+                    '</task-notification>',
+                },
+              ],
+            },
+          },
+          source: null,
+        },
+      },
+    });
+    await painted();
+
+    expect(turns(), 'the ending opens a turn of its own, as the read fold does').toBe(2);
+    expect(drawn(), "and its line draws at that turn's head").toContain(
+      'Background command "Watch CI" completed',
     );
   });
 

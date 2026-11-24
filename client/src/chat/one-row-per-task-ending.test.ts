@@ -9,7 +9,7 @@ import { connect, MAX_RETRY_MS, type Connection } from '../socket';
 import { watchSession } from '../session/live';
 import type { SessionSlot } from '../wire/types';
 import { Chat } from './conversation';
-import { fold } from './units';
+import { fold, pageFactsOf } from './units';
 
 const SEAT: SessionSlot = { org: 'Bench', project: 'seat', label: 'lead' };
 const ENDING = 'Agent "Review #3938 dependency security" finished';
@@ -109,22 +109,36 @@ const recut = {
   ],
 };
 
+/**
+ * The page facts the column hands every turn's fold.
+ *
+ * **The app folds a turn with the page's own facts, so a helper that folded
+ * without them would read a different conversation**: an ending naming a
+ * dispatch the page holds draws nothing, and that decision needs the page.
+ */
+function factsOf(chat: Chat) {
+  return pageFactsOf(get(chat.value).turns);
+}
+
 /** How many ending rows the conversation draws, over every turn it holds. */
 function drawn(chat: Chat, text = ENDING): number {
+  const facts = factsOf(chat);
   return get(chat.value).turns.reduce(
     (count, turn) =>
       count +
-      fold(turn.messages).filter((unit) => unit.kind === 'notice' && unit.notice.text === text)
-        .length,
+      fold(turn.messages, null, false, false, facts).filter(
+        (unit) => unit.kind === 'notice' && unit.notice.text === text,
+      ).length,
     0,
   );
 }
 
 /** Every call row's own status, in the order the conversation draws them. */
 function statuses(chat: Chat): string[] {
+  const facts = factsOf(chat);
   const out: string[] = [];
   for (const turn of get(chat.value).turns) {
-    for (const unit of fold(turn.messages)) {
+    for (const unit of fold(turn.messages, null, false, false, facts)) {
       if (unit.kind !== 'leaves') continue;
       for (const row of unit.rows) {
         if (row.tag === 'call') out.push(row.leaf.status);
@@ -250,7 +264,7 @@ describe('a task ending over repeated reads', () => {
     vi.unstubAllGlobals();
   });
 
-  it('draws one row however many pages the conversation takes', async () => {
+  it('finishes the call row and adds no notice, however many pages the conversation takes', async () => {
     // A page paints on the frame; a shim is the deterministic one.
     vi.stubGlobal('requestAnimationFrame', (fn: (at: number) => void) => setTimeout(fn, 0));
     vi.stubGlobal('cancelAnimationFrame', (handle: number) => clearTimeout(handle));
@@ -266,7 +280,8 @@ describe('a task ending over repeated reads', () => {
     hold.subscribe(() => undefined);
 
     await waitFor('the load', () => pages(chat) >= 1);
-    expect(drawn(chat), 'the ending draws once when the seat loads').toBe(1);
+    expect(drawn(chat), 'the dispatch row is the finish row, so no notice draws').toBe(0);
+    expect(statuses(chat), 'and the call reads finished').toEqual(['completed']);
     const loadedFrames = frames(chat);
 
     // The restart: the socket drops, the seat is asked again, and the page it
@@ -275,7 +290,8 @@ describe('a task ending over repeated reads', () => {
     forge.drop();
     await waitFor('the reconnect', () => forge.opened() >= 2);
     await waitFor('the reconnect page', () => pages(chat) >= 2);
-    expect(drawn(chat), 'and still once over the page the reconnect lands').toBe(1);
+    expect(drawn(chat), 'and still none over the page the reconnect lands').toBe(0);
+    expect(statuses(chat), 'the one finish, however the page is cut').toEqual(['completed']);
     expect(frames(chat), 'the re-cut page adds no copy of the ending it holds').toBe(loadedFrames);
 
     // A return lands the window again, which is the other way a page repeats.
@@ -283,7 +299,8 @@ describe('a task ending over repeated reads', () => {
     forge.drop();
     await waitFor('the second reconnect', () => forge.opened() >= 3);
     await waitFor('the return page', () => pages(chat) >= 3);
-    expect(drawn(chat), 'and once over a page that repeats what is held').toBe(1);
+    expect(drawn(chat), 'and none over a page that repeats what is held').toBe(0);
+    expect(statuses(chat), 'with the call still reading finished').toEqual(['completed']);
     expect(frames(chat), 'the repeated page adds no copy of the ending it holds').toBe(
       loadedFrames,
     );
@@ -293,9 +310,11 @@ describe('a task ending over repeated reads', () => {
     vi.stubGlobal('requestAnimationFrame', (fn: (at: number) => void) => setTimeout(fn, 0));
     vi.stubGlobal('cancelAnimationFrame', (handle: number) => clearTimeout(handle));
 
-    // Two reviews described the same way: their notices say the same words and
-    // only the envelope tells them apart.
-    const says = 'Agent "Review" finished';
+    // Two background commands described the same way: their notices say the
+    // same words and only the envelope tells them apart. They are commands
+    // rather than agents because an agent's ending draws on its own dispatch
+    // row; a command's has no card, so the notice is its only row.
+    const says = 'Background command "Watch" completed';
     const envelope = (task: string, call: string): string =>
       '<task-notification>\n<task-id>' +
       task +
@@ -315,8 +334,8 @@ describe('a task ending over repeated reads', () => {
           {
             type: 'tool_use',
             id: call,
-            name: 'Agent',
-            input: { description: 'Review', subagent_type: 'pensive:rust-auditor' },
+            name: 'Bash',
+            input: { command: 'just ci-watch', description: 'Watch', run_in_background: true },
           },
         ],
       },
