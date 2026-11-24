@@ -1,5 +1,4 @@
-import type { Unit } from './units';
-import { workRowKey } from './units';
+import { rowKey, type Unit } from './units';
 
 /**
  * The conversation's rows: what the virtualised list is handed, one item each.
@@ -98,7 +97,7 @@ function cut(unit: Extract<Unit, { kind: 'leaves' }>, limit: number): Unit[] {
   for (let at = 0; at < unit.rows.length; at += limit) {
     const slice = unit.rows.slice(at, at + limit);
     const first = slice[0];
-    const key = at === 0 || first === undefined ? unit.key : `${unit.key}~${workRowKey(first)}`;
+    const key = at === 0 || first === undefined ? unit.key : `${unit.key}~${rowKey(first)}`;
     out.push({ kind: 'leaves', key, rows: slice });
   }
   return out;
@@ -150,11 +149,12 @@ export function partDraws(part: Part, turnKey: string, key: string): boolean {
     if (`${turnKey}:${unit.key}` === key) return true;
     if (unit.kind !== 'leaves') continue;
     for (const row of unit.rows) {
-      // A call's own mark is `call-` and the row's name; nothing else in a run
-      // draws one. The `#<n>` suffix is a repeated name's ordinal (the list
-      // gives a duplicate an ordinal so it still draws), so it is matched too.
+      // A call's own mark is `call-` and the name the list keys it by; nothing
+      // else in a run draws one. The `#<n>` suffix is an ordinal for a name
+      // the list had to disambiguate (`rowKeys`), so a disambiguated row is
+      // matched too.
       if (row.tag === 'call') {
-        const drawn = `call-${row.key}`;
+        const drawn = `call-${rowKey(row)}`;
         if (key === drawn || key.startsWith(`${drawn}#`)) return true;
       }
     }

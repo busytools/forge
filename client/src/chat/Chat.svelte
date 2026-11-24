@@ -264,6 +264,16 @@
    */
   let restoreAsked: number | null = null;
   /**
+   * The handle the restore last asked THROUGH.
+   *
+   * A list that remounts under a restore (a forced re-measure, a seat's
+   * conversation swapped) takes its scroll with it: the same item index on
+   * the new handle has never been asked for, so the wait would run to its
+   * budget with the reader at the mount's start. The instance is compared,
+   * not the index.
+   */
+  let restoreList: VListHandle | null = null;
+  /**
    * Whether the entry's placement has settled.
    *
    * **The open places its reader; only a settled column follows.** While the
@@ -1875,6 +1885,7 @@
     }
     restoreStarted = Date.now();
     restoreAsked = null;
+    restoreList = null;
     restoreFrame = requestAnimationFrame(() => {
       // **The turn is read again in the frame it is scrolled in**: a prepend
       // can land between this schedule and its frame, and an index from the
@@ -1887,7 +1898,10 @@
       // The ITEM that draws the row, which a taken-apart turn's first item may
       // be tens of thousands of pixels above.
       const at = rowOfKey(rows, turn.key, place.anchor.key);
-      if (at >= 0) restoreAsked = at;
+      if (at >= 0) {
+        restoreAsked = at;
+        restoreList = handle;
+      }
       handle.scrollToIndex(at, { align: 'start' });
       restoreFrame = requestAnimationFrame(placeRestored);
     });
@@ -1920,21 +1934,25 @@
     // apart draws as several items of which the row's own is just one - so a
     // row in a later slice can be outside the drawn window for more than a
     // couple of frames. That state is waited out within the budget a whole
-    // turn gets, asking again only when the item it names has moved.
+    // turn gets, asking again only when the item it names has moved or the
+    // list was remounted under it.
     //
     // **The turn's own head is the exception**: when the row was due in the
-    // head and the head is drawn, the row was re-keyed or taken, and the place
-    // goes to the foot by the rules - waiting would only keep the reader at
-    // the wrong row for the whole budget.
+    // head and ANY item of the turn is drawn, the row was re-keyed or taken,
+    // and the place goes to the foot by the rules - waiting would only keep
+    // the reader at the wrong row for the whole budget.
     const handle = list;
     const at = turn === undefined ? -1 : rowOfKey(rows, turn.key, place.anchor.key);
     const head = turn === undefined ? -1 : firstRowOf(rows, turn.key);
-    const headDrawn =
+    const turnDrawn =
       turn !== undefined && viewport.querySelector(`[data-t="${CSS.escape(turn.key)}"]`) !== null;
-    const waiting = at >= 0 && (at !== head || !headDrawn);
+    const waiting = at >= 0 && (at !== head || !turnDrawn);
     if (handle !== null && waiting && Date.now() - restoreStarted < RESTORE_MS) {
-      if (at !== restoreAsked) {
+      // A remount swaps the handle, and the new one never received the move
+      // the old one was given: the index alone cannot tell that apart.
+      if (at !== restoreAsked || handle !== restoreList) {
         restoreAsked = at;
+        restoreList = handle;
         handle.scrollToIndex(at, { align: 'start' });
       }
       restoreFrame = requestAnimationFrame(placeRestored);
@@ -1960,6 +1978,7 @@
     restoreTries = 0;
     restoreStarted = 0;
     restoreAsked = null;
+    restoreList = null;
     anchor = null;
     placeKept = keepPlace;
     if (!keepPlace) rememberPlace();

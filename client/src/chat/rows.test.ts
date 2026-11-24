@@ -8,7 +8,16 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { chatRows, drawnRows, firstRowOf, partDraws, rowOfCall, rowOfKey, SPLIT_AT } from './rows';
+import {
+  chatRows,
+  drawnRows,
+  firstRowOf,
+  partDraws,
+  PART_ROWS,
+  rowOfCall,
+  rowOfKey,
+  SPLIT_AT,
+} from './rows';
 import type { Unit } from './units';
 
 /** A run of `count` thoughts, which draws one row each. */
@@ -82,7 +91,7 @@ describe('the items a page of turns becomes', () => {
     // would not draw: the turn ends exactly one row past the threshold.
     const tail = over.at(-1)?.part?.units.at(-1);
     expect(tail?.kind).toBe('leaves');
-    if (tail?.kind === 'leaves') expect(tail.rows.length, 'the tail is drawn').toBe(1);
+    expect(tail?.kind === 'leaves' ? tail.rows.length : null, 'the tail is drawn').toBe(1);
     // **The head keeps both its names**: the turn's first item keeps the
     // turn's key and its run keeps the run's, so a live turn crossing the
     // split does not remount the block the reader is on.
@@ -98,8 +107,8 @@ describe('the items a page of turns becomes', () => {
     // exists to deny. The first slice keeps the run's key, and each later one
     // is named by the row it starts at.
     expect(drawn(rows), "the slices, in the run's order").toEqual(
-      Array.from({ length: (SPLIT_AT * 3) / 30 }, (_, slice) =>
-        slice === 0 ? 't0-run' : `t0-run~t0-run-${slice * 30}`,
+      Array.from({ length: (SPLIT_AT * 3) / PART_ROWS }, (_, slice) =>
+        slice === 0 ? 't0-run' : `t0-run~t0-run-${slice * PART_ROWS}`,
       ),
     );
     const rowsDrawn = rows.reduce((total, row) => {
@@ -117,7 +126,7 @@ describe('the items a page of turns becomes', () => {
     // that is not a slice of a run.
     const prose: Unit = { kind: 'text', key: 'mid', text: 'between' };
     const units: Unit[] = [run('a', 100), prose, run('b', 100)];
-    const rows = chatRows(turns(1), () => units, SPLIT_AT, 30);
+    const rows = chatRows(turns(1), () => units, SPLIT_AT, PART_ROWS);
     const at = rows.findIndex((row) => row.part?.units.some((unit) => unit.key === 'mid'));
     expect(at, 'the prose has an item of its own').toBeGreaterThan(0);
     expect(
@@ -169,7 +178,11 @@ describe('the items a page of turns becomes', () => {
       rows: [
         {
           tag: 'call',
-          key: 'c-abc',
+          // **The fold's key carries the occurrence**, so it differs from the
+          // name a spelled-from-the-id implementation would build
+          // (`c-abc`): that one falls back to the turn's head, and this row
+          // is found only by the id match.
+          key: 'c-abc#7#0',
           leaf: {
             id: 'abc',
             row: { kind: 'browser' },
@@ -193,12 +206,17 @@ describe('the items a page of turns becomes', () => {
     };
     const rows = chatRows(turns(1), () => [run('lead', 200), call], 1, 100);
     // The call lands in the second item, which is the one a dispatch jump
-    // must reach: `call-` and the row's key is what the DOM draws.
-    expect(rowOfKey(rows, 't0', 'call-c-abc')).toBe(rows.length - 1);
+    // must reach. The drawn mark is `call-` and the row's key, which is what
+    // `Call.svelte` writes.
+    const drawn = 'call-c-abc#7#0';
+    expect(rowOfKey(rows, 't0', drawn), 'the drawn mark finds its item').toBe(rows.length - 1);
+    // A name the list had to disambiguate carries an ordinal; the row is
+    // still the row.
+    expect(rowOfKey(rows, 't0', `${drawn}#1`), 'a disambiguated name too').toBe(rows.length - 1);
     // **A dispatch jump asks by the call's identity, not by a name spelled
-    // from it.** The fold's own naming carries the occurrence, so a jump that
-    // spelled the name from the id would stop matching the moment that naming
-    // changed; the tool_use id is what the caller holds.
+    // from it.** A spelled implementation builds `call-c-abc` from the id,
+    // which no row draws, and lands on the turn's head; the tool_use id is
+    // what the caller holds and what is matched.
     expect(rowOfCall(rows, 't0', 'abc'), 'the call is found by its id').toBe(rows.length - 1);
     expect(rowOfCall(rows, 't0', 'not-a-call'), 'an unknown call lands on the turn').toBe(0);
   });

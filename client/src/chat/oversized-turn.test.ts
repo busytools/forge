@@ -230,8 +230,13 @@ describe('a turn too tall to draw as one item', () => {
 
     expect(moves.at(-1)?.at, 'the jump lands on the item that draws the call').toBe(wanted);
     const items = [...document.querySelectorAll('.conv [data-t]')];
-    const row = document.querySelector('.conv details.leaf[data-k="call-c-toolu_200"]');
-    expect(row, 'the call drew').not.toBeNull();
+    // **Found by the id it holds, not by a key spelled from it.** The fold
+    // names a call after the occurrence it arrived in, so the drawn mark is
+    // not something this test can spell; the tool_use id in it is.
+    const row = [...document.querySelectorAll('.conv details.leaf')].find((held) =>
+      (held.getAttribute('data-k') ?? '').includes('toolu_200'),
+    );
+    expect(row, 'the call drew').toBeDefined();
     expect(row?.closest('[data-t]'), 'and it is the item the jump asked for').toBe(items[wanted]);
   });
 });
