@@ -301,9 +301,7 @@ impl Workspace {
         password: Option<String>,
         two_factor: Option<String>,
         released: Option<forge_primitives::vault::VaultReleased>,
-        respond: Option<
-            tokio::sync::oneshot::Sender<forge_primitives::vault::VaultUnlockOutcome>,
-        >,
+        respond: Option<tokio::sync::oneshot::Sender<forge_primitives::vault::VaultUnlockOutcome>>,
     ) {
         let session = self.vault.read().clone();
         let Some(session) = session else {
@@ -315,8 +313,7 @@ impl Workspace {
             return;
         };
         tokio::spawn(async move {
-            let answer = match (released, password.filter(|password| !password.trim().is_empty()))
-            {
+            let answer = match (released, password.filter(|password| !password.trim().is_empty())) {
                 (Some(released), _) => match session.unlock_with_released(released).await {
                     Ok(()) => forge_primitives::vault::VaultUnlockOutcome::Unlocked,
                     Err(error) => forge_primitives::vault::VaultUnlockOutcome::Refused {
@@ -713,7 +710,9 @@ mod tests {
             forge_primitives::vault::VaultUnlockOutcome::Refused { reason } => {
                 assert!(reason.contains("[vault]"), "no vault refuses by name: {reason}");
             }
-            other => panic!("no vault answered {other:?}"),
+            forge_primitives::vault::VaultUnlockOutcome::Unlocked => {
+                panic!("no vault answered Unlocked")
+            }
         }
 
         let config = crate::config::VaultConfig {
@@ -749,10 +748,7 @@ mod tests {
             .await
             .expect("answered in time")
             .expect("answered");
-        assert!(matches!(
-            answer,
-            forge_primitives::vault::VaultUnlockOutcome::Unlocked
-        ));
+        assert!(matches!(answer, forge_primitives::vault::VaultUnlockOutcome::Unlocked));
 
         let (sender, receiver) = tokio::sync::oneshot::channel();
         workspace
@@ -771,7 +767,9 @@ mod tests {
             forge_primitives::vault::VaultUnlockOutcome::Refused { reason } => {
                 assert!(reason.contains("password"), "the empty password is named: {reason}");
             }
-            other => panic!("an empty password answered {other:?}"),
+            forge_primitives::vault::VaultUnlockOutcome::Unlocked => {
+                panic!("an empty password answered Unlocked")
+            }
         }
     }
 
