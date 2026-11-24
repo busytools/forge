@@ -4933,22 +4933,22 @@ async fn a_newest_turn_over_the_budget_is_paged_within() {
     assert_eq!(served, every, "every row is served once, in the conversation's order");
 }
 
-/// **A long agentic turn opens on its own content, not on its counter storm.**
+/// **A long agentic turn is served by pages its reader can fold.**
 ///
 /// The shape measured on the Playground Lead seat (#3035): one still-open turn
-/// of ~1,900 frames, 1,669 of them `thinking_tokens` ticks and the rest real
-/// messages. Nothing pruned the ticks, so a page cut by bytes served the storm
-/// and the turn's own content, leaving the history above it unreachable in the
-/// frame the reader's first open has to fold.
+/// of ~1,900 frames, 1,669 of them `thinking_tokens` ticks interleaved through
+/// the turn's work. Nothing pruned the ticks, so the turn grew past the whole
+/// page budget and the page could neither cut it nor carry history.
 ///
-/// Here the turn is a prompt, a handshake and 40 call/result pairs, then 300
-/// ticks. The page must carry the turn's own rows (the pruned turn is what the
-/// budget is spent on), the counter it carries must still sum the whole storm,
-/// and a walk from its handle must reach every row exactly once.
+/// Here the turn is a prompt, a handshake and 40 blocks of eight ticks, a call
+/// and its result. The page must be served WITHIN its budget, carry some of the
+/// turn's own rows, and a walk from its handle must serve every real row
+/// exactly once while the ticks still sum to the storm's growth.
 #[tokio::test]
-async fn a_long_turns_page_carries_its_content_rather_than_its_counter_storm() {
+async fn a_long_turns_page_is_bounded_and_its_walk_reaches_every_row() {
     const BLOCKS: usize = 40;
-    const TICKS: usize = 300;
+    const TICKS_PER_BLOCK: usize = 8;
+    const BUDGET: usize = 2 * 1024;
 
     let dir = tempfile::tempdir().expect("tempdir");
     let fleet = Fleet::in_dir_with_server(
@@ -4975,13 +4975,20 @@ async fn a_long_turns_page_carries_its_content_rather_than_its_counter_storm() {
             init
         }),
     ];
-    for block in 0..BLOCKS {
-        rows.push(a_calling_row(&format!("call{block}"), block));
-        rows.push(an_answering_row(&format!("result{block}"), block));
-    }
+    // The held conversation carries the ticks interleaved through the work,
+    // which is the shape the CLI streams: the transcript holds the rows and
+    // none of the ticks.
     let mut history: Vec<forge_primitives::Message> = rows.iter().map(a_frame).collect();
-    for tick in 0..TICKS {
-        history.push(a_frame(&a_tick_frame(&format!("t{tick}"))));
+    for block in 0..BLOCKS {
+        for tick in 0..TICKS_PER_BLOCK {
+            history.push(a_frame(&a_tick_frame(&format!("t{block}-{tick}"))));
+        }
+        let call = a_calling_row(&format!("call{block}"), block);
+        let result = an_answering_row(&format!("result{block}"), block);
+        history.push(a_frame(&call));
+        history.push(a_frame(&result));
+        rows.push(call);
+        rows.push(result);
     }
 
     let rows_json: Vec<String> = rows.iter().map(serde_json::Value::to_string).collect();
@@ -5005,45 +5012,48 @@ async fn a_long_turns_page_carries_its_content_rather_than_its_counter_storm() {
     let ServerMessage::Snapshot { data, .. } = next_server(&mut socket).await else {
         panic!("a snapshot is the answer to a subscribe")
     };
+    let served_bytes = |turns: &[serde_json::Value]| -> usize {
+        turns
+            .iter()
+            .map(|turn| serde_json::to_string(turn).expect("a turn serialises").len() + 1)
+            .sum()
+    };
     let turns = data["conversation"]["turns"].as_array().expect("the page carries turns");
+    assert!(
+        served_bytes(turns) <= BUDGET,
+        "the page is served within its budget: {} bytes",
+        served_bytes(turns),
+    );
     let frames: Vec<serde_json::Value> = turns
         .iter()
         .flat_map(|turn| turn["messages"].as_array().into_iter().flatten())
         .cloned()
         .collect();
-    let real = frames
-        .iter()
-        .filter(|frame| {
+    assert!(
+        frames.iter().any(|frame| {
             frame["uuid"]
                 .as_str()
                 .is_some_and(|uuid| uuid.starts_with("call") || uuid.starts_with("result"))
-        })
-        .count();
-    assert!(real > 0, "the page carries the turn's own rows rather than its ticks: {frames:?}");
+        }),
+        "the page carries some of the turn's own rows: {frames:?}",
+    );
     assert!(
         frames.len() <= 30,
-        "and the page's frames are bounded by the budget, not by the storm: {}",
+        "and its frames are bounded by the budget, not by the storm: {}",
         frames.len(),
     );
-    let ticks: i64 = frames
-        .iter()
-        .filter(|frame| frame["subtype"] == "thinking_tokens")
-        .filter_map(|frame| frame["estimated_tokens_delta"].as_i64())
-        .sum();
-    assert_eq!(ticks, i64::try_from(TICKS * 50).expect("the storm's sum"), "the storm still sums");
 
-    // The walk from the handle reaches every row of the turn and of the turn
-    // before it, exactly once: the storm is the only thing that folded.
-    let page_uuids = |frames: &[serde_json::Value]| -> Vec<String> {
-        frames.iter().filter_map(|frame| frame["uuid"].as_str().map(str::to_owned)).collect()
-    };
-    let mut pages: Vec<Vec<String>> = vec![page_uuids(&frames)];
+    // The walk serves every real row exactly once, in order, and its ticks add
+    // up to the storm's growth: the fold is per piece, and no piece's fold
+    // covers counters another piece serves.
+    let page_frames = |frames: &[serde_json::Value]| -> Vec<serde_json::Value> { frames.to_vec() };
+    let mut pages: Vec<Vec<serde_json::Value>> = vec![page_frames(&frames)];
     let mut cursor = data["conversation"]["cursor"].as_str().map(str::to_owned);
     assert!(cursor.is_some(), "the cut page carries the handle above it");
     let mut walks = 0;
     while let Some(before) = cursor.take() {
         walks += 1;
-        assert!(walks < 40, "the walk terminates rather than cycling");
+        assert!(walks < 60, "the walk terminates rather than cycling");
         send(
             &mut socket,
             ClientMessage::More { conversation: lead_seat(), before: Some(before), turns: 20 },
@@ -5052,19 +5062,30 @@ async fn a_long_turns_page_carries_its_content_rather_than_its_counter_storm() {
         let ServerMessage::Page { turns, cursor: next, .. } = next_server(&mut socket).await else {
             panic!("a page is the answer to a request for more")
         };
-        pages.push(
-            turns
-                .iter()
-                .flat_map(|turn| turn.messages.iter())
-                .filter_map(|frame| frame["uuid"].as_str().map(str::to_owned))
-                .collect(),
-        );
+        let frames: Vec<serde_json::Value> =
+            turns.iter().flat_map(|turn| turn.messages.iter().cloned()).collect();
+        pages.push(frames);
         cursor = next;
     }
-    let mut served: Vec<String> = Vec::new();
+    let mut served: Vec<serde_json::Value> = Vec::new();
     for page in pages.iter().rev() {
         served.extend(page.iter().cloned());
     }
+    let ticks: i64 = served
+        .iter()
+        .filter(|frame| frame["subtype"] == "thinking_tokens")
+        .filter_map(|frame| frame["estimated_tokens_delta"].as_i64())
+        .sum();
+    assert_eq!(
+        ticks,
+        i64::try_from(BLOCKS * TICKS_PER_BLOCK * 50).expect("the storm's sum"),
+        "the storm's growth is served once across the pieces",
+    );
+    let rows_served: Vec<String> = served
+        .iter()
+        .filter(|frame| frame["subtype"] != "thinking_tokens")
+        .filter_map(|frame| frame["uuid"].as_str().map(str::to_owned))
+        .collect();
     let mut every: Vec<String> =
         vec!["turn0-user".to_owned(), "turn0-answer".to_owned(), "long-open".to_owned()];
     every.push("init-long-2".to_owned());
@@ -5072,10 +5093,9 @@ async fn a_long_turns_page_carries_its_content_rather_than_its_counter_storm() {
         every.push(format!("call{block}"));
         every.push(format!("result{block}"));
     }
-    every.push(format!("t{}", TICKS - 1));
     assert_eq!(
-        served, every,
-        "every row is served once, in order: the storm is one frame and the rest is itself",
+        rows_served, every,
+        "every real row is served once, in order; the ticks are the only frames folded",
     );
 }
 

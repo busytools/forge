@@ -1007,7 +1007,7 @@ pub(crate) fn placement_wire(placement: AnchorPlacement) -> ThreadResolutionWire
 /// inside a turn is a drawing decision, so it belongs to whoever draws; what
 /// crosses is the turn's own boundary, and that stays here because the paging
 /// contract is built on it - `more` asks for turns, and a page cuts on them
-/// rather than leaving a client to stitch half a turn to half.
+/// where it can.
 ///
 /// **A turn larger than the page's budget is served in pieces**, each a
 /// `TurnWire` of its own: the newest rows that fit, then the rest of it on the
@@ -1020,8 +1020,9 @@ pub(crate) fn placement_wire(placement: AnchorPlacement) -> ThreadResolutionWire
 #[serde(rename_all = "snake_case")]
 pub struct TurnWire {
     /// `None` when nothing named the turn: the key comes from a `Result`
-    /// frame, and a conversation read from a transcript carries none. A piece
-    /// of a turn that does not carry the `Result` is named as no turn is.
+    /// frame, and a conversation read from a transcript carries none. The
+    /// piece that opens the turn carries its key where the turn has one; a
+    /// piece cut out of the turn's middle carries none.
     pub key: Option<String>,
     /// The frames this turn ran as, which is the same shape the session
     /// record's `conversation` carries.
@@ -1075,21 +1076,23 @@ fn turn_wire(
     key: Option<&str>,
     endings: &HashMap<String, TaskEnding>,
 ) -> TurnWire {
-    turn_wire_rows(messages, from, to, key, endings).0
+    let (mut turn, _rows) = turn_wire_rows(messages, from, to, key, endings);
+    fold_counters(&mut turn.messages);
+    turn
 }
 
-/// [`turn_wire`], with the message row each served frame came from.
+/// [`turn_wire`]'s frames, with the message row each came from - and counters
+/// NOT yet folded.
 ///
-/// **A page cut inside a turn needs the rows.** The cursor names a message, and
-/// a piece of a turn opens on whatever frame the byte budget kept rather than
-/// on the turn's opening row - so the served frames have to answer which row
-/// their first one is. `None` marks a frame forge forged (the ending carried
-/// into its call's turn), which names no row of its own.
-///
-/// **A turn is pruned as it is built**, so the repeated progress frames it
-/// carries are served once wherever its frames come from; a page then applies
-/// its own per-page pruning and its byte cut on top. What the turn-level
-/// pruning keeps, and why, is stated at `prune_transients`.
+/// **A page cut inside a turn needs the rows and the raw counters.** The
+/// cursor names a message, and a piece of a turn opens on whatever frame the
+/// byte budget kept rather than on the turn's opening row - so the served
+/// frames have to answer which row their first one is. And a page's cut can
+/// land inside a counter storm: the fold has to cover the piece's own counters
+/// and nothing above its cut, or two pieces of one turn would each carry a
+/// fold over the same counters and a client would sum both. So this answers
+/// the frames as the CLI sent them after [`prune_repeats`], and the caller
+/// folds what it serves ([`fold_counters`]).
 fn turn_wire_rows(
     messages: &[Message],
     from: usize,
@@ -1105,7 +1108,7 @@ fn turn_wire_rows(
         frames.push(frame_of(&forged, forged.session_id()));
         rows.push(None);
     }
-    prune_transients(&mut frames, &mut rows);
+    prune_repeats(&mut frames, &mut rows);
     (TurnWire { key: key.map(str::to_owned), messages: frames }, rows)
 }
 
@@ -1222,14 +1225,16 @@ fn turn_transient_key(frame: &Value) -> Option<String> {
 }
 
 /// The transient frames a PAGE repeats, which say the conversation's own state
-/// rather than a turn's: the handshake, the status line, the background task
-/// list, the command list and the VCS state.
+/// rather than a turn's: `init` (the handshake), `status` (the status line),
+/// `background_tasks_changed`, `commands_changed` and `vcs_state_changed`.
 ///
-/// **Each is a snapshot, and each draws no row of its own** (`init` and
-/// `status` are named as plumbing by the client's own `SYSTEM_DRAWN_ELSEWHERE`,
-/// and the two lists feed surfaces of their own). So one copy says everything
-/// on a page: a seat whose five turns each carried a 17,482-byte `init` spent
-/// 87 KB of its page on the same frame five times.
+/// **Each is a snapshot, and each draws no row of its own** (all five are
+/// named as plumbing by the client's own `SYSTEM_DRAWN_ELSEWHERE`, and the
+/// two lists feed surfaces of their own). So one copy says everything on a
+/// page: a seat whose five turns each carried a 17,482-byte `init` spent
+/// 87 KB of its page on the same frame five times. Pruning
+/// `vcs_state_changed` per page is intended: it is the working tree's state,
+/// and the newest copy on the page is the state.
 ///
 /// **Kept per page rather than per turn**, which is where the repetition is:
 /// a turn's own progress belongs to the turn, but this is one state the page
@@ -1248,31 +1253,88 @@ fn page_transient_kind(frame: &Value) -> Option<&'static str> {
     }
 }
 
-/// Serve the latest copy of each transient frame a turn repeats, and fold the
-/// thinking counters into one frame per dispatch.
+/// Serve the latest copy of each NON-COUNTER frame a turn repeats.
 ///
-/// **A counter is a DELTA, not a snapshot**, so its earlier copies cannot just
-/// be dropped: their growth is summed into the one that survives, with
+/// **Only the latest copy of one speaks for the turn.** A `tool_progress`
+/// heartbeat carries the running call's elapsed time, a sub-agent's
+/// `task_progress` tick says nothing its card does not, and a `hook_progress`
+/// the run's latest state. Earlier copies of the same one say nothing the
+/// page's reader can still use, so the piece keeps the last of each and drops
+/// the rest - a long agentic turn measured 1,669 counter frames and 65
+/// progress ticks of one turn's 1.31 MB (#3035).
+///
+/// **A frame the live path draws a row for is not pruned** (rule 25's parity).
+/// A workflow's `task_progress` carries the whole phase tree on every tick and
+/// the chat fold draws each one as its own row, so every tick is served; the
+/// lifecycle frames (`task_started`, `task_updated`, `task_notification`, the
+/// hook pair) are events whose every copy is a fact, and no rule here may drop
+/// one. The `tool_progress` heartbeat is the one stated asymmetry: its live row
+/// is the fold's provisional fallback rather than a face, the beat is an
+/// elapsed-time snapshot whose latest subsumes the rest, and the live path
+/// still crosses every beat - see `docs/book/src/socket.md`.
+///
+/// **Counters are not touched here.** Their fold is [`fold_counters`], which
+/// runs on the frames a page actually serves, so a piece cut out of a turn
+/// never carries a fold built over counters above its cut.
+fn prune_repeats(frames: &mut Vec<Value>, rows: &mut Vec<Option<usize>>) {
+    let mut latest: HashMap<String, usize> = HashMap::new();
+    for (at, frame) in frames.iter().enumerate() {
+        if let Some(key) = turn_transient_key(frame)
+            && !is_counter(frame)
+        {
+            latest.insert(key, at);
+        }
+    }
+    let held = std::mem::take(frames);
+    let held_rows = std::mem::take(rows);
+    let mut kept_frames: Vec<Value> = Vec::with_capacity(held.len());
+    let mut kept_rows: Vec<Option<usize>> = Vec::with_capacity(held.len());
+    for (at, frame) in held.into_iter().enumerate() {
+        // Only a key this pass collected is a copy behind its latest; a
+        // counter's key is not, and counters are not this pass's to drop.
+        if let Some(key) = turn_transient_key(&frame)
+            && latest.get(&key).is_some_and(|&last| last != at)
+        {
+            continue;
+        }
+        kept_frames.push(frame);
+        kept_rows.push(held_rows[at]);
+    }
+    *frames = kept_frames;
+    *rows = kept_rows;
+}
+
+/// Fold thinking counters into one frame per dispatch, over exactly the frames
+/// passed in.
+///
+/// **A counter is a DELTA, not a snapshot**, so earlier copies cannot just be
+/// dropped: their growth is summed into the one that survives, with
 /// `folded_frames` and `folded_from` naming the range it covers - the same
 /// exchange the client's live fold already merges (`batch::merge`). A reader
-/// that sums `estimated_tokens_delta` reads the same figure as over the whole
-/// storm.
+/// that sums `estimated_tokens_delta` reads the same figure as over the frames
+/// folded.
 ///
-/// **A turn that OPENS on counters keeps that whole leading run as it came.**
-/// The window's front can cut inside a running turn, and a client that holds
-/// the same run live dedupes counters by their own ids and pairs a page to its
-/// held copy by the run's stamps. A fold over part of the run would be neither
-/// carried by the held raw counters nor cover them - the client's containment
-/// check would count both - so the run is served raw and the counters after the
-/// first non-counter frame are the ones folded.
+/// **The frames passed are the ones served**, which is what keeps a split
+/// turn's accounting whole: a piece's fold covers that piece's own counters
+/// and starts at the first counter the piece carries, so two pieces' folds are
+/// disjoint and a client summing both reads the turn's true growth.
+///
+/// **Frames that OPEN on counters keep that whole leading run as it came.**
+/// The window's front can cut inside a running turn, so a page can open
+/// mid-storm: a client that holds the same run live dedupes counters by their
+/// own ids and pairs a page to its held copy by the run's stamps. A fold over
+/// part of the run would be neither carried by the held raw counters nor cover
+/// them - the client's containment check would count both - so the run is
+/// served raw and the counters after the first non-counter frame are the ones
+/// folded.
 ///
 /// **A counter group with a frame that carries no stamp is left whole.** The
 /// coverage a landing reads is a stamp range: frames that cannot be placed
 /// cannot be claimed by one frame without a client double-counting counters it
 /// already holds, so the group is served as it came.
-fn prune_transients(frames: &mut Vec<Value>, rows: &mut Vec<Option<usize>>) {
-    // The newest copy of each transient frame, and - for a counter - what the
-    // copies before it add up to.
+fn fold_counters(frames: &mut Vec<Value>) {
+    // The newest copy of each counter run, and what the copies before it add
+    // up to.
     struct Fold {
         delta: i64,
         count: u64,
@@ -1281,7 +1343,7 @@ fn prune_transients(frames: &mut Vec<Value>, rows: &mut Vec<Option<usize>>) {
     }
     let mut latest: HashMap<String, usize> = HashMap::new();
     let mut folds: HashMap<String, Fold> = HashMap::new();
-    // How many counters the piece OPENS on: the window's front cut can land
+    // How many counters the frames OPEN on: a window's front cut can land
     // inside a running turn's storm, and that run is served as it came (see
     // the doc above).
     let mut leading = 0usize;
@@ -1289,11 +1351,14 @@ fn prune_transients(frames: &mut Vec<Value>, rows: &mut Vec<Option<usize>>) {
         leading += 1;
     }
     for (at, frame) in frames.iter().enumerate() {
+        if !is_counter(frame) {
+            continue;
+        }
         let Some(key) = turn_transient_key(frame) else {
             continue;
         };
         latest.insert(key.clone(), at);
-        if !is_counter(frame) || at < leading {
+        if at < leading {
             continue;
         }
         let fold = folds.entry(key).or_insert_with(|| Fold {
@@ -1311,28 +1376,22 @@ fn prune_transients(frames: &mut Vec<Value>, rows: &mut Vec<Option<usize>>) {
     }
 
     let held = std::mem::take(frames);
-    let held_rows = std::mem::take(rows);
     let mut kept_frames: Vec<Value> = Vec::with_capacity(held.len());
-    let mut kept_rows: Vec<Option<usize>> = Vec::with_capacity(held.len());
     for (at, mut frame) in held.into_iter().enumerate() {
-        if let Some(key) = turn_transient_key(&frame) {
+        if is_counter(&frame)
+            && let Some(key) = turn_transient_key(&frame)
+        {
             let foldable = folds.get(&key).is_some_and(|fold| fold.stamped);
             let last = latest.get(&key).copied().unwrap_or(at);
             if last != at {
-                let counter = is_counter(&frame);
-                let raw_leading = at < leading;
-                // A group that cannot be placed is served as it came; a
-                // non-counter keeps only its latest; a counter keeps only its
-                // latest unless it opens the piece's leading run.
-                if counter && (!foldable || raw_leading) {
+                // A group that cannot be placed is served as it came, and so
+                // is the run the frames open on; any other earlier copy goes.
+                if !foldable || at < leading {
                     kept_frames.push(frame);
-                    kept_rows.push(held_rows[at]);
-                    continue;
                 }
                 continue;
             }
             if let Some(fold) = folds.get(&key)
-                && is_counter(&frame)
                 && fold.stamped
                 && fold.count > 1
                 && let Some(object) = frame.as_object_mut()
@@ -1345,10 +1404,8 @@ fn prune_transients(frames: &mut Vec<Value>, rows: &mut Vec<Option<usize>>) {
             }
         }
         kept_frames.push(frame);
-        kept_rows.push(held_rows[at]);
     }
     *frames = kept_frames;
-    *rows = kept_rows;
 }
 
 /// Drop the page-transient frames behind the one copy a page keeps.
@@ -1670,11 +1727,13 @@ pub fn all_turns(messages: &[Message], rendered: &Rendered) -> Vec<TurnWire> {
         .collect()
 }
 
-/// Slice a conversation into whole turns, newest first.
+/// Slice a conversation into turns, newest first.
 ///
 /// **The fold is what says where a turn begins** - the span `render` reports,
-/// in message terms. Slicing on a count of messages instead would cut a turn
-/// in half, which is the breakage the design exists to avoid.
+/// in message terms. A page held to a byte budget serves a turn over it in
+/// pieces, each opening where the page above ended; slicing on a count of
+/// messages instead would cut a turn at a place no handle names, which is the
+/// breakage the design exists to avoid.
 ///
 /// **The cursor errs toward OVERLAP, never toward a gap.** A client asking
 /// for more may be handed a turn it already has - it keys its turns and drops
@@ -1727,14 +1786,14 @@ pub fn page(
 /// piece opened at, so `more` walks the history above it as it always did.
 ///
 /// **A page is cut on turn boundaries, and inside one only when that turn
-/// alone is over the whole budget.** A client draws turns, and a turn cut in
-/// half is one it cannot place - but a turn over the budget served whole is
-/// the page spending the reader's fold on it, which is what cut the history
-/// above the Playground Lead's 1.31 MB open turn (#3035). So a turn that fits
-/// is served whole, and one that does not is served in pieces: the newest
-/// frames that fit, then the rest of it on the page above, then the history
-/// above that. The cursor names the row the page starts at, which for such a
-/// page is a row inside the turn.
+/// alone is over the whole budget.** A client draws turns, and a turn handed
+/// over with no handle to the rest of it is one it cannot place - but a turn
+/// over the budget served whole is the page spending the reader's fold on it,
+/// which is what cut the history above the Playground Lead's 1.31 MB open turn
+/// (#3035). So a turn that fits is served whole, and one that does not is
+/// served in pieces: the newest frames that fit, then the rest of it on the
+/// page above, then the history above that. The cursor names the row the page
+/// starts at, which for such a page is a row inside the turn.
 ///
 /// **The bytes counted are the bytes SERVED**: a turn is pruned of the
 /// transient frames it repeats and its records are bounded by `cap` before it
@@ -1803,10 +1862,14 @@ pub fn page_within(
         let (mut piece, mut rows) = turn_wire_rows(messages, from, at, key, &rendered.endings);
         // The page is served bounded, so it is measured bounded. The pruning
         // runs before the cap so a report's frame index is the index the cut
-        // reads, and only the reports of served frames are logged.
+        // reads, and only the reports of served frames are logged. The counters
+        // are folded on a probe because the piece may be split below: the fold
+        // a piece serves must cover its own frames and no more.
         retain_page_transients(&mut piece.messages, &mut rows, &seen);
         let reports = cap.map_or_else(Vec::new, |(cap, _)| cap_turn(&mut piece, cap));
-        let bytes = wire_len(&piece);
+        let mut probe = piece.messages.clone();
+        fold_counters(&mut probe);
+        let bytes = wire_len(&TurnWire { key: piece.key.clone(), messages: probe });
         if budget != usize::MAX {
             let fits = total.saturating_add(bytes) <= budget;
             if !fits && !pieces.is_empty() {
@@ -1840,6 +1903,7 @@ pub fn page_within(
                 log_record_cap(seat, id.as_deref(), cap, &report);
             }
         }
+        fold_counters(&mut piece.messages);
         seen.extend(page_transient_kinds(&piece.messages));
         total = total.saturating_add(bytes);
         first_row = from;
@@ -1847,14 +1911,25 @@ pub fn page_within(
         at = from;
     }
 
-    // The debt belongs to the turn open at the page's end, which only a page
-    // that serves the conversation's newest row carries. Fold it into the
-    // first counter the newest piece still has, so a client's own fold sums
+    // **The debt rides the page that serves the turn's first counter.** The
+    // window can drop counters off the front and fold their growth into the
+    // first counter it keeps (`dropped_thinking`); the page that carries that
+    // counter is where the figure belongs, and a piece cut above it is not
+    // that page - so the debt is applied by whichever page's row range
+    // contains the turn's first counter, and by no other.
+    let debt_row = ranges.last().and_then(|&(from, to, _)| {
+        (from..to).find(|&row| matches!(messages[row], Message::ThinkingTokens { .. }))
+    });
+
+    // The debt belongs to the conversation's newest turn, and is folded into
+    // the first counter the page serves from it, so a client's own fold sums
     // the whole turn.
     if dropped_thinking != 0
-        && end == messages.len()
-        && let Some(turn) = pieces.first_mut()
-        && let Some(counter) = turn.messages.iter_mut().find(|frame| is_counter(frame))
+        && debt_row.is_some_and(|row| first_row <= row && row < end)
+        && let Some(counter) = pieces
+            .iter_mut()
+            .flat_map(|turn| turn.messages.iter_mut())
+            .find(|frame| is_counter(frame))
     {
         let total = grown(counter).saturating_add(dropped_thinking);
         if let Some(object) = counter.as_object_mut() {
@@ -1872,7 +1947,7 @@ pub fn page_within(
             slot = %seat.display(),
             budget_key,
             budget,
-            turns_kept = pieces.len(),
+            pieces_kept = pieces.len(),
             turns_available =
                 ranges.iter().filter(|(from, to, _)| *from < end && *to > first_row).count(),
             "the page stopped at its byte budget; its cursor names the rows above it",
@@ -1908,13 +1983,19 @@ fn wire_len(turn: &TurnWire) -> usize {
     serde_json::to_string(turn).map_or(0, |text| text.len() + 1)
 }
 
-/// Serve a piece's newest frames that fit `budget`, and the row they open on.
+/// Serve a piece's newest frames that fit `budget`, folded over that slice
+/// alone, and the row they open on.
 ///
 /// **A piece that alone is over the budget is served in pieces** (#3035): the
 /// Playground Lead's open turn was 1.31 MB against a 512 KB page, so the page
 /// spent the reader's whole fold on that turn and the history above was cut.
 /// The tail is what the reader is looking at, so it is what the page carries,
 /// and the row above it is the handle that asks for the rest.
+///
+/// **The fold is the SLICE's own.** A page's cut can land inside a counter
+/// storm, and a fold built over the whole turn would count counters the piece
+/// above the cut also serves - so the counters are folded after the slice is
+/// chosen, and two pieces of one turn carry disjoint ranges.
 ///
 /// **At least one frame is served**, even one over the budget: an empty page
 /// carries no cursor a client can trust, and a page it cannot place is worse
@@ -1927,24 +2008,27 @@ fn cut_piece(
     reports: Vec<CappedFrame>,
     budget: usize,
 ) -> Option<(TurnWire, usize, Vec<CappedFrame>)> {
-    if piece.messages.is_empty() || piece.messages.len() != rows.len() {
+    let len = piece.messages.len();
+    if len == 0 || len != rows.len() {
         return None;
     }
-    let sizes: Vec<usize> = piece
+    let raw: Vec<usize> = piece
         .messages
         .iter()
         .map(|frame| serde_json::to_string(frame).map_or(0, |text| text.len() + 1))
         .collect();
     // The empty turn's own bytes, so the count is the SERVED page's.
     let envelope = wire_len(&TurnWire { key: None, messages: Vec::new() });
-    let mut start = piece.messages.len();
-    let mut bytes = envelope;
+    // A folded slice is never larger than its frames raw, so a slice whose raw
+    // bytes fit cannot serve over the budget: this is the safe first cut.
+    let mut start = len;
+    let mut raw_total = envelope;
     while start > 0 {
-        let next = sizes[start - 1];
-        if start < piece.messages.len() && bytes.saturating_add(next) > budget {
+        let next = raw[start - 1];
+        if start < len && raw_total.saturating_add(next) > budget {
             break;
         }
-        bytes = bytes.saturating_add(next);
+        raw_total = raw_total.saturating_add(next);
         start -= 1;
     }
     // A served piece opens on a message row: a forged ending names none, and a
@@ -1952,19 +2036,45 @@ fn cut_piece(
     while start > 0 && rows[start].is_none() {
         start -= 1;
     }
-    // The estimate above counts each frame as it stands; the envelope and the
-    // separators can still land it over, and an over-budget page is what this
-    // exists to avoid. Trim, never past one frame and never onto a forged one.
-    while start + 1 < piece.messages.len()
-        && rows[start + 1].is_some()
-        && wire_len(&TurnWire { key: None, messages: piece.messages[start..].to_vec() }) > budget
-    {
-        start += 1;
+    // Folding the slice frees the room its counters took, so spend that on the
+    // rows above it, a round at a time, until a round frees nothing.
+    for _ in 0..4 {
+        let folded = folded_len(&piece.messages[start..]);
+        if folded > budget {
+            // Unreachable from the safe cut, kept as the guard: trim the
+            // oldest frames, never past one and never onto a forged one.
+            while start + 1 < len
+                && rows[start + 1].is_some()
+                && folded_len(&piece.messages[start..]) > budget
+            {
+                start += 1;
+            }
+            break;
+        }
+        let deficit = budget - folded;
+        let mut at = start;
+        let mut added = 0usize;
+        while at > 0 && added.saturating_add(raw[at - 1]) <= deficit {
+            added = added.saturating_add(raw[at - 1]);
+            at -= 1;
+        }
+        if at == start {
+            break;
+        }
+        start = at;
     }
     let start_row = rows.get(start).copied().flatten()?;
-    let served = TurnWire { key: None, messages: piece.messages[start..].to_vec() };
+    let mut served = TurnWire { key: None, messages: piece.messages[start..].to_vec() };
+    fold_counters(&mut served.messages);
     let kept = reports.into_iter().filter(|(at, _, _)| *at >= start).collect();
     Some((served, start_row, kept))
+}
+
+/// The bytes a slice of frames would serve as, folded as one piece.
+fn folded_len(frames: &[Value]) -> usize {
+    let mut probe = frames.to_vec();
+    fold_counters(&mut probe);
+    wire_len(&TurnWire { key: None, messages: probe })
 }
 
 /// How long a request waits for a live seat's first `Connected` before
@@ -3409,6 +3519,114 @@ mod tests {
         assert_eq!(served, every, "every row is served once, in the conversation's order");
     }
 
+    /// **A split turn's counters are folded once each across its pieces.**
+    ///
+    /// The counters are INTERLEAVED with a non-counter so a cut lands between
+    /// runs of one dispatch: a fold built over the whole turn before the cut
+    /// would be carried by the newest piece and counted again when the piece
+    /// above re-folds the counters it holds, and a client sums
+    /// `estimated_tokens_delta` over both. Each piece's fold must cover its own
+    /// counters and start at its own first one, so the walk adds up to the
+    /// turn.
+    #[test]
+    fn a_split_turns_counters_fold_once_across_its_pieces() {
+        let messages = vec![
+            opens_turn(),
+            counter(1, 10),
+            counter(2, 10),
+            says(3),
+            counter(4, 10),
+            counter(5, 10),
+            says(6),
+            counter(7, 10),
+        ];
+        let rendered = crate::transcript::render(&messages, true);
+        let whole = page(&messages, &rendered, 0, 0, None, u32::MAX);
+        assert_eq!(counters_on(&whole), vec![(50, Some(5))], "the turn's growth, folded once");
+
+        let mut served: i64 = 0;
+        let mut cursor: Option<String> = None;
+        let mut pages = 0;
+        loop {
+            pages += 1;
+            assert!(pages < 20, "the walk terminates rather than cycling");
+            let page = page_within(
+                &messages,
+                &rendered,
+                0,
+                0,
+                cursor.as_deref(),
+                SUBSCRIBE_TURNS,
+                700,
+                "test",
+                None,
+            );
+            assert!(
+                wire_bytes(&page.turns) <= 700,
+                "a split page is served within its budget: {} bytes",
+                wire_bytes(&page.turns),
+            );
+            served += page
+                .turns
+                .iter()
+                .flat_map(|turn| turn.messages.iter())
+                .filter(|frame| is_counter(frame))
+                .filter_map(|frame| frame["estimated_tokens_delta"].as_i64())
+                .sum::<i64>();
+            match page.cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        assert!(pages > 1, "the turn is served in pieces");
+        assert_eq!(served, 50, "the turn's growth is counted once across its pieces");
+    }
+
+    /// **The cut debt rides the page that serves the turn's first counter.**
+    ///
+    /// The window drops counters off the front and folds their growth into the
+    /// first counter it keeps. A piece cut above that counter does not carry
+    /// it, so pinning the debt to the newest piece loses it; the page that
+    /// contains the counter is the one that must add it, and exactly one page
+    /// does.
+    #[test]
+    fn the_cut_debt_lands_on_the_piece_that_holds_the_counter() {
+        let messages = vec![opens_turn(), counter(1, 10), says(2), says(3), says(4)];
+        let rendered = crate::transcript::render(&messages, true);
+
+        let mut served: i64 = 0;
+        let mut cursor: Option<String> = None;
+        let mut pages = 0;
+        loop {
+            pages += 1;
+            assert!(pages < 20, "the walk terminates rather than cycling");
+            let page = page_within(
+                &messages,
+                &rendered,
+                0,
+                1_000,
+                cursor.as_deref(),
+                SUBSCRIBE_TURNS,
+                200,
+                "test",
+                None,
+            );
+            served += page
+                .turns
+                .iter()
+                .flat_map(|turn| turn.messages.iter())
+                .filter(|frame| is_counter(frame))
+                .filter_map(|frame| frame["estimated_tokens_delta"].as_i64())
+                .sum::<i64>();
+            match page.cursor {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+        assert!(pages > 2, "the turn is served in pieces");
+        assert_eq!(served, 1_010, "the shed growth rides the piece that holds the counter");
+    }
+
     /// **A budget larger than the page changes nothing.** The count is what a
     /// client asked for, and the bytes only ever cut the page it fits in.
     #[test]
@@ -3613,10 +3831,12 @@ mod tests {
     /// reader's fold on frames no row draws (#3035).
     ///
     /// **A workflow's tick is not one of them**: the chat fold draws each as
-    /// its own row, so every tick is served. The heartbeat here carries the
-    /// shape the CLI sends - the call in `parent_tool_use_id` and the beat's
-    /// own id suffixed (`...-heartbeat-1`) - which is what makes two beats one
-    /// call rather than two.
+    /// its own row, so every tick is served. So is every lifecycle frame - two
+    /// `task_updated` patches of one task are two facts, and nothing may fold
+    /// them. The heartbeat here carries the shape the CLI sends - the call in
+    /// `parent_tool_use_id` and the beat's own id suffixed
+    /// (`...-heartbeat-1`) - which is what makes two beats one call rather
+    /// than two.
     #[test]
     fn a_turn_serves_one_copy_of_each_transient_frame() {
         let messages = vec![
@@ -3635,6 +3855,16 @@ mod tests {
                 "task_progress",
                 "w-2",
                 serde_json::json!({"task_id": "wf", "workflow_progress": []}),
+            ),
+            a_system(
+                "task_updated",
+                "up-1",
+                serde_json::json!({"task_id": "t1", "patch": {"status": "running"}}),
+            ),
+            a_system(
+                "task_updated",
+                "up-2",
+                serde_json::json!({"task_id": "t1", "patch": {"status": "completed"}}),
             ),
             a_system("hook_progress", "k-1", serde_json::json!({"hook_id": "h1"})),
             a_system("hook_progress", "k-2", serde_json::json!({"hook_id": "h1"})),
@@ -3668,8 +3898,9 @@ mod tests {
 
         assert_eq!(
             uuids_of(&page),
-            ["u-1", "i-2", "p-2", "p-3", "w-1", "w-2", "k-2", "s-2", "h-2", "a-1"],
-            "the latest of each kind and owner, the workflow's drawn ticks, and what nothing repeats",
+            ["u-1", "i-2", "p-2", "p-3", "w-1", "w-2", "up-1", "up-2", "k-2", "s-2", "h-2", "a-1"],
+            "the latest of each kind and owner, the workflow's and lifecycle frames, and what \
+             nothing repeats",
         );
     }
 
