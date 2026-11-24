@@ -1703,9 +1703,9 @@ pub fn page(
 /// page is a row inside the turn.
 ///
 /// **The bytes counted are the bytes SERVED**: a turn is pruned of the
-/// transient frames it repeats ([`prune_transients`]) and its records are
-/// bounded by `cap` before it is measured, so the page's size follows what the
-/// client receives rather than what the transcript holds. A storm of counters
+/// transient frames it repeats and its records are bounded by `cap` before it
+/// is measured, so the page's size follows what the client receives rather
+/// than what the transcript holds. A storm of counters
 /// or a repeated handshake cannot spend the budget history needs, and one
 /// `init` frame is carried per page rather than one per turn.
 ///
