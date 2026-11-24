@@ -12,12 +12,15 @@ import { get } from 'svelte/store';
 import { noteSnapshot, noteSubscribe } from './perf';
 import { ownSettingsFrame, settingsFrame } from './settings/frame';
 import {
+  ANSWERS_THROUGH_A_REPLY,
   connect,
   DIAL_BOUND_MS,
   inflate,
   LIVENESS_DEAD_MS,
   LIVENESS_EVERY_MS,
   MAX_INFLATED_BYTES,
+  REPLY_BOUND_MS,
+  replyBoundFor,
   RETRY_MS,
   type BrowserFrame,
   type Connection,
@@ -855,6 +858,18 @@ describe('the connection', () => {
     // reject unhandled when the connection closes.
     conn.close();
     await Promise.allSettled(asks.filter((ask) => ask !== null));
+  });
+
+  /**
+   * **The settings page's unlock is network work.** Prelogin, PBKDF2, login
+   * and sync against the user's Vaultwarden can outlive the command bound,
+   * and a bound that fires first reports a failure the session then
+   * contradicts.
+   */
+  it('sends the vault unlock with a reply and its own longer bound', () => {
+    expect(ANSWERS_THROUGH_A_REPLY.has('vault_unlock')).toBe(true);
+    expect(replyBoundFor('vault_unlock', REPLY_BOUND_MS)).toBe(30_000);
+    expect(replyBoundFor('cancel', REPLY_BOUND_MS)).toBe(REPLY_BOUND_MS);
   });
 
   /**

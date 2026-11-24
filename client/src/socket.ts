@@ -343,6 +343,9 @@ export const ANSWERS_THROUGH_A_REPLY: ReadonlySet<string> = new Set([
   // the vault locks.
   'biometric_rewrite',
   'vault_enrolment_material',
+  // The settings page's direct unlock: the answer is the success signal the
+  // dialog needs, and a refusal is its own ending to draw.
+  'vault_unlock',
 ]);
 
 /**
@@ -353,7 +356,7 @@ export const ANSWERS_THROUGH_A_REPLY: ReadonlySet<string> = new Set([
  * worktree and reaps a branch first, which can run for minutes (#1922, #1113),
  * so no finite bound is honest.
  */
-const REPLY_BOUND_MS = 10_000;
+export const REPLY_BOUND_MS = 10_000;
 
 /**
  * The bound on a browser attach, which is longer than a command's.
@@ -365,8 +368,13 @@ const REPLY_BOUND_MS = 10_000;
 const ATTACH_BOUND_MS = 30_000;
 
 /** The bound this command gets, or `null` for a despawn. */
-function replyBoundFor(variant: string, bound: number): number | null {
-  return variant === 'despawn_worker' ? null : bound;
+export function replyBoundFor(variant: string, bound: number): number | null {
+  if (variant === 'despawn_worker') return null;
+  // **The vault unlock is network work** - prelogin, PBKDF2, login and sync
+  // against the user's Vaultwarden - so the command bound would report a
+  // failure while the session unlocked anyway.
+  if (variant === 'vault_unlock') return 30_000;
+  return bound;
 }
 
 /** One command's caller, waiting for the reply that answers it. */
