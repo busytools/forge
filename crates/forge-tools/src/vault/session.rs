@@ -1280,6 +1280,30 @@ mod tests {
         assert!(session.is_locked(), "the session stays locked");
     }
 
+    /// **A refused password leaves the session locked.** The settings page's
+    /// door must not install keys on a login the account refused; the caller
+    /// draws the error and the vault asks again.
+    #[tokio::test]
+    async fn a_refused_password_leaves_the_session_locked() {
+        let prelogin = serde_json::json!({ "kdf": 0, "kdfIterations": 100_000 }).to_string();
+        let (address, _server) = serve(vec![
+            response("200 OK", &prelogin),
+            response("400 Bad Request", r#"{"error":"invalid"}"#),
+        ])
+        .await;
+        let config = VaultConfig {
+            url: format!("http://{address}"),
+            email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
+        };
+        let session = test_session(&config, None, "test").expect("a session");
+
+        let refused = session.unlock_with_password("wrong password".to_owned(), None).await;
+
+        assert!(refused.is_err(), "a refused password is an error");
+        assert!(session.is_locked(), "and the session stays locked");
+    }
+
     #[test]
     fn a_new_session_is_locked() {
         let session = test_session(&config(), None, "test").expect("a session");

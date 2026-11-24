@@ -22,6 +22,7 @@ import {
   REPLY_BOUND_MS,
   replyBoundFor,
   RETRY_MS,
+  VAULT_UNLOCK_BOUND_MS,
   type BrowserFrame,
   type Connection,
   type ConnectionStatus,
@@ -868,7 +869,7 @@ describe('the connection', () => {
    */
   it('sends the vault unlock with a reply and its own longer bound', () => {
     expect(ANSWERS_THROUGH_A_REPLY.has('vault_unlock')).toBe(true);
-    expect(replyBoundFor('vault_unlock', REPLY_BOUND_MS)).toBe(30_000);
+    expect(replyBoundFor('vault_unlock', REPLY_BOUND_MS)).toBe(VAULT_UNLOCK_BOUND_MS);
     expect(replyBoundFor('cancel', REPLY_BOUND_MS)).toBe(REPLY_BOUND_MS);
   });
 

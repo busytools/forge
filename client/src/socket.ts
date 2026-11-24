@@ -359,6 +359,14 @@ export const ANSWERS_THROUGH_A_REPLY: ReadonlySet<string> = new Set([
 export const REPLY_BOUND_MS = 10_000;
 
 /**
+ * The bound on the settings page's vault unlock. **It must equal the Rust
+ * `forge_tools::vault::UNLOCK_BOUND`**: three vault requests - prelogin,
+ * login and sync - at the client's five-minute request bound. A shorter
+ * bound would report a failure the session then contradicts.
+ */
+export const VAULT_UNLOCK_BOUND_MS = 900_000;
+
+/**
  * The bound on a browser attach, which is longer than a command's.
  *
  * **A cold profile starts a host and a driver before it can answer**, and a
@@ -370,10 +378,11 @@ const ATTACH_BOUND_MS = 30_000;
 /** The bound this command gets, or `null` for a despawn. */
 export function replyBoundFor(variant: string, bound: number): number | null {
   if (variant === 'despawn_worker') return null;
-  // **The vault unlock is network work** - prelogin, PBKDF2, login and sync
-  // against the user's Vaultwarden - so the command bound would report a
-  // failure while the session unlocked anyway.
-  if (variant === 'vault_unlock') return 30_000;
+  // **The vault unlock is network work** - prelogin, login and sync against
+  // the user's Vaultwarden - so the command bound would report a failure
+  // while the session unlocked anyway. The server task carries the same
+  // bound, so neither half gives up on the other.
+  if (variant === 'vault_unlock') return VAULT_UNLOCK_BOUND_MS;
   return bound;
 }
 

@@ -990,6 +990,12 @@ fn reply_bound_for(command: &Value, bound: Duration) -> Option<Duration> {
     match variant_of(command) {
         Some("despawn_worker") => None,
         Some("file_upload_end") => Some(Duration::from_secs(120)),
+        // **The settings page's unlock is network work**: prelogin, login and
+        // sync against the user's Vaultwarden, so the shipping bound would
+        // draw a false failure on a slow unlock. It is the same number the
+        // page gives it and the server task carries
+        // (`forge_tools::vault::UNLOCK_BOUND`).
+        Some("vault_unlock") => Some(Duration::from_secs(900)),
         _ => Some(bound),
     }
 }
@@ -4006,6 +4012,14 @@ pub(crate) mod tests {
         assert_eq!(reply_bound_for(&begin, bound), Some(bound));
         let despawn = json!({ "despawn_worker": {} });
         assert_eq!(reply_bound_for(&despawn, bound), None);
+        // The unlock's network work gets the vault's own bound, not the
+        // shipping one; a shorter one draws a false failure on a slow unlock.
+        let unlock = json!({ "vault_unlock": { "password": "sample" } });
+        assert_eq!(
+            reply_bound_for(&unlock, bound),
+            Some(Duration::from_secs(900)),
+            "the unlock keeps the vault's own bound",
+        );
     }
 
     /// **The shipping liveness pair is the value the book states.** What the

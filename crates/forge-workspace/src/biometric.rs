@@ -17,6 +17,7 @@
 use std::time::SystemTime;
 
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use forge_primitives::biometric::{BiometricBlob, BiometricEnrolment, BiometricPurpose};
 
@@ -293,9 +294,10 @@ impl Workspace {
     /// success signal**, not the `VaultLockChanged` frame: a frame also
     /// arrives for an unlock another view performed.
     ///
-    /// The password and the code are taken by value and zeroized inside
-    /// `forge-tools`, which owns the secret discipline the held-call path
-    /// already keeps.
+    /// The secrets are wrapped before any branch can return, so the no-vault
+    /// refusal and the empty-password refusal wipe them like the unlock path
+    /// does, and the task is bounded by the vault client's own request bounds
+    /// so a hung endpoint cannot park the dialog past its own bound.
     pub(crate) fn start_vault_unlock(
         &self,
         password: Option<String>,
@@ -303,6 +305,8 @@ impl Workspace {
         released: Option<forge_primitives::vault::VaultReleased>,
         respond: Option<tokio::sync::oneshot::Sender<forge_primitives::vault::VaultUnlockOutcome>>,
     ) {
+        let password = password.map(Zeroizing::new);
+        let two_factor = two_factor.map(Zeroizing::new);
         let session = self.vault.read().clone();
         let Some(session) = session else {
             if let Some(respond) = respond {
@@ -313,23 +317,32 @@ impl Workspace {
             return;
         };
         tokio::spawn(async move {
-            let answer = match (released, password.filter(|password| !password.trim().is_empty())) {
-                (Some(released), _) => match session.unlock_with_released(released).await {
-                    Ok(()) => forge_primitives::vault::VaultUnlockOutcome::Unlocked,
-                    Err(error) => forge_primitives::vault::VaultUnlockOutcome::Refused {
-                        reason: error.to_string(),
-                    },
-                },
-                (None, Some(password)) => {
-                    match session.unlock_with_password(password, two_factor).await {
-                        Ok(()) => forge_primitives::vault::VaultUnlockOutcome::Unlocked,
-                        Err(error) => forge_primitives::vault::VaultUnlockOutcome::Refused {
-                            reason: error.to_string(),
-                        },
+            let unlock = tokio::time::timeout(
+                forge_tools::vault::UNLOCK_BOUND,
+                async move {
+                    match (released, password.filter(|password| !password.trim().is_empty())) {
+                        (Some(released), _) => {
+                            session.unlock_with_released(released).await.map_err(|error| error.to_string())
+                        }
+                        (None, Some(password)) => session
+                            .unlock_with_password(
+                                password.to_string(),
+                                two_factor.as_deref().map(|code| code.to_string()),
+                            )
+                            .await
+                            .map_err(|error| error.to_string()),
+                        (None, None) => Err("the master password is required".to_owned()),
                     }
+                },
+            )
+            .await;
+            let answer = match unlock {
+                Ok(Ok(())) => forge_primitives::vault::VaultUnlockOutcome::Unlocked,
+                Ok(Err(reason)) => {
+                    forge_primitives::vault::VaultUnlockOutcome::Refused { reason }
                 }
-                (None, None) => forge_primitives::vault::VaultUnlockOutcome::Refused {
-                    reason: "the master password is required".to_owned(),
+                Err(_) => forge_primitives::vault::VaultUnlockOutcome::Refused {
+                    reason: "the vault did not answer the unlock in time".to_owned(),
                 },
             };
             if let Some(respond) = respond {

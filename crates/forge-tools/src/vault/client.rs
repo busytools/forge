@@ -30,6 +30,13 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const READ_TIMEOUT: Duration = Duration::from_secs(60);
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
+/// The most one settings-page unlock can wait on the network: the three
+/// requests it makes in sequence - prelogin, login and sync - each bounded by
+/// [`REQUEST_TIMEOUT`]. The settings dialog and the server task that serves
+/// it must use the same number, or one side gives up while the other still
+/// works, and the dialog reports a failure the session then contradicts.
+pub const UNLOCK_BOUND: Duration = REQUEST_TIMEOUT.saturating_mul(3);
+
 /// A download is opaque ciphertext up to the attachment cap, so its idle read
 /// bound and total bound are longer than an API call's.
 pub const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(10 * 60);
