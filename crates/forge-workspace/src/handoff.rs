@@ -1,10 +1,11 @@
 //! The handoff brief: forge's own ground truth, and the handing-over
 //! session's judgment.
 //!
-//! The ground truth is derived at swap time from the transcript, git and the
-//! board, so every path, command and number in it is read rather than
-//! remembered. The judgment is the old session's reply to forge's own prompt,
-//! captured before the swap while its context still holds the work.
+//! The ground truth is derived at swap time from the transcript, git, the
+//! board, the worker registry and the cron store, so every path, command and
+//! number in it is read rather than remembered. The judgment is the old
+//! session's reply to forge's own prompt, captured before the swap while its
+//! context still holds the work.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,7 +14,7 @@ use std::time::SystemTime;
 use forge_agent::client::SessionLaunchSettings;
 use forge_primitives::{
     ContentBlock, HandoffBrief, HandoffCycle, HandoffGitState, HandoffReason, HandoffRecord,
-    HandoffSection, Message, Task, TaskStatus,
+    HandoffSection, Message, SessionLifecycleState, Task, TaskStatus, WorkerLiveness, WorkerStatus,
 };
 
 use crate::SessionSlot;
@@ -23,6 +24,9 @@ use crate::protocol::{Command, NoticeSeverity, SessionUpdate};
 /// re-summarising the session, which is the failure it exists to avoid.
 const FILE_CAP: usize = 10;
 const DIRTY_CAP: usize = 20;
+/// How many open board rows the live-state section names before it states
+/// the cut, the way the files row does.
+const LIVE_STATE_CAP: usize = 20;
 /// The judgment half's ceiling: room for the 400-word note the prompt asks
 /// for, with its pointer lines, and no more.
 const JUDGMENT_CAP: usize = 5_000;
@@ -75,6 +79,7 @@ pub(crate) async fn ground_truth(
     config_dir: &Path,
     seat: &HandoffSeat<'_>,
     board: &[Task],
+    board_unreadable: bool,
     live: Vec<HandoffSection>,
 ) -> GroundTruth {
     let read = {
@@ -106,7 +111,7 @@ pub(crate) async fn ground_truth(
     // project files the successor needs, and counting its reads would make
     // the successor's re-read measurement measure the handoff's own cost.
     let memory_roots = memory_roots(config_dir, seat.cwd);
-    let mut truth = assemble(seat, &messages, &git, board, &memory_roots, live);
+    let mut truth = assemble(seat, &messages, &git, board, board_unreadable, &memory_roots, live);
     if read_failed {
         // **An empty PART 1 is not a session with nothing in it.** Without
         // this line the successor reads a blank ground truth as a blank
@@ -133,6 +138,7 @@ pub(crate) fn assemble(
     messages: &[Message],
     git: &HandoffGitState,
     board: &[Task],
+    board_unreadable: bool,
     memory_roots: &[PathBuf],
     live: Vec<HandoffSection>,
 ) -> GroundTruth {
@@ -140,7 +146,7 @@ pub(crate) fn assemble(
     let mut sections = seat_sections(seat, git);
     sections.push(role_section(&seat.role));
     sections.push(files_section(messages, git, memory_roots));
-    sections.push(board_section(seat.slot, board));
+    sections.push(board_section(seat.slot, board, board_unreadable));
     sections.extend(live);
     sections.push(record_section(seat));
     GroundTruth { sections, cycle: cycle(messages, turns), reads: read_set(messages, memory_roots) }
@@ -419,7 +425,17 @@ fn files_section(
     HandoffSection { label: "files".to_owned(), lines }
 }
 
-fn board_section(slot: &SessionSlot, board: &[Task]) -> HandoffSection {
+fn board_section(slot: &SessionSlot, board: &[Task], board_unreadable: bool) -> HandoffSection {
+    if board_unreadable {
+        return HandoffSection {
+            label: "board".to_owned(),
+            lines: vec![
+                "not read - this run could not load the durable board; the rows on disk are \
+                 not visible this run"
+                    .to_owned(),
+            ],
+        };
+    }
     let mut lines = Vec::new();
     let mut refs: Vec<String> = Vec::new();
     for task in board.iter().filter(|task| task.owner.as_ref() == Some(slot)) {
@@ -503,6 +519,208 @@ pub(crate) fn live_work_sections(
     ]
 }
 
+/// The project-wide live state the successor inherits beside this seat's own
+/// work: the other live workers and the project's crons.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LiveState {
+    /// One line per live worker, already naming its slot and the door that
+    /// resumes it.
+    pub workers: Vec<String>,
+    /// One line per project cron, already naming its owner and next fire.
+    pub crons: Vec<String>,
+    /// The boot could not load the durable crons: the in-memory set is empty
+    /// while schedules may be on disk, and `cron__list` refuses in this
+    /// state. The section says so instead of "none scheduled".
+    pub crons_unreadable: bool,
+    /// The boot could not load the durable board: the in-memory set is empty
+    /// while rows may be on disk. The section says so instead of "none open".
+    pub board_unreadable: bool,
+}
+
+/// What the successor picks up beyond the handing-over session's own work:
+/// the other live workers, the project's crons and the open board rows, each
+/// with the door that resumes it.
+///
+/// **A best-effort read, and the tools' names where it fails.** The registry
+/// and the cron store are read where the workspace can reach them; a read
+/// that could not be made says so and names the tool that answers, so a
+/// continuation always says where to look rather than claiming the project is
+/// idle. The board rows are read from the board the caller already holds, so
+/// they are rendered even when the registry could not be reached.
+pub(crate) fn live_state_sections(
+    live: Option<&LiveState>,
+    board: &[Task],
+    seat: &SessionSlot,
+) -> Vec<HandoffSection> {
+    let mut sections = Vec::new();
+    if let Some(live) = live {
+        sections.push(HandoffSection {
+            label: "live workers".to_owned(),
+            lines: capped(live.workers.clone(), "none live", "live workers"),
+        });
+        let crons = if live.crons_unreadable {
+            vec![
+                "not read - this run could not load the durable crons; `cron__list` \
+                 refuses in this state"
+                    .to_owned(),
+            ]
+        } else {
+            let mut lines = capped(live.crons.clone(), "none scheduled", "live crons");
+            if !live.crons.is_empty() {
+                lines.insert(0, "each fires on its own".to_owned());
+            }
+            lines
+        };
+        sections.push(HandoffSection { label: "live crons".to_owned(), lines: crons });
+    } else {
+        sections.push(fact(
+            "live workers",
+            "not read - run `agents__list` for the live workers and their slots".to_owned(),
+        ));
+        sections.push(fact(
+            "live crons",
+            "not read - run `cron__list` for the schedules and their next fires".to_owned(),
+        ));
+    }
+
+    let open: Vec<&Task> = board
+        .iter()
+        .filter(|task| {
+            matches!(
+                task.status,
+                TaskStatus::Pending | TaskStatus::InProgress | TaskStatus::Waiting
+            )
+        })
+        .collect();
+    let rows = if live.is_some_and(|live| live.board_unreadable) {
+        vec![
+            "not read - this run could not load the durable board; the rows on disk are \
+             not visible this run"
+                .to_owned(),
+        ]
+    } else if open.is_empty() {
+        vec!["none open".to_owned()]
+    } else {
+        let mut lines =
+            vec!["yours to continue; an unowned pending row takes `tasks__claim`".to_owned()];
+        for task in open.iter().take(LIVE_STATE_CAP) {
+            let owner =
+                task.owner.as_ref().map_or_else(|| "unowned".to_owned(), SessionSlot::display);
+            let door = board_door(task, seat);
+            lines.push(format!(
+                "{} - {} [{}], owner {owner} - {door}",
+                task.id.as_str(),
+                task.subject,
+                status_name(task.status)
+            ));
+        }
+        if open.len() > LIVE_STATE_CAP {
+            lines.push(cut_line(open.len() - LIVE_STATE_CAP, "open rows"));
+        }
+        lines
+    };
+    sections.push(HandoffSection { label: "open board rows".to_owned(), lines: rows });
+    sections
+}
+
+/// The door a board row's own state takes. `tasks__claim` takes a row only
+/// when it is pending, unowned, unwaiting and unreserved, so a reserved
+/// pick, a wait and a row already moving each get the door that actually
+/// opens: claiming the first two is refused, and an unowned row past pending
+/// is moved with `tasks__update`.
+fn board_door(task: &Task, seat: &SessionSlot) -> &'static str {
+    if task.reserved.is_some() {
+        return "reserved for you";
+    }
+    if task.owner.as_ref() == Some(seat) {
+        return if task.status == TaskStatus::Waiting {
+            waiting_door(task)
+        } else {
+            "yours to continue"
+        };
+    }
+    if task.owner.is_none() {
+        return if task.status == TaskStatus::Pending && task.waiting_on.is_none() {
+            "claim with `tasks__claim`"
+        } else {
+            "nobody holds it - take it with `tasks__update`"
+        };
+    }
+    "held by its owner"
+}
+
+/// What a waiting row of the successor's own waits on, so its line names the
+/// block rather than reading as work to continue.
+fn waiting_door(task: &Task) -> &'static str {
+    use forge_primitives::tasks::WaitingKind;
+    match task.waiting_on.as_ref().and_then(|waiting| waiting.kind) {
+        Some(WaitingKind::Decision) => "yours - waiting on the user's decision",
+        Some(WaitingKind::Dependency) => "yours - waiting on its dependency",
+        Some(WaitingKind::Resource) => "yours - waiting on a resource",
+        None => "yours - waiting; the kind is unstated",
+    }
+}
+
+/// One live worker as the brief names it: the slot addresses it, and the
+/// state decides the door. A failed worker is the lead's to spawn again; a
+/// restarting one is already being healed; a live one takes a message.
+fn worker_live_line(status: &WorkerStatus) -> String {
+    let slot = status.slot.display();
+    let activity = status.activity.map_or("unknown", activity_name);
+    let failed = matches!(status.status, WorkerLiveness::Failed)
+        || matches!(status.activity, Some(SessionLifecycleState::Failed));
+    let restarting = matches!(status.status, WorkerLiveness::Restarting)
+        || matches!(status.activity, Some(SessionLifecycleState::Restarting));
+    if failed {
+        let why = status.diagnostic.as_deref().unwrap_or("no diagnostic captured");
+        format!(
+            "{slot} [{activity}: {why}] - the lead spawns it again with `agents__spawn` and \
+             `resume_session: true`, reusing the charter `agents__list` reports"
+        )
+    } else if restarting {
+        format!("{slot} [{activity}] - its heal is scheduled; wait for the next attempt")
+    } else {
+        format!("{slot} [{activity}] - message it with `agents__send_message`")
+    }
+}
+
+/// A lifecycle state as a word, never the Rust identifier `Debug` would print.
+fn activity_name(state: SessionLifecycleState) -> &'static str {
+    match state {
+        SessionLifecycleState::Sleeping => "sleeping",
+        SessionLifecycleState::Spawning => "spawning",
+        SessionLifecycleState::Idle => "idle",
+        SessionLifecycleState::Running => "running",
+        SessionLifecycleState::Attention => "needs attention",
+        SessionLifecycleState::AuthRequired => "auth required",
+        SessionLifecycleState::Failed => "failed",
+        SessionLifecycleState::Restarting => "restarting",
+        SessionLifecycleState::LoggedOut => "logged out",
+    }
+}
+
+/// A list of lines, or the empty-state line when there are none, capped the
+/// way the open rows are so a big project's brief stays readable.
+fn capped(mut lines: Vec<String>, empty: &str, kind: &str) -> Vec<String> {
+    if lines.is_empty() {
+        return vec![empty.to_owned()];
+    }
+    if lines.len() > LIVE_STATE_CAP {
+        let extra = lines.len() - LIVE_STATE_CAP;
+        lines.truncate(LIVE_STATE_CAP);
+        lines.push(cut_line(extra, kind));
+    }
+    lines
+}
+
+/// "and 1 more row" / "and 3 more rows": the cut states the count and the
+/// noun agrees with it, so a one-line cut never reads "and 1 more rows". The
+/// kinds are regular plurals, so a count of one drops their final `s`.
+fn cut_line(extra: usize, kind: &str) -> String {
+    let noun = if extra == 1 { kind.strip_suffix('s').unwrap_or(kind) } else { kind };
+    format!("and {extra} more {noun}")
+}
+
 fn record_section(seat: &HandoffSeat<'_>) -> HandoffSection {
     HandoffSection {
         label: "record".to_owned(),
@@ -512,6 +730,13 @@ fn record_section(seat: &HandoffSeat<'_>) -> HandoffSection {
             "anything this brief does not carry is in that transcript, not guessed".to_owned(),
         ],
     }
+}
+
+/// A `SystemTime` as UTC RFC3339, the shape `cron__list` reports a fire in.
+fn fmt_rfc3339(t: SystemTime) -> String {
+    time::OffsetDateTime::from(t)
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_owned())
 }
 
 fn status_name(status: TaskStatus) -> &'static str {
@@ -929,10 +1154,10 @@ fn judgment_opening() -> String {
 /// What the turn is told to do: run the skill, then exit through the tool.
 const JUDGMENT_BODY: &str = "\
 Invoke the handoff skill and follow it. It completes this session's learnings \
-into memory, records and stops what is still running so the new session can \
-resume it, then calls `agents__handoff` with the note. If this environment has \
-no such skill, do those three steps from this prompt: memory first, then close \
-out what is running, then call `agents__handoff` with the note.";
+into memory, records what is still running and hands it over so the new session \
+can continue it, then calls `agents__handoff` with the note. If this environment \
+has no such skill, do those three steps from this prompt: memory first, then \
+hand over what is running, then call `agents__handoff` with the note.";
 
 /// Forge's output contract for the note the exit call carries.
 ///
@@ -944,12 +1169,18 @@ Write the continuation the next session needs, in whatever shape reads best - \
 there is no set of headings to fill in. It must carry: where things stand, and \
 what is done and verified; what is in flight, with the row, PR, branch or \
 session id that names it; what you tried that failed, and what stopped it; and \
-the exact next action, with the file, command or row it starts at. Point at \
-what you recorded instead of retelling it: the memory files by name, the rolling \
-handoff document, the board rows by id, the PR numbers, the transcript. Never \
-write a key, token, password or personal data into the note. This note is Step \
-2's handoff document; pass the same text to `agents__handoff` as `brief`. Keep \
-it under 400 words.";
+the exact next action, with the file, command or row it starts at. It must also \
+carry the live state this session started: every subagent by task and \
+transcript, every running background command or monitor by command and output \
+path, and every worktree this session created by path and branch, each with the \
+door that continues or restarts it. PART 1 carries the project's own state - \
+the other live workers, the live crons and the open board rows, capped - so \
+point at it rather than repeating it. \
+Point at what you recorded instead of retelling it: the memory files by name, \
+the rolling handoff document, the board rows by id, the PR numbers, the \
+transcript. Never write a key, token, password or personal data into the note. \
+This note is Step 2's handoff document; pass the same text to `agents__handoff` \
+as `brief`. Keep it under 400 words.";
 
 /// The judgment prompt the turn runs: forge's own words, the skill it names,
 /// and the output contract for the note the exit call carries.
@@ -1465,6 +1696,42 @@ impl crate::Workspace {
         });
     }
 
+    /// The project's live workers and crons, for the brief's live-state
+    /// section. `None` when the project does not resolve, which is the same
+    /// reach the worker registry has.
+    ///
+    /// **The seat itself is not a worker to resume.** A handoff swaps the
+    /// session id and leaves the slot, so the row at this slot belongs to the
+    /// successor; naming it would tell the successor to message itself.
+    pub(crate) fn project_live_state(&self, slot: &SessionSlot) -> Option<LiveState> {
+        let project =
+            self.list_projects().into_iter().find(|project| project.name == slot.project())?;
+        let workers = self
+            .list_live_workers(&project.key)
+            .iter()
+            .filter(|entry| &entry.slot != slot)
+            .map(|entry| worker_live_line(&self.worker_status_snapshot(entry)))
+            .collect();
+        let crons = self
+            .crons_for_project(slot.project())
+            .iter()
+            .map(|cron| {
+                let owner = cron.team_role.as_deref().unwrap_or("lead");
+                format!(
+                    "{} (owner {owner}), next {}",
+                    cron.id.as_str(),
+                    fmt_rfc3339(cron.next_fire)
+                )
+            })
+            .collect();
+        Some(LiveState {
+            workers,
+            crons,
+            crons_unreadable: self.durable_crons_unavailable(),
+            board_unreadable: self.durable_tasks_unavailable(),
+        })
+    }
+
     /// Run a handoff: build the ground truth, announce the swap, and start the
     /// new session on the same order `/new` uses.
     ///
@@ -1517,14 +1784,18 @@ impl crate::Workspace {
             transcript_path: &transcript_path,
             role: request.role.clone(),
         };
+        let registry = self.project_live_state(&request.slot);
+        let board_unreadable = registry.as_ref().is_some_and(|live| live.board_unreadable);
         let live = {
+            let mut sections = live_state_sections(registry.as_ref(), &board, &request.slot);
             let domain = self.domain_session_for(&request.slot);
             match domain {
-                Some(domain) => live_work_sections(Some(&domain.lock())),
-                None => live_work_sections(None),
+                Some(domain) => sections.extend(live_work_sections(Some(&domain.lock()))),
+                None => sections.extend(live_work_sections(None)),
             }
+            sections
         };
-        let truth = ground_truth(self.config_dir(), &seat, &board, live).await;
+        let truth = ground_truth(self.config_dir(), &seat, &board, board_unreadable, live).await;
         let GroundTruth { sections, cycle, reads } = truth;
         let record = HandoffRecord {
             slot: request.slot.clone(),
@@ -1779,7 +2050,8 @@ mod tests {
     /// its own and reads as part of the label above it.
     #[test]
     fn the_seat_and_the_record_name_the_identity_and_the_transcript() {
-        let ground = assemble(&seat(), &[], &HandoffGitState::default(), &[], &[], Vec::new());
+        let ground =
+            assemble(&seat(), &[], &HandoffGitState::default(), &[], false, &[], Vec::new());
         let labels: Vec<&str> = ground.sections.iter().map(|s| s.label.as_str()).collect();
         assert_eq!(
             &labels[..3],
@@ -1804,7 +2076,7 @@ mod tests {
             head: Some("94cab2f20".to_owned()),
             ..HandoffGitState::default()
         };
-        let on_a_branch = assemble(&seat(), &[], &git, &[], &[], Vec::new());
+        let on_a_branch = assemble(&seat(), &[], &git, &[], false, &[], Vec::new());
         assert_eq!(
             on_a_branch.sections[2].label, "branch",
             "the branch keeps its own row: {:?}",
@@ -1994,7 +2266,7 @@ mod tests {
             dirty_total: 0,
             diff: vec![" src/a.rs | 2 ++".to_owned()],
         };
-        let ground = assemble(&seat(), &messages, &git, &[], &[], live_work_sections(None));
+        let ground = assemble(&seat(), &messages, &git, &[], false, &[], live_work_sections(None));
         let labels: Vec<&str> = ground.sections.iter().map(|s| s.label.as_str()).collect();
         assert_eq!(
             labels,
@@ -2050,7 +2322,7 @@ mod tests {
                 None,
             ),
         ];
-        let section = board_section(&mine, &rows);
+        let section = board_section(&mine, &rows, false);
         assert_eq!(
             section.lines.first().map(String::as_str),
             Some("the automatic handoff (in progress)"),
@@ -2197,6 +2469,277 @@ mod tests {
                 "an absent domain is stated as unread, not as nothing running",
             );
         }
+    }
+
+    /// **The live state is the project's, not only the seat's own.** The
+    /// successor inherits the other workers, the crons and every open row,
+    /// each with the door that resumes it.
+    #[test]
+    fn the_live_state_sections_name_workers_crons_and_open_rows_with_their_door() {
+        let mine = SessionSlot::worker("Busytools", "forge", "handoff-cut");
+        let mut finished =
+            task("the landed row", Some(SessionSlot::lead("Busytools", "forge")), None);
+        finished.status = TaskStatus::Completed;
+        let mut waiting = task("the blocked row", Some(mine.clone()), None);
+        waiting.status = TaskStatus::Waiting;
+        waiting.waiting_on = Some(forge_primitives::tasks::Waiting {
+            kind: Some(forge_primitives::tasks::WaitingKind::Decision),
+            detail: None,
+            on: None,
+            verification: false,
+            parked: false,
+            since: None,
+        });
+        let mut reserved = task("the reserved row", None, None);
+        reserved.status = TaskStatus::Pending;
+        reserved.reserved = Some(forge_primitives::tasks::ReservedBy::User);
+        let unowned_moving = task("the unowned cut", None, None);
+        let rows = vec![
+            task("the handoff cut", Some(mine.clone()), None),
+            task("the auth fix", Some(SessionSlot::worker("Busytools", "forge", "builder")), None),
+            waiting,
+            reserved,
+            unowned_moving,
+            finished,
+        ];
+        let live = LiveState {
+            workers: vec![
+                "Busytools/forge/builder [idle] - message it with `agents__send_message`"
+                    .to_owned(),
+            ],
+            crons: vec!["0f3c (owner lead), next 2026-11-24T09:00:00Z".to_owned()],
+            ..LiveState::default()
+        };
+        let sections = live_state_sections(Some(&live), &rows, &mine);
+        let text = sections
+            .iter()
+            .map(|section| format!("{}: {}", section.label, section.lines.join("\n")))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for clause in [
+            "live workers: Busytools/forge/builder [idle] - message it with `agents__send_message`",
+            "live crons: each fires on its own",
+            "0f3c (owner lead), next 2026-11-24T09:00:00Z",
+            "open board rows: yours to continue; an unowned pending row takes `tasks__claim`",
+            "the handoff cut [in progress], owner Busytools/forge/handoff-cut - yours to continue",
+            "the auth fix [in progress], owner Busytools/forge/builder - held by its owner",
+            "the blocked row [waiting], owner Busytools/forge/handoff-cut - yours - waiting on \
+             the user's decision",
+            "the reserved row [pending], owner unowned - reserved for you",
+            "the unowned cut [in progress], owner unowned - nobody holds it - take it with \
+             `tasks__update`",
+        ] {
+            assert!(text.contains(clause), "the live state drops '{clause}': {text}");
+        }
+        assert!(
+            !text.contains("the landed row"),
+            "a completed row is not open work to pick up: {text}",
+        );
+
+        let empty = live_state_sections(Some(&LiveState::default()), &[], &mine);
+        let empty_text =
+            empty.iter().map(|section| section.lines.join("\n")).collect::<Vec<_>>().join("\n");
+        for idle in ["none live", "none scheduled", "none open"] {
+            assert!(empty_text.contains(idle), "an empty project states '{idle}': {empty_text}");
+        }
+    }
+
+    /// **A big project's brief stays readable.** The worker, cron and open
+    /// row lines are capped, and the cut is stated in the singular when it
+    /// cuts one.
+    #[test]
+    fn the_live_state_sections_cap_the_workers_crons_and_open_rows() {
+        let seat = SessionSlot::worker("Busytools", "forge", "handoff-cut");
+        let live = LiveState {
+            workers: (0..21).map(|at| format!("worker {at}")).collect(),
+            crons: (0..21).map(|at| format!("cron {at}")).collect(),
+            ..LiveState::default()
+        };
+        let rows: Vec<Task> = (0..21).map(|at| task(&format!("row {at}"), None, None)).collect();
+        let sections = live_state_sections(Some(&live), &rows, &seat);
+        let workers = &sections[0];
+        assert_eq!(workers.lines.len(), LIVE_STATE_CAP + 1, "20 lines and the cut");
+        assert_eq!(workers.lines.last().unwrap(), "and 1 more live worker");
+        let crons = &sections[1];
+        assert_eq!(crons.lines.len(), LIVE_STATE_CAP + 2, "the truth, 20 lines and the cut");
+        assert_eq!(crons.lines.first().unwrap(), "each fires on its own");
+        assert_eq!(crons.lines.last().unwrap(), "and 1 more live cron");
+        let board = &sections[2];
+        assert_eq!(board.lines.len(), LIVE_STATE_CAP + 2, "the truth, 20 lines and the cut");
+        assert_eq!(board.lines.last().unwrap(), "and 1 more open row");
+
+        // The plural branch states the count against the plural noun.
+        let live = LiveState {
+            workers: (0..22).map(|at| format!("worker {at}")).collect(),
+            ..LiveState::default()
+        };
+        let sections = live_state_sections(Some(&live), &[], &seat);
+        assert_eq!(sections[0].lines.last().unwrap(), "and 2 more live workers");
+    }
+
+    /// **A worker's line carries its state and the door that state takes.**
+    /// A live worker takes a message; a failed one carries its diagnostic and
+    /// the spawn that resumes it; a restarting one names its heal. The line
+    /// never puts the Rust variant's `Debug` name in the brief.
+    #[test]
+    fn a_worker_line_carries_its_status_and_the_door_that_state_takes() {
+        let worker = |status: WorkerLiveness, diagnostic: Option<&str>, activity| WorkerStatus {
+            label: "builder".to_owned(),
+            charter: "builds".to_owned(),
+            status,
+            session_id: "s".to_owned(),
+            slot: SessionSlot::worker("Busytools", "forge", "builder"),
+            spawned_at: SystemTime::UNIX_EPOCH,
+            spawned_by: SessionSlot::lead("Busytools", "forge"),
+            diagnostic: diagnostic.map(str::to_owned),
+            heal_attempt: None,
+            heal_next_at: None,
+            activity,
+        };
+
+        let live = worker_live_line(&worker(
+            WorkerLiveness::Running,
+            None,
+            Some(SessionLifecycleState::Idle),
+        ));
+        assert!(live.contains("Busytools/forge/builder [idle]"), "{live}");
+        assert!(live.contains("`agents__send_message`"), "{live}");
+        assert!(!live.contains("Running"), "the Rust variant name is not brief text: {live}");
+
+        let spawning = worker_live_line(&worker(
+            WorkerLiveness::Spawning,
+            None,
+            Some(SessionLifecycleState::Spawning),
+        ));
+        assert!(spawning.contains("Busytools/forge/builder [spawning]"), "{spawning}");
+        assert!(spawning.contains("`agents__send_message`"), "{spawning}");
+
+        let failed =
+            worker_live_line(&worker(WorkerLiveness::Failed, Some("No conversation found"), None));
+        assert!(failed.contains("No conversation found"), "{failed}");
+        assert!(failed.contains("the lead spawns it again"), "{failed}");
+        assert!(failed.contains("`agents__spawn`"), "{failed}");
+        assert!(
+            failed.contains("`resume_session: true`"),
+            "a same-label spawn without it starts fresh and loses the transcript: {failed}",
+        );
+        assert!(failed.contains("reusing the charter"), "{failed}");
+
+        // A live spawn whose activity has died takes the spawn door, not the
+        // message door: the registry's status is the spawn outcome and does
+        // not move after the worker connects.
+        let died_after_connect = worker_live_line(&worker(
+            WorkerLiveness::Running,
+            Some("No conversation found"),
+            Some(SessionLifecycleState::Failed),
+        ));
+        assert!(died_after_connect.contains("the lead spawns it again"), "{died_after_connect}");
+        assert!(!died_after_connect.contains("`agents__send_message`"), "{died_after_connect}");
+
+        let restarting = worker_live_line(&worker(WorkerLiveness::Restarting, None, None));
+        assert!(restarting.contains("heal"), "{restarting}");
+        assert!(!restarting.contains("`agents__send_message`"), "{restarting}");
+
+        let healed = worker_live_line(&worker(
+            WorkerLiveness::Running,
+            None,
+            Some(SessionLifecycleState::Restarting),
+        ));
+        assert!(healed.contains("heal"), "{healed}");
+        assert!(!healed.contains("`agents__send_message`"), "{healed}");
+    }
+
+    /// **A failed load is not an empty project.** A cron or board read that
+    /// did not happen says so instead of "none scheduled" or "none open".
+    #[test]
+    fn a_failed_load_is_stated_as_not_read() {
+        let seat = SessionSlot::worker("Busytools", "forge", "handoff-cut");
+        let live =
+            LiveState { crons_unreadable: true, board_unreadable: true, ..LiveState::default() };
+        let sections = live_state_sections(Some(&live), &[], &seat);
+        let text =
+            sections.iter().map(|section| section.lines.join("\n")).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("not read"), "the failed load is stated: {text}");
+        assert!(
+            !text.contains("none scheduled") && !text.contains("none open"),
+            "a failed load is not 'nothing there': {text}",
+        );
+    }
+
+    /// **The production read carries the failed-load flag.** A boot whose
+    /// board read failed leaves the in-memory set empty while rows are on
+    /// disk; the section must say "not read" rather than "none open".
+    #[test]
+    fn a_failed_board_load_reaches_the_live_state_as_not_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.seed_test_project("forge", "/tmp/handoff-failed-load");
+        workspace.tasks_load_failed.store(true, std::sync::atomic::Ordering::Relaxed);
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let live = workspace.project_live_state(&slot).expect("the seeded project resolves");
+        assert!(live.board_unreadable, "the failed board load is carried into the live state");
+        let sections = live_state_sections(Some(&live), &[], &slot);
+        let rows = sections
+            .iter()
+            .find(|section| section.label == "open board rows")
+            .expect("the board rows are a section");
+        assert!(
+            rows.lines.iter().any(|line| line.contains("not read")),
+            "the failed board read is stated: {:?}",
+            rows.lines,
+        );
+        assert!(
+            !rows.lines.iter().any(|line| line.contains("none open")),
+            "a failed read is not 'nothing open': {:?}",
+            rows.lines,
+        );
+
+        // The seat's own board section reads the same flag: it must not claim
+        // "no rows owned" when the board it would read was never loaded.
+        let truth = assemble(&seat(), &[], &HandoffGitState::default(), &[], true, &[], Vec::new());
+        let own = truth
+            .sections
+            .iter()
+            .find(|section| section.label == "board")
+            .expect("the seat's board is a section");
+        assert!(
+            own.lines.iter().any(|line| line.contains("not read")),
+            "the seat's own board states the failed read: {:?}",
+            own.lines,
+        );
+        assert!(
+            !own.lines.iter().any(|line| line.contains("no rows owned")),
+            "a failed read is not 'no rows owned': {:?}",
+            own.lines,
+        );
+    }
+
+    /// **An unread registry is not an idle project.** When the workspace
+    /// cannot reach the workers or the crons, the section names the tools
+    /// that answer rather than claiming nothing is running. The board it was
+    /// handed is still rendered, because the caller read it.
+    #[test]
+    fn a_live_state_that_could_not_be_read_names_the_tools_instead_of_claiming_idle() {
+        let seat = SessionSlot::worker("Busytools", "forge", "handoff-cut");
+        let sections = live_state_sections(None, &[], &seat);
+        let text = sections
+            .iter()
+            .map(|section| format!("{}: {}", section.label, section.lines.join("\n")))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for tool in ["`agents__list`", "`cron__list`"] {
+            assert!(text.contains(tool), "the section names {tool}: {text}");
+        }
+        assert!(text.contains("not read"), "the section says the read did not happen: {text}");
+        assert!(
+            !text.contains("none live") && !text.contains("none scheduled"),
+            "an unread registry is not 'nothing running': {text}",
+        );
+        assert!(
+            text.contains("open board rows: none open"),
+            "the board the caller read is still rendered: {text}",
+        );
     }
 
     /// The cycle counts one request per assistant row that has a usage
@@ -2823,7 +3366,7 @@ fix the parser, then the client row.";
             transcript_path: &transcript_path,
             role: Role::Worker { charter_opening: None },
         };
-        let ground = ground_truth(dir.path(), &seat, &[], Vec::new()).await;
+        let ground = ground_truth(dir.path(), &seat, &[], false, Vec::new()).await;
         assert_eq!(ground.sections[0].label, "note", "the failure leads the brief");
         assert!(
             ground.sections[0].lines[0].contains("could not be read"),
@@ -2879,9 +3422,9 @@ fix the parser, then the client row.";
         let prompt = judgment_prompt();
         assert!(
             prompt.contains(
-                "memory first, then close out what is running, then call `agents__handoff`"
+                "memory first, then hand over what is running, then call `agents__handoff`"
             ),
-            "the order is stated: memory, close out, exit",
+            "the order is stated: memory, hand over, exit",
         );
         assert!(
             prompt.find("Invoke the handoff skill").expect("the skill is named")
@@ -2911,6 +3454,14 @@ fix the parser, then the client row.";
             "the row, PR, branch or session",
             "what you tried that failed",
             "the exact next action",
+            "It must also carry the live state this session started",
+            "every subagent by task and transcript",
+            "every running background command or monitor by command and output path",
+            "every worktree this session created by path and branch",
+            "each with the door that continues or restarts it",
+            "PART 1 carries the project's own state",
+            "the other live workers, the live crons and the open board rows, capped",
+            "so point at it rather than repeating it",
             "Point at what you recorded instead of retelling it",
             "the memory files by name",
             "Never write a key, token, password or personal data",
@@ -2958,12 +3509,65 @@ fix the parser, then the client row.";
             ),
             ("Redact sensitive information (API keys, passwords, PII).", "redaction"),
             ("SHIPPED / IN FLIGHT / BLOCKED", "the index token"),
-            ("## Forge: close out and exit", "the forge addition"),
-            ("record in memory what it is and how to resume it", "the close-out step"),
+            ("## Forge: hand over and exit", "the forge addition"),
+            ("Capture the live state", "the live state is captured"),
+            (
+                "list what this session started and put each in the note with its id",
+                "the note carries what the session started",
+            ),
+            ("every other live worker, from `agents__list`, by label and slot", "workers"),
+            ("a live worker takes `agents__send_message`", "a worker's resume"),
+            (
+                "a failed one is the lead's to spawn again with `agents__spawn` and \
+                 `resume_session: true`, reusing the charter `agents__list` reports",
+                "a failed worker's resume",
+            ),
+            (
+                "PART 1 carries the live workers, so point at it rather than repeating them",
+                "the workers are PART 1's",
+            ),
+            ("a restarting one is already being healed", "a restarting worker's heal"),
+            (
+                "every subagent this session dispatched, by its task and where its transcript lives",
+                "subagents",
+            ),
+            ("a subagent cannot be resumed", "a subagent's resume"),
+            (
+                "every running background command or monitor, by the command and where its \
+                 output goes",
+                "background commands",
+            ),
+            ("every live cron, from `cron__list`, by id and next fire", "crons"),
+            (
+                "PART 1 carries the live crons, so point at it rather than repeating them",
+                "the crons are PART 1's",
+            ),
+            (
+                "every open board row this session owns or is still running, from `tasks__list`, \
+                 by id and owner",
+                "board rows",
+            ),
+            ("a reserved row is the user's pick", "a reserved row's door"),
+            ("a waiting one names what it waits on", "a waiting row's kind"),
+            ("an unowned pending row takes `tasks__claim`", "a pending row's claim door"),
+            (
+                "an unowned row past pending is taken with `tasks__update`",
+                "an unowned moving row's door",
+            ),
+            (
+                "every worktree this session created, from `git worktree list`, by path and branch",
+                "worktrees",
+            ),
+            (
+                "**Durable state hands over; the session's own children stop.**",
+                "the split between durable state and the session's children",
+            ),
+            ("Verify before you wait", "the successor checks liveness"),
+            ("any worker PART 1 names", "the liveness check reads PART 1"),
             ("Leave nothing unfinished unrecorded", "unfinished work is named, not dropped"),
             ("pass the same text to `agents__handoff` as `brief`", "the exit call"),
             ("there are no headings to fill in", "forge prescribes no headings"),
-            ("Memory first, then close out what is running, then the note.", "the order"),
+            ("Memory first, then hand over what is running, then the note.", "the order"),
         ] {
             let clause = clause.split_whitespace().collect::<Vec<_>>().join(" ");
             assert!(flat.contains(&clause), "the shipped skill drops '{clause}' ({why})");
@@ -2971,6 +3575,31 @@ fix the parser, then the client row.";
         for heading in ["Where it stood", "Pointers", "Done means"] {
             assert!(!flat.contains(heading), "the shipped skill prescribes '{heading}' again");
         }
+    }
+
+    /// **The old wording stopped the work on the way out.** A handoff is a
+    /// continuation: the live state is recorded and handed over, never killed
+    /// so the successor has to restart it.
+    #[test]
+    fn the_shipped_skill_hands_the_live_state_over_instead_of_stopping_it() {
+        let flat = SKILL.split_whitespace().collect::<Vec<_>>().join(" ");
+        for gone in [
+            "then stop it",
+            "Close out what is running",
+            "close out what is running",
+            "must not outlive it",
+            "Hand over, do not stop",
+            "do not kill it on the way out",
+        ] {
+            assert!(
+                !flat.contains(gone),
+                "the skill still tells the session to stop the work: '{gone}'",
+            );
+        }
+        assert!(
+            flat.contains("**Durable state hands over; the session's own children stop.**"),
+            "the skill splits what survives from what the swap stops",
+        );
     }
 
     /// `is_machine_prompt` recognizes forge's own turn by this exact prefix;
@@ -3452,7 +4081,7 @@ fix the parser, then the client row.";
             transcript_path: &transcript,
             role: Role::Worker { charter_opening: None },
         };
-        let ground = ground_truth(config, &seat, &[], Vec::new()).await;
+        let ground = ground_truth(config, &seat, &[], false, Vec::new()).await;
         let files = ground.sections.iter().find(|section| section.label == "files").expect("files");
         let changed =
             files.lines.iter().find(|line| line.starts_with("changed:")).expect("changed");
