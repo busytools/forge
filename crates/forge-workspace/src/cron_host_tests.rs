@@ -2098,7 +2098,7 @@ provider = "anthropic"
         let live = ws
             .project_live_state(&SessionSlot::lead("TestOrg", "forge"))
             .expect("the seeded project resolves");
-        assert!(live.crons_unreadable, "the failed cron read is carried into the live state",);
+        assert!(live.crons_unreadable, "the failed cron read is carried into the live state");
     }
 
     /// The board's failing arm: the store opens, but its task read fails.
@@ -2131,11 +2131,11 @@ provider = "anthropic"
 
         let ws = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("workspace boots"));
         assert!(ws.db.lock().is_some(), "the store opened; only its task read fails");
-        assert!(ws.durable_tasks_unavailable(), "a failed task read marks the board unavailable",);
+        assert!(ws.durable_tasks_unavailable(), "a failed task read marks the board unavailable");
         let live = ws
             .project_live_state(&SessionSlot::lead("TestOrg", "forge"))
             .expect("the seeded project resolves");
-        assert!(live.board_unreadable, "the failed task read is carried into the live state",);
+        assert!(live.board_unreadable, "the failed task read is carried into the live state");
     }
 
     /// The negative control for the refusals above: a healthy boot opens

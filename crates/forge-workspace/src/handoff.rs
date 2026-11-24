@@ -2540,7 +2540,7 @@ mod tests {
         let empty_text =
             empty.iter().map(|section| section.lines.join("\n")).collect::<Vec<_>>().join("\n");
         for idle in ["none live", "none scheduled", "none open"] {
-            assert!(empty_text.contains(idle), "an empty project states '{idle}': {empty_text}",);
+            assert!(empty_text.contains(idle), "an empty project states '{idle}': {empty_text}");
         }
     }
 
