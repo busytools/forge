@@ -38,18 +38,24 @@ pub struct ServerConfig {
     /// turns of a large conversation are megabytes: seconds over a network,
     /// from a frame a client spends milliseconds on locally. The newest
     /// turns are kept while they fit and the rest is paged through `more` as
-    /// it always was, so nothing is dropped and the order does not move.
+    /// it always was, so nothing is dropped and the order does not move. A
+    /// turn that alone is over the budget is served in pages of its own
+    /// rather than whole, so one long agentic turn cannot spend the reader's
+    /// fold or cut the history above it. The bytes counted are the bytes
+    /// SERVED: a turn's repeated progress and counter frames are pruned to
+    /// one copy each before the cut.
     /// `0` serves the page the turn count asks for, for a reader who would
     /// rather have the whole window in one frame.
     pub first_frame_cap_kb: u64,
     /// How many bytes of conversation a `more` page carries, in KB.
     ///
     /// **A page past the first frame is unbounded by its turn count alone**:
-    /// the page contract is whole turns, so one large turn crossed whole and
-    /// a `more` answer could be tens of megabytes. The newest whole turns are
-    /// kept while they fit, the newest rides even when it alone is over, and
-    /// the cursor names the history above the page as it always did - nothing
-    /// is dropped and the walk above it still reaches every turn.
+    /// one large turn could cross a `more` answer as tens of megabytes. The
+    /// newest turns are kept while they fit; a turn over the budget is served
+    /// in pages of its own, its newest frames first, and the cursor names the
+    /// row above the page - nothing is dropped and the walk above it still
+    /// reaches every row. The bytes counted are the bytes served, after the
+    /// repeated progress frames are pruned.
     /// `0` serves the page the turn count asks for.
     pub more_page_cap_kb: u64,
     /// Extra browser origins allowed to open the socket, beside the shell's

@@ -417,10 +417,10 @@ fills the room or ends.
 seat keeps whatever the reader pulls, and the server answers every page below
 its own window from the transcript under the same `[server] more_page_cap_kb`
 byte budget as any other `more` page, so a page is never a whole transcript
-read. One turn over the budget still rides whole, so a long walk can still
-hold more than 8 MiB: when the reader comes back to the latest, the oldest
-pages are dropped until the held set fits 8 MiB, and a seat the reader has
-left settles on each page that lands while it is away. Dropping is by whole
+read. A turn over the budget arrives in pages. A long walk
+can still hold more than 8 MiB, and when the reader comes back to the latest,
+the oldest pages are dropped until the held set fits 8 MiB; a seat the reader
+has left settles on each page that lands while it is away. Dropping is by whole
 page and never under the row at the column's top edge: a page's rows share
 the cursor that re-fetches it, so a row cut from inside one would be skipped.
 The newest page
