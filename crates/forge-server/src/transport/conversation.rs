@@ -681,7 +681,7 @@ pub struct Conversations {
     touch_seq: std::sync::atomic::AtomicU64,
     /// Drops a seat's ring when its held copy is evicted, so the two go
     /// together. `None` in tests and wherever the ring lives elsewhere.
-    ring_evictor: Option<Arc<dyn forge_primitives::ConversationEvictor>>,
+    ring_evictor: Option<Arc<dyn forge_workspace::ConversationEvictor>>,
     /// Fires when a seat's copy is first held or reseeded, so a read waiting
     /// for it to become current knows it moved.
     seeded: tokio::sync::Notify,
@@ -746,7 +746,7 @@ impl Conversations {
     /// **`0` means no total budget**, the same as the shipped key's opt-out.
     pub fn with_budget(
         budget_bytes: usize,
-        evictor: Option<Arc<dyn forge_primitives::ConversationEvictor>>,
+        evictor: Option<Arc<dyn forge_workspace::ConversationEvictor>>,
     ) -> Self {
         Self { budget_bytes, ring_evictor: evictor, ..Self::default() }
     }
@@ -1165,7 +1165,8 @@ impl Conversations {
 
 #[cfg(test)]
 mod tests {
-    use forge_primitives::{ContentBlock, ConversationEvictor, SessionId};
+    use forge_primitives::{ContentBlock, SessionId};
+    use forge_workspace::ConversationEvictor;
     use forge_workspace::conversation_window::{CONVERSATION_CAP, CONVERSATION_SLACK};
 
     use super::*;
@@ -2293,7 +2294,7 @@ mod tests {
         }
     }
 
-    impl forge_primitives::ConversationEvictor for RecordingEvictor {
+    impl ConversationEvictor for RecordingEvictor {
         fn evict_ring(&self, slot: &SessionSlot) {
             self.evicted.lock().unwrap_or_else(PoisonError::into_inner).push(slot.clone());
             self.ring_bytes.lock().unwrap_or_else(PoisonError::into_inner).remove(slot);
@@ -2301,6 +2302,15 @@ mod tests {
 
         fn total_ring_bytes(&self) -> usize {
             self.ring_bytes.lock().unwrap_or_else(PoisonError::into_inner).values().sum()
+        }
+
+        fn ring_bytes(&self, slot: &SessionSlot) -> usize {
+            self.ring_bytes
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(slot)
+                .copied()
+                .unwrap_or(0)
         }
     }
 
@@ -2350,7 +2360,7 @@ mod tests {
         let no_ring_evictor = Arc::new(RecordingEvictor::default());
         let no_ring = Conversations::with_budget(
             budget,
-            Some(Arc::clone(&no_ring_evictor) as Arc<dyn forge_primitives::ConversationEvictor>),
+            Some(Arc::clone(&no_ring_evictor) as Arc<dyn forge_workspace::ConversationEvictor>),
         );
         no_ring.apply(&a_connect_for(&seat_a, history(40)), None);
         no_ring.apply(&a_connect_for(&seat_b, history(40)), None);
@@ -2372,7 +2382,7 @@ mod tests {
         evictor.set_ring_bytes(&seat_b, ring_weight);
         let held = Conversations::with_budget(
             budget,
-            Some(Arc::clone(&evictor) as Arc<dyn forge_primitives::ConversationEvictor>),
+            Some(Arc::clone(&evictor) as Arc<dyn forge_workspace::ConversationEvictor>),
         );
         held.apply(&a_connect_for(&seat_a, history(40)), None);
         held.apply(&a_connect_for(&seat_b, history(40)), None);

@@ -127,27 +127,6 @@ impl Default for ServerConfig {
     }
 }
 
-/// Drops a seat's retained ring when the transport evicts its conversation.
-///
-/// **The two are one seat's retained memory, so they go together.** A seat's
-/// held copy and its repair ring both hold frames for the same seat, and a
-/// budget that drops one without the other leaves the seat half-evicted: a
-/// cold read that finds no held copy still finds a ring, and a repair that
-/// finds no ring still finds a held copy. The transport owns the budget and
-/// the eviction; the workspace owns the ring, so it hands this seam down.
-pub trait ConversationEvictor: Send + Sync {
-    /// Drop whatever retained memory this seat's ring holds.
-    fn evict_ring(&self, slot: &crate::SessionSlot);
-
-    /// What all the rings weigh in total, for the budget's accounting.
-    ///
-    /// **The budget covers both maps, not just the held copies.** A seat's
-    /// held conversation and its frame ring are one seat's retained memory;
-    /// counting only the held copy would let the rings grow past the budget
-    /// while the held copies stay under it.
-    fn total_ring_bytes(&self) -> usize;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

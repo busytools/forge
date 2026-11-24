@@ -1921,13 +1921,17 @@ struct WorkspaceRingEvictor {
     update_tx: UpdateFanout,
 }
 
-impl forge_primitives::ConversationEvictor for WorkspaceRingEvictor {
+impl crate::ConversationEvictor for WorkspaceRingEvictor {
     fn evict_ring(&self, slot: &forge_primitives::SessionSlot) {
         self.update_tx.evict_ring(slot);
     }
 
     fn total_ring_bytes(&self) -> usize {
         self.update_tx.total_ring_bytes()
+    }
+
+    fn ring_bytes(&self, slot: &forge_primitives::SessionSlot) -> usize {
+        self.update_tx.ring_bytes(slot)
     }
 }
 
@@ -2676,7 +2680,7 @@ impl Workspace {
     ///
     /// The transport owns the budget and the eviction; the workspace owns the
     /// ring. This seam hands the ring's drop across so the two go together.
-    pub fn conversation_evictor(&self) -> Arc<dyn forge_primitives::ConversationEvictor> {
+    pub fn conversation_evictor(&self) -> Arc<dyn crate::ConversationEvictor> {
         Arc::new(WorkspaceRingEvictor { update_tx: self.update_tx.clone() })
     }
 

@@ -28,6 +28,36 @@ pub struct SeatUpdate {
     pub update: Arc<SessionUpdate>,
 }
 
+/// Drops a seat's retained ring when the transport evicts its conversation.
+///
+/// **The two are one seat's retained memory, so they go together.** A seat's
+/// held copy and its repair ring both hold frames for the same seat, and a
+/// budget that drops one without the other leaves the seat half-evicted: a
+/// cold read that finds no held copy still finds a ring, and a repair that
+/// finds no ring still finds a held copy. The transport owns the budget and
+/// the eviction; the workspace owns the ring, so the seam lives beside the
+/// ring it drops.
+pub trait ConversationEvictor: Send + Sync {
+    /// Drop whatever retained memory this seat's ring holds.
+    fn evict_ring(&self, slot: &SessionSlot);
+
+    /// What all the rings weigh in total, for the budget's accounting.
+    ///
+    /// **The budget covers both maps, not just the held copies.** A seat's
+    /// held conversation and its frame ring are one seat's retained memory;
+    /// counting only the held copy would let the rings grow past the budget
+    /// while the held copies stay under it.
+    fn total_ring_bytes(&self) -> usize;
+
+    /// What this seat's ring weighs, `0` for a seat with none.
+    ///
+    /// **What tells a victim from a byte count.** The total says the budget is
+    /// over; this says which seats the overrun is in, so the eviction can drop
+    /// the rings of seats that hold no copy - bytes the held map cannot trade
+    /// for.
+    fn ring_bytes(&self, slot: &SessionSlot) -> usize;
+}
+
 /// How many frames one seat's stream keeps for repair.
 ///
 /// **Sized from the window a client is served from**, like the conversation
@@ -448,8 +478,8 @@ impl UpdateFanout {
         self.shared.lock().ring_cap_bytes = bytes;
     }
 
-    /// What `slot`'s ring weighs, for the tests that pin its ceiling.
-    #[cfg(test)]
+    /// What `slot`'s ring weighs, for the budget's accounting and the tests
+    /// that pin its ceiling.
     pub(crate) fn ring_bytes(&self, slot: &SessionSlot) -> usize {
         self.shared.lock().ring_bytes.get(slot).copied().unwrap_or(0)
     }
