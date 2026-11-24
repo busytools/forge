@@ -228,6 +228,7 @@ fn edit_spec(path: &str) -> EditSpec {
         | "server.first_frame_cap_kb"
         | "server.more_page_cap_kb"
         | "server.tool_record_cap_kb"
+        | "server.conversation_memory_budget_bytes"
         | "browser.fps"
         | "browser.quality"
         | "browser.idle_minutes"
@@ -1012,6 +1013,17 @@ const SERVER_KEYS: &[ConfigKey] = &[
         area: "server",
         class: EffectClass::Live,
         rows: |config| vec![number("server.tool_record_cap_kb", config.server.tool_record_cap_kb)],
+    },
+    ConfigKey {
+        path: "server.conversation_memory_budget_bytes",
+        area: "server",
+        class: EffectClass::Restart,
+        rows: |config| {
+            vec![number(
+                "server.conversation_memory_budget_bytes",
+                config.server.conversation_memory_budget_bytes,
+            )]
+        },
     },
     ConfigKey {
         path: "server.startup_gate",
@@ -2008,6 +2020,7 @@ startup_gate = "/opt/forge/gate.sh"
 first_frame_cap_kb = 64
 more_page_cap_kb = 64
 tool_record_cap_kb = 8
+conversation_memory_budget_bytes = 2147483648
 allowed_origins = ["http://localhost:8080"]
 
 [client]
