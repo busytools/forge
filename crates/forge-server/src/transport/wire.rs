@@ -2118,6 +2118,7 @@ pub async fn conversation_for(
     state: &TransportState,
     slot: &SessionSlot,
     timings: &mut OpenTimings,
+    cover: u64,
 ) -> Option<Arc<Held>> {
     // **A copy of another occupant is no copy.** Answering with it would pair
     // the new epoch's count with rows it never wrote.
@@ -2134,7 +2135,7 @@ pub async fn conversation_for(
     // **The file seeds only a seat with NO copy.** `insert` keeps what is
     // there, so a copy that appeared while the file was read is the stream's
     // and must not be overwritten.
-    if let Some(held) = seed_from_transcript(state, slot, timings).await {
+    if let Some(held) = seed_from_transcript(state, slot, timings, cover).await {
         // **The seed must be the seat's copy too.** Its occupant is the
         // read's own resolution, which can lag a header that already moved
         // on: that copy would answer for the run it did not read.
@@ -2207,6 +2208,7 @@ async fn seed_from_transcript(
     state: &TransportState,
     slot: &SessionSlot,
     timings: &mut OpenTimings,
+    cover: u64,
 ) -> Option<Arc<Held>> {
     // A test can hold the seed here, between the cache check that found no
     // copy and the read: a `Connected` that lands while this is held is the
@@ -2234,11 +2236,25 @@ async fn seed_from_transcript(
     // already names the new run.
     let occupant = read.session_id.map(forge_primitives::SessionId::new);
     conversation.set_occupant(occupant.clone());
+    // **The seed is a copy of the rows up to `cover`, and it says so.** Without
+    // the number, the answer would carry the empty copy's own coverage (1) and
+    // every later fill would apply frames the seed already holds. The mark and
+    // the insert happen under the seat's fill lock, so a catch-up on this seat
+    // either finds no copy and takes the seed, or waits and then finds the
+    // watermark it must fill above.
+    conversation.set_watermark(cover);
+    let fill = state.conversations.fill_lock(slot);
+    let _filling = fill.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     // **A copy the stream inserted while the file was read is the live one,
     // and it stays.** The seat held none when this read started, so a copy
     // that appeared since came from the stream, which carries frames a
     // transcript does not.
-    Some(state.conversations.insert(slot, conversation))
+    if let Some(held) = state.conversations.get(slot) {
+        return Some(held);
+    }
+    let held = state.conversations.insert(slot, conversation);
+    state.conversations.advance_consumed(slot, cover);
+    Some(held)
 }
 
 /// How many of a conversation's newest turns a subscribe carries.
@@ -2620,7 +2636,14 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> Resu
     if want == 0 || state.conversations.consumed_for(slot) >= want {
         return Ok(());
     }
-    if state.conversations.await_consumed(slot, want, CATCH_UP_WAIT).await {
+    // **A seat with no copy is not a fold lag.** The fold marks a watermark
+    // only where there is a copy to take it, so waiting on the fold would burn
+    // the catch-up wait on every read of an evicted seat and still find the
+    // gap. The waits run only where a copy can arrive.
+    let occupant = state.surface.header(slot).session_id;
+    let has_copy =
+        state.conversations.get(slot).is_some_and(|held| held.holds_occupant(occupant.as_ref()));
+    if has_copy && state.conversations.await_consumed(slot, want, CATCH_UP_WAIT).await {
         return Ok(());
     }
     // **A seal's rows the fold has not applied cannot be stood in for by the
@@ -2629,7 +2652,8 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> Resu
     // them. Waited on here, before the fill lock, for the fold's own mark:
     // applying the seal resets it to zero and the frames after it climb back
     // to `want`, so reaching `want` means the reseed is in place. The wait is
-    // what keeps a transient lag from failing the read.
+    // what keeps a transient lag from failing the read. It only applies where
+    // no current copy exists, which is what `awaits_seal_history` reads.
     if awaits_seal_history(state, slot)
         && state.conversations.await_consumed(slot, want, SEAL_WAIT).await
     {
@@ -2644,7 +2668,29 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> Resu
     if state.conversations.consumed_for(slot) >= want {
         return Ok(());
     }
-    let from = state.conversations.consumed_for(slot).saturating_add(1);
+    // **A copy that exists is behind by the stretch above its watermark; a
+    // seat with no copy is rebuilt from its window's own front.** The front is
+    // a window cut, and below it the transcript answers - the same rule the
+    // client's range repair follows - so a front past the epoch's start is not
+    // a hole. With nothing in the window there is nothing to rebuild from and
+    // the read seeds from the transcript instead.
+    let occupant = state.surface.header(slot).session_id;
+    let existing =
+        state.conversations.get(slot).filter(|held| held.holds_occupant(occupant.as_ref()));
+    let from = match (&existing, state.conversations.was_evicted(slot)) {
+        // **A dropped seat rebuilds from its window's own front.** The rows
+        // below it are old, and the transcript answers for them; the front is
+        // a window cut, not a hole. With nothing left in the window there is
+        // nothing to rebuild from, and the read seeds from the transcript.
+        (None, true) => match state.surface.seat_oldest_kept_seq(slot) {
+            Some(front) if front <= want => front,
+            _ => return Ok(()),
+        },
+        // A copy that exists is behind by the stretch above its watermark, and
+        // a seat nothing has folded and with no drop behind it must reach back
+        // to its first frame: the window check below refuses it otherwise.
+        _ => state.conversations.consumed_for(slot).saturating_add(1),
+    };
     let frames = state.surface.seat_frames_between(slot, from, want);
     // **A stretch holding only a seal is not a stretch the copy is behind on.**
     // The frames that close an epoch are numbered but never ringed, so no
@@ -2681,10 +2727,7 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> Resu
     // the synthetic copy carries the header's own occupant (#2446). Refused
     // rather than synthesised; the fold's apply of the seal is what makes the
     // read answer.
-    let occupant = state.surface.header(slot).session_id;
-    let matching =
-        state.conversations.get(slot).is_some_and(|held| held.holds_occupant(occupant.as_ref()));
-    if !matching {
+    if existing.is_none() {
         if state.surface.seat_epoch_opened_with_rows(slot) {
             tracing::error!(
                 event_name = "seat_copy_awaits_seal",
@@ -2698,6 +2741,10 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> Resu
         }
         let mut conversation = crate::transport::conversation::Conversation::empty();
         conversation.set_occupant(occupant);
+        // **The count BEFORE the window's front.** The applies below count the
+        // window's own boundaries through `Conversation::push`, so seeding
+        // with the running total would count them twice.
+        conversation.set_compaction_count(state.surface.seat_compaction_count_before(slot, from));
         state.conversations.replace(slot, conversation);
     }
     for frame in &frames {
@@ -2779,6 +2826,10 @@ async fn session(
     // than skipping as already drawn. Read after the read, a frame minted in
     // between is in neither - a silently lost row on the reconnect path.
     let seq = surface.seat_next_seq(slot);
+    // **The budget is held off this seat while the read walks to its copy.**
+    // A catch-up can rebuild a copy the record is about to be built from, and
+    // an eviction landing between the two would drop what the read just built.
+    let _reading = state.conversations.reading(slot);
     // **And the copy has to have caught up to it.** The copy is filled by the
     // fold loop consuming the same stream in another task, so a frame minted
     // before the read can land after it: waited on briefly, and filled from
@@ -2800,7 +2851,7 @@ async fn session(
     // so the fold never runs on the reactor or under the lock. A seat with no
     // conversation is answered with the empty one.
     let at = std::time::Instant::now();
-    let conversation = conversation_for(state, slot, timings).await;
+    let conversation = conversation_for(state, slot, timings, seq.saturating_sub(1)).await;
     // **The slices are DISJOINT, and the seed is taken out of this total.**
     // The transcript read a cold seat pays is timed inside `conversation_for`,
     // so a total over the whole call would carry it twice: the sum the line's
@@ -7326,5 +7377,317 @@ mode = \"toggle\"
             .output()
             .expect("run git");
         assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    }
+
+    /// A transport over `fleet` whose conversation budget is `budget`.
+    fn a_budgeted_transport(
+        fleet: &crate::testing::Fleet,
+        budget: usize,
+    ) -> crate::transport::TransportState {
+        use crate::transport::{Heartbeat, TransportState, WorkCache};
+        TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::with_budget(
+                budget,
+                Some(fleet.workspace().conversation_evictor()),
+            )),
+            live: std::sync::Mutex::new(crate::live::Live::new()),
+            settings: crate::transport::settings_channel(),
+            browser_host: None,
+            heartbeat: Heartbeat::default(),
+        }
+    }
+
+    /// Drive one frame the way the socket's fold does: mint it on the fan-out
+    /// (which is what the ring and the seat's next number come from), fold it
+    /// into the copy, and mark what the fold consumed - only where a copy
+    /// exists to take the mark.
+    fn drive(
+        state: &crate::transport::TransportState,
+        fleet: &crate::testing::Fleet,
+        update: &forge_workspace::SessionUpdate,
+    ) {
+        let slot = update.slot().cloned();
+        let seq = slot.as_ref().map(|slot| state.surface.seat_next_seq(slot));
+        fleet.emit(update.clone());
+        state.conversations.apply(update, seq);
+        if let (Some(slot), Some(seq)) = (slot, seq)
+            && state.conversations.get(&slot).is_some()
+        {
+            state.conversations.consumed(&slot, seq);
+        }
+    }
+
+    /// Mint a frame on the fan-out and fold it, WITHOUT the mark a fold that
+    /// has not finished would leave: what a copy evicted mid-fold sees.
+    fn mint(
+        state: &crate::transport::TransportState,
+        fleet: &crate::testing::Fleet,
+        update: &forge_workspace::SessionUpdate,
+    ) {
+        let seq = update.slot().map(|slot| state.surface.seat_next_seq(slot));
+        fleet.emit(update.clone());
+        state.conversations.apply(update, seq);
+    }
+
+    /// A chat frame for `slot`.
+    fn a_chat(slot: &SessionSlot, msg: Message) -> forge_workspace::SessionUpdate {
+        forge_workspace::SessionUpdate::ChatAppended { key: slot.clone(), msg, source: None }
+    }
+
+    /// A connect for `slot` carrying `history`.
+    fn a_connect_for(slot: &SessionSlot, history: Vec<Message>) -> forge_workspace::SessionUpdate {
+        forge_workspace::SessionUpdate::Connected {
+            key: slot.clone(),
+            session_id: forge_primitives::SessionId::new("0f3a5c6d-7e8f-4a9b-8c0d-1e2f3a4b5c6d"),
+            cwd: "/tmp".to_owned(),
+            current_model: forge_primitives::runtime::CurrentModel {
+                requested_id: None,
+                resolved_id: "claude-opus-5".to_owned(),
+                display_name_short: "Opus".to_owned(),
+                display_name_long: "Opus 5".to_owned(),
+                catalog_id: None,
+                supports_effort: false,
+                supported_effort_levels: Vec::new(),
+                supports_auto_mode: None,
+                supports_adaptive_thinking: None,
+                is_authoritative: false,
+            },
+            available_models: Vec::new(),
+            mode: None,
+            history,
+            dropped: 0,
+            compaction_count: 0,
+        }
+    }
+
+    /// `turns` transcript rows, each a prompt whose words a page can name.
+    fn transcript_rows(turns: usize) -> Vec<String> {
+        (0..turns)
+            .map(|at| {
+                format!(
+                    "{{\"type\":\"user\",\"uuid\":\"u{at}\",\"session_id\":\"s1\",\
+                     \"message\":{{\"role\":\"user\",\"content\":\"turn {at}\"}}}}"
+                )
+            })
+            .collect()
+    }
+
+    /// The words one message carries.
+    fn text_of(message: &Message) -> String {
+        let Message::User { message, .. } = message else {
+            return String::new();
+        };
+        message
+            .content
+            .iter()
+            .find_map(|block| match block {
+                forge_primitives::ContentBlock::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// A fleet whose lead seat has a six-row transcript, the seat's copy held
+    /// from it, and a budget that the seat plus one more seat's copy exceeds
+    /// by a single byte.
+    fn an_evictable_seat() -> (
+        crate::testing::Fleet,
+        tempfile::TempDir,
+        crate::transport::TransportState,
+        SessionSlot,
+        SessionSlot,
+        Vec<Message>,
+    ) {
+        let dir = tempfile::tempdir().expect("a config dir of its own");
+        let fleet =
+            crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])]).expect("a fleet");
+        fleet.start("TestOrg", "proj").expect("a live lead session");
+        let seat = SessionSlot::lead("TestOrg", "proj");
+        let rows = transcript_rows(6);
+        let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
+        fleet.seed_transcript("TestOrg", "proj", "lead", &refs).expect("the session's transcript");
+
+        // Measure the transcript-backed copy, and the other seat's, so the
+        // budget is arithmetic: one byte under their sum.
+        let measuring = a_budgeted_transport(&fleet, usize::MAX);
+        fleet.hold_conversation(&measuring, "TestOrg", "proj", "lead").expect("the held window");
+        let weight = measuring.conversations.get(&seat).expect("held").bytes();
+        assert!(weight > 0, "the transcript's copy weighs something");
+        let filler: Vec<Message> = (0..6)
+            .map(|i| {
+                a_frame(&format!(
+                    "{{\"type\":\"user\",\"uuid\":\"f{i}\",\"session_id\":\"other\",\
+                     \"message\":{{\"role\":\"user\",\"content\":\"filler {i}\"}}}}"
+                ))
+            })
+            .collect();
+        let other_weight =
+            crate::transport::conversation::Conversation::new(filler.clone(), 0, 0).bytes();
+        let budget = weight + other_weight - 1;
+
+        let state = a_budgeted_transport(&fleet, budget);
+        fleet.hold_conversation(&state, "TestOrg", "proj", "lead").expect("the held window");
+        (fleet, dir, state, seat, SessionSlot::lead("TestOrg", "other"), filler)
+    }
+
+    /// **An evicted seat reopens through the read path.** The A finding: the
+    /// copy goes with the budget, and the next read must settle - catch_up
+    /// followed by the copy lookup - rather than refuse because the watermark
+    /// was left where the eviction found it.
+    #[tokio::test]
+    async fn an_evicted_seat_reopens_from_the_transcript_it_seeded_from() {
+        let (fleet, _dir, state, seat, other, filler) = an_evictable_seat();
+        // One frame minted against the copy but not yet marked, so the
+        // eviction leaves the watermark below the seat's number: the seed has
+        // to carry the gap forward or a later fill would refuse it.
+        mint(&state, &fleet, &a_chat(&seat, opens_turn_at(1)));
+        // The second seat's copy pushes the total over and the first goes.
+        drive(&state, &fleet, &a_connect_for(&other, filler));
+        assert!(state.conversations.get(&seat).is_none(), "the transcript-backed seat was evicted");
+        assert_eq!(state.conversations.consumed_for(&seat), 0, "the fold never marked the frame");
+
+        // Nothing was minted after the eviction, so the transcript seeds it.
+        let want = state.surface.seat_next_seq(&seat).saturating_sub(1);
+        assert!(want > 0, "the seat kept the number its stream reached");
+        super::catch_up(&state, &seat, want).await.expect("the read settles, not refuses");
+        let held = super::conversation_for(&state, &seat, &mut super::OpenTimings::default(), want)
+            .await
+            .expect("the seat serves a copy again");
+        let texts: Vec<String> = held.lock().messages().iter().map(text_of).collect();
+        assert_eq!(
+            texts,
+            (0..6).map(|i| format!("turn {i}")).collect::<Vec<_>>(),
+            "the transcript's own rows, in order",
+        );
+        assert_eq!(held.lock().watermark(), want, "the copy covers the number the answer carries");
+        assert_eq!(
+            state.conversations.consumed_for(&seat),
+            want,
+            "and a later fill does not apply the same rows again",
+        );
+    }
+
+    /// **A seat evicted while it is still producing reopens from its window.**
+    /// The other half of A: after the eviction the fold keeps seeing the
+    /// seat's frames with no copy to put them in, and the read rebuilds from
+    /// the ring's own front rather than refusing.
+    #[tokio::test]
+    async fn an_evicted_seat_that_keeps_producing_reopens_from_its_window() {
+        let (fleet, _dir, state, seat, other, filler) = an_evictable_seat();
+        mint(&state, &fleet, &a_chat(&seat, opens_turn_at(1)));
+        drive(&state, &fleet, &a_connect_for(&other, filler));
+        assert!(state.conversations.get(&seat).is_none(), "the transcript-backed seat was evicted");
+
+        // Minted AFTER the eviction: ringed, folded into nothing, unmarked.
+        drive(
+            &state,
+            &fleet,
+            &a_chat(
+                &seat,
+                a_frame(
+                    "{\"type\":\"user\",\"uuid\":\"after\",\"session_id\":\"s\",\
+                     \"message\":{\"role\":\"user\",\"content\":\
+                     [{\"type\":\"text\",\"text\":\"after the eviction\"}]}}",
+                ),
+            ),
+        );
+        let want = state.surface.seat_next_seq(&seat).saturating_sub(1);
+        assert_eq!(want, 2, "the seat minted two numbered frames");
+        super::catch_up(&state, &seat, want).await.expect("the read settles, not refuses");
+        let held = super::conversation_for(&state, &seat, &mut super::OpenTimings::default(), want)
+            .await
+            .expect("the seat serves a copy again");
+        let texts: Vec<String> = held.lock().messages().iter().map(text_of).collect();
+        assert_eq!(
+            texts,
+            vec!["after the eviction".to_owned()],
+            "the window's newest row is served"
+        );
+        assert_eq!(
+            held.lock().watermark(),
+            want,
+            "and the copy covers the number the answer carries",
+        );
+    }
+
+    /// A compaction boundary, as the CLI writes one.
+    fn a_compact_boundary() -> Message {
+        Message::CompactBoundary {
+            trigger: "auto".to_owned(),
+            pre_tokens: 10,
+            post_tokens: 4,
+            uuid: "c1".to_owned(),
+            session_id: "s".to_owned(),
+            metadata_extras: serde_json::Map::default(),
+            extras: serde_json::Map::default(),
+        }
+    }
+
+    /// **A rebuilt copy counts its boundaries once.** The fan-out's running
+    /// count already includes every boundary since the seal; the copy applies
+    /// the window's own boundaries as frames, so it must seed with the count
+    /// BEFORE the window's front or the header draws one too high.
+    #[tokio::test]
+    async fn a_rebuilt_seat_counts_its_compactions_once() {
+        let (fleet, _dir, state, seat, other, filler) = an_evictable_seat();
+        // One boundary folds into the held copy, then the budget drops it.
+        drive(&state, &fleet, &a_chat(&seat, a_compact_boundary()));
+        assert_eq!(state.surface.seat_compaction_count(&seat), 1, "the stream has compacted once");
+        drive(&state, &fleet, &a_connect_for(&other, filler));
+        assert!(state.conversations.get(&seat).is_none(), "the seat was evicted");
+
+        // A second boundary after the eviction: ringed, folded into nothing.
+        drive(&state, &fleet, &a_chat(&seat, a_compact_boundary()));
+        let want = state.surface.seat_next_seq(&seat).saturating_sub(1);
+        assert_eq!(state.surface.seat_compaction_count(&seat), 2, "and twice by the read");
+        super::catch_up(&state, &seat, want).await.expect("the read settles");
+        let held = super::conversation_for(&state, &seat, &mut super::OpenTimings::default(), want)
+            .await
+            .expect("the seat serves a copy again");
+        assert_eq!(
+            held.lock().compaction_count(),
+            state.surface.seat_compaction_count(&seat),
+            "the copy reports the stream's count, not one per applied boundary too many",
+        );
+    }
+
+    /// **The production switch reads the config.** `for_workspace` is the one
+    /// site that turns `conversation_memory_budget_bytes` into the transport's
+    /// budget and decides whether the ring evictor comes with it; a transport
+    /// a test builds by hand cannot see that site at all.
+    #[tokio::test]
+    async fn the_transport_carries_the_configured_budget_from_the_workspace() {
+        let dir = tempfile::tempdir().expect("a config dir of its own");
+        let fleet = crate::testing::Fleet::in_dir_with_server(
+            dir.path(),
+            &[("TestOrg", &["proj"])],
+            "[server]\nconversation_memory_budget_bytes = 536870912\n",
+        )
+        .expect("a fleet");
+        let state = crate::transport::TransportState::for_workspace(&fleet.workspace());
+        assert_eq!(
+            state.conversations.budget_bytes(),
+            536_870_912,
+            "the file's value reaches the transport",
+        );
+        assert!(state.conversations.has_ring_evictor(), "and a non-zero budget brings the evictor");
+    }
+
+    /// **Zero is the opt-out on the production path too**, not just in a
+    /// hand-built set: no total budget, and no ring evictor to apply one.
+    #[tokio::test]
+    async fn a_zero_budget_leaves_the_transport_unbounded() {
+        let dir = tempfile::tempdir().expect("a config dir of its own");
+        let fleet = crate::testing::Fleet::in_dir_with_server(
+            dir.path(),
+            &[("TestOrg", &["proj"])],
+            "[server]\nconversation_memory_budget_bytes = 0\n",
+        )
+        .expect("a fleet");
+        let state = crate::transport::TransportState::for_workspace(&fleet.workspace());
+        assert_eq!(state.conversations.budget_bytes(), 0, "zero means no total budget");
+        assert!(!state.conversations.has_ring_evictor(), "and nothing to evict with");
     }
 }

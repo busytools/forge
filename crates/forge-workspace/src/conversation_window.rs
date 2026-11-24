@@ -179,6 +179,11 @@ impl Window {
         self.messages.is_empty()
     }
 
+    /// The window's own weight, as the byte ceiling counts it.
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
     /// One frame the session emitted, and what the ceilings shed for it.
     ///
     /// **Before the push, so the drop pays for the room it makes.** After it,

@@ -6567,7 +6567,8 @@ async fn a_mismatched_copy_is_answered_by_the_reseed_that_lands_in_time() {
     fleet.seed_view_facts(&seat, ViewFacts { session_id: Some(new.clone()), ..Default::default() });
 
     let mut timings = OpenTimings::default();
-    let mut read = std::pin::pin!(wire::conversation_for(&state, &seat, &mut timings));
+    let cover = state.surface.seat_next_seq(&seat).saturating_sub(1);
+    let mut read = std::pin::pin!(wire::conversation_for(&state, &seat, &mut timings, cover));
     assert!(
         futures_util::poll!(read.as_mut()).is_pending(),
         "a copy of another occupant is waited for, not answered with",
@@ -6645,8 +6646,9 @@ async fn a_mismatched_copy_that_never_reseeds_is_not_served() {
     fleet.seed_view_facts(&seat, ViewFacts { session_id: Some(new), ..Default::default() });
 
     let mut timings = OpenTimings::default();
+    let cover = state.surface.seat_next_seq(&seat).saturating_sub(1);
     let answered =
-        tokio::time::timeout(SEED_WAIT, wire::conversation_for(&state, &seat, &mut timings))
+        tokio::time::timeout(SEED_WAIT, wire::conversation_for(&state, &seat, &mut timings, cover))
             .await
             .expect("the wait is bounded");
     assert!(answered.is_none(), "a copy that never turns current is not answered");

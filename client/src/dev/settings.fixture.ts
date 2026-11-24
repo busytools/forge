@@ -102,6 +102,15 @@ export const settingsWire: SettingsDocument = {
           NUMBER,
         ),
         key(
+          'server.conversation_memory_budget_bytes',
+          'restart',
+          { kind: 'number', text: '2147483648' },
+          ['server'],
+          'conversation_memory_budget_bytes',
+          'restart',
+          NUMBER,
+        ),
+        key(
           'browser.idle_minutes',
           'live',
           { kind: 'number', text: '30' },
