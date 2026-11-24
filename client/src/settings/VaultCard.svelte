@@ -123,8 +123,10 @@
       </span>
     </div>
 
-    <div class="clients-head">
-      <code>clients</code>{#if count !== null}<span>{count}</span>{/if}
+    <div class="settings-card-head">
+      <span class="settings-card-name">clients</span>
+      {#if count !== null}<span class="settings-card-count">{count}</span>{/if}
+      <span class="settings-card-grow"></span>
     </div>
 
     <div class="settings-setting" data-device="this">

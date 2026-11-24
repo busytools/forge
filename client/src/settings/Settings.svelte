@@ -122,23 +122,30 @@
    * would let a revoked device re-register. The vault is open when this runs;
    * the dialog opened it when it was not.
    */
+  /** Whether the gate's gesture is biometric, from a state that knows. */
+  function biometricOf(gate: DeviceGate): boolean {
+    return gate.outcome === 'ready' || gate.outcome === 'enrolled' ? gate.biometric : true;
+  }
+
   async function enrolDevice(): Promise<void> {
     // **One press at a time**: a second press interleaved with the first
     // could store a gate key and then lose the write, leaving a key that
     // opens nothing.
     if (device.outcome === 'enrolling') return;
+    // **The previous state comes back if the vault relocked under the press**:
+    // an enrolled client must not be redrawn as "not enrolled", and a dialog
+    // already open must not take a second entry.
+    const previous = device;
     device = { outcome: 'enrolling' };
     const result = await enrolVault(connection);
     if (result.outcome === 'enrolled') {
-      device = { outcome: 'enrolled' };
+      device = { outcome: 'enrolled', biometric: biometricOf(previous) };
       return;
     }
     if (result.outcome === 'needs_unlock') {
-      // The vault locked between the dialog's unlock and the material read;
-      // the press goes back to the dialog rather than silently stopping.
-      device = { outcome: 'ready' };
-      openDialog('enrol');
+      device = previous;
       dialogReason = 'the vault locked again; unlock it to enrol';
+      if (dialog === null) openDialog('enrol');
       return;
     }
     device =
@@ -185,9 +192,16 @@
         dialogReason = answer.reason;
         return;
       }
-      const kind = dialog;
+      if (dialog === 'enrol') {
+        // **The dialog stays open through the enrol.** Closing it first and
+        // reopening on a relocked vault raced its own history pop and left a
+        // dialog with no entry behind it; a failure closes with its reason on
+        // the card, a relock keeps the dialog with the reason in it.
+        await enrolDevice();
+        if (device.outcome !== 'enrolling' && dialogReason === null) closeDialog();
+        return;
+      }
       closeDialog();
-      if (kind === 'enrol') await enrolDevice();
     } catch (why) {
       dialogReason = reasonOf(why);
     } finally {
@@ -911,6 +925,7 @@
         variant={dialog}
         busy={dialogBusy}
         reason={dialogReason}
+        biometric={biometricOf(device)}
         ongesture={gestureUnlock}
         onpassword={submitVaultPassword}
         oncancel={closeDialog}

@@ -329,7 +329,7 @@ describe('the settings page', () => {
             },
           ],
         },
-        device: { outcome: 'ready' },
+        device: { outcome: 'ready', biometric: true },
         onVaultAction: () => {},
         vault: { locked: false, idle_minutes: 15 },
       },

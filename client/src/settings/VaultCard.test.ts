@@ -66,12 +66,12 @@ function button(label: string): HTMLButtonElement | null {
 
 describe('the merged vault card', () => {
   it('offers the enrol press when the client is not enrolled, locked or not', () => {
-    draw({ device: { outcome: 'ready' }, locked: false });
+    draw({ device: { outcome: 'ready', biometric: true }, locked: false });
     expect(document.body.textContent).toContain('not enrolled');
     expect(button('enrol this client')).not.toBeNull();
 
     document.body.innerHTML = '';
-    draw({ device: { outcome: 'ready' }, locked: true });
+    draw({ device: { outcome: 'ready', biometric: true }, locked: true });
     expect(document.body.textContent).toContain('not enrolled');
     expect(button('enrol this client')).not.toBeNull();
   });
@@ -79,7 +79,7 @@ describe('the merged vault card', () => {
   it('offers unlock only while an enrolled client faces a locked vault', () => {
     localStorage.setItem('forge.biometric.enrolment.vault', LOCAL_ID);
     draw({
-      device: { outcome: 'enrolled' },
+      device: { outcome: 'enrolled', biometric: true },
       locked: true,
       clients: [enrolment(LOCAL_ID, 'this mac')],
     });
@@ -89,7 +89,7 @@ describe('the merged vault card', () => {
     document.body.innerHTML = '';
     localStorage.setItem('forge.biometric.enrolment.vault', LOCAL_ID);
     draw({
-      device: { outcome: 'enrolled' },
+      device: { outcome: 'enrolled', biometric: true },
       locked: false,
       clients: [enrolment(LOCAL_ID, 'this mac')],
     });
@@ -99,7 +99,7 @@ describe('the merged vault card', () => {
   });
 
   it('offers enrol again when the server has no row for an enrolled client', () => {
-    draw({ device: { outcome: 'enrolled' }, locked: true, clients: [] });
+    draw({ device: { outcome: 'enrolled', biometric: true }, locked: true, clients: [] });
 
     expect(document.body.textContent).toContain(
       'enrolled here, but the server has no row - enrol again',
@@ -151,7 +151,7 @@ describe('the merged vault card', () => {
           outcome: 'read' as const,
           value: [enrolment(LOCAL_ID, 'this mac'), enrolment('other-id', 'the other mac')],
         },
-        device: { outcome: 'enrolled' as const },
+        device: { outcome: 'enrolled' as const, biometric: true },
         onaction: () => {},
         onrevoke,
         onlock: () => {},
@@ -170,7 +170,7 @@ describe('the merged vault card', () => {
   });
 
   it('draws the empty list as its own padded line', () => {
-    draw({ device: { outcome: 'ready' }, locked: false });
+    draw({ device: { outcome: 'ready', biometric: true }, locked: false });
 
     const empty = document.querySelector('.settings-card .settings-empty');
     expect(empty?.textContent).toContain('No client has enrolled');
@@ -182,7 +182,7 @@ describe('the merged vault card', () => {
       props: {
         vault: null,
         read: { outcome: 'read' as const, value: [] },
-        device: { outcome: 'ready' as const },
+        device: { outcome: 'ready' as const, biometric: true },
       },
     });
     flushSync();
@@ -196,7 +196,7 @@ describe('the merged vault card', () => {
       props: {
         vault: undefined,
         read: { outcome: 'read' as const, value: [] },
-        device: { outcome: 'ready' as const },
+        device: { outcome: 'ready' as const, biometric: true },
       },
     });
     flushSync();

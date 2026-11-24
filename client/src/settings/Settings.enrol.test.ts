@@ -28,13 +28,14 @@ vi.mock('../biometric/vault-enrolment', () => ({
   enrolVault: enrol.enrolVault,
   releaseVaultMaterial: enrol.releaseVaultMaterial,
   unlockVault: enrol.unlockVault,
-  enrolmentIdIfMinted: () => null,
+  enrolmentIdIfMinted: () => localStorage.getItem('forge.biometric.enrolment.vault'),
   forgetVaultMaterial: () => {},
 }));
 
-vi.mock('../biometric/device', () => ({
-  readDeviceGate: () => Promise.resolve({ outcome: 'ready' }),
-}));
+const gate = vi.hoisted(() => ({ readDeviceGate: vi.fn() }));
+vi.mock('../biometric/device', () => ({ readDeviceGate: gate.readDeviceGate }));
+
+const LOCAL_ID = '11111111-2222-4333-8444-555555555555';
 
 let app: Record<string, unknown> | null = null;
 
@@ -75,11 +76,11 @@ function read(vault: { locked: boolean; idle_minutes: number } | null): HomeRead
   };
 }
 
-function draw(vault: { locked: boolean; idle_minutes: number } | null): void {
+function drawHome(home: HomeRead): void {
   settingsFrame.set({ status: 'ready', document: documentWithVault() });
   app = mount(Settings, {
     target: document.body,
-    props: { connection, home: read(vault), mark: null },
+    props: { connection, home, mark: null },
   });
   flushSync();
   const rail = [...document.querySelectorAll<HTMLButtonElement>('.settings-rail-item')].find(
@@ -87,6 +88,35 @@ function draw(vault: { locked: boolean; idle_minutes: number } | null): void {
   );
   rail?.click();
   flushSync();
+}
+
+function draw(vault: { locked: boolean; idle_minutes: number } | null): void {
+  drawHome(read(vault));
+}
+
+/** The same home with this client's own enrolment in the core's list. */
+function readEnrolled(vault: { locked: boolean; idle_minutes: number }): HomeRead {
+  const at = { secs_since_epoch: 1_790_000_000, nanos_since_epoch: 0 };
+  return {
+    wire: {
+      ...homeWire,
+      vault,
+      biometric: {
+        outcome: 'read',
+        value: [
+          {
+            id: LOCAL_ID,
+            device: 'this mac',
+            created_at: at,
+            purposes: [{ purpose: 'vault', created_at: at, last_used_at: null }],
+          },
+        ],
+      },
+    },
+    refused: null,
+    failed: null,
+    report: null,
+  };
 }
 
 async function settled(): Promise<void> {
@@ -117,6 +147,9 @@ beforeEach(() => {
   enrol.unlockVault.mockReset();
   enrol.unlockVault.mockResolvedValue({ outcome: 'unlocked' });
   enrol.releaseVaultMaterial.mockResolvedValue({ outcome: 'not_enrolled' });
+  gate.readDeviceGate.mockReset();
+  gate.readDeviceGate.mockResolvedValue({ outcome: 'ready', biometric: true });
+  localStorage.clear();
 });
 
 afterEach(async () => {
@@ -190,6 +223,54 @@ describe('the vault press', () => {
     expect(document.querySelector('[role="alert"]')?.textContent).toContain('incorrect');
     expect(document.querySelector('input[type="password"]'), 'the fields stay').not.toBeNull();
     expect(enrol.enrolVault).not.toHaveBeenCalled();
+  });
+
+  it('opens the gesture-first dialog from an enrolled client and closes on it', async () => {
+    gate.readDeviceGate.mockResolvedValue({ outcome: 'enrolled', biometric: true });
+    localStorage.setItem('forge.biometric.enrolment.vault', LOCAL_ID);
+    enrol.releaseVaultMaterial.mockResolvedValue({
+      outcome: 'released',
+      material: { refresh_token: 'refresh', user_key: 'key' },
+    });
+    drawHome(readEnrolled({ locked: true, idle_minutes: 15 }));
+    await settled();
+
+    button('unlock')?.click();
+    await settled();
+    expect(document.body.textContent, 'the unlock variant').toContain('unlock the vault');
+    expect(button('Unlock with this device'), 'the gesture leads').not.toBeNull();
+    expect(document.querySelector('input[type="password"]'), 'the password waits').toBeNull();
+
+    button('Unlock with this device')?.click();
+    await settled();
+
+    expect(enrol.releaseVaultMaterial).toHaveBeenCalledTimes(1);
+    expect(enrol.unlockVault).toHaveBeenCalledWith(connection, {
+      released: { refresh_token: 'refresh', user_key: 'key' },
+    });
+    expect(document.querySelector('.settings-dialog'), 'the dialog closed').toBeNull();
+  });
+
+  it('closes the dialog on Back and returns focus to the press', async () => {
+    draw({ locked: true, idle_minutes: 15 });
+    await settled();
+    const opener = button('enrol this client');
+    // jsdom's click does not move focus, so the opener takes it first: the
+    // dialog returns the keyboard to whatever held it when it opened.
+    opener?.focus();
+    opener?.click();
+    await settled();
+    expect(document.querySelector('.settings-dialog')).not.toBeNull();
+
+    // **jsdom does not deliver `popstate` for a same-document back**, so the
+    // platform's event is dispatched: it is the one the page's own handler
+    // answers on a real Back.
+    history.back();
+    dispatchEvent(new PopStateEvent('popstate'));
+    await settled();
+
+    expect(document.querySelector('.settings-dialog'), 'Back closed the dialog').toBeNull();
+    expect(document.activeElement, 'and the keyboard came back').toBe(opener);
   });
 
   it('draws the reason a failed enrolment gives', async () => {

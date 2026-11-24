@@ -10,10 +10,15 @@
 import { availability, enrolled } from './index';
 import { VAULT_PURPOSE } from './vault';
 
+/** A gate that can hold a key, and which gesture answers it. `biometric` is
+ *  false on a Mac with no sensor: the device password is the gesture then,
+ *  and the dialog's button names it. */
+type Answering = { biometric: boolean };
+
 export type DeviceGate =
   | { outcome: 'reading' }
-  | { outcome: 'enrolled' }
-  | { outcome: 'ready' }
+  | ({ outcome: 'enrolled' } & Answering)
+  | ({ outcome: 'ready' } & Answering)
   | { outcome: 'enrolling' }
   | { outcome: 'unavailable'; reason: string }
   | { outcome: 'failed'; reason: string };
@@ -24,5 +29,8 @@ export async function readDeviceGate(): Promise<DeviceGate> {
   if (!gate.available) {
     return { outcome: 'unavailable', reason: gate.reason ?? 'this device has no authenticator' };
   }
-  return (await enrolled(VAULT_PURPOSE)) ? { outcome: 'enrolled' } : { outcome: 'ready' };
+  const biometric = gate.biometric;
+  return (await enrolled(VAULT_PURPOSE))
+    ? { outcome: 'enrolled', biometric }
+    : { outcome: 'ready', biometric };
 }
