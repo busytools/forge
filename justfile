@@ -156,6 +156,53 @@ conformance-record-socket:
 bench:
     RUSTFLAGS="-D warnings" cargo nextest run -p forge-workspace --test bench --run-ignored all --no-capture -E 'test(=bench_corpus)'
 
+# The weekly dictation exploration sweep. Refreshes the transcribe.cpp
+# catalogue feed, diffs `(variant, quant)` against the tested state under
+# the bench cache, takes at most two ASR candidates within the budget
+# (`DICTATE_SWEEP_BUDGET_BYTES`, default 2 GiB), downloads each into
+# `<app-support>/forge/dictate-bench/` - never the models directory - and
+# benches it over the saved takes and the known-word tiers.
+#
+# The table prints one row per model: tier, clips, audio seconds, WER where
+# the words are known, term accuracy where the corpus has it, mean
+# divergence on the takes, realtime factor, and the takes where a
+# candidate's words differ from the in-use model's, with both texts.
+#
+# The plan's three questions are answered per candidate: (a) the candidate
+# with the normalizer against the live ASR, (b) the candidate without the
+# normalizer against the live ASR+normalizer pair, and (c) whether the
+# normalizer improved it. A tier with no WER answers "not measured", never
+# "does not beat". A candidate that fails the load smoke is reported
+# unloadable and deleted, never benched; a transient fetch or download
+# failure is reported and not recorded, so the next run retries it; one
+# that clears (a) or (b) is a proposal and kept. Nothing here switches a
+# role, and nothing writes the live redb or the server's catalogue cache:
+# the results land in `results.json` under the bench cache.
+#
+# The direct Hugging Face search is a fallback, not the primary. It runs
+# only when `DICTATE_SWEEP_DIRECT=1` is set and the feed has nothing new;
+# every direct hit is marked unverified and must pass the load smoke before
+# it is benched.
+#
+# Ignored by CI, like `just bench`: it needs the live models on disk and the
+# network. A run that finds nothing new downloads nothing and says so.
+dictate-sweep:
+    RUSTFLAGS="-D warnings" cargo nextest run -p forge-workspace --test dictate_sweep --run-ignored all --no-capture -E 'test(=dictate_sweep)'
+
+# The sweep's discovery dry run: refresh the feed, diff it against the
+# tested state, and print the candidates and the reasons for what was left
+# out. Downloads nothing. `DICTATE_SWEEP_DIRECT=1` also prints the direct
+# Hub fallback's hits, each marked unverified.
+dictate-sweep-dry:
+    RUSTFLAGS="-D warnings" cargo nextest run -p forge-workspace --test dictate_sweep --run-ignored all --no-capture -E 'test(=dictate_sweep_discovery)'
+
+# The live-model bench alone: the installed ASR+normalizer pair and the ASR
+# without its normalizer, over the saved takes and the known-word tiers.
+# No feed refresh and no download; its report is `live-results.json`, so a
+# live run never overwrites the weekly run's `results.json`.
+dictate-sweep-live:
+    RUSTFLAGS="-D warnings" cargo nextest run -p forge-workspace --test dictate_sweep --run-ignored all --no-capture -E 'test(=dictate_sweep_live)'
+
 # Mutation-test the client with Stryker: break each line the tests claim to
 # cover and see whether anything fails. `vitest` reports what ran and never
 # whether a passing assertion discriminates, so this is the client's only

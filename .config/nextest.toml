@@ -72,3 +72,16 @@ cef-live = { max-threads = 1 }
 [[profile.default.overrides]]
 filter = 'binary(veto_live) or binary(input_live) or binary(frame_roundtrip) or binary(record_live) or binary(audio_live) or binary(download_live) or binary(file_live) or binary(click_live) or binary(host_bundle) or binary(reap_live) or binary(tabs_live) or binary(popup_live) or binary(browser_service) or binary(browser_custom_live) or binary(surface_parity_live) or binary(autofill_live) or binary(webauthn_live) or binary(host_log_live) or binary(opener_bridge_live) or binary(dialog_live) or binary(focus_live)'
 test-group = 'cef-live'
+
+# **The weekly dictate sweep is a real bench run**, not a unit test: it
+# refreshes the feed, downloads its candidates, then runs the live pair, the
+# live ASR alone and each candidate with and without the normalizer over
+# three tiers. The live pair and ASR alone measured 107 s together on this
+# machine, and the full weekly mode runs three times that many configs plus
+# two downloads. The default 30 s x 4 kill (120 s) takes it mid-run, so this
+# override puts the kill at 300 s x 4 = 1200 s: well above the observed run,
+# and still a named stop rather than a job timeout. The discovery dry run and
+# the live run share the binary and fit inside it many times over.
+[[profile.default.overrides]]
+filter = 'binary(dictate_sweep)'
+slow-timeout = { period = "300s", terminate-after = 4 }

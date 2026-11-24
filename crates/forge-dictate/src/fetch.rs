@@ -339,6 +339,16 @@ fn ensure(
     cache: &DigestCache,
     on_progress: &mut Reporter<'_>,
 ) -> Result<(), Error> {
+    // **The file name is one normal component.** The spec's file crosses
+    // from a feed document or a Hub listing and is joined onto the models
+    // directory; an absolute path or a `..` would write and verify outside
+    // it. The same rule the public-corpus manifest is held to.
+    let mut components = Path::new(&spec.file).components();
+    let first = components.next();
+    let rest = components.next();
+    if !matches!((first, rest), (Some(std::path::Component::Normal(_)), None)) {
+        return Err(Error::Bench { message: format!("{} is not a single file name", spec.file) });
+    }
     let target = dir.join(&spec.file);
     if target.try_exists().map_err(|source| Error::Io { path: target.clone(), source })? {
         match check_present(&target, spec, cache, on_progress) {
@@ -758,6 +768,32 @@ mod tests_cached_verification {
         assert!(
             !announced.borrow().iter().any(|p| matches!(p, Progress::Verifying { .. })),
             "a digestless spec has nothing to hash, so nothing may say it is verifying"
+        );
+    }
+
+    /// **A spec's file name must be one normal component.** The name crosses
+    /// from a feed document or a Hub listing and is joined onto the models
+    /// directory; a nested or absolute name would write outside it. The
+    /// guard runs before anything is written, so the attempt leaves no file.
+    #[test]
+    fn a_nested_file_name_is_refused_before_anything_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = ConfigBuilder::new()
+            .models_dir(dir.path())
+            .asr_model(offline_spec("nested/candidate.gguf", b"weights"))
+            .normalizer(None)
+            .build();
+
+        let error = prepare(&cfg, |_| std::ops::ControlFlow::Continue(()))
+            .expect_err("a nested file name is not a model file");
+
+        assert!(
+            matches!(&error, Error::Bench { message } if message.contains("not a single file name")),
+            "got: {error:?}"
+        );
+        assert!(
+            !dir.path().join("nested").exists(),
+            "nothing may be written outside the models directory"
         );
     }
 
