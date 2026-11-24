@@ -119,12 +119,18 @@
       <div class="fields">
         <label>
           master password
-          <input type="password" bind:value={password} placeholder="master password" />
+          <input
+            type="password"
+            data-editor="settings"
+            bind:value={password}
+            placeholder="master password"
+          />
         </label>
         <label>
           2FA code (optional)
           <input
             type="text"
+            data-editor="settings"
             inputmode="numeric"
             autocomplete="one-time-code"
             bind:value={code}
