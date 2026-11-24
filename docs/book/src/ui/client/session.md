@@ -313,12 +313,15 @@ by default, after a compaction, or when one is asked for - the successor's
 transcript opens with the brief forge delivered, and that prompt draws as
 the handoff procedure: the row wears the handoff's own mark, names itself,
 and holds the whole brief behind its open. The brief is the ground truth
-forge read off the transcript, git and the board - the seat, the working
-directory, the branch, the role, the files read and changed, the rows the
-seat owns and their links, the transcript the record names, and what was
-still running when the seat changed: the live agents, background tasks,
-monitors and the session's process tree, so the successor knows what to
-resume - then the note the handing-over session wrote, or its closing text
+forge read off the transcript, git, the board, the worker registry and the
+cron store - the seat, the working directory, the branch, the role, the
+files read and changed, the rows the seat owns and their links, the
+transcript the record names, and what was still running when the seat
+changed: the other live workers, the project's crons and its open board
+rows, each with the door that resumes it, beside the live agents,
+background tasks, monitors and the session's process tree this seat started,
+so the successor knows what to resume and what the swap stopped - then the
+note the handing-over session wrote, or its closing text
 under a `source` label when the exit call carried none: where things stand,
 what is in flight with the id that names it, what failed, and the exact next
 action with the file, command or row it starts at, so the successor opens
@@ -335,6 +338,21 @@ row reports its own height; drawn rather than left blank, so a fast scroll
 through fresh history reads as moving content instead of a black column.
 The correction is the list's, and the column's foot and parked anchor
 absorb it, so the place the reader holds does not move under the reader.
+
+**A turn too tall to draw as one item is drawn as several.** The list
+virtualises its items, so a turn of tens of thousands of pixels handed over
+as one item is laid out in full whenever any part of it is on screen, which
+is the whole of a long turn built in one frame and the black a reader meets
+scrolling up through it. The column reads two thresholds: a turn carrying at
+least as many frames as the split is folded, and one whose fold then draws
+more rows than the split reaches the list as slices of those rows, each its
+own item of about thirty rows, so the list draws the slices around the reader
+and the rest stays data. A turn under the frame count is handed over whole
+and drawn as before. The slices keep the turn's own spacing at its head and
+foot; a work run, a stretch of leaves and the reader's own block drop their
+margins at a seam, while a card or a compaction point landing there keeps its
+own. Nothing is dropped: the same rows in the same order, however tall the
+turn.
 
 **A conversation with a saved place opens at it; everything else opens at
 the latest.** A place is the row the reader held and how far into it they

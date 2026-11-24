@@ -548,6 +548,7 @@ impl Workspace {
             cron,
             cron_ports,
             tasks: Mutex::new(Vec::new()),
+            tasks_load_failed: std::sync::atomic::AtomicBool::new(false),
             parked_by_slot: Mutex::new(HashMap::new()),
             pending_handoffs: Mutex::new(HashMap::new()),
             swapping: Mutex::new(HashMap::new()),

@@ -1183,6 +1183,14 @@ impl Workspace {
     pub fn tasks_for_project(&self, project_name: &str) -> Vec<Task> {
         self.tasks.lock().iter().filter(|t| t.project_name == project_name).cloned().collect()
     }
+
+    /// Whether this run's boot could not load the durable board. The
+    /// in-memory set is empty while rows may be on disk, so a reader must
+    /// not report "none open" for a board it could not read - the handoff
+    /// brief says "not read" instead.
+    pub fn durable_tasks_unavailable(&self) -> bool {
+        self.tasks_load_failed.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 #[cfg(any(test, feature = "testing"))]

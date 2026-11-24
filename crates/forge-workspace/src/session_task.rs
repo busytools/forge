@@ -4386,6 +4386,67 @@ mod tests {
         workspace.install_db_for_test(
             crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
         );
+        // **The project's live state must reach PART 1.** A worker that is
+        // not the seat and a cron are seeded; deleting the
+        // `live_state_sections` call leaves the brief without them. The
+        // seat's own row is seeded too, so the filter that keeps the
+        // successor from messaging itself is exercised.
+        workspace.seed_test_project("forge", "/tmp/handoff-cut-project");
+        let project = workspace.project_key_for_name("forge").expect("the seeded project");
+        let worker = |label: &str, session: &str| crate::mcp::workers::types::WorkerEntry {
+            label: label.to_owned(),
+            charter: format!("charter for {label}"),
+            slot: SessionSlot::worker("TestOrg", "forge", label),
+            session_id: Some(forge_primitives::SessionId::new(session)),
+            status: forge_primitives::WorkerLiveness::Running,
+            spawned_at: std::time::SystemTime::UNIX_EPOCH,
+            spawned_by: SessionSlot::lead("TestOrg", "forge"),
+            needs_tag: false,
+            is_git_repo_at_spawn: false,
+            cwd: None,
+            diagnostic: None,
+            kick: None,
+        };
+        workspace.insert_live_worker(&project, worker("builder", "builder-session"));
+        workspace.insert_live_worker(&project, worker("handoff-cut", "old-session-id"));
+        workspace.seed_test_cron(forge_primitives::cron::CronEntry {
+            id: forge_primitives::cron::CronId::from("cron-1"),
+            project_name: "forge".to_owned(),
+            kind: forge_primitives::cron::CronKind::Recurring("0 9 * * *".to_owned()),
+            prompt: "morning summary".to_owned(),
+            description: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            last_fire: None,
+            next_fire: std::time::SystemTime::UNIX_EPOCH,
+            team_role: None,
+            wake: true,
+        });
+        // **An open board row must reach PART 1.** The build reads the board
+        // the caller already holds, so a row is seeded; deleting the
+        // `&board` wiring fails this.
+        workspace.with_tasks_mut(|tasks| {
+            tasks.push(forge_primitives::Task {
+                id: forge_primitives::TaskId::from("board-row-1"),
+                project_name: "forge".to_owned(),
+                subject: "the open board row".to_owned(),
+                active_form: None,
+                detail: None,
+                status: forge_primitives::TaskStatus::Pending,
+                owner: None,
+                parent: None,
+                waiting_on: None,
+                estimate: None,
+                rank: None,
+                verify: None,
+                attested: None,
+                reserved: None,
+                links: Vec::new(),
+                attempt: 0,
+                archived_at: None,
+                created_at: std::time::SystemTime::UNIX_EPOCH,
+                updated_at: std::time::SystemTime::UNIX_EPOCH,
+            });
+        });
         // **A live task must reach PART 1.** The build reads the seat's own
         // domain, so the domain is registered and a background task seeded;
         // deleting `sections.extend(live)` fails this.
@@ -4443,6 +4504,50 @@ mod tests {
             "the caller's brief is the judgment half: {:?}",
             record.brief.judgment,
         );
+        let workers = record
+            .brief
+            .ground_truth
+            .iter()
+            .find(|section| section.label == "live workers")
+            .expect("the other live workers reach PART 1");
+        let workers_text = workers.lines.join("\n");
+        assert!(
+            workers_text.contains("TestOrg/forge/builder"),
+            "a worker that is not the seat is named: {workers_text}",
+        );
+        assert!(
+            !workers_text.contains("TestOrg/forge/handoff-cut"),
+            "the seat handing over is not a worker to message: {workers_text}",
+        );
+        let crons = record
+            .brief
+            .ground_truth
+            .iter()
+            .find(|section| section.label == "live crons")
+            .expect("the project's crons reach PART 1");
+        assert!(
+            crons.lines.iter().any(|line| line.contains("cron-1")),
+            "the cron is named with its id: {:?}",
+            crons.lines,
+        );
+        let rows = record
+            .brief
+            .ground_truth
+            .iter()
+            .find(|section| section.label == "open board rows")
+            .expect("the open board rows reach PART 1");
+        let rows_text = rows.lines.join("\n");
+        assert!(
+            rows_text.contains("board-row-1") && rows_text.contains("the open board row"),
+            "the open board row is named: {rows_text}",
+        );
+        assert!(
+            rows_text.contains(
+                "board-row-1 - the open board row [pending], owner unowned - claim with \
+                 `tasks__claim`"
+            ),
+            "and its own door, not the section's legend: {rows_text}",
+        );
 
         let dispatched = workspace.drain_test_dispatch_buffer();
         let spawn = dispatched.iter().find_map(|command| match command {
@@ -4463,6 +4568,67 @@ mod tests {
             workspace.handoff_for_successor(&slot, &record.to).is_some(),
             "and the record is written, so the successor is measurable",
         );
+    }
+
+    /// **A board the boot could not read says so in both places it is drawn.**
+    /// The live-state section and the seat's own board are built separately
+    /// from the same flag, and a handoff must not print "none open" or "no
+    /// rows owned" over a board that was never loaded.
+    #[tokio::test]
+    async fn a_handoff_over_an_unread_board_says_not_read_in_both_sections() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, mut update_rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        workspace.enable_test_dispatch_intercept();
+        let slot = SessionSlot::worker("TestOrg", "forge", "handoff-cut");
+        let (mut task, _agent_rx) = command_task_for(&workspace, &slot);
+        task.domain.lock().session_id = Some(forge_primitives::SessionId::new("old-session-id"));
+        workspace.install_db_for_test(
+            crate::store::Db::open(&dir.path().join("db.redb")).expect("open db"),
+        );
+        workspace.seed_test_project("forge", "/tmp/handoff-unread-board");
+        workspace.tasks_load_failed.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        task.execute_command(Command::Handoff { key: slot.clone(), brief: None });
+        task.domain.lock().handoff.judgment = Some("Next: read the board.".to_owned());
+        task.after_turn_ended();
+
+        let record = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(frame) = update_rx.recv().await {
+                if let SessionUpdate::Handoff { handoff, .. } =
+                    std::sync::Arc::unwrap_or_clone(frame.update)
+                {
+                    return handoff;
+                }
+            }
+            panic!("the handoff row was never emitted");
+        })
+        .await
+        .expect("the handoff lands");
+
+        for label in ["open board rows", "board"] {
+            let section = record
+                .brief
+                .ground_truth
+                .iter()
+                .find(|section| section.label == label)
+                .unwrap_or_else(|| {
+                    panic!("'{label}' is a section: {:?}", record.brief.ground_truth)
+                });
+            assert!(
+                section.lines.iter().any(|line| line.contains("not read")),
+                "'{label}' states the failed read: {:?}",
+                section.lines,
+            );
+            assert!(
+                !section
+                    .lines
+                    .iter()
+                    .any(|line| line.contains("none open") || line.contains("no rows owned")),
+                "'{label}' does not claim an empty board: {:?}",
+                section.lines,
+            );
+        }
     }
 
     /// A prompt that arrives while the seat swaps its occupant waits for the

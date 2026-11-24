@@ -77,15 +77,42 @@ line is what the next session actually sees; the file is only reachable through 
 
 A worker writes no index line: its file is its own seat's, reached by the worker itself.
 
-## Forge: close out and exit
+## Forge: hand over and exit
 
-When forge hands the seat over, three things happen on top of the steps above.
+When forge hands the seat over, these steps sit on top of the ones above.
 
-**Close out what is running.** Anything this session started and did not finish must not outlive
-it: a live sub-agent, a background command, a monitor, a process it spawned. For each one,
-record in memory what it is and how to resume it - the command, the id it ran under, where its
-output goes - then stop it. A successor that finds half-finished work and no record of the
-process that owns it cannot tell the two apart.
+**Capture the live state.** Before writing the note, list what this session started and put each
+in the note with its id and where the successor picks it up:
+
+- every other live worker, from `agents__list`, by label and slot - a live worker takes
+  `agents__send_message`; a failed one is the lead's to spawn again with `agents__spawn` and
+  `resume_session: true`, reusing the charter `agents__list` reports; a restarting one is
+  already being healed, so wait for its next attempt; PART 1 carries the live workers, so point
+  at it rather than repeating them;
+- every subagent this session dispatched, by its task and where its transcript lives - a
+  subagent cannot be resumed: the swap kills it. Name the task and transcript so the successor
+  re-dispatches the work; when the transcript is gone, say so - there is nothing to re-dispatch
+  from;
+- every running background command or monitor, by the command and where its output goes - the
+  swap stops it too, so name where it got to and how to restart it;
+- every live cron, from `cron__list`, by id and next fire - each fires on its own; PART 1
+  carries the live crons, so point at it rather than repeating them;
+- every open board row this session owns or is still running, from `tasks__list`, by id and
+  owner - a reserved row is the user's pick; a row the successor owns is its to continue, and a
+  waiting one names what it waits on; an unowned pending row takes `tasks__claim`; an unowned
+  row past pending is taken with `tasks__update`; a row another seat holds is that seat's to
+  move; PART 1 carries the project's open rows, so point at it rather than repeating them;
+- every worktree this session created, from `git worktree list`, by path and branch - a worker
+  successor cannot enter one, so name the path to read from or the move the successor can make.
+
+**Durable state hands over; the session's own children stop.** Workers, crons, board rows and the
+on-disk worktree outlive the swap and belong to the successor. Subagents, background commands
+and monitors are the session's own children: the swap stops them, so name where each got to and
+how to restart it. When a subagent's transcript is gone, or a command's output is gone, say so:
+the successor cannot pick up where it stopped.
+
+**Verify before you wait.** A registry row can outlive its process. Check `agents__list` before
+the successor waits on any worker PART 1 names.
 
 **Leave nothing unfinished unrecorded.** List what this session was expected to handle and could
 not finish in this turn - a blocked ask, a deferred fix, a call that was refused, a question left
@@ -95,6 +122,6 @@ where this one stopped; anything left out is lost when the turn ends.
 **Exit through the tool.** Forge takes the note as you wrote it - there are no headings to fill
 in, and your Step 2 document is the note. Write it where the seat section and Step 2 say, then
 pass the same text to
-`agents__handoff` as `brief` as the turn's last act. Memory first, then close out what is
+`agents__handoff` as `brief` as the turn's last act. Memory first, then hand over what is
 running, then the note. Do not call `agents__handoff` for any other reason - a handoff starts at
 `/handoff` or at the automatic trigger (fill or compaction).

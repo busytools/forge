@@ -49,6 +49,9 @@ pub enum ClipSource {
 /// One clip of audio, and whatever is known about it.
 pub struct Clip {
     pub source: ClipSource,
+    /// The take's own directory name or the public clip's file name, so a
+    /// disagreement names audio a reader can find.
+    pub id: String,
     pub audio: Vec<f32>,
     /// The words a run is scored against where they are KNOWN: the
     /// read-aloud passage, and nothing else. `None` for a saved take,
@@ -170,6 +173,7 @@ pub fn public_corpus(dir: &Path) -> Result<Vec<Clip>, Error> {
         let audio = decode_wav(&path)?;
         clips.push(Clip {
             source: ClipSource::Public,
+            id: entry.file,
             audio,
             truth: Some(entry.transcript),
             recorded: None,
@@ -221,7 +225,7 @@ pub fn takes(dir: &Path) -> Result<Vec<Clip>, Error> {
         }
         let audio = decode_wav(&wav)?;
         let recorded = std::fs::read_to_string(take.join("text.txt")).ok();
-        clips.push(Clip { source: ClipSource::Take, audio, truth: None, recorded });
+        clips.push(Clip { source: ClipSource::Take, id: name, audio, truth: None, recorded });
     }
     Ok(clips)
 }
@@ -507,8 +511,19 @@ fn walk(
 pub fn run(
     cfg: &Config,
     corpus: &Corpus,
-    mut on_clip: impl FnMut(&ClipRun) -> std::ops::ControlFlow<()>,
+    on_clip: impl FnMut(&ClipRun) -> std::ops::ControlFlow<()>,
 ) -> Result<Metrics, Error> {
+    run_with_clips(cfg, corpus, on_clip).map(|(metrics, _)| metrics)
+}
+
+/// [`run`], keeping each clip's own outcome: the headless sweep has to name
+/// the takes where a candidate's words differ from the model in use, and a
+/// table of metrics alone cannot say which clip moved.
+pub fn run_with_clips(
+    cfg: &Config,
+    corpus: &Corpus,
+    mut on_clip: impl FnMut(&ClipRun) -> std::ops::ControlFlow<()>,
+) -> Result<(Metrics, Vec<ClipRun>), Error> {
     let engine = crate::Engine::new(cfg.clone())?;
     engine.wait_ready()?;
 
@@ -581,16 +596,19 @@ pub fn run(
         (agreed, scored.len())
     });
 
-    Ok(Metrics {
-        clips: runs.len(),
-        audio_seconds,
-        wall_seconds,
-        xrt_wall: if wall_seconds > 0.0 { audio_seconds / wall_seconds } else { 0.0 },
-        term_accuracy,
-        wer,
-        matched,
-        stages_ms,
-    })
+    Ok((
+        Metrics {
+            clips: runs.len(),
+            audio_seconds,
+            wall_seconds,
+            xrt_wall: if wall_seconds > 0.0 { audio_seconds / wall_seconds } else { 0.0 },
+            term_accuracy,
+            wer,
+            matched,
+            stages_ms,
+        },
+        runs,
+    ))
 }
 
 /// Decode one 16-bit mono wav at the model's own rate, refusing anything
@@ -868,6 +886,7 @@ mod tests {
 
         let passage = Clip {
             source: ClipSource::ReadAloud,
+            id: "passage".to_owned(),
             audio: vec![0.0; 8],
             truth: Some("a passage".to_owned()),
             recorded: None,
