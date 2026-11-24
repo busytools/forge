@@ -387,7 +387,11 @@ fn print_report(report: &SweepReport) {
             let outcome = &row.outcome;
             let disposition = if row.retained {
                 "kept"
-            } else if row.reason.as_deref().is_some_and(|reason| reason.contains("could not be deleted")) {
+            } else if row
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("could not be deleted"))
+            {
                 "delete failed"
             } else {
                 "deleted"
@@ -734,12 +738,16 @@ mod tests {
     use super::*;
 
     fn candidate(file: &str) -> Candidate {
+        candidate_with_quant(file, "Q4_K_M")
+    }
+
+    fn candidate_with_quant(file: &str, quant: &str) -> Candidate {
         Candidate {
             source: forge_workspace::sweep::CandidateSource::Feed,
             variant: "test".to_owned(),
             display_name: "test".to_owned(),
             family: "test".to_owned(),
-            quant: "Q4_K_M".to_owned(),
+            quant: quant.to_owned(),
             file: file.to_owned(),
             size: 100,
             sha256: None,
@@ -759,7 +767,6 @@ mod tests {
         let file = dir.path().join("a-Q4_K_M.gguf");
         std::fs::write(&file, b"weights").unwrap();
         let mut report = SweepReport::default();
-        let tested = TestedState::default();
         let candidate = candidate("a-Q4_K_M.gguf");
 
         record_transient(
@@ -773,7 +780,6 @@ mod tests {
         assert_eq!(report.downloaded.len(), 1);
         assert_eq!(report.downloaded[0].outcome, "transient");
         assert!(!file.exists(), "the file is cleaned");
-        assert!(!tested.has("test", "Q4_K_M"), "a transient failure is not recorded");
     }
 
     /// A deterministic failure is recorded and its file cleaned.
@@ -807,8 +813,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut report = SweepReport::default();
         let mut tested = TestedState::default();
-        let losing = candidate("losing-Q4_K_M.gguf");
-        let kept = candidate("kept-Q4_K_M.gguf");
+        let losing = candidate_with_quant("losing-Q4_K_M.gguf", "Q4_K_M");
+        let kept = candidate_with_quant("kept-Q8_0.gguf", "Q8_0");
         let losing_file = dir.path().join(&losing.file);
         let kept_file = dir.path().join(&kept.file);
         std::fs::write(&losing_file, b"weights").unwrap();
@@ -819,6 +825,31 @@ mod tests {
 
         assert!(!losing_file.exists(), "a losing bench deletes its file");
         assert!(kept_file.exists(), "a retained bench keeps its file");
-        assert!(tested.has("test", "Q4_K_M"), "the bench verdict is recorded");
+        assert!(tested.has("test", "Q4_K_M"), "the losing bench verdict is recorded");
+        assert!(tested.has("test", "Q8_0"), "the retained bench verdict is recorded");
+    }
+
+    /// A dangling normalizer link is replaced, never treated as present: a
+    /// stale link would make every with-normalizer bench fail for a reason
+    /// the candidate did not cause.
+    #[test]
+    fn a_dangling_normalizer_link_is_replaced() {
+        let models = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let config = Config::default();
+        let normalizer = config.normalizer.clone().expect("the default config has a normalizer");
+        let source = models.path().join(&normalizer.file);
+        std::fs::write(&source, b"weights").unwrap();
+        // A link at the same name pointing at nothing.
+        let dest = cache.path().join(&normalizer.file);
+        std::os::unix::fs::symlink(models.path().join("missing.gguf"), &dest).unwrap();
+        assert!(!dest.exists(), "the pre-created link dangles");
+
+        let live =
+            LiveRoles { models: Vec::new(), config, models_dir: models.path().to_path_buf() };
+        link_live_normalizer(&live, cache.path()).unwrap();
+
+        assert!(dest.exists(), "the dangling link is replaced by one that resolves");
+        assert_eq!(std::fs::read_link(&dest).unwrap(), source, "the link points at the live file");
     }
 }

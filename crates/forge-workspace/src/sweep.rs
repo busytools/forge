@@ -1351,6 +1351,21 @@ mod tests {
         clean_download(dir.path(), "gone.gguf").unwrap();
     }
 
+    /// A delete that cannot remove the file is reported, never swallowed:
+    /// the report must not claim a file is gone when it is not.
+    #[test]
+    fn a_clean_download_reports_a_failed_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory at the file's own name makes `remove_file` fail with
+        // EISDIR, so the path is still there afterwards.
+        let blocked = dir.path().join("blocked-Q4_K_M.gguf");
+        std::fs::create_dir(&blocked).unwrap();
+
+        let error = clean_download(dir.path(), "blocked-Q4_K_M.gguf").expect_err("a failed delete");
+        assert!(error.contains("blocked-Q4_K_M.gguf"), "the error names the path: {error}");
+        assert!(blocked.exists(), "the file is still there");
+    }
+
     /// A delete that fails is not swallowed: the report carries it.
     #[test]
     fn the_smoke_gate_reports_a_failed_delete() {
@@ -1498,7 +1513,7 @@ mod tests {
     }
 
     /// **The realtime half of the bar is load-bearing.** A lower WER at a
-    /// worse realtime factor does not beat; the same WER at a better factor
+    /// worse realtime factor does not beat; a higher WER at a better factor
     /// does not either.
     #[test]
     fn a_lower_wer_at_a_worse_realtime_factor_does_not_beat() {
@@ -1547,6 +1562,27 @@ mod tests {
         let live_pair = model("live pair", Some(0.02), 20.0);
 
         assert_eq!(meets(&alone, &live_pair, "public"), Verdict::DoesNotBeat);
+    }
+
+    /// A tier with no word error rate answers "not measured" on the
+    /// meeting bar, never "does not beat".
+    #[test]
+    fn a_tier_without_a_word_error_rate_is_not_measured() {
+        let alone = model("candidate (no normalizer)", None, 20.0);
+        let live_pair = model("live pair", Some(0.02), 20.0);
+
+        assert_eq!(meets(&alone, &live_pair, "public"), Verdict::NotMeasured);
+        assert!(one_model_answer(&alone, &live_pair).contains("is not measured"));
+    }
+
+    /// The one-model answer prints the meeting phrase, not the strict one.
+    #[test]
+    fn the_one_model_answer_prints_the_meeting_phrase() {
+        let alone = model("candidate (no normalizer)", Some(0.02), 20.0);
+        let live_pair = model("live pair", Some(0.02), 20.0);
+
+        let answer = one_model_answer(&alone, &live_pair);
+        assert!(answer.contains("matches or beats"), "got: {answer}");
     }
 
     /// **The (a) arm proposes on its own.** A candidate that beats the live
