@@ -11,6 +11,7 @@
 //! and nothing here may call a file verified.
 
 use std::cell::Cell;
+use std::path::Path;
 use std::sync::Arc;
 
 use forge_dictate::catalogue::{CatalogueEntry, CatalogueSource, Download, EntryKind};
@@ -189,6 +190,65 @@ pub(crate) fn resolve_role(
     RoleResolution::Chosen(ActiveModel { role, spec: pin, from: ActiveFrom::Pin, at: None })
 }
 
+/// Remove one installed model's file, record and runtime pick: the app's
+/// own removal path, shared by the models page's remove control and any
+/// in-process caller.
+///
+/// **The file has to be one this machine recorded**, which the models page
+/// and [`Workspace::uninstall_model`] check before calling; the function
+/// itself is the file drop and the record drop together, never one without
+/// the other.
+///
+/// The sweep's out-of-process run cannot call this against a live store: a
+/// running server holds redb's exclusive lock, so the sweep names the
+/// installed records no role runs and the page is the door. The function is
+/// the same path both reach through.
+pub fn remove_installed(
+    db: Option<&crate::store::Db>,
+    models_dir: Option<&Path>,
+    file: &str,
+) -> Result<(), String> {
+    let record = db
+        .and_then(|db| crate::store::dictate_models::installed(db).ok())
+        .and_then(|rows| rows.into_iter().find(|model| model.file == file));
+    if let Some(dir) = models_dir {
+        let path = dir.join(file);
+        if let Err(error) = std::fs::remove_file(&path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(%error, file, "the model file was not removed");
+            return Err(error.to_string());
+        }
+    }
+    if let Some(db) = db {
+        if let Err(error) = crate::store::dictate_models::remove_installed(db, file) {
+            tracing::warn!(
+                event_name = "dictate_uninstall_record_failed",
+                %error,
+                file,
+                "the model was removed from disk but its record was not; the page still lists it"
+            );
+        }
+        if let Some(record) = record {
+            for role in [DictateRole::Transcribing, DictateRole::Normalization] {
+                let picked = crate::store::dictate_models::active(db, role)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|choice| choice.variant == record.variant);
+                if picked && let Err(error) = crate::store::dictate_models::clear_active(db, role) {
+                    tracing::warn!(
+                        event_name = "dictate_uninstall_pick_clear_failed",
+                        %error,
+                        role = crate::store::dictate_models::role_key(role),
+                        "the removal left a runtime pick naming the model that is gone"
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 impl Workspace {
     /// The install's state, for the page's read.
     pub fn dictate_install(&self) -> InstallState {
@@ -227,12 +287,11 @@ impl Workspace {
     /// with it**: a pick left naming a file that is gone refuses the next
     /// boot, and the page that removed the file is the one that can clear it.
     pub(crate) fn uninstall_model(&self, file: &str) -> Result<(), DispatchError> {
-        let Some(record) = self.installed_models().into_iter().find(|model| model.file == file)
-        else {
+        if !self.installed_models().iter().any(|model| model.file == file) {
             return Err(DispatchError::UninstallRefused {
                 reason: "no model this machine downloaded carries that file".to_owned(),
             });
-        };
+        }
         if let Some((role, _)) =
             self.active_models().iter().find(|(_, model)| model.spec.file == file)
         {
@@ -255,41 +314,10 @@ impl Workspace {
                 reason: "the file is being downloaded right now".to_owned(),
             });
         }
-        if let Some(dir) = self.config_arc().dictate.models_dir() {
-            let path = dir.join(file);
-            if let Err(error) = std::fs::remove_file(&path)
-                && error.kind() != std::io::ErrorKind::NotFound
-            {
-                tracing::warn!(%error, file, "the model file was not removed");
-                return Err(DispatchError::UninstallRefused { reason: error.to_string() });
-            }
-        }
+        let models_dir = self.config_arc().dictate.models_dir();
         let db = self.db.lock();
-        if let Some(db) = db.as_ref() {
-            if let Err(error) = crate::store::dictate_models::remove_installed(db, file) {
-                tracing::warn!(
-                    event_name = "dictate_uninstall_record_failed",
-                    %error,
-                    file,
-                    "the model was removed from disk but its record was not; the page still lists it"
-                );
-            }
-            for role in [DictateRole::Transcribing, DictateRole::Normalization] {
-                let picked = crate::store::dictate_models::active(db, role)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|choice| choice.variant == record.variant);
-                if picked && let Err(error) = crate::store::dictate_models::clear_active(db, role) {
-                    tracing::warn!(
-                        event_name = "dictate_uninstall_pick_clear_failed",
-                        %error,
-                        role = crate::store::dictate_models::role_key(role),
-                        "the removal left a runtime pick naming the model that is gone"
-                    );
-                }
-            }
-        }
-        Ok(())
+        remove_installed(db.as_ref(), models_dir.as_deref(), file)
+            .map_err(|reason| DispatchError::UninstallRefused { reason })
     }
 
     /// The install prelude, without the spawn: the enabled check, the

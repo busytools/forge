@@ -8,15 +8,27 @@
 //! Hugging Face hit has no such contract: it is marked unverified, and it
 //! must pass [`smoke_gate`] before it may be benched.
 //!
-//! Nothing here writes the live redb. The sweep reads the live roles off a
-//! copy (through [`crate::bench::resolved_live_roles`]) and keeps its own
-//! state under the bench cache; the server owns the store.
+//! **The verdict is the plan's comparison, not a lookalike.** Question (a)
+//! is the candidate with the normalizer against the live ASR alone;
+//! question (b) is the candidate without the normalizer against the live
+//! ASR+normalizer pair. A candidate that clears either bar is proposed, and
+//! question (b) is the basis when it is the stronger one. A tier that
+//! carries no word error rate answers "not measured", never "does not
+//! beat".
+//!
+//! Nothing here writes the live redb or the live catalogue cache. The sweep
+//! reads the live roles off a copy (through [`crate::bench::resolved_live_roles`])
+//! and keeps its own state under the bench cache; the server owns the
+//! store.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
+use forge_dictate::bench::{ClipRun, Corpus, Metrics};
 use forge_dictate::catalogue::{CatalogueEntry, CatalogueSource, Download, EntryKind};
 use forge_dictate::{Config, ModelFacts, ModelSpec};
 use serde::{Deserialize, Serialize};
+
+use crate::install::InstalledModel;
 
 /// The directory the sweep downloads into: never the models directory.
 pub fn bench_cache_dir(app_support: &Path) -> PathBuf {
@@ -26,17 +38,23 @@ pub fn bench_cache_dir(app_support: &Path) -> PathBuf {
 /// The tested-state file under the bench cache.
 pub const TESTED_FILE: &str = "tested.json";
 
-/// The results file under the bench cache.
+/// The weekly run's results file under the bench cache.
 pub const RESULTS_FILE: &str = "results.json";
 
-/// One `(variant, quant)` the sweep has already tried.
+/// The live-model run's results file, kept apart from the weekly run's so a
+/// `dictate-sweep-live` never overwrites the weekly evidence.
+pub const LIVE_RESULTS_FILE: &str = "live-results.json";
+
+/// One `(variant, quant)` the sweep has a deterministic verdict for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestedPair {
     pub variant: String,
     pub quant: String,
     /// RFC 3339.
     pub at: String,
-    /// `benched` or `unloadable`.
+    /// `benched`, `unloadable` (the smoke), or `failed` (the bench). A
+    /// transient fetch or download failure is never recorded, so the next
+    /// run retries it.
     pub outcome: String,
 }
 
@@ -47,7 +65,8 @@ pub struct TestedState {
 }
 
 impl TestedState {
-    /// Whether this exact pair has already been tried.
+    /// Whether this exact pair has already been tried. Only deterministic
+    /// verdicts are recorded, so a hit is a pair not worth retrying yet.
     pub fn has(&self, variant: &str, quant: &str) -> bool {
         self.pairs.iter().any(|pair| pair.variant == variant && pair.quant == quant)
     }
@@ -88,6 +107,18 @@ pub enum CandidateSource {
     Direct,
 }
 
+impl CandidateSource {
+    /// The source as the report names it. A direct hit says unverified
+    /// wherever it crosses, because the feed stays the recommendation
+    /// source.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Feed => "feed",
+            Self::Direct => "direct (unverified)",
+        }
+    }
+}
+
 /// One candidate the sweep will try.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Candidate {
@@ -116,6 +147,7 @@ impl Candidate {
     /// its URL uses it; a speech-feed candidate reads the variant's own
     /// documents for the link that carries its file.
     pub fn spec(&self, source: &CatalogueSource) -> Result<ModelSpec, String> {
+        safe_file_name(&self.file)?;
         let url = if let Some(url) = &self.url {
             url.clone()
         } else {
@@ -179,14 +211,19 @@ fn newest_measured_on(entry: &CatalogueEntry) -> Option<String> {
     entry.speed_benchmarks.iter().filter_map(|row| row.measured_on.clone()).max()
 }
 
-/// Whether the entry names English, or names no language at all. An empty
-/// list is unknown rather than "not English", so it stays eligible.
-fn speaks_english(entry: &CatalogueEntry) -> bool {
-    entry.languages.is_empty() || entry.languages.iter().any(|language| language == "en")
+/// Whether the entry names the configured language, or names no language at
+/// all. An empty list is unknown rather than "not this language", so it
+/// stays eligible.
+fn speaks(entry: &CatalogueEntry, language: &str) -> bool {
+    entry.languages.is_empty() || entry.languages.iter().any(|held| held == language)
 }
 
 /// Pick at most `max` ASR candidates not in use, not already tested, with a
 /// preferred download whose combined size is within `budget_bytes`.
+///
+/// **The language is the configured one**, not a hardcoded English: the
+/// feed's entries carry their languages, and a model that does not name the
+/// one dictation runs is not a candidate for this machine.
 ///
 /// **The ranking is the feed's own evidence**: fastest m4-max Metal row
 /// first, the newest measurement breaking a tie, then the Hub's download
@@ -195,6 +232,7 @@ pub fn select_candidates(
     entries: &[CatalogueEntry],
     tested: &TestedState,
     in_use_files: &[String],
+    language: &str,
     budget_bytes: u64,
     max: usize,
 ) -> Selection {
@@ -232,6 +270,14 @@ pub fn select_candidates(
             });
             continue;
         }
+        if safe_file_name(&download.filename).is_err() {
+            skipped.push(Skipped {
+                variant: entry.variant.clone(),
+                quant: download.quant.clone(),
+                reason: "the feed names a path rather than a file".to_owned(),
+            });
+            continue;
+        }
         if tested.has(&entry.variant, &download.quant) {
             skipped.push(Skipped {
                 variant: entry.variant.clone(),
@@ -248,11 +294,11 @@ pub fn select_candidates(
             });
             continue;
         }
-        if !speaks_english(entry) {
+        if !speaks(entry, language) {
             skipped.push(Skipped {
                 variant: entry.variant.clone(),
                 quant: download.quant.clone(),
-                reason: "not an English model".to_owned(),
+                reason: format!("does not name {language}"),
             });
             continue;
         }
@@ -311,6 +357,9 @@ pub fn select_candidates(
 #[derive(Debug, Clone, PartialEq)]
 pub struct DirectHit {
     pub repo: String,
+    /// The repo-relative path the Hub lists, which the URL resolves.
+    pub path: String,
+    /// The file's own name, which is the only thing the cache writes.
     pub file: String,
     pub size: u64,
     pub sha256: Option<String>,
@@ -322,7 +371,7 @@ impl DirectHit {
     /// The candidate a direct hit describes, marked unverified.
     pub fn candidate(&self) -> Candidate {
         let repo = &self.repo;
-        let file = &self.file;
+        let path = &self.path;
         Candidate {
             source: CandidateSource::Direct,
             variant: self.repo.clone(),
@@ -332,7 +381,7 @@ impl DirectHit {
             file: self.file.clone(),
             size: self.size,
             sha256: self.sha256.clone(),
-            url: Some(format!("https://huggingface.co/{repo}/resolve/main/{file}")),
+            url: Some(format!("https://huggingface.co/{repo}/resolve/main/{path}")),
             published_repo: Some(self.repo.clone()),
             speed: None,
             measured_on: None,
@@ -341,9 +390,32 @@ impl DirectHit {
     }
 }
 
+/// Whether `quant` appears in `name` as a whole token. A plain `contains`
+/// finds `F16` inside `BF16`, which would record the wrong quantisation for
+/// a direct hit.
+fn quant_in_name(name: &str, quant: &str) -> bool {
+    let needle = quant.to_lowercase();
+    let mut from = 0;
+    while let Some(at) = name[from..].find(needle.as_str()) {
+        let start = from + at;
+        let end = start + needle.len();
+        let before_ok = start == 0 || !name.as_bytes()[start - 1].is_ascii_alphanumeric();
+        let after_ok = end == name.len() || !name.as_bytes()[end].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
 /// The GGUF files one Hub repo publishes, restricted to the quants this
 /// runtime runs. The first preferred quant a repo ships is the one it is
 /// tried at.
+///
+/// **The cache writes the file's own name, never the repo path.** A nested
+/// `rfilename` is a repo path; the URL keeps it, the destination keeps only
+/// the last component.
 pub fn direct_hits(
     repo: &str,
     downloads: Option<u64>,
@@ -354,19 +426,25 @@ pub fn direct_hits(
     };
     let mut hits = Vec::new();
     for file in files {
-        let Some(name) = file.get("rfilename").and_then(serde_json::Value::as_str) else {
+        let Some(path) = file.get("rfilename").and_then(serde_json::Value::as_str) else {
             continue;
         };
-        let lower = name.to_lowercase();
-        if !std::path::Path::new(&lower)
+        let lower = path.to_lowercase();
+        if !Path::new(&lower)
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("gguf"))
         {
             continue;
         }
+        let Some(name) = Path::new(path).file_name().and_then(std::ffi::OsStr::to_str) else {
+            continue;
+        };
+        if safe_file_name(name).is_err() {
+            continue;
+        }
         let Some(quant) = forge_dictate::catalogue::PREFERRED_DOWNLOADS
             .iter()
-            .find(|quant| lower.contains(quant.to_lowercase().as_str()))
+            .find(|quant| quant_in_name(&lower, quant))
         else {
             continue;
         };
@@ -387,6 +465,7 @@ pub fn direct_hits(
             .map(str::to_owned);
         hits.push(DirectHit {
             repo: repo.to_owned(),
+            path: path.to_owned(),
             file: name.to_owned(),
             size,
             sha256,
@@ -398,8 +477,8 @@ pub fn direct_hits(
 }
 
 /// Pick direct hits under the same tested-state, budget and cap rules as the
-/// feed. One candidate per repo, newest name first, and the Hub's download
-/// count orders them because a direct hit has no measured speed.
+/// feed. One candidate per repo, most downloaded first, because a direct hit
+/// has no measured speed.
 pub fn select_direct(
     hits: &[DirectHit],
     tested: &TestedState,
@@ -447,8 +526,9 @@ pub fn select_direct(
 
 /// Query the Hub for GGUF repos in the families the feed already supports.
 ///
-/// A fallback only: the feed stays the recommendation source. Each repo is
-/// read for its file list, and every hit it yields is unverified.
+/// A fallback only, and behind the caller's own opt-in: the feed stays the
+/// recommendation source. Each repo is read for its file list, and every
+/// hit it yields is unverified.
 pub fn search_hugging_face(
     families: &[String],
     per_family: usize,
@@ -502,6 +582,28 @@ fn get_json(client: &reqwest::blocking::Client, url: &str) -> Option<serde_json:
     response.json().ok()
 }
 
+/// A remote file name must be one normal component. The feed and the Hub
+/// both cross a name the sweep joins onto the bench cache, so an absolute
+/// path or a `..` would write outside it; the same rule the public corpus
+/// manifest is held to.
+pub fn safe_file_name(file: &str) -> Result<(), String> {
+    let mut components = Path::new(file).components();
+    let first = components.next();
+    let rest = components.next();
+    match (first, rest) {
+        (Some(Component::Normal(_)), None) => Ok(()),
+        _ => Err(format!("{file:?} is not a single file name")),
+    }
+}
+
+/// Remove a candidate's complete file and any partial `prepare` left
+/// behind. A failed fetch or a losing bench must not leave a file the next
+/// sweep would load.
+pub fn clean_download(dir: &Path, file: &str) {
+    let _ = std::fs::remove_file(dir.join(file));
+    let _ = std::fs::remove_file(dir.join(format!("{file}.part")));
+}
+
 /// Download one candidate into `dir`, with the size and digest checks its
 /// spec carries. The path is the file the bench then loads.
 ///
@@ -513,6 +615,7 @@ pub fn download_candidate(
     spec: &ModelSpec,
     dir: &Path,
 ) -> Result<PathBuf, String> {
+    safe_file_name(&candidate.file)?;
     std::fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
     let cfg = Config {
         models_dir: Some(dir.to_path_buf()),
@@ -522,9 +625,13 @@ pub fn download_candidate(
         digest_cache_dir: None,
         ..Config::default()
     };
-    forge_dictate::prepare(&cfg, |_progress| std::ops::ControlFlow::Continue(()))
-        .map_err(|error| error.to_string())?;
-    Ok(dir.join(&candidate.file))
+    match forge_dictate::prepare(&cfg, |_progress| std::ops::ControlFlow::Continue(())) {
+        Ok(()) => Ok(dir.join(&candidate.file)),
+        Err(error) => {
+            clean_download(dir, &candidate.file);
+            Err(error.to_string())
+        }
+    }
 }
 
 /// Load and transcribe one short clip through the config's engine. This is
@@ -545,15 +652,30 @@ pub fn load_smoke(cfg: &Config, clip: &[f32]) -> Result<(), String> {
 }
 
 /// Run `smoke` and, when it fails, delete the downloaded file. A candidate
-/// that will not load is reported as unloadable and gone, never benched.
+/// that will not load is reported as unloadable and gone, never benched. A
+/// file that cannot be deleted says so in the same reason rather than
+/// vanishing from the report.
 pub fn smoke_gate(file: &Path, smoke: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
     match smoke() {
         Ok(()) => Ok(()),
-        Err(reason) => {
-            let _ = std::fs::remove_file(file);
-            Err(reason)
-        }
+        Err(reason) => match std::fs::remove_file(file) {
+            Ok(()) => Err(reason),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(reason),
+            Err(error) => Err(format!("{reason}; the file could not be deleted: {error}")),
+        },
     }
+}
+
+/// The plan's own question, answered as a verdict rather than a number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+    /// Lower word error rate at equal or better realtime factor.
+    Beats,
+    /// Measured, and not better on both axes.
+    DoesNotBeat,
+    /// The tier carries no word error rate to compare.
+    NotMeasured,
 }
 
 /// One tier's row in a model's table.
@@ -561,9 +683,15 @@ pub fn smoke_gate(file: &Path, smoke: impl FnOnce() -> Result<(), String>) -> Re
 pub struct TierReport {
     pub tier: String,
     pub clips: usize,
+    /// The tier's own audio length, so a one-clip 20 ms read-aloud row
+    /// reads as one rather than as a WER with no context.
+    pub audio_seconds: f64,
     /// The tier's word error rate where its words are known, `None` on the
     /// saved takes.
     pub wer: Option<f64>,
+    /// The share of the read-aloud passage's known terms that survived,
+    /// `None` on a tier with no passage.
+    pub term_accuracy: Option<f64>,
     /// The mean word error rate against the takes' own recorded words,
     /// `None` on a tier whose clips carry no model text.
     pub mean_divergence: Option<f64>,
@@ -575,6 +703,9 @@ pub struct TierReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Disagreement {
     pub clip: usize,
+    /// The take's own directory name or the public clip's file name, so the
+    /// audio is findable.
+    pub take: String,
     pub candidate: String,
     pub in_use: String,
 }
@@ -584,7 +715,7 @@ pub struct Disagreement {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelReport {
     pub label: String,
-    /// `live`, `feed`, or `direct`.
+    /// `live`, `feed`, or `direct (unverified)`.
     pub source: String,
     pub tiers: Vec<TierReport>,
     pub disagreements: Vec<Disagreement>,
@@ -599,8 +730,14 @@ pub struct DownloadReport {
     pub file: String,
     pub size: u64,
     pub sha256: Option<String>,
-    /// `benched` or `unloadable`.
+    /// `feed` or `direct (unverified)`.
+    pub source: String,
+    /// `benched`, `unloadable` (the smoke), `failed` (the bench), or
+    /// `transient` (a fetch or download failure, not recorded in the tested
+    /// state).
     pub outcome: String,
+    /// Whether the file was kept as a proposal after the run.
+    pub retained: bool,
     pub reason: Option<String>,
 }
 
@@ -612,16 +749,42 @@ pub struct SweepReport {
     pub feed_release: Option<String>,
     pub feed_skipped: usize,
     pub budget_bytes: u64,
+    /// The selected candidates' labels, before any download.
+    pub candidates: Vec<String>,
+    /// The plan's questions (a), (b) and (c), stated in words per
+    /// candidate.
+    pub answers: Vec<String>,
     pub downloaded: Vec<DownloadReport>,
     pub models: Vec<ModelReport>,
-    /// The candidates that beat the live pair, named as proposals. Nothing
-    /// here switches a role.
+    /// The candidates that beat a bar, named as proposals. Nothing here
+    /// switches a role.
     pub proposed: Vec<String>,
+    /// Installed records no live role runs. The removal is the app's own
+    /// path; the sweep names them so the invariant is visible.
+    pub installed_not_in_use: Vec<String>,
 }
 
-/// Write one report under `dir`, atomically.
+/// The installed records no live role runs, by file. The removal itself is
+/// the app's own path (`install::remove_installed`, behind the models page's
+/// remove control), because a running server holds the store's exclusive
+/// lock; the sweep reports the list rather than reaching into it.
+pub fn installed_not_in_use(installed: &[InstalledModel], in_use_files: &[String]) -> Vec<String> {
+    installed
+        .iter()
+        .map(|model| model.file.clone())
+        .filter(|file| !in_use_files.iter().any(|live| live == file))
+        .collect()
+}
+
+/// Write the weekly run's report under `dir`, atomically.
 pub fn write_report(dir: &Path, report: &SweepReport) -> Result<(), String> {
     write_json(dir, RESULTS_FILE, report)
+}
+
+/// Write the live-model run's report under `dir`, apart from the weekly
+/// run's.
+pub fn write_live_report(dir: &Path, report: &SweepReport) -> Result<(), String> {
+    write_json(dir, LIVE_RESULTS_FILE, report)
 }
 
 /// Write one JSON file under `dir`, beside and renamed over.
@@ -635,9 +798,175 @@ fn write_json<T: Serialize>(dir: &Path, name: &str, value: &T) -> Result<(), Str
     std::fs::rename(&partial, &path).map_err(|error| format!("{}: {error}", path.display()))
 }
 
+/// The mean word error rate against the takes' own recorded words, and the
+/// takes where the run's words differ, with both texts.
+pub fn divergence(clips: &[ClipRun], corpus: &Corpus) -> (Option<f64>, Vec<Disagreement>) {
+    let mut total = 0.0_f64;
+    let mut count = 0_u32;
+    let mut disagreements = Vec::new();
+    for run in clips {
+        let Some(clip) = corpus.clips.get(run.index) else {
+            continue;
+        };
+        let Some(recorded) = clip.recorded.as_deref() else {
+            continue;
+        };
+        total += forge_dictate::bench::wer(&run.text, recorded);
+        count += 1;
+        if run.matched == Some(false) {
+            disagreements.push(Disagreement {
+                clip: run.index,
+                take: clip.id.clone(),
+                candidate: run.text.clone(),
+                in_use: recorded.to_owned(),
+            });
+        }
+    }
+    let mean = (count > 0).then(|| total / f64::from(count));
+    (mean, disagreements)
+}
+
+/// Fold one tier's metrics and divergence into the table's row.
+pub fn tier_report(tier: &str, metrics: &Metrics, mean_divergence: Option<f64>) -> TierReport {
+    TierReport {
+        tier: tier.to_owned(),
+        clips: metrics.clips,
+        audio_seconds: metrics.audio_seconds,
+        wer: metrics.wer,
+        term_accuracy: metrics.term_accuracy,
+        mean_divergence,
+        xrt_wall: metrics.xrt_wall,
+    }
+}
+
+/// The word error rate one model's table carries for `tier`.
+pub fn tier_wer(model: &ModelReport, tier: &str) -> Option<f64> {
+    model.tiers.iter().find(|row| row.tier == tier).and_then(|row| row.wer)
+}
+
+/// The realtime factor one model's table carries for `tier`.
+pub fn tier_xrt(model: &ModelReport, tier: &str) -> f64 {
+    model.tiers.iter().find(|row| row.tier == tier).map_or(0.0, |row| row.xrt_wall)
+}
+
+/// A rate as the table prints it, `-` when there is none.
+pub fn percent(value: Option<f64>) -> String {
+    value.map_or_else(|| "-".to_owned(), |rate| format!("{:.2}%", rate * 100.0))
+}
+
+/// Answer the plan's comparison for one pair of models on one tier.
+fn answer(
+    subject: &str,
+    candidate: &ModelReport,
+    against: &str,
+    baseline: &ModelReport,
+    tier: &str,
+) -> String {
+    let verdict = beats(candidate, baseline, tier);
+    let candidate_wer = percent(tier_wer(candidate, tier));
+    let baseline_wer = percent(tier_wer(baseline, tier));
+    let candidate_xrt = tier_xrt(candidate, tier);
+    let baseline_xrt = tier_xrt(baseline, tier);
+    match verdict {
+        Verdict::Beats => format!(
+            "{subject} beats {against} on {tier} WER at equal or better RTF \
+             ({candidate_wer} vs {baseline_wer}; {candidate_xrt:.1}x vs {baseline_xrt:.1}x)"
+        ),
+        Verdict::DoesNotBeat => format!(
+            "{subject} does not beat {against} on {tier} WER \
+             ({candidate_wer} vs {baseline_wer}; {candidate_xrt:.1}x vs {baseline_xrt:.1}x)"
+        ),
+        Verdict::NotMeasured => {
+            format!("{subject} vs {against}: {tier} WER is not measured")
+        }
+    }
+}
+
+/// Plan question (a): does the candidate with the normalizer beat the live
+/// ASR on WER at equal or better realtime factor?
+pub fn answer_a(candidate: &ModelReport, live_asr: &ModelReport) -> String {
+    answer("the candidate with the normalizer", candidate, "the live ASR", live_asr, "public")
+}
+
+/// Plan question (b): does the candidate without the normalizer match or
+/// beat the live ASR+normalizer pair?
+pub fn one_model_answer(alone: &ModelReport, pair: &ModelReport) -> String {
+    answer(
+        "the candidate without the normalizer",
+        alone,
+        "the live ASR+normalizer pair",
+        pair,
+        "public",
+    )
+}
+
+/// Plan question (c): does adding the normalizer improve the candidate
+/// further?
+pub fn answer_c(with: &ModelReport, alone: &ModelReport) -> String {
+    answer("the candidate with the normalizer", with, "the candidate without it", alone, "public")
+}
+
+/// The plan's comparison, as a verdict.
+pub fn beats(candidate: &ModelReport, baseline: &ModelReport, tier: &str) -> Verdict {
+    let (Some(candidate_wer), Some(baseline_wer)) =
+        (tier_wer(candidate, tier), tier_wer(baseline, tier))
+    else {
+        return Verdict::NotMeasured;
+    };
+    if candidate_wer < baseline_wer && tier_xrt(candidate, tier) >= tier_xrt(baseline, tier) {
+        Verdict::Beats
+    } else {
+        Verdict::DoesNotBeat
+    }
+}
+
+/// The keep/propose decision: question (a), with question (b) as the basis
+/// when it is the stronger one. `None` means the candidate cleared neither
+/// bar.
+pub fn proposal(
+    with: &ModelReport,
+    alone: &ModelReport,
+    live_asr: &ModelReport,
+    live_pair: &ModelReport,
+    source: &str,
+) -> Option<String> {
+    let a = beats(with, live_asr, "public");
+    let b = beats(alone, live_pair, "public");
+    let basis = match (a, b) {
+        (_, Verdict::Beats) => {
+            let one_model = one_model_answer(alone, live_pair);
+            format!("the one-model answer: {one_model}")
+        }
+        (Verdict::Beats, _) => {
+            let against = answer("the candidate", with, "the live ASR", live_asr, "public");
+            format!("beats the live ASR: {against}")
+        }
+        _ => return None,
+    };
+    let label = &with.label;
+    Some(format!("{source} {label}: {basis}"))
+}
+
+/// Whether the candidate's file is worth keeping. Only a measured defeat on
+/// both bars deletes it: a tier with no WER cannot say a candidate lost.
+pub fn retain_file(
+    with: &ModelReport,
+    alone: &ModelReport,
+    live_asr: &ModelReport,
+    live_pair: &ModelReport,
+) -> bool {
+    let a = beats(with, live_asr, "public");
+    let b = beats(alone, live_pair, "public");
+    !matches!((a, b), (Verdict::DoesNotBeat, Verdict::DoesNotBeat))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    use forge_dictate::Stages;
+    use forge_dictate::bench::{Clip, ClipSource, Corpus, CorpusId, Metrics, StageTotals};
     use forge_dictate::catalogue::SpeedRow;
 
     fn entry(
@@ -691,6 +1020,28 @@ mod tests {
         }
     }
 
+    fn tier_row(tier: &str, wer: Option<f64>, xrt_wall: f64) -> TierReport {
+        TierReport {
+            tier: tier.to_owned(),
+            clips: 32,
+            audio_seconds: 156.0,
+            wer,
+            term_accuracy: None,
+            mean_divergence: None,
+            xrt_wall,
+        }
+    }
+
+    fn model(label: &str, public_wer: Option<f64>, xrt_wall: f64) -> ModelReport {
+        ModelReport {
+            label: label.to_owned(),
+            source: "feed".to_owned(),
+            tiers: vec![tier_row("public", public_wer, xrt_wall)],
+            disagreements: Vec::new(),
+            one_model: None,
+        }
+    }
+
     /// **A tested pair is the diff's whole guard.** Without the skip, the
     /// same model would be downloaded and benched every week.
     #[test]
@@ -699,7 +1050,7 @@ mod tests {
         let mut tested = TestedState::default();
         tested.record(pair("a", "Q4_K_M"));
 
-        let selection = select_candidates(&entries, &tested, &[], 1_000, 2);
+        let selection = select_candidates(&entries, &tested, &[], "en", 1_000, 2);
 
         assert!(selection.candidates.is_empty(), "a tested pair is not offered again");
         assert!(
@@ -719,6 +1070,7 @@ mod tests {
             &entries,
             &TestedState::default(),
             &["a-Q4_K_M.gguf".to_owned()],
+            "en",
             1_000,
             2,
         );
@@ -740,7 +1092,7 @@ mod tests {
             entry("b", "Q4_K_M", "b-Q4_K_M.gguf", 600, Some(10.0)),
         ];
 
-        let selection = select_candidates(&entries, &TestedState::default(), &[], 1_000, 2);
+        let selection = select_candidates(&entries, &TestedState::default(), &[], "en", 1_000, 2);
 
         assert_eq!(selection.candidates.len(), 1, "only the first fits");
         assert!(selection.bytes <= 1_000);
@@ -760,7 +1112,7 @@ mod tests {
             entry("c", "Q4_K_M", "c-Q4_K_M.gguf", 10, Some(10.0)),
         ];
 
-        let selection = select_candidates(&entries, &TestedState::default(), &[], 1_000, 2);
+        let selection = select_candidates(&entries, &TestedState::default(), &[], "en", 1_000, 2);
 
         assert_eq!(selection.candidates.len(), 2);
         assert_eq!(selection.candidates[0].variant, "a", "the fastest first");
@@ -776,7 +1128,7 @@ mod tests {
             entry("fast", "Q4_K_M", "fast-Q4_K_M.gguf", 10, Some(90.0)),
         ];
 
-        let selection = select_candidates(&entries, &TestedState::default(), &[], 1_000, 2);
+        let selection = select_candidates(&entries, &TestedState::default(), &[], "en", 1_000, 2);
 
         assert_eq!(selection.candidates[0].variant, "fast");
     }
@@ -791,7 +1143,8 @@ mod tests {
         }
         let newer = entry("newer", "Q4_K_M", "newer-Q4_K_M.gguf", 10, Some(10.0));
 
-        let selection = select_candidates(&[older, newer], &TestedState::default(), &[], 1_000, 2);
+        let selection =
+            select_candidates(&[older, newer], &TestedState::default(), &[], "en", 1_000, 2);
 
         assert_eq!(selection.candidates[0].variant, "newer");
     }
@@ -809,7 +1162,7 @@ mod tests {
             url: None,
         }];
 
-        let selection = select_candidates(&[entry], &TestedState::default(), &[], 1_000, 2);
+        let selection = select_candidates(&[entry], &TestedState::default(), &[], "en", 1_000, 2);
 
         assert!(selection.candidates.is_empty());
         assert!(
@@ -826,7 +1179,7 @@ mod tests {
         let mut entry = entry("norm", "Q4_K_M", "norm-Q4_K_M.gguf", 10, Some(10.0));
         entry.kind = EntryKind::Normalizer;
 
-        let selection = select_candidates(&[entry], &TestedState::default(), &[], 1_000, 2);
+        let selection = select_candidates(&[entry], &TestedState::default(), &[], "en", 1_000, 2);
 
         assert!(selection.candidates.is_empty());
     }
@@ -840,7 +1193,7 @@ mod tests {
         let mut entry = entry("lang-id", "Q8_0", "lang-id-Q8_0.gguf", 10, Some(10.0));
         entry.capabilities.transcribe = forge_dictate::catalogue::Support { supported: false };
 
-        let selection = select_candidates(&[entry], &TestedState::default(), &[], 1_000, 2);
+        let selection = select_candidates(&[entry], &TestedState::default(), &[], "en", 1_000, 2);
 
         assert!(selection.candidates.is_empty());
         assert!(
@@ -848,6 +1201,23 @@ mod tests {
             "skipped: {:?}",
             selection.skipped
         );
+    }
+
+    /// **The language is the configured one.** An entry that names another
+    /// language is not a candidate, and the same entry is when the config
+    /// names it.
+    #[test]
+    fn the_language_is_the_configured_one() {
+        let mut french = entry("fr", "Q4_K_M", "fr-Q4_K_M.gguf", 10, Some(10.0));
+        french.languages = vec!["fr".to_owned()];
+
+        let none =
+            select_candidates(&[french.clone()], &TestedState::default(), &[], "en", 1_000, 2);
+        assert!(none.candidates.is_empty(), "an English run does not take a French model");
+        assert!(none.skipped.iter().any(|skip| skip.reason == "does not name en"));
+
+        let taken = select_candidates(&[french], &TestedState::default(), &[], "fr", 1_000, 2);
+        assert_eq!(taken.candidates.len(), 1, "a French run takes it");
     }
 
     /// The tested state round-trips through its file, and a missing file is
@@ -890,12 +1260,34 @@ mod tests {
         assert!(file.exists(), "a loadable candidate stays for the bench");
     }
 
+    /// A delete that fails is not swallowed: the report carries it.
+    #[test]
+    fn the_smoke_gate_reports_a_failed_delete() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let outcome = smoke_gate(dir.path(), || Err("the model would not load".to_owned()));
+
+        let reason = outcome.expect_err("the smoke still failed");
+        assert!(reason.contains("could not be deleted"), "got: {reason}");
+    }
+
+    /// The remote-name guard: one normal component, nothing else.
+    #[test]
+    fn a_remote_file_name_must_be_one_component() {
+        assert!(safe_file_name("a-Q4_K_M.gguf").is_ok());
+        assert!(safe_file_name("../a.gguf").is_err());
+        assert!(safe_file_name("nested/a.gguf").is_err());
+        assert!(safe_file_name("/a.gguf").is_err());
+        assert!(safe_file_name("").is_err());
+    }
+
     /// **A direct hit is unverified and carries its own resolve URL.** The
-    /// report marks it direct so the feed stays the recommendation source.
+    /// report marks it direct so the feed stays the recommendation source,
+    /// and a nested repo path keeps only its file name for the cache.
     #[test]
     fn a_direct_hit_is_marked_unverified_and_names_its_url() {
         let siblings = serde_json::json!([
-            { "rfilename": "model.Q4_K_M.gguf", "size": 100, "lfs": { "sha256": "ab" } },
+            { "rfilename": "gguf/model.Q4_K_M.gguf", "size": 100, "lfs": { "sha256": "ab" } },
             { "rfilename": "README.md", "size": 10 },
         ]);
 
@@ -903,14 +1295,26 @@ mod tests {
         let candidate = hits[0].candidate();
 
         assert_eq!(candidate.source, CandidateSource::Direct);
+        assert_eq!(candidate.source.label(), "direct (unverified)");
         assert_eq!(candidate.variant, "owner/model");
+        assert_eq!(candidate.file, "model.Q4_K_M.gguf");
         assert_eq!(candidate.quant, "Q4_K_M");
         assert_eq!(candidate.size, 100);
         assert_eq!(candidate.sha256.as_deref(), Some("ab"));
         assert_eq!(
             candidate.url.as_deref(),
-            Some("https://huggingface.co/owner/model/resolve/main/model.Q4_K_M.gguf")
+            Some("https://huggingface.co/owner/model/resolve/main/gguf/model.Q4_K_M.gguf")
         );
+    }
+
+    /// **The quant match is a token, not a substring.** `F16` lives inside
+    /// `BF16`; a plain contains would record the wrong quantisation.
+    #[test]
+    fn the_quant_match_is_a_whole_token() {
+        assert!(quant_in_name("model.bf16.gguf", "BF16"));
+        assert!(!quant_in_name("model.bf16.gguf", "F16"));
+        assert!(quant_in_name("model.f16.gguf", "F16"));
+        assert!(quant_in_name("model.q4_k_m.gguf", "Q4_K_M"));
     }
 
     /// The direct selection obeys the tested state, the budget and the cap.
@@ -919,6 +1323,7 @@ mod tests {
         let hits = vec![
             DirectHit {
                 repo: "a/model".to_owned(),
+                path: "a-Q4_K_M.gguf".to_owned(),
                 file: "a-Q4_K_M.gguf".to_owned(),
                 size: 600,
                 sha256: None,
@@ -927,6 +1332,7 @@ mod tests {
             },
             DirectHit {
                 repo: "b/model".to_owned(),
+                path: "b-Q4_K_M.gguf".to_owned(),
                 file: "b-Q4_K_M.gguf".to_owned(),
                 size: 600,
                 sha256: None,
@@ -968,5 +1374,147 @@ mod tests {
         assert_eq!(spec.size, 100);
         assert_eq!(spec.sha256.as_deref(), Some("ab"));
         assert_eq!(spec.url, "https://weights.invalid/a-Q4_K_M.gguf");
+    }
+
+    /// **The plan's (a): the candidate with the normalizer against the live
+    /// ASR alone.** A lower known-word WER at equal or better realtime
+    /// factor is the bar.
+    #[test]
+    fn question_a_is_the_candidate_against_the_live_asr() {
+        let candidate = model("candidate", Some(0.0093), 30.7);
+        let live_asr = model("live ASR", Some(0.0280), 17.2);
+
+        assert_eq!(beats(&candidate, &live_asr, "public"), Verdict::Beats);
+        assert_eq!(beats(&live_asr, &candidate, "public"), Verdict::DoesNotBeat);
+        assert!(answer_a(&candidate, &live_asr).contains("beats the live ASR"));
+    }
+
+    /// **The plan's (b) is the no-normalizer candidate against the live
+    /// pair, and it is the proposal's basis when it is the stronger one.**
+    #[test]
+    fn question_b_is_the_one_model_answer() {
+        let candidate = model("candidate", Some(0.02), 30.7);
+        let alone = model("candidate (no normalizer)", Some(0.0093), 40.0);
+        let live_asr = model("live ASR", Some(0.0090), 40.0);
+        let live_pair = model("live pair", Some(0.0280), 17.2);
+
+        assert_eq!(beats(&alone, &live_pair, "public"), Verdict::Beats);
+        assert_eq!(beats(&candidate, &live_asr, "public"), Verdict::DoesNotBeat);
+        let proposed =
+            proposal(&candidate, &alone, &live_asr, &live_pair, "feed").expect("proposal");
+        assert!(proposed.contains("the one-model answer"), "got: {proposed}");
+        assert!(retain_file(&candidate, &alone, &live_asr, &live_pair));
+    }
+
+    /// A candidate that clears neither bar is not proposed and its file goes.
+    #[test]
+    fn a_candidate_that_clears_neither_bar_is_not_proposed() {
+        let candidate = model("candidate", Some(0.05), 10.0);
+        let alone = model("candidate (no normalizer)", Some(0.05), 10.0);
+        let live_asr = model("live ASR", Some(0.02), 20.0);
+        let live_pair = model("live pair", Some(0.02), 20.0);
+
+        assert!(proposal(&candidate, &alone, &live_asr, &live_pair, "feed").is_none());
+        assert!(!retain_file(&candidate, &alone, &live_asr, &live_pair));
+    }
+
+    /// **A tier with no WER answers "not measured", never "does not beat",
+    /// and does not delete a file.**
+    #[test]
+    fn a_not_measured_tier_is_not_a_defeat() {
+        let candidate = model("candidate", None, 10.0);
+        let alone = model("candidate (no normalizer)", None, 10.0);
+        let live_asr = model("live ASR", Some(0.02), 20.0);
+        let live_pair = model("live pair", Some(0.02), 20.0);
+
+        assert_eq!(beats(&candidate, &live_asr, "public"), Verdict::NotMeasured);
+        assert_eq!(beats(&alone, &live_pair, "public"), Verdict::NotMeasured);
+        assert!(proposal(&candidate, &alone, &live_asr, &live_pair, "feed").is_none());
+        assert!(
+            retain_file(&candidate, &alone, &live_asr, &live_pair),
+            "a not-measured tier cannot be a measured defeat"
+        );
+        assert!(one_model_answer(&alone, &live_pair).contains("not measured"));
+    }
+
+    /// The divergence and the disagreement's take identity come from the
+    /// clip the run scored.
+    #[test]
+    fn the_divergence_names_the_take_it_scored() {
+        let clip = Clip {
+            source: ClipSource::Take,
+            id: "take-1791432905239".to_owned(),
+            audio: vec![0.0; 8],
+            truth: None,
+            recorded: Some("hello world".to_owned()),
+        };
+        let corpus = Corpus {
+            clips: vec![clip],
+            id: CorpusId { clips: 1, audio_seconds: 0, sha256: "abc".to_owned() },
+        };
+        let clips = vec![ClipRun {
+            index: 0,
+            text: "hello there".to_owned(),
+            stages: Stages::default(),
+            wall: Duration::ZERO,
+            matched: Some(false),
+        }];
+
+        let (mean, disagreements) = divergence(&clips, &corpus);
+
+        assert!(mean.is_some_and(|rate| rate > 0.0), "one word of two is an edit");
+        assert_eq!(disagreements.len(), 1);
+        assert_eq!(disagreements[0].take, "take-1791432905239");
+        assert_eq!(disagreements[0].in_use, "hello world");
+    }
+
+    /// The table row carries the tier's own audio and term accuracy, so a
+    /// one-clip 20 ms row cannot read as a full-corpus result.
+    #[test]
+    fn the_tier_row_carries_its_audio_and_terms() {
+        let metrics = Metrics {
+            clips: 1,
+            audio_seconds: 0.02,
+            wall_seconds: 0.2,
+            xrt_wall: 0.1,
+            term_accuracy: Some(0.0),
+            wer: Some(1.0),
+            matched: None,
+            stages_ms: StageTotals::default(),
+        };
+
+        let row = tier_report("read_aloud", &metrics, None);
+
+        assert_eq!(row.clips, 1);
+        assert!((row.audio_seconds - 0.02).abs() < f64::EPSILON);
+        assert_eq!(row.term_accuracy, Some(0.0));
+    }
+
+    /// A record the live role does not run is named; a record it does run
+    /// is not.
+    #[test]
+    fn an_installed_record_not_in_use_is_named() {
+        let installed = vec![
+            InstalledModel {
+                variant: "a".to_owned(),
+                file: "a-Q4_K_M.gguf".to_owned(),
+                url: "https://weights.invalid/a-Q4_K_M.gguf".to_owned(),
+                size: 100,
+                facts: ModelFacts::default(),
+                at: "2026-11-01T00:00:00Z".to_owned(),
+            },
+            InstalledModel {
+                variant: "live".to_owned(),
+                file: "live.gguf".to_owned(),
+                url: "https://weights.invalid/live.gguf".to_owned(),
+                size: 100,
+                facts: ModelFacts::default(),
+                at: "2026-11-01T00:00:00Z".to_owned(),
+            },
+        ];
+
+        let named = installed_not_in_use(&installed, &["live.gguf".to_owned()]);
+
+        assert_eq!(named, vec!["a-Q4_K_M.gguf".to_owned()]);
     }
 }

@@ -49,6 +49,9 @@ pub enum ClipSource {
 /// One clip of audio, and whatever is known about it.
 pub struct Clip {
     pub source: ClipSource,
+    /// The take's own directory name or the public clip's file name, so a
+    /// disagreement names audio a reader can find.
+    pub id: String,
     pub audio: Vec<f32>,
     /// The words a run is scored against where they are KNOWN: the
     /// read-aloud passage, and nothing else. `None` for a saved take,
@@ -170,6 +173,7 @@ pub fn public_corpus(dir: &Path) -> Result<Vec<Clip>, Error> {
         let audio = decode_wav(&path)?;
         clips.push(Clip {
             source: ClipSource::Public,
+            id: entry.file,
             audio,
             truth: Some(entry.transcript),
             recorded: None,
@@ -221,7 +225,7 @@ pub fn takes(dir: &Path) -> Result<Vec<Clip>, Error> {
         }
         let audio = decode_wav(&wav)?;
         let recorded = std::fs::read_to_string(take.join("text.txt")).ok();
-        clips.push(Clip { source: ClipSource::Take, audio, truth: None, recorded });
+        clips.push(Clip { source: ClipSource::Take, id: name, audio, truth: None, recorded });
     }
     Ok(clips)
 }
@@ -882,6 +886,7 @@ mod tests {
 
         let passage = Clip {
             source: ClipSource::ReadAloud,
+            id: "passage".to_owned(),
             audio: vec![0.0; 8],
             truth: Some("a passage".to_owned()),
             recorded: None,

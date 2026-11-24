@@ -339,6 +339,16 @@ fn ensure(
     cache: &DigestCache,
     on_progress: &mut Reporter<'_>,
 ) -> Result<(), Error> {
+    // **The file name is one normal component.** The spec's file crosses
+    // from a feed document or a Hub listing and is joined onto the models
+    // directory; an absolute path or a `..` would write and verify outside
+    // it. The same rule the public-corpus manifest is held to.
+    let mut components = Path::new(&spec.file).components();
+    let first = components.next();
+    let rest = components.next();
+    if !matches!((first, rest), (Some(std::path::Component::Normal(_)), None)) {
+        return Err(Error::Bench { message: format!("{} is not a single file name", spec.file) });
+    }
     let target = dir.join(&spec.file);
     if target.try_exists().map_err(|source| Error::Io { path: target.clone(), source })? {
         match check_present(&target, spec, cache, on_progress) {

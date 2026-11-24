@@ -8,25 +8,29 @@
 //!
 //! **It measures the models the live roles resolve to on this machine**,
 //! off a copy of the store the running server holds. It never writes that
-//! store: its results go to a JSON file under the bench cache, and its
-//! candidates are downloaded there, never into the models directory.
+//! store or the server's catalogue cache: its results go to a JSON file
+//! under the bench cache, and its candidates are downloaded there, never
+//! into the models directory.
 //!
-//! **One table per model**: the tier, its clips, the word error rate where
-//! the words are known, the mean divergence on the saved takes, the
-//! realtime factor, and the takes where a candidate's words differ from
-//! the in-use model's, with both texts.
+//! **One table per model**: the tier, its clips, its audio seconds, the
+//! word error rate where the words are known, the term accuracy where the
+//! corpus has it, the mean divergence on the saved takes, the realtime
+//! factor, and the takes where a candidate's words differ from the in-use
+//! model's, with both texts.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
 
 use forge_dictate::Config;
-use forge_dictate::bench::{ClipRun, Corpus, Tier};
-use forge_workspace::bench::{LiveRoles, resolved_live_roles};
+use forge_dictate::bench::{Corpus, Tier};
+use forge_workspace::bench::{LiveRoles, installed_records, resolved_live_roles};
 use forge_workspace::sweep::{
-    CandidateSource, Disagreement, DownloadReport, ModelReport, SweepReport, TestedPair,
-    TierReport, bench_cache_dir, download_candidate, load_smoke, load_tested, save_tested,
-    search_hugging_face, select_candidates, select_direct, smoke_gate, write_report,
+    Candidate, DownloadReport, ModelReport, SweepReport, TestedPair, TestedState, answer_a,
+    answer_c, bench_cache_dir, clean_download, divergence, download_candidate,
+    installed_not_in_use, load_smoke, load_tested, one_model_answer, percent, proposal,
+    retain_file, save_tested, search_hugging_face, select_candidates, select_direct, smoke_gate,
+    tier_report, write_live_report, write_report,
 };
 
 /// `$CLAUDE_CONFIG_DIR`, else `~/.claude`: the config dir a running forge
@@ -50,6 +54,11 @@ fn live_roles() -> LiveRoles {
     resolved_live_roles(&config_dir(), &app_support()).unwrap_or_else(|error| {
         panic!("the live dictate roles must resolve before a sweep can measure them: {error}")
     })
+}
+
+/// The language dictation runs, from `[dictate] language`.
+fn language(live: &LiveRoles) -> String {
+    live.config.language.clone().unwrap_or_else(|| "en".to_owned())
 }
 
 /// The live pair's config with the bench's own stores off: a bench run must
@@ -143,91 +152,10 @@ fn bench_three_tiers(
         })
         .map_err(|error| format!("{label} on {}: {error}", tier_label(tier)))?;
         let (mean_divergence, diffs) = divergence(&clips, &corpus);
-        tiers.push(TierReport {
-            tier: tier_label(tier).to_owned(),
-            clips: metrics.clips,
-            wer: metrics.wer,
-            mean_divergence,
-            xrt_wall: metrics.xrt_wall,
-        });
+        tiers.push(tier_report(tier_label(tier), &metrics, mean_divergence));
         disagreements.extend(diffs);
     }
     Ok(ModelReport { label, source: source.to_owned(), tiers, disagreements, one_model: None })
-}
-
-/// The mean word error rate against the takes' own recorded words, and the
-/// takes where the run's words differ, with both texts.
-fn divergence(clips: &[ClipRun], corpus: &Corpus) -> (Option<f64>, Vec<Disagreement>) {
-    let mut total = 0.0_f64;
-    let mut count = 0_u32;
-    let mut disagreements = Vec::new();
-    for run in clips {
-        let Some(clip) = corpus.clips.get(run.index) else {
-            continue;
-        };
-        let Some(recorded) = clip.recorded.as_deref() else {
-            continue;
-        };
-        total += forge_dictate::bench::wer(&run.text, recorded);
-        count += 1;
-        if run.matched == Some(false) {
-            disagreements.push(Disagreement {
-                clip: run.index,
-                candidate: run.text.clone(),
-                in_use: recorded.to_owned(),
-            });
-        }
-    }
-    let mean = (count > 0).then(|| total / f64::from(count));
-    (mean, disagreements)
-}
-
-fn tier_wer(model: &ModelReport, tier: &str) -> Option<f64> {
-    model.tiers.iter().find(|row| row.tier == tier).and_then(|row| row.wer)
-}
-
-fn tier_xrt(model: &ModelReport, tier: &str) -> f64 {
-    model.tiers.iter().find(|row| row.tier == tier).map_or(0.0, |row| row.xrt_wall)
-}
-
-fn percent(value: Option<f64>) -> String {
-    value.map_or_else(|| "-".to_owned(), |rate| format!("{:.2}%", rate * 100.0))
-}
-
-/// The one-model question: does the run without the normalizer match or
-/// beat the live ASR+normalizer pair on the known words?
-fn one_model_answer(alone: &ModelReport, pair: &ModelReport) -> String {
-    let public_alone = tier_wer(alone, "public");
-    let public_pair = tier_wer(pair, "public");
-    let read_alone = tier_wer(alone, "read_aloud");
-    let read_pair = tier_wer(pair, "read_aloud");
-    let matches_pair = match (public_alone, public_pair) {
-        (Some(candidate), Some(live)) => candidate <= live,
-        _ => false,
-    };
-    let verdict = if matches_pair { "matches or beats" } else { "does not match" };
-    let public_alone = percent(public_alone);
-    let public_pair = percent(public_pair);
-    let read_alone = percent(read_alone);
-    let read_pair = percent(read_pair);
-    let alone_rtf = format!("{:.1}x", tier_xrt(alone, "public"));
-    let pair_rtf = format!("{:.1}x", tier_xrt(pair, "public"));
-    format!(
-        "the model without the normalizer {verdict} the live ASR+normalizer pair on public WER \
-         ({public_alone} vs {public_pair}; read-aloud {read_alone} vs {read_pair}); RTF \
-         {alone_rtf} vs {pair_rtf}"
-    )
-}
-
-/// Whether a candidate beats the live pair on the plan's own axis: a lower
-/// known-word WER at equal or better realtime factor.
-fn beats_live(candidate: &ModelReport, live: &ModelReport) -> bool {
-    match (tier_wer(candidate, "public"), tier_wer(live, "public")) {
-        (Some(candidate_wer), Some(live_wer)) => {
-            candidate_wer < live_wer && tier_xrt(candidate, "public") >= tier_xrt(live, "public")
-        }
-        _ => false,
-    }
 }
 
 fn live_files(live: &LiveRoles) -> Vec<String> {
@@ -261,18 +189,116 @@ fn public_clip(live: &LiveRoles) -> Vec<f32> {
         .unwrap_or_default()
 }
 
+/// The records the live roles do not run, off a store copy.
+fn prunable(live: &LiveRoles) -> Vec<String> {
+    let records = installed_records(&config_dir(), &app_support()).unwrap_or_default();
+    installed_not_in_use(&records, &live_files(live))
+}
+
+/// One transient failure: reported, cleaned, and never recorded, so the
+/// next run retries it.
+fn record_transient(
+    report: &mut SweepReport,
+    candidate: &Candidate,
+    source: &str,
+    reason: String,
+    cache: &Path,
+) {
+    clean_download(cache, &candidate.file);
+    report.downloaded.push(DownloadReport {
+        variant: candidate.variant.clone(),
+        quant: candidate.quant.clone(),
+        file: candidate.file.clone(),
+        size: candidate.size,
+        sha256: candidate.sha256.clone(),
+        source: source.to_owned(),
+        outcome: "transient".to_owned(),
+        retained: false,
+        reason: Some(reason),
+    });
+}
+
+/// A deterministic verdict before or at the smoke (unloadable) or at the
+/// bench (failed): recorded, cleaned, never benched again by this state.
+fn record_verdict(
+    report: &mut SweepReport,
+    tested: &mut TestedState,
+    candidate: &Candidate,
+    source: &str,
+    outcome: &str,
+    reason: String,
+    cache: &Path,
+) {
+    clean_download(cache, &candidate.file);
+    report.downloaded.push(DownloadReport {
+        variant: candidate.variant.clone(),
+        quant: candidate.quant.clone(),
+        file: candidate.file.clone(),
+        size: candidate.size,
+        sha256: candidate.sha256.clone(),
+        source: source.to_owned(),
+        outcome: outcome.to_owned(),
+        retained: false,
+        reason: Some(reason),
+    });
+    tested.record(TestedPair {
+        variant: candidate.variant.clone(),
+        quant: candidate.quant.clone(),
+        at: now(),
+        outcome: outcome.to_owned(),
+    });
+}
+
+/// A bench that produced a result: kept as a proposal or deleted.
+fn record_bench(
+    report: &mut SweepReport,
+    tested: &mut TestedState,
+    candidate: &Candidate,
+    source: &str,
+    retained: bool,
+    cache: &Path,
+) {
+    if !retained {
+        clean_download(cache, &candidate.file);
+    }
+    report.downloaded.push(DownloadReport {
+        variant: candidate.variant.clone(),
+        quant: candidate.quant.clone(),
+        file: candidate.file.clone(),
+        size: candidate.size,
+        sha256: candidate.sha256.clone(),
+        source: source.to_owned(),
+        outcome: "benched".to_owned(),
+        retained,
+        reason: None,
+    });
+    tested.record(TestedPair {
+        variant: candidate.variant.clone(),
+        quant: candidate.quant.clone(),
+        at: now(),
+        outcome: "benched".to_owned(),
+    });
+}
+
 fn print_model(model: &ModelReport) {
     let label = &model.label;
     let source = &model.source;
     println!("\n--- {label} ({source}) ---");
-    println!("{:<12} {:>5} {:>9} {:>13} {:>8}", "tier", "clips", "WER", "divergence", "RTF");
+    println!(
+        "{:<12} {:>5} {:>8} {:>9} {:>9} {:>13} {:>8}",
+        "tier", "clips", "audio", "WER", "terms", "divergence", "RTF"
+    );
     for row in &model.tiers {
         let tier = &row.tier;
         let clips = row.clips;
+        let audio = format!("{:.1}s", row.audio_seconds);
         let wer = percent(row.wer);
+        let terms = percent(row.term_accuracy);
         let divergence = percent(row.mean_divergence);
         let xrt = row.xrt_wall;
-        println!("{tier:<12} {clips:>5} {wer:>9} {divergence:>13} {xrt:>8.1}x");
+        println!(
+            "{tier:<12} {clips:>5} {audio:>8} {wer:>9} {terms:>9} {divergence:>13} {xrt:>8.1}x"
+        );
     }
     if let Some(answer) = &model.one_model {
         println!("one-model: {answer}");
@@ -283,9 +309,10 @@ fn print_model(model: &ModelReport) {
     println!("takes where the words differ:");
     for row in &model.disagreements {
         let clip = row.clip;
+        let take = &row.take;
         let candidate = &row.candidate;
         let in_use = &row.in_use;
-        println!("  clip {clip}: candidate {candidate:?} vs in-use {in_use:?}");
+        println!("  clip {clip} (take {take}): candidate {candidate:?} vs in-use {in_use:?}");
     }
 }
 
@@ -293,11 +320,27 @@ fn print_report(report: &SweepReport) {
     let at = &report.at;
     println!("\n=== dictate sweep {at} ===");
     if let Some(release) = &report.feed_release {
-        let entries = report.models.len();
-        println!("feed release {release}; {entries} models measured");
+        let unreadable = report.feed_skipped;
+        println!("feed release {release}; {unreadable} unreadable documents");
+    }
+    if report.budget_bytes > 0 {
+        let budget = report.budget_bytes;
+        println!("budget: {budget} bytes");
+    }
+    if !report.candidates.is_empty() {
+        println!("candidates:");
+        for candidate in &report.candidates {
+            println!("  {candidate}");
+        }
     }
     for model in &report.models {
         print_model(model);
+    }
+    if !report.answers.is_empty() {
+        println!("\nplan answers:");
+        for answer in &report.answers {
+            println!("  {answer}");
+        }
     }
     if report.downloaded.is_empty() {
         println!("\nno candidate was downloaded");
@@ -307,15 +350,23 @@ fn print_report(report: &SweepReport) {
             let variant = &row.variant;
             let quant = &row.quant;
             let file = &row.file;
+            let source = &row.source;
             let outcome = &row.outcome;
+            let kept = if row.retained { "kept" } else { "deleted" };
             let reason = row.reason.as_deref().unwrap_or("");
-            println!("  {variant} {quant} -> {file}: {outcome} {reason}");
+            println!("  {variant} {quant} -> {file}: {source} {outcome} ({kept}) {reason}");
         }
     }
     if !report.proposed.is_empty() {
         println!("\nproposals (nothing switched):");
-        for proposal in &report.proposed {
-            println!("  {proposal}");
+        for proposed in &report.proposed {
+            println!("  {proposed}");
+        }
+    }
+    if !report.installed_not_in_use.is_empty() {
+        println!("\ninstalled but not in use (remove via the models page):");
+        for file in &report.installed_not_in_use {
+            println!("  {file}");
         }
     }
 }
@@ -324,7 +375,7 @@ fn print_report(report: &SweepReport) {
 /// stays the recommendation source.
 fn direct_selection(
     catalogue: &forge_dictate::catalogue::Catalogue,
-    tested: &forge_workspace::sweep::TestedState,
+    tested: &TestedState,
     budget: u64,
 ) -> forge_workspace::sweep::Selection {
     let mut families: Vec<String> = Vec::new();
@@ -339,7 +390,7 @@ fn direct_selection(
 
 /// The real sweep over the installed live models: the pair and the ASR
 /// alone over the saved takes and the known-word tiers, with no feed and no
-/// download.
+/// download. Its report is `live-results.json`, apart from the weekly run's.
 #[test]
 #[ignore = "needs the live models on disk; run via just dictate-sweep-live"]
 fn dictate_sweep_live() {
@@ -363,25 +414,30 @@ fn dictate_sweep_live() {
         "live",
     )
     .expect("the live ASR must load");
-    alone.one_model = Some(one_model_answer(&alone, &pair));
+    let answer = one_model_answer(&alone, &pair);
+    alone.one_model = Some(answer.clone());
 
     let report = SweepReport {
         at: now(),
         feed_release: None,
         feed_skipped: 0,
         budget_bytes: 0,
+        candidates: Vec::new(),
+        answers: vec![format!("live ASR (no normalizer): {answer}")],
         downloaded: Vec::new(),
         models: vec![pair, alone],
         proposed: Vec::new(),
+        installed_not_in_use: prunable(&live),
     };
     print_report(&report);
-    write_report(&cache, &report).expect("the report must write");
-    let path = cache.join(forge_workspace::sweep::RESULTS_FILE);
+    write_live_report(&cache, &report).expect("the report must write");
+    let path = cache.join(forge_workspace::sweep::LIVE_RESULTS_FILE);
     println!("\nwrote {}", path.display());
 }
 
 /// The discovery dry run: refresh the feed, diff it against the tested
-/// state, and print the candidates. Nothing is downloaded.
+/// state, and print the candidates. Nothing is downloaded and the server's
+/// catalogue cache is not touched.
 #[test]
 #[ignore = "needs the network; run via just dictate-sweep-dry"]
 fn dictate_sweep_discovery() {
@@ -391,11 +447,16 @@ fn dictate_sweep_discovery() {
     let source = forge_dictate::catalogue::CatalogueSource::default();
     let catalogue =
         forge_dictate::catalogue::fetch_catalogue(&source).expect("the feed must refresh");
-    forge_dictate::catalogue::write_catalogue_cache(&app.join("dictate-catalogue"), &catalogue)
-        .expect("the feed must cache");
     let tested = load_tested(&cache);
     let budget = sweep_budget();
-    let selection = select_candidates(&catalogue.entries, &tested, &live_files(&live), budget, 2);
+    let selection = select_candidates(
+        &catalogue.entries,
+        &tested,
+        &live_files(&live),
+        &language(&live),
+        budget,
+        2,
+    );
 
     println!("\n=== dictate sweep discovery (no download) ===");
     let release = catalogue.release.as_deref().unwrap_or("unknown");
@@ -424,6 +485,13 @@ fn dictate_sweep_discovery() {
             println!("  {variant} {quant}: {reason}");
         }
     }
+    let stale = prunable(&live);
+    if !stale.is_empty() {
+        println!("installed but not in use (remove via the models page):");
+        for file in &stale {
+            println!("  {file}");
+        }
+    }
     if std::env::var("DICTATE_SWEEP_DIRECT").is_ok() {
         let direct = direct_selection(&catalogue, &tested, budget);
         let hits = direct.candidates.len();
@@ -439,8 +507,8 @@ fn dictate_sweep_discovery() {
 
 /// The weekly run: refresh the feed, take at most two candidates within the
 /// budget, download them into the bench cache, smoke each one, bench what
-/// loads over the takes and the known-word tiers, and delete what did not
-/// beat the live pair.
+/// loads over the takes and the known-word tiers, answer the plan's three
+/// questions, and delete what did not clear either bar.
 #[test]
 #[ignore = "needs the live models, the network and the run's budget; run via just dictate-sweep"]
 fn dictate_sweep() {
@@ -453,15 +521,19 @@ fn dictate_sweep() {
     let source = forge_dictate::catalogue::CatalogueSource::default();
     let catalogue =
         forge_dictate::catalogue::fetch_catalogue(&source).expect("the feed must refresh");
-    forge_dictate::catalogue::write_catalogue_cache(&app.join("dictate-catalogue"), &catalogue)
-        .expect("the feed must cache");
     let mut tested = load_tested(&cache);
     let budget = sweep_budget();
-    let mut selection =
-        select_candidates(&catalogue.entries, &tested, &live_files(&live), budget, 2);
+    let mut selection = select_candidates(
+        &catalogue.entries,
+        &tested,
+        &live_files(&live),
+        &language(&live),
+        budget,
+        2,
+    );
     // The feed is the recommendation source; the direct Hub search is the
-    // fallback for a week the feed has nothing new. Every direct hit must
-    // pass the same load smoke before its bench.
+    // fallback for a week the feed has nothing new, behind its own opt-in.
+    // Every direct hit must pass the same load smoke before its bench.
     if selection.candidates.is_empty() && std::env::var("DICTATE_SWEEP_DIRECT").is_ok() {
         selection = direct_selection(&catalogue, &tested, budget);
     }
@@ -482,15 +554,28 @@ fn dictate_sweep() {
     .expect("the live ASR must load");
     alone.one_model = Some(one_model_answer(&alone, &pair));
     let live_pair = pair.clone();
+    let live_alone = alone.clone();
 
+    let candidates: Vec<String> = selection
+        .candidates
+        .iter()
+        .map(|candidate| {
+            let variant = &candidate.variant;
+            let quant = &candidate.quant;
+            format!("{variant} {quant}")
+        })
+        .collect();
     let mut report = SweepReport {
         at: now(),
         feed_release: catalogue.release.clone(),
         feed_skipped: catalogue.skipped,
         budget_bytes: budget,
+        candidates,
+        answers: Vec::new(),
         downloaded: Vec::new(),
         models: vec![pair, alone],
         proposed: Vec::new(),
+        installed_not_in_use: prunable(&live),
     };
 
     let clip = public_clip(&live);
@@ -498,64 +583,49 @@ fn dictate_sweep() {
         .expect("the live normalizer must link into the bench cache");
 
     for candidate in &selection.candidates {
-        let unloadable = |report: &mut SweepReport,
-                          tested: &mut forge_workspace::sweep::TestedState,
-                          reason: String| {
-            report.downloaded.push(DownloadReport {
-                variant: candidate.variant.clone(),
-                quant: candidate.quant.clone(),
-                file: candidate.file.clone(),
-                size: candidate.size,
-                sha256: candidate.sha256.clone(),
-                outcome: "unloadable".to_owned(),
-                reason: Some(reason),
-            });
-            tested.record(TestedPair {
-                variant: candidate.variant.clone(),
-                quant: candidate.quant.clone(),
-                at: now(),
-                outcome: "unloadable".to_owned(),
-            });
-        };
-
+        let source_label = candidate.source.label();
         let spec = match candidate.spec(&source) {
             Ok(spec) => spec,
             Err(reason) => {
-                unloadable(&mut report, &mut tested, reason);
+                record_transient(&mut report, candidate, source_label, reason, &cache);
                 continue;
             }
         };
         let path = match download_candidate(candidate, &spec, &cache) {
             Ok(path) => path,
             Err(reason) => {
-                unloadable(&mut report, &mut tested, reason);
+                record_transient(&mut report, candidate, source_label, reason, &cache);
                 continue;
             }
         };
         let with_normalizer = match candidate_config(&live, &cache, &candidate.file, true) {
             Ok(cfg) => cfg,
             Err(reason) => {
-                unloadable(&mut report, &mut tested, reason);
+                record_transient(&mut report, candidate, source_label, reason, &cache);
                 continue;
             }
         };
         let no_normalizer = match candidate_config(&live, &cache, &candidate.file, false) {
             Ok(cfg) => cfg,
             Err(reason) => {
-                unloadable(&mut report, &mut tested, reason);
+                record_transient(&mut report, candidate, source_label, reason, &cache);
                 continue;
             }
         };
         if let Err(reason) = smoke_gate(&path, || load_smoke(&no_normalizer, &clip)) {
-            unloadable(&mut report, &mut tested, reason);
+            record_verdict(
+                &mut report,
+                &mut tested,
+                candidate,
+                source_label,
+                "unloadable",
+                reason,
+                &cache,
+            );
             continue;
         }
 
         let file = &candidate.file;
-        let source_label = match candidate.source {
-            CandidateSource::Feed => "feed",
-            CandidateSource::Direct => "direct (unverified)",
-        };
         let with = match bench_three_tiers(
             &with_normalizer,
             &live,
@@ -564,7 +634,15 @@ fn dictate_sweep() {
         ) {
             Ok(model) => model,
             Err(reason) => {
-                unloadable(&mut report, &mut tested, reason);
+                record_verdict(
+                    &mut report,
+                    &mut tested,
+                    candidate,
+                    source_label,
+                    "failed",
+                    reason,
+                    &cache,
+                );
                 continue;
             }
         };
@@ -576,45 +654,33 @@ fn dictate_sweep() {
         ) {
             Ok(model) => model,
             Err(reason) => {
-                unloadable(&mut report, &mut tested, reason);
+                record_verdict(
+                    &mut report,
+                    &mut tested,
+                    candidate,
+                    source_label,
+                    "failed",
+                    reason,
+                    &cache,
+                );
                 continue;
             }
         };
-        let answer = one_model_answer(&without, &live_pair);
-        without.one_model = Some(answer.clone());
+        let b = one_model_answer(&without, &live_pair);
+        without.one_model = Some(b.clone());
+        let a = answer_a(&with, &live_alone);
+        let c = answer_c(&with, &without);
+        let variant = &candidate.variant;
+        let quant = &candidate.quant;
+        report.answers.push(format!("{variant} {quant}: {a}; {b}; {c}"));
 
-        let beats = beats_live(&with, &live_pair);
-        report.downloaded.push(DownloadReport {
-            variant: candidate.variant.clone(),
-            quant: candidate.quant.clone(),
-            file: candidate.file.clone(),
-            size: candidate.size,
-            sha256: candidate.sha256.clone(),
-            outcome: "benched".to_owned(),
-            reason: None,
-        });
-        tested.record(TestedPair {
-            variant: candidate.variant.clone(),
-            quant: candidate.quant.clone(),
-            at: now(),
-            outcome: "benched".to_owned(),
-        });
-        let candidate_wer = percent(tier_wer(&with, "public"));
-        let live_wer = percent(tier_wer(&live_pair, "public"));
-        let candidate_xrt = tier_xrt(&with, "public");
-        let live_xrt = tier_xrt(&live_pair, "public");
+        let kept = retain_file(&with, &without, &live_alone, &live_pair);
+        if let Some(proposed) = proposal(&with, &without, &live_alone, &live_pair, source_label) {
+            report.proposed.push(proposed);
+        }
+        record_bench(&mut report, &mut tested, candidate, source_label, kept, &cache);
         report.models.push(with);
         report.models.push(without);
-        if beats {
-            let variant = &candidate.variant;
-            let quant = &candidate.quant;
-            report.proposed.push(format!(
-                "{variant} {quant}: public WER {candidate_wer} vs {live_wer}; RTF \
-                 {candidate_xrt:.1}x vs {live_xrt:.1}x; {answer}"
-            ));
-        } else if let Err(error) = std::fs::remove_file(&path) {
-            println!("  {file} was not removed: {error}");
-        }
     }
 
     print_report(&report);
