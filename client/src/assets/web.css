@@ -5355,8 +5355,21 @@ details[open] > summary .arw { opacity: 1; }
 .settings-dialog .s { font-size: var(--fs-data); color: var(--muted);
   margin: 8px 0 16px; }
 .settings-dialog .acts { display: flex; justify-content: flex-end; gap: 8px; }
+/* The vault unlock's one extra: the password path under the gesture, and the
+   server's own refusal in place. */
+.settings-dialog .reveal { margin-top: 10px; }
+.settings-dialog .fields { display: flex; flex-direction: column; gap: 10px;
+  margin-top: 14px; }
+.settings-dialog .fields label { display: flex; flex-direction: column; gap: 4px;
+  font-family: var(--mono); font-size: 10.5px; color: var(--dim); }
+.settings-dialog .fields input { font-family: var(--mono); font-size: 13px;
+  color: var(--text); background: var(--bg); border: 1px solid var(--ctl);
+  border-radius: 7px; padding: 8px 9px; }
+.settings-dialog .why { font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--bad); margin-top: 12px; }
 
 @media (pointer: coarse) {
+  .settings-dialog .fields input { min-height: 44px; }
   .settings-page .settings-rail-item, .settings-page .settings-link,
   .settings-page .back, .settings-page .settings-mode, .settings-page .settings-add,
   .settings-page .settings-row-action, .settings-btn,
