@@ -1198,7 +1198,8 @@ mod tests {
              <status>completed</status>\n<summary>done</summary>\n</task-notification>",
         );
 
-        for (notice, signal) in [(by_mode, "the mode"), (by_tag, "the tag"), (by_text, "the text")] {
+        for (notice, signal) in [(by_mode, "the mode"), (by_tag, "the tag"), (by_text, "the text")]
+        {
             let rendered = settled(&[notice]);
             assert_eq!(rendered.turns.len(), 1, "a completion notice opens its own turn: {signal}");
             assert_eq!(rendered.turns[0].opens_at, 0, "at the notice row itself: {signal}");
