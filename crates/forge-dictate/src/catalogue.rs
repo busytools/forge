@@ -147,6 +147,11 @@ pub struct License {
 pub struct Capabilities {
     #[serde(default)]
     pub streaming: Support,
+    /// Whether the runtime can transcribe with it. A speech-feed document
+    /// that sets this false - a voice-activity or language-id model - is in
+    /// the catalogue but is not an ASR candidate.
+    #[serde(default)]
+    pub transcribe: Support,
 }
 
 /// One capability's support flag.
@@ -216,6 +221,11 @@ pub struct SpeedRow {
     pub quant: String,
     #[serde(default)]
     pub xrt_wall: Option<f64>,
+    /// The date the feed measured this row, `YYYY-MM-DD`. The discovery
+    /// ranks equal-speed candidates by it, so the newest measurement wins
+    /// a tie. Absent on a row whose source publishes no date.
+    #[serde(default)]
+    pub measured_on: Option<String>,
 }
 
 /// One measured accuracy row.
