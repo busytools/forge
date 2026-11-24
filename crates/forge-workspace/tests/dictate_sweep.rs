@@ -110,8 +110,15 @@ fn link_live_normalizer(live: &LiveRoles, cache: &Path) -> Result<(), String> {
     };
     let source = live.models_dir.join(&normalizer.file);
     let dest = cache.join(&normalizer.file);
-    if std::fs::symlink_metadata(&dest).is_ok() {
-        return Ok(());
+    // A link that is present but dangling is replaced: it would make every
+    // with-normalizer bench fail and the candidate be deleted for a reason
+    // the model did not cause.
+    if let Ok(metadata) = std::fs::symlink_metadata(&dest) {
+        let resolves = metadata.file_type().is_symlink() && dest.exists();
+        if resolves {
+            return Ok(());
+        }
+        std::fs::remove_file(&dest).map_err(|error| format!("{}: {error}", dest.display()))?;
     }
     std::fs::create_dir_all(cache).map_err(|error| format!("{}: {error}", cache.display()))?;
     std::os::unix::fs::symlink(&source, &dest)
@@ -190,9 +197,21 @@ fn public_clip(live: &LiveRoles) -> Vec<f32> {
 }
 
 /// The records the live roles do not run, off a store copy.
-fn prunable(live: &LiveRoles) -> Vec<String> {
-    let records = installed_records(&config_dir(), &app_support()).unwrap_or_default();
-    installed_not_in_use(&records, &live_files(live))
+fn prunable(live: &LiveRoles) -> Result<Vec<String>, String> {
+    let records = installed_records(&config_dir(), &app_support())?;
+    Ok(installed_not_in_use(&records, &live_files(live)))
+}
+
+/// The prune list, or a stated reason it could not be read. A store copy
+/// that cannot be read must not read as "nothing to prune".
+fn prunable_or_stated(live: &LiveRoles) -> Vec<String> {
+    match prunable(live) {
+        Ok(files) => files,
+        Err(reason) => {
+            println!("installed records could not be read: {reason}");
+            Vec::new()
+        }
+    }
 }
 
 /// One transient failure: reported, cleaned, and never recorded, so the
@@ -204,7 +223,7 @@ fn record_transient(
     reason: String,
     cache: &Path,
 ) {
-    clean_download(cache, &candidate.file);
+    let reason = with_cleanup(reason, clean_download(cache, &candidate.file));
     report.downloaded.push(DownloadReport {
         variant: candidate.variant.clone(),
         quant: candidate.quant.clone(),
@@ -218,6 +237,15 @@ fn record_transient(
     });
 }
 
+/// A reason with a failed delete stated after it, so a report never claims
+/// a file was removed when it was not.
+fn with_cleanup(reason: String, cleanup: Result<(), String>) -> String {
+    match cleanup {
+        Ok(()) => reason,
+        Err(failure) => format!("{reason}; the file could not be deleted: {failure}"),
+    }
+}
+
 /// A deterministic verdict before or at the smoke (unloadable) or at the
 /// bench (failed): recorded, cleaned, never benched again by this state.
 fn record_verdict(
@@ -229,7 +257,7 @@ fn record_verdict(
     reason: String,
     cache: &Path,
 ) {
-    clean_download(cache, &candidate.file);
+    let reason = with_cleanup(reason, clean_download(cache, &candidate.file));
     report.downloaded.push(DownloadReport {
         variant: candidate.variant.clone(),
         quant: candidate.quant.clone(),
@@ -258,9 +286,14 @@ fn record_bench(
     retained: bool,
     cache: &Path,
 ) {
-    if !retained {
-        clean_download(cache, &candidate.file);
-    }
+    let reason = if retained {
+        None
+    } else {
+        match clean_download(cache, &candidate.file) {
+            Ok(()) => None,
+            Err(failure) => Some(format!("the file could not be deleted: {failure}")),
+        }
+    };
     report.downloaded.push(DownloadReport {
         variant: candidate.variant.clone(),
         quant: candidate.quant.clone(),
@@ -270,7 +303,7 @@ fn record_bench(
         source: source.to_owned(),
         outcome: "benched".to_owned(),
         retained,
-        reason: None,
+        reason,
     });
     tested.record(TestedPair {
         variant: candidate.variant.clone(),
@@ -352,9 +385,15 @@ fn print_report(report: &SweepReport) {
             let file = &row.file;
             let source = &row.source;
             let outcome = &row.outcome;
-            let kept = if row.retained { "kept" } else { "deleted" };
+            let disposition = if row.retained {
+                "kept"
+            } else if row.reason.as_deref().is_some_and(|reason| reason.contains("could not be deleted")) {
+                "delete failed"
+            } else {
+                "deleted"
+            };
             let reason = row.reason.as_deref().unwrap_or("");
-            println!("  {variant} {quant} -> {file}: {source} {outcome} ({kept}) {reason}");
+            println!("  {variant} {quant} -> {file}: {source} {outcome} ({disposition}) {reason}");
         }
     }
     if !report.proposed.is_empty() {
@@ -427,7 +466,7 @@ fn dictate_sweep_live() {
         downloaded: Vec::new(),
         models: vec![pair, alone],
         proposed: Vec::new(),
-        installed_not_in_use: prunable(&live),
+        installed_not_in_use: prunable_or_stated(&live),
     };
     print_report(&report);
     write_live_report(&cache, &report).expect("the report must write");
@@ -485,7 +524,7 @@ fn dictate_sweep_discovery() {
             println!("  {variant} {quant}: {reason}");
         }
     }
-    let stale = prunable(&live);
+    let stale = prunable_or_stated(&live);
     if !stale.is_empty() {
         println!("installed but not in use (remove via the models page):");
         for file in &stale {
@@ -575,7 +614,7 @@ fn dictate_sweep() {
         downloaded: Vec::new(),
         models: vec![pair, alone],
         proposed: Vec::new(),
-        installed_not_in_use: prunable(&live),
+        installed_not_in_use: prunable_or_stated(&live),
     };
 
     let clip = public_clip(&live);
@@ -688,4 +727,98 @@ fn dictate_sweep() {
     write_report(&cache, &report).expect("the report must write");
     let path = cache.join(forge_workspace::sweep::RESULTS_FILE);
     println!("\nwrote {}", path.display());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn candidate(file: &str) -> Candidate {
+        Candidate {
+            source: forge_workspace::sweep::CandidateSource::Feed,
+            variant: "test".to_owned(),
+            display_name: "test".to_owned(),
+            family: "test".to_owned(),
+            quant: "Q4_K_M".to_owned(),
+            file: file.to_owned(),
+            size: 100,
+            sha256: None,
+            url: Some("https://weights.invalid/test.gguf".to_owned()),
+            published_repo: None,
+            speed: None,
+            measured_on: None,
+            download_count: None,
+        }
+    }
+
+    /// A transient failure is reported and its file cleaned, but never
+    /// recorded: the next run retries it.
+    #[test]
+    fn a_transient_failure_is_not_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a-Q4_K_M.gguf");
+        std::fs::write(&file, b"weights").unwrap();
+        let mut report = SweepReport::default();
+        let tested = TestedState::default();
+        let candidate = candidate("a-Q4_K_M.gguf");
+
+        record_transient(
+            &mut report,
+            &candidate,
+            "feed",
+            "the network dropped".to_owned(),
+            dir.path(),
+        );
+
+        assert_eq!(report.downloaded.len(), 1);
+        assert_eq!(report.downloaded[0].outcome, "transient");
+        assert!(!file.exists(), "the file is cleaned");
+        assert!(!tested.has("test", "Q4_K_M"), "a transient failure is not recorded");
+    }
+
+    /// A deterministic failure is recorded and its file cleaned.
+    #[test]
+    fn a_deterministic_failure_is_recorded_and_cleaned() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a-Q4_K_M.gguf");
+        std::fs::write(&file, b"weights").unwrap();
+        let mut report = SweepReport::default();
+        let mut tested = TestedState::default();
+        let candidate = candidate("a-Q4_K_M.gguf");
+
+        record_verdict(
+            &mut report,
+            &mut tested,
+            &candidate,
+            "feed",
+            "failed",
+            "the bench failed".to_owned(),
+            dir.path(),
+        );
+
+        assert_eq!(report.downloaded[0].outcome, "failed");
+        assert!(!file.exists(), "the file is cleaned");
+        assert!(tested.has("test", "Q4_K_M"), "a deterministic failure is recorded");
+    }
+
+    /// A losing bench deletes its file; a retained one keeps it.
+    #[test]
+    fn a_losing_bench_deletes_and_a_retained_bench_keeps() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut report = SweepReport::default();
+        let mut tested = TestedState::default();
+        let losing = candidate("losing-Q4_K_M.gguf");
+        let kept = candidate("kept-Q4_K_M.gguf");
+        let losing_file = dir.path().join(&losing.file);
+        let kept_file = dir.path().join(&kept.file);
+        std::fs::write(&losing_file, b"weights").unwrap();
+        std::fs::write(&kept_file, b"weights").unwrap();
+
+        record_bench(&mut report, &mut tested, &losing, "feed", false, dir.path());
+        record_bench(&mut report, &mut tested, &kept, "feed", true, dir.path());
+
+        assert!(!losing_file.exists(), "a losing bench deletes its file");
+        assert!(kept_file.exists(), "a retained bench keeps its file");
+        assert!(tested.has("test", "Q4_K_M"), "the bench verdict is recorded");
+    }
 }

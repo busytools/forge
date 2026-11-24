@@ -195,7 +195,7 @@ pub(crate) fn resolve_role(
 /// in-process caller.
 ///
 /// **The file has to be one this machine recorded**, which the models page
-/// and [`Workspace::uninstall_model`] check before calling; the function
+/// and the workspace's own remove control check before calling; the function
 /// itself is the file drop and the record drop together, never one without
 /// the other.
 ///

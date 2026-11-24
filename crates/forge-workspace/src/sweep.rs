@@ -213,9 +213,14 @@ fn newest_measured_on(entry: &CatalogueEntry) -> Option<String> {
 
 /// Whether the entry names the configured language, or names no language at
 /// all. An empty list is unknown rather than "not this language", so it
-/// stays eligible.
+/// stays eligible. The feed mixes granularities (`en` and `en-US`), so a
+/// regional tag of the configured language counts.
 fn speaks(entry: &CatalogueEntry, language: &str) -> bool {
-    entry.languages.is_empty() || entry.languages.iter().any(|held| held == language)
+    entry.languages.is_empty()
+        || entry.languages.iter().any(|held| {
+            held == language
+                || held.strip_prefix(language).is_some_and(|rest| rest.starts_with('-'))
+        })
 }
 
 /// Pick at most `max` ASR candidates not in use, not already tested, with a
@@ -598,10 +603,18 @@ pub fn safe_file_name(file: &str) -> Result<(), String> {
 
 /// Remove a candidate's complete file and any partial `prepare` left
 /// behind. A failed fetch or a losing bench must not leave a file the next
-/// sweep would load.
-pub fn clean_download(dir: &Path, file: &str) {
-    let _ = std::fs::remove_file(dir.join(file));
-    let _ = std::fs::remove_file(dir.join(format!("{file}.part")));
+/// sweep would load. A delete that fails is reported, so the report never
+/// claims a file is gone when it is not.
+pub fn clean_download(dir: &Path, file: &str) -> Result<(), String> {
+    let mut failure = None;
+    for path in [dir.join(file), dir.join(format!("{file}.part"))] {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => failure = Some(format!("{}: {error}", path.display())),
+        }
+    }
+    failure.map_or(Ok(()), Err)
 }
 
 /// Download one candidate into `dir`, with the size and digest checks its
@@ -628,8 +641,11 @@ pub fn download_candidate(
     match forge_dictate::prepare(&cfg, |_progress| std::ops::ControlFlow::Continue(())) {
         Ok(()) => Ok(dir.join(&candidate.file)),
         Err(error) => {
-            clean_download(dir, &candidate.file);
-            Err(error.to_string())
+            let cleanup = clean_download(dir, &candidate.file)
+                .err()
+                .map(|failure| format!("; the partial file could not be deleted: {failure}"))
+                .unwrap_or_default();
+            Err(format!("{error}{cleanup}"))
         }
     }
 }
@@ -667,10 +683,13 @@ pub fn smoke_gate(file: &Path, smoke: impl FnOnce() -> Result<(), String>) -> Re
 }
 
 /// The plan's own question, answered as a verdict rather than a number.
+/// `Beats` is the strict comparison for (a) and (c); `meets` reuses it for
+/// question (b)'s match-or-beat bar, where an exact tie clears.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
-    /// Lower word error rate at equal or better realtime factor.
+    /// Lower word error rate at equal or better realtime factor, or for
+    /// `meets`, an equal one.
     Beats,
     /// Measured, and not better on both axes.
     DoesNotBeat,
@@ -854,22 +873,25 @@ pub fn percent(value: Option<f64>) -> String {
     value.map_or_else(|| "-".to_owned(), |rate| format!("{:.2}%", rate * 100.0))
 }
 
-/// Answer the plan's comparison for one pair of models on one tier.
+/// Answer the plan's comparison for one pair of models on one tier. `clear`
+/// is the phrase the clearing verdict prints: "beats" for the strict bars,
+/// "matches or beats" for question (b).
 fn answer(
     subject: &str,
     candidate: &ModelReport,
     against: &str,
     baseline: &ModelReport,
     tier: &str,
+    verdict: Verdict,
+    clear: &str,
 ) -> String {
-    let verdict = beats(candidate, baseline, tier);
     let candidate_wer = percent(tier_wer(candidate, tier));
     let baseline_wer = percent(tier_wer(baseline, tier));
     let candidate_xrt = tier_xrt(candidate, tier);
     let baseline_xrt = tier_xrt(baseline, tier);
     match verdict {
         Verdict::Beats => format!(
-            "{subject} beats {against} on {tier} WER at equal or better RTF \
+            "{subject} {clear} {against} on {tier} WER at equal or better RTF \
              ({candidate_wer} vs {baseline_wer}; {candidate_xrt:.1}x vs {baseline_xrt:.1}x)"
         ),
         Verdict::DoesNotBeat => format!(
@@ -885,11 +907,20 @@ fn answer(
 /// Plan question (a): does the candidate with the normalizer beat the live
 /// ASR on WER at equal or better realtime factor?
 pub fn answer_a(candidate: &ModelReport, live_asr: &ModelReport) -> String {
-    answer("the candidate with the normalizer", candidate, "the live ASR", live_asr, "public")
+    answer(
+        "the candidate with the normalizer",
+        candidate,
+        "the live ASR",
+        live_asr,
+        "public",
+        beats(candidate, live_asr, "public"),
+        "beats",
+    )
 }
 
 /// Plan question (b): does the candidate without the normalizer match or
-/// beat the live ASR+normalizer pair?
+/// beat the live ASR+normalizer pair? "Match" is the plan's word, so an
+/// exact WER tie at equal or better realtime factor clears this bar.
 pub fn one_model_answer(alone: &ModelReport, pair: &ModelReport) -> String {
     answer(
         "the candidate without the normalizer",
@@ -897,16 +928,27 @@ pub fn one_model_answer(alone: &ModelReport, pair: &ModelReport) -> String {
         "the live ASR+normalizer pair",
         pair,
         "public",
+        meets(alone, pair, "public"),
+        "matches or beats",
     )
 }
 
 /// Plan question (c): does adding the normalizer improve the candidate
 /// further?
 pub fn answer_c(with: &ModelReport, alone: &ModelReport) -> String {
-    answer("the candidate with the normalizer", with, "the candidate without it", alone, "public")
+    answer(
+        "the candidate with the normalizer",
+        with,
+        "the candidate without it",
+        alone,
+        "public",
+        beats(with, alone, "public"),
+        "beats",
+    )
 }
 
-/// The plan's comparison, as a verdict.
+/// The plan's strict comparison, as a verdict: strictly lower WER at equal
+/// or better realtime factor. Questions (a) and (c) use this bar.
 pub fn beats(candidate: &ModelReport, baseline: &ModelReport, tier: &str) -> Verdict {
     let (Some(candidate_wer), Some(baseline_wer)) =
         (tier_wer(candidate, tier), tier_wer(baseline, tier))
@@ -914,6 +956,22 @@ pub fn beats(candidate: &ModelReport, baseline: &ModelReport, tier: &str) -> Ver
         return Verdict::NotMeasured;
     };
     if candidate_wer < baseline_wer && tier_xrt(candidate, tier) >= tier_xrt(baseline, tier) {
+        Verdict::Beats
+    } else {
+        Verdict::DoesNotBeat
+    }
+}
+
+/// Question (b)'s bar: match or beat. An exact WER tie at equal or better
+/// realtime factor clears it, unlike the strict `beats` that (a) and (c)
+/// use. A one-model candidate that ties is a real outcome, not a loss.
+pub fn meets(candidate: &ModelReport, baseline: &ModelReport, tier: &str) -> Verdict {
+    let (Some(candidate_wer), Some(baseline_wer)) =
+        (tier_wer(candidate, tier), tier_wer(baseline, tier))
+    else {
+        return Verdict::NotMeasured;
+    };
+    if candidate_wer <= baseline_wer && tier_xrt(candidate, tier) >= tier_xrt(baseline, tier) {
         Verdict::Beats
     } else {
         Verdict::DoesNotBeat
@@ -931,19 +989,17 @@ pub fn proposal(
     source: &str,
 ) -> Option<String> {
     let a = beats(with, live_asr, "public");
-    let b = beats(alone, live_pair, "public");
-    let basis = match (a, b) {
+    let b = meets(alone, live_pair, "public");
+    let (basis, label) = match (a, b) {
         (_, Verdict::Beats) => {
-            let one_model = one_model_answer(alone, live_pair);
-            format!("the one-model answer: {one_model}")
+            // The b bar is the one-model question, so the label names the
+            // configuration that answered it: the candidate without the
+            // normalizer.
+            (format!("the one-model answer: {}", one_model_answer(alone, live_pair)), &alone.label)
         }
-        (Verdict::Beats, _) => {
-            let against = answer("the candidate", with, "the live ASR", live_asr, "public");
-            format!("beats the live ASR: {against}")
-        }
+        (Verdict::Beats, _) => (answer_a(with, live_asr), &with.label),
         _ => return None,
     };
-    let label = &with.label;
     Some(format!("{source} {label}: {basis}"))
 }
 
@@ -956,7 +1012,7 @@ pub fn retain_file(
     live_pair: &ModelReport,
 ) -> bool {
     let a = beats(with, live_asr, "public");
-    let b = beats(alone, live_pair, "public");
+    let b = meets(alone, live_pair, "public");
     !matches!((a, b), (Verdict::DoesNotBeat, Verdict::DoesNotBeat))
 }
 
@@ -1220,6 +1276,19 @@ mod tests {
         assert_eq!(taken.candidates.len(), 1, "a French run takes it");
     }
 
+    /// A regional tag of the configured language counts. The feed lists
+    /// `en-US` entries as well as `en`.
+    #[test]
+    fn a_regional_tag_of_the_configured_language_is_taken() {
+        let mut regional = entry("us", "Q4_K_M", "us-Q4_K_M.gguf", 10, Some(10.0));
+        regional.languages = vec!["en-US".to_owned()];
+
+        let selection =
+            select_candidates(&[regional], &TestedState::default(), &[], "en", 1_000, 2);
+
+        assert_eq!(selection.candidates.len(), 1, "en-US is an English entry");
+    }
+
     /// The tested state round-trips through its file, and a missing file is
     /// an empty state rather than a failure.
     #[test]
@@ -1258,6 +1327,28 @@ mod tests {
         smoke_gate(&file, || Ok(())).unwrap();
 
         assert!(file.exists(), "a loadable candidate stays for the bench");
+    }
+
+    /// A losing candidate's file and its partial are both removed.
+    #[test]
+    fn a_clean_download_removes_the_file_and_its_partial() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a-Q4_K_M.gguf");
+        let partial = dir.path().join("a-Q4_K_M.gguf.part");
+        std::fs::write(&file, b"weights").unwrap();
+        std::fs::write(&partial, b"partial").unwrap();
+
+        clean_download(dir.path(), "a-Q4_K_M.gguf").unwrap();
+
+        assert!(!file.exists(), "the complete file is gone");
+        assert!(!partial.exists(), "the partial is gone");
+    }
+
+    /// A missing file is not a cleanup failure.
+    #[test]
+    fn a_clean_download_of_a_missing_file_is_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        clean_download(dir.path(), "gone.gguf").unwrap();
     }
 
     /// A delete that fails is not swallowed: the report carries it.
@@ -1403,6 +1494,107 @@ mod tests {
         let proposed =
             proposal(&candidate, &alone, &live_asr, &live_pair, "feed").expect("proposal");
         assert!(proposed.contains("the one-model answer"), "got: {proposed}");
+        assert!(retain_file(&candidate, &alone, &live_asr, &live_pair));
+    }
+
+    /// **The realtime half of the bar is load-bearing.** A lower WER at a
+    /// worse realtime factor does not beat; the same WER at a better factor
+    /// does not either.
+    #[test]
+    fn a_lower_wer_at_a_worse_realtime_factor_does_not_beat() {
+        let slower = model("candidate", Some(0.0093), 10.0);
+        let faster = model("live ASR", Some(0.0280), 20.0);
+
+        assert_eq!(beats(&slower, &faster, "public"), Verdict::DoesNotBeat);
+        assert_eq!(beats(&faster, &slower, "public"), Verdict::DoesNotBeat);
+    }
+
+    /// A lower WER at an equal realtime factor clears the strict bar.
+    #[test]
+    fn a_lower_wer_at_an_equal_realtime_factor_beats() {
+        let candidate = model("candidate", Some(0.0093), 20.0);
+        let live_asr = model("live ASR", Some(0.0280), 20.0);
+
+        assert_eq!(beats(&candidate, &live_asr, "public"), Verdict::Beats);
+    }
+
+    /// An exact WER tie does not clear the strict bar.
+    #[test]
+    fn an_exact_tie_does_not_beat() {
+        let candidate = model("candidate", Some(0.02), 20.0);
+        let live_asr = model("live ASR", Some(0.02), 20.0);
+
+        assert_eq!(beats(&candidate, &live_asr, "public"), Verdict::DoesNotBeat);
+    }
+
+    /// **Question (b) is match or beat: an exact WER tie at an equal
+    /// realtime factor clears it.** A one-model candidate that ties the
+    /// live pair is a proposal, not a loss.
+    #[test]
+    fn an_exact_tie_meets_the_one_model_bar() {
+        let alone = model("candidate (no normalizer)", Some(0.02), 20.0);
+        let live_pair = model("live pair", Some(0.02), 20.0);
+
+        assert_eq!(meets(&alone, &live_pair, "public"), Verdict::Beats);
+        assert_eq!(beats(&alone, &live_pair, "public"), Verdict::DoesNotBeat);
+        assert!(retain_file(&alone, &alone, &live_pair, &live_pair), "a tie is retained");
+    }
+
+    /// A tie at a worse realtime factor does not meet the bar either.
+    #[test]
+    fn a_tie_at_a_worse_realtime_factor_does_not_meet() {
+        let alone = model("candidate (no normalizer)", Some(0.02), 10.0);
+        let live_pair = model("live pair", Some(0.02), 20.0);
+
+        assert_eq!(meets(&alone, &live_pair, "public"), Verdict::DoesNotBeat);
+    }
+
+    /// **The (a) arm proposes on its own.** A candidate that beats the live
+    /// ASR but not the live pair is still a proposal, and its label names
+    /// the with-normalizer configuration.
+    #[test]
+    fn the_live_asr_bar_proposes_on_its_own() {
+        let candidate = model("candidate + normalizer", Some(0.0090), 20.0);
+        let alone = model("candidate (no normalizer)", Some(0.0500), 20.0);
+        let live_asr = model("live ASR", Some(0.0280), 20.0);
+        let live_pair = model("live pair", Some(0.0200), 20.0);
+
+        assert_eq!(beats(&candidate, &live_asr, "public"), Verdict::Beats);
+        assert_eq!(meets(&alone, &live_pair, "public"), Verdict::DoesNotBeat);
+        let proposed =
+            proposal(&candidate, &alone, &live_asr, &live_pair, "feed").expect("proposal");
+        assert!(proposed.contains("beats the live ASR"), "got: {proposed}");
+        assert!(proposed.contains("candidate + normalizer"), "the (a) label is the with config");
+        assert!(retain_file(&candidate, &alone, &live_asr, &live_pair));
+    }
+
+    /// **The b-basis proposal names the no-normalizer configuration.** A
+    /// label that named the with-normalizer file would point at the losing
+    /// configuration.
+    #[test]
+    fn the_one_model_proposal_names_the_no_normalizer_configuration() {
+        let candidate = model("candidate + normalizer", Some(0.0500), 20.0);
+        let alone = model("candidate (no normalizer)", Some(0.0090), 20.0);
+        let live_asr = model("live ASR", Some(0.0090), 20.0);
+        let live_pair = model("live pair", Some(0.0280), 20.0);
+
+        let proposed =
+            proposal(&candidate, &alone, &live_asr, &live_pair, "feed").expect("proposal");
+        assert!(proposed.contains("candidate (no normalizer)"), "got: {proposed}");
+        assert!(!proposed.contains("candidate + normalizer"), "got: {proposed}");
+    }
+
+    /// A mixed verdict keeps the file: a not-measured (a) with a measured
+    /// defeat (b) is not a measured defeat on both bars.
+    #[test]
+    fn a_mixed_not_measured_and_defeat_keeps_the_file() {
+        let candidate = model("candidate", None, 10.0);
+        let alone = model("candidate (no normalizer)", Some(0.05), 10.0);
+        let live_asr = model("live ASR", Some(0.02), 20.0);
+        let live_pair = model("live pair", Some(0.02), 20.0);
+
+        assert_eq!(beats(&candidate, &live_asr, "public"), Verdict::NotMeasured);
+        assert_eq!(meets(&alone, &live_pair, "public"), Verdict::DoesNotBeat);
         assert!(retain_file(&candidate, &alone, &live_asr, &live_pair));
     }
 
