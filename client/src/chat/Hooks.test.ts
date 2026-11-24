@@ -15,6 +15,9 @@ const batch = (actions: number, infos = ONE, errors: string[] = []): HookBatchLe
   actions,
   infos,
   errors,
+  hasOutput: false,
+  additionalContext: [],
+  preventedContinuation: false,
 });
 
 /** The row drawn open, which is the state its body needs. */
@@ -52,7 +55,7 @@ const rulesIn = (sheet: string): { selectors: string[]; body: string }[] =>
   }));
 
 /** The classes a tool row's own box can wear. */
-const ROW_BOX_CLASSES = ['leaf', 'hookgroup', 'hookbatch'];
+const ROW_BOX_CLASSES = ['leaf', 'hookgroup', 'hookbatch', 'hookfoot'];
 
 /**
  * Whether a selector's last compound is a tool row's own box - the shared
@@ -271,6 +274,7 @@ describe('the hook batch a turn carries', () => {
     expect(rowBox('details.leaf.hookrow'), 'a row wearing the box').toBe(true);
     expect(rowBox('.hookbatch'), 'the batch class on the box').toBe(true);
     expect(rowBox('details.hookgroup'), 'the group class on the box').toBe(true);
+    expect(rowBox('details.hookfoot'), 'the foot chip').toBe(true);
     expect(rowBox('.conv details.leaf'), 'the box reached through an ancestor').toBe(true);
     expect(rowBox('details.leaf > summary'), 'the row inside the box').toBe(false);
     expect(rowBox('.leaf .tn'), 'a rule for something inside it').toBe(false);
@@ -290,8 +294,8 @@ describe('the hook batch a turn carries', () => {
       'the book draws all four samples inside the leaves lists',
     ).toBeGreaterThanOrEqual(4);
 
-    const closed = drawn.find((row) => !row.includes(' open>') && row.includes('3 actions')) ?? '';
-    expect(closed, 'the book draws the closed three-action sample').not.toBe('');
+    const closed = drawn.find((row) => !row.includes(' open>')) ?? '';
+    expect(closed, 'the book draws a closed carrying batch').not.toBe('');
     const closedSummary = summaryOf(closed);
     expect(closedSummary, 'the hook glyph').toContain('#i-hook');
     expect(closedSummary, 'the shared chevron').toContain('class="ic arw"');
@@ -311,6 +315,21 @@ describe('the hook batch a turn carries', () => {
   });
 
   /**
+   * The silent batches' row, which is the shape most stops take: one chip at
+   * the turn's foot, counting them and drawn as the same kind of row.
+   */
+  it('draws the turn foot chip in the book, counting its batches', () => {
+    const chips = leavesBlocks(PAGE).flatMap(
+      (block) => block.match(/<details class="leaf hookfoot"[\s\S]*?<\/details>/g) ?? [],
+    );
+    expect(chips.length, 'the book draws the chip inside a leaves list').toBeGreaterThanOrEqual(1);
+    const summary = summaryOf(chips[0] ?? '');
+    expect(summary, 'the hook glyph').toContain('#i-hook');
+    expect(summary, 'the count of batches').toMatch(/hooks &#183; \d+ batches?/);
+    expect(summary, 'and the shared chevron').toContain('class="ic arw"');
+  });
+
+  /**
    * The failed half the row exists for, and a page drawing only the passing row
    * is the same one-state blind spot the open drawing was added to close. What
    * holds is the SHAPE: the failure tone and the count ride the summary - which
@@ -321,7 +340,9 @@ describe('the hook batch a turn carries', () => {
     const failed =
       batches().find(
         (row) =>
-          row.includes('gl err') && /hook summary &#183; \d+ actions? &#183; \d+ errors?/.test(row),
+          row.includes(' open>') &&
+          row.includes('gl err') &&
+          /hook summary &#183; \d+ actions? &#183; \d+ errors?/.test(row),
       ) ?? '';
     expect(failed, 'the book draws the failed batch').not.toBe('');
 

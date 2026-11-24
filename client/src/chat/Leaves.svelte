@@ -1,6 +1,7 @@
 <script lang="ts">
   import Call from './Call.svelte';
   import Hook from './Hook.svelte';
+  import HookFoot from './HookFoot.svelte';
   import Hooks from './Hooks.svelte';
   import HookGroup from './HookGroup.svelte';
   import Inbound from './Inbound.svelte';
@@ -61,6 +62,8 @@
       <HookGroup group={row} />
     {:else if row.tag === 'hookbatch'}
       <Hooks batch={row} />
+    {:else if row.tag === 'hookfoot'}
+      <HookFoot foot={row} />
     {:else if row.tag === 'inbound'}
       <Inbound {row} />
     {:else if row.tag === 'thought'}

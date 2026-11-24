@@ -1697,10 +1697,10 @@ fn turn_ranges<'a>(
     let opens = opens_of(spans);
     // **A conversation can hold no turn at all**, and a client folds turns, so
     // it rides one instead of none. A session whose only rows are shapes the
-    // fold opens nothing at - an interrupt marker, a task notice, a body no
-    // call holds - is the case; handing a client no turns would leave the
-    // whole of it unreachable, which is exactly what a page's `None` cursor
-    // stops it asking for.
+    // fold opens nothing at - an interrupt marker, a body no call holds, an
+    // agent's ending whose dispatch row is outside the window - is the case;
+    // handing a client no turns would leave the whole of it unreachable, which
+    // is exactly what a page's `None` cursor stops it asking for.
     if opens.is_empty() {
         return if messages.is_empty() { Vec::new() } else { vec![(0, messages.len(), None)] };
     }
@@ -4163,7 +4163,7 @@ mod tests {
     fn the_ending_is_carried_into_the_call_turn() {
         for (rows, call, said) in [
             (
-                crate::fixtures::SAME_TURN_USER_ROW,
+                crate::fixtures::BACKGROUND_END_USER_ROW,
                 "call_da4c7ee117d14d48ba99e036",
                 "Background command \"Watch the account-lifecycle CI run\" failed with exit code 1",
             ),

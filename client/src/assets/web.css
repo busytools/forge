@@ -2597,6 +2597,11 @@ details.hookrow > summary .ev strong, details.hookrow > summary .ev code { color
    thought's expansion is, so the hooks read as what the firing carried rather
    than as rows beside it. */
 details.hookgroup > .body { border-left: 1px solid var(--line); padding: 2px 0 2px 13px; }
+/* The turn foot's silent batches: one chip per turn, its batches listed whole
+   under it by the same body a carrying batch draws. Each batch is a group of
+   its own, spaced off the last so two stops' commands do not read as one. */
+details.hookfoot > .body { border-left: 1px solid var(--line); padding: 2px 0 2px 13px; }
+details.hookfoot .bfoot + .bfoot { margin-top: 7px; }
 /* An inbound row's tail line: the delivery's first line, at the warning tone
    where the wire said the delivery is elevated - clamped to its one line and
    taking the width the name leaves, the way the hook row's tail does. */

@@ -39,7 +39,7 @@
   import Turn from './Turn.svelte';
   import { turnOfDispatch } from './dispatch-jump';
   import { callRow, reachableIds, reveal, subagents } from './subagents.svelte';
-  import { stopsOf, turnFold, type PageStops, type TurnInfo } from './units';
+  import { pageFactsOf, turnFold, type PageFacts, type TurnInfo } from './units';
 
   /**
    * The conversation: whole turns, virtualised.
@@ -309,11 +309,12 @@
     held.turns.length === 0 ? null : (held.turns[held.turns.length - 1] ?? null),
   );
   /**
-   * The stops the page's turns carry, resolved once and handed to every turn's
+   * The page facts the turns carry, resolved once and handed to every turn's
    * fold: a job started in one prompt and stopped in the next has its stop in
-   * a LATER turn than the call it ends, so no single turn can see both.
+   * a LATER turn than the call it ends, and a sub-agent's ending arrives after
+   * the turn that dispatched it, so no single turn can see both.
    */
-  const stops = $derived(stopsOf(held.turns));
+  const facts = $derived(pageFactsOf(held.turns));
   /** The newest turn's key: the row the carried beat and the reader's echo ride. */
   const newest = $derived(newestTurn?.key ?? null);
   /**
@@ -351,7 +352,7 @@
     chatRows(held.turns, (turn) =>
       turn.messages.length < FOLD_AT
         ? null
-        : turnFold(turn, slot, inFlight(turn), !inFlight(turn), stops),
+        : turnFold(turn, slot, inFlight(turn), !inFlight(turn), facts),
     ),
   );
   /**
@@ -409,13 +410,13 @@
    * `<turn>:<unit key>`, and a call row is `call-<call key>` under its unit.
    * The leaf kinds without a row of their own, and cards, carry none.
    *
-   * **The stops are the fold's own argument**: a stop the page holds lands on
-   * the row it ends, so the same turn keys differently with and without them,
-   * and the seed has to name what the render will draw.
+   * **The page facts are the fold's own argument**: a stop the page holds
+   * lands on the row it ends, so the same turn keys differently with and
+   * without them, and the seed has to name what the render will draw.
    */
-  function drawnKeys(turn: HeldTurn, stops: PageStops): string[] {
+  function drawnKeys(turn: HeldTurn, facts: PageFacts): string[] {
     const keys: string[] = [];
-    const units = turnFold(turn, slot, inFlight(turn), !inFlight(turn), stops);
+    const units = turnFold(turn, slot, inFlight(turn), !inFlight(turn), facts);
     for (const unit of units) {
       keys.push(`${turn.key}:${unit.key}`);
       if (unit.kind !== 'leaves') continue;
@@ -425,10 +426,10 @@
   }
 
   /** Record a turn already on screen as arrived, whatever built it. */
-  function seedDrawn(turn: HeldTurn | null, stops: PageStops): void {
+  function seedDrawn(turn: HeldTurn | null, facts: PageFacts): void {
     if (turn === null) return;
     seenTurn[turn.key] = true;
-    for (const key of drawnKeys(turn, stops)) recordArrival(turn.key, key);
+    for (const key of drawnKeys(turn, facts)) recordArrival(turn.key, key);
   }
 
   /**
@@ -450,10 +451,11 @@
       seenTurn[turn.key] = true;
       return;
     }
-    // **The stops are walked only where they are used.** They are the render's
-    // own fold argument, and the live path must not pay a second page walk per
-    // frame - which it would if the caller evaluated them before these guards.
-    seedDrawn(turn, stopsOf(turns));
+    // **The facts are walked only where they are used.** They are the
+    // render's own fold argument, and the live path must not pay a second page
+    // walk per frame - which it would if the caller evaluated them before
+    // these guards.
+    seedDrawn(turn, pageFactsOf(turns));
   }
 
   /** Mark one row as having just arrived, and take the mark back after it. */
@@ -1714,12 +1716,12 @@
     // **What the conversation already draws has already arrived.** A return
     // into a seat whose newest turn was built by frames would otherwise enter
     // every row of it at once, and the list renders its first items after the
-    // attach, so only the model can say which rows those are. The stops are
-    // the kept record's, which the derived `stops` has not caught up to yet.
+    // attach, so only the model can say which rows those are. The facts are
+    // the kept record's, which the derived `facts` has not caught up to yet.
     if (switched) {
       seedDrawn(
         untrack(() => keptValue.turns[keptValue.turns.length - 1] ?? null),
-        stopsOf(keptValue.turns),
+        pageFactsOf(keptValue.turns),
       );
     }
     // After `held`, so the open's own start and the conversation it names
@@ -2217,7 +2219,7 @@
   const newestRow = $derived.by((): { key: string; info: TurnInfo } | null => {
     const turn = newestTurn;
     if (turn === null) return null;
-    const units = turnFold(turn, slot, inFlight(turn), !inFlight(turn), stops);
+    const units = turnFold(turn, slot, inFlight(turn), !inFlight(turn), facts);
     for (let at = units.length - 1; at >= 0; at -= 1) {
       const unit = units[at];
       if (unit !== undefined && unit.kind === 'report') return { key: unit.key, info: unit.info };
@@ -3483,7 +3485,7 @@
             part={row.part}
             {slot}
             turns={held.turns}
-            {stops}
+            {facts}
             carried={row.turn.key === newest ? (pinned?.key ?? null) : null}
             onreadoutput={readOutput}
           />

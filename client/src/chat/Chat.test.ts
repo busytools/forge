@@ -3,6 +3,9 @@ import { createRawSnippet, flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Chat as HandedChat, type Conversation } from './conversation';
+import { conversationsFor } from './conversations';
+import parityEvents from './testing/parity-events.json';
+import { fold, pageFactsOf } from './units';
 import { echoes } from './echoes.svelte';
 import { git } from './git.svelte';
 import { freeze } from './testing/frozen';
@@ -235,6 +238,73 @@ async function painted(): Promise<void> {
   await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
   await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
   flushSync();
+}
+
+/** An assistant frame carrying prose, for the parity event list. */
+const prose = (words: string, uuid: string): unknown => ({
+  type: 'assistant',
+  uuid,
+  message: {
+    id: `m-${uuid}`,
+    role: 'assistant',
+    model: 'claude-opus-5',
+    content: [{ type: 'text', text: words }],
+  },
+});
+
+/** What a person typed. */
+const typed = (words: string): unknown => ({
+  type: 'user',
+  uuid: 'u-prompt',
+  message: { role: 'user', content: [{ type: 'text', text: words }] },
+});
+
+/**
+ * The live carrier of a background completion: the CLI's own
+ * `system/task_notification`, which is what the wire sends (`see
+ * crates/forge-test-harness/baselines/sdk/2.1.280/backgrounded_bash_lifecycle.jsonl`).
+ * The read's carrier of the same event is the user notice row the CLI persists.
+ */
+const completed = (call: string, task: string): unknown => ({
+  type: 'system',
+  subtype: 'task_notification',
+  task_id: task,
+  tool_use_id: call,
+  status: 'completed',
+  summary: 'Background command "Watch CI" completed',
+});
+
+/**
+ * The parity event list, shared with the read fold: one background story.
+ *
+ * **The twin lives in `crates/forge-server/src/transcript.rs`**
+ * (`background_completion_opens_the_read_turn_at_the_same_boundary`), and both
+ * read the SAME BYTES - `testing/parity-events.json`. Each event carries the
+ * carriers it has (`live` for the wire's `system/task_notification`, `read`
+ * for the notice row a transcript persists, `frame` for both), and says
+ * `head` when the event opens a turn. Neither side restates the boundaries:
+ * each is asked to find exactly the events marked as heads.
+ */
+interface ParityEvent {
+  head?: boolean;
+  frame?: unknown;
+  live?: unknown;
+  read?: unknown;
+}
+
+const PARITY: ParityEvent[] = parityEvents;
+
+/** The events this fold consumes, in order, and the ones that head a turn. */
+function paritySide(side: 'live' | 'read'): { events: unknown[]; heads: number[] } {
+  const events: unknown[] = [];
+  const heads: number[] = [];
+  for (const event of PARITY) {
+    const frame = event.frame ?? (side === 'live' ? event.live : event.read);
+    if (frame === undefined) continue;
+    if (event.head === true) heads.push(events.length);
+    events.push(frame);
+  }
+  return { events, heads };
 }
 
 /** One assistant frame, whose usage the running row draws. */
@@ -547,6 +617,148 @@ describe('the chat column as it draws', () => {
     expect(drawn(), 'and the refusal is said beside it').toContain(
       'the conversation is not held yet',
     );
+  });
+
+  it('opens a turn at the live carrier of a background completion', async () => {
+    // **One event, two carriers.** The CLI persists a completion as a user row
+    // holding the notice XML, and the read fold opens its turn there. Live, the
+    // wire sends `system/task_notification` and no user row at all (captured in
+    // `crates/forge-test-harness/baselines/sdk/2.1.280/backgrounded_bash_lifecycle.jsonl`),
+    // so the live fold has to open at that frame or the two paths disagree
+    // about where the turn begins - the disagreement #3054 is about.
+    const server = stub();
+    draw({}, server);
+    server.answer([{ key: 't1', messages: [prose('armed the watch', 'a1')] }]);
+    flushSync();
+
+    const held = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }));
+    if (held === undefined) throw new Error('the column opened no conversation');
+    const turns = (): number => {
+      let count = 0;
+      const stop = held.chat.value.subscribe((value) => (count = value.turns.length));
+      stop();
+      return count;
+    };
+    expect(turns(), 'the page is one turn').toBe(1);
+
+    server.send({
+      kind: 'update',
+      update: { chat_appended: { key: LEAD, msg: completed('call_bg', 't-cmd') } },
+    });
+    await painted();
+
+    expect(turns(), 'the completion opens a turn of its own, as the read fold does').toBe(2);
+    expect(drawn(), 'and the frame draws the line the read carrier draws').toContain(
+      'Background command "Watch CI" completed',
+    );
+
+    // The work the completion woke draws in the turn it opened.
+    server.send({
+      kind: 'update',
+      update: { chat_appended: { key: LEAD, msg: prose('the watch ended', 'a-work') } },
+    });
+    await painted();
+    expect(drawn(), "the turn's own work draws").toContain('the watch ended');
+  });
+
+  it('joins a completion exactly when the turn it lands in waits on a call', async () => {
+    // **The read fold's pressed guard, not "the turn is writing".** A
+    // completion stays in the turn above only while that turn has a call still
+    // out; a turn being written with no call out takes the completion as a
+    // head, which is what a re-read cuts. Guarding on "writing" joined the
+    // second case live and cut it on the read - the divergence this removes.
+    const server = stub();
+    draw({}, server);
+    server.answer([{ key: 't1', messages: [prose('armed the watch', 'a1')] }]);
+    flushSync();
+
+    const held = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }));
+    if (held === undefined) throw new Error('the column opened no conversation');
+    const turns = (): number => {
+      let count = 0;
+      const stop = held.chat.value.subscribe((value) => (count = value.turns.length));
+      stop();
+      return count;
+    };
+    const send = async (msg: unknown): Promise<void> => {
+      server.send({ kind: 'update', update: { chat_appended: { key: LEAD, msg } } });
+      await painted();
+    };
+
+    // A prompt opens a turn and leaves it being written, with a call out.
+    await send(typed('go'));
+    await send({
+      type: 'assistant',
+      uuid: 'a-call',
+      message: {
+        id: 'm-call',
+        role: 'assistant',
+        model: 'claude-opus-5',
+        content: [{ type: 'tool_use', id: 'toolu_open', name: 'Bash', input: { command: 'ls' } }],
+      },
+    });
+    expect(turns(), 'the prompt opened a turn').toBe(2);
+
+    await send(completed('call_bg', 't-cmd'));
+    expect(turns(), 'a call still out keeps the completion in that turn').toBe(2);
+
+    await send({
+      type: 'user',
+      uuid: 'u-result',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'toolu_open', content: 'ok', is_error: false },
+        ],
+      },
+    });
+    await send(completed('call_bg2', 't-cmd2'));
+    expect(turns(), 'with the call answered, the next completion opens a turn of its own').toBe(3);
+  });
+
+  it('cuts the same turn boundaries live as the read fold does', async () => {
+    // **The parity this fix exists for.** One event list, two folds: this one
+    // (the live `Chat`) and the read fold's twin in
+    // `crates/forge-server/src/transcript.rs`,
+    // `background_completion_opens_the_read_turn_at_the_same_boundary`. Both
+    // consume the same fixture, and it names its own heads.
+    const { events, heads } = paritySide('live');
+    const server = stub();
+    draw({}, server);
+    server.answer([]);
+    flushSync();
+
+    const held = conversationsFor(server.connection).live.get(subjectKey({ session: LEAD }));
+    if (held === undefined) throw new Error('the column opened no conversation');
+    const send = async (msg: unknown): Promise<void> => {
+      server.send({ kind: 'update', update: { chat_appended: { key: LEAD, msg } } });
+      await painted();
+    };
+
+    for (const frame of events) await send(frame);
+
+    let turns: readonly { messages: readonly unknown[] }[] = [];
+    const stop = held.chat.value.subscribe((value) => (turns = value.turns));
+    stop();
+
+    expect(
+      turns.map((turn) => events.indexOf(turn.messages[0])),
+      'the frames that head a turn, exactly as the fixture marks them: the prompt, the ' +
+        "mid-stream completion (no call out), and the command's completion - never the agent's " +
+        'ending, and never the completion that found a call out',
+    ).toEqual(heads);
+    expect(turns.length, 'and one turn per head').toBe(heads.length);
+
+    // **No drawn turn is empty.** A completion the page suppresses can leave a
+    // headless turn if the cut does not know it, and the list draws every turn
+    // with a 24px floor - a blank band. Every turn here draws at least a row.
+    const facts = pageFactsOf(turns);
+    for (const [at, turn] of turns.entries()) {
+      expect(
+        fold(turn.messages, null, false, false, facts).length,
+        `turn ${at} draws`,
+      ).toBeGreaterThan(0);
+    }
   });
 
   it('keeps a row the reader opened when a page prefixes the turn with their words', async () => {

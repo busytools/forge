@@ -340,9 +340,14 @@ pub fn has_a_transcript_row(message: &forge_primitives::Message) -> bool {
 /// The `system` subtypes whose row is not the conversation's: the task
 /// lifecycle lands on its call's row, the background-task and command lists
 /// feed their own surfaces, the handshake is not content, and a hook run
-/// draws from its attachment row. **The client filters the same list** (its
-/// own `SYSTEM_DRAWN_ELSEWHERE`), because the read and the live path are one
-/// obligation - a subtype added here belongs there, and the other way round.
+/// draws from its attachment row.
+///
+/// **The client filters the same list** (its own `SYSTEM_DRAWN_ELSEWHERE`),
+/// because the read and the live path are one obligation - with one split
+/// the carriers force: `task_notification` is here because a transcript never
+/// holds the frame (the CLI persists the same event as a user notice row),
+/// while the client draws the frame live, since there it is the completion's
+/// only carrier. The test below names that entry and holds the rest in step.
 const SYSTEM_ROWS_DRAWN_ELSEWHERE: [&str; 11] = [
     "task_started",
     "task_updated",
@@ -3201,13 +3206,31 @@ mod tests {
             "the client's skip list parsed to nothing, so this test compared nothing",
         );
         theirs.sort();
-        let mut ours: Vec<String> =
-            SYSTEM_ROWS_DRAWN_ELSEWHERE.iter().map(|name| (*name).to_owned()).collect();
+        // **One entry is the two lists' deliberate split, and both sides
+        // state it.** The scan keeps `task_notification` because a transcript
+        // never holds the frame; the client must not, because it draws that
+        // frame live - the wire is the completion's only live carrier, and a
+        // client list that named it would silence the notice. Every other
+        // entry stays in step, and any new difference is drift.
+        let split = "task_notification";
+        assert!(
+            SYSTEM_ROWS_DRAWN_ELSEWHERE.contains(&split),
+            "the scan keeps the live-only completion frame off a transcript read",
+        );
+        assert!(
+            !theirs.iter().any(|entry| entry == split),
+            "and the client draws it, so its skip list must not name it: {theirs:?}",
+        );
+        let mut ours: Vec<String> = SYSTEM_ROWS_DRAWN_ELSEWHERE
+            .iter()
+            .filter(|name| **name != split)
+            .map(|name| (*name).to_owned())
+            .collect();
         ours.sort();
         assert_eq!(
             ours, theirs,
             "the scan's SYSTEM_ROWS_DRAWN_ELSEWHERE and the client's SYSTEM_DRAWN_ELSEWHERE \
-             have diverged; a subtype belongs in both or neither",
+             have diverged beyond the one carrier split; a subtype belongs in both or neither",
         );
     }
 
