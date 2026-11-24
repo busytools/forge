@@ -87,6 +87,8 @@ fn the_nextest_kill_stays_above_every_wait_stack() {
         (WEDGE + stop_wait()) * 2 + Duration::from_secs(3),
         // Two listening waits around a refused boot.
         (WEDGE * 3) + stop_wait(),
+        // The idle stop: one listening wait, one stop.
+        WEDGE + stop_wait(),
     ];
     for stack in stacks {
         assert!(stack < kill, "a legitimate stack of {stack:?} must stay under the {kill:?} kill");
@@ -839,6 +841,38 @@ async fn headless_boot_serves_the_home_and_stops_clean() {
         .expect("the restarted server is reaped within the stop budget")
         .expect("the restarted server is reaped");
     assert!(status.success(), "and stops clean in turn: {status}");
+}
+
+/// **The contract pin for #3050: a server nobody has connected to exits on
+/// SIGTERM.** The fixture seeds no session and this test never dials the
+/// socket, so the boot is all that runs. It is green before and after the
+/// bounded drain - the negative proof is
+/// `boot::the_runtime_close_answers_on_its_grace_with_a_blocking_task_parked`
+/// - but the shape the issue measured is pinned here against the real
+/// binary, so a stop that holds an idle server open fails at the instrument
+/// a deployment runs.
+#[tokio::test]
+async fn an_idle_server_with_no_client_exits_on_sigterm() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (mut server, _port, _) = spawn_serving(
+        two_free_ports,
+        |port, gateway| {
+            let (home, config) = write_fixture(dir.path(), port, gateway);
+            Scratch { home, config, bin: None }
+        },
+        |_| {},
+    )
+    .await;
+
+    let began = std::time::Instant::now();
+    terminate(server.id().expect("the server has a pid while it runs")).await;
+    let exit = tokio::time::timeout(stop_wait(), server.wait())
+        .await
+        .expect("the server finishes its stop within the deadline")
+        .expect("the server is reaped");
+    let elapsed = began.elapsed();
+    assert!(exit.success(), "an idle server exits clean on SIGTERM: {exit}");
+    assert!(elapsed < stop_wait(), "the stop fits one stop budget: {elapsed:?}");
 }
 
 /// One shipped file's bytes, for comparing what the boot wrote.
