@@ -775,8 +775,7 @@ pub struct ReadGuard<'a> {
 
 impl Drop for ReadGuard<'_> {
     fn drop(&mut self) {
-        let mut readers =
-            self.conversations.readers.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut readers = self.conversations.readers.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(count) = readers.get_mut(&self.slot) {
             *count = count.saturating_sub(1);
             if *count == 0 {
@@ -1118,10 +1117,7 @@ impl Conversations {
 
     /// Say a seat with no held copy was just seen, at `ordinal`.
     fn note_seen(&self, slot: &SessionSlot, ordinal: u64) {
-        self.last_seen
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(slot.clone(), ordinal);
+        self.last_seen.lock().unwrap_or_else(PoisonError::into_inner).insert(slot.clone(), ordinal);
     }
 
     /// Hold the budget off `slot` while a read builds its record.

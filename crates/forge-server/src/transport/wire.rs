@@ -6764,10 +6764,7 @@ mode = \"toggle\"
     }
 
     /// A connect for `slot` carrying `history`.
-    fn a_connect_for(
-        slot: &SessionSlot,
-        history: Vec<Message>,
-    ) -> forge_workspace::SessionUpdate {
+    fn a_connect_for(slot: &SessionSlot, history: Vec<Message>) -> forge_workspace::SessionUpdate {
         forge_workspace::SessionUpdate::Connected {
             key: slot.clone(),
             session_id: forge_primitives::SessionId::new("0f3a5c6d-7e8f-4a9b-8c0d-1e2f3a4b5c6d"),
@@ -6831,8 +6828,8 @@ mode = \"toggle\"
         Vec<Message>,
     ) {
         let dir = tempfile::tempdir().expect("a config dir of its own");
-        let fleet = crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])])
-            .expect("a fleet");
+        let fleet =
+            crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])]).expect("a fleet");
         fleet.start("TestOrg", "proj").expect("a live lead session");
         let seat = SessionSlot::lead("TestOrg", "proj");
         let rows = transcript_rows(6);
@@ -6891,11 +6888,7 @@ mode = \"toggle\"
             (0..6).map(|i| format!("turn {i}")).collect::<Vec<_>>(),
             "the transcript's own rows, in order",
         );
-        assert_eq!(
-            held.lock().watermark(),
-            want,
-            "the copy covers the number the answer carries",
-        );
+        assert_eq!(held.lock().watermark(), want, "the copy covers the number the answer carries",);
         assert_eq!(
             state.conversations.consumed_for(&seat),
             want,
@@ -6934,7 +6927,11 @@ mode = \"toggle\"
             .await
             .expect("the seat serves a copy again");
         let texts: Vec<String> = held.lock().messages().iter().map(text_of).collect();
-        assert_eq!(texts, vec!["after the eviction".to_owned()], "the window's newest row is served");
+        assert_eq!(
+            texts,
+            vec!["after the eviction".to_owned()],
+            "the window's newest row is served"
+        );
         assert_eq!(
             held.lock().watermark(),
             want,

@@ -336,7 +336,8 @@ impl Shared {
             // **A boundary inside the run moves the count**, the same frame the
             // held copy counts. The fanout is where each frame crosses exactly
             // once, so this is the number a copy rebuilt from a window reports.
-            if let SessionUpdate::ChatAppended { msg: Message::CompactBoundary { .. }, .. } = &update
+            if let SessionUpdate::ChatAppended { msg: Message::CompactBoundary { .. }, .. } =
+                &update
             {
                 *self.compactions.entry(slot.clone()).or_default() += 1;
             }
@@ -1289,10 +1290,7 @@ mod tests {
         let key = seat("a-ring");
         fanout.send(a_turn_ends(&key));
         assert!(fanout.ring_bytes(&key) > 0, "the frame weighs on the ring");
-        assert!(
-            fanout.total_ring_bytes() >= fanout.ring_bytes(&key),
-            "and the total counts it",
-        );
+        assert!(fanout.total_ring_bytes() >= fanout.ring_bytes(&key), "and the total counts it",);
         assert_eq!(fanout.frames_between(&key, 1, 1).len(), 1, "the window holds the frame");
         fanout.evict_ring(&key);
         assert_eq!(fanout.ring_bytes(&key), 0, "the ring is gone");
