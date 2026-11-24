@@ -5203,6 +5203,10 @@ details[open] > summary .arw { opacity: 1; }
 .settings-page .settings-pane-body { padding-top: 2px; }
 .settings-page .settings-empty { font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); margin: 14px 0; }
+/* **Inside a card the empty line takes the rows' own inset.** Measured on the
+   running app: a row's text starts 16px inside the card while the empty line
+   started at the border, which read as an unpadded description. */
+.settings-page .settings-card .settings-empty { padding: 0 16px; }
 
 /* an instance card: its head band, then one line per setting */
 .settings-page .settings-card { border: 1px solid var(--line); border-radius: 12px;

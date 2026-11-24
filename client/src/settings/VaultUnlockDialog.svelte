@@ -33,7 +33,9 @@
   let dialog: HTMLElement | undefined = $state();
   let closed = false;
   let returnTo: HTMLElement | null = null;
-  let revealed = $state(variant === 'enrol');
+  /** The password fields: always on for enrol, revealed by the link for unlock. */
+  let revealedByLink = $state(false);
+  const revealed = $derived(variant === 'enrol' || revealedByLink);
   let password = $state('');
   let code = $state('');
 
@@ -107,7 +109,7 @@
       </button>
       {#if !revealed}
         <div class="reveal">
-          <button type="button" class="settings-link" onclick={() => (revealed = true)}>
+          <button type="button" class="settings-link" onclick={() => (revealedByLink = true)}>
             use the Vaultwarden password
           </button>
         </div>

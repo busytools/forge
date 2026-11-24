@@ -19,7 +19,14 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-function draw(props: Record<string, unknown>): void {
+function draw(props: {
+  variant: 'unlock' | 'enrol';
+  busy?: boolean;
+  reason?: string | null;
+  ongesture?: () => void;
+  onpassword?: (password: string, code: string) => void;
+  oncancel: () => void;
+}): void {
   app = mount(VaultUnlockDialog, { target: document.body, props });
   flushSync();
 }

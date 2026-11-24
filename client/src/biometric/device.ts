@@ -15,7 +15,6 @@ export type DeviceGate =
   | { outcome: 'enrolled' }
   | { outcome: 'ready' }
   | { outcome: 'enrolling' }
-  | { outcome: 'needs_unlock' }
   | { outcome: 'unavailable'; reason: string }
   | { outcome: 'failed'; reason: string };
 

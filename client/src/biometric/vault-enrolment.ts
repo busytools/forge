@@ -56,6 +56,46 @@ export type VaultEnrolment =
   | { outcome: 'unavailable'; reason: string }
   | { outcome: 'failed'; reason: string };
 
+/** What the settings page's direct unlock ended as. */
+export type VaultUnlock = { outcome: 'unlocked' } | { outcome: 'refused'; reason: string };
+
+/**
+ * Unlock the shared vault from the settings page: the master password with
+ * the optional 2FA code, or the material the gate released.
+ *
+ * **The command's wire literal lives here**, with the enrolment's other
+ * hand-written commands, so a rename and the server's decoder move together
+ * in review. A failure is drawn in the dialog, never thrown.
+ */
+export async function unlockVault(
+  connection: VaultConnection,
+  credential: { password: string; two_factor: string } | { released: VaultMaterial },
+): Promise<VaultUnlock> {
+  const command =
+    'released' in credential
+      ? { vault_unlock: { released: credential.released } }
+      : {
+          vault_unlock: {
+            password: credential.password,
+            ...(credential.two_factor === '' ? {} : { two_factor: credential.two_factor }),
+          },
+        };
+  return unlockAnswer(await connection.dispatch(command));
+}
+
+function unlockAnswer(answer: unknown): VaultUnlock {
+  if (answer === null || typeof answer !== 'object') {
+    return { outcome: 'refused', reason: 'the unlock answer did not read' };
+  }
+  const held = answer as Record<string, unknown>;
+  if (held['outcome'] === 'unlocked') return { outcome: 'unlocked' };
+  const reason = held['reason'];
+  return {
+    outcome: 'refused',
+    reason: typeof reason === 'string' && reason !== '' ? reason : 'the vault refused the unlock',
+  };
+}
+
 /** Forget the material this run held: the vault locked, or the card settled. */
 export function forgetVaultMaterial(): void {
   held = null;
