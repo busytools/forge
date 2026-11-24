@@ -211,15 +211,19 @@ struct Shared {
     /// count: a number older than that lies beyond any window a fill could
     /// serve, where the count it underwrites is a refusal rather than a hole.
     unringed: HashMap<SessionSlot, VecDeque<u64>>,
-    /// How many times each seat's stream has compacted.
+    /// The compaction count each seat's epoch opened with, and the number of
+    /// every boundary minted since.
     ///
     /// **What a copy rebuilt from a window cannot count for itself.** The
     /// window holds only the boundaries after its front, so a copy built from
     /// it would report a count short by every compaction older than the
-    /// window. The fanout sees each frame exactly once, at the mint, so the
-    /// count is kept here and the rebuild reads it. A seal sets it from the
-    /// count the epoch opens with.
-    compactions: HashMap<SessionSlot, u32>,
+    /// window - and a copy seeded with the running total would count its own
+    /// boundaries a second time as it applies them. The fanout sees each
+    /// frame exactly once, at the mint, so it keeps the seal's count and each
+    /// boundary's number; a rebuild asks for the count BEFORE its front and
+    /// lets the applies count the rest. A seal replaces both.
+    compaction_base: HashMap<SessionSlot, u32>,
+    compaction_seqs: HashMap<SessionSlot, Vec<u64>>,
     /// The seats whose latest epoch-opening seal carried rows.
     ///
     /// **A seal's history is not in the ring**, so a reader filling a copy
@@ -246,7 +250,8 @@ impl Default for Shared {
             rings: HashMap::new(),
             ring_bytes: HashMap::new(),
             unringed: HashMap::new(),
-            compactions: HashMap::new(),
+            compaction_base: HashMap::new(),
+            compaction_seqs: HashMap::new(),
             sealed_with_rows: HashSet::new(),
             ring_cap: SEAT_RING,
             ring_cap_bytes: SEAT_RING_BYTES,
@@ -315,9 +320,11 @@ impl Shared {
             } else {
                 self.sealed_with_rows.remove(&slot);
             }
-            // **A seal states the count its epoch opens with**, so the ring's
-            // own boundaries after it only add to it.
-            self.compactions.insert(slot.clone(), compactions);
+            // **A seal states the count its epoch opens with**, and replaces
+            // the boundary numbers the previous run carried: its numbers are
+            // minted again by the run after it.
+            self.compaction_base.insert(slot.clone(), compactions);
+            self.compaction_seqs.remove(&slot);
         } else if matches!(update, SessionUpdate::Releasing { .. }) {
             // **The counter still advances** - the frame carries a number like
             // any other, and leaving the counter behind mints that number
@@ -333,13 +340,13 @@ impl Shared {
             remember(self.unringed.entry(slot.clone()).or_default(), seq, self.ring_cap);
         } else {
             self.sequences.insert(slot.clone(), seq);
-            // **A boundary inside the run moves the count**, the same frame the
-            // held copy counts. The fanout is where each frame crosses exactly
-            // once, so this is the number a copy rebuilt from a window reports.
+            // **A boundary inside the run is remembered by its number**, so a
+            // copy rebuilt from a window can be seeded with the count BEFORE
+            // the window's front and let its own applies count the rest.
             if let SessionUpdate::ChatAppended { msg: Message::CompactBoundary { .. }, .. } =
                 &update
             {
-                *self.compactions.entry(slot.clone()).or_default() += 1;
+                self.compaction_seqs.entry(slot.clone()).or_default().push(seq);
             }
         }
         let frame = SeatUpdate { seq: Some(seq), update: Arc::new(update) };
@@ -409,7 +416,24 @@ impl Shared {
     /// How many times `slot`'s stream has compacted, `0` for a seat nothing
     /// has sealed in this process.
     fn compactions_of(&self, slot: &SessionSlot) -> u32 {
-        self.compactions.get(slot).copied().unwrap_or(0)
+        let base = self.compaction_base.get(slot).copied().unwrap_or(0);
+        let boundaries = self.compaction_seqs.get(slot).map_or(0, Vec::len);
+        base.saturating_add(u32::try_from(boundaries).unwrap_or(u32::MAX))
+    }
+
+    /// How many times `slot`'s stream had compacted before frame `seq`.
+    ///
+    /// **The seed a copy rebuilt from the window starts from.** Boundaries
+    /// numbered at or above `seq` are the window's own, and the copy counts
+    /// those as it applies them; counting them here too is how a rebuilt copy
+    /// reported one compaction more than its stream had.
+    fn compactions_before(&self, slot: &SessionSlot, seq: u64) -> u32 {
+        let base = self.compaction_base.get(slot).copied().unwrap_or(0);
+        let boundaries = self
+            .compaction_seqs
+            .get(slot)
+            .map_or(0, |seqs| seqs.iter().filter(|minted| **minted < seq).count());
+        base.saturating_add(u32::try_from(boundaries).unwrap_or(u32::MAX))
     }
 }
 
@@ -484,6 +508,13 @@ impl UpdateFanout {
     /// its front and the count must not shrink with it.
     pub(crate) fn compactions(&self, slot: &SessionSlot) -> u32 {
         self.shared.lock().compactions_of(slot)
+    }
+
+    /// How many times `slot`'s stream had compacted before frame `seq`: the
+    /// count a copy rebuilt from the window seeds with, so the boundaries it
+    /// applies are counted exactly once.
+    pub(crate) fn compactions_before(&self, slot: &SessionSlot, seq: u64) -> u32 {
+        self.shared.lock().compactions_before(slot, seq)
     }
 
     /// Drop everything this seat's ring holds, for a budget that evicted its
@@ -1336,6 +1367,16 @@ mod tests {
             source: None,
         });
         assert_eq!(fanout.compactions(&key), 3, "a boundary after it adds one");
+        assert_eq!(
+            fanout.compactions_before(&key, 1),
+            2,
+            "a copy rebuilt from a window starting at the boundary seeds with the count before it",
+        );
+        assert_eq!(
+            fanout.compactions_before(&key, 2),
+            3,
+            "and one starting after it seeds with the boundary already counted",
+        );
         fanout.evict_ring(&key);
         assert_eq!(fanout.compactions(&key), 3, "and the eviction does not reset it");
     }

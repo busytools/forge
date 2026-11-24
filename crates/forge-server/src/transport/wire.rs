@@ -2358,7 +2358,10 @@ async fn catch_up(state: &TransportState, slot: &SessionSlot, want: u64) -> Resu
         }
         let mut conversation = crate::transport::conversation::Conversation::empty();
         conversation.set_occupant(occupant);
-        conversation.set_compaction_count(state.surface.seat_compaction_count(slot));
+        // **The count BEFORE the window's front.** The applies below count the
+        // window's own boundaries through `Conversation::push`, so seeding
+        // with the running total would count them twice.
+        conversation.set_compaction_count(state.surface.seat_compaction_count_before(slot, from));
         state.conversations.replace(slot, conversation);
     }
     for frame in &frames {
@@ -6937,5 +6940,84 @@ mode = \"toggle\"
             want,
             "and the copy covers the number the answer carries",
         );
+    }
+
+    /// A compaction boundary, as the CLI writes one.
+    fn a_compact_boundary() -> Message {
+        Message::CompactBoundary {
+            trigger: "auto".to_owned(),
+            pre_tokens: 10,
+            post_tokens: 4,
+            uuid: "c1".to_owned(),
+            session_id: "s".to_owned(),
+            metadata_extras: serde_json::Map::default(),
+            extras: serde_json::Map::default(),
+        }
+    }
+
+    /// **A rebuilt copy counts its boundaries once.** The fan-out's running
+    /// count already includes every boundary since the seal; the copy applies
+    /// the window's own boundaries as frames, so it must seed with the count
+    /// BEFORE the window's front or the header draws one too high.
+    #[tokio::test]
+    async fn a_rebuilt_seat_counts_its_compactions_once() {
+        let (fleet, _dir, state, seat, other, filler) = an_evictable_seat();
+        // One boundary folds into the held copy, then the budget drops it.
+        drive(&state, &fleet, &a_chat(&seat, a_compact_boundary()));
+        assert_eq!(state.surface.seat_compaction_count(&seat), 1, "the stream has compacted once");
+        drive(&state, &fleet, &a_connect_for(&other, filler));
+        assert!(state.conversations.get(&seat).is_none(), "the seat was evicted");
+
+        // A second boundary after the eviction: ringed, folded into nothing.
+        drive(&state, &fleet, &a_chat(&seat, a_compact_boundary()));
+        let want = state.surface.seat_next_seq(&seat).saturating_sub(1);
+        assert_eq!(state.surface.seat_compaction_count(&seat), 2, "and twice by the read");
+        super::catch_up(&state, &seat, want).await.expect("the read settles");
+        let held = super::conversation_for(&state, &seat, &mut super::OpenTimings::default(), want)
+            .await
+            .expect("the seat serves a copy again");
+        assert_eq!(
+            held.lock().compaction_count(),
+            state.surface.seat_compaction_count(&seat),
+            "the copy reports the stream's count, not one per applied boundary too many",
+        );
+    }
+
+    /// **The production switch reads the config.** `for_workspace` is the one
+    /// site that turns `conversation_memory_budget_bytes` into the transport's
+    /// budget and decides whether the ring evictor comes with it; a transport
+    /// a test builds by hand cannot see that site at all.
+    #[tokio::test]
+    async fn the_transport_carries_the_configured_budget_from_the_workspace() {
+        let dir = tempfile::tempdir().expect("a config dir of its own");
+        let fleet = crate::testing::Fleet::in_dir_with_server(
+            dir.path(),
+            &[("TestOrg", &["proj"])],
+            "[server]\nconversation_memory_budget_bytes = 536870912\n",
+        )
+        .expect("a fleet");
+        let state = crate::transport::TransportState::for_workspace(&fleet.workspace());
+        assert_eq!(
+            state.conversations.budget_bytes(),
+            536_870_912,
+            "the file's value reaches the transport",
+        );
+        assert!(state.conversations.has_ring_evictor(), "and a non-zero budget brings the evictor");
+    }
+
+    /// **Zero is the opt-out on the production path too**, not just in a
+    /// hand-built set: no total budget, and no ring evictor to apply one.
+    #[tokio::test]
+    async fn a_zero_budget_leaves_the_transport_unbounded() {
+        let dir = tempfile::tempdir().expect("a config dir of its own");
+        let fleet = crate::testing::Fleet::in_dir_with_server(
+            dir.path(),
+            &[("TestOrg", &["proj"])],
+            "[server]\nconversation_memory_budget_bytes = 0\n",
+        )
+        .expect("a fleet");
+        let state = crate::transport::TransportState::for_workspace(&fleet.workspace());
+        assert_eq!(state.conversations.budget_bytes(), 0, "zero means no total budget");
+        assert!(!state.conversations.has_ring_evictor(), "and nothing to evict with");
     }
 }

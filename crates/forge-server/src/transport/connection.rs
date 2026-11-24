@@ -2962,6 +2962,9 @@ where
             // **A seed says how far the seat's stream stood when it was read**,
             // so a seat the budget evicted seeds with the number its answer
             // would carry and a later fill does not re-apply the same rows.
+            // **No read guard here**: this path holds the `Arc` it is handed,
+            // and an eviction can drop the map entry without touching the copy
+            // the page is built from.
             let cover = state.surface.seat_next_seq(&conversation).saturating_sub(1);
             let Some(held) =
                 conversation_for(state, &conversation, &mut OpenTimings::default(), cover).await

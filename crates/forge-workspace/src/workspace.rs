@@ -5869,6 +5869,13 @@ impl Workspace {
         self.update_tx.compactions(key)
     }
 
+    /// How many times `key`'s stream had compacted before frame `seq`: the
+    /// count a copy rebuilt from the window seeds with, so the boundaries it
+    /// applies are counted exactly once.
+    pub fn seat_compaction_count_before(&self, key: &SessionSlot, seq: u64) -> u32 {
+        self.update_tx.compactions_before(key, seq)
+    }
+
     /// How many of the numbers in `from..=to` on `key`'s stream no window
     /// holds: the frames that close an epoch are numbered but kept out of the
     /// ring, so a reader measuring whether a copy covers a stretch leaves them

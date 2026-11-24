@@ -735,7 +735,10 @@ pub struct Conversations {
     /// them, so its next read may rebuild from the window's own front. A seat
     /// nothing ever folded has no such backing: a window that no longer
     /// reaches its first frame is a hole, and the read must refuse it. The
-    /// mark is cleared the moment a copy is held again.
+    /// mark is cleared the moment a copy is held again. A seat never held
+    /// again keeps its slot here for the process's life: one slot and one
+    /// counter per seat the process has seen, bounded by the roster rather
+    /// than by activity.
     evicted: Mutex<std::collections::HashSet<SessionSlot>>,
     /// A test's hold on the fold loop, so the window above can be driven
     /// rather than raced: while it is set, the loop does not consume.
@@ -1113,6 +1116,15 @@ impl Conversations {
     /// held since.
     pub fn was_evicted(&self, slot: &SessionSlot) -> bool {
         self.evicted.lock().unwrap_or_else(PoisonError::into_inner).contains(slot)
+    }
+
+    /// Whether this set drops rings with the seats it evicts.
+    ///
+    /// Test-only: the production switch that pairs a non-zero budget with the
+    /// workspace's evictor is one site, and a hand-built set cannot show it.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn has_ring_evictor(&self) -> bool {
+        self.ring_evictor.is_some()
     }
 
     /// Say a seat with no held copy was just seen, at `ordinal`.

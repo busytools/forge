@@ -357,6 +357,13 @@ impl ViewSurface {
         self.workspace.seat_compaction_count(slot)
     }
 
+    /// How many times `slot`'s stream had compacted before frame `seq`: the
+    /// count a copy rebuilt from the window seeds with, so the boundaries it
+    /// applies are counted exactly once.
+    pub fn seat_compaction_count_before(&self, slot: &SessionSlot, seq: u64) -> u32 {
+        self.workspace.seat_compaction_count_before(slot, seq)
+    }
+
     /// Whether `slot`'s latest epoch-opening seal carried rows, which no ring
     /// holds.
     pub fn seat_epoch_opened_with_rows(&self, slot: &SessionSlot) -> bool {
