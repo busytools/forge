@@ -2948,9 +2948,11 @@ where
             // Paging walks nothing: the walk belongs to the seat's hold and
             // its loop now, so a page reads the store the way every other read
             // does - and a seat nobody held is a seat nothing walks.
-            // The window slices the boundaries the fold reported, so a turn
-            // crosses whole. Slicing on a count of messages instead is what
-            // would hand a client half a turn.
+            // The window slices the boundaries the fold reported, so a page
+            // cuts on turns - and inside one only where a turn alone is over
+            // the byte budget, each piece opening exactly where the page
+            // above ended. Slicing on a count of messages instead is what
+            // would hand a client a piece with no handle to the rest of it.
             //
             // The fold runs in a blocking task and NOT under the lock: the
             // socket folds the core's stream in one task for every seat, so a

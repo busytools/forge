@@ -235,6 +235,27 @@ pub fn resolved_live_roles(config_dir: &Path, app_support: &Path) -> Result<Live
     Ok(LiveRoles { models, config, models_dir })
 }
 
+/// The installed records, read off a copy of the store the running server
+/// holds: the sweep's prune list, without touching the live redb.
+#[cfg(any(test, feature = "testing"))]
+pub fn installed_records(
+    config_dir: &Path,
+    app_support: &Path,
+) -> Result<Vec<crate::install::InstalledModel>, String> {
+    let live = crate::store::path_for(app_support, config_dir);
+    let copy = StoreCopy::take(&live)?;
+    let db = crate::store::Db::open(&copy.0).map_err(|error| {
+        format!(
+            "the store at {} could not be read through a copy at {}: {error}",
+            live.display(),
+            copy.0.display()
+        )
+    })?;
+    crate::store::dictate_models::installed(&db).map_err(|error| {
+        format!("the installed models could not be read from {}: {error}", live.display())
+    })
+}
+
 /// How many saved results the page reads.
 const RESULTS_SHOWN: usize = 50;
 
