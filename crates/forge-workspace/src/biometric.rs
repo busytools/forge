@@ -317,30 +317,23 @@ impl Workspace {
             return;
         };
         tokio::spawn(async move {
-            let unlock = tokio::time::timeout(
-                forge_tools::vault::UNLOCK_BOUND,
-                async move {
-                    match (released, password.filter(|password| !password.trim().is_empty())) {
-                        (Some(released), _) => {
-                            session.unlock_with_released(released).await.map_err(|error| error.to_string())
-                        }
-                        (None, Some(password)) => session
-                            .unlock_with_password(
-                                password.to_string(),
-                                two_factor.as_deref().map(|code| code.to_string()),
-                            )
-                            .await
-                            .map_err(|error| error.to_string()),
-                        (None, None) => Err("the master password is required".to_owned()),
-                    }
-                },
-            )
+            let unlock = tokio::time::timeout(forge_tools::vault::UNLOCK_BOUND, async move {
+                match (released, password.filter(|password| !password.trim().is_empty())) {
+                    (Some(released), _) => session
+                        .unlock_with_released(released)
+                        .await
+                        .map_err(|error| error.to_string()),
+                    (None, Some(password)) => session
+                        .unlock_with_password(password.to_string(), two_factor.as_deref().cloned())
+                        .await
+                        .map_err(|error| error.to_string()),
+                    (None, None) => Err("the master password is required".to_owned()),
+                }
+            })
             .await;
             let answer = match unlock {
                 Ok(Ok(())) => forge_primitives::vault::VaultUnlockOutcome::Unlocked,
-                Ok(Err(reason)) => {
-                    forge_primitives::vault::VaultUnlockOutcome::Refused { reason }
-                }
+                Ok(Err(reason)) => forge_primitives::vault::VaultUnlockOutcome::Refused { reason },
                 Err(_) => forge_primitives::vault::VaultUnlockOutcome::Refused {
                     reason: "the vault did not answer the unlock in time".to_owned(),
                 },
