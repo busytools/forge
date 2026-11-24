@@ -1013,14 +1013,15 @@ pub(crate) fn close_runtime_within(runtime: tokio::runtime::Runtime, grace: std:
     runtime.shutdown_timeout(grace);
     let waited = started.elapsed();
     // `shutdown_timeout` answers when the pool drains or when the grace runs
-    // out, and it reports neither; the clock is what tells the two apart.
+    // out, and it reports neither, so the clock is the only signal there is.
+    // A clean drain descheduled across the deadline therefore reads as an
+    // expiry: this line is a coarse flag, not a precise verdict.
     if waited >= grace {
         tracing::warn!(
             event_name = "shutdown_blocking_drain_expired",
             grace_ms = grace.as_millis(),
             waited_ms = waited.as_millis(),
-            "the exit's grace ran out with blocking work still running and left it behind; a \
-             boot-time model install or load cut here is re-checked on the next boot"
+            "the exit's grace ran out with blocking work still running and left it behind"
         );
     }
 }
@@ -1028,9 +1029,9 @@ pub(crate) fn close_runtime_within(runtime: tokio::runtime::Runtime, grace: std:
 #[cfg(test)]
 mod tests {
     use super::{
-        BOOT_WAVE_WAIT, close_runtime_within, install_crypto_provider, install_shipped_skills,
-        panic_record, run_startup_gate, start_boot_wave, start_config_watch, start_subsystems,
-        stop_result, wait_for_accounts,
+        BLOCKING_DRAIN_GRACE, BOOT_WAVE_WAIT, close_runtime, close_runtime_within,
+        install_crypto_provider, install_shipped_skills, panic_record, run_startup_gate,
+        start_boot_wave, start_config_watch, start_subsystems, stop_result, wait_for_accounts,
     };
     #[cfg(target_os = "macos")]
     use super::{configure_fleet_profiles, reap_then_prune};
@@ -1288,8 +1289,74 @@ mod tests {
                 *level == tracing::Level::WARN
                     && fields.contains("event_name=\"shutdown_blocking_drain_expired\"")
                     && fields.contains("grace_ms=250")
+                    && fields.contains("waited_ms=")
             }),
-            "an expired drain names its event and its grace: {events:?}"
+            "an expired drain names its event, its grace and the wait: {events:?}"
+        );
+    }
+
+    /// **The production entry is the one under test.** The seam case injects
+    /// its own budget, so a `close_runtime` that dropped instead, or passed
+    /// any other grace, would leave it green: this case parks the task well
+    /// past the production grace and reads the production constant off the
+    /// warning it must write.
+    #[test]
+    fn the_production_close_answers_on_the_production_grace() {
+        // Well past the production grace; the test's escape, not the
+        // property.
+        const PARKED: Duration = Duration::from_secs(20);
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let (started, started_rx) = std::sync::mpsc::channel();
+        let (_release, parked) = std::sync::mpsc::channel::<()>();
+        runtime.spawn(async move {
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = started.send(());
+                let _ = parked.recv_timeout(PARKED);
+            })
+            .await;
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the blocking task starts before the close is asked for");
+
+        let began = std::time::Instant::now();
+        let events = crate::test_support::logged(|| close_runtime(runtime));
+        let waited = began.elapsed();
+
+        assert!(
+            waited >= BLOCKING_DRAIN_GRACE,
+            "the close spends its grace on the parked task rather than answering early: waited \
+             {waited:?}"
+        );
+        assert!(
+            waited < BLOCKING_DRAIN_GRACE + Duration::from_secs(1),
+            "the production close answers on its grace, not when the parked task ends: waited \
+             {waited:?}"
+        );
+        let fields = events
+            .iter()
+            .find(|(level, fields)| {
+                *level == tracing::Level::WARN
+                    && fields.contains("event_name=\"shutdown_blocking_drain_expired\"")
+            })
+            .map(|(_, fields)| fields.clone())
+            .expect("the production grace expired, so the drain reports it");
+        assert!(
+            fields.contains(&format!("grace_ms={}", BLOCKING_DRAIN_GRACE.as_millis())),
+            "the warning names the production grace: {fields}"
+        );
+        assert!(fields.contains("waited_ms="), "the warning carries the wait: {fields}");
+    }
+
+    /// **A clean close is silent.** Nothing was parked, so the drain never
+    /// spends its grace and the warning a stop can point at must not appear.
+    #[test]
+    fn a_close_with_nothing_parked_writes_no_drain_warning() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let events = crate::test_support::logged(|| close_runtime(runtime));
+        assert!(
+            !events.iter().any(|(_, fields)| fields.contains("shutdown_blocking_drain_expired")),
+            "a drain that never met its grace is not a problem to report: {events:?}"
         );
     }
 

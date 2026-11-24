@@ -864,15 +864,14 @@ async fn an_idle_server_with_no_client_exits_on_sigterm() {
     )
     .await;
 
-    let began = std::time::Instant::now();
     terminate(server.id().expect("the server has a pid while it runs")).await;
+    // The timeout is the bound the test holds the stop to; the property is
+    // the exit, and its status is the clean-stop half.
     let exit = tokio::time::timeout(stop_wait(), server.wait())
         .await
         .expect("the server finishes its stop within the deadline")
         .expect("the server is reaped");
-    let elapsed = began.elapsed();
     assert!(exit.success(), "an idle server exits clean on SIGTERM: {exit}");
-    assert!(elapsed < stop_wait(), "the stop fits one stop budget: {elapsed:?}");
 }
 
 /// One shipped file's bytes, for comparing what the boot wrote.
