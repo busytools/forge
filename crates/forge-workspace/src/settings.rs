@@ -2630,6 +2630,22 @@ models = ["m"]
         }
     }
 
+    /// **The budget crosses the loader as the file wrote it.** A key that only
+    /// ever read its default would never notice the one file that sets it,
+    /// and the budget is a value a reader will want to tune.
+    #[test]
+    fn a_non_default_conversation_budget_crosses_the_loader() {
+        let changed = EVERY_KEY.replace(
+            "conversation_memory_budget_bytes = 2147483648",
+            "conversation_memory_budget_bytes = 536870912",
+        );
+        let loaded = load(&changed);
+        assert_eq!(
+            loaded.server.conversation_memory_budget_bytes, 536_870_912,
+            "the file's value, not the default",
+        );
+    }
+
     /// A class split inside one table stays split in the reload summary: a
     /// live cap is not reported as a restart, and a port is not reported as
     /// live.
