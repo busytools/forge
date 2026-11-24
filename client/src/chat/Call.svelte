@@ -562,6 +562,7 @@
   class:running={bright}
   bind:open={opened}
   data-k={`call-${k}`}
+  data-callid={call.id === '' ? undefined : call.id}
   data-sg={card?.dispatch_id}
 >
   <summary>
