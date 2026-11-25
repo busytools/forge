@@ -25,6 +25,15 @@ export interface Refusal {
 
 const listeners = new Set<(line: Refusal) => void>();
 
+/**
+ * What the reader is told when a command never left the browser.
+ *
+ * One line for both surfaces that say it: the seat's column draws it as a
+ * notice, and the composer draws it above the field a send was typed into -
+ * the same failure, said where each was read.
+ */
+export const NOT_SENT = 'Not sent - the connection is down.';
+
 /** Draw the next refusal in the given seat's column; returns the off switch. */
 export function onRefusal(fn: (line: Refusal) => void): () => void {
   listeners.add(fn);
@@ -43,7 +52,7 @@ export function onRefusal(fn: (line: Refusal) => void): () => void {
 export function refused(at: SessionSlot): void {
   const line: Refusal = {
     seat: subjectKey({ session: at }),
-    text: 'Not sent - the connection is down.',
+    text: NOT_SENT,
   };
   for (const fn of listeners) fn(line);
 }

@@ -17,7 +17,16 @@ import { subjectKey } from '../protocol';
 import { ReadPace } from '../read-pace';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
-import { boardFrom, coversBoard, type BoardRead, type BoardWire } from '../wire/board';
+import {
+  applyCrons,
+  applyTasks,
+  boardFrom,
+  coversBoard,
+  cronsFrame,
+  tasksFrame,
+  type BoardRead,
+  type BoardWire,
+} from '../wire/board';
 import { tasksChanged } from '../wire/home';
 
 /**
@@ -108,6 +117,10 @@ function boardStore(connection: Connection): Readable<BoardRead> {
   let stopForeground: (() => void) | null = null;
   /** The tasks each project last announced, so an unchanged set is no read. */
   const lastTasks = new Map<string, string>();
+  /** The last board draw, so a frame's own facts can be applied into it. */
+  let drawn: BoardWire | null = null;
+  /** A frame applied while the read in hand was being encoded (#3074). */
+  let appliedDuringRead = false;
   let stopMessages: (() => void) | null = null;
   let stopStatus: (() => void) | null = null;
 
@@ -119,14 +132,15 @@ function boardStore(connection: Connection): Readable<BoardRead> {
     if (held === null) return;
     const state = held.state();
     if (state.kind === 'refused') {
+      // Nothing to apply into: a frame that landed before the refusal must
+      // not paint the refused subject back (#3074 review).
+      drawn = null;
       view.set({ wire: null, refused: state.why });
       return;
     }
     const data = held.snapshot();
-    view.set({
-      wire: data === null ? null : boardFrom(data as unknown as BoardWire),
-      refused: null,
-    });
+    drawn = data === null ? null : boardFrom(data as unknown as BoardWire);
+    view.set({ wire: drawn, refused: null });
   }
 
   /**
@@ -198,6 +212,15 @@ function boardStore(connection: Connection): Readable<BoardRead> {
         }
         if (message.kind === 'error' || message.subject === 'board') {
           reading = false;
+          if (appliedDuringRead) {
+            // **The answer was encoded before the frame already drawn**: it
+            // must not overwrite that frame's news. The ask goes again, and
+            // the next answer is the one newer than the frame.
+            appliedDuringRead = false;
+            stale = false;
+            schedule();
+            return;
+          }
           read();
           if (stale) {
             stale = false;
@@ -207,6 +230,13 @@ function boardStore(connection: Connection): Readable<BoardRead> {
         return;
       }
       if (message.kind !== 'update' || !coversBoard(message.update)) return;
+      // **A refused subject draws its refusal, and the news is not lost**:
+      // nothing may paint over the refusal, but the update is spent by the
+      // snapshot that re-establishes the subject (#3074 review).
+      if (held?.state().kind === 'refused') {
+        stale = true;
+        return;
+      }
       const tasks = tasksChanged(message.update);
       if (tasks !== null) {
         // An unchanged set is no news: the chase used to re-announce every
@@ -214,7 +244,48 @@ function boardStore(connection: Connection): Readable<BoardRead> {
         // #2540 removed.
         if (lastTasks.get(tasks.project) === tasks.digest) return;
         lastTasks.set(tasks.project, tasks.digest);
+        // **The frame carries the project's whole set**, so a task write is
+        // applied into the drawn board - the read it replaces was 3 MB and ran
+        // at 0.39/s while a seat was on screen (#3063, rule 32).
+        const frame = tasksFrame(message.update);
+        const applied = frame === null ? null : applyTasks(drawn, frame.project, frame.tasks);
+        if (applied !== null) {
+          drawn = applied;
+          view.set({ wire: drawn, refused: null });
+          // **A read already in flight was encoded before this frame and will
+          // land after it**: the landing is dropped and the ask goes again
+          // rather than overwriting the frame's news.
+          if (reading) appliedDuringRead = true;
+          return;
+        }
+      } else {
+        const crons = cronsFrame(message.update);
+        if (crons !== null) {
+          const applied = applyCrons(drawn, crons.project, crons.crons);
+          if (applied !== null) {
+            drawn = applied;
+            view.set({ wire: drawn, refused: null });
+            if (reading) appliedDuringRead = true;
+            return;
+          }
+        } else if (Object.keys(message.update).includes('connector_subscriptions_changed')) {
+          // The connector sets are still a read: their wire shape is
+          // `unknown` here, so folding them is its own change. Rare - a user
+          // action or a door no tool reaches, not a per-second beat.
+          if (reading) {
+            stale = true;
+            return;
+          }
+          schedule();
+          return;
+        }
+        // **The six seat-liveness variants read nothing.** A row's stale chip
+        // and its ages are the server's own computation; the marks beat
+        // reconciles them within five minutes, the staleness it already
+        // accepts. Reading 3 MB for a chip was the loop #3063 measured.
+        return;
       }
+      // The first read is still owed: the frame has nowhere to land.
       if (reading) {
         stale = true;
         return;
@@ -225,6 +296,9 @@ function boardStore(connection: Connection): Readable<BoardRead> {
       if (next !== 'open') {
         reading = false;
         stale = false;
+        // A reconnect re-subscribes and answers with a fresh snapshot; the
+        // frames in between have nowhere to land.
+        drawn = null;
       }
     });
     // The slow beat the server-derived marks need, while there is a page
@@ -251,6 +325,7 @@ function boardStore(connection: Connection): Readable<BoardRead> {
     beatOff();
     connection.unsubscribe('board');
     held = null;
+    drawn = null;
   }
 
   const view: Writable<BoardRead> = writable(NOTHING, () => {

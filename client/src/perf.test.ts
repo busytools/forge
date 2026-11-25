@@ -1650,6 +1650,24 @@ describe('the surface a record names', () => {
 });
 
 describe('the switch gap marks (#2513)', () => {
+  /**
+   * **A whole read names the subject it read.** String subjects (home, board)
+   * logged no name at all, which is how the poll-on-frame loop stayed
+   * invisible in the log (#3063, #3074).
+   */
+  it('names the subject on a subscribe and its snapshot', () => {
+    const h = harness();
+    h.probe.noteSubscribe(null, false, undefined, 'home');
+    h.probe.noteSubscribe('forge/lead', false, undefined, 'session');
+    h.probe.noteSnapshot(null, 198_317, 2.5, 'home');
+
+    const subscribes = h.records.flat().filter((record) => record.kind === 'subscribe');
+    expect(subscribes[0]?.subject, 'a home subscribe named no subject').toBe('home');
+    expect(subscribes[1]?.subject, 'a seat subscribe did not say session').toBe('session');
+    const snapshot = h.records.flat().find((record) => record.kind === 'snapshot');
+    expect(snapshot?.subject, 'the home read could not be attributed').toBe('home');
+  });
+
   it('measures a subscribe from the click that preceded it', () => {
     const h = harness();
     h.probe.setSurface('session', 'forge/agent');

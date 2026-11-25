@@ -523,7 +523,8 @@ pub enum ClientMessage {
 pub enum SettingsRefusal {
     /// The file moved since the page loaded it.
     Stale,
-    /// The candidate failed the boot loader.
+    /// The candidate failed the boot loader, or the file on disk cannot be
+    /// loaded at all.
     Invalid,
     /// A guard refused the save.
     Refused,

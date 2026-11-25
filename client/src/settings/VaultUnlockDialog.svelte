@@ -23,6 +23,7 @@
     reason = null,
     biometric = true,
     gesture = true,
+    startgesture = false,
     ongesture = () => {},
     onpassword = () => {},
     oncancel,
@@ -39,6 +40,9 @@
         failed probe): the dialog drops the button and opens on the password,
         because a press that can only fail is not an offer. */
     gesture?: boolean;
+    /** Open the unlock already asking for the gesture: an enrolled client on
+        a capable device has nothing to choose between. */
+    startgesture?: boolean;
     ongesture?: () => void;
     onpassword?: (password: string, code: string) => void;
     oncancel: () => void;
@@ -52,7 +56,9 @@
   /** The password fields: always on for enrol and for a gate that cannot
       answer, revealed by the link for an unlock that can. */
   let revealedByLink = $state(false);
-  const revealed = $derived(variant === 'enrol' || !gesture || revealedByLink);
+  // **A refusal reveals the password**: the reason names why the gesture did
+  // not work, and the way forward is the field underneath it.
+  const revealed = $derived(variant === 'enrol' || !gesture || revealedByLink || reason !== null);
   let password = $state('');
   let code = $state('');
   let passwordEl: HTMLInputElement | null = null;
@@ -85,6 +91,9 @@
     returnTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     if (variant === 'unlock' && gesture) {
       dialog?.querySelector<HTMLElement>('button')?.focus();
+      // **The straight path**: an enrolled client on a capable device asks
+      // for the gesture at once rather than drawing a choice it already made.
+      if (startgesture) queueMicrotask(ongesture);
     } else {
       // **The password forms start in the password box**, not on cancel: the
       // page asked for a password, or the gate cannot offer a gesture.

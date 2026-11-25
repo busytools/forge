@@ -26,8 +26,10 @@ import { ReadPace } from '../read-pace';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import { coversHome, serviceReport, type ServiceReport } from '../wire/fleet';
+import { tasksFrame } from '../wire/board';
 import {
   accountsPayload,
+  applyFleetCounts,
   homeFrom,
   poolFactsChanged,
   tasksChanged,
@@ -201,6 +203,10 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     reading = true;
     return connection.refresh('home');
   }, COALESCE_MS);
+  /** The last home draw, so a frame's own facts can be applied into it. */
+  let drawn: HomeWire | null = null;
+  /** A frame applied while the read in hand was being encoded (#3074). */
+  let appliedDuringRead = false;
   let stopMessages: (() => void) | null = null;
   let stopStatus: (() => void) | null = null;
 
@@ -222,6 +228,9 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     drawnPool = null;
     const state = held.state();
     if (state.kind === 'refused') {
+      // Nothing to apply into: a frame must not paint the refused subject
+      // back (#3074 review).
+      drawn = null;
       view.set({ wire: null, refused: state.why, failed: null, report });
       return;
     }
@@ -245,6 +254,7 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       const wire = homeFrom(data as unknown as HomeWire);
       if (pool !== null) wire.accounts = pool;
       drawnPool = wire.accounts;
+      drawn = wire;
       view.set({ wire, refused: null, failed: null, report });
     } catch (why) {
       view.set({
@@ -315,6 +325,15 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
         // about the home's read.
         if (message.subject !== 'home') return;
         reading = false;
+        if (appliedDuringRead) {
+          // **The answer was encoded before the frame already drawn**: it
+          // must not overwrite that frame's news. The ask goes again, and the
+          // next answer is the one newer than the frame.
+          appliedDuringRead = false;
+          stale = false;
+          schedule();
+          return;
+        }
         // The answer states the pool itself. A fold that arrived while THIS
         // read was in flight is newer than it and stays; a fold from an
         // earlier request is older and goes.
@@ -330,6 +349,13 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
         return;
       }
       if (message.kind !== 'update' || !coversHome(message.update)) return;
+      // **A refused subject draws its refusal, and the news is not lost**:
+      // nothing may paint over the refusal, but the update is spent by the
+      // snapshot that re-establishes the subject (#2559, #3074 review).
+      if (held?.state().kind === 'refused') {
+        stale = true;
+        return;
+      }
       // **The pool's frame carries the pool.** It is the whole field the read
       // would answer with, so folding it spends no encode; a frame from an
       // older server carries none, and falls through to the read it always
@@ -365,6 +391,24 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
         // #2540 removed.
         if (lastTasks.get(tasks.project) === tasks.digest) return;
         lastTasks.set(tasks.project, tasks.digest);
+        // **The frame carries the whole set**, so the fleet row's own counts
+        // (the ready queue, the waits on the person, the row count) are
+        // applied into the draw instead of answered with a read (rule 32;
+        // #3063).
+        const frame = tasksFrame(message.update);
+        const applied =
+          frame === null || drawn === null
+            ? null
+            : applyFleetCounts(drawn, tasks.project, frame.tasks);
+        if (applied !== null) {
+          drawn = applied;
+          view.set({ wire: drawn, refused: null, failed: null, report });
+          // **A read already in flight was encoded before this frame and will
+          // land after it**: the landing is dropped and the ask goes again
+          // rather than overwriting the frame's news (#3074 review).
+          if (reading) appliedDuringRead = true;
+          return;
+        }
       }
       if (reading) {
         stale = true;
@@ -383,6 +427,7 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
         // fresh and replaces the fold; the page keeps drawing the fold until
         // it lands.
         foldRead = null;
+        drawn = null;
       }
     });
   }

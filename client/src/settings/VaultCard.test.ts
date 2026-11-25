@@ -15,7 +15,7 @@ import type { BiometricEnrolment } from '../wire/home';
 const AT = { secs_since_epoch: 1_790_000_000, nanos_since_epoch: 0 };
 const LOCAL_ID = '11111111-2222-4333-8444-555555555555';
 /** The key the client mints its enrolment id under, as the module keeps it. */
-const ENROLMENT_KEY = 'forge.biometric.enrolment.vault';
+const ENROLMENT_KEY = 'forge.biometric.device';
 
 let app: Record<string, unknown> | null = null;
 
