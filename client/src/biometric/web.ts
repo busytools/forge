@@ -117,8 +117,35 @@ export function enrolled(purpose: string): boolean {
   return readRecord(purpose) !== null;
 }
 
-/** Create the purpose's passkey and seal `key` under its PRF output. */
+/**
+ * Seal `key` under a passkey's PRF output, reusing this purpose's passkey when
+ * it still works.
+ *
+ * **A re-enrol replaces the sealed key, not the passkey.** The press is the
+ * route back from a stale blob, and one press must not leave another passkey
+ * in the person's own passkey manager. A record the passkey cannot open is
+ * dead - the PRF is deterministic - so it is dropped and a fresh passkey
+ * replaces it.
+ */
 export async function store(purpose: string, key: string): Promise<void> {
+  const existing = readRecord(purpose);
+  const credential = existing === null ? null : fromBase64(existing.credential);
+  if (existing !== null && credential !== null) {
+    const prf = await assertPasskey(purpose, credential);
+    if (prf !== null && (await openText(existing.wrapped, prf)) !== null) {
+      const wrapped = await sealText(key, prf);
+      if (wrapped === null) {
+        throw new Error('the passkey released no usable key, so nothing was stored');
+      }
+      writeRecord(purpose, { credential: existing.credential, wrapped });
+      return;
+    }
+    // **The record is dead**, so it goes rather than leaving a gesture that
+    // can never succeed; the fresh passkey below is the replacement.
+    remove(purpose);
+  } else if (existing !== null) {
+    remove(purpose);
+  }
   const created = await createPasskey(purpose);
   const wrapped = await sealText(key, created.prf);
   if (wrapped === null) {
@@ -142,6 +169,10 @@ export async function release(purpose: string): Promise<Release> {
   }
   const key = await openText(record.wrapped, prf);
   if (key === null) {
+    // **A record this passkey cannot open is dead.** The PRF is deterministic,
+    // so the next attempt would fail the same way; dropping the record sends
+    // the next unlock straight to the password instead of another gesture.
+    remove(purpose);
     return {
       outcome: 'refused',
       reason: 'the stored unlock could not be opened with this passkey; use the password',
@@ -197,13 +228,25 @@ async function createPasskey(
     options,
   )) as PublicKeyCredential | null;
   if (created === null) throw new Error('the browser created no passkey');
+  const credential = toBase64(new Uint8Array(created.rawId));
   const prf = prfOutput(created);
-  if (prf === null) {
-    throw new Error(
-      'this browser does not support the PRF extension, so nothing was stored; use the password',
-    );
+  if (prf !== null) return { credential, prf };
+  // **Created but withheld.** Some authenticators report PRF enabled without
+  // returning the output at creation; one assertion fetches it, so a working
+  // authenticator is not read as PRF-less.
+  if (prfEnabled(created) === true) {
+    const asserted = await assertPasskey(purpose, new Uint8Array(created.rawId));
+    if (asserted !== null) return { credential, prf: asserted };
   }
-  return { credential: toBase64(new Uint8Array(created.rawId)), prf };
+  throw new Error(
+    'this browser does not support the PRF extension, so nothing was stored; use the password',
+  );
+}
+
+/** Whether a created credential reports the PRF extension enabled. */
+function prfEnabled(credential: PublicKeyCredential): boolean | undefined {
+  const results = credential.getClientExtensionResults() as { prf?: { enabled?: boolean } };
+  return results.prf?.enabled;
 }
 
 async function assertPasskey(

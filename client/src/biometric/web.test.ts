@@ -27,6 +27,22 @@ function aCredential(prf: Uint8Array | null, rawId = new Uint8Array([1, 2, 3, 4]
   };
 }
 
+/** A create that reports PRF enabled but returns no output. */
+function anEnabledCredential(): unknown {
+  return {
+    rawId: new Uint8Array([5, 6, 7, 8]).buffer,
+    getClientExtensionResults: () => ({ prf: { enabled: true } }),
+  };
+}
+
+/** A create that reports PRF disabled. */
+function aDisabledCredential(): unknown {
+  return {
+    rawId: new Uint8Array([5, 6, 7, 8]).buffer,
+    getClientExtensionResults: () => ({ prf: { enabled: false } }),
+  };
+}
+
 let created: Record<string, unknown>[] = [];
 let asserted: Record<string, unknown>[] = [];
 
@@ -81,6 +97,10 @@ describe('the web gate', () => {
       userVerification: 'required',
     });
     expect(create?.['extensions']).toHaveProperty('prf');
+    // **The page's own origin is the RP.** No `rp.id` means the browser scopes
+    // the credential to the effective domain of the page, which is what the
+    // web client wants; the socket server's address is not involved.
+    expect(create?.['rp']).toEqual({ name: 'forge' });
     // **The salt is the purpose, pinned byte for byte**: create and get must
     // derive the same wrapping key, so a change on either side is a blob no
     // release can open.
@@ -218,5 +238,102 @@ describe('the web gate', () => {
 
     expect(gate.enrolled('vault')).toBe(false);
     expect(await gate.release('vault')).toEqual({ outcome: 'not_enrolled' });
+  });
+
+  /// **A re-enrol replaces the key, not the passkey.** The press is the route
+  /// back from a stale blob, and each press must not leave another passkey in
+  /// the person's own passkey manager.
+  it('reuses the passkey it already made, replacing its sealed key', async () => {
+    await gate.store('vault', 'first-key');
+    await gate.store('vault', 'second-key');
+
+    expect(created, 'one passkey, not two').toHaveLength(1);
+    expect(asserted.length, 'the second press asserted the existing passkey').toBe(1);
+    expect(await gate.release('vault')).toEqual({ outcome: 'released', blob: 'second-key' });
+  });
+
+  /// A record the passkey cannot open is dead; a fresh passkey replaces it
+  /// rather than reusing a credential whose wrapping key is lost.
+  it('replaces a record the passkey cannot open', async () => {
+    await gate.store('vault', 'first-key');
+    const held = JSON.parse(
+      globalThis.localStorage.getItem('forge.biometric.web.vault') ?? '{}',
+    ) as Record<string, unknown>;
+    globalThis.localStorage.setItem(
+      'forge.biometric.web.vault',
+      JSON.stringify({ ...held, wrapped: 'AAAA' }),
+    );
+
+    await gate.store('vault', 'second-key');
+
+    expect(created, 'the dead record was replaced by a fresh passkey').toHaveLength(2);
+    expect(await gate.release('vault')).toEqual({ outcome: 'released', blob: 'second-key' });
+  });
+
+  /// **Some authenticators report PRF enabled and withhold the output at
+  /// creation.** One assertion fetches it; without that step a working
+  /// authenticator would read as PRF-less.
+  it('asks for the PRF once when creation withholds the output', async () => {
+    Object.defineProperty(globalThis.navigator, 'credentials', {
+      configurable: true,
+      value: {
+        create: (options: Record<string, unknown>) => {
+          created.push(options);
+          return Promise.resolve(anEnabledCredential());
+        },
+        get: (options: Record<string, unknown>) => {
+          asserted.push(options);
+          return Promise.resolve(aCredential(PRF));
+        },
+      },
+    });
+
+    await gate.store('vault', 'the-purpose-key');
+
+    expect(created).toHaveLength(1);
+    expect(asserted, 'one assertion fetched the output').toHaveLength(1);
+    expect(await gate.release('vault')).toEqual({ outcome: 'released', blob: 'the-purpose-key' });
+  });
+
+  /// A disabled PRF is answered, not retried: there is nothing a second
+  /// assertion could return.
+  it('does not assert when creation reports the PRF disabled', async () => {
+    Object.defineProperty(globalThis.navigator, 'credentials', {
+      configurable: true,
+      value: {
+        create: () => Promise.resolve(aDisabledCredential()),
+        get: (options: Record<string, unknown>) => {
+          asserted.push(options);
+          return Promise.resolve(aCredential(PRF));
+        },
+      },
+    });
+
+    await expect(gate.store('vault', 'the-purpose-key')).rejects.toThrow('PRF');
+
+    expect(asserted).toHaveLength(0);
+    expect(gate.enrolled('vault')).toBe(false);
+  });
+
+  /// A record the asserted PRF cannot open is dropped, so the next unlock
+  /// goes straight to the password instead of raising a gesture that cannot
+  /// succeed.
+  it('drops a record the asserted PRF cannot open', async () => {
+    await gate.store('vault', 'the-purpose-key');
+    Object.defineProperty(globalThis.navigator, 'credentials', {
+      configurable: true,
+      value: {
+        create: () => Promise.resolve(aCredential(PRF)),
+        get: (options: Record<string, unknown>) => {
+          asserted.push(options);
+          return Promise.resolve(aCredential(OTHER_PRF));
+        },
+      },
+    });
+
+    const released = await gate.release('vault');
+
+    expect(released.outcome).toBe('refused');
+    expect(gate.enrolled('vault'), 'the dead record goes').toBe(false);
   });
 });
