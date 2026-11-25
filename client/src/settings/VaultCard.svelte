@@ -73,7 +73,7 @@
       case 'ready':
         return 'not enrolled';
       case 'unavailable':
-        return `cannot unlock here: ${device.reason}`;
+        return `cannot use this device's gesture: ${device.reason}`;
       case 'failed':
         return `the enrolment did not land: ${device.reason}`;
     }
@@ -88,6 +88,11 @@
         return { kind: 'enrol', label: 'enrol again' };
       case 'enrolled':
         if (noServerRow) return { kind: 'enrol', label: 'enrol again' };
+        return vault?.locked === true ? { kind: 'unlock', label: 'unlock' } : null;
+      case 'unavailable':
+        // **The gate cannot answer, but the password still can.** The
+        // contract keeps it reachable whenever no biometric is enrolled, and
+        // this card is the client's only unlock door.
         return vault?.locked === true ? { kind: 'unlock', label: 'unlock' } : null;
       default:
         return null;

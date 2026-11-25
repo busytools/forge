@@ -127,6 +127,13 @@
     return gate.outcome === 'ready' || gate.outcome === 'enrolled' ? gate.biometric : true;
   }
 
+  /** Whether the gate can be asked for a gesture at all. **An unavailable
+   *  one cannot** - no biometric enrolled, a probe that failed, an unsigned
+   *  build - and the dialog opens on the password instead. */
+  function gestureOf(gate: DeviceGate): boolean {
+    return gate.outcome !== 'unavailable';
+  }
+
   async function enrolDevice(): Promise<void> {
     // **One press at a time**: a second press interleaved with the first
     // could store a gate key and then lose the write, leaving a key that
@@ -926,6 +933,7 @@
         busy={dialogBusy}
         reason={dialogReason}
         biometric={biometricOf(device)}
+        gesture={gestureOf(device)}
         ongesture={gestureUnlock}
         onpassword={submitVaultPassword}
         oncancel={closeDialog}

@@ -321,6 +321,48 @@ describe('the vault press', () => {
     expect(document.body.textContent).toContain('enrolled here');
   });
 
+  /**
+   * The contract's fallback: with no biometric enrolled the gate cannot
+   * answer, and the password must be one press away. Before this the card
+   * drew no press at all for that state, so the only door was a vault tool
+   * ask elsewhere in the app.
+   */
+  it('opens the password dialog when the gate cannot answer', async () => {
+    gate.readDeviceGate.mockResolvedValue({
+      outcome: 'unavailable',
+      reason: 'no biometric is enrolled on this device',
+    });
+    draw({ locked: true, idle_minutes: 15 });
+    await settled();
+
+    expect(document.body.textContent).toContain(
+      "cannot use this device's gesture: no biometric is enrolled on this device",
+    );
+    button('unlock')?.click();
+    await settled();
+
+    expect(document.body.textContent, 'the unlock dialog').toContain('unlock the vault');
+    expect(button('Unlock with this device'), 'no gesture the gate cannot answer').toBeNull();
+    expect(
+      document.querySelector('input[type="password"]'),
+      'the password is already open',
+    ).not.toBeNull();
+
+    type('input[type="password"]', 'open sesame');
+    const submit = [
+      ...document.querySelectorAll<HTMLButtonElement>('.settings-dialog button'),
+    ].find((element) => element.textContent?.trim() === 'unlock');
+    submit?.click();
+    await settled();
+
+    expect(enrol.unlockVault).toHaveBeenCalledWith(connection, {
+      password: 'open sesame',
+      two_factor: '',
+    });
+    expect(enrol.releaseVaultMaterial, 'no gesture is attempted').not.toHaveBeenCalled();
+    expect(document.querySelector('.settings-dialog'), 'the dialog closed').toBeNull();
+  });
+
   it('draws an unread home as unread, not as a vault that is absent', () => {
     settingsFrame.set({ status: 'ready', document: documentWithVault() });
     app = mount(Settings, {
