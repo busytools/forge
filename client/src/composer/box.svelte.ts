@@ -63,6 +63,16 @@ export class Box {
    */
   sendLine = $state<{ tone: string; text: string } | null>(null);
   /**
+   * The dispatch id of a press still crossing, or `null` when the box is not
+   * waiting on one.
+   *
+   * **The words stay in the box until the crossing answers** (#3072), so the
+   * send is still offered over them: a second Enter or click while this is
+   * set is the same send being asked twice, and it is skipped rather than
+   * dispatched under a second uuid. Not `$state`: nothing draws from it.
+   */
+  crossing: number | null = null;
+  /**
    * Why the draft this box was drawing left the core without this reader
    * answering, drawn where the dock stood.
    *

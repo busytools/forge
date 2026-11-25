@@ -1256,6 +1256,28 @@
     // for.
     const text = box.draft.trim();
     if (text === '') return;
+    // **The press's own seat is read here, once.** The composer stays mounted
+    // across a seat switch and `box` is swapped under it, so the arms below -
+    // which run when the transport answers, an IPC round trip away on the
+    // desktop and Android shells - would otherwise land on whichever seat the
+    // reader moved to.
+    const at = box;
+    const atSlot = slot;
+    const atKey = boxKey(atSlot);
+    const wasRunning = running;
+    // **A crossing press is the same send asked twice.** The words stay in the
+    // box until the answer, so Enter and the send button are still offered
+    // over them; a second press would dispatch the same words under a second
+    // uuid. The takeover path guards its own send the same way.
+    if (at.crossing !== null) return;
+    const [first = ''] = text.split(/\s+/);
+    // **A prompt the core answers itself draws no row** (#2816): a forge
+    // command, a misuse or a slash name this session cannot run never reaches
+    // a model, so no turn carries its words and the echo would stand as a row
+    // nothing clears. The core's answer is the feedback. Read at the press,
+    // like everything else here.
+    const advertised = advisoriesFrom(record.slash_commands).map((row) => row.name);
+    const answered = coreAnswers(first, advertised);
     // The prompt's own id is minted here and rides the frame: the CLI emits
     // that prompt's lifecycle frames only under a client-supplied uuid, and
     // the queued row the core echoes back carries the same id - so this send,
@@ -1264,12 +1286,13 @@
     // **Every surface that sends is this client's hand.** The id is remembered
     // beside the echo: a parked reader's own send carries the column to the
     // foot, and a send from the phone must only count in the badge.
-    echoes.remember(boxKey(slot), uuid);
+    echoes.remember(atKey, uuid);
     // **The press's own number, which a refusal echoes back** (#1583): it is
     // what tells this send from another seat's when the reason arrives.
     const dispatch = echoes.mint();
+    at.crossing = dispatch;
     // A new press retires the line the last failed one left.
-    box.sendLine = null;
+    at.sendLine = null;
     let crossing: Promise<unknown>;
     try {
       // A prompt is fire-and-forget: its outcome rides the subscription rather
@@ -1281,7 +1304,7 @@
       crossing = connection.dispatch(
         {
           prompt_under: {
-            key: slot,
+            key: atSlot,
             text,
             attachments: [],
             uuid,
@@ -1289,29 +1312,27 @@
             dispatch_id: dispatch,
           },
         },
-        slot,
+        atSlot,
       );
     } catch {
       // A closed socket throws rather than answering: the words stay and the
-      // box says why.
-      box.sendLine = { tone: 'bad', text: NOT_SENT };
+      // press's own box says why.
+      at.crossing = null;
+      at.sendLine = { tone: 'bad', text: NOT_SENT };
       return;
     }
     void crossing.then(
       () => {
-        const [first = ''] = text.split(/\s+/);
-        // **A prompt the core answers itself draws no row** (#2816): a forge
-        // command, a misuse or a slash name this session cannot run never
-        // reaches a model, so no turn carries its words and the echo would
-        // stand as a row nothing clears. The core's answer is the feedback.
-        const advertised = advisoriesFrom(record.slash_commands).map((row) => row.name);
-        const answered = coreAnswers(first, advertised);
+        // The newest press owns the box: a crossing an older one still held
+        // would be a send the reader has already asked again.
+        if (at.crossing !== dispatch) return;
+        at.crossing = null;
         // **And it never starts a turn either**, so the blocked "Running
         // <command>" line has nothing to wait for: no record update follows to
         // clear it, and the field would stay away with it. The id is kept so a
         // refusal of this press lands on this seat's box and no other.
-        box.answeredDispatch = answered ? dispatch : null;
-        if (first.startsWith('/') && !answered) box.sent = first;
+        at.answeredDispatch = answered ? dispatch : null;
+        if (first.startsWith('/') && !answered) at.sent = first;
         if (!answered) {
           // What the seat was doing when the words left: a send that starts a
           // turn is taken by it, one sent into a turn already running is not
@@ -1323,17 +1344,20 @@
           // turn-start frame can be applied and not yet drawn - and a send
           // posted as not-running is taken by the very publish that carries the
           // turn, where a refusal can no longer reach it.
-          echoes.post(boxKey(slot), text, runningAt(connection, slot, running), uuid, dispatch);
+          echoes.post(atKey, text, runningAt(connection, atSlot, wasRunning), uuid, dispatch);
         }
         // What the reader typed while the frame crossed is not this send's to
         // take: the box empties only while it still holds exactly the words
         // that left it.
-        if (box.draft.trim() === text) box.draft = '';
+        if (at.draft.trim() === text) at.draft = '';
       },
       () => {
+        // A failure that is not the newest press has nothing left to say.
+        if (at.crossing !== dispatch) return;
         // The frame did not cross, so this send did not happen: the words stay
-        // where they were typed and the box says why.
-        box.sendLine = { tone: 'bad', text: NOT_SENT };
+        // where they were typed and the press's own box says why.
+        at.crossing = null;
+        at.sendLine = { tone: 'bad', text: NOT_SENT };
       },
     );
   }

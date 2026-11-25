@@ -12640,4 +12640,72 @@ describe('a send the transport could not carry', () => {
     expect(boxes[0]?.textContent, 'the failed box says why').toContain(NOT_SENT);
     expect(boxes[1]?.textContent, "and the other seat's box says nothing").not.toContain(NOT_SENT);
   });
+
+  it('lands the crossing on the seat it was pressed in', async () => {
+    const shared = wire();
+    const harness = open({ record: record({ header: { turn_in_flight: true } }) }, shared);
+    type(WORDS);
+    press('Enter');
+    // The reader moves while the transport is still answering. On the shells
+    // that answer through the IPC round trip, that is the whole window.
+    harness.page.slot = ELSEWHERE;
+    harness.page.record = record({ slot: ELSEWHERE, header: { turn_in_flight: true } });
+    flushSync();
+    await crossed();
+
+    expect(echoAt(SLOT)?.words, "the row belongs to the press's seat").toBe(WORDS);
+    expect(echoAt(ELSEWHERE), 'the seat moved to holds nothing').toBeUndefined();
+
+    harness.page.slot = SLOT;
+    harness.page.record = record({ header: { turn_in_flight: true } });
+    flushSync();
+    expect(field().value, "the press's own box is the one that cleared").toBe('');
+  });
+
+  it('draws a failed crossing in the seat it was pressed in', async () => {
+    const shared = wire();
+    const harness = open({ record: record({ header: { turn_in_flight: true } }) }, shared);
+    type(WORDS);
+    shared.dead = true;
+    press('Enter');
+    harness.page.slot = ELSEWHERE;
+    harness.page.record = record({ slot: ELSEWHERE, header: { turn_in_flight: true } });
+    flushSync();
+    shared.dead = false;
+    await crossed();
+
+    expect(drawn(), 'the seat moved to draws nothing about it').not.toContain(NOT_SENT);
+    harness.page.slot = SLOT;
+    harness.page.record = record({ header: { turn_in_flight: true } });
+    flushSync();
+    expect(drawn(), "the press's own seat says why").toContain(NOT_SENT);
+    expect(field().value, 'and keeps the words').toBe(WORDS);
+  });
+
+  it('skips a second press while the first is still crossing', async () => {
+    const shared = wire();
+    const harness = open({ record: record({ header: { turn_in_flight: true } }) }, shared);
+    type(WORDS);
+    // The words are still in the box, so Enter is offered over them again.
+    press('Enter');
+    press('Enter');
+    await crossed();
+
+    expect(harness.sent, 'one press is one prompt').toHaveLength(1);
+    expect(field().value, 'and the box still clears once').toBe('');
+  });
+
+  it('keeps the words typed while the frame was crossing', async () => {
+    open();
+    type(WORDS);
+    press('Enter');
+    // The reader keeps writing while the transport answers: those words are
+    // not the send's to take.
+    type(`${WORDS} and one more thing`);
+    await crossed();
+
+    expect(field().value, 'the later typing survives the crossing').toBe(
+      `${WORDS} and one more thing`,
+    );
+  });
 });
