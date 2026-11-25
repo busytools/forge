@@ -22,6 +22,7 @@
 import { writable, type Readable, type Writable } from 'svelte/store';
 
 import { subjectKey } from '../protocol';
+import { ReadPace } from '../read-pace';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import { coversHome, serviceReport, type ServiceReport } from '../wire/fleet';
@@ -186,24 +187,26 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
   let reads = 0;
   /** The pool the drawn view holds, which a fresh frame is compared against. */
   let drawnPool: AccountsWire | null = null;
-  let timer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The beat every frame-driven read is asked on, floored so a fleet whose
+   * news never stops cannot buy a whole encode per frame (#3060).
+   */
+  const beat = new ReadPace(() => {
+    // **A read that started inside the beat is the one this update wanted.**
+    // A return's ask lands here too; queueing a second whole encode behind
+    // it would let the first answer clear the flag while the second is in
+    // flight, and a third could follow.
+    if (held === null || reading || held.state().kind === 'refused') return false;
+    reads += 1;
+    reading = true;
+    return connection.refresh('home');
+  }, COALESCE_MS);
   let stopMessages: (() => void) | null = null;
   let stopStatus: (() => void) | null = null;
 
   /** Ask for one read, coalescing the updates that arrive inside the beat. */
   function schedule(): void {
-    if (timer !== null) return;
-    timer = setTimeout(() => {
-      timer = null;
-      // **A read that started inside the beat is the one this update wanted.**
-      // A return's ask lands here too; queueing a second whole encode behind
-      // it would let the first answer clear the flag while the second is in
-      // flight, and a third could follow.
-      if (held === null || reading || held.state().kind === 'refused') return;
-      reads += 1;
-      reading = true;
-      connection.refresh('home');
-    }, COALESCE_MS);
+    beat.schedule();
   }
 
   /**
@@ -255,13 +258,15 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
 
   /**
    * One read through this page's guards: nothing while one is in flight, and
-   * nothing from a refused subject. The beat and a return both come here.
+   * nothing from a refused subject. A return asks here directly rather than
+   * through the beat, and its ask starts the floor so the beat cannot buy a
+   * second whole encode right behind it.
    */
   function reread(): void {
     if (held === null || reading || held.state().kind === 'refused') return;
     reads += 1;
     reading = true;
-    connection.refresh('home');
+    if (connection.refresh('home')) beat.went();
   }
 
   function watch(): void {
@@ -387,8 +392,7 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     stopStatus?.();
     stopMessages = null;
     stopStatus = null;
-    if (timer !== null) clearTimeout(timer);
-    timer = null;
+    beat.stop();
     // The subscription goes with the last subscriber too, or a connection
     // nothing draws from stays counted against a seat it is not showing.
     connection.unsubscribe('home');

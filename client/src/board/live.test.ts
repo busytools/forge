@@ -160,6 +160,41 @@ async function settle(): Promise<void> {
 }
 
 /**
+ * The floor between two whole reads, which the product promises: a stream of
+ * frames buys at most one read per floor, however fast it arrives (#3060).
+ *
+ * Spelled out rather than imported, like `MARK_BEAT_MS`, so the cases state
+ * the cadence the product promises rather than reading it back off the code
+ * they check.
+ */
+const FLOOR_MS = 2_000;
+
+/** Advance past the floor: the wait a read owes while one has just gone. */
+async function settleFloor(): Promise<void> {
+  await vi.advanceTimersByTimeAsync(FLOOR_MS);
+}
+
+/** A project's task set with `n` in its row, so each set is news to the dedupe. */
+function setNumbered(n: number): ServerMessage {
+  return {
+    kind: 'update',
+    update: {
+      tasks_changed: {
+        key: LEAD,
+        tasks: [
+          {
+            id: 't1',
+            project_name: 'proj',
+            subject: `row ${n}`,
+            status: 'pending',
+          } as unknown as Task,
+        ],
+      },
+    },
+  };
+}
+
+/**
  * Whether the window has focus, and whether the document is hidden, as the
  * tests drive them.
  *
@@ -268,6 +303,59 @@ describe('the board over a connection', () => {
     forge.arrive(OTHER);
     await settle();
     expect(forge.refreshed, 'a chat frame asked for a board read').toEqual([BOARD]);
+    stop();
+  });
+
+  /**
+   * **A stream of board news buys one whole read per floor, not one per
+   * frame.** The coalescing beat folds a burst, but a busy fleet's task
+   * writes arrive closer together than an answer comes back, so the beat
+   * alone fires as fast as the round trip - and a board read is one of the
+   * client's largest (#3060).
+   */
+  it('bounds a stream of board news to one read per floor', async () => {
+    const forge = fakeConnection();
+    const stop = watchBoard(forge.connection).subscribe(() => {});
+
+    // Twenty seconds of news, one changed set a second, each read answered
+    // as the server would answer it.
+    for (let second = 0; second < 20; second += 1) {
+      const before = forge.refreshed.length;
+      forge.arrive(setNumbered(second));
+      await vi.advanceTimersByTimeAsync(1_000);
+      if (forge.refreshed.length > before) {
+        forge.arrive({ kind: 'snapshot', subject: BOARD, data: { projects: [] } });
+      }
+    }
+
+    expect(
+      forge.refreshed.length,
+      'the stream bought more than one read per floor',
+    ).toBeLessThanOrEqual(Math.ceil(20_000 / FLOOR_MS) + 1);
+    expect(forge.refreshed.length, 'the stream stopped being read at all').toBeGreaterThan(1);
+    stop();
+  });
+
+  /**
+   * **The floor delays a read; it never drops one.** A set that moves while
+   * the floor holds is read when it lifts, because the read in hand was
+   * encoded before it.
+   */
+  it('reads the news that arrives inside the floor once it lifts', async () => {
+    const forge = fakeConnection();
+    const stop = watchBoard(forge.connection).subscribe(() => {});
+
+    forge.arrive(UPDATE);
+    await settle();
+    expect(forge.refreshed, 'the first update did not ask for a read').toEqual([BOARD]);
+
+    forge.arrive({ kind: 'snapshot', subject: BOARD, data: { projects: [] } });
+    forge.arrive(NEWS);
+    await settle();
+    expect(forge.refreshed, 'a second read went inside the floor').toEqual([BOARD]);
+
+    await settleFloor();
+    expect(forge.refreshed, 'the news behind the floor was dropped').toEqual([BOARD, BOARD]);
     stop();
   });
 
@@ -516,7 +604,7 @@ describe('the board over a connection', () => {
     forge.setStatus('connecting');
     forge.setStatus('open');
     forge.arrive(NEWS);
-    await settle();
+    await settleFloor();
     expect(forge.refreshed, 'the update after a reconnect was dropped').toEqual([BOARD, BOARD]);
     stop();
   });
@@ -547,7 +635,7 @@ describe('the board over a connection', () => {
     forge.arrive({ kind: 'snapshot', subject: BOARD, data: { projects: [] } });
 
     forge.arrive(theirs);
-    await settle();
+    await settleFloor();
     expect(forge.refreshed, 'the second project did not ask for a read').toEqual([BOARD, BOARD]);
     forge.arrive({ kind: 'snapshot', subject: BOARD, data: { projects: [] } });
 
@@ -647,7 +735,7 @@ describe('the board over a connection', () => {
     expect(forge.refreshed, 'an unchanged task set asked for another read').toEqual([BOARD]);
 
     forge.arrive(moved);
-    await settle();
+    await settleFloor();
     expect(forge.refreshed, 'a moved task set did not ask for a read').toEqual([BOARD, BOARD]);
     stop();
   });
@@ -692,13 +780,13 @@ describe('the board over a connection', () => {
     expect(forge.refreshed, 'an unchanged empty set asked again').toEqual([BOARD]);
 
     forge.arrive(one);
-    await settle();
+    await settleFloor();
     expect(forge.refreshed, 'a task added did not ask for a read').toEqual([BOARD, BOARD]);
     forge.arrive({ kind: 'snapshot', subject: BOARD, data: { projects: [] } });
     await settle();
 
     forge.arrive(empty);
-    await settle();
+    await settleFloor();
     expect(forge.refreshed, 'a deletion did not ask for a read').toEqual([BOARD, BOARD, BOARD]);
     stop();
   });
@@ -716,7 +804,7 @@ describe('the board over a connection', () => {
     forge.arrive(NEWS);
     forge.stores.get(BOARD)?.set({ projects: [] });
     forge.arrive({ kind: 'snapshot', subject: BOARD, data: { projects: [] } });
-    await settle();
+    await settleFloor();
     expect(forge.refreshed, 'the update that crossed the read was dropped').toEqual([BOARD, BOARD]);
     stop();
   });
