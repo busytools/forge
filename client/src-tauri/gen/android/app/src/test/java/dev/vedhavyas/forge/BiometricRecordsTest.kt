@@ -48,6 +48,9 @@ class BiometricRecordsTest {
 
   @Test
   fun anUnavailableSensorSaysWhichWay() {
+    // **Every branch is pinned, not just the two the card most often draws.**
+    // A branch left unpinned reverts to "fingerprint" green: the suite would
+    // pass while the card quoted the wrong word.
     assertEquals(
       "no biometric is enrolled on this device",
       BiometricRecords.availabilityReason(BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED),
@@ -55,6 +58,26 @@ class BiometricRecordsTest {
     assertEquals(
       "this device has no biometric sensor",
       BiometricRecords.availabilityReason(BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE),
+    )
+    assertEquals(
+      "the biometric sensor is not available right now",
+      BiometricRecords.availabilityReason(BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE),
+    )
+    assertEquals(
+      "this device's security patch is too old for biometric keys",
+      BiometricRecords.availabilityReason(BiometricManager.BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED),
+    )
+    assertEquals(
+      "this device does not support biometric keys",
+      BiometricRecords.availabilityReason(BiometricManager.BIOMETRIC_ERROR_UNSUPPORTED),
+    )
+    assertEquals(
+      "the biometric sensor's state is unknown",
+      BiometricRecords.availabilityReason(BiometricManager.BIOMETRIC_STATUS_UNKNOWN),
+    )
+    assertEquals(
+      "the biometric sensor answered 1234",
+      BiometricRecords.availabilityReason(1234),
     )
   }
 
