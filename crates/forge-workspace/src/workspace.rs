@@ -5978,6 +5978,21 @@ impl Workspace {
         self.domain_handles.lock().get(key).cloned()
     }
 
+    /// The prompts this forge has drawn in the seat's conversation, oldest
+    /// first: the delivery ids a transcript read puts back on the CLI's own
+    /// rows (#3073). Empty for a seat with no session task.
+    ///
+    /// **A read the server's page assembly makes, not a view's** - the
+    /// surface reads it on the same blocking call that reads the transcript,
+    /// and no client sees this list. It is bounded per occupant, and a row
+    /// with no record there keeps the CLI's id, so a miss is a visible
+    /// duplicate rather than a lost row.
+    pub fn delivered_log(&self, slot: &SessionSlot) -> forge_primitives::messages::DeliveredLog {
+        self.domain_session_for(slot)
+            .map(|domain| domain.lock().delivered_log())
+            .unwrap_or_default()
+    }
+
     /// The slash commands the CLI last advertised for the session at
     /// `slot`. Empty for a slot whose session has not connected yet, or
     /// whose CLI advertised none.

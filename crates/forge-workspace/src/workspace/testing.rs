@@ -1072,6 +1072,20 @@ impl Workspace {
         domain.available_agents = agents;
     }
 
+    /// Record `prompts` as this seat's delivered rows, registering its domain
+    /// if it has none, so a cross-crate test can read the re-key a served
+    /// page carries (#3073). Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn seed_test_delivered_prompts(&self, slot: &SessionSlot, prompts: &[(&str, &str)]) {
+        let domain = self
+            .domain_session_for(slot)
+            .unwrap_or_else(|| self.register_domain_session(slot.clone(), None));
+        let mut domain = domain.lock();
+        for (uuid, text) in prompts {
+            domain.record_delivered_prompt(uuid, text);
+        }
+    }
+
     /// Park one ask of `kind` on `slot`, so a test can read the state a held
     /// turn produces without driving the wire. A prompt's domain is
     /// registered when it has none; a registry ask parks in its own registry

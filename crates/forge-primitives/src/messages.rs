@@ -877,6 +877,39 @@ impl Message {
     }
 }
 
+/// A prompt this forge process drew in a seat's conversation.
+///
+/// **The identity a delivered prompt's read copy comes back without.** The CLI
+/// records a prompt it pressed into a running turn as its own user row, under
+/// an id it minted, so that row and the display row forge drew for the same
+/// prompt share no id. This is the display row's half, kept in the order the
+/// prompts started, so the read that serves a transcript can put the delivery
+/// id back on the row the CLI recorded under its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveredPrompt {
+    /// The prompt id forge minted, the one its display row and lifecycle
+    /// frames were sent under.
+    pub uuid: String,
+    /// The RAW prompt forge sent, which is what the transcript persists: the
+    /// display row's own prefix (a cron delivery's) is never in the file.
+    pub text: String,
+    /// When the row was drawn, in Unix milliseconds. A record older than the
+    /// re-key's window is let go, so an orphan cannot park the queue.
+    pub at_ms: u64,
+}
+
+/// The delivered prompts one occupant's forge has drawn, and the run they
+/// belong to (#3073).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeliveredLog {
+    /// The prompts, oldest first.
+    pub prompts: Vec<DeliveredPrompt>,
+    /// When this occupant started, in Unix milliseconds: a transcript row
+    /// older than this belongs to an earlier run, and the re-key leaves it
+    /// alone - a resumed seat's history can say the same words as a new send.
+    pub since_ms: u64,
+}
+
 /// The Anthropic-API-shaped envelope inside an `Assistant` message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AssistantEnvelope {

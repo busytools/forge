@@ -530,8 +530,18 @@ impl ViewSurface {
         // timeline under the call; the row list skips them client-side
         // (#1763).
         let read = forge_workspace::session_history(self.workspace.config_dir(), &session_id, &cwd);
+        // **The page carries the delivery id, not the CLI's** (#3073). A
+        // prompt pressed into a running turn comes back from the transcript
+        // under an id the CLI minted; this process's own record of what it
+        // drew puts its id back, so a client holds one id for one prompt and
+        // the live row and the page row are the same row.
+        let delivered = self.workspace.delivered_log(slot);
         ConversationHistory {
-            messages: crate::transcript::notices_as_blocks(read.messages),
+            messages: crate::transcript::rekey_delivered(
+                crate::transcript::notices_as_blocks(read.messages),
+                &delivered,
+                crate::transcript::now_ms(),
+            ),
             compaction_count: read.compaction_count,
             session_id: Some(session_id),
         }
@@ -620,7 +630,7 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
 
-    use forge_primitives::SessionSlot;
+    use forge_primitives::{Message, SessionSlot};
     use forge_workspace::Workspace;
 
     use super::ViewSurface;
@@ -770,6 +780,40 @@ mod tests {
         let read = ViewSurface::new(Arc::clone(&workspace)).conversation(&lead, Path::new(""));
 
         assert_eq!(read.messages.len(), 2, "the record places the read the caller could not");
+    }
+
+    /// **The page carries the delivery id, not the CLI's** (#3073): a prompt
+    /// pressed into a running turn comes back from the transcript under an id
+    /// the CLI minted, and the read puts forge's id back so the client holds
+    /// one id for one prompt across the live row and the page row.
+    #[test]
+    fn conversation_puts_the_delivery_id_back_on_a_delivered_row() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let lead = SessionSlot::lead("TestOrg", "forge");
+        workspace.seed_test_running_session_id(&lead, SESSION_A);
+        workspace.seed_test_delivered_prompts(&lead, &[("forge_prompt_9", "steer there")]);
+
+        let projects = workspace.config_dir().join("projects").join(
+            forge_workspace::userdata::catalog::scan::project_key_for_directory(Some("/tmp")),
+        );
+        std::fs::create_dir_all(&projects).expect("projects dir");
+        std::fs::write(
+            projects.join(format!("{SESSION_A}.jsonl")),
+            "{\"type\":\"user\",\"uuid\":\"cli-minted\",\"message\":{\"role\":\"user\",\"content\":\"steer there\"}}\n",
+        )
+        .expect("write transcript");
+
+        let read = ViewSurface::new(Arc::clone(&workspace)).conversation(&lead, Path::new(""));
+
+        assert_eq!(read.messages.len(), 1);
+        let Message::User { uuid, .. } = &read.messages[0] else {
+            panic!("expected the user row, got {:?}", read.messages[0]);
+        };
+        assert_eq!(
+            uuid.as_deref(),
+            Some("forge_prompt_9"),
+            "the row is served under the id the live display row carries",
+        );
     }
 
     /// **A dispatch row's expansion is drawn from these frames.** The read

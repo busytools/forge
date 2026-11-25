@@ -108,6 +108,23 @@ impl HandoffState {
 /// and one that empties on a word nobody reads is silently wrong.
 const SETTLED_STATES: [&str; 5] = ["started", "completed", "cancelled", "discarded", "refused"];
 
+/// How many delivered prompts one occupant keeps for the read's re-key.
+///
+/// **A bound the failure direction can take.** A row whose record has aged out
+/// keeps the CLI's id and draws once from each carrier - a visible duplicate,
+/// never a lost row - so the only cost of a small number is that a page older
+/// than it pairs nothing, which is exactly the fallback the re-key already
+/// has for a row with no record at all.
+const DELIVERED_PROMPTS_KEPT: usize = 256;
+
+/// Unix milliseconds now, the clock the delivered records and the run epoch
+/// are stamped with.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
+}
+
 /// The interactions a seat is parked on, oldest first.
 ///
 /// **Ordered because the read answers it, and the dock draws the front.** Two
@@ -317,6 +334,21 @@ pub struct DomainSession {
     /// which are the only writer of a prompt's state. Belongs to the
     /// occupant, so it is dropped with the background registry.
     pub prompt_queue: Vec<crate::protocol::QueuedPrompt>,
+    /// The prompts this occupant's forge has drawn in the conversation, in
+    /// the order they started, newest last and bounded.
+    ///
+    /// **The delivery ids a read puts back on the CLI's own rows** (#3073):
+    /// the CLI records a prompt it pressed into a running turn under an id it
+    /// minted, so a page served from the transcript would carry that id while
+    /// the live row carries forge's - and the client, pairing the two, would
+    /// draw one prompt twice. This is the source of the re-key, and it is
+    /// deliberately not the queue: a delivered prompt is off the pile, and
+    /// most of what ships here has to be readable for the whole process.
+    pub delivered_prompts: std::collections::VecDeque<forge_primitives::messages::DeliveredPrompt>,
+    /// When this occupant's run began, in Unix milliseconds. The read re-keys
+    /// only rows at or after it, so a resumed seat's history cannot take a
+    /// new delivery's id (#3073).
+    pub occupant_since_ms: u64,
     /// Whether this occupant's CLI advertises `msg_lifecycle_v1`, from its
     /// init frame. `None` until one has been read.
     ///
@@ -648,6 +680,12 @@ impl DomainSession {
         // latched, a `/resume` onto an advertising CLI would keep the pile
         // silently off, or latch true beside rows nothing can settle.
         self.lifecycle_frames = None;
+        // The deliveries went with the occupant whose transcript carried
+        // their rows; the successor's read must not re-key against them, and
+        // its run starts now - a resumed seat's file holds rows from before
+        // this moment that the re-key must leave alone.
+        self.delivered_prompts.clear();
+        self.occupant_since_ms = now_ms();
         std::mem::take(&mut self.prompt_queue)
     }
 
@@ -709,6 +747,49 @@ impl DomainSession {
         self.prompt_queue.retain(|p| p.uuid != uuid);
     }
 
+    /// Record that `uuid`'s display row was drawn, with the words it carried.
+    ///
+    /// **First write wins for an id.** A prompt can reach this from two places,
+    /// the dispatch-time row a CLI without lifecycle frames gets and the row
+    /// every CLI gets at `started`, and the second call is the same prompt's
+    /// words again; recording it twice would make one transcript row answer
+    /// two records. The id is the key, so the first wins and the later call is
+    /// dropped.
+    ///
+    /// Bounded to the newest [`DELIVERED_PROMPTS_KEPT`]: a read that finds no
+    /// record for a row leaves that row's CLI id alone, so forgetting an old
+    /// one costs a visible duplicate on a very old page, never a lost row.
+    pub(crate) fn record_delivered_prompt(&mut self, uuid: &str, text: &str) {
+        // **A row with no words can never be paired.** An image-only prompt's
+        // transcript row carries no text to match, so recording it would park
+        // the head of the queue for the window and serve every later delivery
+        // under its CLI id; the row it cannot pair draws once from each
+        // carrier, which is the fallback the re-key already accepts.
+        if text.is_empty() {
+            return;
+        }
+        if self.delivered_prompts.iter().any(|prompt| prompt.uuid == uuid) {
+            return;
+        }
+        self.delivered_prompts.push_back(forge_primitives::messages::DeliveredPrompt {
+            uuid: uuid.to_owned(),
+            text: text.to_owned(),
+            at_ms: now_ms(),
+        });
+        while self.delivered_prompts.len() > DELIVERED_PROMPTS_KEPT {
+            self.delivered_prompts.pop_front();
+        }
+    }
+
+    /// The prompts this occupant's forge has drawn, oldest first, with the
+    /// moment the run began.
+    pub(crate) fn delivered_log(&self) -> forge_primitives::messages::DeliveredLog {
+        forge_primitives::messages::DeliveredLog {
+            prompts: self.delivered_prompts.iter().cloned().collect(),
+            since_ms: self.occupant_since_ms,
+        }
+    }
+
     /// Fill in the call that began each entry, and the command its card
     /// carried, wherever both halves are known. Called after either half
     /// lands, so the order the CLI sends them in does not matter.
@@ -739,6 +820,8 @@ impl DomainSession {
             conn,
             pending_interactions: PendingInteractions::default(),
             prompt_queue: Vec::new(),
+            delivered_prompts: std::collections::VecDeque::new(),
+            occupant_since_ms: now_ms(),
             lifecycle_frames: None,
             spawned_force_new: false,
             pending_lead_resume_note: None,
@@ -931,6 +1014,31 @@ impl std::fmt::Debug for DomainSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One prompt is one record, and the order is the order it started in.
+    #[test]
+    fn a_delivered_prompt_is_recorded_once_in_start_order() {
+        let slot = forge_primitives::SessionSlot::new("Org", "proj", "lead");
+        let mut domain = DomainSession::new(slot, None);
+        domain.record_delivered_prompt("forge_prompt_1", "first");
+        domain.record_delivered_prompt("forge_prompt_2", "second");
+        // The dispatch-time row and the started row are the same prompt's
+        // words; the first write wins and the second is dropped.
+        domain.record_delivered_prompt("forge_prompt_1", "first");
+        let held: Vec<(String, String)> = domain
+            .delivered_log()
+            .prompts
+            .into_iter()
+            .map(|prompt| (prompt.uuid, prompt.text))
+            .collect();
+        assert_eq!(
+            held,
+            vec![
+                ("forge_prompt_1".to_owned(), "first".to_owned()),
+                ("forge_prompt_2".to_owned(), "second".to_owned()),
+            ],
+        );
+    }
 
     /// The level the spawn asked the CLI to run at, so a session whose
     /// hook has not fired yet still names an effort rather than none.

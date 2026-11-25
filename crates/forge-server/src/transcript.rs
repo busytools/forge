@@ -606,6 +606,116 @@ pub(crate) fn notices_as_blocks(mut messages: Vec<Message>) -> Vec<Message> {
     messages
 }
 
+/// Put the delivery id back on the rows the CLI recorded under its own.
+///
+/// **One prompt, one id, on both paths** (#3073). The CLI writes a prompt it
+/// pressed into a running turn as its own user row, under an id it minted, so
+/// a page served from the transcript carried a different id from the live
+/// display row forge drew for the same prompt - and a client pairing the two
+/// drew one prompt twice or moved it. `delivered` is this process's own record
+/// of what it drew, oldest first; a row whose words equal the OLDEST unpaired
+/// record takes that record's id.
+///
+/// **Strict FIFO, no skipping.** A row that does not match the oldest record
+/// keeps its CLI id and the record stays waiting; a row never pairs ahead to a
+/// later record, because then a CLI row that happens to repeat the words could
+/// steal a delivery and leave the real one to pair wrongly. One record answers
+/// for at most one row (it is consumed on its match), and a row with no record
+/// keeps its id - so the failure direction is a visible duplicate, never a
+/// lost row.
+///
+/// **Two escapes keep the FIFO from parking.** A record older than
+/// [`REKEY_WINDOW_MS`] is let go (an orphan - recorded but never persisted -
+/// would otherwise block every later delivery), and a row stamped before the
+/// occupant's run began is out of scope (a resumed seat's history can say the
+/// same words as a new send). Both move the pointer past a record or a row
+/// without ever letting a ROW skip ahead to a later record.
+pub(crate) fn rekey_delivered(
+    messages: Vec<Message>,
+    delivered: &forge_primitives::messages::DeliveredLog,
+    now_ms: u64,
+) -> Vec<Message> {
+    if delivered.prompts.is_empty() {
+        return messages;
+    }
+    let mut next = 0;
+    let mut out = Vec::with_capacity(messages.len());
+    for mut message in messages {
+        // **A row older than this run is history, not a delivery.** A resumed
+        // seat's file keeps rows from before the resume, and one of them can
+        // say the same words as a new send; re-keying it would serve history
+        // under a live delivery's id and let the client collapse the two.
+        let stamp = match &message {
+            Message::User { timestamp, .. } => timestamp.as_deref().and_then(row_ms),
+            _ => None,
+        };
+        if stamp.is_some_and(|at| at < delivered.since_ms) {
+            out.push(message);
+            continue;
+        }
+        // **An orphan record is let go, never a queue's head for ever.** A
+        // delivery recorded but never persisted - a failed dispatch, an
+        // occupant killed mid-delivery - would otherwise stop every later
+        // row from pairing until it aged out of the ring. Past the window its
+        // row cannot still arrive, so the record goes; the row it would have
+        // paired keeps its CLI id and draws once from each carrier.
+        while delivered
+            .prompts
+            .get(next)
+            .is_some_and(|record| now_ms.saturating_sub(record.at_ms) > REKEY_WINDOW_MS)
+        {
+            next += 1;
+        }
+        if let Message::User { message: envelope, uuid, .. } = &mut message
+            && let Some(record) = delivered.prompts.get(next)
+            && user_row_text(envelope).as_deref() == Some(record.text.as_str())
+        {
+            *uuid = Some(record.uuid.clone());
+            next += 1;
+        }
+        out.push(message);
+    }
+    out
+}
+
+/// How long a delivered row waits for its transcript copy before the record
+/// is let go.
+///
+/// **The window is what keeps an orphan from parking the queue**, and it is
+/// the only expiry: a record inside it still governs strictly in order. Five
+/// minutes is many times the gap between a row being drawn and a page being
+/// served for the same process; a read older than that falls back to the CLI
+/// ids, which draws a duplicate rather than a wrong id.
+const REKEY_WINDOW_MS: u64 = 5 * 60 * 1000;
+
+/// Unix milliseconds from a row's RFC3339 stamp.
+fn row_ms(stamp: &str) -> Option<u64> {
+    let at =
+        time::OffsetDateTime::parse(stamp, &time::format_description::well_known::Rfc3339).ok()?;
+    let nanos = at.unix_timestamp_nanos();
+    u64::try_from(nanos / 1_000_000).ok()
+}
+
+/// Unix milliseconds now, the clock the window is measured against.
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// The words a user row carries, in either carrier the CLI persists it in.
+fn user_row_text(envelope: &forge_primitives::messages::UserEnvelope) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for block in &envelope.content {
+        match block {
+            ContentBlock::Text { text, .. } => parts.push(text.clone()),
+            ContentBlock::QueuedCommand { prompt, .. } => parts.push(queued_command_text(prompt)),
+            _ => {}
+        }
+    }
+    if parts.is_empty() { None } else { Some(parts.join("\n")) }
+}
+
 /// The ending a persisted notice carries, or `None` when the text is not one
 /// or names no call to end.
 fn task_ending(text: &str) -> Option<TaskEnding> {
@@ -932,6 +1042,216 @@ mod tests {
             source_uuid: None,
             extras: serde_json::Map::new(),
         }])
+    }
+
+    /// A plain user row as the CLI writes one, under an id it minted.
+    fn recorded(id: &str, text: &str) -> Message {
+        let mut message = user(vec![ContentBlock::Text {
+            text: text.to_owned(),
+            extras: serde_json::Map::new(),
+        }]);
+        if let Message::User { uuid, .. } = &mut message {
+            *uuid = Some(id.to_owned());
+        }
+        message
+    }
+
+    /// A delivered record stamped `at_ms` from now (`now` is the clock the
+    /// test hands the re-key).
+    fn delivered(
+        uuid: &str,
+        text: &str,
+        now: u64,
+        at_ms: u64,
+    ) -> forge_primitives::messages::DeliveredPrompt {
+        forge_primitives::messages::DeliveredPrompt {
+            uuid: uuid.to_owned(),
+            text: text.to_owned(),
+            at_ms: now.saturating_sub(at_ms),
+        }
+    }
+
+    fn log_of(
+        since_ms: u64,
+        prompts: Vec<forge_primitives::messages::DeliveredPrompt>,
+    ) -> forge_primitives::messages::DeliveredLog {
+        forge_primitives::messages::DeliveredLog { prompts, since_ms }
+    }
+
+    /// A row with the stamp the CLI writes on every transcript entry.
+    fn stamped(id: &str, text: &str, stamp: &str) -> Message {
+        let mut message = recorded(id, text);
+        if let Message::User { timestamp, .. } = &mut message {
+            *timestamp = Some(stamp.to_owned());
+        }
+        message
+    }
+
+    fn row_id(message: &Message) -> Option<&str> {
+        match message {
+            Message::User { uuid, .. } => uuid.as_deref(),
+            _ => None,
+        }
+    }
+
+    const NOW: u64 = 1_000_000;
+
+    #[test]
+    fn a_delivered_row_takes_its_delivery_id_back() {
+        let log = log_of(0, vec![delivered("forge_prompt_1", "one", NOW, 0)]);
+        let out = super::rekey_delivered(
+            vec![recorded("cli-1", "one"), assistant(vec![]), recorded("cli-2", "other")],
+            &log,
+            NOW,
+        );
+        assert_eq!(row_id(&out[0]), Some("forge_prompt_1"));
+        assert_eq!(row_id(&out[2]), Some("cli-2"), "a row with no record keeps its id");
+    }
+
+    #[test]
+    fn the_oldest_record_governs_and_a_row_never_skips_ahead() {
+        let log = log_of(
+            0,
+            vec![
+                delivered("forge_prompt_a", "alpha", NOW, 0),
+                delivered("forge_prompt_b", "beta", NOW, 0),
+            ],
+        );
+        let out = super::rekey_delivered(
+            vec![
+                recorded("cli-beta-1", "beta"),
+                recorded("cli-alpha", "alpha"),
+                recorded("cli-beta-2", "beta"),
+            ],
+            &log,
+            NOW,
+        );
+        assert_eq!(row_id(&out[0]), Some("cli-beta-1"), "a row cannot skip the oldest record");
+        assert_eq!(row_id(&out[1]), Some("forge_prompt_a"));
+        assert_eq!(row_id(&out[2]), Some("forge_prompt_b"));
+    }
+
+    #[test]
+    fn two_sends_of_the_same_text_pair_in_delivery_order() {
+        let log = log_of(
+            0,
+            vec![
+                delivered("forge_prompt_1", "same", NOW, 0),
+                delivered("forge_prompt_2", "same", NOW, 0),
+            ],
+        );
+        let out = super::rekey_delivered(
+            vec![recorded("cli-1", "same"), recorded("cli-2", "same")],
+            &log,
+            NOW,
+        );
+        assert_eq!(row_id(&out[0]), Some("forge_prompt_1"));
+        assert_eq!(row_id(&out[1]), Some("forge_prompt_2"));
+    }
+
+    #[test]
+    fn a_queued_attachment_advances_its_record() {
+        let log = log_of(
+            0,
+            vec![
+                delivered("forge_prompt_1", "one", NOW, 0),
+                delivered("forge_prompt_2", "two", NOW, 0),
+            ],
+        );
+        let out = super::rekey_delivered(
+            vec![
+                user(vec![ContentBlock::QueuedCommand {
+                    prompt: serde_json::Value::String("one".to_owned()),
+                    command_mode: Some("prompt".to_owned()),
+                    source_uuid: Some("forge_prompt_1".to_owned()),
+                    extras: serde_json::Map::new(),
+                }]),
+                recorded("cli-2", "two"),
+            ],
+            &log,
+            NOW,
+        );
+        assert_eq!(row_id(&out[1]), Some("forge_prompt_2"), "the next record is not blocked");
+    }
+
+    #[test]
+    fn a_cron_delivery_does_not_park_the_ones_after_it() {
+        // The cron record is the RAW prompt, as the workspace records it; the
+        // display row's `[Cron]` prefix never reaches the file. A steering
+        // send after it still pairs.
+        let log = log_of(
+            0,
+            vec![
+                delivered("forge_prompt_cron", "run the nightly sweep", NOW, 0),
+                delivered("forge_prompt_steer", "steer there", NOW, 0),
+            ],
+        );
+        let out = super::rekey_delivered(
+            vec![
+                recorded("cli-cron", "run the nightly sweep"),
+                recorded("cli-steer", "steer there"),
+            ],
+            &log,
+            NOW,
+        );
+        assert_eq!(row_id(&out[0]), Some("forge_prompt_cron"));
+        assert_eq!(row_id(&out[1]), Some("forge_prompt_steer"), "the steering send re-keyed");
+    }
+
+    #[test]
+    fn an_orphaned_record_is_let_go_so_the_queue_moves() {
+        let log = log_of(
+            0,
+            vec![
+                // Never persisted: an old record with no row anywhere.
+                delivered("forge_prompt_orphan", "never written", NOW, super::REKEY_WINDOW_MS + 1),
+                delivered("forge_prompt_fresh", "steer there", NOW, 0),
+            ],
+        );
+        let out = super::rekey_delivered(vec![recorded("cli-steer", "steer there")], &log, NOW);
+        assert_eq!(row_id(&out[0]), Some("forge_prompt_fresh"), "the orphan did not block it");
+    }
+
+    #[test]
+    fn a_fresh_orphan_still_governs_in_order() {
+        // Inside the window the FIFO is strict: the row cannot skip ahead to a
+        // later record.
+        let log = log_of(
+            0,
+            vec![
+                delivered("forge_prompt_first", "first", NOW, 0),
+                delivered("forge_prompt_second", "second", NOW, 0),
+            ],
+        );
+        let out = super::rekey_delivered(vec![recorded("cli-second", "second")], &log, NOW);
+        assert_eq!(row_id(&out[0]), Some("cli-second"), "the head is still waiting");
+    }
+
+    /// `ms` as the RFC3339 stamp the CLI writes on a row.
+    fn rfc(ms: u64) -> String {
+        time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms) * 1_000_000)
+            .expect("stamp")
+            .format(&time::format_description::well_known::Rfc3339)
+            .expect("format")
+    }
+
+    #[test]
+    fn a_resumed_seat_rekeys_its_newest_row_not_its_history() {
+        // Real clock values: the resumed run began a minute ago, the old row
+        // is an hour older, and both say the same word.
+        let now = super::now_ms();
+        let since = now - 60_000;
+        let log = log_of(since, vec![delivered("forge_prompt_continue", "continue", now, 0)]);
+        let out = super::rekey_delivered(
+            vec![
+                stamped("cli-old", "continue", &rfc(since - 3_600_000)),
+                stamped("cli-new", "continue", &rfc(now)),
+            ],
+            &log,
+            now,
+        );
+        assert_eq!(row_id(&out[0]), Some("cli-old"), "history keeps its id");
+        assert_eq!(row_id(&out[1]), Some("forge_prompt_continue"), "the new send re-keys");
     }
 
     /// The same completion notice in the queued carrier the scan hoists an

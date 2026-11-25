@@ -905,58 +905,107 @@ function insideRun(runs: readonly FoldedRun[], message: unknown): boolean {
 }
 
 /**
- * `target` with the frames of `copy` it does not hold, each placed where the
- * exchange's own order puts it.
+ * `target` with the rows of `copy` put where the PAGE puts them.
  *
- * **The drawn row and the page row are two cuts of one exchange, so the turn's
- * order is the only thing that anchors both.** `outsidePage` has already taken
- * the frames this page carries in a later row out of the drawn row, which is
- * what leaves the page row's own neighbours useless as anchors: its first frame
- * has none, so it went to the front of the row before, and the end is the same
- * mistake mirrored - a live frame that arrived after the page was read sits
- * there, and the page's frames are older than it. So each frame the page adds
- * goes after the last drawn frame that precedes it in `order`, before the first
- * one that follows it, and at the end only when nothing drawn follows it. A
- * frame the page carries that the turn never did follows the one before it in
- * the page row.
+ * **The page is the authority once it lands** (#3073): a cold reload, the
+ * phone and the web draw only what the read recorded, so a frame both cuts
+ * carry goes where the read put it - even where the live fold drew it first -
+ * and the landing is the one move that row makes. `order` is the page's own
+ * flattened messages up to and including this row, which is what carries a
+ * frame across a page-row boundary: a delivery whose row the read cut into
+ * the NEXT page row belongs after the call the previous row ends on, and a
+ * row-local order has no way to say so.
  *
- * **The fold is `interleave`'s.** A page row's folded counter run replaces the
- * drawn raw counters it covers here, and a drawn run counts the page's raw
- * counters through `have` - the drawn row's own index - so neither is added
- * beside the other.
+ * Frames only the live cut has keep their places and anchor the rest; a frame
+ * the page never had is placed by its page row's neighbours. **The fold is
+ * `interleave`'s**: a page row's folded counter run replaces the drawn raw
+ * counters it covers, and a drawn run counts the page's raw counters through
+ * their own index, so neither is added beside the other.
  */
-function rejoin(target: unknown[], copy: unknown[], order: readonly unknown[]): unknown[] {
-  const have = new Frames(target);
+function rejoin(
+  target: unknown[],
+  copy: unknown[],
+  order: readonly unknown[],
+  drawnBefore?: readonly unknown[],
+): unknown[] {
   const runs: FoldedRun[] = [];
   for (const message of copy) {
     const run = foldedRunMs(message);
     if (run !== null) runs.push(run);
   }
   const kept = runs.length === 0 ? target : target.filter((message) => !insideRun(runs, message));
+  // A counter the drawn row's own folded run already counts is not a frame the
+  // page adds: offering it would draw the growth beside the sum.
+  const haveRuns: FoldedRun[] = [];
+  for (const message of target) {
+    const run = foldedRunMs(message);
+    if (run !== null) haveRuns.push(run);
+  }
+  const counted = (message: unknown): boolean => {
+    const folded = foldedRunMs(message);
+    if (folded !== null) {
+      return haveRuns.some((run) => run.from <= folded.from && folded.through <= run.through);
+    }
+    return withinRuns(haveRuns, counterStampMs(message));
+  };
+  // Frames the page row carries are re-placed by the page's order, so they are
+  // taken out of the fixed part first.
+  const page = new Frames(copy);
+  const base = kept.filter((message) => !page.carries(message));
   const at = frameIndex(order);
-  const position = kept.map((message) => at(message) ?? null);
-  const drawnAt = frameIndex(kept);
-  /** Frames to place after one drawn index, ordered by where the turn had them. */
+  const position = base.map((message) => at(message) ?? null);
+  const baseAt = frameIndex(base);
+  /**
+   * Where a carried frame currently sits among the fixed frames.
+   *
+   * **A frame the page says nothing about is an obstacle, not air** (#3073):
+   * a drawn-only folded run between two page frames must not be jumped by the
+   * later one, because the page cannot place it. So a re-placed frame never
+   * moves earlier than the last fixed frame it already follows.
+   */
+  const baseIndex = new Map<unknown, number>(base.map((message, index) => [message, index]));
+  const route = drawnBefore ?? kept;
+  const routeAt = frameIndex(route);
+  /**
+   * The frame with the note this client wrote on the drawn copy, if any.
+   *
+   * **`forge_note` is this client's own mark** - the wait a drained prompt
+   * says on its row - and the transcript never carries it. Replacing the drawn
+   * copy with the page's would change the row beyond its id and place, so the
+   * note rides across (#3073).
+   */
+  const heldAt = frameIndex(target);
+  const withHeldNote = (message: unknown): unknown => {
+    if (typeof message !== 'object' || message === null) return message;
+    if ((message as { forge_note?: unknown }).forge_note !== undefined) return message;
+    const from = heldAt(message);
+    const note =
+      from === undefined ? undefined : (target[from] as { forge_note?: unknown }).forge_note;
+    return note === undefined ? message : { ...message, forge_note: note };
+  };
+  const floorOf = (message: unknown): number | undefined => {
+    const from = routeAt(message);
+    if (from === undefined) return undefined;
+    for (let back = from - 1; back >= 0; back -= 1) {
+      const index = baseIndex.get(route[back]);
+      if (index !== undefined) return index;
+    }
+    return -1;
+  };
+  /** Frames to place after one kept index, ordered by where the page had them. */
   const buckets = new Map<number, Array<{ rank: number; message: unknown }>>();
   const add = (after: number, rank: number, message: unknown): void => {
     const bucket = buckets.get(after);
     if (bucket === undefined) buckets.set(after, [{ rank, message }]);
     else bucket.push({ rank, message });
   };
-  /** The drawn index the page row has reached, which a frame with no order position follows. */
+  /** The kept index the page row has reached, which a frame with no page position follows. */
   let last = -1;
-  /** The turn's position of the frame last placed, which one with none shares. */
+  /** The page's position of the frame last placed, which one with none shares. */
   let rank = -1;
-  for (const message of copy) {
-    // A frame the drawn row already holds keeps its place, and is the anchor
-    // the next one measures from.
-    if (have.carries(message)) {
-      const index = drawnAt(message);
-      if (index !== undefined) last = index;
-      continue;
-    }
-    // A page counter inside a run the drawn row holds is answered by `have`,
-    // top of this loop: its covers are a superset of any run kept here.
+  for (let spot = 0; spot < copy.length; spot += 1) {
+    const message = copy[spot];
+    if (counted(message)) continue;
     const want = at(message);
     if (want !== undefined) rank = want;
     let anchor = last;
@@ -968,29 +1017,47 @@ function rejoin(target: unknown[], copy: unknown[], order: readonly unknown[]): 
         if (spot < want) before = index;
         else if (following === undefined) following = index;
       });
-      // A frame that leads the row goes before the first drawn frame that
-      // follows it; one nothing drawn follows goes at the end. **Leading every
-      // drawn frame is the defensive arm** - a later page row is a later slice
-      // of the turn, so it has no frame before the drawn row's first one - and
-      // it is kept so a cut the server sends still lands somewhere ordered
-      // rather than at the front of the row.
-      if (before === null) before = following === undefined ? kept.length - 1 : following - 1;
+      // A frame that leads the row goes before the first kept frame that
+      // follows it; one nothing kept follows goes at the end.
+      if (before === null) before = following === undefined ? base.length - 1 : following - 1;
       anchor = before;
+    } else {
+      // **A frame the page row alone carries is placed by ITS neighbours**
+      // (#3073): after the kept frame its row follows, before the one its row
+      // leads, and after what is drawn when it has neither - never at the
+      // row's front.
+      let lead: number | undefined;
+      for (let next = spot + 1; next < copy.length && lead === undefined; next += 1) {
+        lead = baseAt(copy[next]);
+      }
+      let behind: number | undefined;
+      for (let prev = spot - 1; prev >= 0 && behind === undefined; prev -= 1) {
+        behind = baseAt(copy[prev]);
+      }
+      if (lead !== undefined) anchor = Math.max(last, lead - 1);
+      else if (behind !== undefined) anchor = Math.max(last, behind);
+      else anchor = last >= 0 ? last : base.length - 1;
     }
-    add(anchor, rank, message);
+    const floor = floorOf(message);
+    if (floor !== undefined) anchor = Math.max(anchor, floor);
+    add(anchor, rank, withHeldNote(message));
     last = anchor;
   }
-  if (kept.length === target.length && buckets.size === 0) return target;
-  // Two frames can share an anchor; the turn's own order is what ranks them
-  // (a frame the turn never had keeps the rank of the one before it).
+  if (base.length === target.length && buckets.size === 0) return target;
+  // Two frames can share an anchor; the page's own order is what ranks them
+  // (a frame the page never had keeps the rank of the one before it).
   for (const bucket of buckets.values()) bucket.sort((one, other) => one.rank - other.rank);
   const out: unknown[] = (buckets.get(-1) ?? []).map((entry) => entry.message);
-  kept.forEach((message, index) => {
+  base.forEach((message, index) => {
     out.push(message);
     const bucket = buckets.get(index);
     if (bucket !== undefined) out.push(...bucket.map((entry) => entry.message));
   });
-  return out;
+  // **A landing that moves nothing hands back the row it was given**, so a
+  // page saying what is already drawn is not a new object for the list.
+  if (out.length !== target.length) return out;
+  for (let at = 0; at < out.length; at += 1) if (out[at] !== target[at]) return out;
+  return target;
 }
 
 /**
@@ -2635,6 +2702,12 @@ export class Chat {
     this.fold((held) => {
       const first = !held.loaded;
       const healed = this.healedOf(held, fromPage);
+      // **One prompt carries one id on both paths** (#3073). A prompt pressed
+      // into a running turn comes back from the read under the CLI's own id;
+      // the server puts the delivery id back on that row before it serves the
+      // page (`transcript::rekey_delivered`), so the page row and the live
+      // display row share an id and the id-keyed reconcile below is the whole
+      // merge. Nothing here matches a page row to a held row by its words.
       const known = new Map(healed.turns.map((turn) => [turn.key, turn]));
       // A turn a page has settled is also known by the page's own name for it,
       // which is what the next page repeats it under.
@@ -2781,7 +2854,37 @@ export class Chat {
        * and every later one joins it rather than drawing it twice (#2458).
        */
       const placed = new Map<Turn, number>();
+      /**
+       * Each placed exchange's row BEFORE the frames a later page row carries
+       * are taken out of it.
+       *
+       * **The anchor a frame keeps when it comes back in its own row** (#3073):
+       * a carried frame is lifted out of this row and re-joined from the later
+       * row, and where it sat here is the only thing that says it may not jump
+       * a frame the page cannot place - a folded counter run, say.
+       */
+      const beforeOutside = new Map<Turn, unknown[]>();
       const drawn: Turn[] = [];
+      /**
+       * The page's own flattened messages, up to and including each row, by
+       * the row's own message array.
+       *
+       * **What says where a frame sits across a page-row boundary** (#3073): a
+       * delivery the read cut into a later row belongs after the frames the
+       * rows before it end on, and a row-local order cannot see that. **Keyed
+       * by the array, not by an index**: the pile's splice drops rows from
+       * `named`, so an index kept beside the loop names a row that moved. A
+       * repeated row carries the held array instead, which misses here on
+       * purpose - its own order is the held one.
+       */
+      const pageThrough = new Map<unknown[], unknown[]>();
+      {
+        let through: unknown[] = [];
+        for (const row of pageRows) {
+          through = [...through, ...messagesOf(row)];
+          pageThrough.set(messagesOf(row), through);
+        }
+      }
       for (let index = 0; index < named.length; index += 1) {
         const row = named[index];
         if (row === undefined) continue;
@@ -2843,7 +2946,14 @@ export class Chat {
           // own order, so nothing drawn moves (see `rejoin`).
           const target = drawn[placedAt];
           if (target === undefined) continue;
-          const messages = pairHookRuns(rejoin(target.messages, copy, match.messages));
+          const messages = pairHookRuns(
+            rejoin(
+              target.messages,
+              copy,
+              pageThrough.get(copy) ?? match.messages,
+              beforeOutside.get(match),
+            ),
+          );
           const also = target.also ?? [];
           const later = also.includes(row.key) ? also : [...also, row.key];
           drawn[placedAt] =
@@ -2892,6 +3002,8 @@ export class Chat {
         // beside the row already held.
         const later = match.also ?? [];
         const also = later.includes(row.key) ? later : [...later, row.key];
+        const merged = interleave(own, match.messages);
+        beforeOutside.set(match, merged);
         if (!match.live) {
           // A held turn this page renews under a name it did not have when the
           // first read cut it - a name it did have would have been found
@@ -2899,11 +3011,7 @@ export class Chat {
           // it lacks arrived after its read.
           drawn.push({
             ...match,
-            messages: outsidePage(
-              pairHookRuns(interleave(own, match.messages)),
-              ownFrames,
-              fromPage,
-            ),
+            messages: outsidePage(pairHookRuns(merged), ownFrames, fromPage),
             also,
           });
           continue;
@@ -2926,11 +3034,7 @@ export class Chat {
             ? { ...row, key: match.key, also }
             : {
                 key: match.key,
-                messages: outsidePage(
-                  pairHookRuns(interleave(own, match.messages)),
-                  ownFrames,
-                  fromPage,
-                ),
+                messages: outsidePage(pairHookRuns(merged), ownFrames, fromPage),
                 live: !settledRow(index),
                 // **The record's mark survives a landing.** A rebuilt turn
                 // that forgot it would draw the bar again for a turn the core
