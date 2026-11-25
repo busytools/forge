@@ -400,6 +400,19 @@ function sendBox(): void {
   flushSync();
 }
 
+/**
+ * Let a send's crossing answer.
+ *
+ * The box empties and the echo posts when the transport answers that the
+ * frame left (#3072), which is one microtask after a fire-and-forget dispatch
+ * on the live transports - so a case that reads either straight after the key
+ * waits here first.
+ */
+async function crossed(): Promise<void> {
+  await Promise.resolve();
+  flushSync();
+}
+
 /** The frame a turn opens with, which is where the core says a turn is in flight. */
 function openTurn(): Record<string, unknown> {
   return { type: 'system', subtype: 'init', session_id: 's' };
@@ -711,7 +724,7 @@ describe("the reader's draft", () => {
  * leaves, and the reasons the whole thing is replaced.
  */
 describe('the box', () => {
-  it('sends what the reader typed, and clears the box for the next thing', () => {
+  it('sends what the reader typed, and clears the box for the next thing', async () => {
     const harness = open();
     type('push it once CI is green');
     const box = field();
@@ -719,6 +732,7 @@ describe('the box', () => {
       new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
     );
     flushSync();
+    await crossed();
 
     const [sent] = harness.sent;
     const under = sent?.command['prompt_under'] ?? {};
@@ -744,7 +758,7 @@ describe('the box', () => {
     expect(field().value, 'the box is empty once the words have gone').toBe('');
   });
 
-  it('answers a core-answered command without ever blocking the box', () => {
+  it('answers a core-answered command without ever blocking the box', async () => {
     // A forge command, a misuse and a slash name the session cannot run never
     // reach a model, so no turn carries their words and no record update
     // follows: an echo would stand as a row nothing clears, and a "Running"
@@ -761,6 +775,7 @@ describe('the box', () => {
       press('Escape');
       press('Enter');
       flushSync();
+      await crossed();
       expect(echoAt(SLOT), `no echo for ${words}`).toBeUndefined();
       // **No record update is delivered here**: the core answers the command
       // itself, and this is the real path the old test hid by reassigning the
@@ -785,6 +800,7 @@ describe('the box', () => {
       press('Escape');
       press('Enter');
       flushSync();
+      await crossed();
       expect(echoAt(SLOT)?.words, `${words} is still the reader's send`).toBe(words);
       settle();
     }
@@ -796,6 +812,7 @@ describe('the box', () => {
     press('Escape');
     press('Enter');
     flushSync();
+    await crossed();
     expect(echoAt(SLOT)?.words, 'an empty catalogue is forwarded').toBe('/spinner');
     expect(harness.sent.length, 'every send still went').toBe(7);
   });
@@ -1687,10 +1704,11 @@ describe('the box', () => {
     expect(document.querySelector('.b1 .ring'), 'a ring joined the lead wake').toBeNull();
   });
 
-  it('takes the mark off a send the core has started, and keeps the words', () => {
+  it('takes the mark off a send the core has started, and keeps the words', async () => {
     const harness = open();
     type('push it once CI is green');
     press('Enter');
+    await crossed();
     expect(echoAt(SLOT)?.state, 'the send is on its way').toBe('sending');
 
     harness.page.record = record({ header: { turn_in_flight: true } });
@@ -1715,10 +1733,11 @@ describe('the box', () => {
    * still on its way, so the server's refusal landed nowhere: the words stayed
    * drawn with no mark, no reason and no way to send them again.
    */
-  it('keeps a mid-turn send on its way, so a refusal can land on it', () => {
+  it('keeps a mid-turn send on its way, so a refusal can land on it', async () => {
     const harness = open({ record: record({ header: { turn_in_flight: true } }) });
     type('run the gate again');
     sendBox();
+    await crossed();
 
     expect(echoAt(SLOT)?.state, 'the turn was already running, so this send did not start it').toBe(
       'sending',
@@ -1742,7 +1761,7 @@ describe('the box', () => {
    * the very publish that carries the turn, and loses the refusal that comes
    * for it, which a taken send can no longer be given.
    */
-  it('keeps a send on its way for a turn applied but not drawn yet', () => {
+  it('keeps a send on its way for a turn applied but not drawn yet', async () => {
     const on = wire();
     // The turn is on the seat already...
     on.hold(SLOT, { chat_appended: { key: SLOT, msg: openTurn() } });
@@ -1750,6 +1769,7 @@ describe('the box', () => {
     const harness = open({ record: record({ header: { turn_in_flight: false } }) }, on);
     type('run the gate again');
     sendBox();
+    await crossed();
 
     // The paint that carries the turn arrives.
     harness.page.record = record({ header: { turn_in_flight: true } });
@@ -1765,10 +1785,11 @@ describe('the box', () => {
    * The record in hand can be another seat's - the page keeps this composer
    * mounted across a switch - and its turn says nothing about this seat.
    */
-  it("does not take this seat's send with another seat's record in hand", () => {
+  it("does not take this seat's send with another seat's record in hand", async () => {
     const harness = open();
     type('for the seat I am on');
     sendBox();
+    await crossed();
     expect(echoAt(SLOT)?.state, 'on its way').toBe('sending');
 
     harness.page.record = record({ slot: ELSEWHERE, header: { turn_in_flight: true } });
@@ -1784,10 +1805,11 @@ describe('the box', () => {
    * refusal that arrived after the switch was heard by nobody: the row, the
    * reason and the way to send it again all went with the echo.
    */
-  it('keeps a send the reader left, so a refusal still finds it', () => {
+  it('keeps a send the reader left, so a refusal still finds it', async () => {
     const harness = open();
     type('send it before I move on');
     sendBox();
+    await crossed();
 
     harness.page.slot = ELSEWHERE;
     harness.page.record = record({ slot: ELSEWHERE });
@@ -1823,7 +1845,7 @@ describe('the box', () => {
     expect(document.activeElement, 'and still has it after the switch').toBe(field());
   });
 
-  it('names the slash command a turn is still working on', () => {
+  it('names the slash command a turn is still working on', async () => {
     const harness = open();
     type('/compact');
     // Enter takes the row the list is offering - the command itself - and the
@@ -1831,6 +1853,7 @@ describe('the box', () => {
     press('Enter');
     press('Enter');
     flushSync();
+    await crossed();
 
     harness.page.record = record({ header: { turn_in_flight: true } });
     flushSync();
@@ -3422,6 +3445,7 @@ describe('a sent message', () => {
     // ones the reader sent out of it.
     expect(field().value, 'the take lands in the box').toBe(LANDED.text);
     sendBox();
+    await crossed();
     expect(field().value, 'the reader sent the words, so the box is empty').toBe('');
 
     // Another seat, which has no take of its own.
@@ -3512,6 +3536,7 @@ describe('the seat the box belongs to', () => {
     flushSync();
     expect(field().value, 'the take lands on its own seat').toBe(LANDED.text);
     sendBox();
+    await crossed();
     expect(field().value, 'the reader sent the words, so the box is empty').toBe('');
 
     // The reader moves, and the page has not answered with the new seat yet:
@@ -3588,11 +3613,12 @@ describe('the seat the box belongs to', () => {
     expect(field().value, "the take's own words land in the box").toBe('the words');
   });
 
-  it('does not mark a refused send on a seat that never sent it', () => {
+  it('does not mark a refused send on a seat that never sent it', async () => {
     const shared = wire();
     const harness = open({}, shared);
     type('push it once CI is green');
     sendBox();
+    await crossed();
     // The premise, without which a refusal that never reaches any seat leaves
     // this case green: this seat's own send really is outstanding, so a
     // refusal names it.
@@ -3609,6 +3635,7 @@ describe('the seat the box belongs to', () => {
     // it, and a page that dropped the send here would lose it in silence.
     type('and the gate too');
     sendBox();
+    await crossed();
     expect(harness.sent, 'the second send went out too').toHaveLength(2);
     harness.page.slot = ELSEWHERE;
     flushSync();
@@ -3639,11 +3666,12 @@ describe('the seat the box belongs to', () => {
    * one refusal - and a refusal that arrives after the reader moved still
    * finds the seat it belongs to (#1583).
    */
-  it('routes a refusal to the dispatch it names, not to every waiting seat', () => {
+  it('routes a refusal to the dispatch it names, not to every waiting seat', async () => {
     const shared = wire();
     const harness = open({}, shared);
     type('push it once CI is green');
     sendBox();
+    await crossed();
     const first = harness.sent[0]?.command['prompt_under'] as Record<string, unknown>;
 
     // The reader moves on with that send still outstanding, and sends again
@@ -3652,6 +3680,7 @@ describe('the seat the box belongs to', () => {
     flushSync();
     type('and the gate too');
     sendBox();
+    await crossed();
     expect(harness.sent, 'both sends went out').toHaveLength(2);
     const second = harness.sent[1]?.command['prompt_under'] as Record<string, unknown>;
     expect(first['dispatch_id'], 'each press minted its own id').not.toBe(second['dispatch_id']);
@@ -3685,7 +3714,7 @@ describe('the seat the box belongs to', () => {
    * a refusal that matched no echo used to be dropped, with the draft already
    * cleared: the press did nothing and said nothing.
    */
-  it('draws the refusal of a core-answered command', () => {
+  it('draws the refusal of a core-answered command', async () => {
     const shared = wire();
     const harness = open({}, shared);
     const sent = harness.sent;
@@ -3695,6 +3724,7 @@ describe('the seat the box belongs to', () => {
     press('Escape');
     press('Enter');
     flushSync();
+    await crossed();
     const dispatched = sent[0]?.command['prompt_under'] as Record<string, unknown>;
     expect(dispatched?.['text'], 'precondition: the press went out').toBe('/new');
     expect(echoAt(SLOT), 'the core answers it, so no echo stands in for a row').toBeUndefined();
@@ -3715,13 +3745,14 @@ describe('the seat the box belongs to', () => {
    * may have moved on before the answer arrives; the reason belongs on the
    * seat whose box minted the dispatch id, never on the seat shown now.
    */
-  it('scopes a core-answered refusal to the press seat', () => {
+  it('scopes a core-answered refusal to the press seat', async () => {
     const shared = wire();
     const harness = open({}, shared);
     type('/model');
     press('Escape');
     press('Enter');
     flushSync();
+    await crossed();
     const dispatched = harness.sent[0]?.command['prompt_under'] as Record<string, unknown>;
 
     harness.page.slot = ELSEWHERE;
@@ -3742,15 +3773,17 @@ describe('the seat the box belongs to', () => {
     expect(drawn(), "the press's own seat draws the reason").toContain('the model is gone');
   });
 
-  it('drops a numbered refusal whose own press the seat has replaced', () => {
+  it('drops a numbered refusal whose own press the seat has replaced', async () => {
     const shared = wire();
     const harness = open({}, shared);
     type('the first words');
     sendBox();
+    await crossed();
     const first = harness.sent[0]?.command['prompt_under'] as Record<string, unknown>;
 
     type('the second words');
     sendBox();
+    await crossed();
     expect(harness.sent, 'both sends went out').toHaveLength(2);
     const second = harness.sent[1]?.command['prompt_under'] as Record<string, unknown>;
     expect(first['dispatch_id']).not.toBe(second['dispatch_id']);
@@ -6531,10 +6564,11 @@ describe('the dock', () => {
     ]);
   });
 
-  it('leaves a refused send in the column, and says why, rather than refilling the box', () => {
+  it('leaves a refused send in the column, and says why, rather than refilling the box', async () => {
     const harness = open();
     type('push it once CI is green');
     press('Enter');
+    await crossed();
     expect(field().value, 'the box is cleared for the next thing').toBe('');
 
     harness.say({ kind: 'error', what: 'dispatch', why: 'the session is not running' });
@@ -7488,7 +7522,7 @@ describe('the dock', () => {
     );
   });
 
-  it('does not read a later refusal as the draft it answered', () => {
+  it('does not read a later refusal as the draft it answered', async () => {
     const harness = open({ record: record({ pending_asks: [slackDraftAsk()] }) });
 
     action('Post').click();
@@ -7511,6 +7545,7 @@ describe('the dock', () => {
     // forever and put its reason in a row nothing asked for.
     type('hello');
     sendBox();
+    await crossed();
     harness.say({ kind: 'error', what: 'dispatch', why: 'the connector is not configured' });
     flushSync();
 
@@ -12494,5 +12529,183 @@ describe('dictation in the send-back box', () => {
 
     expect(feedbackBox().value, 'the key took the words to the open box').toBe('key words');
     expect(write).toHaveBeenCalledWith('key words');
+  });
+});
+
+/**
+ * **A send the transport could not carry says so where it was typed** (#3072).
+ *
+ * The socket throws when nothing is open, and a transport whose write is
+ * refused rejects instead: either way the words never left, so they stay in
+ * the box and the box draws the reason above the field. Before this, the throw
+ * kept the words with nothing of the box's own saying so, and a rejection
+ * cleared them outright with an echo no running turn draws.
+ */
+describe('a send the transport could not carry', () => {
+  const WORDS = 'why are we not using ryot for games as well ?';
+  const NOT_SENT = 'Not sent - the connection is down.';
+
+  it('keeps the words and says why in the box when the socket is not open', () => {
+    const shared = wire();
+    open({ record: record({ header: { turn_in_flight: true } }) }, shared);
+    type(WORDS);
+    shared.down = true;
+    try {
+      press('Enter');
+    } finally {
+      shared.down = false;
+    }
+
+    expect(field().value, 'the words were never sent, so they stay').toBe(WORDS);
+    expect(drawn(), 'and the box itself says why').toContain(NOT_SENT);
+    expect(
+      document.querySelector('.comp .notice')?.className,
+      'as a failure rather than a passing note',
+    ).toContain('bad');
+    expect(echoAt(SLOT), 'no row was posted for a send that never left').toBeUndefined();
+  });
+
+  it('keeps the words and says why in the box when the crossing rejects', async () => {
+    const shared = wire();
+    open({ record: record({ header: { turn_in_flight: true } }) }, shared);
+    type(WORDS);
+    shared.dead = true;
+    try {
+      press('Enter');
+      await vi.waitFor(() => expect(drawn()).toContain(NOT_SENT));
+    } finally {
+      shared.dead = false;
+    }
+
+    expect(field().value, 'the words stay where they were typed').toBe(WORDS);
+    expect(echoAt(SLOT), 'no sending row is left behind').toBeUndefined();
+  });
+
+  it('takes the line away when the reader types again', () => {
+    const shared = wire();
+    open({ record: record({ header: { turn_in_flight: true } }) }, shared);
+    type(WORDS);
+    shared.down = true;
+    try {
+      press('Enter');
+    } finally {
+      shared.down = false;
+    }
+    expect(drawn(), 'the failure is drawn').toContain(NOT_SENT);
+
+    type(`${WORDS} and one more thing`);
+    expect(drawn(), 'and the next keystroke takes it away').not.toContain(NOT_SENT);
+  });
+
+  it('clears the words and posts the sending row once the crossing has answered', async () => {
+    open();
+    type(WORDS);
+    press('Enter');
+    await vi.waitFor(() => expect(echoAt(SLOT)?.state).toBe('sending'));
+    expect(field().value, 'the words left the box').toBe('');
+    expect(drawn(), 'and nothing claims they were not sent').not.toContain(NOT_SENT);
+  });
+
+  it('draws the line only in the box whose own send failed', () => {
+    const down = wire();
+    const up = wire();
+    open({ record: record({ header: { turn_in_flight: true } }) }, down);
+    second = mount(Harness, {
+      target: document.body,
+      props: {
+        wire: up,
+        initial: {
+          slot: ELSEWHERE,
+          record: record({ slot: ELSEWHERE, header: { turn_in_flight: true } }),
+        },
+        dictation: false,
+      },
+    });
+    flushSync();
+
+    const fields = Array.from(document.querySelectorAll('textarea'));
+    const boxes = Array.from(document.querySelectorAll('.comp'));
+    if (fields[0] === undefined || boxes[1] === undefined) {
+      throw new Error('both boxes must be drawn');
+    }
+    fields[0].focus();
+    type(WORDS);
+    down.down = true;
+    try {
+      press('Enter');
+    } finally {
+      down.down = false;
+    }
+
+    expect(boxes[0]?.textContent, 'the failed box says why').toContain(NOT_SENT);
+    expect(boxes[1]?.textContent, "and the other seat's box says nothing").not.toContain(NOT_SENT);
+  });
+
+  it('lands the crossing on the seat it was pressed in', async () => {
+    const shared = wire();
+    const harness = open({ record: record({ header: { turn_in_flight: true } }) }, shared);
+    type(WORDS);
+    press('Enter');
+    // The reader moves while the transport is still answering. On the shells
+    // that answer through the IPC round trip, that is the whole window.
+    harness.page.slot = ELSEWHERE;
+    harness.page.record = record({ slot: ELSEWHERE, header: { turn_in_flight: true } });
+    flushSync();
+    await crossed();
+
+    expect(echoAt(SLOT)?.words, "the row belongs to the press's seat").toBe(WORDS);
+    expect(echoAt(ELSEWHERE), 'the seat moved to holds nothing').toBeUndefined();
+
+    harness.page.slot = SLOT;
+    harness.page.record = record({ header: { turn_in_flight: true } });
+    flushSync();
+    expect(field().value, "the press's own box is the one that cleared").toBe('');
+  });
+
+  it('draws a failed crossing in the seat it was pressed in', async () => {
+    const shared = wire();
+    const harness = open({ record: record({ header: { turn_in_flight: true } }) }, shared);
+    type(WORDS);
+    shared.dead = true;
+    press('Enter');
+    harness.page.slot = ELSEWHERE;
+    harness.page.record = record({ slot: ELSEWHERE, header: { turn_in_flight: true } });
+    flushSync();
+    shared.dead = false;
+    await crossed();
+
+    expect(drawn(), 'the seat moved to draws nothing about it').not.toContain(NOT_SENT);
+    harness.page.slot = SLOT;
+    harness.page.record = record({ header: { turn_in_flight: true } });
+    flushSync();
+    expect(drawn(), "the press's own seat says why").toContain(NOT_SENT);
+    expect(field().value, 'and keeps the words').toBe(WORDS);
+  });
+
+  it('skips a second press while the first is still crossing', async () => {
+    const shared = wire();
+    const harness = open({ record: record({ header: { turn_in_flight: true } }) }, shared);
+    type(WORDS);
+    // The words are still in the box, so Enter is offered over them again.
+    press('Enter');
+    press('Enter');
+    await crossed();
+
+    expect(harness.sent, 'one press is one prompt').toHaveLength(1);
+    expect(field().value, 'and the box still clears once').toBe('');
+  });
+
+  it('keeps the words typed while the frame was crossing', async () => {
+    open();
+    type(WORDS);
+    press('Enter');
+    // The reader keeps writing while the transport answers: those words are
+    // not the send's to take.
+    type(`${WORDS} and one more thing`);
+    await crossed();
+
+    expect(field().value, 'the later typing survives the crossing').toBe(
+      `${WORDS} and one more thing`,
+    );
   });
 });

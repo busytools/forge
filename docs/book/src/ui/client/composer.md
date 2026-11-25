@@ -40,6 +40,13 @@ marked row - is lost to the swap.
 it, which is what makes the CLI emit the lifecycle frames [the queue page](./queue.md) reads;
 without a stamp the CLI emits none.
 
+**A send that never crosses keeps its words and says so.** The field empties only once the
+frame has left for the core, so a socket that is not open, or a transport whose write is
+refused, leaves the words where they were typed with `Not sent - the connection is down.` above
+them. The line belongs to that seat's box, the reader's next keystroke takes it away, and the
+seat's column still draws the refusal as its own notice, the rule every refused dispatch
+follows.
+
 ## The ask's dock
 
 While a prompt holds the body it replaces the field with its own card. A held Slack draft shows
@@ -286,6 +293,7 @@ refusal is logged at debug.
 | Typing | the draft, the send joining the row; the keys as a pointer's detail |
 | Running | the turn's figures leading the live row; `stop` beside the mic, and escape its key |
 | A question parked | the dock in the body, its chip on the live row, the reader's draft a chip beside it |
+| A send that never left | the words stay in the field with `Not sent - the connection is down.` above it, in that seat's box; the queue stays empty |
 | An ask folded | every kind folds to one bar: the kind's mark, its subject, the count behind it, a refusal line |
 | Sign-in needed | the field stays, with the sign-in line above it: the reader is told where, not blocked |
 | A handoff | `handing this session over`, the sweep, no field |
