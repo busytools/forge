@@ -2682,6 +2682,12 @@ details.turninfo[open] > summary .arw { color: var(--accent); }
   .sess > .more > summary { min-width: 44px; }
 }
 
+/* The run's own inset, carried by the notice row itself. A notice is always a
+   run of one row, so the `.leaves` block that seats a run would give it the
+   run's outer spacing as vertical padding on a single line - four above and
+   eight below - where the rows it sits among stand flush (Ved, 2026-11-26,
+   #3083). */
+.work > .unit > .leaf.nrow { margin-left: 4px; }
 /* A notice's text is the message, not a call's title, so it wraps and keeps
    the line breaks a failure or a delivery arrived with; a call's title may
    clamp because the call opens onto its input, and a notice that clipped its
