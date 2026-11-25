@@ -16,14 +16,21 @@ import { homeWire } from '../dev/fixture.data';
 import { settingsWire } from '../dev/settings.fixture';
 import type { HomeRead } from '../home/live';
 import type { Connection } from '../socket';
+import type { BiometricEnrolment } from '../wire/home';
 import type { SettingsDocument, SettingsKey } from '../wire/settings';
 import Settings from './Settings.svelte';
 
-const enrol = vi.hoisted(() => ({ enrolVault: vi.fn() }));
+const enrol = vi.hoisted(() => ({
+  enrolVault: vi.fn(),
+  remove: vi.fn(() => Promise.resolve()),
+  forgetVaultMaterial: vi.fn(),
+  mine: { id: null as string | null },
+}));
+vi.mock('../biometric', () => ({ remove: enrol.remove }));
 vi.mock('../biometric/vault-enrolment', () => ({
   enrolVault: enrol.enrolVault,
-  enrolmentIdIfMinted: () => null,
-  forgetVaultMaterial: () => {},
+  enrolmentIdIfMinted: () => enrol.mine.id,
+  forgetVaultMaterial: enrol.forgetVaultMaterial,
 }));
 
 vi.mock('../biometric/device', () => ({
@@ -32,9 +39,10 @@ vi.mock('../biometric/device', () => ({
 
 let app: Record<string, unknown> | null = null;
 
+const dispatch = vi.fn(() => Promise.resolve());
 const connection = {
   onMessage: () => () => {},
-  dispatch: () => Promise.resolve(),
+  dispatch,
   settingsEdit: () => true,
 } as unknown as Connection;
 
@@ -60,20 +68,38 @@ function documentWithVault(): SettingsDocument {
   };
 }
 
-function read(vault: { locked: boolean; idle_minutes: number } | null): HomeRead {
+const AT = { secs_since_epoch: 1_790_000_000, nanos_since_epoch: 0 };
+
+/** One device row as the home carries it. */
+function row(id: string, device: string): BiometricEnrolment {
   return {
-    wire: { ...homeWire, vault, biometric: { outcome: 'read', value: [] } },
+    id,
+    device,
+    created_at: AT,
+    purposes: [{ purpose: 'vault', created_at: AT, last_used_at: null }],
+  };
+}
+
+function read(
+  vault: { locked: boolean; idle_minutes: number } | null,
+  devices: BiometricEnrolment[] = [],
+): HomeRead {
+  return {
+    wire: { ...homeWire, vault, biometric: { outcome: 'read', value: devices } },
     refused: null,
     failed: null,
     report: null,
   };
 }
 
-function draw(vault: { locked: boolean; idle_minutes: number } | null): void {
+function draw(
+  vault: { locked: boolean; idle_minutes: number } | null,
+  devices: BiometricEnrolment[] = [],
+): void {
   settingsFrame.set({ status: 'ready', document: documentWithVault() });
   app = mount(Settings, {
     target: document.body,
-    props: { connection, home: read(vault), mark: null },
+    props: { connection, home: read(vault, devices), mark: null },
   });
   flushSync();
   const rail = [...document.querySelectorAll<HTMLButtonElement>('.settings-rail-item')].find(
@@ -99,6 +125,12 @@ function enrolButton(): HTMLButtonElement | null {
 
 beforeEach(() => {
   enrol.enrolVault.mockReset();
+  enrol.remove.mockReset();
+  enrol.remove.mockResolvedValue(undefined);
+  enrol.forgetVaultMaterial.mockReset();
+  enrol.mine.id = null;
+  dispatch.mockReset();
+  dispatch.mockResolvedValue(undefined);
 });
 
 afterEach(async () => {
@@ -205,5 +237,48 @@ describe('the enrol press', () => {
 
     expect(document.body.textContent).toContain('The vault state has not been read yet');
     expect(enrolButton(), 'no card and no door before the home').toBeNull();
+  });
+
+  /// **This device's own record goes with its server row.** A revoked
+  /// registration must not leave a gesture that can never succeed, or material
+  /// a later rotation would rewrite the deleted row with. Another device's
+  /// revoke leaves this one's record alone.
+  it("drops this device's record when its own vault row is revoked", async () => {
+    enrol.mine.id = 'device-1';
+    draw({ locked: true, idle_minutes: 15 }, [
+      row('device-1', 'Chrome on macOS (device1)'),
+      row('device-2', 'phone'),
+    ]);
+    await settled();
+
+    const revoke = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent?.trim() === 'revoke',
+    );
+    revoke?.click();
+    await settled();
+
+    expect(dispatch).toHaveBeenCalledWith({
+      biometric_revoke: { enrolment: 'device-1', purpose: 'vault' },
+    });
+    expect(enrol.forgetVaultMaterial, 'the held material goes').toHaveBeenCalled();
+    expect(enrol.remove, "and the gate's record goes").toHaveBeenCalledWith('vault');
+  });
+
+  it("leaves this device's record alone when another device is revoked", async () => {
+    enrol.mine.id = 'device-1';
+    draw({ locked: true, idle_minutes: 15 }, [row('device-2', 'phone')]);
+    await settled();
+
+    const revoke = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent?.trim() === 'revoke',
+    );
+    revoke?.click();
+    await settled();
+
+    expect(dispatch).toHaveBeenCalledWith({
+      biometric_revoke: { enrolment: 'device-2', purpose: 'vault' },
+    });
+    expect(enrol.forgetVaultMaterial).not.toHaveBeenCalled();
+    expect(enrol.remove).not.toHaveBeenCalled();
   });
 });
