@@ -185,6 +185,37 @@ describe('enrolling this device', () => {
     ).toBe(false);
   });
 
+  /// **A failed store drops the record so the next press can mint again.**
+  /// A passkey the person removed in the browser's own manager makes the held
+  /// credential's assertion reject; without the drop, every later press would
+  /// fail on that same dead credential.
+  it('drops the record on a failed store, so the next press mints a fresh passkey', async () => {
+    const connection = aConnection((command) =>
+      commandName(command) === 'vault_enrolment_material' ? MATERIAL : true,
+    );
+    gateStore.mockRejectedValue(new Error('the passkey is gone'));
+
+    const refused = await enrolVault(connection);
+
+    expect(refused).toMatchObject({ outcome: 'failed' });
+    expect(gateRemove, 'the dead record goes').toHaveBeenCalledWith('vault');
+    expect(
+      connection.calls.some((command) => commandName(command) === 'biometric_enrol'),
+      'and no core row was written',
+    ).toBe(false);
+
+    gateStore.mockReset();
+    gateStore.mockResolvedValue(undefined);
+    const again = await enrolVault(connection);
+
+    expect(again).toMatchObject({ outcome: 'enrolled' });
+    expect(gateStore, 'the next press stored a fresh key').toHaveBeenCalledTimes(1);
+    expect(
+      connection.calls.some((command) => commandName(command) === 'biometric_enrol'),
+      'and the core row landed',
+    ).toBe(true);
+  });
+
   /// **A core write that THROWS leaves no record either.** A closed socket
   /// returns failed, and a record kept there would be an orphan the next
   /// release spends a gesture on.

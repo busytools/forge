@@ -153,8 +153,13 @@ export async function enrolVault(connection: VaultConnection): Promise<VaultEnro
   try {
     await store(VAULT_PURPOSE, key);
   } catch (why) {
-    // **A refused prompt is an attempt that failed**, not a gate that cannot
-    // hold a key: the press stays so the person can try again.
+    // **A failed store drops the record.** A passkey the person deleted in
+    // the browser's own manager makes the held credential's assertion reject;
+    // without the drop, every later press would fail on that same dead
+    // credential. A cancelled prompt is indistinguishable from it here, so a
+    // cancel costs the record and the next press mints a fresh passkey - the
+    // accepted trade.
+    await dropRecord();
     return { outcome: 'failed', reason: reasonOf(why) };
   }
   let written: boolean;
