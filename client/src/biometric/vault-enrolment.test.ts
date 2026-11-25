@@ -26,7 +26,8 @@ vi.mock('./index', () => ({
     typeof why === 'string' ? why : 'the platform authenticator did not answer',
   release: vi.fn(),
   store: vi.fn(),
-  remove: vi.fn(),
+  // A promise, like the real one: the enrol's cleanup chains `.catch`.
+  remove: vi.fn(() => Promise.resolve()),
 }));
 
 const gateRelease = vi.mocked(release);
@@ -43,6 +44,7 @@ beforeEach(() => {
   gateStore.mockReset();
   gateRemove.mockReset();
   gateStore.mockResolvedValue(undefined);
+  gateRemove.mockResolvedValue(undefined);
   globalThis.localStorage.clear();
   forgetVaultMaterial();
 });
@@ -148,6 +150,56 @@ describe('enrolling this device', () => {
 
     expect(enrolmentIdIfMinted()).toBeNull();
     expect(globalThis.localStorage.length, 'and stores nothing at all').toBe(0);
+  });
+
+  /// **An id under the pre-rename key is the same device.** A client enrolled
+  /// before the device-scoped key adopts its id rather than reading "no row"
+  /// and enrolling a second one; the old key goes.
+  it('adopts an id enrolled under the pre-rename key', () => {
+    const legacy = 'abcdef12-3456-7890-abcd-ef1234567890';
+    globalThis.localStorage.setItem('forge.biometric.enrolment.vault', legacy);
+
+    expect(enrolmentIdIfMinted()).toBe(legacy);
+    expect(globalThis.localStorage.getItem('forge.biometric.device')).toBe(legacy);
+    expect(
+      globalThis.localStorage.getItem('forge.biometric.enrolment.vault'),
+      'the old key is cleared',
+    ).toBeNull();
+    expect(enrolmentId(), 'and no new id is minted').toBe(legacy);
+  });
+
+  /// **A refused passkey prompt stops the core write.** A gate that cannot
+  /// store the key must not leave a row no device key can open.
+  it('writes no core row when the gate refuses the key', async () => {
+    gateStore.mockRejectedValue(new Error('the gesture was cancelled'));
+    const connection = aConnection((command) =>
+      commandName(command) === 'vault_enrolment_material' ? MATERIAL : true,
+    );
+
+    const answer = await enrolVault(connection);
+
+    expect(answer).toMatchObject({ outcome: 'failed' });
+    expect(
+      connection.calls.some((command) => commandName(command) === 'biometric_enrol'),
+      'the core was never asked to store a row',
+    ).toBe(false);
+  });
+
+  /// **A core write that THROWS leaves no record either.** A closed socket
+  /// returns failed, and a record kept there would be an orphan the next
+  /// release spends a gesture on.
+  it('drops the gate record when the core write throws', async () => {
+    const connection = aConnection((command) => {
+      const name = commandName(command);
+      if (name === 'vault_enrolment_material') return MATERIAL;
+      if (name === 'biometric_enrol') throw new Error('the socket closed');
+      return true;
+    });
+
+    const answer = await enrolVault(connection);
+
+    expect(answer).toMatchObject({ outcome: 'failed' });
+    expect(gateRemove, 'the record goes with the failed write').toHaveBeenCalledWith('vault');
   });
 
   it('enrols nothing while the session is locked', async () => {

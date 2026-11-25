@@ -839,9 +839,11 @@
         // material a later rotation would rewrite the deleted row with.
         if (purpose === VAULT_PURPOSE && enrolment === enrolmentIdIfMinted()) {
           forgetVaultMaterial();
-          void remove(VAULT_PURPOSE).then(() => {
-            refreshDevice();
-          });
+          void remove(VAULT_PURPOSE)
+            .catch(() => {})
+            .then(() => {
+              refreshDevice();
+            });
         }
       }}
       {device}

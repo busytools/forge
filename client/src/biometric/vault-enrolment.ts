@@ -42,6 +42,12 @@ import {
  */
 const DEVICE_STORAGE = 'forge.biometric.device';
 
+/**
+ * The purpose-scoped key shipped before this cut. A client enrolled under it
+ * adopts its id rather than reading "no row" and enrolling a second one.
+ */
+const LEGACY_DEVICE_STORAGE = 'forge.biometric.enrolment.vault';
+
 /** The material and wrapping key this app run last held. */
 interface Held {
   material: VaultMaterial;
@@ -109,6 +115,17 @@ export function forgetVaultMaterial(): void {
 }
 
 /**
+ * Drop the gate's record without letting a failed drop outlive the answer.
+ *
+ * **Every failed enrol ends here**, so "nothing was stored" is true whether
+ * the core refused the write or the socket threw while it was in flight: a
+ * record with no row is an orphan the next release would spend a gesture on.
+ */
+function dropRecord(): Promise<void> {
+  return remove(VAULT_PURPOSE).catch(() => {});
+}
+
+/**
  * Enrol this device, from the material the core hands out while its session
  * is unlocked. Called by the settings card's enrol control and nothing else:
  * the person's own action, taken while the vault is open.
@@ -144,13 +161,13 @@ export async function enrolVault(connection: VaultConnection): Promise<VaultEnro
   try {
     written = await writeEnrolment(connection, sealed);
   } catch (why) {
+    // **The answer that failed and the record go together**, on a throw as
+    // much as on a refusal: a socket that closed mid-write leaves no row.
+    await dropRecord();
     return { outcome: 'failed', reason: reasonOf(why) };
   }
   if (!written) {
-    // **A gate record with no row is an orphan.** The next release would spend
-    // a gesture on a row that is not there, so the record goes with the failed
-    // write; the next press enrols cleanly.
-    void remove(VAULT_PURPOSE);
+    await dropRecord();
     return { outcome: 'failed', reason: 'the core did not store the enrolment' };
   }
   // **Held only once the write landed.** Material kept past a refused write
@@ -180,7 +197,7 @@ export async function releaseVaultMaterial(connection: VaultConnection): Promise
     // the person already revoked, so it goes too rather than leaving a
     // gesture that can never succeed, and so does the material this run held -
     // a later rotation must not rewrite a row the person deleted.
-    void remove(VAULT_PURPOSE);
+    await dropRecord();
     forgetVaultMaterial();
     return { outcome: 'not_enrolled' };
   }
@@ -350,11 +367,21 @@ export function enrolmentId(): string | null {
  * The id this client already minted, or null - **a read, not a mint**. A
  * comparison against the server's list must not create an id as a side
  * effect; only enrolling does that.
+ *
+ * **An id under the pre-rename key is adopted**, not read as absent: a client
+ * enrolled before the device-scoped key would otherwise see "the server has
+ * no row" and enrol a second one. Adoption moves the same UUID to the new key
+ * and drops the old one.
  */
 export function enrolmentIdIfMinted(): string | null {
   try {
     const stored = globalThis.localStorage.getItem(DEVICE_STORAGE);
-    return stored !== null && stored !== '' ? stored : null;
+    if (stored !== null && stored !== '') return stored;
+    const legacy = globalThis.localStorage.getItem(LEGACY_DEVICE_STORAGE);
+    if (legacy === null || legacy === '') return null;
+    globalThis.localStorage.setItem(DEVICE_STORAGE, legacy);
+    globalThis.localStorage.removeItem(LEGACY_DEVICE_STORAGE);
+    return legacy;
   } catch {
     return null;
   }
