@@ -31,7 +31,7 @@ import javax.crypto.spec.GCMParameterSpec
  * **The purpose is the whole key.** One alias and one record per purpose, so
  * a second consumer is a new purpose string - no new code, no new key type -
  * and revocation drops that purpose's record and key, nothing else. A change
- * to the enrolled fingerprints invalidates the key, which is the platform's
+ * to the enrolled biometrics invalidates the key, which is the platform's
  * own invalidation: a per-use key is still returned by `getKey` and refuses
  * at `init`, so a release falls back to the password and a fresh enrolment
  * replaces the dead key.
@@ -80,6 +80,13 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
         keyFor(args.purpose, create = false)?.let { usable(it) } ?: false
       } catch (unrecoverable: UnrecoverableKeyException) {
         false
+      } catch (transient: Exception) {
+        // **Only a genuine invalidation may mean not-enrolled.** A provider,
+        // auth or key-store error on a healthy key would otherwise draw "not
+        // enrolled" and revoke a working enrolment on every read. Report
+        // conservatively enrolled; release still falls back to the password
+        // if the key truly cannot be used.
+        true
       }
       invoke.resolve(JSObject().put("enrolled", hasRecord && hasKey))
     }
@@ -98,6 +105,13 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
       true
     } catch (invalidated: KeyPermanentlyInvalidatedException) {
       false
+    } catch (transient: Exception) {
+      // **Only a genuine invalidation may mean not-enrolled.** A provider,
+      // auth or key-store error on a healthy key is not proof the key is
+      // dead; the auth check lands at `doFinal`, and release falls back to
+      // the password if the key truly cannot be used. Report conservatively
+      // enrolled rather than revoke a working enrolment on a read error.
+      true
     }
 
   /**
@@ -109,7 +123,7 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
    * that writes the record is the authorised one (the per-use check lands at
    * `doFinal`, so `init` is expected to succeed).
    *
-   * **A key the OS invalidated is replaced here.** A fingerprint change
+   * **A key the OS invalidated is replaced here.** A biometric change
    * invalidates a per-use key at use, not at `getKey`: the key comes back and
    * `init` throws `KeyPermanentlyInvalidatedException`. Catching it, deleting
    * the alias and generating again is what makes the card's "enrol again"
@@ -141,7 +155,10 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
       }
       val host = activity as? androidx.fragment.app.FragmentActivity
       if (host == null) {
-        invoke.resolve(refused("this window cannot show the fingerprint prompt"))
+        // A prompt that never opened wrote nothing, so a resolved answer here
+        // would register an enrolment the gate never stored. Reject like the
+        // prompt-throw and commit-false paths.
+        invoke.reject("this window cannot show the biometric prompt")
         return@background
       }
       val prompt = BiometricPrompt(
@@ -192,7 +209,7 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   /**
-   * Release one purpose's blob, asking for the fingerprint first.
+   * Release one purpose's blob, asking for the biometric first.
    *
    * The cipher is initialised before the prompt and completed by it: the key
    * refuses a decrypt until the biometric has been verified, and the prompt's
@@ -215,7 +232,7 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
       keyFor(args.purpose, create = false)
     } catch (invalidated: KeyPermanentlyInvalidatedException) {
       invoke.resolve(refused(
-        "the device's fingerprints changed, so the stored unlock was invalidated; use the password and enrol again"
+        "the device's biometrics changed, so the stored unlock was invalidated; use the password and enrol again"
       ))
       return
     } catch (unrecoverable: UnrecoverableKeyException) {
@@ -233,7 +250,7 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
       }
     } catch (invalidated: KeyPermanentlyInvalidatedException) {
       invoke.resolve(refused(
-        "the device's fingerprints changed, so the stored unlock was invalidated; use the password and enrol again"
+        "the device's biometrics changed, so the stored unlock was invalidated; use the password and enrol again"
       ))
       return
     } catch (unusable: UnrecoverableKeyException) {
@@ -245,7 +262,7 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
 
     val host = activity as? androidx.fragment.app.FragmentActivity
     if (host == null) {
-      invoke.resolve(refused("this window cannot show the fingerprint prompt"))
+      invoke.resolve(refused("this window cannot show the biometric prompt"))
       return
     }
     val prompt = BiometricPrompt(
@@ -329,7 +346,7 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
     val existing = try {
       store.getKey(alias, null) as? SecretKey
     } catch (invalidated: UnrecoverableKeyException) {
-      // **A fingerprint change invalidates the key and `getKey` reports it
+      // **A biometric change invalidates the key and `getKey` reports it
       // this way.** A release cannot use it; a fresh enrolment replaces it
       // rather than failing, which is what makes "enrol again" true.
       if (!create) throw invalidated
