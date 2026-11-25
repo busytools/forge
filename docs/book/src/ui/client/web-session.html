@@ -652,6 +652,11 @@
      a row carries its own kind on its own glyph, and each call still opens
      on its own. */
   .leaves { padding: 0 0 4px 4px; margin: 4px 0; }
+  /* The run's own inset, carried by the notice row itself. A notice is always
+     a run of one row, so the `.leaves` block that seats a run would give it
+     the run's outer spacing as vertical padding on a single line - four above
+     and eight below - where the rows it sits among stand flush. */
+  .work > .leaf.nrow { margin-left: 4px; }
   /* The kind's glyph, leading every row: the mark the family row used to
      carry. Muted while the row runs, and the tone it settles into is the
      outcome - green came back, red failed - so a settled row carries no
@@ -2960,10 +2965,8 @@ Contains simple_expansion</div>
              other's echo: the row above leads with the FAILURE mark - the mark
              follows the turn - and this line carries its words. The calls the
              turn left open draw as failed. -->
-        <div class="leaves">
-          <div class="leaf nrow"><div class="rrow"><span class="lead"><svg class="ic gl err"><use href="#i-error"/></svg><span class="tn">Turn failed: error_during_execution &#183; aborted_streaming
+        <div class="leaf nrow"><div class="rrow"><span class="lead"><svg class="ic gl err"><use href="#i-error"/></svg><span class="tn">Turn failed: error_during_execution &#183; aborted_streaming
 [ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null</span></span></div></div>
-        </div>
       </div>
 
       <!-- The compaction point: drawn in the conversation at the boundary,
@@ -3300,14 +3303,10 @@ branch main, nothing to commit</div>
         </div>
 
         <div class="annot"><span class="dim">refused before leaving &#183; the dispatch never reached the socket, so no echo row exists: the line draws in the seat the click was made in, as a notice</span></div>
-        <div class="leaves">
-          <div class="leaf nrow"><div class="rrow"><span class="lead"><svg class="ic gl warn"><use href="#i-warning"/></svg><span class="tn">Not sent - the connection is down.</span></span></div></div>
-        </div>
+        <div class="leaf nrow"><div class="rrow"><span class="lead"><svg class="ic gl warn"><use href="#i-warning"/></svg><span class="tn">Not sent - the connection is down.</span></span></div></div>
 
         <div class="annot"><span class="dim">a service report &#183; keyless on the wire, so every open seat's chat draws it as the core pushes it, once per report</span></div>
-        <div class="leaves">
-          <div class="leaf nrow"><div class="rrow"><span class="lead"><svg class="ic gl warn"><use href="#i-warning"/></svg><span class="tn">Elevated error rates on the Anthropic API</span></span></div></div>
-        </div>
+        <div class="leaf nrow"><div class="rrow"><span class="lead"><svg class="ic gl warn"><use href="#i-warning"/></svg><span class="tn">Elevated error rates on the Anthropic API</span></span></div></div>
       </div>
 
       <div class="mine">
