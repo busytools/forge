@@ -46,6 +46,9 @@ function pinned(purpose: string): number[] {
 
 beforeEach(() => {
   vi.stubGlobal('crypto', webcrypto);
+  // jsdom reports every page insecure; a real browser on localhost or https
+  // is not, and that is the context these ceremonies run in.
+  vi.stubGlobal('isSecureContext', true);
   vi.stubGlobal('PublicKeyCredential', {
     isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(true),
   });
@@ -146,6 +149,66 @@ describe('the web gate', () => {
 
     expect(availability.available).toBe(false);
     expect(availability.reason).toContain('platform authenticator');
+  });
+
+  /// **An insecure page has no WebAuthn at all**, and saying so as "this
+  /// browser has no WebAuthn" sends the reader looking at the wrong thing.
+  it('draws an insecure origin as its own refusal', async () => {
+    vi.stubGlobal('isSecureContext', false);
+    vi.stubGlobal('PublicKeyCredential', undefined);
+
+    const availability = await gate.availability();
+
+    expect(availability.available).toBe(false);
+    expect(availability.reason).toContain('secure origin');
+    expect(availability.reason).toContain('password');
+  });
+
+  /// The browser itself can say it has no PRF, before anything is created:
+  /// the press is not offered and the password is named.
+  it('draws a browser whose capabilities report no PRF as unavailable', async () => {
+    vi.stubGlobal('PublicKeyCredential', {
+      isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(true),
+      getClientCapabilities: () => Promise.resolve({ 'extension:prf': false }),
+    });
+
+    const availability = await gate.availability();
+
+    expect(availability.available).toBe(false);
+    expect(availability.reason).toContain('PRF');
+    expect(availability.reason).toContain('password');
+  });
+
+  it('is available when the capabilities report the PRF extension', async () => {
+    vi.stubGlobal('PublicKeyCredential', {
+      isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(true),
+      getClientCapabilities: () => Promise.resolve({ 'extension:prf': true }),
+    });
+
+    expect(await gate.availability()).toEqual({ available: true, biometric: true });
+  });
+
+  /// **An absent key is not a false one.** A browser with no capability API
+  /// (or one that omits the extension) gets the press, and the attempt
+  /// settles whether the authenticator answers PRF.
+  it('offers the press when the browser cannot say whether it has PRF', async () => {
+    vi.stubGlobal('PublicKeyCredential', {
+      isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(true),
+    });
+
+    expect(await gate.availability()).toEqual({ available: true, biometric: true });
+  });
+
+  it('draws a browser with no WebCrypto as unavailable', async () => {
+    vi.stubGlobal('PublicKeyCredential', {
+      isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(true),
+    });
+    vi.stubGlobal('crypto', {});
+
+    const availability = await gate.availability();
+
+    expect(availability.available).toBe(false);
+    expect(availability.reason).toContain('WebCrypto');
   });
 
   it('drops the record on remove, leaving the purpose idempotent', async () => {

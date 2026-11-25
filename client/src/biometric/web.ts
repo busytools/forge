@@ -30,28 +30,85 @@ interface WebRecord {
 
 /** Whether this browser can answer at all, and with what gesture. */
 export async function availability(): Promise<Availability> {
-  const platform = globalThis.PublicKeyCredential;
-  if (platform === undefined || globalThis.crypto?.subtle === undefined) {
+  // **The secure context is checked first.** An insecure page has no WebAuthn
+  // at all, and reporting that as "this browser has no WebAuthn" sends a
+  // reader looking at the wrong thing.
+  if ((globalThis as { isSecureContext?: boolean }).isSecureContext === false) {
     return {
       available: false,
       biometric: false,
-      reason: 'this browser has no WebAuthn or WebCrypto, so there is no gesture to offer',
+      reason:
+        'this page is not a secure origin (https or localhost), so the browser offers no passkey; use the password',
+    };
+  }
+  const platform = globalThis.PublicKeyCredential;
+  if (platform === undefined) {
+    return {
+      available: false,
+      biometric: false,
+      reason: 'this browser has no WebAuthn, so there is no gesture to offer; use the password',
+    };
+  }
+  if (globalThis.crypto?.subtle === undefined) {
+    return {
+      available: false,
+      biometric: false,
+      reason: 'this browser has no WebCrypto, so a passkey could not seal anything; use the password',
     };
   }
   try {
     const usable = await platform.isUserVerifyingPlatformAuthenticatorAvailable();
-    if (usable) return { available: true, biometric: true };
-    return {
-      available: false,
-      biometric: false,
-      reason: 'this browser has no platform authenticator, so there is no gesture to offer',
-    };
+    if (!usable) {
+      return {
+        available: false,
+        biometric: false,
+        reason: 'this browser has no platform authenticator, so there is no gesture to offer',
+      };
+    }
   } catch {
     return {
       available: false,
       biometric: false,
       reason: 'the browser could not check for a platform authenticator',
     };
+  }
+  if ((await prfSupport(platform)) === 'unsupported') {
+    return {
+      available: false,
+      biometric: false,
+      reason:
+        'this browser supports no passkey PRF, so a passkey cannot keep the unlock; use the password',
+    };
+  }
+  return { available: true, biometric: true };
+}
+
+/** What the browser says about the PRF extension, before any credential exists. */
+type PrfSupport = 'supported' | 'unsupported' | 'unknown';
+
+/**
+ * What the browser reports for `extension:prf`.
+ *
+ * **An absent answer is `unknown`, not `unsupported`.** A browser with no
+ * capability API, or one that omits the key, may still answer PRF at
+ * creation; the enrol attempt is what settles it, and refusing the press on
+ * absence would close a path that works.
+ */
+async function prfSupport(platform: typeof globalThis.PublicKeyCredential): Promise<PrfSupport> {
+  const read = (
+    platform as unknown as {
+      getClientCapabilities?: () => Promise<Record<string, boolean>>;
+    }
+  ).getClientCapabilities;
+  if (read === undefined) return 'unknown';
+  try {
+    const capabilities = await read.call(platform);
+    const supported = capabilities['extension:prf'];
+    if (supported === true) return 'supported';
+    if (supported === false) return 'unsupported';
+    return 'unknown';
+  } catch {
+    return 'unknown';
   }
 }
 
