@@ -15847,10 +15847,17 @@ provider = "anthropic"
             std::thread::spawn(move || workspace.reload_config())
         };
         reached.recv_timeout(Duration::from_secs(5)).expect("the watcher reload is in flight");
+        let (started, adopt_started) = std::sync::mpsc::channel::<()>();
         let adopt = {
             let workspace = Arc::clone(&workspace);
-            std::thread::spawn(move || workspace.adopt_config_change())
+            std::thread::spawn(move || {
+                let _ = started.send(());
+                workspace.adopt_config_change()
+            })
         };
+        adopt_started.recv_timeout(Duration::from_secs(5)).expect("the adopt thread started");
+        // The thread is inside the adopt now; it must still be blocked on the
+        // reload in flight rather than finishing under its own steam.
         std::thread::sleep(Duration::from_millis(250));
         assert!(!adopt.is_finished(), "the adopt waited for the reload already in flight");
 
@@ -16026,26 +16033,35 @@ provider = "anthropic"
         };
         assert!(message.contains("cannot be applied"), "{message}");
         assert!(message.contains("failed to parse"), "the loader's words are carried: {message}");
+        assert!(
+            message.contains("fix the file and try again"),
+            "the retry recovery is named: {message}",
+        );
         assert!(message.contains("restart"), "a recovery that exists is named: {message}");
         assert_eq!(key_path, None, "no key in the save is at fault");
 
         let facade = ProdSettingsFacade::from_arc(&workspace);
-        let error = facade
-            .set(
+        let error = tokio::time::timeout(
+            Duration::from_secs(10),
+            facade.set(
                 &SessionSlot::lead("Default", "forge"),
                 vec![SettingsSetItem {
                     key: "orgs.Default.projects.forge.max_workers".to_owned(),
                     value: serde_json::json!(7),
                 }],
-            )
-            .await
-            .expect_err("the file on disk cannot be loaded");
+            ),
+        )
+        .await
+        .expect("the refusal precedes the ask, so nothing waits on an approval")
+        .expect_err("the file on disk cannot be loaded");
+        assert!(workspace.settings_writes.lock().is_empty(), "no ask was minted");
         let said = error.message();
         assert!(
             said.contains("cannot be applied")
                 && said.contains("failed to parse")
+                && said.contains("fix the file and try again")
                 && said.contains("restart"),
-            "the facade names the same situation in the same words: {said}",
+            "the facade names the same situation and both recoveries in the same words: {said}",
         );
         assert_eq!(
             fs::read_to_string(workspace.config_path()).expect("read the config"),
