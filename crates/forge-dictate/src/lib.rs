@@ -55,10 +55,12 @@ mod fetch;
 mod gates;
 pub mod host;
 pub mod normalize;
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, unix))]
 mod staging;
 #[cfg(test)]
 mod staging_build_tie_test;
+#[cfg(all(test, unix))]
+mod staging_temp_test;
 #[cfg(all(test, target_os = "macos"))]
 mod staging_test;
 

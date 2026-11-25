@@ -54,6 +54,15 @@ pub(crate) fn stage(runtime_dir: &Path, dest: &Path) -> io::Result<()> {
     for entry in fs::read_dir(dest)? {
         let entry = entry?;
         let name = entry.file_name();
+        if is_temp(&name) {
+            // A temp left by a killed stage is litter; a temp whose owner is
+            // still running is that stage's in-flight file. Removing it would
+            // make the other stage's rename fail, so liveness decides.
+            if temp_owner(&name).is_some_and(|pid| !owner_is_alive(pid)) {
+                remove_if_present(&entry.path())?;
+            }
+            continue;
+        }
         if is_library(&name) && !shipped.contains(&name) {
             remove_if_present(&entry.path())?;
         }
@@ -61,11 +70,46 @@ pub(crate) fn stage(runtime_dir: &Path, dest: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// The temporary name a library is staged under: hidden, suffixed `.tmp`
+/// and carrying this process's id, so two cargo invocations can write one
+/// destination without colliding.
 fn temp_name(name: &OsStr) -> OsString {
     let mut temp = OsString::from(".");
     temp.push(name);
     temp.push(format!(".{}.tmp", std::process::id()));
     temp
+}
+
+/// Whether an entry is one of [`temp_name`]'s names rather than a library.
+///
+/// The shipped sweep must test this before `is_library`: a `.so` library's
+/// temp contains `.so` and would otherwise read as a stale library.
+fn is_temp(name: &OsStr) -> bool {
+    let name = name.to_string_lossy();
+    name.starts_with('.') && name.ends_with(".tmp")
+}
+
+/// The process id a temp name carries.
+fn temp_owner(name: &OsStr) -> Option<u32> {
+    let name = name.to_string_lossy();
+    let owner = name.strip_suffix(".tmp")?.rsplit_once('.')?.1;
+    owner.parse().ok()
+}
+
+/// Whether `pid` is a running process.
+#[cfg(unix)]
+fn owner_is_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Off unix another process's liveness is not cheaply provable here, so a
+/// temp is never treated as stale.
+#[cfg(not(unix))]
+fn owner_is_alive(_pid: u32) -> bool {
+    true
 }
 
 /// One library at `incoming`, by copy or by link.
