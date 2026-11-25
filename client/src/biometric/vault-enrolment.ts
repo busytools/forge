@@ -18,6 +18,7 @@
 
 import type { Connection } from '../socket';
 import { reasonOf, release, remove, store } from './index';
+import { deviceName } from './name';
 
 /** The connection half the commands need: one dispatch doorway. */
 export type VaultConnection = Pick<Connection, 'dispatch'>;
@@ -32,8 +33,20 @@ import {
   type VaultMaterial,
 } from './vault';
 
-/** Where this client keeps the enrolment id it minted for this device. */
-const ENROLMENT_STORAGE = 'forge.biometric.enrolment.vault';
+/**
+ * Where this client keeps the id it minted for this device.
+ *
+ * **One id names a device, not a purpose.** A second purpose on one device is
+ * the same device, so the id lives under a key of its own rather than one per
+ * purpose; every release and every row's revoke name it.
+ */
+const DEVICE_STORAGE = 'forge.biometric.device';
+
+/**
+ * The purpose-scoped key shipped before this cut. A client enrolled under it
+ * adopts its id rather than reading "no row" and enrolling a second one.
+ */
+const LEGACY_DEVICE_STORAGE = 'forge.biometric.enrolment.vault';
 
 /** The material and wrapping key this app run last held. */
 interface Held {
@@ -102,6 +115,17 @@ export function forgetVaultMaterial(): void {
 }
 
 /**
+ * Drop the gate's record without letting a failed drop outlive the answer.
+ *
+ * **Every failed enrol ends here**, so "nothing was stored" is true whether
+ * the core refused the write or the socket threw while it was in flight: a
+ * record with no row is an orphan the next release would spend a gesture on.
+ */
+function dropRecord(): Promise<void> {
+  return remove(VAULT_PURPOSE).catch(() => {});
+}
+
+/**
  * Enrol this device, from the material the core hands out while its session
  * is unlocked. Called by the settings card's enrol control and nothing else:
  * the person's own action, taken while the vault is open.
@@ -129,17 +153,28 @@ export async function enrolVault(connection: VaultConnection): Promise<VaultEnro
   try {
     await store(VAULT_PURPOSE, key);
   } catch (why) {
-    // **A refused prompt is an attempt that failed**, not a gate that cannot
-    // hold a key: the press stays so the person can try again.
+    // **A failed store drops the record.** A passkey the person deleted in
+    // the browser's own manager makes the held credential's assertion reject;
+    // without the drop, every later press would fail on that same dead
+    // credential. A cancelled prompt is indistinguishable from it here, so a
+    // cancel costs the record and the next press mints a fresh passkey - the
+    // accepted trade.
+    await dropRecord();
     return { outcome: 'failed', reason: reasonOf(why) };
   }
   let written: boolean;
   try {
     written = await writeEnrolment(connection, sealed);
   } catch (why) {
+    // **The answer that failed and the record go together**, on a throw as
+    // much as on a refusal: a socket that closed mid-write leaves no row.
+    await dropRecord();
     return { outcome: 'failed', reason: reasonOf(why) };
   }
-  if (!written) return { outcome: 'failed', reason: 'the core did not store the enrolment' };
+  if (!written) {
+    await dropRecord();
+    return { outcome: 'failed', reason: 'the core did not store the enrolment' };
+  }
   // **Held only once the write landed.** Material kept past a refused write
   // would let a later rotation complete an enrolment the card reported
   // failed.
@@ -153,21 +188,26 @@ export async function enrolVault(connection: VaultConnection): Promise<VaultEnro
  * to draw.
  */
 export async function releaseVaultMaterial(connection: VaultConnection): Promise<VaultRelease> {
-  const released = await release(VAULT_PURPOSE);
-  if (released.outcome !== 'released') return released;
-  const enrolment = enrolmentId();
+  // **No id is no row, and a release never mints one.** A device that has
+  // never enrolled has nothing for a gesture to open, so the prompt is not
+  // raised and the card draws the password instead.
+  const enrolment = enrolmentIdIfMinted();
   if (enrolment === null) return { outcome: 'not_enrolled' };
+  // **The row before the gesture.** A device revoked elsewhere holds nothing,
+  // so a passkey prompt would be spent on a call that cannot land; the core's
+  // answer is read first and a missing row is answered without one.
   const sealed = await sealedFrom(connection, enrolment);
   if (sealed === null) {
-    // **The core holds nothing for this device.** The item the gate just
-    // opened is a registration the person already revoked, so it goes too
-    // rather than leaving a gesture that can never succeed, and so does the
-    // material this run held - a later rotation must not rewrite a row the
-    // person deleted.
-    void remove(VAULT_PURPOSE);
+    // **The core holds nothing for this device.** The item is a registration
+    // the person already revoked, so it goes too rather than leaving a
+    // gesture that can never succeed, and so does the material this run held -
+    // a later rotation must not rewrite a row the person deleted.
+    await dropRecord();
     forgetVaultMaterial();
     return { outcome: 'not_enrolled' };
   }
+  const released = await release(VAULT_PURPOSE);
+  if (released.outcome !== 'released') return released;
   const material = await openVaultMaterial(sealed, released.blob);
   if (material === null) {
     return {
@@ -310,9 +350,10 @@ async function writeRewrite(connection: VaultConnection, blob: string): Promise<
 }
 
 /**
- * The enrolment id this client minted, or null when this page cannot keep
- * one - storage that is refused loses the id across a restart, so the release
- * path falls back to the password rather than naming a device it cannot.
+ * The device id this client minted, minting one when there is none, or null
+ * when this page cannot keep one - storage that is refused loses the id
+ * across a restart, so the release path falls back to the password rather
+ * than naming a device it cannot.
  */
 export function enrolmentId(): string | null {
   try {
@@ -320,7 +361,7 @@ export function enrolmentId(): string | null {
     if (stored !== null) return stored;
     const minted = mintedId();
     if (minted === null) return null;
-    globalThis.localStorage.setItem(ENROLMENT_STORAGE, minted);
+    globalThis.localStorage.setItem(DEVICE_STORAGE, minted);
     return minted;
   } catch {
     return null;
@@ -331,11 +372,21 @@ export function enrolmentId(): string | null {
  * The id this client already minted, or null - **a read, not a mint**. A
  * comparison against the server's list must not create an id as a side
  * effect; only enrolling does that.
+ *
+ * **An id under the pre-rename key is adopted**, not read as absent: a client
+ * enrolled before the device-scoped key would otherwise see "the server has
+ * no row" and enrol a second one. Adoption moves the same UUID to the new key
+ * and drops the old one.
  */
 export function enrolmentIdIfMinted(): string | null {
   try {
-    const stored = globalThis.localStorage.getItem(ENROLMENT_STORAGE);
-    return stored !== null && stored !== '' ? stored : null;
+    const stored = globalThis.localStorage.getItem(DEVICE_STORAGE);
+    if (stored !== null && stored !== '') return stored;
+    const legacy = globalThis.localStorage.getItem(LEGACY_DEVICE_STORAGE);
+    if (legacy === null || legacy === '') return null;
+    globalThis.localStorage.setItem(DEVICE_STORAGE, legacy);
+    globalThis.localStorage.removeItem(LEGACY_DEVICE_STORAGE);
+    return legacy;
   } catch {
     return null;
   }
@@ -351,17 +402,4 @@ function mintedId(): string | null {
   bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
   const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
-
-/**
- * The device's name for the settings list. **The platform plus this
- * enrolment's own serial**: the page has no hostname on any of the three
- * clients, so the id the client minted is what tells two devices of one
- * platform apart.
- */
-export function deviceName(enrolment: string): string {
-  const data = (globalThis.navigator as { userAgentData?: { platform?: string } }).userAgentData;
-  const platform = data?.platform ?? globalThis.navigator.platform;
-  const name = platform === undefined || platform === '' ? 'this device' : platform;
-  return `${name} (${enrolment.slice(0, 8)})`;
 }

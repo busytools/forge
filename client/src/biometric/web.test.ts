@@ -27,6 +27,22 @@ function aCredential(prf: Uint8Array | null, rawId = new Uint8Array([1, 2, 3, 4]
   };
 }
 
+/** A create that reports PRF enabled but returns no output. */
+function anEnabledCredential(): unknown {
+  return {
+    rawId: new Uint8Array([5, 6, 7, 8]).buffer,
+    getClientExtensionResults: () => ({ prf: { enabled: true } }),
+  };
+}
+
+/** A create that reports PRF disabled. */
+function aDisabledCredential(): unknown {
+  return {
+    rawId: new Uint8Array([5, 6, 7, 8]).buffer,
+    getClientExtensionResults: () => ({ prf: { enabled: false } }),
+  };
+}
+
 let created: Record<string, unknown>[] = [];
 let asserted: Record<string, unknown>[] = [];
 
@@ -46,6 +62,9 @@ function pinned(purpose: string): number[] {
 
 beforeEach(() => {
   vi.stubGlobal('crypto', webcrypto);
+  // jsdom reports every page insecure; a real browser on localhost or https
+  // is not, and that is the context these ceremonies run in.
+  vi.stubGlobal('isSecureContext', true);
   vi.stubGlobal('PublicKeyCredential', {
     isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(true),
   });
@@ -78,6 +97,10 @@ describe('the web gate', () => {
       userVerification: 'required',
     });
     expect(create?.['extensions']).toHaveProperty('prf');
+    // **The page's own origin is the RP.** No `rp.id` means the browser scopes
+    // the credential to the effective domain of the page, which is what the
+    // web client wants; the socket server's address is not involved.
+    expect(create?.['rp']).toEqual({ name: 'forge' });
     // **The salt is the purpose, pinned byte for byte**: create and get must
     // derive the same wrapping key, so a change on either side is a blob no
     // release can open.
@@ -146,6 +169,110 @@ describe('the web gate', () => {
 
     expect(availability.available).toBe(false);
     expect(availability.reason).toContain('platform authenticator');
+    expect(availability.reason, 'the password is the route').toContain('password');
+  });
+
+  it('names the password when the platform check throws', async () => {
+    vi.stubGlobal('PublicKeyCredential', {
+      isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.reject(new Error('no')),
+    });
+
+    const availability = await gate.availability();
+
+    expect(availability.available).toBe(false);
+    expect(availability.reason).toContain('password');
+  });
+
+  it('names the password when the page has no WebAuthn', async () => {
+    vi.stubGlobal('PublicKeyCredential', undefined);
+
+    const availability = await gate.availability();
+
+    expect(availability.available).toBe(false);
+    expect(availability.reason).toContain('WebAuthn');
+    expect(availability.reason).toContain('password');
+  });
+
+  /// **An insecure page has no WebAuthn at all**, and saying so as "this
+  /// browser has no WebAuthn" sends the reader looking at the wrong thing.
+  it('draws an insecure origin as its own refusal', async () => {
+    vi.stubGlobal('isSecureContext', false);
+    vi.stubGlobal('PublicKeyCredential', undefined);
+
+    const availability = await gate.availability();
+
+    expect(availability.available).toBe(false);
+    expect(availability.reason).toContain('secure origin');
+    expect(availability.reason).toContain('password');
+  });
+
+  /// The browser itself can say it has no PRF, before anything is created:
+  /// the press is not offered and the password is named.
+  it('draws a browser whose capabilities report no PRF as unavailable', async () => {
+    vi.stubGlobal('PublicKeyCredential', {
+      isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(true),
+      getClientCapabilities: () => Promise.resolve({ 'extension:prf': false }),
+    });
+
+    const availability = await gate.availability();
+
+    expect(availability.available).toBe(false);
+    expect(availability.reason).toContain('PRF');
+    expect(availability.reason).toContain('password');
+  });
+
+  it('is available when the capabilities report the PRF extension', async () => {
+    vi.stubGlobal('PublicKeyCredential', {
+      isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(true),
+      getClientCapabilities: () => Promise.resolve({ 'extension:prf': true }),
+    });
+
+    expect(await gate.availability()).toEqual({ available: true, biometric: true });
+  });
+
+  /// **An absent key is not a false one.** A browser with no capability API
+  /// (or one that omits the extension) gets the press, and the attempt
+  /// settles whether the authenticator answers PRF.
+  it('offers the press when the browser cannot say whether it has PRF', async () => {
+    vi.stubGlobal('PublicKeyCredential', {
+      isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(true),
+    });
+
+    expect(await gate.availability()).toEqual({ available: true, biometric: true });
+  });
+
+  /// **An absent key is not a false one.** A browser that omits `prf` from
+  /// its capabilities may still answer it at creation.
+  it('offers the press when the capabilities omit the PRF key', async () => {
+    vi.stubGlobal('PublicKeyCredential', {
+      isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(true),
+      getClientCapabilities: () => Promise.resolve({ 'extension:other': true }),
+    });
+
+    expect(await gate.availability()).toEqual({ available: true, biometric: true });
+  });
+
+  /// A capability read that throws is unknown, not unsupported: the enrol
+  /// attempt is what settles it.
+  it('offers the press when the capability check throws', async () => {
+    vi.stubGlobal('PublicKeyCredential', {
+      isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(true),
+      getClientCapabilities: () => Promise.reject(new Error('no capabilities')),
+    });
+
+    expect(await gate.availability()).toEqual({ available: true, biometric: true });
+  });
+
+  it('draws a browser with no WebCrypto as unavailable', async () => {
+    vi.stubGlobal('PublicKeyCredential', {
+      isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(true),
+    });
+    vi.stubGlobal('crypto', {});
+
+    const availability = await gate.availability();
+
+    expect(availability.available).toBe(false);
+    expect(availability.reason).toContain('WebCrypto');
   });
 
   it('drops the record on remove, leaving the purpose idempotent', async () => {
@@ -155,5 +282,103 @@ describe('the web gate', () => {
 
     expect(gate.enrolled('vault')).toBe(false);
     expect(await gate.release('vault')).toEqual({ outcome: 'not_enrolled' });
+  });
+
+  /// **A re-enrol replaces the key, not the passkey.** The press is the route
+  /// back from a stale blob, and each press must not leave another passkey in
+  /// the person's own passkey manager.
+  it('reuses the passkey it already made, replacing its sealed key', async () => {
+    await gate.store('vault', 'first-key');
+    await gate.store('vault', 'second-key');
+
+    expect(created, 'one passkey, not two').toHaveLength(1);
+    expect(asserted.length, 'the second press asserted the existing passkey').toBe(1);
+    expect(await gate.release('vault')).toEqual({ outcome: 'released', blob: 'second-key' });
+  });
+
+  /// **A dead record is resealed under the passkey already held**, not
+  /// replaced by a second one: the PRF is deterministic, so one assertion is
+  /// enough to make the record work again.
+  it('reseals a record the passkey can no longer open under the same passkey', async () => {
+    await gate.store('vault', 'first-key');
+    const held = JSON.parse(
+      globalThis.localStorage.getItem('forge.biometric.web.vault') ?? '{}',
+    ) as Record<string, unknown>;
+    globalThis.localStorage.setItem(
+      'forge.biometric.web.vault',
+      JSON.stringify({ ...held, wrapped: 'AAAA' }),
+    );
+
+    await gate.store('vault', 'second-key');
+
+    expect(created, 'the passkey is the one already held').toHaveLength(1);
+    expect(await gate.release('vault')).toEqual({ outcome: 'released', blob: 'second-key' });
+  });
+
+  /// **Some authenticators report PRF enabled and withhold the output at
+  /// creation.** One assertion fetches it; without that step a working
+  /// authenticator would read as PRF-less.
+  it('asks for the PRF once when creation withholds the output', async () => {
+    Object.defineProperty(globalThis.navigator, 'credentials', {
+      configurable: true,
+      value: {
+        create: (options: Record<string, unknown>) => {
+          created.push(options);
+          return Promise.resolve(anEnabledCredential());
+        },
+        get: (options: Record<string, unknown>) => {
+          asserted.push(options);
+          return Promise.resolve(aCredential(PRF));
+        },
+      },
+    });
+
+    await gate.store('vault', 'the-purpose-key');
+
+    expect(created).toHaveLength(1);
+    expect(asserted, 'one assertion fetched the output').toHaveLength(1);
+    expect(await gate.release('vault')).toEqual({ outcome: 'released', blob: 'the-purpose-key' });
+  });
+
+  /// A disabled PRF is answered, not retried: there is nothing a second
+  /// assertion could return.
+  it('does not assert when creation reports the PRF disabled', async () => {
+    Object.defineProperty(globalThis.navigator, 'credentials', {
+      configurable: true,
+      value: {
+        create: () => Promise.resolve(aDisabledCredential()),
+        get: (options: Record<string, unknown>) => {
+          asserted.push(options);
+          return Promise.resolve(aCredential(PRF));
+        },
+      },
+    });
+
+    await expect(gate.store('vault', 'the-purpose-key')).rejects.toThrow('PRF');
+
+    expect(asserted).toHaveLength(0);
+    expect(gate.enrolled('vault')).toBe(false);
+  });
+
+  /// A record the asserted PRF cannot open is dropped, so the next unlock
+  /// goes straight to the password instead of raising a gesture that cannot
+  /// succeed.
+  it('drops a record the asserted PRF cannot open', async () => {
+    await gate.store('vault', 'the-purpose-key');
+    Object.defineProperty(globalThis.navigator, 'credentials', {
+      configurable: true,
+      value: {
+        create: () => Promise.resolve(aCredential(PRF)),
+        get: (options: Record<string, unknown>) => {
+          asserted.push(options);
+          return Promise.resolve(aCredential(OTHER_PRF));
+        },
+      },
+    });
+
+    const released = await gate.release('vault');
+
+    expect(released.outcome).toBe('refused');
+    expect(gate.enrolled('vault'), 'the dead record goes').toBe(false);
   });
 });
