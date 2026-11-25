@@ -63,14 +63,15 @@ export async function availability(): Promise<Availability> {
       return {
         available: false,
         biometric: false,
-        reason: 'this browser has no platform authenticator, so there is no gesture to offer',
+        reason:
+          'this browser has no platform authenticator, so there is no gesture to offer; use the password',
       };
     }
   } catch {
     return {
       available: false,
       biometric: false,
-      reason: 'the browser could not check for a platform authenticator',
+      reason: 'the browser could not check for a platform authenticator; use the password',
     };
   }
   if ((await prfSupport(platform)) === 'unsupported') {
@@ -120,20 +121,21 @@ export function enrolled(purpose: string): boolean {
 
 /**
  * Seal `key` under a passkey's PRF output, reusing this purpose's passkey when
- * it still works.
+ * this browser still holds one.
  *
  * **A re-enrol replaces the sealed key, not the passkey.** The press is the
  * route back from a stale blob, and one press must not leave another passkey
- * in the person's own passkey manager. A record the passkey cannot open is
- * dead - the PRF is deterministic - so it is dropped and a fresh passkey
- * replaces it.
+ * in the person's own passkey manager. The PRF is deterministic, so the same
+ * credential reseals the new key whether or not the old bytes still open; a
+ * fresh passkey is minted only when this browser holds no record at all (a
+ * revoke, or a cleared profile).
  */
 export async function store(purpose: string, key: string): Promise<void> {
   const existing = readRecord(purpose);
   const credential = existing === null ? null : fromBase64(existing.credential);
   if (existing !== null && credential !== null) {
     const prf = await assertPasskey(purpose, credential);
-    if (prf !== null && (await openText(existing.wrapped, prf)) !== null) {
+    if (prf !== null) {
       const wrapped = await sealText(key, prf);
       if (wrapped === null) {
         throw new Error('the passkey released no usable key, so nothing was stored');
@@ -141,8 +143,8 @@ export async function store(purpose: string, key: string): Promise<void> {
       writeRecord(purpose, { credential: existing.credential, wrapped });
       return;
     }
-    // **The record is dead**, so it goes rather than leaving a gesture that
-    // can never succeed; the fresh passkey below is the replacement.
+    // **An assertion with no PRF cannot reseal**, so the record goes and the
+    // fresh passkey below is the replacement.
     remove(purpose);
   } else if (existing !== null) {
     remove(purpose);
