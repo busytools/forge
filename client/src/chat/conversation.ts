@@ -577,6 +577,25 @@ function wordsOf(message: unknown): string[] {
 }
 
 /**
+ * The words of a row forge drew for a prompt it delivered, when it is one.
+ *
+ * **The one live row a page can carry back under another id** (#3073): the
+ * CLI records a prompt it pressed into a running turn as its own user row,
+ * under an id it minted, so the display row forge drew for the same prompt
+ * and the page's copy share no identity. The id's namespace is what says the
+ * row is forge's rather than the CLI's, and the words are the only thing the
+ * two carriers agree on.
+ */
+function displayWordsOf(message: unknown): string[] | null {
+  const frame = message as { type?: unknown; uuid?: unknown } | null;
+  if (frame?.type !== 'user') return null;
+  const id = typeof frame.uuid === 'string' ? frame.uuid : '';
+  if (!id.startsWith('forge_prompt_')) return null;
+  const words = wordsOf(message);
+  return words.length === 0 ? null : words;
+}
+
+/**
  * A list of frames, indexed so a copy can be asked what it already carries.
  *
  * **The scans were the cost.** Asking whether a list holds a frame meant
@@ -916,9 +935,12 @@ function insideRun(runs: readonly FoldedRun[], message: unknown): boolean {
  * mistake mirrored - a live frame that arrived after the page was read sits
  * there, and the page's frames are older than it. So each frame the page adds
  * goes after the last drawn frame that precedes it in `order`, before the first
- * one that follows it, and at the end only when nothing drawn follows it. A
- * frame the page carries that the turn never did follows the one before it in
- * the page row.
+ * one that follows it, and at the end only when nothing drawn follows it. **A
+ * frame the turn never had has no place in `order`**, so its page row's own
+ * neighbours place it: after the drawn frame its row follows, before the one
+ * its row leads, and at the walk's position when it has neither - never at the
+ * row's front, which is where a page copy of a prompt the live fold already
+ * drew would otherwise land above the turn's own head (#3073).
  *
  * **The fold is `interleave`'s.** A page row's folded counter run replaces the
  * drawn raw counters it covers here, and a drawn run counts the page's raw
@@ -947,7 +969,8 @@ function rejoin(target: unknown[], copy: unknown[], order: readonly unknown[]): 
   let last = -1;
   /** The turn's position of the frame last placed, which one with none shares. */
   let rank = -1;
-  for (const message of copy) {
+  for (let spot = 0; spot < copy.length; spot += 1) {
+    const message = copy[spot];
     // A frame the drawn row already holds keeps its place, and is the anchor
     // the next one measures from.
     if (have.carries(message)) {
@@ -976,6 +999,27 @@ function rejoin(target: unknown[], copy: unknown[], order: readonly unknown[]): 
       // rather than at the front of the row.
       if (before === null) before = following === undefined ? kept.length - 1 : following - 1;
       anchor = before;
+    } else {
+      // **A frame the held order never had is placed by ITS page row's
+      // neighbours** (#3073). The held order cannot say where a row the live
+      // fold never drew belongs, and parking it at `last` starts every such
+      // row at -1, ahead of the turn's own head - the front of a row already
+      // drawn. The page row is the only order that has it: it follows the
+      // drawn frame its page row follows and leads the one its page row leads.
+      let lead: number | undefined;
+      for (let next = spot + 1; next < copy.length && lead === undefined; next += 1) {
+        lead = drawnAt(copy[next]);
+      }
+      let behind: number | undefined;
+      for (let prev = spot - 1; prev >= 0 && behind === undefined; prev -= 1) {
+        behind = drawnAt(copy[prev]);
+      }
+      if (lead !== undefined) anchor = Math.max(last, lead - 1);
+      else if (behind !== undefined) anchor = Math.max(last, behind);
+      // **A later slice of the turn follows what is drawn.** When nothing this
+      // page row carries sits in the drawn row, the row runs on from its end -
+      // never ahead of it, which is what parking at -1 did (#3073).
+      else anchor = last >= 0 ? last : kept.length - 1;
     }
     add(anchor, rank, message);
     last = anchor;
@@ -2716,6 +2760,52 @@ export class Chat {
       // turn opening at the forged row with the running frames joined to it,
       // so the row survives the pull - and a copy kept while its words went
       // into the hold would draw beside the card AND drain a second time.
+      // **A delivered prompt's page copy is the row the live path already
+      // drew** (#3073). The page carries the CLI's own row for a prompt it
+      // pressed into a running turn, under an id it minted; the live path's
+      // row for the same prompt is forge's display row under forge's id, so
+      // nothing pairs them by identity and the landing drew the page's copy
+      // as a second row - at the page's position, while the drawn one stayed
+      // where the sequence put it. One prompt is one row: a page copy that
+      // says what a held display row says, whose own id the conversation does
+      // not carry, is that row. Each held copy answers for one page copy, so
+      // two sends of the same text still draw twice.
+      const onPage = new Set<string>();
+      for (const copy of copies) {
+        for (const message of copy) {
+          const id = uuidOf(message);
+          if (id !== null) onPage.add(id);
+        }
+      }
+      const said = new Map<string, number>();
+      for (const turn of healed.turns) {
+        for (const message of turn.messages) {
+          const words = displayWordsOf(message);
+          if (words === null) continue;
+          const id = uuidOf(message);
+          if (id !== null && onPage.has(id)) continue;
+          const key = JSON.stringify(words);
+          said.set(key, (said.get(key) ?? 0) + 1);
+        }
+      }
+      const repeats = (message: unknown): boolean => {
+        // **The CLI's row carries its words as a plain string.** The live
+        // display row carries blocks; the read's copy of a delivered prompt is
+        // `{"role":"user","content":"..."}`, so a words reader that only knows
+        // blocks pairs nothing and the duplicate survives (#3073).
+        const content = (message as { type?: unknown; message?: { content?: unknown } } | null)
+          ?.message?.content;
+        const words =
+          typeof content === 'string' ? (content === '' ? [] : [content]) : wordsOf(message);
+        if (words.length === 0) return false;
+        const id = uuidOf(message);
+        if (id !== null && healed.turns.some((turn) => heldIds(turn).has(id))) return false;
+        const key = JSON.stringify(words);
+        const held = said.get(key) ?? 0;
+        if (held === 0) return false;
+        said.set(key, held - 1);
+        return true;
+      };
       const quiet: unknown[][] = [];
       const quietNamed: Turn[] = [];
       const quietNamedTurn: Array<Turn | null> = [];
@@ -2726,7 +2816,7 @@ export class Chat {
         const row = named[at];
         if (row === undefined) continue;
         const copy = copies[at] ?? [];
-        const kept = copy.filter((message) => !this.heldBack(message));
+        const kept = copy.filter((message) => !this.heldBack(message) && !repeats(message));
         if (kept.length !== copy.length) pulled = true;
         if (kept.length === 0) continue;
         quietNamed.push({ ...row, messages: kept });
