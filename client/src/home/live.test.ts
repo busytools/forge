@@ -125,8 +125,8 @@ function idleHome() {
 }
 
 /** One prompt-lifecycle frame for the fixture's seat. */
-function life(state: string): ServerMessage {
-  return { kind: 'update', update: { prompt_lifecycle: { key: LEAD, uuid: 'p1', state } } };
+function life(state: string, uuid = 'p1'): ServerMessage {
+  return { kind: 'update', update: { prompt_lifecycle: { key: LEAD, uuid, state } } };
 }
 
 /** One CLI background-registry frame for the fixture's seat. */
@@ -574,14 +574,11 @@ describe('the home over a connection', () => {
 
   /**
    * **A prompt's life is folded into the drawn row, not answered with a
-   * read.** The frame carries the prompt's own state and the seat it names,
-   * and the row's lifecycle is the one value a per-seat count reproduces: a
-   * `queued` prompt starts it, a terminal state ends it. **The count is
-   * derived from frames the seat received and re-based by every snapshot
-   * answer**, so a reconnect's first answer resets it rather than adding to
-   * it; a turn that never reports terminal leaves a Running mark only until
-   * the next home read, which the residual completion frames and every
-   * return still ask for.
+   * read.** The frame names the prompt and its state, and the row's lifecycle
+   * is what a per-seat set of prompt uuids reproduces: `queued` adds the
+   * uuid, `started` keeps it, a terminal removes it. A repeat of one uuid is
+   * no second prompt. **The set is re-based by every snapshot answer and
+   * cleared by a socket drop**, so a reconnect starts from the snapshot.
    */
   it("folds a prompt's life into the drawn row without a read", async () => {
     const forge = fakeConnection();
@@ -594,6 +591,8 @@ describe('the home over a connection', () => {
     forge.arrive({ kind: 'snapshot', subject: HOME, data: wire });
 
     forge.arrive(life('queued'));
+    // The same prompt announced again is no second one.
+    forge.arrive(life('queued'));
     await settle();
     expect(forge.refreshed, "a prompt's queue asked for a whole read").toEqual([]);
     expect(seen.at(-1)?.wire?.agents[0]?.lifecycle, 'the queued prompt did not start the row').toBe(
@@ -604,11 +603,78 @@ describe('the home over a connection', () => {
     await settle();
     expect(forge.refreshed, "a prompt's start asked for a whole read").toEqual([]);
     expect(seen.at(-1)?.wire?.agents[0]?.lifecycle).toBe('Running');
+    // The old read refreshed the row's "last moved" at the turn's start; the
+    // fold states the same moment, so a later-attached page draws a fresh age.
+    expect(
+      seen.at(-1)?.wire?.agents[0]?.last_activity,
+      'the turn start left the last-moved stamp stale',
+    ).not.toBeNull();
 
     forge.arrive(life('completed'));
     await settle();
     expect(forge.refreshed, "a prompt's end asked for a whole read").toEqual([]);
     expect(seen.at(-1)?.wire?.agents[0]?.lifecycle, 'the settled row did not go idle').toBe('Idle');
+    stop();
+  });
+
+  /**
+   * **A snapshot answer must not clobber a count the frames built.** A prompt
+   * queued behind a running turn is a second uuid; an answer that lands while
+   * both are live keeps it, so the running prompt's terminal does not publish
+   * Idle under a queued turn (rule 16: a page attaching then draws Running).
+   * A reconnect forgets the set, so the next terminal names a prompt this page
+   * never counted and keeps the read.
+   */
+  it('keeps a second queued prompt across a snapshot, and forgets it on a reconnect', async () => {
+    const forge = fakeConnection();
+    const seen: HomeRead[] = [];
+    const stop = watchHome(forge.connection).subscribe(($next) => {
+      seen.push($next);
+    });
+    const wire = idleHome();
+    forge.stores.get(HOME)?.set(wire);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: wire });
+
+    forge.arrive(life('queued', 'p1'));
+    forge.arrive(life('queued', 'p2'));
+    await settle();
+    expect(forge.refreshed, 'two queued prompts asked for a read').toEqual([]);
+
+    // An answer lands while both are live and the server states the seat is
+    // running: the set must survive it.
+    const running = { ...wire, agents: [{ ...IDLE_AGENT, lifecycle: 'Running' }] };
+    forge.stores.get(HOME)?.set(running);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: running });
+    forge.arrive(life('completed', 'p1'));
+    await settle();
+    expect(forge.refreshed, 'the second prompt went uncounted after a snapshot').toEqual([]);
+    expect(
+      seen.at(-1)?.wire?.agents[0]?.lifecycle,
+      'the row went idle while a second prompt was queued',
+    ).toBe('Running');
+
+    forge.arrive(life('started', 'p2'));
+    forge.arrive(life('completed', 'p2'));
+    await settle();
+    expect(forge.refreshed, 'the second prompt did not settle').toEqual([]);
+    expect(seen.at(-1)?.wire?.agents[0]?.lifecycle).toBe('Idle');
+
+    // A reconnect forgets every set: a terminal for a prompt the page never
+    // counted keeps the read rather than folding a stale count.
+    forge.arrive(life('queued', 'p3'));
+    await settle();
+    forge.status('connecting');
+    forge.status('open');
+    const rebased = { ...wire, agents: [{ ...IDLE_AGENT, lifecycle: 'Running' }] };
+    forge.stores.get(HOME)?.set(rebased);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: rebased });
+    await settle();
+    forge.arrive(life('completed', 'p3'));
+    await settleFloor();
+    expect(
+      forge.refreshed,
+      'a terminal for a pre-reconnect prompt folded a count the page no longer held',
+    ).toEqual([HOME]);
     stop();
   });
 
@@ -626,6 +692,95 @@ describe('the home over a connection', () => {
       HOME,
     ]);
     stop();
+  });
+
+  /**
+   * **A successful result still buys the read that moves `unseen`.** The
+   * completion is the one home value no frame carries whole: the mark is the
+   * server's cross-client fact (no client was showing the seat), so a fold
+   * here would either invent it or lose it. This pins the residual the folds
+   * must not swallow.
+   */
+  it('still reads for a successful result, the completion the home cannot fold', async () => {
+    const forge = fakeConnection();
+    const stop = watchHome(forge.connection).subscribe(() => {});
+    const wire = idleHome();
+    forge.stores.get(HOME)?.set(wire);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: wire });
+
+    forge.arrive({
+      kind: 'update',
+      update: {
+        chat_appended: {
+          key: LEAD,
+          msg: { type: 'result', subtype: 'success', is_error: false },
+        },
+      },
+    } as unknown as ServerMessage);
+    await settle();
+    expect(
+      forge.refreshed,
+      'a successful result stopped asking for the read that moves unseen',
+    ).toEqual([HOME]);
+    stop();
+  });
+
+  /**
+   * **Every fold keeps its read when the value cannot be reproduced.** These
+   * are the four refusals the failure direction names: a seat the drawn home
+   * does not hold, a row another source owns, a prompt state this build has
+   * not seen, and a vault the home states none of.
+   */
+  it('keeps the read for a frame the drawn home cannot reproduce', async () => {
+    // A seat the drawn home does not hold.
+    const absent = fakeConnection();
+    const stopAbsent = watchHome(absent.connection).subscribe(() => {});
+    const noSeat = { ...idleHome(), agents: [] };
+    absent.stores.get(HOME)?.set(noSeat);
+    absent.arrive({ kind: 'snapshot', subject: HOME, data: noSeat });
+    absent.arrive(life('queued'));
+    await settle();
+    expect(absent.refreshed, 'a seat the drawn home does not hold was folded into nothing').toEqual(
+      [HOME],
+    );
+    stopAbsent();
+
+    // A row in a state another source owns.
+    const owned = fakeConnection();
+    const stopOwned = watchHome(owned.connection).subscribe(() => {});
+    const attention = { ...idleHome(), agents: [{ ...IDLE_AGENT, lifecycle: 'Attention' }] };
+    owned.stores.get(HOME)?.set(attention);
+    owned.arrive({ kind: 'snapshot', subject: HOME, data: attention });
+    owned.arrive(life('queued'));
+    await settle();
+    expect(owned.refreshed, 'a row an ask owns was overwritten by the fold').toEqual([HOME]);
+    stopOwned();
+
+    // A prompt state this build has not seen.
+    const unknown = fakeConnection();
+    const stopUnknown = watchHome(unknown.connection).subscribe(() => {});
+    const idle = idleHome();
+    unknown.stores.get(HOME)?.set(idle);
+    unknown.arrive({ kind: 'snapshot', subject: HOME, data: idle });
+    unknown.arrive(life('finished'));
+    await settle();
+    expect(unknown.refreshed, 'an unknown prompt state was guessed instead of read').toEqual([
+      HOME,
+    ]);
+    stopUnknown();
+
+    // A vault the home states none of.
+    const noVault = fakeConnection();
+    const stopNoVault = watchHome(noVault.connection).subscribe(() => {});
+    const bare = { ...idleHome(), vault: null };
+    noVault.stores.get(HOME)?.set(bare);
+    noVault.arrive({ kind: 'snapshot', subject: HOME, data: bare });
+    noVault.arrive({ kind: 'update', update: { vault_lock_changed: { locked: false } } });
+    await settle();
+    expect(noVault.refreshed, 'a lock for a vault the home states none of was folded').toEqual([
+      HOME,
+    ]);
+    stopNoVault();
   });
 
   /**
@@ -945,6 +1100,37 @@ describe('the home over a connection', () => {
     expect(seen.at(-1)?.failed, 'a ready empty store fell back to waiting').toBe(
       'the snapshot was empty',
     );
+    stop();
+  });
+
+  /**
+   * **A fold never repaints a failed read as healthy.** An empty or skewed
+   * answer is its own state, drawn over no record; a later frame that folds
+   * into the last good snapshot would erase the failure the state exists to
+   * draw (rule 22), so those branches clear the record instead.
+   */
+  it('does not repaint a failed read with a fold', async () => {
+    const forge = fakeConnection();
+    const seen: HomeRead[] = [];
+    const stop = watchHome(forge.connection).subscribe(($next) => {
+      seen.push($next);
+    });
+    const wire = idleHome();
+    forge.stores.get(HOME)?.set(wire);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: wire });
+    expect(seen.at(-1)?.wire, 'the good read did not land').not.toBeNull();
+
+    forge.stores.get(HOME)?.set(null);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: null });
+    expect(seen.at(-1)?.failed, 'the empty answer did not draw a failure').not.toBeNull();
+
+    forge.arrive({
+      kind: 'update',
+      update: { service_status: { severity: 'error', message: 'the core is down' } },
+    });
+    await settle();
+    expect(seen.at(-1)?.wire, 'a fold repainted the snapshot the failure replaced').toBeNull();
+    expect(seen.at(-1)?.failed, 'a fold erased the failure state').not.toBeNull();
     stop();
   });
 

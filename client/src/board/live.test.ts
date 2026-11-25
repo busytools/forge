@@ -486,6 +486,9 @@ describe('the board over a connection', () => {
         },
       },
     });
+    // **Past the coalescing beat**, or a fold that also scheduled a read would
+    // pass on a synchronous assertion taken before the beat fires.
+    await settle();
     expect(forge.refreshed, 'a connector set asked for a whole read').toEqual([]);
     const held = seen.at(-1)?.wire?.projects[0]?.connectors as
       { gotify: unknown[]; slack: unknown[] } | undefined;
