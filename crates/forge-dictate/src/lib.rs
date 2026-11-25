@@ -55,6 +55,10 @@ mod fetch;
 mod gates;
 pub mod host;
 pub mod normalize;
+#[cfg(all(test, target_os = "macos"))]
+mod staging;
+#[cfg(all(test, target_os = "macos"))]
+mod staging_test;
 
 pub use audio::{AudioSource, SAMPLE_RATE, Samples, resample_mono};
 pub use config::{Config, ConfigBuilder, ModelFacts, ModelSpec, spec_for_download};

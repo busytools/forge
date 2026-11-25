@@ -89,6 +89,14 @@ test:
 # Run tests across the whole workspace (includes forge-test-harness replay).
 test-all:
     RUSTFLAGS="-D warnings" cargo nextest run --workspace --all-features
+    # One built binary must start beside the staged transcribe libraries: a
+    # stage the loader rejects would otherwise surface as dozens of unrelated
+    # headless-test failures. The staging is dyld's, so it is macOS-only.
+    @if [ "$(uname -s)" = "Darwin" ]; then \
+        binary="${CARGO_TARGET_DIR:-target}/debug/forge"; \
+        [ -x "$binary" ] || { echo "test-all: no built forge at $binary to smoke the staged libraries"; exit 1; }; \
+        env -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH "$binary" --version > /dev/null; \
+    fi
 
 # `cargo nextest run` executes no doctest and `cargo check --all-targets`
 # builds none, so without this step the Rust fences under `crates/*/src/`
