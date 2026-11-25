@@ -12562,10 +12562,7 @@ describe('a send the transport could not carry', () => {
       document.querySelector('.comp .notice')?.className,
       'as a failure rather than a passing note',
     ).toContain('bad');
-    expect(
-      echoAt(SLOT),
-      'no row was posted for a send that never left',
-    ).toBeUndefined();
+    expect(echoAt(SLOT), 'no row was posted for a send that never left').toBeUndefined();
   });
 
   it('keeps the words and says why in the box when the crossing rejects', async () => {
