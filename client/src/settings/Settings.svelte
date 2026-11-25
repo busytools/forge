@@ -1,12 +1,14 @@
 <script lang="ts">
   import type { HomeRead } from '../home/live';
-  import { remove } from '../biometric';
+  import { reasonOf, remove } from '../biometric';
   import { readDeviceGate, type DeviceGate } from '../biometric/device';
   import { VAULT_PURPOSE } from '../biometric/vault';
   import {
     enrolVault,
     enrolmentIdIfMinted,
     forgetVaultMaterial,
+    releaseVaultMaterial,
+    unlockVault,
   } from '../biometric/vault-enrolment';
   import { watchModels } from '../models/live';
   import { boxKey } from '../composer/box.svelte';
@@ -19,6 +21,7 @@
   import type { ActivateState, InstallState, SpeakingWire } from '../wire/models';
   import ConfirmDialog from '../components/ConfirmDialog.svelte';
   import SettingsBody from './SettingsBody.svelte';
+  import VaultUnlockDialog from './VaultUnlockDialog.svelte';
   import { settingsFrame } from './frame';
   import { previewNext } from './preview';
   import {
@@ -65,8 +68,15 @@
   type Pending = { kind: 'remove'; entry: EntryTarget } | { kind: 'discard'; then: Then };
 
   let selected = $state<string | null>(null);
-  /** This device's own gate state, read once when the page opens. */
+  /** This client's own gate state, read once when the page opens. */
   let device = $state<DeviceGate>({ outcome: 'reading' });
+
+  /** The vault unlock dialog the card's press opened, and its own state. */
+  let dialog = $state<null | 'unlock' | 'enrol'>(null);
+  let dialogBusy = $state(false);
+  let dialogReason = $state<string | null>(null);
+  /** A close through the dialog's own buttons, waiting on its entry's pop. */
+  let vaultClosing = false;
 
   function refreshDevice(): void {
     void readDeviceGate().then((read) => (device = read));
@@ -76,25 +86,127 @@
     refreshDevice();
   });
 
+  // **The dialog is an overlay, so it takes a history entry** (rule 22): the
+  // hardware Back closes it rather than leaving the page under it. The page
+  // already places one entry per dialog; the vault unlock rides that
+  // machinery so one pop settles whichever dialog is open.
+  function openDialog(kind: 'unlock' | 'enrol'): void {
+    dialog = kind;
+    dialogReason = null;
+    if (!dialogEntry) {
+      history.pushState({ ...heldState(), forgeSettingsDialog: true }, '', location.href);
+      dialogEntry = true;
+    }
+  }
+
+  function closeDialog(): void {
+    dialog = null;
+    dialogReason = null;
+    if (!dialogEntry) return;
+    vaultClosing = true;
+    history.back();
+  }
+
+  /** The card's one press: unlock an existing enrolment, or write a row. */
+  function vaultAction(action: 'enrol' | 'unlock'): void {
+    if (home.wire?.vault?.locked === false) {
+      if (action === 'enrol') void enrolDevice();
+      return;
+    }
+    openDialog(action);
+  }
+
   /**
-   * Enrol this device while the vault is open. **This is the only enrolment
-   * path**: nothing enrols on an unlock frame, because that frame reaches
-   * every connected client and would let a revoked device re-register.
+   * Enrol this client. **This is the only enrolment path**: nothing enrols on
+   * an unlock frame, because that frame reaches every connected client and
+   * would let a revoked device re-register. The vault is open when this runs;
+   * the dialog opened it when it was not.
    */
+  /** Whether the gate's gesture is biometric, from a state that knows. */
+  function biometricOf(gate: DeviceGate): boolean {
+    return gate.outcome === 'ready' || gate.outcome === 'enrolled' ? gate.biometric : true;
+  }
+
   async function enrolDevice(): Promise<void> {
     // **One press at a time**: a second press interleaved with the first
     // could store a gate key and then lose the write, leaving a key that
     // opens nothing.
     if (device.outcome === 'enrolling') return;
-    if (home.wire?.vault?.locked !== false) {
-      device = { outcome: 'needs_unlock' };
-      return;
-    }
+    // **The previous state comes back if the vault relocked under the press**:
+    // an enrolled client must not be redrawn as "not enrolled", and a dialog
+    // already open must not take a second entry.
+    const previous = device;
     device = { outcome: 'enrolling' };
     const result = await enrolVault(connection);
-    if (result.outcome === 'enrolled') device = { outcome: 'enrolled' };
-    else if (result.outcome === 'needs_unlock') device = { outcome: 'needs_unlock' };
-    else device = { outcome: result.outcome, reason: result.reason };
+    if (result.outcome === 'enrolled') {
+      device = { outcome: 'enrolled', biometric: biometricOf(previous) };
+      return;
+    }
+    if (result.outcome === 'needs_unlock') {
+      device = previous;
+      dialogReason = 'the vault locked again; unlock it to enrol';
+      if (dialog === null) openDialog('enrol');
+      return;
+    }
+    device =
+      result.outcome === 'unavailable'
+        ? { outcome: 'unavailable', reason: result.reason }
+        : { outcome: 'failed', reason: result.reason };
+  }
+
+  /** The gesture the dialog leads with: release the material, then unlock. */
+  async function gestureUnlock(): Promise<void> {
+    if (dialogBusy) return;
+    dialogBusy = true;
+    dialogReason = null;
+    try {
+      const released = await releaseVaultMaterial(connection);
+      if (released.outcome === 'released') {
+        const answer = await unlockVault(connection, { released: released.material });
+        if (answer.outcome === 'unlocked') {
+          closeDialog();
+          return;
+        }
+        dialogReason = answer.reason;
+        return;
+      }
+      dialogReason =
+        released.outcome === 'not_enrolled'
+          ? 'this device has nothing enrolled; use the password'
+          : released.reason;
+    } catch (why) {
+      dialogReason = reasonOf(why);
+    } finally {
+      dialogBusy = false;
+    }
+  }
+
+  /** The dialog's password path: unlock, then finish what the press began. */
+  async function submitVaultPassword(password: string, code: string): Promise<void> {
+    if (dialogBusy) return;
+    dialogBusy = true;
+    dialogReason = null;
+    try {
+      const answer = await unlockVault(connection, { password, two_factor: code });
+      if (answer.outcome === 'refused') {
+        dialogReason = answer.reason;
+        return;
+      }
+      if (dialog === 'enrol') {
+        // **The dialog stays open through the enrol.** Closing it first and
+        // reopening on a relocked vault raced its own history pop and left a
+        // dialog with no entry behind it; a failure closes with its reason on
+        // the card, a relock keeps the dialog with the reason in it.
+        await enrolDevice();
+        if (device.outcome !== 'enrolling' && dialogReason === null) closeDialog();
+        return;
+      }
+      closeDialog();
+    } catch (why) {
+      dialogReason = reasonOf(why);
+    } finally {
+      dialogBusy = false;
+    }
   }
   let editing = $state(false);
   let draft = $state<Draft>(emptyDraft());
@@ -479,6 +591,12 @@
         after?.();
         return;
       }
+      if (vaultClosing) {
+        // The vault dialog's own buttons closed it; its entry is off.
+        vaultClosing = false;
+        dialogEntry = false;
+        return;
+      }
       if (settle !== null) {
         const answer = settle;
         settle = null;
@@ -490,6 +608,13 @@
         // Back closed the dialog; cancelling is what Back means.
         dialogEntry = false;
         runPending('cancel');
+        return;
+      }
+      if (dialog !== null) {
+        // Back closed the vault unlock; cancelling is what Back means.
+        dialog = null;
+        dialogReason = null;
+        dialogEntry = false;
         return;
       }
       if (editing && dirty > 0) {
@@ -720,7 +845,7 @@
         }
       }}
       {device}
-      onEnrolDevice={enrolDevice}
+      onVaultAction={vaultAction}
       vault={home.wire === null ? undefined : home.wire.vault}
       onLockVault={() => {
         void connection.dispatch('vault_lock');
@@ -792,6 +917,19 @@
         fallback="settings-area-title"
         onconfirm={() => settlePending('confirm')}
         oncancel={() => settlePending('cancel')}
+      />
+    {/if}
+
+    {#if dialog !== null}
+      <VaultUnlockDialog
+        variant={dialog}
+        busy={dialogBusy}
+        reason={dialogReason}
+        biometric={biometricOf(device)}
+        ongesture={gestureUnlock}
+        onpassword={submitVaultPassword}
+        oncancel={closeDialog}
+        fallback="vault-lock"
       />
     {/if}
   {/if}

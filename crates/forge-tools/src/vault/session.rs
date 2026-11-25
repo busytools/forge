@@ -277,6 +277,30 @@ impl VaultSession {
         Ok(())
     }
 
+    /// The settings page's password door: the master password with the
+    /// optional 2FA code. **The strings are taken by value and zeroized
+    /// here**, because this crate owns the secret discipline the held-call
+    /// path already keeps. Idempotent like the private unlock it wraps.
+    pub async fn unlock_with_password(
+        &self,
+        password: String,
+        two_factor: Option<String>,
+    ) -> Result<(), VaultError> {
+        let password = Zeroizing::new(password);
+        let two_factor = two_factor.map(Zeroizing::new);
+        self.unlock(
+            password.as_str(),
+            two_factor.as_deref().map(String::as_str).filter(|code| !code.is_empty()),
+        )
+        .await
+    }
+
+    /// The settings page's gesture door: material a client released through
+    /// its platform authenticator.
+    pub async fn unlock_with_released(&self, released: VaultReleased) -> Result<(), VaultError> {
+        self.unlock_released(&released.refresh_token, &released.user_key).await
+    }
+
     /// Unlock from material a client released through its platform
     /// authenticator: the enrolment's refresh token and the account's user
     /// key.
@@ -1254,6 +1278,30 @@ mod tests {
 
         assert!(matches!(refused, Err(VaultError::Locked)), "the lock wins: {refused:?}");
         assert!(session.is_locked(), "the session stays locked");
+    }
+
+    /// **A refused password leaves the session locked.** The settings page's
+    /// door must not install keys on a login the account refused; the caller
+    /// draws the error and the vault asks again.
+    #[tokio::test]
+    async fn a_refused_password_leaves_the_session_locked() {
+        let prelogin = serde_json::json!({ "kdf": 0, "kdfIterations": 100_000 }).to_string();
+        let (address, _server) = serve(vec![
+            response("200 OK", &prelogin),
+            response("400 Bad Request", r#"{"error":"invalid"}"#),
+        ])
+        .await;
+        let config = VaultConfig {
+            url: format!("http://{address}"),
+            email: "hi@vedhavyas.dev".to_owned(),
+            idle_minutes: None,
+        };
+        let session = test_session(&config, None, "test").expect("a session");
+
+        let refused = session.unlock_with_password("wrong password".to_owned(), None).await;
+
+        assert!(refused.is_err(), "a refused password is an error");
+        assert!(session.is_locked(), "and the session stays locked");
     }
 
     #[test]

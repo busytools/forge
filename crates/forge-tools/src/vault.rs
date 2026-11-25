@@ -28,7 +28,7 @@ pub mod session;
 pub mod tools;
 
 pub use ask::VaultAsks;
-pub use client::VaultClient;
+pub use client::{UNLOCK_BOUND, VaultClient};
 pub use crypto::Unlocked;
 #[cfg(any(test, feature = "testing"))]
 pub use facade::MockVaultFacade;

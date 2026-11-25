@@ -15,6 +15,7 @@ import {
   enrolmentIdIfMinted,
   forgetVaultMaterial,
   releaseVaultMaterial,
+  unlockVault,
   watchVaultEnrolment,
 } from './vault-enrolment';
 
@@ -431,6 +432,40 @@ describe('a rotation', () => {
     });
     await settled();
     expect(live.calls.slice(before), 'and a rotation has nothing to rewrite').toHaveLength(0);
+  });
+});
+
+describe('unlocking from the settings page', () => {
+  /// **The command's wire literal is the module's**, so the dialog never
+  /// writes a key the server does not decode: the password and the code ride
+  /// `vault_unlock`, and an empty code is the field left off, not sent empty.
+  it('sends the password and the code, and omits an empty code', async () => {
+    const connection = aConnection(() => ({ outcome: 'unlocked' }));
+
+    await unlockVault(connection, { password: 'open sesame', two_factor: '123456' });
+    await unlockVault(connection, { password: 'open sesame', two_factor: '' });
+
+    expect(connection.calls).toEqual([
+      { vault_unlock: { password: 'open sesame', two_factor: '123456' } },
+      { vault_unlock: { password: 'open sesame' } },
+    ]);
+  });
+
+  it('sends released material under the same command', async () => {
+    const connection = aConnection(() => ({ outcome: 'refused', reason: 'wrong' }));
+
+    const answer = await unlockVault(connection, { released: MATERIAL });
+
+    expect(answer).toEqual({ outcome: 'refused', reason: 'wrong' });
+    expect(connection.calls).toEqual([{ vault_unlock: { released: MATERIAL } }]);
+  });
+
+  it('reads an unreadable answer as a refusal, never as a success', async () => {
+    const connection = aConnection(() => null);
+
+    const answer = await unlockVault(connection, { password: 'open sesame', two_factor: '' });
+
+    expect(answer.outcome).toBe('refused');
   });
 });
 

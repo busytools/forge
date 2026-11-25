@@ -421,26 +421,29 @@
             <div class="settings-setting"><span class="settings-setting-label"><code title="vault.email">email</code><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span><span class="settings-setting-value">me@example.com</span></div>
             <div class="settings-setting"><span class="settings-setting-label"><code title="vault.idle_minutes">idle_minutes</code><span class="chip settings-class" data-class="live"><span class="settings-class-mark"></span><span class="settings-class-word">live</span></span></span><span class="settings-setting-value">30</span></div>
           </div>
-          <!-- The vault's account card, right after its own key card: the
-               shared session's state and the manual lock, app-level because
-               one vault serves the whole config dir. -->
-          <div class="settings-card" role="group" aria-labelledby="card-vault-lock">
+          <!-- The vault: the shared session's state and the clients enrolled
+               against it, in one card. The one press follows the state -
+               `enrol this client`, `unlock`, or `enrol again` - and opens the
+               unlock dialog in place rather than stopping at "unlock the
+               vault first". -->
+          <div class="settings-card" role="group" aria-labelledby="card-vault">
             <header class="settings-card-head">
-              <h3 id="card-vault-lock">vault</h3>
+              <h3 id="card-vault">vault</h3>
               <span class="settings-card-grow"></span>
             </header>
             <div class="settings-setting"><span class="settings-setting-label"><code>unlocked</code><span class="settings-dim">locks after 30 minutes without use</span></span><span class="settings-setting-value"><span class="settings-btn ghost">lock</span></span></div>
+            <div class="settings-card-head"><span class="settings-card-name">clients</span><span class="settings-card-count">1</span><span class="settings-card-grow"></span></div>
+            <div class="settings-setting"><span class="settings-setting-label"><code>this client</code><span class="settings-dim">enrolled - the gesture unlocks the vault here</span></span><span class="settings-setting-value settings-dim">ready</span></div>
+            <div class="settings-setting"><span class="settings-setting-label"><code>Chrome on macOS (3f2a9c1b)</code><span class="settings-dim">this client</span><span class="settings-dim">enrolled 3h ago</span></span><span class="settings-setting-value"><span class="biometric-purpose"><code>vault</code><span class="settings-dim">last used 12m ago</span><span class="settings-btn ghost">revoke</span></span></span></div>
           </div>
-          <!-- The vault's device enrolments: the runtime list, not a config
-               key. Each purpose carries its own revoke. -->
-          <div class="settings-card" role="group" aria-labelledby="card-vault-devices">
-            <header class="settings-card-head">
-              <h3 id="card-vault-devices">devices</h3>
-              <span class="settings-card-count">1</span>
-              <span class="settings-card-grow"></span>
-            </header>
-            <div class="settings-setting"><span class="settings-setting-label"><code>this device</code><span class="settings-dim">not enrolled - enrol while the vault is unlocked</span></span><span class="settings-setting-value"><span class="settings-btn ghost">enrol</span></span></div>
-            <div class="settings-setting"><span class="settings-setting-label"><code>Chrome on macOS (3f2a9c1b)</code><span class="settings-dim">enrolled 3h ago</span></span><span class="settings-setting-value"><span class="biometric-purpose"><code>vault</code><span class="settings-dim">last used 12m ago</span><span class="settings-btn ghost">revoke</span></span></span></div>
+          <!-- The unlock dialog, gesture first, the Vaultwarden password one
+               click beneath it; a refusal stays here with the fields. -->
+          <div class="settings-dialog">
+            <div class="t">unlock the vault</div>
+            <div class="s">The vault is locked. Release it with this device, or enter the Vaultwarden password.</div>
+            <span class="settings-btn go">Unlock with this device</span>
+            <div style="margin-top:10px"><span class="settings-link">use the Vaultwarden password</span></div>
+            <div class="acts"><span class="settings-btn ghost">cancel</span></div>
           </div>
         </div>
       </section>

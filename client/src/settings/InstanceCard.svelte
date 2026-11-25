@@ -49,7 +49,9 @@
   {#if headingId === null}
     <span class="settings-card-name">{label}</span>
   {:else}
-    <h3 id={headingId}>{label}</h3>
+    <!-- A programmatic focus target for a dialog closing when its opener is
+         gone: `tabindex="-1"` keeps it out of the Tab order. -->
+    <h3 id={headingId} tabindex="-1">{label}</h3>
   {/if}
   {#if removed}
     <span class="settings-removed">removed on save</span>
