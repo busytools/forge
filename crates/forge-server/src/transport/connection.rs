@@ -2130,9 +2130,12 @@ where
     // screen (`Showing`), not when it starts listening.
     let seat = report.as_ref().and_then(|report| report.seat.clone());
     watching.subjects.push(subject.clone());
+    // **The label is taken before the subject moves into the frame**: the log
+    // line names the subject, and the frame consumes it.
+    let subject_name = subject_label(&subject);
     let write = send_frame_timed(socket, ServerMessage::Snapshot { subject, data }, &SystemClock)?;
     if let Some(report) = &report {
-        log_open(report, &write);
+        log_open(report, &write, &subject_name);
     }
     // **The subscribe that completes a showing pair spends its marks here**,
     // after the seat's own record is on its way: the snapshot was encoded
@@ -2148,8 +2151,40 @@ where
 }
 
 /// The open's two records: the snapshot's handoff, and the session's slices.
-fn log_open(report: &OpenReport, write: &FrameWrite) {
-    let Some(slot) = &report.seat else { return };
+/// A subject's own name for a log line: a named subject by its word, a seat by
+/// its slot.
+fn subject_label(subject: &Subject) -> String {
+    match subject {
+        Subject::Session(slot) => slot.display(),
+        Subject::Home => "home".to_owned(),
+        Subject::Board => "board".to_owned(),
+        Subject::Usage => "usage".to_owned(),
+        Subject::DictateModels => "dictate_models".to_owned(),
+        Subject::Extensions => "extensions".to_owned(),
+        Subject::Dictate => "dictate".to_owned(),
+    }
+}
+
+fn log_open(report: &OpenReport, write: &FrameWrite, subject: &str) {
+    let Some(slot) = &report.seat else {
+        // **A string subject's whole read is measured too.** The home and the
+        // board are the client's two largest reads (#3063), and without this
+        // line neither side could say what one cost: the seat-only record was
+        // half the reason the poll-on-frame loop stayed invisible.
+        tracing::debug!(
+            event_name = "frame_write",
+            subject = %subject,
+            peer = %report.peer,
+            bytes = write.bytes,
+            prep_ms = write.prep_ms,
+            write_ms = write.write_ms,
+            waited = write.waited,
+            "a named subject's snapshot handoff, measured the same way a \
+             seat's is: prep is the record serialised and compressed into the \
+             bytes the writer takes, write_ms is the handoff after that",
+        );
+        return;
+    };
     // The snapshot's own write, its own record: the open below keeps the
     // slices, so the write's numbers are not repeated there (#2506).
     tracing::debug!(
