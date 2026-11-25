@@ -7,6 +7,7 @@ import { Stores } from '../stores';
 import type { Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import { railFooter } from '../session/view';
+import { homeWire } from '../dev/fixture.data';
 import { COALESCE_MS, rereadHome, watchHome, type HomeRead } from './live';
 import { homeView } from './view';
 
@@ -268,6 +269,44 @@ describe('the home over a connection', () => {
    * the state it asked about until something else moves. That is the wait Ved
    * met: an ask answered, and the row still sitting under needs-you.
    */
+  it('counts a task frame into the fleet row without a read', async () => {
+    const forge = fakeConnection();
+    const seen: HomeRead[] = [];
+    const stop = watchHome(forge.connection).subscribe(($next) => {
+      seen.push($next);
+    });
+    forge.stores.get(HOME)?.set(homeWire);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: homeWire });
+
+    forge.arrive({
+      kind: 'update',
+      update: {
+        tasks_changed: {
+          key: { org: 'TestOrg', project: 'proj', label: 'lead' },
+          tasks: [
+            { id: 't1', project_name: 'proj', status: 'pending', owner: null },
+            { id: 't2', project_name: 'proj', status: 'pending', owner: null },
+            {
+              id: 't3',
+              project_name: 'proj',
+              status: 'waiting',
+              owner: null,
+              waiting_on: { kind: 'decision', detail: null, on: null, verification: false },
+            },
+          ],
+        },
+      },
+    });
+    await settle();
+    expect(forge.refreshed, 'a task write asked for a whole home read').toEqual([]);
+    const row = seen.at(-1)?.wire?.fleet.find((entry) => entry.project === 'proj');
+    expect(row?.queue, 'the frame did not move the ready count').toBe(2);
+    expect(row?.waiting_on_user, 'the decision wait was not counted').toBe(1);
+    expect(row?.rows, 'the row count is the set').toBe(3);
+    expect(row?.live_workers, 'the server-derived figure moved').toBe(1);
+    stop();
+  });
+
   it('asks again for an update that lands while a read is in flight', async () => {
     const forge = fakeConnection();
     const stop = watchHome(forge.connection).subscribe(() => {});
