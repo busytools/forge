@@ -50,6 +50,7 @@ script-tests:
     python3 scripts/test_browser_stack_patch.py
     python3 scripts/test_browser_host_focus.py
     python3 scripts/test_check_client_entitlements.py
+    python3 scripts/test_check_updater_signature.py
 
 # Rewrite files to match rustfmt. The shell is a workspace root of its own,
 # so it takes its own invocation.
@@ -637,9 +638,30 @@ client-release version: sync-main client-release-deps
         # the ad-hoc fallback needs the variable genuinely unset.
         export APPLE_SIGNING_IDENTITY
         echo "[OK] signing the client with $APPLE_SIGNING_IDENTITY"
+
+        # **The keychain entitlements need a matching provisioning profile.**
+        # The application identifier and keychain access group are only
+        # honoured when a Developer ID profile carrying the same team and
+        # application identifier is embedded beside them. The profile is
+        # minted in the Developer portal and lives outside the repo
+        # (`client/README.md`, the keychain profile). Fail rather than skip,
+        # the way the updater key and the Android keystore do.
+        profile="${FORGE_PROVISION_PROFILE:-$HOME/.tauri/forge.provisionprofile}"
+        if [ ! -f "$profile" ]; then
+            echo "[ERROR] the provisioning profile is not set up: $profile" >&2
+            echo "        mint a Developer ID profile for dev.vedhavyas.forge in the" >&2
+            echo "        Developer portal and save it there, or name it with" >&2
+            echo "        FORGE_PROVISION_PROFILE (client/README.md, the keychain profile)" >&2
+            exit 1
+        fi
     else
         unset APPLE_SIGNING_IDENTITY
-        echo "[WARN] no Developer ID identity on this machine: the client stays ad-hoc signed" >&2
+        # Tauri 2.12 skips signing when no identity is set, so the build is
+        # unsigned, not ad-hoc signed. The entitlement check fails on an
+        # unsigned bundle (fail-closed, the way #3029 shipped it), so a release
+        # without an identity stops at the entitlement gate after the build
+        # rather than shipping a dormant gate.
+        echo "[WARN] no Developer ID identity on this machine: the client stays unsigned" >&2
     fi
 
     npm --prefix client run tauri -- build --bundles app --ci -- --locked
@@ -647,6 +669,71 @@ client-release version: sync-main client-release-deps
     if [ ! -e "$built" ]; then
         echo "[ERROR] the build produced no app bundle at $built" >&2
         exit 1
+    fi
+
+    if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
+        # **Embed the profile and sign again.** Tauri signs the app with the
+        # entitlements file but cannot embed a provisioning profile. With the
+        # pair present and no profile, AMFI rejects the exec or strips the
+        # pair; the keychain is not reached. The profile goes in first so the
+        # signature seals it, then the app is signed again with the same
+        # entitlements, hardened runtime and a secure timestamp.
+        ditto "$profile" "$built/Contents/embedded.provisionprofile"
+        codesign --force --options runtime --timestamp \
+            --entitlements client/src-tauri/entitlements.plist \
+            --sign "$APPLE_SIGNING_IDENTITY" "$built"
+        # The seal is read back before the tarball is packed from the bundle:
+        # the re-sign is what covers the embedded profile, so a broken seal
+        # must stop the release here rather than at the first launch.
+        codesign --verify --deep --strict "$built"
+
+        # **Nothing in this recipe notarises.** Tauri 2.12 notarises and
+        # staples inside `bundle_project` when APPLE_ID, APPLE_PASSWORD and
+        # APPLE_TEAM_ID are set - the APPLE_* variables turn it on,
+        # `--skip-stapling` only omits the staple - and the embed and re-sign
+        # above invalidate that staple. A notarised build therefore builds
+        # with `--skip-stapling` and notarises the final signature after this
+        # recipe, or accepts that the shipped app's staple is stale. It does
+        # not fire today: no APPLE_* variables are set on this machine.
+
+        # **The updater tarball must carry the re-signed app.** Tauri creates
+        # the tarball during the build, before the profile is embedded and the
+        # app is signed again, so the build's pair carries an app without the
+        # profile and with the pre-re-sign signature. Regenerate the tarball
+        # from the re-signed bundle and sign it with the updater key, replacing
+        # the build's pair. A desktop auto-update installs this tarball, so a
+        # stale one would land a gate-dormant app while a fresh install works.
+        #
+        # The signer reads the key by path: in CLI 2.12
+        # `TAURI_SIGNING_PRIVATE_KEY` is the literal base64 key, not a path, so
+        # the path form goes through `--private-key-path`. The path does not
+        # expand `~`, so a leading `~/` is replaced with `$HOME` first. The
+        # tarball argument is absolute because `npm --prefix client run` runs
+        # with `client/` as its cwd.
+        #
+        # **The env variable must be absent for this call.** clap reads
+        # `TAURI_SIGNING_PRIVATE_KEY` as `--private-key` and refuses it beside
+        # `--private-key-path` (exit 2), which would abort the release after
+        # the build, the embed and the re-sign. The password stays exported.
+        key_file=$(sed -n 's/^keyFile=//p' "$up" 2>/dev/null || true)
+        case "$key_file" in
+            "~/"*) key_file="$HOME/${key_file#\~/}" ;;
+        esac
+        bundle_dir="$(cd "$(dirname "$built")" && pwd)"
+        tarball="$bundle_dir/forge.app.tar.gz"
+        rm -f "$tarball" "$tarball.sig"
+        # **No AppleDouble members.** macOS tar stores extended attributes
+        # (the real app's Info.plist carries com.apple.provenance) as `._`
+        # members and writes them first; tauri-plugin-updater extracts each
+        # entry with its first path component skipped, so a leading
+        # `._forge.app` yields an empty path, unpacks onto the temp dir itself
+        # and every desktop update fails. COPYFILE_DISABLE skips the AppleDouble
+        # member (the extended attributes still ride the pax headers), giving
+        # the same 9-member layout Tauri's own tarball has.
+        COPYFILE_DISABLE=1 tar -czf "$tarball" -C "$bundle_dir" forge.app
+        env -u TAURI_SIGNING_PRIVATE_KEY \
+            npm --prefix client run tauri -- signer sign --app-version "{{version}}" \
+                --private-key-path "$key_file" "$tarball"
     fi
 
     got=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$built/Contents/Info.plist")
@@ -1384,6 +1471,8 @@ publish version:
         exit 1
     fi
 
+    ./scripts/check_client_entitlements.py \
+        client/src-tauri/target/release/bundle/macos/forge.app
     ./scripts/check_updater_signature.py . {{version}}
     ./scripts/update_manifest.py . {{version}}
 

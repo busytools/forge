@@ -14,6 +14,7 @@ import { writable, type Readable, type Writable } from 'svelte/store';
 import { observeAttention, pageWatched } from '../attention';
 import { observeForeground } from '../foreground';
 import { subjectKey } from '../protocol';
+import { ReadPace } from '../read-pace';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import { boardFrom, coversBoard, type BoardRead, type BoardWire } from '../wire/board';
@@ -89,7 +90,19 @@ function boardStore(connection: Connection): Readable<BoardRead> {
   let reading = false;
   /** Whether an update landed while a read was in flight. */
   let stale = false;
-  let timer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The pace every frame-driven read is asked at, floored so a fleet whose
+   * news never stops cannot buy a whole encode per frame (#3060).
+   */
+  const pace = new ReadPace(() => {
+    // A read already in flight is the ask this update would have made:
+    // asking again would queue a second whole encode behind it.
+    // **A refused subject is not asked again either** - the refusal is the
+    // answer, and an update would knock on a door already shut.
+    if (reading || held?.state().kind === 'refused') return false;
+    reading = true;
+    return connection.refresh('board');
+  }, COALESCE_MS);
   let beat: ReturnType<typeof setInterval> | null = null;
   let stopAttention: (() => void) | null = null;
   let stopForeground: (() => void) | null = null;
@@ -99,17 +112,7 @@ function boardStore(connection: Connection): Readable<BoardRead> {
   let stopStatus: (() => void) | null = null;
 
   function schedule(): void {
-    if (timer !== null) return;
-    timer = setTimeout(() => {
-      timer = null;
-      // A beat (or any read) already in flight is the ask this update would
-      // have made: asking again would queue a second whole encode behind it.
-      // **A refused subject is not asked again either** - the refusal is the
-      // answer, and an update would knock on a door already shut.
-      if (reading || held?.state().kind === 'refused') return;
-      reading = true;
-      connection.refresh('board');
-    }, COALESCE_MS);
+    pace.schedule();
   }
 
   function read(): void {
@@ -128,12 +131,14 @@ function boardStore(connection: Connection): Readable<BoardRead> {
 
   /**
    * One read through this page's guards: nothing while one is in flight, and
-   * nothing from a refused subject. The beat and a return both come here.
+   * nothing from a refused subject. The marks' beat and a return ask here
+   * directly rather than through the pace, and the ask starts the floor so
+   * the pace cannot buy a second whole encode right behind it.
    */
   function reread(): void {
     if (held === null || reading || held.state().kind === 'refused') return;
     reading = true;
-    connection.refresh('board');
+    if (connection.refresh('board')) pace.went();
   }
 
   /**
@@ -242,8 +247,7 @@ function boardStore(connection: Connection): Readable<BoardRead> {
     stopStatus = null;
     stopAttention = null;
     stopForeground = null;
-    if (timer !== null) clearTimeout(timer);
-    timer = null;
+    pace.stop();
     beatOff();
     connection.unsubscribe('board');
     held = null;

@@ -4,5 +4,11 @@
 <dict>
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
+	<key>com.apple.application-identifier</key>
+	<string>KALKD5L7NF.dev.vedhavyas.forge</string>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>KALKD5L7NF.dev.vedhavyas.forge</string>
+	</array>
 </dict>
 </plist>
