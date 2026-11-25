@@ -384,18 +384,20 @@ internal object BiometricRecords {
     }
   }
 
-  /** The platform's own words for a failed availability check. */
+  /** The platform's own words for a failed availability check. **Biometric,
+   *  not fingerprint**: `BIOMETRIC_STRONG` includes face unlock on the
+   *  devices that offer it, and these words are drawn in the card. */
   fun availabilityReason(status: Int): String = when (status) {
-    BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE -> "this device has no fingerprint sensor"
+    BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE -> "this device has no biometric sensor"
     BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE ->
-      "the fingerprint sensor is not available right now"
-    BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> "no fingerprint is enrolled on this device"
+      "the biometric sensor is not available right now"
+    BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> "no biometric is enrolled on this device"
     BiometricManager.BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED ->
-      "this device's security patch is too old for fingerprint keys"
+      "this device's security patch is too old for biometric keys"
     BiometricManager.BIOMETRIC_ERROR_UNSUPPORTED ->
-      "this device does not support fingerprint keys"
-    BiometricManager.BIOMETRIC_STATUS_UNKNOWN -> "the fingerprint sensor's state is unknown"
-    else -> "the fingerprint sensor answered $status"
+      "this device does not support biometric keys"
+    BiometricManager.BIOMETRIC_STATUS_UNKNOWN -> "the biometric sensor's state is unknown"
+    else -> "the biometric sensor answered $status"
   }
 
   /** The platform's own words for a prompt that did not succeed. */
@@ -405,7 +407,7 @@ internal object BiometricRecords {
     BiometricPrompt.ERROR_CANCELED -> "the gesture was cancelled"
     BiometricPrompt.ERROR_LOCKOUT,
     BiometricPrompt.ERROR_LOCKOUT_PERMANENT ->
-      "the fingerprint sensor is locked out; use the password"
-    else -> message.toString().ifEmpty { "the fingerprint sensor answered $code" }
+      "the biometric sensor is locked out; use the password"
+    else -> message.toString().ifEmpty { "the biometric sensor answered $code" }
   }
 }

@@ -49,11 +49,11 @@ class BiometricRecordsTest {
   @Test
   fun anUnavailableSensorSaysWhichWay() {
     assertEquals(
-      "no fingerprint is enrolled on this device",
+      "no biometric is enrolled on this device",
       BiometricRecords.availabilityReason(BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED),
     )
     assertEquals(
-      "this device has no fingerprint sensor",
+      "this device has no biometric sensor",
       BiometricRecords.availabilityReason(BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE),
     )
   }
@@ -65,7 +65,7 @@ class BiometricRecordsTest {
       BiometricRecords.promptError(BiometricPrompt.ERROR_USER_CANCELED, "Canceled"),
     )
     assertEquals(
-      "the fingerprint sensor is locked out; use the password",
+      "the biometric sensor is locked out; use the password",
       BiometricRecords.promptError(BiometricPrompt.ERROR_LOCKOUT, "Too many attempts"),
     )
   }
