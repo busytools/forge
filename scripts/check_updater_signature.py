@@ -16,13 +16,22 @@ the signature from the app bundle's `forge.app.tar.gz.sig`. Both are base64
 of a minisign text file whose second line decodes to a blob carrying the
 eight-byte key id at offset 2; the signature's trusted comment carries the
 version the artifact was signed for.
+
+It also reads the archive's layout and the extracted app's signature: every
+member must sit under `forge.app` with no AppleDouble (`._`) members, and a
+Developer ID-signed app must carry its embedded provisioning profile beside
+the keychain pair.
 """
 
 import base64
 import json
+import os
+import plistlib
 import re
+import subprocess
 import sys
 import tarfile
+import tempfile
 from pathlib import Path
 
 
@@ -50,6 +59,100 @@ def key_id(lines: list[str], what: str) -> bytes:
     if len(blob) < 10:
         fail(f"{what}'s blob is too short to carry a key id")
     return blob[2:10]
+
+
+def extract_safely(archive: tarfile.TarFile, target: str) -> None:
+    """Extract every member, refusing one that would land outside the target."""
+    root = Path(target).resolve()
+    for member in archive.getmembers():
+        member_path = (root / member.name).resolve()
+        if not str(member_path).startswith(str(root) + os.sep):
+            fail(f"the updater tarball carries a path outside the archive: {member.name}")
+        archive.extract(member, target, filter="data")
+
+
+def read_team_identifier(app: Path) -> str:
+    """The TeamIdentifier the extracted app's signature carries.
+
+    Empty means ad-hoc (`not set`). A verbose read that prints no
+    TeamIdentifier line, or an empty one, is not an ad-hoc signature - it
+    fails, so a changed codesign output cannot skip the profile requirement.
+    """
+    try:
+        result = subprocess.run(
+            ["codesign", "-d", "--verbose=4", str(app)],
+            capture_output=True,
+        )
+    except OSError as err:
+        fail(f"codesign could not be run on the extracted app: {err}")
+    if result.returncode != 0:
+        detail = result.stderr.decode(errors="replace").strip()
+        fail(f"the extracted app's signature could not be read: {detail}")
+    for line in result.stderr.decode(errors="replace").splitlines():
+        if line.startswith("TeamIdentifier="):
+            team = line.split("=", 1)[1].strip()
+            if team == "not set":
+                return ""
+            if not team:
+                fail(f"{app}'s signature carries an empty TeamIdentifier")
+            return team
+    fail(f"{app}'s signature carries no TeamIdentifier line")
+
+
+def check_extracted_app(tarball: Path, names: set[str]) -> None:
+    """Extract the tarball and require a Developer ID app with profile and pair.
+
+    The tarball's app must be the re-signed one: the recipe embeds the profile
+    and signs the app again before the tarball is regenerated. The keychain
+    pair is on both the pre-embed and the re-signed build, so the pair alone
+    does not prove the tarball is the re-signed one. The embedded profile is
+    the discriminator, and it is owed by every tarball this gate sees: an
+    ad-hoc or unsigned app cannot honour the pair at all, so it is refused
+    rather than passed as the dev path.
+    """
+    with tempfile.TemporaryDirectory() as scratch:
+        try:
+            with tarfile.open(tarball, "r:gz") as archive:
+                extract_safely(archive, scratch)
+        except (OSError, tarfile.TarError) as err:
+            fail(f"the updater tarball could not be extracted: {err}")
+        app = Path(scratch) / "forge.app"
+        team = read_team_identifier(app)
+        if not team:
+            fail(
+                "the extracted app is ad-hoc signed; the update tarball must "
+                "carry a Developer ID-signed app with an embedded profile"
+            )
+        profile = "forge.app/Contents/embedded.provisionprofile"
+        if profile not in names:
+            fail(
+                "the extracted app is Developer ID signed "
+                f"(team {team}) but the update tarball carries no profile "
+                f"({profile} is missing)"
+            )
+        try:
+            result = subprocess.run(
+                ["codesign", "-d", "--entitlements", "-", "--xml", str(app)],
+                capture_output=True,
+            )
+        except OSError as err:
+            fail(f"codesign could not be run on the extracted app: {err}")
+        if result.returncode != 0:
+            detail = result.stderr.decode(errors="replace").strip()
+            fail(f"the extracted app's entitlements could not be read: {detail}")
+        try:
+            entitlements = plistlib.loads(result.stdout)
+        except Exception as err:
+            fail(f"the extracted app's entitlements do not parse: {err}")
+        app_id = entitlements.get("com.apple.application-identifier")
+        groups = entitlements.get("keychain-access-groups")
+        if not isinstance(app_id, str) or not app_id.strip():
+            fail("the extracted app declares no com.apple.application-identifier")
+        if not isinstance(groups, list) or app_id not in groups:
+            fail(
+                "the extracted app's keychain-access-groups does not carry its "
+                "application identifier"
+            )
 
 
 def main() -> None:
@@ -106,9 +209,32 @@ def main() -> None:
     except (OSError, tarfile.TarError) as err:
         fail(f"the updater tarball could not be read: {err}")
 
+    # **The archive must carry forge.app and nothing else.** macOS tar stores
+    # extended attributes (the real app's Info.plist carries
+    # com.apple.provenance) as AppleDouble members (`._name`) and writes them
+    # first. tauri-plugin-updater extracts each entry with its first path
+    # component skipped, so a leading `._forge.app` yields an empty path,
+    # unpacks onto the temp dir itself and every desktop update fails. A
+    # member outside forge.app would land where the updater never looks.
+    for name in names:
+        parts = name.split("/")
+        if any(part.startswith("._") for part in parts):
+            fail(f"the update tarball carries an AppleDouble member: {name}")
+        if parts[0] != "forge.app":
+            fail(f"the update tarball carries a member outside forge.app: {name}")
+
     app_binary = "forge.app/Contents/MacOS/forge-client"
     if app_binary not in names:
         fail(f"the update tarball carries no client binary ({app_binary} is missing)")
+
+    # **The tarball's app must be the re-signed one.** The release embeds the
+    # profile in the app bundle and signs the app again, but tauri's build
+    # creates the tarball before that. A stale tarball ships a gate-dormant
+    # app through the desktop updater while a fresh install works. Extract
+    # unconditionally: a Developer ID signed app must carry the profile, and
+    # the keychain pair must be on its signature. The pair is on both the
+    # pre-embed and the re-signed build, so the profile is the discriminator.
+    check_extracted_app(tarball, names)
 
     forbidden = [
         "forge.app/Contents/Frameworks/Chromium Embedded Framework.framework/"
