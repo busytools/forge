@@ -64,8 +64,7 @@ describe('a web device name', () => {
   it('reads the user agent when the browser reports no brands', () => {
     withNavigator({
       platform: 'MacIntel',
-      userAgent:
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Version/18.0 Safari/605.1.15',
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Version/18.0 Safari/605.1.15',
     });
 
     expect(deviceName(ID)).toBe('Safari on macOS (3f2a9c1b)');

@@ -53,7 +53,8 @@ export async function availability(): Promise<Availability> {
     return {
       available: false,
       biometric: false,
-      reason: 'this browser has no WebCrypto, so a passkey could not seal anything; use the password',
+      reason:
+        'this browser has no WebCrypto, so a passkey could not seal anything; use the password',
     };
   }
   try {
