@@ -410,6 +410,10 @@ describe('the vault press', () => {
     await settled();
 
     expect(document.body.textContent, 'the unlock dialog').toContain('unlock the vault');
+    expect(
+      document.body.textContent,
+      'the reason names the gate, not a missing enrolment',
+    ).toContain('this device cannot use a gesture; enter the vault password');
     expect(button('Unlock with this device'), 'no gesture the gate cannot answer').toBeNull();
     expect(
       document.querySelector('input[type="password"]'),

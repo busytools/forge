@@ -128,9 +128,12 @@
         return;
       }
       openDialog('unlock');
-      dialogReason = biometricOf(device)
-        ? 'this client is not enrolled; enter the vault password or enrol it first'
-        : 'this device cannot use a gesture; enter the vault password';
+      dialogReason =
+        device.outcome === 'unavailable'
+          ? 'this device cannot use a gesture; enter the vault password'
+          : biometricOf(device)
+            ? 'this client is not enrolled; enter the vault password or enrol it first'
+            : 'this device cannot use a gesture; enter the vault password';
       return;
     }
     openDialog(action);
