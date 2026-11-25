@@ -10,7 +10,6 @@ import type { ServerMessage } from '../protocol';
 import { release, remove, store } from './index';
 import { openVaultMaterial, type VaultMaterial } from './vault';
 import {
-  deviceName,
   enrolVault,
   enrolmentId,
   enrolmentIdIfMinted,
@@ -123,13 +122,6 @@ describe('enrolling this device', () => {
       await openVaultMaterial(enrol?.biometric_enrol.blob ?? '', key as string),
       'the bytes open under the key the gate holds',
     ).toEqual(MATERIAL);
-  });
-
-  /// **The serial is what tells two devices of one platform apart.** The page
-  /// has no hostname on any client, so the id this client minted is the one
-  /// distinctive part of the name the list draws.
-  it('names the device by its platform and its own serial', () => {
-    expect(deviceName('abcdef12-3456-7890-abcd-ef1234567890')).toMatch(/ \(abcdef12\)$/);
   });
 
   /// **One id names a DEVICE, not a purpose.** A second purpose on one browser

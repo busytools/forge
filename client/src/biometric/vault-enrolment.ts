@@ -18,6 +18,7 @@
 
 import type { Connection } from '../socket';
 import { reasonOf, release, remove, store } from './index';
+import { deviceName } from './name';
 
 /** The connection half the commands need: one dispatch doorway. */
 export type VaultConnection = Pick<Connection, 'dispatch'>;
@@ -331,15 +332,3 @@ function mintedId(): string | null {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-/**
- * The device's name for the settings list. **The platform plus this
- * enrolment's own serial**: the page has no hostname on any of the three
- * clients, so the id the client minted is what tells two devices of one
- * platform apart.
- */
-export function deviceName(enrolment: string): string {
-  const data = (globalThis.navigator as { userAgentData?: { platform?: string } }).userAgentData;
-  const platform = data?.platform ?? globalThis.navigator.platform;
-  const name = platform === undefined || platform === '' ? 'this device' : platform;
-  return `${name} (${enrolment.slice(0, 8)})`;
-}
