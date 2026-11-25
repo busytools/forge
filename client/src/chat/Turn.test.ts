@@ -396,9 +396,10 @@ describe('one turn, as the page draws it', () => {
         use('c2', 'Read', { file_path: 'b.rs' }),
       ]),
       result('q1', 'answered', { answers: { 'Which one?': 'a' } }),
-      // A notice is a unit of its own, and it carries a leaves wrapper for the
-      // run's inset too. It is not a work run, so the count below must not see
-      // it as one.
+      // A notice is a unit of its own: a static row in the run's inset, but
+      // not a work run, so the count below must not see it as one. The second
+      // carries a raw frame, so it draws as the disclosure shape - both shapes
+      // must stay out of a leaves list.
       {
         type: 'system',
         uuid: 'n1',
@@ -406,15 +407,29 @@ describe('one turn, as the page draws it', () => {
         severity: 'info',
         text: 'Goal cleared',
       },
+      {
+        type: 'system',
+        uuid: 'n2',
+        subtype: 'notification',
+        text: 'the nightly job holds the lock',
+      },
     );
 
-    // The notice's own wrapper is a leaves list too, so the count asks what a
-    // run IS: a list whose first row is a work row. A notice is a unit, not a
-    // run, and its row carries `nrow`.
+    // The notice is not a run, so its unit holds the row with no leaves list
+    // around it: the row takes the run's inset itself, where a `.leaves` block
+    // would give a single line the whole run's outer spacing.
     const runs =
       body.match(/<div class="leaves">(?:<!--[^>]*-->)*<details class="leaf(?![^>]*\bnrow\b)/g) ??
       [];
-    expect(body, 'the notice still takes the run inset').toMatch(
+    expect(body, 'the notice draws straight into its unit').toMatch(
+      /<div class="unit"[^>]*>(?:<!--[^>]*-->)*<div class="leaf nrow"/,
+    );
+    // The control for the negative below: the second notice opens, so the
+    // disclosure shape is in the body for it to reject, not merely absent.
+    expect(body, 'the provisional notice draws as a disclosure').toContain(
+      '<details class="leaf nrow"',
+    );
+    expect(body, 'and no leaves block seats it').not.toMatch(
       /<div class="leaves">(?:<!--[^>]*-->)*(?:<details class="leaf nrow"|<div class="leaf nrow")/,
     );
     expect(runs, 'two runs, so two leaf lists').toHaveLength(2);
