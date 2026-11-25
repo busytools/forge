@@ -42,6 +42,8 @@ import Files from './files/Files.svelte';
 import ExtensionsBody from './extensions/ExtensionsBody.svelte';
 import { extensionsWire, project, recorder } from './extensions/testing';
 import SettingsBody from './settings/SettingsBody.svelte';
+import VaultCard from './settings/VaultCard.svelte';
+import VaultUnlockDialog from './settings/VaultUnlockDialog.svelte';
 import { settingsWire } from './dev/settings.fixture';
 import Home from './home/Home.svelte';
 import Models from './models/Models.svelte';
@@ -1219,6 +1221,58 @@ describe('axe over the rendered pages', () => {
     }).body;
     expect(html, 'the number control drew').toContain('type="number"');
     expect(html, 'and the value that was edited').toContain('8791');
+    expect(await idsOf(`<main>${html}</main>`)).toEqual([]);
+  });
+
+  /** **The merged vault card**: the session line, this client's action and the
+   *  clients list, each row a group with its own label. */
+  it('draws the vault card with no violations', async () => {
+    const html = render(VaultCard, {
+      props: {
+        vault: { locked: true, idle_minutes: 15 },
+        read: {
+          outcome: 'read',
+          value: [
+            {
+              id: 'device-1',
+              device: 'macOS (3f2a9c1b)',
+              created_at: { secs_since_epoch: 1_790_000_000, nanos_since_epoch: 0 },
+              purposes: [
+                {
+                  purpose: 'vault',
+                  created_at: { secs_since_epoch: 1_790_000_000, nanos_since_epoch: 0 },
+                  last_used_at: null,
+                },
+              ],
+            },
+          ],
+        },
+        device: { outcome: 'ready', biometric: true },
+        onaction: () => {},
+        onrevoke: () => {},
+        onlock: () => {},
+      },
+    }).body;
+    expect(html, 'the card drew its clients block').toContain('clients');
+    expect(html, 'and its one action').toContain('enrol this client');
+    expect(await idsOf(`<main>${html}</main>`)).toEqual([]);
+  });
+
+  /** **The unlock dialog is a surface of its own**: a labelled modal whose
+   *  fields and actions are what the reader's keyboard meets. */
+  it('draws the vault unlock dialog with no violations', async () => {
+    const html = render(VaultUnlockDialog, {
+      props: {
+        variant: 'enrol',
+        busy: false,
+        reason: null,
+        ongesture: () => {},
+        onpassword: () => {},
+        oncancel: () => {},
+      },
+    }).body;
+    expect(html, 'the dialog drew its title').toContain('unlock to enrol this client');
+    expect(html, 'and its labelled fields').toContain('the vault master password');
     expect(await idsOf(`<main>${html}</main>`)).toEqual([]);
   });
 
