@@ -9,6 +9,7 @@
   import DiffCode from './DiffCode.svelte';
   import Forge from './Forge.svelte';
   import Call from './Call.svelte';
+  import Hooks from './Hooks.svelte';
   import MarkdownDiff from './MarkdownDiff.svelte';
   import MarkdownPanel from './MarkdownPanel.svelte';
   import { iconOf, isBrowserTool, isEdit, mcpParts } from './families';
@@ -669,7 +670,9 @@
             {:else if line.kind === 'thought'}
               <Thought text={line.text} />
             {:else if line.kind === 'hook'}
-              <div class="sg-pr">{line.text}</div>
+              <!-- The instance's own stop-hook batch, drawn as the session
+                   draws a batch: the count on the row, every hook behind it. -->
+              <Hooks batch={line.batch} />
             {:else if line.kind === 'notice'}
               <!-- The session's notice face: the level is its glyph and the
                    wire's own subtype is its chip, so a refusal inside a

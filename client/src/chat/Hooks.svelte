@@ -3,19 +3,19 @@
 
   import Chevron from '../components/Chevron.svelte';
   import Icon from '../components/Icon.svelte';
-  import { duration } from './numbers';
-  import type { HookBatchLeaf } from './units';
+  import HookBatchBody from './HookBatchBody.svelte';
+  import { batchHasBody, type HookBatchLeaf } from './units';
 
   /**
-   * What a turn's hooks did: the count, one row per hook behind it, and the
-   * errors the CLI reported against the batch.
+   * One stop-hook batch that carries something, as its own row: the count and
+   * any errors on the summary, every hook and its context behind the open.
    *
-   * **The batch is a tool row, not a line of its own.** It is work the turn
-   * ran, so it takes the tool row's shape: a glyph, the title, the chevron.
-   * The glyph is the hook's, the one the other two hook rows wear; a call
-   * wears its family's instead. The row takes its place in the turn's rows
-   * where its frame arrived rather than standing above the work
-   * (Ved, 2026-11-13).
+   * **Only a carrying batch is a row.** A silent one - the same few plugin
+   * hooks on every stop, printing nothing - goes behind the turn foot's chip
+   * (`HookFoot.svelte`), because a full disclosure row per stop is what filled
+   * the view (#3054). A batch that reports output, an error, additional
+   * context or a prevented continuation is what the reader is owed at a
+   * glance, so this row stays.
    *
    * The frame sends none of these when no hook fired, so a row on the page
    * always has something behind it.
@@ -32,17 +32,6 @@
         ? ` \u{b7} ${batch.errors.length} ${batch.errors.length === 1 ? 'error' : 'errors'}`
         : ''),
   );
-
-  /**
-   * How long one hook took, which is milliseconds where the row has them.
-   *
-   * Every hook in the captured corpus ran in under a second (3ms, 6ms, 412ms),
-   * and the row's own drawing says `3ms`: the shared span formatter floors
-   * those to `0.0s`, which is a duration drawn as no duration at all.
-   */
-  function took(ms: number): string {
-    return ms < 1000 ? `${ms}ms` : duration(ms);
-  }
 </script>
 
 <details class="leaf hookgroup hookbatch" bind:open={opened}>
@@ -53,16 +42,9 @@
     <span class="tn">{label}</span>
     <Chevron />
   </summary>
-  {#if opened && (batch.infos.length > 0 || batch.errors.length > 0)}
+  {#if opened && batchHasBody(batch)}
     <div class="body">
-      {#each batch.infos as info, at (at)}
-        <div class="term">
-          {info.command}{#if info.durationMs !== undefined}{' \u{b7} '}{took(info.durationMs)}{/if}
-        </div>
-      {/each}
-      {#each batch.errors as error, at (at)}
-        <div class="term"><span class="fail">{error}</span></div>
-      {/each}
+      <HookBatchBody {batch} />
     </div>
   {/if}
 </details>

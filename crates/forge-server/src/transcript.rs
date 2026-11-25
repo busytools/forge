@@ -13,8 +13,8 @@ use forge_primitives::{ContentBlock, Message, StopReason, ToolCallStatus};
 // The row predicates the fold opens a turn by, which the conversation window
 // reads too: they live in the window's crate so the two share one copy.
 use forge_workspace::conversation_turns::{
-    claims_skill_call, forge_minted, is_continuation, is_dispatched, is_image_note,
-    is_interrupt_marker, is_task_notice,
+    claims_skill_call, forge_minted, is_completion_notice, is_continuation, is_dispatched,
+    is_image_note, is_interrupt_marker, is_task_notice, queued_command_text, task_notice_call,
 };
 
 use crate::envelope::detect_inbound;
@@ -53,6 +53,32 @@ pub struct Rendered {
 /// belongs to the next turn. Asked on demand, at the rare row that needs it,
 /// so a fold over a settled conversation pays a scan only where it joins; the
 /// live walk never asks, because the caller's flag answers first.
+/// Every `Task`/`Agent` dispatch the conversation holds, by its call id.
+///
+/// **An agent's ending opens no turn.** Its row is the dispatch row, in the
+/// turn that opened the instance, so a fold that cut a turn at the ending
+/// would split the agent's work from the reaction to its finish - and the
+/// client, which draws the ending on that row, would draw the empty turn the
+/// cut left behind. Both completion carriers and the live frame read this one
+/// set, so the whole conversation answers the same way about every ending.
+fn dispatch_calls(messages: &[Message]) -> std::collections::HashSet<String> {
+    let mut dispatches = std::collections::HashSet::new();
+    for message in messages {
+        let Message::Assistant { message: envelope, .. } = message else {
+            continue;
+        };
+        for block in &envelope.content {
+            if let ContentBlock::ToolUse { id, name, .. }
+            | ContentBlock::ServerToolUse { id, name, .. } = block
+                && (name == "Task" || name == "Agent")
+            {
+                dispatches.insert(id.clone());
+            }
+        }
+    }
+    dispatches
+}
+
 fn answered_later(messages: &[Message], from: usize, open: &[String]) -> bool {
     messages[from + 1..].iter().any(|message| {
         let Message::User { message: envelope, .. } = message else {
@@ -105,6 +131,7 @@ fn name_open(turns: &mut [TurnSpan], open: Option<usize>, key: Option<String>) {
 /// `false` or the seat's own flag where that is at hand.
 pub fn render(messages: &[Message], live: bool) -> Rendered {
     let endings = task_endings(messages);
+    let dispatches = dispatch_calls(messages);
     let mut traced = TurnTrace::default();
     // The names this fold has already given out, so a second turn opening on
     // one clock takes its own rather than the first turn's.
@@ -166,6 +193,30 @@ pub fn render(messages: &[Message], live: bool) -> Rendered {
             open_calls.clear();
             continue;
         }
+        // **The live carrier of a background completion.** The CLI persists the
+        // same event as a user notice row, and the wire (which a held page is
+        // cut from) sends this frame instead - so both carriers open the turn
+        // the completion woke, and neither opens one for an agent's ending,
+        // whose row is its dispatch row. Pressed into a running turn, it stays
+        // there like every other pressed row (#2379).
+        if let Message::TaskNotification { tool_use_id, .. } = message {
+            if tool_use_id.as_deref().is_some_and(|call| dispatches.contains(call)) {
+                continue;
+            }
+            if open.is_some()
+                && !open_calls.is_empty()
+                && (live || answered_later(messages, index, &open_calls))
+            {
+                continue;
+            }
+            close_traced(&mut traced, true, &mut keys, &mut turns, open);
+            open = Some(open_turn(&mut turns, index));
+            turn_skills.clear();
+            turn_boundary = false;
+            turn_calls = false;
+            open_calls.clear();
+            continue;
+        }
         let (assistant, row_uuid, content) = match message {
             Message::Assistant { message: envelope, .. } => {
                 (true, None, envelope.content.as_slice())
@@ -199,13 +250,41 @@ pub fn render(messages: &[Message], live: bool) -> Rendered {
                 // row as the caption. It opens no turn of its own either way.
                 ContentBlock::Text { text, .. }
                     if !assistant && turn_calls && is_image_note(text) => {}
-                // The harness's task ending in its other carrier: the same XML
-                // written into a user row, which the scan hands on as this
-                // plain text. A turn opened for it draws a task id and an
-                // output path attributed to the reader, so the row opens none -
-                // and the ending it carries was read in the pre-pass above,
-                // which is the only place that can see across turns.
-                ContentBlock::Text { text, .. } if !assistant && is_task_notice(text) => {}
+                // **A background completion opens the turn the CLI ran for
+                // it.** The notice row is the first row of a turn the harness
+                // started on its own - nobody typed it - and a fold that opened
+                // no turn here folded the whole stretch into whatever prompt
+                // came last: a long background session drew hours of stop-hook
+                // batches and agent endings as ONE turn at the page's edge
+                // (#3054's lump). The live path sends the same event as
+                // `system/task_notification` and opens its turn there, so the
+                // two carriers cut the same boundary.
+                //
+                // **An agent's ending opens nothing**: its row is the dispatch
+                // row, already in an earlier turn, so a head here would be a
+                // turn the client draws empty.
+                //
+                // **And a notice pressed into a running turn stays there**: a
+                // call still waiting on its result is the guard every other
+                // pressed row keeps (#2379), because a turn opened here cuts
+                // that call off from the answer below it.
+                ContentBlock::Text { text, .. } if !assistant && is_task_notice(text) => {
+                    if task_notice_call(text).is_some_and(|call| dispatches.contains(call)) {
+                        continue;
+                    }
+                    if open.is_some()
+                        && !open_calls.is_empty()
+                        && (live || answered_later(messages, index, &open_calls))
+                    {
+                        continue;
+                    }
+                    close_traced(&mut traced, true, &mut keys, &mut turns, open);
+                    open = Some(open_turn(&mut turns, index));
+                    turn_skills.clear();
+                    turn_boundary = false;
+                    turn_calls = false;
+                    open_calls.clear();
+                }
                 // The CLI's interrupt marker, written as the reader's own row
                 // INSIDE the turn it ended: a turn opened for it separates the
                 // failing `Result` from the call it ended, so the report and
@@ -266,13 +345,32 @@ pub fn render(messages: &[Message], live: bool) -> Rendered {
                     }
                 }
                 ContentBlock::QueuedCommand { prompt, command_mode, source_uuid, .. } => {
-                    // The harness's own background-completion notice rides the
-                    // same block as a prompt, and the scan hoists it into a
-                    // user envelope without reading the mode - so a turn opened
-                    // for it is a row nothing fills, which the page draws as a
-                    // blank line. A view never draws one: it filters the
-                    // row rather than the turn.
+                    // **The completion notice's other carrier, and the same
+                    // rule**: the harness's own background completion opens the
+                    // turn it woke, unless an agent's ending owns the row or it
+                    // was pressed into a turn still waiting on a call (#2379).
+                    // It rides the same block as a prompt, and the scan hoists
+                    // it into a user envelope without reading the mode - so
+                    // without this arm the turn the CLI ran has no head and
+                    // folds into the turn above.
                     if is_completion_notice(command_mode.as_deref(), prompt) {
+                        let words = queued_command_text(prompt);
+                        let call = task_notice_call(&words);
+                        if call.is_some_and(|call| dispatches.contains(call)) {
+                            continue;
+                        }
+                        if open.is_some()
+                            && !open_calls.is_empty()
+                            && (live || answered_later(messages, index, &open_calls))
+                        {
+                            continue;
+                        }
+                        close_traced(&mut traced, true, &mut keys, &mut turns, open);
+                        open = Some(open_turn(&mut turns, index));
+                        turn_skills.clear();
+                        turn_boundary = false;
+                        turn_calls = false;
+                        open_calls.clear();
                         continue;
                     }
                     // The same rule as the plain row above: a forge-minted
@@ -453,16 +551,6 @@ fn take_key(
     Some(if *nth == 1 { base } else { format!("{base}#{nth}") })
 }
 
-/// Whether a queued block is the harness's background-completion notice
-/// rather than anything a person said.
-///
-/// The mode is the field that says which of the three kinds arrived, and
-/// the text's own prefix is the other signal. Both are read here, because a
-/// fold keyed on one of them drifts from the other the first time either moves.
-fn is_completion_notice(command_mode: Option<&str>, prompt: &serde_json::Value) -> bool {
-    command_mode == Some("task-notification") || is_task_notice(&queued_command_text(prompt))
-}
-
 /// What a persisted task ending says, which is what the live wire's
 /// `task_notification` frame says: the CLI writes the frame's fields as XML
 /// into the transcript instead.
@@ -559,34 +647,6 @@ fn task_status(word: &str) -> Option<ToolCallStatus> {
     }
 }
 
-/// The text a `queued_command` block carries: a plain string for a typed
-/// prompt, or a content-block array for a multi-modal one, where only the
-/// text blocks are the words the user typed. An image or document is not
-/// text: a view draws it as an attachment row, from the block itself. Every
-/// other block renders as a `[type]` placeholder so the reader sees
-/// something rather than a blank.
-pub fn queued_command_text(prompt: &serde_json::Value) -> String {
-    if let Some(text) = prompt.as_str() {
-        return text.to_owned();
-    }
-    let Some(blocks) = prompt.as_array() else {
-        return serde_json::to_string(prompt).unwrap_or_else(|_| String::from("[unrenderable]"));
-    };
-    blocks
-        .iter()
-        .filter_map(|block| match block.get("type").and_then(serde_json::Value::as_str) {
-            Some("text") => {
-                block.get("text").and_then(serde_json::Value::as_str).map(str::to_owned)
-            }
-            // `image` and `document` draw in a view's attachment row, not as
-            // words.
-            Some("image" | "document") | None => None,
-            Some(other) => Some(format!("[{other}]")),
-        })
-        .collect::<Vec<String>>()
-        .join("\n")
-}
-
 /// Every task ending the conversation holds, by the call each names.
 ///
 /// Both carriers, because the CLI writes the same notice two ways: an
@@ -631,7 +691,8 @@ pub(crate) fn task_endings(messages: &[Message]) -> HashMap<String, TaskEnding> 
 #[cfg(test)]
 mod tests {
     use forge_primitives::{
-        AssistantEnvelope, ContentBlock, Message, ToolCallStatus, UserEnvelope,
+        AssistantEnvelope, ContentBlock, Message, TaskNotificationStatus, ToolCallStatus,
+        UserEnvelope,
     };
 
     use super::{Rendered, TaskEnding, render, settled, task_ending};
@@ -871,6 +932,41 @@ mod tests {
             source_uuid: None,
             extras: serde_json::Map::new(),
         }])
+    }
+
+    /// The same completion notice in the queued carrier the scan hoists an
+    /// attachment row into.
+    fn queued_notice(text: &str) -> Message {
+        user(vec![ContentBlock::QueuedCommand {
+            prompt: serde_json::Value::String(text.to_owned()),
+            command_mode: Some("task-notification".to_owned()),
+            source_uuid: None,
+            extras: serde_json::Map::new(),
+        }])
+    }
+
+    /// A notice's own XML, as both user-row carriers hold it.
+    fn notice_xml(call: &str, summary: &str, status: &str) -> String {
+        format!(
+            "<task-notification>\n<tool-use-id>{call}</tool-use-id>\n<status>{status}</status>\n\
+             <summary>{summary}</summary>\n</task-notification>"
+        )
+    }
+
+    /// The wire's completion frame: the live carrier of the same event the
+    /// user notice row carries on disk.
+    fn completion_frame(call: &str) -> Message {
+        Message::TaskNotification {
+            task_id: "t-cmd".to_owned(),
+            status: TaskNotificationStatus::Completed,
+            output_file: String::new(),
+            summary: "Background command \"Watch CI\" completed".to_owned(),
+            uuid: String::new(),
+            session_id: "session".to_owned(),
+            tool_use_id: Some(call.to_owned()),
+            usage: None,
+            extras: serde_json::Map::new(),
+        }
     }
 
     /// The result the tool at `tool_use_id` came back with.
@@ -1174,8 +1270,15 @@ mod tests {
         assert_eq!(orphan.turns.len(), 2, "a prompt with no boundary still opens a turn");
     }
 
+    /// **A background completion opens the turn the CLI ran for it.** The
+    /// harness starts a turn on its own when a task ends - nobody typed it -
+    /// and the notice row is the first thing that turn wrote. Opening no turn
+    /// here folded the whole stretch into whatever prompt came last, so a
+    /// long background session drew hours of stop-hook batches and agent
+    /// endings as ONE turn at the page's edge (#3054's lump). The live client
+    /// opens a turn at this same row; this is the read path moving to it.
     #[test]
-    fn a_notification_row_opens_no_turn() {
+    fn a_notification_row_opens_its_turn() {
         let by_mode = user(vec![ContentBlock::QueuedCommand {
             prompt: serde_json::Value::String("Task bj5g0t2kq done".to_owned()),
             command_mode: Some("task-notification".to_owned()),
@@ -1190,11 +1293,144 @@ mod tests {
             source_uuid: None,
             extras: serde_json::Map::new(),
         }]);
+        let by_text = reader_row(
+            "<task-notification>\n<tool-use-id>tu1</tool-use-id>\n\
+             <status>completed</status>\n<summary>done</summary>\n</task-notification>",
+        );
 
-        for (notice, signal) in [(by_mode, "the mode"), (by_tag, "the tag")] {
+        for (notice, signal) in [(by_mode, "the mode"), (by_tag, "the tag"), (by_text, "the text")]
+        {
             let rendered = settled(&[notice]);
-            assert!(rendered.turns.is_empty(), "a completion notice opens no turn: {signal}");
+            assert_eq!(rendered.turns.len(), 1, "a completion notice opens its own turn: {signal}");
+            assert_eq!(rendered.turns[0].opens_at, 0, "at the notice row itself: {signal}");
         }
+    }
+
+    /// **A notice pressed into a running turn stays there.** The CLI absorbs a
+    /// completion into a turn with a call still out; opening a turn at the row
+    /// would cut that call off from the result below it - the rule every other
+    /// pressed row keeps (#2379).
+    ///
+    /// **Both carriers, and both halves of the bound.** The settled list
+    /// settles it by the answer that comes later; the live walk has no later
+    /// frame to read, so the caller's flag is the deciding half - and the
+    /// settled list with no answer at all (the crash shape, #1836) is where
+    /// the fold does open. A guard missing either half leaves one of these
+    /// three red.
+    #[test]
+    fn a_notification_pressed_into_a_running_turn_stays() {
+        let open_call = assistant(vec![ContentBlock::ToolUse {
+            id: "tu-open".to_owned(),
+            name: "Bash".to_owned(),
+            input: serde_json::json!({ "command": "ls" }),
+            extras: serde_json::Map::new(),
+        }]);
+        let answer = tool_result("tu-open", false);
+        let queued = queued_notice("Task bj5g0t2kq done");
+        let by_text = reader_row(&notice_xml("tu-open", "Task done", "completed"));
+
+        for (notice, signal) in [
+            (queued, "the queued carrier"),
+            (by_text, "the text carrier"),
+            (completion_frame("tu-open"), "the live frame"),
+        ] {
+            let answered =
+                settled(&[reader_row("go"), open_call.clone(), notice.clone(), answer.clone()]);
+            assert_eq!(
+                answered.turns.len(),
+                1,
+                "the call's answer comes later in the file, so the notice stays in its turn: \
+                 {signal}",
+            );
+
+            let live = render(&[reader_row("go"), open_call.clone(), notice.clone()], true);
+            assert_eq!(
+                live.turns.len(),
+                1,
+                "with nothing answered yet, the caller's live flag keeps it in the running turn: \
+                 {signal}",
+            );
+
+            let crash = settled(&[reader_row("go"), open_call.clone(), notice]);
+            assert_eq!(
+                crash.turns.len(),
+                2,
+                "a settled list whose call is never answered is the crash shape, where the fold \
+                 opens: {signal}",
+            );
+        }
+    }
+
+    /// **The wire's completion frame is the live carrier of the same event**,
+    /// and a held page is cut from frames like it. It opens the turn the
+    /// completion woke, and an agent's ending opens none - its row is the
+    /// dispatch row, so a head there would draw empty.
+    #[test]
+    fn the_wire_completion_frame_opens_its_turn() {
+        let read = settled(&[completion_frame("call_bg")]);
+        assert_eq!(read.turns.len(), 1, "the wire's completion frame opens a turn");
+        assert_eq!(read.turns[0].opens_at, 0, "at the frame itself");
+
+        let dispatch = assistant(vec![ContentBlock::ToolUse {
+            id: "toolu_task".to_owned(),
+            name: "Task".to_owned(),
+            input: serde_json::json!({ "description": "Review" }),
+            extras: serde_json::Map::new(),
+        }]);
+        let agent = settled(&[dispatch, completion_frame("toolu_task")]);
+        assert!(
+            agent.turns.is_empty(),
+            "an agent's ending opens no turn of its own - and the call it ends is not a head",
+        );
+    }
+
+    /// **The read fold's twin of the client's parity list** (`Chat.test.ts`,
+    /// `cuts the same turn boundaries live as the read fold does`).
+    ///
+    /// One background story in this path's carriers: a user notice row where
+    /// the live wire sends `system/task_notification`. One boundary at the
+    /// prompt, none at the agent's ending (its row is the dispatch row), and
+    /// one at the command's completion. The literals must move together - the
+    /// two harnesses cannot import each other, so the twins are the pin.
+    #[test]
+    fn background_completion_opens_the_read_turn_at_the_same_boundary() {
+        // **Both folds read the same bytes**: `client/src/chat/testing/
+        // parity-events.json`, the file the client's twin consumes. Each event
+        // carries the carriers that have it, and says `head` when it opens a
+        // turn - so neither side restates the boundaries and the two cannot
+        // drift on what the story is.
+        const PATH: &str = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../client/src/chat/testing/parity-events.json"
+        );
+        let raw = std::fs::read_to_string(PATH)
+            .unwrap_or_else(|err| panic!("the shared parity fixture is readable at {PATH}: {err}"));
+        let fixture: Vec<serde_json::Value> =
+            serde_json::from_str(&raw).expect("the shared parity fixture parses");
+
+        let mut events: Vec<Message> = Vec::new();
+        let mut heads: Vec<usize> = Vec::new();
+        for event in &fixture {
+            let Some(frame) = event.get("frame").or_else(|| event.get("read")) else {
+                continue;
+            };
+            if event.get("head").and_then(serde_json::Value::as_bool) == Some(true) {
+                heads.push(events.len());
+            }
+            events.push(
+                serde_json::from_value(frame.clone())
+                    .unwrap_or_else(|err| panic!("a parity frame decodes: {err}: {frame}")),
+            );
+        }
+        assert!(!heads.is_empty(), "the fixture parsed and marked its heads");
+
+        let opened: Vec<usize> = settled(&events).turns.iter().map(|span| span.opens_at).collect();
+        assert_eq!(
+            opened, heads,
+            "the read fold heads exactly the fixture's head events: the prompt, the mid-stream \
+             completion (no call out) and the command's completion - never the agent's ending in \
+             either carrier, and never the completion that found a call out",
+        );
     }
 
     /// **The window's turn scan names no frame the fold opens no turn at.**
@@ -1295,9 +1531,10 @@ mod tests {
 
         assert_eq!(
             named,
-            vec![0, 3, 11, 13, 14, 16, 17, 19, 20, 23, 26],
+            vec![0, 3, 4, 11, 13, 14, 16, 17, 19, 20, 23, 26],
             "precondition: the scan names the fixture's own prompts - each state-reset frame \
-             included - and the suppressions hold",
+             included, and the completion notice at 4, which the fold opens too - and the \
+             suppressions hold",
         );
         assert!(
             named.iter().all(|at| opened.contains(at)),
@@ -1339,7 +1576,7 @@ mod tests {
     #[test]
     fn a_persisted_notice_is_read_as_the_ending_it_carries() {
         let row: serde_json::Value =
-            serde_json::from_str(crate::fixtures::SAME_TURN_USER_ROW[2]).expect("a real row");
+            serde_json::from_str(crate::fixtures::BACKGROUND_END_USER_ROW[2]).expect("a real row");
         let text = row["message"]["content"].as_str().expect("the notice's own text");
 
         let ending = task_ending(text).expect("a task notice");
@@ -1411,13 +1648,15 @@ mod tests {
     /// 1,200 rows of it across this machine's 2.1.280 transcripts, with the
     /// task id and the output path in the text.
     #[test]
-    fn the_user_rows_notice_opens_no_turn() {
-        let rendered = folded(crate::fixtures::SAME_TURN_USER_ROW);
+    fn the_user_rows_notice_opens_its_turn() {
+        let rendered = folded(crate::fixtures::BACKGROUND_END_USER_ROW);
 
-        assert!(
-            rendered.turns.is_empty(),
-            "a notice the CLI persisted as a user row opens no turn of its own",
+        assert_eq!(
+            rendered.turns.len(),
+            1,
+            "the notice the CLI persisted as a user row is the head of the turn it woke",
         );
+        assert_eq!(rendered.turns[0].opens_at, 2, "at the row itself, the fixture's third");
     }
 
     /// An ending ends the call it names, carrying the harness's own sentence.
@@ -1436,7 +1675,7 @@ mod tests {
     fn an_ending_ends_the_call_it_names() {
         for (rows, call, status, said) in [
             (
-                crate::fixtures::SAME_TURN_USER_ROW,
+                crate::fixtures::BACKGROUND_END_USER_ROW,
                 "call_da4c7ee117d14d48ba99e036",
                 ToolCallStatus::Failed,
                 "Background command \"Watch the account-lifecycle CI run\" failed with exit code 1",
@@ -1500,9 +1739,10 @@ mod tests {
     /// XML as the reader's own turn.
     #[test]
     fn a_raw_transcripts_notice_is_read() {
-        let rendered = settled(&read_raw(crate::fixtures::SAME_TURN_USER_ROW));
+        let rendered = settled(&read_raw(crate::fixtures::BACKGROUND_END_USER_ROW));
 
-        assert!(rendered.turns.is_empty(), "the row the CLI wrote opens no turn of its own");
+        assert_eq!(rendered.turns.len(), 1, "the row the CLI wrote heads the turn it woke");
+        assert_eq!(rendered.turns[0].opens_at, 2, "at the row itself, the fixture's third");
         assert_eq!(
             ending_for(&rendered, "call_da4c7ee117d14d48ba99e036").status,
             Some(ToolCallStatus::Failed),
@@ -1623,7 +1863,7 @@ mod tests {
 /// above reads it, and so does a view's own message walker.
 #[cfg(test)]
 mod queued_command_tests {
-    use super::queued_command_text;
+    use forge_workspace::conversation_turns::queued_command_text;
     use serde_json::json;
 
     #[test]

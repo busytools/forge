@@ -228,6 +228,7 @@ fn edit_spec(path: &str) -> EditSpec {
         | "server.first_frame_cap_kb"
         | "server.more_page_cap_kb"
         | "server.tool_record_cap_kb"
+        | "server.conversation_memory_budget_bytes"
         | "browser.fps"
         | "browser.quality"
         | "browser.idle_minutes"
@@ -1012,6 +1013,17 @@ const SERVER_KEYS: &[ConfigKey] = &[
         area: "server",
         class: EffectClass::Live,
         rows: |config| vec![number("server.tool_record_cap_kb", config.server.tool_record_cap_kb)],
+    },
+    ConfigKey {
+        path: "server.conversation_memory_budget_bytes",
+        area: "server",
+        class: EffectClass::Restart,
+        rows: |config| {
+            vec![number(
+                "server.conversation_memory_budget_bytes",
+                config.server.conversation_memory_budget_bytes,
+            )]
+        },
     },
     ConfigKey {
         path: "server.startup_gate",
@@ -2008,6 +2020,7 @@ startup_gate = "/opt/forge/gate.sh"
 first_frame_cap_kb = 64
 more_page_cap_kb = 64
 tool_record_cap_kb = 8
+conversation_memory_budget_bytes = 2147483648
 allowed_origins = ["http://localhost:8080"]
 
 [client]
@@ -2615,6 +2628,22 @@ models = ["m"]
                 "{path} must carry the raw unset value, not a display default",
             );
         }
+    }
+
+    /// **The budget crosses the loader as the file wrote it.** A key that only
+    /// ever read its default would never notice the one file that sets it,
+    /// and the budget is a value a reader will want to tune.
+    #[test]
+    fn a_non_default_conversation_budget_crosses_the_loader() {
+        let changed = EVERY_KEY.replace(
+            "conversation_memory_budget_bytes = 2147483648",
+            "conversation_memory_budget_bytes = 536870912",
+        );
+        let loaded = load(&changed);
+        assert_eq!(
+            loaded.server.conversation_memory_budget_bytes, 536_870_912,
+            "the file's value, not the default",
+        );
     }
 
     /// A class split inside one table stays split in the reload summary: a

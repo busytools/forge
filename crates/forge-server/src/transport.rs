@@ -460,10 +460,18 @@ impl TransportState {
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(publish_settings(documents, settings.clone()));
         }
+        let server_config = workspace.server_config();
+        let budget_bytes =
+            usize::try_from(server_config.conversation_memory_budget_bytes).unwrap_or(usize::MAX);
+        let evictor: Option<Arc<dyn forge_workspace::ConversationEvictor>> =
+            if budget_bytes == 0 { None } else { Some(workspace.conversation_evictor()) };
         let state = Self {
             surface: Arc::new(ViewSurface::new(Arc::clone(workspace))),
             work: Arc::new(WorkCache::new()),
-            conversations: Arc::new(conversation::Conversations::new()),
+            conversations: Arc::new(conversation::Conversations::with_budget(
+                budget_bytes,
+                evictor,
+            )),
             // The process is another viewer of the same seats, so the
             // attachment count has to see it: a turn finishing on a seat this
             // process shows is one the reader watched.

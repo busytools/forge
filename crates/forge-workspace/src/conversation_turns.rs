@@ -39,6 +39,8 @@
 //! no turn for the row, and for a call whose result never arrives it keeps
 //! answering that way - heads the window cannot start on.
 
+use std::collections::HashSet;
+
 use forge_primitives::messages::names_a_dispatch;
 use forge_primitives::{ContentBlock, Message};
 
@@ -66,6 +68,14 @@ pub struct TurnScan {
     /// (the restart shape, #1836) is declined here and opened there: a head
     /// the window cannot start on, never a cut inside a turn.
     open: Vec<String>,
+    /// The `Task`/`Agent` dispatch calls seen so far.
+    ///
+    /// **An agent's ending is not a head.** Its row is the dispatch row, drawn
+    /// in the turn that opened the instance, so the fold opens no turn at the
+    /// notice naming it - a head the fold opens nothing at is a cut inside the
+    /// turn it belongs to. The walk records every call's own name as it passes
+    /// the assistant frame that made it.
+    dispatches: HashSet<String>,
 }
 
 impl TurnScan {
@@ -102,7 +112,25 @@ impl TurnScan {
                             if self.calls && is_image_note(text) {
                                 continue;
                             }
+                            // **A background completion opens the turn the
+                            // CLI ran for it.** The fold opens one, and a
+                            // head this walk cannot start on leaves the
+                            // turn's rows above the window's floor. Except at
+                            // a call still waiting on its result: pressed into
+                            // a running turn, the notice stays there, and the
+                            // window must not start inside it. And an agent's
+                            // ending opens nothing in either walk - its row is
+                            // the dispatch row, in an earlier turn.
                             if is_task_notice(text) {
+                                if self.holds_dispatch(task_notice_call(text))
+                                    || !self.open.is_empty()
+                                {
+                                    continue;
+                                }
+                                self.skills.clear();
+                                self.boundary = false;
+                                self.calls = false;
+                                opens = true;
                                 continue;
                             }
                             // The bracket fallback below would catch the
@@ -140,13 +168,48 @@ impl TurnScan {
                             self.open.clear();
                             opens = true;
                         }
+                        // **The completion notice's other carrier**, and the
+                        // same rule as the text one above: it opens the turn
+                        // unless it was pressed into a running turn, and an
+                        // agent's ending opens nothing at all.
+                        ContentBlock::QueuedCommand { prompt, command_mode, .. }
+                            if is_completion_notice(command_mode.as_deref(), prompt) =>
+                        {
+                            let words = queued_command_text(prompt);
+                            let call = task_notice_call(&words);
+                            if self.holds_dispatch(call) || !self.open.is_empty() {
+                                continue;
+                            }
+                            self.skills.clear();
+                            self.boundary = false;
+                            self.calls = false;
+                            opens = true;
+                        }
                         other => self.calls_in(std::slice::from_ref(other)),
                     }
                 }
                 opens
             }
+            // **The live carrier of a completion**, which is the same event the
+            // user notice row carries on disk. It opens the turn the CLI ran
+            // unless an agent's ending owns the row (the dispatch row) or the
+            // completion was pressed into a running turn.
+            Message::TaskNotification { tool_use_id, .. } => {
+                if self.holds_dispatch(tool_use_id.as_deref()) || !self.open.is_empty() {
+                    return false;
+                }
+                self.skills.clear();
+                self.boundary = false;
+                self.calls = false;
+                true
+            }
             _ => false,
         }
+    }
+
+    /// Whether a call the notice names is a `Task`/`Agent` dispatch seen so far.
+    fn holds_dispatch(&self, call: Option<&str>) -> bool {
+        call.is_some_and(|call| self.dispatches.contains(call))
     }
 
     /// The blocks that move the state the next turn opens under rather than
@@ -165,6 +228,11 @@ impl TurnScan {
             {
                 self.calls = true;
                 self.open.push(id.clone());
+                // The dispatch's own call, whose ending draws on this row
+                // rather than as a head of its own.
+                if name == "Task" || name == "Agent" {
+                    self.dispatches.insert(id.clone());
+                }
                 if let Some(want) = input
                     .get("skill")
                     .and_then(serde_json::Value::as_str)
@@ -251,6 +319,61 @@ pub fn is_dispatched(message: &Message) -> bool {
 /// here and not elsewhere.
 pub fn is_task_notice(text: &str) -> bool {
     text.trim_start().starts_with("<task-notification>")
+}
+
+/// The call a task notice names, from the `<tool-use-id>` tag in its XML.
+///
+/// **One parser for every carrier and both walks.** The notice reaches a fold
+/// as a user row's own text, as a queued block's words (`queued_command_text`
+/// first), or - live only - as the `system/task_notification` frame's
+/// `tool_use_id`. The call id is what says whether the notice is an agent's
+/// ending, whose row is the dispatch row, or a command's, whose row is the
+/// notice itself.
+pub fn task_notice_call(text: &str) -> Option<&str> {
+    let (_, rest) = text.split_once("<tool-use-id>")?;
+    let (call, _) = rest.split_once("</tool-use-id>")?;
+    let call = call.trim();
+    if call.is_empty() { None } else { Some(call) }
+}
+
+/// The text a `queued_command` block carries: a plain string for a typed
+/// prompt, or a content-block array for a multi-modal one, where only the
+/// text blocks are the words the user typed. An image or document is not
+/// text: a view draws it as an attachment row, from the block itself. Every
+/// other block renders as a `[type]` placeholder so the reader sees
+/// something rather than a blank.
+pub fn queued_command_text(prompt: &serde_json::Value) -> String {
+    if let Some(text) = prompt.as_str() {
+        return text.to_owned();
+    }
+    let Some(blocks) = prompt.as_array() else {
+        return serde_json::to_string(prompt).unwrap_or_else(|_| String::from("[unrenderable]"));
+    };
+    blocks
+        .iter()
+        .filter_map(|block| match block.get("type").and_then(serde_json::Value::as_str) {
+            Some("text") => {
+                block.get("text").and_then(serde_json::Value::as_str).map(str::to_owned)
+            }
+            // `image` and `document` draw in a view's attachment row, not as
+            // words.
+            Some("image" | "document") | None => None,
+            Some(other) => Some(format!("[{other}]")),
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+/// Whether a queued block is the harness's background-completion notice
+/// rather than anything a person said.
+///
+/// **The mode is the field that says which of the three kinds arrived, and
+/// the text's own prefix is the other signal.** Both are read, because a
+/// reader keyed on one of them drifts from the other the first time either
+/// moves. One copy serves the fold's two carriers and the scan, so a turn
+/// opened by one walk is a turn the other can start on.
+pub fn is_completion_notice(command_mode: Option<&str>, prompt: &serde_json::Value) -> bool {
+    command_mode == Some("task-notification") || is_task_notice(&queued_command_text(prompt))
 }
 
 /// Whether `text` is the harness's own line about an image it just read.
@@ -392,6 +515,114 @@ mod tests {
         assert!(
             opens_for_debt(&mut TurnScan::default(), &row),
             "and the debt read must count the turn it opens",
+        );
+    }
+
+    /// A completion notice's head, as the fold decides it and the scan must
+    /// agree: it opens when nothing is waiting on a call, not while one is,
+    /// and never for an agent's ending, whose row is the dispatch row.
+    ///
+    /// **The press-in branch is load-bearing**: about one notice in thirty
+    /// arrives while a call is still out, and a scan that named it there would
+    /// cut the window inside the running turn.
+    #[test]
+    fn a_completion_notice_opens_the_scan_unless_a_call_is_out_or_it_is_an_agents() {
+        let user = |content: serde_json::Value| -> Message {
+            serde_json::from_value(serde_json::json!({
+                "type": "user",
+                "uuid": "u-notice",
+                "message": { "role": "user", "content": content },
+                "session_id": "s",
+            }))
+            .expect("a user frame")
+        };
+        let assistant = |id: &str, name: &str| -> Message {
+            serde_json::from_value(serde_json::json!({
+                "type": "assistant",
+                "uuid": format!("a-{id}"),
+                "message": {
+                    "id": format!("m-{id}"),
+                    "model": "claude-opus-5",
+                    "role": "assistant",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": id,
+                        "name": name,
+                        "input": {},
+                    }],
+                },
+                "session_id": "s",
+            }))
+            .expect("an assistant frame")
+        };
+        let result = |call: &str| -> Message {
+            serde_json::from_value(serde_json::json!({
+                "type": "user",
+                "uuid": format!("u-result-{call}"),
+                "message": {
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": call,
+                        "content": "ok",
+                        "is_error": false,
+                    }],
+                },
+                "session_id": "s",
+            }))
+            .expect("a result frame")
+        };
+        let notice = |call: &str| -> Message {
+            user(serde_json::json!(format!(
+                "<task-notification>\n<tool-use-id>{call}</tool-use-id>\n\
+                 <status>completed</status>\n<summary>done</summary>\n</task-notification>"
+            )))
+        };
+        let completion = |call: &str| -> Message {
+            serde_json::from_value(serde_json::json!({
+                "type": "system",
+                "subtype": "task_notification",
+                "task_id": "t1",
+                "tool_use_id": call,
+                "status": "completed",
+                "summary": "done",
+                "output_file": "",
+                "uuid": "n-1",
+                "session_id": "s",
+            }))
+            .expect("a completion frame")
+        };
+
+        for (frame, signal) in
+            [(notice("call_bg"), "the text notice"), (completion("call_bg"), "the live frame")]
+        {
+            let mut scan = TurnScan::default();
+            assert!(scan.opens(&frame), "a command's completion opens a turn: {signal}");
+
+            let mut pressed = TurnScan::default();
+            assert!(!pressed.opens(&assistant("call_open", "Bash")));
+            assert!(
+                !pressed.opens(&frame),
+                "pressed into a turn waiting on a call, the completion stays: {signal}",
+            );
+        }
+
+        // An agent's ending: the scan learned the call's own name, so the
+        // notice opens nothing.
+        let mut dispatch = TurnScan::default();
+        assert!(!dispatch.opens(&assistant("toolu_task", "Task")));
+        assert!(!dispatch.opens(&result("toolu_task")));
+        assert!(
+            !dispatch.opens(&notice("toolu_task")),
+            "an agent's ending opens no turn in the scan",
+        );
+
+        let mut live_dispatch = TurnScan::default();
+        assert!(!live_dispatch.opens(&assistant("toolu_task", "Task")));
+        assert!(!live_dispatch.opens(&result("toolu_task")));
+        assert!(
+            !live_dispatch.opens(&completion("toolu_task")),
+            "nor does the wire's carrier of it",
         );
     }
 }

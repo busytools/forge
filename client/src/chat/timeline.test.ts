@@ -75,7 +75,13 @@ describe('a dispatch read into its timeline', () => {
     );
 
     expect(
-      frames.lines.map((line) => (line.kind === 'call' ? line.leaf.title : line.text)),
+      frames.lines.map((line) =>
+        line.kind === 'call'
+          ? line.leaf.title
+          : line.kind === 'hook'
+            ? `hooks \u{b7} ${line.batch.actions}`
+            : line.text,
+      ),
       'calls and prose in the order they arrived',
     ).toEqual(['subagent', 'The pane folds its own cards.', 'git log --oneline -3']);
     const first = frames.lines[0];
@@ -225,10 +231,11 @@ describe('a dispatch read into its timeline', () => {
     expect(first?.kind === 'thought' && first.text).toBe('Two files, then the diff.');
   });
 
-  it('draws a hook summary under the dispatch with the count the wire carries', () => {
-    // Measured: the wire renames the field on the way out (`hookCount`), so a
-    // read of `actions` is always undefined and the line said `hooks ran` with
-    // no count on it.
+  it("draws the instance's own hook batch where its steps are, batch whole", () => {
+    // Ved's rule for #3054: opening a sub-agent shows its steps AND its hooks,
+    // never the hooks in the main conversation. The line carries the batch the
+    // session's own fold would build, so the expansion's disclosure has every
+    // command and duration behind it rather than a count and nothing else.
     const summary = (count: number) => ({
       type: 'system',
       subtype: 'stop_hook_summary',
@@ -236,22 +243,26 @@ describe('a dispatch read into its timeline', () => {
       hookCount: count,
       hookInfos: [{ command: 'cargo fmt', durationMs: 3 }],
       hookErrors: [],
+      hasOutput: false,
     });
 
-    const texts = [3, 1].map((count) => {
+    const batches = [3, 1].map((count) => {
       const line = dispatchFrames([dispatch(), summary(count)], 'tu-task').lines[0];
-      return line?.kind === 'hook' ? line.text : null;
+      return line?.kind === 'hook' ? line.batch : null;
     });
 
-    expect(texts, 'the count, and its singular').toEqual([
-      'hooks \u{b7} 3 actions',
-      'hooks \u{b7} 1 action',
+    expect(
+      batches.map((batch) => batch?.actions),
+      'the count the wire carries',
+    ).toEqual([3, 1]);
+    expect(batches[0]?.infos, 'and the per-hook rows behind it').toEqual([
+      { command: 'cargo fmt', durationMs: 3 },
     ]);
   });
 
-  it('draws the hook summary line even when no count arrived', () => {
+  it('draws the hook batch even when no count arrived', () => {
     // A frame with no count still draws as itself rather than being dropped,
-    // the same rule the summary line is under in the first place.
+    // the same rule the session's fold keeps for a frame with no vocabulary.
     const frames = dispatchFrames(
       [
         dispatch(),
@@ -267,11 +278,14 @@ describe('a dispatch read into its timeline', () => {
 
     const line = frames.lines[0];
     expect(line?.kind).toBe('hook');
-    expect(line?.kind === 'hook' && line.text).toBe('hooks ran');
+    expect(line?.kind === 'hook' && line.batch.actions).toBe(0);
+    expect(line?.kind === 'hook' && line.batch.infos).toEqual([
+      { command: 'cargo fmt', durationMs: 3 },
+    ]);
   });
 
   it('draws a zero-count hook summary rather than dropping it', () => {
-    // Zero is a legal wire value, and the session's own chip hides at zero
+    // Zero is a legal wire value, and the session's foot chip hides at zero
     // because a chip marks something that happened. Here the line is the
     // frame's only representation, so a zero count still draws as itself
     // rather than vanishing.
@@ -290,7 +304,7 @@ describe('a dispatch read into its timeline', () => {
 
     const line = frames.lines[0];
     expect(line?.kind).toBe('hook');
-    expect(line?.kind === 'hook' && line.text).toBe('hooks \u{b7} 0 actions');
+    expect(line?.kind === 'hook' && line.batch.actions).toBe(0);
   });
 
   it('keeps a backgrounded child call open rather than settling it on its ack', () => {

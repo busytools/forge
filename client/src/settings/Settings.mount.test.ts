@@ -106,13 +106,14 @@ describe('the settings page', () => {
       'browser',
       'server',
     ]);
-    expect(cards()[1]?.querySelector('.settings-card-count')?.textContent).toBe('2 keys');
+    expect(cards()[1]?.querySelector('.settings-card-count')?.textContent).toBe('3 keys');
     expect(cards()[0]?.querySelector('.settings-card-count')?.textContent).toBe('1 key');
 
     expect(rowKeys(), 'a line draws its leaf, not the path its card already names').toEqual([
       'idle_minutes',
       'port',
       'first_frame_cap_kb',
+      'conversation_memory_budget_bytes',
     ]);
     const port = rows().find(
       (row) => row.querySelector('code')?.getAttribute('title') === 'server.port',

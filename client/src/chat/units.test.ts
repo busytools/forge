@@ -6,7 +6,7 @@ import { runningMs } from './report';
 import {
   carriedValue,
   fold,
-  stopsOf,
+  pageFactsOf,
   turnFold,
   type HookLeaf,
   type HookRun,
@@ -96,6 +96,19 @@ const nudgesOf = (unit: Unit | undefined): NudgeLeaf[] =>
 const proceduresOf = (unit: Unit | undefined): ProcedureLeaf[] =>
   rowsOf(unit).flatMap((row) => (row.tag === 'procedure' ? [row] : []));
 
+/** The words of every notice a fold drew, in the order they arrived. */
+const noticesOf = (units: Unit[]): string[] =>
+  units.flatMap((unit) => (unit.kind === 'notice' ? [unit.notice.text] : []));
+
+/** A task ending as the CLI delivers it: the envelope's own XML, in a user row. */
+const ending = (call: string, summary: string, status = 'completed'): unknown =>
+  heard([
+    text(
+      `<task-notification>\n<tool-use-id>${call}</tool-use-id>\n<status>${status}</status>\n` +
+        `<summary>${summary}</summary>\n</task-notification>`,
+    ),
+  ]);
+
 /** The hook runs a fold drew, in the order they arrived, grouped or not. */
 const runsOf = (units: Unit[]): HookLeaf[] =>
   units.flatMap((unit) =>
@@ -112,8 +125,22 @@ const runOf = (units: Unit[]): HookRun | null => runsOf(units)[0]?.run ?? null;
  * the batch a turn's settled stop hooks report. The two wire names are the
  * message's own renames (`hookCount`, `hookInfos`), which is what the fold
  * reads.
+ *
+ * **Silent by default**, which is the shape the real per-stop batches carry
+ * (issue #3054: every one of the reported seat's 23 frames had
+ * `hasOutput: false`, no errors and no additional context). A test that wants
+ * the full row overrides `carrying`.
  */
-const stopHook = (count: number, uuid = 'uuid_7'): unknown => ({
+const stopHook = (
+  count: number,
+  uuid = 'uuid_7',
+  carrying: Partial<{
+    hookErrors: string[];
+    hookAdditionalContext: string[];
+    hasOutput: boolean;
+    preventedContinuation: boolean;
+  }> = {},
+): unknown => ({
   session_id: 'session_0',
   type: 'system',
   subtype: 'stop_hook_summary',
@@ -126,10 +153,11 @@ const stopHook = (count: number, uuid = 'uuid_7'): unknown => ({
   hookAdditionalContext: [],
   preventedContinuation: false,
   stopReason: '',
-  hasOutput: true,
+  hasOutput: false,
   level: 'suggestion',
   toolUseID: '00afa158-9a64-4fae-9c85-4866c0399894',
   uuid,
+  ...carrying,
 });
 
 /**
@@ -2165,16 +2193,11 @@ describe('one turn folded into the units a view draws', () => {
     });
   });
 
-  it('folds the turn hooks into the work as one row, where they fired', () => {
-    // The capture is the SHAPE here, not the count: the fields and their names
-    // are taken from
-    // crates/forge-test-harness/baselines/sdk/2.1.280/real_session_sample.jsonl
-    // (less the synthetic parent id), where that row carries `hookCount: 1` and
-    // one info. The three hooks are a deliberate widening, so a fold that
-    // emitted one row per INFO draws extra rows and fails this test. The two
-    // names are the wire's own - the message renames the Rust fields on the way
-    // out - so a fold reading `actions`/`hook_infos` draws nothing on a real
-    // session.
+  it('collapses a silent batch into the turn foot, counting it', () => {
+    // Issue #3054: every stop drew the same three silent Stop hooks, so one
+    // row per batch filled the main view. The batch still draws - behind the
+    // turn foot's chip, which counts it and holds it whole (rule 25) - and it
+    // stops costing a work row.
     const units = fold([call('read', 0), stopHook(3), call('read', 1)]);
     expect(kinds(units), 'the hooks ride the turn work rather than a unit of their own').toEqual([
       'leaves',
@@ -2182,13 +2205,17 @@ describe('one turn folded into the units a view draws', () => {
     const rows = rowsOf(units[0]);
     expect(
       rows.map((row) => row.tag),
-      'one batch row, in frame order, between the calls',
-    ).toEqual(['call', 'hookbatch', 'call']);
-    const batch = rows[1];
-    expect(batch?.tag === 'hookbatch' ? batch.actions : null).toBe(3);
+      'no work row for the silent batch; the chip is the turn foot',
+    ).toEqual(['call', 'call', 'hookfoot']);
+    const foot = rows[2];
+    expect(foot?.tag === 'hookfoot' ? foot.actions : null, 'the chip counts every hook').toBe(3);
     expect(
-      batch?.tag === 'hookbatch' ? batch.infos : [],
-      'every hook the count names, all three on the one row',
+      foot?.tag === 'hookfoot' ? foot.batches.map((batch) => batch.infos.length) : null,
+      'and every hook the count names is behind it',
+    ).toEqual([3]);
+    expect(
+      foot?.tag === 'hookfoot' ? foot.batches[0]?.infos : [],
+      'with the per-hook rows the disclosure draws',
     ).toEqual([
       { command: 'echo fixture-stop-hook-ok', durationMs: 3 },
       { command: 'echo fixture-stop-hook-1', durationMs: 4 },
@@ -2197,24 +2224,57 @@ describe('one turn folded into the units a view draws', () => {
     expect(fold([stopHook(0)]), 'a frame reporting none draws nothing').toHaveLength(0);
   });
 
-  it('draws one row per stop-hook summary frame', () => {
-    // Two batches in one turn are two rows rather than one merged row: the
-    // row is keyed by its own frame, so the list keeps them apart.
-    const rows = rowsOf(fold([stopHook(1, 'uuid_7'), stopHook(2, 'uuid_8')])[0]).filter(
-      (row) => row.tag === 'hookbatch',
-    );
+  it('groups every silent batch into one foot chip, in arrival order', () => {
+    // One chip however many stops the turn ran, named by the first batch so
+    // the row does not move as later ones land.
+    const rows = rowsOf(fold([stopHook(1, 'uuid_7'), stopHook(2, 'uuid_8')])[0]);
+    expect(rows.map((row) => row.tag)).toEqual(['hookfoot']);
+    const foot = rows[0];
+    expect(foot?.tag === 'hookfoot' ? foot.key : null).toBe('uuid_7#hookbatch#hookfoot');
+    expect(foot?.tag === 'hookfoot' ? foot.actions : null, 'the counts are summed').toBe(3);
     expect(
-      rows.map((row) => row.key),
+      foot?.tag === 'hookfoot' ? foot.batches.map((batch) => batch.key) : null,
       'each batch keeps the key of the frame it arrived on',
     ).toEqual(['uuid_7#hookbatch', 'uuid_8#hookbatch']);
   });
 
-  it('folds a batch that counted actions but carried no rows', () => {
+  it('keeps a batch that carries anything as its own row, where it fired', () => {
+    // The other half of #3054's rule: output, an error, additional context or
+    // a prevented continuation is information the reader is owed without
+    // opening anything, so that batch keeps the full disclosure row.
+    for (const carrying of [
+      { hookErrors: ['boom'] },
+      { hasOutput: true },
+      { hookAdditionalContext: ['read this'] },
+      { preventedContinuation: true },
+    ]) {
+      const rows = rowsOf(
+        fold([call('read', 0), stopHook(2, 'uuid_7', carrying), call('read', 1)])[0],
+      );
+      expect(
+        rows.map((row) => row.tag),
+        JSON.stringify(carrying),
+      ).toEqual(['call', 'hookbatch', 'call']);
+    }
+  });
+
+  it('carries only the silent batches into the foot when both kinds ran', () => {
+    const rows = rowsOf(
+      fold([stopHook(1, 'uuid_7'), stopHook(2, 'uuid_8', { hasOutput: true })])[0],
+    );
+    expect(rows.map((row) => row.tag)).toEqual(['hookbatch', 'hookfoot']);
+    expect(
+      rows[1]?.tag === 'hookfoot' ? rows[1].batches.map((batch) => batch.key) : null,
+      'the carrying batch is its own row and stays out of the chip',
+    ).toEqual(['uuid_7#hookbatch']);
+  });
+
+  it('counts a batch that carried no hook rows, behind the foot', () => {
     // A real shape on the wire: `hookCount` above zero with empty
     // `hookInfos`/`hookErrors`, carried by forge's own page fixture
     // (`crates/forge-server/src/transport/wire.rs`, the hook summary row in
     // `every_kind_a_turn_holds_reaches_a_page_stamped`). A fold that gated the
-    // row on its INFOS would drop the batch silently, so the count alone has
+    // chip on its INFOS would drop the batch silently, so the count alone has
     // to draw it.
     const counted: Record<string, unknown> = {
       type: 'system',
@@ -2222,18 +2282,17 @@ describe('one turn folded into the units a view draws', () => {
       hookCount: 1,
       hookInfos: [],
       hookErrors: [],
+      hasOutput: false,
       uuid: 'uuid_8',
     };
 
-    const units = fold([counted]);
-    expect(kinds(units), 'the batch rides the turn work').toEqual(['leaves']);
-    const rows = rowsOf(units[0]);
+    const rows = rowsOf(fold([counted])[0]);
     expect(
       rows.map((row) => row.tag),
-      'one row, from the count alone',
-    ).toEqual(['hookbatch']);
-    expect(rows[0]?.tag === 'hookbatch' ? rows[0].actions : null).toBe(1);
-    expect(rows[0]?.tag === 'hookbatch' ? rows[0].infos : null).toEqual([]);
+      'one chip, from the count alone',
+    ).toEqual(['hookfoot']);
+    expect(rows[0]?.tag === 'hookfoot' ? rows[0].actions : null).toBe(1);
+    expect(rows[0]?.tag === 'hookfoot' ? rows[0].batches[0]?.infos : null).toEqual([]);
   });
 
   it('reads the errors a failed hook summary carries', () => {
@@ -2276,6 +2335,128 @@ describe('one turn folded into the units a view draws', () => {
       cleanBatch?.tag === 'hookbatch' ? cleanBatch.errors : null,
       'and a summary that carries none reads as none',
     ).toEqual([]);
+  });
+
+  it('draws no ending row when the page holds the dispatch it names', () => {
+    // Ved's one-row rule: the sub-agent's own row is the finish row. The
+    // ending is what that row already carries, the way a tool_result is what
+    // its call's row carries - so it draws nothing of its own. The turn holds
+    // the work the completion woke, as a real page's does.
+    const dispatched = said([
+      use('toolu_task_1', 'Task', { description: 'Review PR', subagent_type: 'Explore' }),
+    ]);
+    const finished = ending('toolu_task_1', 'Agent "Review PR" finished');
+    const worked = said([text('picking the review up')]);
+    const finishedTurn = { messages: [finished, worked] };
+    const turns = [{ messages: [dispatched] }, finishedTurn];
+    expect(
+      noticesOf(fold(finishedTurn.messages, null, false, false, pageFactsOf(turns))),
+      'the dispatch row is the finish row',
+    ).toEqual([]);
+
+    // The control: the same ending with no dispatch on the page still draws,
+    // because then the notice is the only row the fact has (rule 25).
+    const alone = [finishedTurn];
+    expect(noticesOf(fold(finishedTurn.messages, null, false, false, pageFactsOf(alone)))).toEqual([
+      'Agent "Review PR" finished',
+    ]);
+  });
+
+  it('re-folds a turn when the page loses the dispatch its ending names', () => {
+    // **The memo compares the dispatch set by value**, and this is the case
+    // that needs it: the same ending, the same frames, a page that no longer
+    // holds the dispatch it names. Answered from the stale fold, the notice
+    // would stay suppressed on a page whose call row is gone - a completion
+    // the page never draws, which is rule 25's opposite.
+    const dispatched = said([
+      use('toolu_task_3', 'Task', { description: 'Review', subagent_type: 'Explore' }),
+    ]);
+    const finished = ending('toolu_task_3', 'Agent "Review" finished');
+    const worked = said([text('picking the review up')]);
+    const finishedTurn = { messages: [finished, worked] };
+    const withDispatch = pageFactsOf([{ messages: [dispatched] }, finishedTurn]);
+    expect(
+      noticesOf(turnFold(finishedTurn, null, false, false, withDispatch)),
+      'suppressed while the page holds the dispatch',
+    ).toEqual([]);
+
+    // The same head frame and the same messages, on a page that lost it.
+    const without = { messages: finishedTurn.messages };
+    expect(
+      noticesOf(turnFold(without, null, false, false, pageFactsOf([without]))),
+      'and drawn once the page no longer holds the call',
+    ).toEqual(['Agent "Review" finished']);
+  });
+
+  it('keeps the ending as a marker when a late page brings the dispatch', () => {
+    // **The dispatch set can GROW under a held turn.** An older page landing
+    // brings the dispatch a notice was drawn without, and the suppression
+    // then takes the only line the turn had - a turn that draws nothing is
+    // the list's 24px blank band. The ending stays as that turn's marker.
+    const finished = ending('toolu_task_5', 'Agent "Review PR" finished');
+    const finishedTurn = { messages: [finished] };
+    const alone = [finishedTurn];
+    expect(
+      noticesOf(fold(finishedTurn.messages, null, false, false, pageFactsOf(alone))),
+      'drawn while the page holds no dispatch',
+    ).toEqual(['Agent "Review PR" finished']);
+
+    const dispatched = said([
+      use('toolu_task_5', 'Task', { description: 'Review PR', subagent_type: 'Explore' }),
+    ]);
+    const gained = pageFactsOf([{ messages: [dispatched] }, finishedTurn]);
+    expect(gained.dispatches.has('toolu_task_5'), 'precondition: the dispatch arrived').toBe(true);
+    expect(
+      noticesOf(fold(finishedTurn.messages, null, false, false, gained)),
+      'and the turn is never left blank',
+    ).toEqual(['Agent "Review PR" finished']);
+  });
+
+  it('keeps a background command ending, whose call is no dispatch', () => {
+    // A backgrounded Bash finishes the same way, but its row is a command's,
+    // not an agent's - and the ending carries the exit the command's row does
+    // not state, so it keeps its own row.
+    const watching = said([
+      use('toolu_bash_1', 'Bash', { command: 'watch ci', run_in_background: true }),
+    ]);
+    const finished = ending('toolu_bash_1', 'Background command "Watch CI" completed (exit 0)');
+    const finishedTurn = { messages: [finished] };
+    const turns = [{ messages: [watching] }, finishedTurn];
+    expect(noticesOf(fold(finishedTurn.messages, null, false, false, pageFactsOf(turns)))).toEqual([
+      'Background command "Watch CI" completed (exit 0)',
+    ]);
+  });
+
+  it('draws no ending row for a queued carrier naming a held dispatch', () => {
+    // The other carrier reads the same fields through the same parser, so the
+    // one-row rule holds whichever way the CLI delivered the ending.
+    const dispatched = said([
+      use('toolu_task_2', 'Task', { description: 'Review PR', subagent_type: 'Explore' }),
+    ]);
+    const finished = heard([
+      {
+        type: 'queued_command',
+        commandMode: 'task-notification',
+        prompt:
+          '<task-notification>\n<tool-use-id>toolu_task_2</tool-use-id>\n' +
+          '<status>completed</status>\n<summary>Agent "Review PR" finished</summary>\n' +
+          '</task-notification>',
+      },
+    ]);
+    // The turn holds the work the completion woke, as a real page's does; a
+    // turn holding only the ending keeps it as its marker (below).
+    const worked = said([text('picking the review up')]);
+    const finishedTurn = { messages: [finished, worked] };
+    const turns = [{ messages: [dispatched] }, finishedTurn];
+    expect(
+      noticesOf(fold(finishedTurn.messages, null, false, false, pageFactsOf(turns))),
+      'the dispatch row is the finish row here too',
+    ).toEqual([]);
+
+    const alone = [finishedTurn];
+    expect(noticesOf(fold(finishedTurn.messages, null, false, false, pageFactsOf(alone)))).toEqual([
+      'Agent "Review PR" finished',
+    ]);
   });
 
   it("draws a hook's own row, carrying what the frames that reported it sent", () => {
@@ -3590,7 +3771,7 @@ describe('one turn folded into the units a view draws', () => {
   it('settles a TaskStop stop from the page that holds its launch, turn or not', () => {
     // A prompt opens a turn, so the common shape is a job started in one prompt
     // and stopped in the next: the stop's turn holds no launch at all, and the
-    // join is the PAGE's held turns (`stopsOf`), not the turn being folded.
+    // join is the PAGE's held turns (`pageFactsOf`), not the turn being folded.
     // Session 4b35ed0e is the same shape inside one prompt - the tool path
     // sends no task frame, so the launch result's sentence is the only link.
     const LAUNCH = 'call_33a76dda7de84b5698ade3cafe64ddce';
@@ -3627,7 +3808,7 @@ describe('one turn folded into the units a view draws', () => {
 
     const first = [...started(LAUNCH, command, TASK), ...started(OTHER, 'sleep 60', OTHER_TASK)];
     const second = [asking, stopped];
-    const holds = stopsOf([{ messages: first }, { messages: second }]);
+    const holds = pageFactsOf([{ messages: first }, { messages: second }]);
 
     const [earlier] = fold(first, null, false, false, holds);
     const calls = callsOf(earlier).map((row) => row.leaf);
@@ -3661,7 +3842,11 @@ describe('one turn folded into the units a view draws', () => {
     // And a VALUE-EQUAL page is the same page: a fresh object carrying the same
     // stops is answered from the carry, not folded again. Identity comparison
     // would miss here, since the derive rebuilds the object per frame.
-    const sameContent = { settled: new Map(holds.settled), drawn: new Set(holds.drawn) };
+    const sameContent = {
+      settled: new Map(holds.settled),
+      drawn: new Set(holds.drawn),
+      dispatches: new Set(holds.dispatches),
+    };
     const [again] = [turnFold(carried, null, false, false, sameContent)];
     expect(again, 'a value-equal stop page keeps the carry').toBe(after);
 
@@ -3675,7 +3860,7 @@ describe('one turn folded into the units a view draws', () => {
     // Frame order within a page is not what joins them: the stop ahead of its
     // launch settles the same call.
     const reversed = [asking, stopped, ...started(LAUNCH, command, TASK)];
-    const [backwards] = fold(reversed, null, false, false, stopsOf([{ messages: reversed }]));
+    const [backwards] = fold(reversed, null, false, false, pageFactsOf([{ messages: reversed }]));
     const [held] = callsOf(backwards).map((row) => row.leaf);
     expect(
       [held?.id, held?.status, held?.stop],
@@ -3697,7 +3882,7 @@ describe('one turn folded into the units a view draws', () => {
         },
       ]),
     ];
-    const quoted = stopsOf([{ messages: first }, { messages: [...quoting, ...second] }]);
+    const quoted = pageFactsOf([{ messages: first }, { messages: [...quoting, ...second] }]);
     const [launchedTurn] = fold(first, null, false, false, quoted);
     const stoppedLaunch = callsOf(launchedTurn)
       .map((row) => row.leaf)
@@ -3718,7 +3903,13 @@ describe('one turn folded into the units a view draws', () => {
       answered([{ type: 'text', text: `Successfully stopped task: ${TASK}` }]),
     ];
     const textBlocks = [...started(LAUNCH, command, TASK), ...blocks];
-    const [asBlocks] = fold(textBlocks, null, false, false, stopsOf([{ messages: textBlocks }]));
+    const [asBlocks] = fold(
+      textBlocks,
+      null,
+      false,
+      false,
+      pageFactsOf([{ messages: textBlocks }]),
+    );
     expect(callsOf(asBlocks)[0]?.leaf.status, 'a text-block answer settles it too').toBe('killed');
   });
 
@@ -3774,7 +3965,7 @@ describe('one turn folded into the units a view draws', () => {
 
     for (const [why, tail] of arms) {
       const frames = [launch, launched, asking, ...tail];
-      const [group] = fold(frames, null, false, false, stopsOf([{ messages: frames }]));
+      const [group] = fold(frames, null, false, false, pageFactsOf([{ messages: frames }]));
       const calls = callsOf(group).map((row) => row.leaf);
       expect(calls, `${why}: the launch keeps its row and the stop draws its own`).toHaveLength(2);
       expect(calls[0]?.status, `${why}: nothing settled the launch`).toBe('completed');
@@ -3817,7 +4008,7 @@ describe('one turn folded into the units a view draws', () => {
       ]),
     ];
 
-    const [group] = fold(frames, null, false, false, stopsOf([{ messages: frames }]));
+    const [group] = fold(frames, null, false, false, pageFactsOf([{ messages: frames }]));
     const calls = callsOf(group).map((row) => row.leaf);
     expect(calls, 'the read keeps its row and the stop draws its own').toHaveLength(2);
     expect(
@@ -3864,7 +4055,7 @@ describe('one turn folded into the units a view draws', () => {
     ]);
 
     const frames = [subLaunch, subResult, asking, stopped];
-    const [group] = fold(frames, null, false, false, stopsOf([{ messages: frames }]));
+    const [group] = fold(frames, null, false, false, pageFactsOf([{ messages: frames }]));
     const calls = callsOf(group);
     expect(calls, 'the sub-agent call is not folded here, so the stop draws').toHaveLength(1);
     expect(calls[0]?.leaf.title, 'named with the task it stopped').toContain(TASK);
@@ -3903,7 +4094,7 @@ describe('one turn folded into the units a view draws', () => {
     ]);
 
     const frames = [launch, launched, started, asking, stopped];
-    const [group] = fold(frames, null, false, false, stopsOf([{ messages: frames }]));
+    const [group] = fold(frames, null, false, false, pageFactsOf([{ messages: frames }]));
     const [call] = callsOf(group).map((row) => row.leaf);
     expect([call?.id, call?.status, call?.stop], 'the stop draws on the Monitor').toEqual([
       'toolu_mon',

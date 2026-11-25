@@ -370,10 +370,54 @@ describe("a turn's hook batch row", () => {
         actions: 2,
         infos: [{ command: 'cargo fmt --check', durationMs: 412 }],
         errors: [],
+        hasOutput: false,
+        additionalContext: [],
+        preventedContinuation: false,
       },
     ]);
 
     expect(drawn, 'the count the row carries').toContain('hook summary \u{b7} 2 actions');
+    expect(drawn, 'the hook family mark').toContain('#i-hook');
+    expect(drawn, 'and the shared disclosure chevron').toContain('class="ic arw"');
+  });
+
+  /**
+   * The silent batches' row: one chip at the turn's foot, counting every batch
+   * and holding each one's hooks behind its open - so the frame draws without
+   * costing a row per stop (#3054).
+   */
+  it('draws the turn foot chip, counting its batches', () => {
+    const drawn = draw([
+      {
+        tag: 'hookfoot',
+        key: 'uuid_7#hookbatch#hookfoot',
+        batches: [
+          {
+            key: 'uuid_7#hookbatch',
+            actions: 3,
+            infos: [{ command: 'cargo fmt --check', durationMs: 412 }],
+            errors: [],
+            hasOutput: false,
+            additionalContext: [],
+            preventedContinuation: false,
+          },
+          {
+            key: 'uuid_8#hookbatch',
+            actions: 3,
+            infos: [{ command: 'cargo fmt --check', durationMs: 412 }],
+            errors: [],
+            hasOutput: false,
+            additionalContext: [],
+            preventedContinuation: false,
+          },
+        ],
+        actions: 6,
+      },
+    ]);
+
+    expect(drawn, 'the batches and the hooks the chip counts').toContain(
+      'hooks \u{b7} 2 batches \u{b7} 6 hooks',
+    );
     expect(drawn, 'the hook family mark').toContain('#i-hook');
     expect(drawn, 'and the shared disclosure chevron').toContain('class="ic arw"');
   });
