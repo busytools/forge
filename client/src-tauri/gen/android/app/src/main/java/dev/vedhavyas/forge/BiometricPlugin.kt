@@ -136,9 +136,19 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
             try {
               val ready = result.cryptoObject?.cipher ?: cipher
               val ciphertext = ready.doFinal(Base64.getDecoder().decode(args.blob))
-              preferences().edit()
-                .putString(args.purpose, BiometricRecords.encode(ready.iv, ciphertext))
-                .commit()
+              // **The commit's answer is the enrolment's.** A resolved call
+              // is a record the caller can rely on; a failed write answering
+              // success would register sealed material against a key the gate
+              // does not hold.
+              val wrote =
+                preferences()
+                  .edit()
+                  .putString(args.purpose, BiometricRecords.encode(ready.iv, ciphertext))
+                  .commit()
+              if (!wrote) {
+                invoke.reject("the enrolment could not be written on this device")
+                return
+              }
               invoke.resolve()
             } catch (err: Exception) {
               invoke.reject(err.message ?: err.toString())
@@ -157,7 +167,9 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
         try {
           prompt.authenticate(promptInfo(), BiometricPrompt.CryptoObject(cipher))
         } catch (err: Exception) {
-          invoke.resolve(refused(err.message ?: err.toString()))
+          // The same rule as a refused prompt: a prompt that never opened
+          // wrote nothing, so it must not answer as a stored enrolment.
+          invoke.reject(err.message ?: err.toString())
         }
       }
     }
