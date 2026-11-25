@@ -278,8 +278,16 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
    * **The identity is the frame's own `uuid`**: `queued` adds it, `started`
    * keeps it, and a terminal removes it. A frame naming a prompt this page
    * never counted, or a row in a state another source owns, folds nothing and
-   * keeps the read, because the count cannot be reproduced. Answers whether
-   * the frame was consumed; `false` leaves the read owed.
+   * keeps the read, because the count cannot be reproduced.
+   *
+   * **A fold moves a row to Running; it never moves one to Idle.** The set is
+   * only the prompts this page has SEEN, so an empty set is no proof that the
+   * seat is idle: a page that attached mid-turn drew its Running from a read
+   * and has no uuids at all, and folding Idle on its own prompt's terminal
+   * would contradict the turn still in flight. Idle is therefore the read's
+   * to state, and the terminal that empties the set keeps the read.
+   *
+   * Answers whether the frame was consumed; `false` leaves the read owed.
    */
   function foldLifecycle(slot: SessionSlot, uuid: string, state: string): boolean {
     if (drawn === null) return false;
@@ -303,7 +311,9 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
         // the read is the failure direction.
         if (!held.has(uuid)) return false;
         // The old read refreshed the row's "last moved" at the turn's start;
-        // the fold states the same moment from this side.
+        // the frame carries no timestamp, so this is the client clock's
+        // reading of the same moment, and a skewed clock draws a briefly wrong
+        // age until the next read states the server's own stamp.
         touched = { secs_since_epoch: Math.floor(Date.now() / 1000), nanos_since_epoch: 0 };
         break;
       case 'completed':
@@ -311,13 +321,19 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       case 'discarded':
       case 'refused':
         if (!held.delete(uuid)) return false;
+        // The set empties: the drawn Running may count a prompt this page
+        // never saw, so Idle is the read's to state.
+        if (held.size === 0) {
+          livePrompts.delete(key);
+          return false;
+        }
         break;
       default:
         // A state this build has not seen: the read is the failure direction.
         return false;
     }
     livePrompts.set(key, held);
-    const applied = applyLifecycle(drawn, slot, held.size > 0 ? 'Running' : 'Idle', touched);
+    const applied = applyLifecycle(drawn, slot, 'Running', touched);
     if (applied === null) return false;
     publishFold(applied);
     return true;
@@ -599,8 +615,10 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
         stale = false;
         // No read is owed across the drop, so the reconnect's snapshot is
         // fresh and replaces the fold; the page keeps drawing the fold until
-        // it lands.
+        // it lands. **The in-flight answer died with the socket**, so a fold
+        // that landed while it was out no longer outruns the next one.
         foldRead = null;
+        appliedDuringRead = false;
         drawn = null;
         livePrompts.clear();
       }

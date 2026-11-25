@@ -312,7 +312,10 @@ function boardStore(connection: Connection): Readable<BoardRead> {
         reading = false;
         stale = false;
         // A reconnect re-subscribes and answers with a fresh snapshot; the
-        // frames in between have nowhere to land.
+        // frames in between have nowhere to land. **The in-flight answer died
+        // with the socket**, so a frame applied while it was out no longer
+        // outruns the next one.
+        appliedDuringRead = false;
         drawn = null;
       }
     });

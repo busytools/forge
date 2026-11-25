@@ -577,8 +577,11 @@ describe('the home over a connection', () => {
    * read.** The frame names the prompt and its state, and the row's lifecycle
    * is what a per-seat set of prompt uuids reproduces: `queued` adds the
    * uuid, `started` keeps it, a terminal removes it. A repeat of one uuid is
-   * no second prompt. **The set is re-based by every snapshot answer and
-   * cleared by a socket drop**, so a reconnect starts from the snapshot.
+   * no second prompt. **A fold may only move a row to Running**: the terminal
+   * that empties the set keeps the read, because the drawn Running may count
+   * a prompt this page never saw. The set is re-based by every snapshot
+   * answer and cleared by a socket drop, so a reconnect starts from the
+   * snapshot.
    */
   it("folds a prompt's life into the drawn row without a read", async () => {
     const forge = fakeConnection();
@@ -610,10 +613,18 @@ describe('the home over a connection', () => {
       'the turn start left the last-moved stamp stale',
     ).not.toBeNull();
 
+    // The last prompt ending is the one terminal a fold cannot take: the
+    // drawn Running may count a prompt this page never saw, so Idle is the
+    // read's to state and the row keeps Running until it lands.
     forge.arrive(life('completed'));
     await settle();
-    expect(forge.refreshed, "a prompt's end asked for a whole read").toEqual([]);
-    expect(seen.at(-1)?.wire?.agents[0]?.lifecycle, 'the settled row did not go idle').toBe('Idle');
+    expect(forge.refreshed, "a prompt's end stopped asking for the read Idle needs").toEqual([
+      HOME,
+    ]);
+    expect(
+      seen.at(-1)?.wire?.agents[0]?.lifecycle,
+      'the fold moved the row to Idle on its own',
+    ).toBe('Running');
     stop();
   });
 
@@ -621,9 +632,9 @@ describe('the home over a connection', () => {
    * **A snapshot answer must not clobber a count the frames built.** A prompt
    * queued behind a running turn is a second uuid; an answer that lands while
    * both are live keeps it, so the running prompt's terminal does not publish
-   * Idle under a queued turn (rule 16: a page attaching then draws Running).
-   * A reconnect forgets the set, so the next terminal names a prompt this page
-   * never counted and keeps the read.
+   * Idle under a queued turn. The second prompt's own terminal is the empty
+   * set and keeps the read. A reconnect forgets the set, so the next terminal
+   * names a prompt this page never counted and keeps the read too.
    */
   it('keeps a second queued prompt across a snapshot, and forgets it on a reconnect', async () => {
     const forge = fakeConnection();
@@ -654,10 +665,12 @@ describe('the home over a connection', () => {
     ).toBe('Running');
 
     forge.arrive(life('started', 'p2'));
+    await settle();
+    expect(forge.refreshed, 'the second prompt starting asked for a read').toEqual([]);
     forge.arrive(life('completed', 'p2'));
     await settle();
-    expect(forge.refreshed, 'the second prompt did not settle').toEqual([]);
-    expect(seen.at(-1)?.wire?.agents[0]?.lifecycle).toBe('Idle');
+    expect(forge.refreshed, 'the empty set folded Idle instead of reading').toEqual([HOME]);
+    expect(seen.at(-1)?.wire?.agents[0]?.lifecycle).toBe('Running');
 
     // A reconnect forgets every set: a terminal for a prompt the page never
     // counted keeps the read rather than folding a stale count.
@@ -674,7 +687,43 @@ describe('the home over a connection', () => {
     expect(
       forge.refreshed,
       'a terminal for a pre-reconnect prompt folded a count the page no longer held',
-    ).toEqual([HOME]);
+    ).toEqual([HOME, HOME]);
+    stop();
+  });
+
+  /**
+   * **A row a read drew Running keeps the read when a prompt this page counted
+   * settles.** A page that attached mid-turn has no uuids: the set empties
+   * when its own prompt ends, while the turn the snapshot drew is still
+   * running. The empty set is therefore no proof of Idle, and the fold must
+   * leave the mark to the read.
+   */
+  it('keeps the read when the empty set sits under a snapshot-drawn Running', async () => {
+    const forge = fakeConnection();
+    const seen: HomeRead[] = [];
+    const stop = watchHome(forge.connection).subscribe(($next) => {
+      seen.push($next);
+    });
+    // The page attached mid-turn: the drawn Running is the server's, and the
+    // page has seen none of its prompts.
+    const running = { ...idleHome(), agents: [{ ...IDLE_AGENT, lifecycle: 'Running' }] };
+    forge.stores.get(HOME)?.set(running);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: running });
+
+    forge.arrive(life('queued', 'p7'));
+    await settle();
+    expect(forge.refreshed, 'the queued prompt asked for a read').toEqual([]);
+    expect(seen.at(-1)?.wire?.agents[0]?.lifecycle).toBe('Running');
+
+    forge.arrive(life('cancelled', 'p7'));
+    await settle();
+    expect(forge.refreshed, 'the empty set folded Idle under the turn the snapshot drew').toEqual([
+      HOME,
+    ]);
+    expect(
+      seen.at(-1)?.wire?.agents[0]?.lifecycle,
+      'the row went idle while the original turn was still running',
+    ).toBe('Running');
     stop();
   });
 
