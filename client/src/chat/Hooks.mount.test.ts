@@ -19,7 +19,17 @@ describe('the hook batch row, mounted', () => {
   it("draws its hooks onto the reader's open, and holds nothing while closed", () => {
     const app = mount(Hooks, {
       target: document.body,
-      props: { batch: { key: 'uuid_7#hookbatch', actions: 1, infos: ONE, errors: [] } },
+      props: {
+        batch: {
+          key: 'uuid_7#hookbatch',
+          actions: 1,
+          infos: ONE,
+          errors: [],
+          hasOutput: false,
+          additionalContext: [],
+          preventedContinuation: false,
+        },
+      },
     });
     try {
       flushSync();

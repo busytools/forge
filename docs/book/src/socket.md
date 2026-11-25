@@ -396,8 +396,8 @@ variant's own name rather than on `kind`:
 }
 ```
 
-A command's variant is its name around its field bag - `Command` has 73
-variants, 66 of them struct variants; the seven unit variants,
+A command's variant is its name around its field bag - `Command` has 74
+variants, 67 of them struct variants; the seven unit variants,
 `dictate_catalogue_check`, `dictate_bench_stop`, `voice_bench_start`,
 `voice_bench_stop`, `plugin_update_all`, `plugin_check_updates` and
 `vault_lock`, cross as the name alone. An update is the same
@@ -672,9 +672,12 @@ but a `home` snapshot may follow unsolicited when it spent a mark and this
 connection holds the home.
 
 **`more {conversation, before, turns}`** - a page of a session's
-conversation, as whole turns. Each turn carries `key` and `messages`, which is
+conversation, by turns. Each turn carries `key` and `messages`, which is
 the same shape the session snapshot's `conversation` carries; the grouping
-inside a turn is the client's to decide.
+inside a turn is the client's to decide. **A turn larger than the page budget
+arrives in pieces**: the page carries its newest rows that fit and its cursor
+names the row above them, so `before` can name a row inside a turn rather than
+a turn's opening row.
 
 **A page carries `cron_names` where any of its rows is a fired prompt**: the
 schedule each came from, keyed by the prompt's own id, because the prose a
@@ -733,19 +736,22 @@ position and is the one handle that always names a turn.
 **The boundary between turns is the server's where a page has one, and it is
 the only part of the fold that crosses.** How a run of tool calls groups
 within a turn is a drawing decision; where one turn ends and the next begins
-is what the paging contract is built on, so a page above the window's floor
-never hands over half a turn. **A page below that floor can carry a stretch
-inside a turn** - a running turn's older rows are exactly that - and the
-server keeps what a fold needs to read it: a page never opens on a tool
-result without the call that produced it, and a running turn is the whole of
-what a late-attaching view can reach when the session never ends one.
+is what the paging contract is built on. **A page carries whole turns until a
+turn alone is over its byte budget**: that turn is served in pieces, newest
+rows first, and the pieces meet exactly - the handle above a piece names the
+row it opened at. So a page below the window's floor can carry a stretch
+inside a turn (a running turn's older rows are exactly that), and so can a
+piece of a turn over the budget: a page can open on a tool result whose call
+sits on the page above, and a running turn is the whole of what a
+late-attaching view can reach when the session never ends one.
 
 **The cursor is a position, not an index.** Echo it back as `before` and do
-not take it apart: above the window's floor it names the message the page's
-first turn opens on, below it names the row the page stopped at by the byte
-that row starts at, and what either is made of is the server's business.
-`null` means there is nothing above the page it came with, and that is where
-a walk backwards ends.
+not take it apart: it names the row the page it came with began at - a
+message a turn opens on, or a row inside a turn a budget cut - so a cursor
+can name a row no turn opens at; below the window's floor it names the row
+the page stopped at by the byte that row starts at, and what either is made
+of is the server's business. `null` means there is nothing above the page it
+came with, and that is where a walk backwards ends.
 
 **`document_read {session, path, reviewable}`** - one document out of a
 seat's own working tree or its project's `document_roots` in `forge.toml`,
@@ -1026,12 +1032,13 @@ writes it at all - because the command is fire-and-forget: its effect
 arrives through the subscription, which is why a client subscribes before
 it acts.
 
-**`reply_to` is required on exactly nine of them**: a worker spawn, a
-despawn, the three review writes, and the four biometric commands - a
-release, an enrolment, a rotation's update-only rewrite, and the vault's
-material request. Their outcome rides the reply and no update carries it, so
-a client that omitted `reply_to` would not be declining a reply - it would be
-declining to learn whether the work happened.
+**`reply_to` is required on exactly ten of them**: a worker spawn, a
+despawn, the three review writes, and the five vault and biometric commands -
+a release, an enrolment, a rotation's update-only rewrite, the vault's
+material request, and the settings page's vault unlock. Their outcome rides
+the reply and no update carries it, so a client that omitted `reply_to`
+would not be declining a reply - it would be declining to learn whether the
+work happened.
 
 **Both mismatches are refused, with a sentence naming the field**, and
 refused before the command runs: a required field left off, and a
@@ -1039,15 +1046,16 @@ refused before the command runs: a required field left off, and a
 for the same reason the first does - a client that set it is waiting on a
 channel nothing will ever come down.
 
-**Each of the nine answers with its own type**: a spawn with a
+**Each of the ten answers with its own type**: a spawn with a
 worker-spawn reply, a despawn with a despawn result, the review writes with a
-`bool` and a review set, and the biometric four with the released blob, the
-enrolment's `true`, the rewrite's `true`/`false`, and the vault's released
-material. One channel cannot carry nine different answers, so the reply type
-follows the command. A refusal arrives in that same reply, as the body of the
-answer rather than as an `error` - which is what the nine are for. A command
-that is _not_ one of the nine refuses as an `error` like anything else the
-core declines, whether or not a reply was asked for.
+`bool` and a review set, and the five vault and biometric commands with the
+released blob, the enrolment's `true`, the rewrite's `true`/`false`, the
+vault's released material, and the unlock's `VaultUnlockOutcome`. One channel
+cannot carry ten different answers, so the reply type follows the command. A
+refusal arrives in that same reply, as the body of the answer rather than as
+an `error` - which is what the ten are for. A command that is _not_ one of
+the ten refuses as an `error` like anything else the core declines, whether
+or not a reply was asked for.
 
 **`read_call_output` answers a call's own output**: the newest lines of
 the file the CLI streamed the task's output to, or a named reason there is
@@ -1272,7 +1280,7 @@ conversation, and what the composer is doing.
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `slot`                        | The seat itself.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `header`                      | The occupant's session id - the one a copy control hands out, and `null` when there is no occupant to name (nothing started, nothing connected yet, or one dropped after a sign-in or a failed connection) - the resolved model and the catalogue a picker draws from, the engine the seat's last launch resolved, the effort level, the permission mode, context usage, asked for on the reads that encode a subject when the seat has none, again when a turn finishes on a seat a page shows, and again when a compaction settles, a page or not (the socket issues the ask whether or not an agent is behind the seat, so where there is none it is refused and nothing reaches the CLI; the answer lands as a `context_usage_snapshot` update only where there is one) and whether a turn is in flight. `seq` is the number the seat's next frame will carry, and the occupant's session id beside it is the epoch that number belongs to: a client that attaches mid-stream reads where the stream stands, so the frames it hears from here continue the count it holds rather than looking like a gap.                                                   |
-| `conversation`                | The NEWEST turns, in order, with the compaction count and the cursor above them (`cursor`, the same handle a `more` answers with), and `cron_names` for any fired-prompt row it holds (the schedule each came from, keyed by the prompt's own id, absent when there is none) - up to twenty of them, the same page a `more` answers with, so a client seeds its conversation from this answer and asks for what is above it rather than for the page again. **An older server's record omits `cursor`**: the page still seeds, and the client asks for the newest page rather than reading the history above as the end - a `more` answer names the window's floor, and the field is additive, so a client never refuses a snapshot that lacks it. (Fewer than twenty when the held window's 64 MiB byte ceiling has dropped messages off its front, or when `[server] first_frame_cap_kb` holds the page below that many turns: the newest whole ones are kept, and the front of what it keeps is where the walk below the floor begins.) Each turn carries `key` and `messages`, the frames the turn ran as. The live `update` stream carries those too, and both paths fold a run of consecutive token appends into ONE frame carrying the summed `estimated_tokens_delta` - the stream by its flush, a page by its turn, except a turn whose first carried frame is a counter (the window's front cut inside a running turn, so its leading run is served as itself) - and a page's frame adds `folded_from` and `folded_frames`: the run's first stamp and how many frames the one stands for, so a client landing it knows which counters the frame already covers. The two differ elsewhere: a forged frame carries the id its prompt or delivery was minted under, which is the id the read's copy of the same row carries - the two pair on it - while a frame the CLI sent carries the CLI's own. A page differs the other way as well - it carries an ending for a backgrounded task's call as a frame of its own, which the stream never sends - so read these as the ones this row states rather than as the whole list. **Every path to a client carries the same bound on a frame's structured record**: a `tool_use_result` over `[server] tool_record_cap_kb` is reduced to the keys a client draws (a mutation's patch and outside-edit mark, a question's answers and notes), and arrives as a `{omitted, bytes}` marker only when that reduction is still over the cap. The transcript keeps the record whole. |
+| `conversation`                | The NEWEST turns, in order, with the compaction count and the cursor above them (`cursor`, the same handle a `more` answers with), and `cron_names` for any fired-prompt row it holds (the schedule each came from, keyed by the prompt's own id, absent when there is none) - up to twenty of them, the same page a `more` answers with, so a client seeds its conversation from this answer and asks for what is above it rather than for the page again. **An older server's record omits `cursor`**: the page still seeds, and the client asks for the newest page rather than reading the history above as the end - a `more` answer names the window's floor, and the field is additive, so a client never refuses a snapshot that lacks it. (Fewer than twenty when the held window's 64 MiB byte ceiling has dropped messages off its front, or when `[server] first_frame_cap_kb` holds the page below that many turns: the newest are kept, a turn over the budget is served in pieces of its own, and the front of what it keeps is where the walk below the floor begins.) Each turn carries `key` and `messages`, the frames the turn ran as. The live `update` stream carries those too, and both paths fold thinking-token appends into ONE frame per dispatch carrying the summed `estimated_tokens_delta` - the stream by its flush, a page by the frames it serves (a piece of an over-budget turn folds its own counters and no others) - except the whole leading run of counters when the piece opens on one (the window's front cut can land inside a running turn, and a budget cut can too; a client pairs such a page with the copy it holds by the run's own stamps, so the run is served as itself). A page's frame adds `folded_from` and `folded_frames`: the range's first stamp and how many frames the one stands for, so a client landing it knows which counters the frame already covers. **A page also serves only the latest copy of each frame a turn repeats** - a call's `tool_progress` heartbeats, a hook run's progress, a sub-agent task's progress - and one handshake, status line, background-task list, command list and VCS state per page. Each of those draws no row of its own on either path, and its latest copy says everything the earlier ones did, so the page's fold pays for them once: the Playground Lead seat's open turn measured 1,669 counter frames and 65 progress ticks among 1,934 frames of one turn. **A workflow's `task_progress` tick is exempt and served every time**, because the chat fold draws each tick's phase tree as its own row and the read and the live path must show the same rows; every lifecycle frame (`task_started`, `task_updated`, `task_notification`, the hook pair) is served every time for the same reason. The `tool_progress` heartbeat is the one stated asymmetry: its live row is the fold's provisional fallback rather than a face, and a beat is an elapsed-time snapshot, so a page shows the last beat where a live reader sees each - the live stream still crosses every one. The two differ elsewhere: a forged frame carries the id its prompt or delivery was minted under, which is the id the read's copy of the same row carries - the two pair on it - while a frame the CLI sent carries the CLI's own. A page differs the other way as well - it carries an ending for a backgrounded task's call as a frame of its own, which the stream never sends - so read these as the ones this row states rather than as the whole list. **Every path to a client carries the same bound on a frame's structured record**: a `tool_use_result` over `[server] tool_record_cap_kb` is reduced to the keys a client draws (a mutation's patch and outside-edit mark, a question's answers and notes), and arrives as a `{omitted, bytes}` marker only when that reduction is still over the cap. The transcript keeps the record whole. |
 | `work`                        | The working tree as state: branch, how much changed, and whether git runs here.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `git`                         | The tree behind the row's depth: `default_branch` (which branch the tree is measured against), `worktree` (the uncommitted files, each with its path, added and removed counts and its `status` - `modified` / `added` / `deleted` / `renamed` / `copied` / `typechange` / `unmerged` / `untracked`) and `ahead` (the branch's `commit_count`, the chain itself - each commit a short `sha`, `subject`, its own `stats` and the instant it was committed in unix seconds - and the range's own `stats`) all come from one scan, and `base` is what the last read that measured it found for the base `ahead` is read against - `local`, `current` or `unverified` from this server, `behind` as a value a client still draws, `null` until a read has measured one. A scan only kicks a refresh for a remote-tracking default and never waits for it, so `base` is what the last completed refresh measured - a watch pass's kick, or a review page's own read (the one that waits when the seat has no session) - and `local` arrives from a review read's own probe of a base with no remote-tracking ref; `base` may be older than the scan beside it, because it is carried across scans that do not refresh. Beside it sits `base_error` - git's own first line for a refresh that could not run, `null` when it ran or no measurement has landed - carried with the state so a page that hears the row names the reason rather than only that the base could not be checked. Every `stats` block carries the full totals and the busiest files up to the scan's cap of seven, each classified with the same statuses the uncommitted layer speaks; the chain is capped at the scan's walk. `null` layers are nothing to state - a clean tree, an unscanned one - and it moves with `work_changed` frames like the row above it. **`base` is what makes a base-only move news**: an upstream advance the branch does not contain moves `origin/main` while the branch's own count and chain stay exactly as they were, so that field is the one that changes. **A completed check is itself news**: a refresh that landed after the row was taken is pushed on the seat's next watch pass whenever its state or its `base_error` differs from what the row already states, because a page that drew the base unchecked is waiting for that check; a check that found exactly the same thing again is not news. |
 | `pr`, `closes`                | The open pull request this seat's branch is on - its number and URL, and whether it is a `draft` - and the issues it closes, which is the `PR #N -> closes #M` line a view draws under its PR row. `null` and an empty list when there is none, or when the branch is not pushed. **The record carries the PR the seat's last scan knows**: the lookup is one network call, two when it finds a PR (the second fetches its closing issues), and a record read never waits on it - a cache past its refetch window is served as it stands and the seat's own watch looks it up on its next pass, pushing the corrected row as `work_changed`. So a first open after that window can draw the previous value, or nothing when the seat has no scan yet, for about two seconds when the lookup finds a PR and about one when it finds none. A seat with no session has no store to serve and no watch to correct it, so its record still looks the PR up on the read.                                                                                                                                                                                                                                                                                                   |
@@ -1365,15 +1373,18 @@ that ran and failed, which is what a page draws when it has nothing else.
 settled turn arrives by `more` as the messages it ran as; the turn in
 flight arrives as the same CLI frames, one `update` at a time - except
 that a run of consecutive token appends inside one flush crosses as ONE
-frame carrying what they grew by summed, where a page's copy of the same
-turn carries the CLI's own several. **A client folds both with one rule of
-its own** - how a run of tool calls groups, the labels it draws and the
-tail it shows - and the two meet with nothing to reconcile about their
-shape, because the frames are the same shape on either side. The one thing
-the server keeps is the turn boundary where a page has one - and, below the
-window's floor, the call a result belongs to, so a page never opens on a
-result whose call it does not carry; where a turn BEGINS is a fact about the
-session, and how its work is drawn is not. Neither view is short of a token for the fold:
+frame carrying what they grew by summed, and a page folds a whole turn's
+appends into one frame per dispatch the same way, naming the range with
+`folded_from` and `folded_frames`. The two sides differ in how many frames
+carry a turn's growth, never in the growth they add up to. **A client folds
+both with one rule of its own** - how a run of tool calls groups, the labels
+it draws and the tail it shows - and the two meet with nothing to reconcile
+about their shape, because the frames are the same shape on either side.
+The one thing the server keeps is the turn boundary where a page has one.
+**A page cut inside an over-budget turn can part a call from its result**,
+because its pieces meet at a frame boundary rather than at a fold's: the
+client reads each piece as its own turn, and the seam is that cut. Where a
+turn BEGINS is a fact about the session, and how its work is drawn is not. Neither view is short of a token for the fold:
 both draw a turn's estimate as the sum of the deltas, so the two agree on
 the number where they differ in frames. **What can differ is the id, and
 only for the forged frame below.**

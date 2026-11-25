@@ -6,6 +6,8 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
+use forge_primitives::Message;
+
 use crate::SessionSlot;
 use crate::protocol::SessionUpdate;
 
@@ -26,6 +28,36 @@ pub struct SeatUpdate {
     /// afterwards - so a deep clone per subscriber paid for a payload most of
     /// them drop. The ring holds the same pointer.
     pub update: Arc<SessionUpdate>,
+}
+
+/// Drops a seat's retained ring when the transport evicts its conversation.
+///
+/// **The two are one seat's retained memory, so they go together.** A seat's
+/// held copy and its repair ring both hold frames for the same seat, and a
+/// budget that drops one without the other leaves the seat half-evicted: a
+/// cold read that finds no held copy still finds a ring, and a repair that
+/// finds no ring still finds a held copy. The transport owns the budget and
+/// the eviction; the workspace owns the ring, so the seam lives beside the
+/// ring it drops.
+pub trait ConversationEvictor: Send + Sync {
+    /// Drop whatever retained memory this seat's ring holds.
+    fn evict_ring(&self, slot: &SessionSlot);
+
+    /// What all the rings weigh in total, for the budget's accounting.
+    ///
+    /// **The budget covers both maps, not just the held copies.** A seat's
+    /// held conversation and its frame ring are one seat's retained memory;
+    /// counting only the held copy would let the rings grow past the budget
+    /// while the held copies stay under it.
+    fn total_ring_bytes(&self) -> usize;
+
+    /// What this seat's ring weighs, `0` for a seat with none.
+    ///
+    /// **What tells a victim from a byte count.** The total says the budget is
+    /// over; this says which seats the overrun is in, so the eviction can drop
+    /// the rings of seats that hold no copy - bytes the held map cannot trade
+    /// for.
+    fn ring_bytes(&self, slot: &SessionSlot) -> usize;
 }
 
 /// How many frames one seat's stream keeps for repair.
@@ -179,6 +211,19 @@ struct Shared {
     /// count: a number older than that lies beyond any window a fill could
     /// serve, where the count it underwrites is a refusal rather than a hole.
     unringed: HashMap<SessionSlot, VecDeque<u64>>,
+    /// The compaction count each seat's epoch opened with, and the number of
+    /// every boundary minted since.
+    ///
+    /// **What a copy rebuilt from a window cannot count for itself.** The
+    /// window holds only the boundaries after its front, so a copy built from
+    /// it would report a count short by every compaction older than the
+    /// window - and a copy seeded with the running total would count its own
+    /// boundaries a second time as it applies them. The fanout sees each
+    /// frame exactly once, at the mint, so it keeps the seal's count and each
+    /// boundary's number; a rebuild asks for the count BEFORE its front and
+    /// lets the applies count the rest. A seal replaces both.
+    compaction_base: HashMap<SessionSlot, u32>,
+    compaction_seqs: HashMap<SessionSlot, Vec<u64>>,
     /// The seats whose latest epoch-opening seal carried rows.
     ///
     /// **A seal's history is not in the ring**, so a reader filling a copy
@@ -205,6 +250,8 @@ impl Default for Shared {
             rings: HashMap::new(),
             ring_bytes: HashMap::new(),
             unringed: HashMap::new(),
+            compaction_base: HashMap::new(),
+            compaction_seqs: HashMap::new(),
             sealed_with_rows: HashSet::new(),
             ring_cap: SEAT_RING,
             ring_cap_bytes: SEAT_RING_BYTES,
@@ -261,16 +308,23 @@ impl Shared {
             // one's mark: its ring was cleared at this mint, so a fill holds
             // its whole history. Before the mint the value is still the
             // previous seal's, which is what notices the header-move window.
-            let carried = match &update {
-                SessionUpdate::Connected { history, .. }
-                | SessionUpdate::SessionReplaced { history, .. } => !history.is_empty(),
-                _ => false,
+            let (carried, compactions) = match &update {
+                SessionUpdate::Connected { history, compaction_count, .. }
+                | SessionUpdate::SessionReplaced { history, compaction_count, .. } => {
+                    (!history.is_empty(), *compaction_count)
+                }
+                _ => (false, 0),
             };
             if carried {
                 self.sealed_with_rows.insert(slot.clone());
             } else {
                 self.sealed_with_rows.remove(&slot);
             }
+            // **A seal states the count its epoch opens with**, and replaces
+            // the boundary numbers the previous run carried: its numbers are
+            // minted again by the run after it.
+            self.compaction_base.insert(slot.clone(), compactions);
+            self.compaction_seqs.remove(&slot);
         } else if matches!(update, SessionUpdate::Releasing { .. }) {
             // **The counter still advances** - the frame carries a number like
             // any other, and leaving the counter behind mints that number
@@ -286,6 +340,14 @@ impl Shared {
             remember(self.unringed.entry(slot.clone()).or_default(), seq, self.ring_cap);
         } else {
             self.sequences.insert(slot.clone(), seq);
+            // **A boundary inside the run is remembered by its number**, so a
+            // copy rebuilt from a window can be seeded with the count BEFORE
+            // the window's front and let its own applies count the rest.
+            if let SessionUpdate::ChatAppended { msg: Message::CompactBoundary { .. }, .. } =
+                &update
+            {
+                self.compaction_seqs.entry(slot.clone()).or_default().push(seq);
+            }
         }
         let frame = SeatUpdate { seq: Some(seq), update: Arc::new(update) };
         if !epoch_frame {
@@ -349,6 +411,29 @@ impl Shared {
     /// Whether `slot`'s latest epoch-opening seal carried rows.
     fn epoch_opened_with_rows(&self, slot: &SessionSlot) -> bool {
         self.sealed_with_rows.contains(slot)
+    }
+
+    /// How many times `slot`'s stream has compacted, `0` for a seat nothing
+    /// has sealed in this process.
+    fn compactions_of(&self, slot: &SessionSlot) -> u32 {
+        let base = self.compaction_base.get(slot).copied().unwrap_or(0);
+        let boundaries = self.compaction_seqs.get(slot).map_or(0, Vec::len);
+        base.saturating_add(u32::try_from(boundaries).unwrap_or(u32::MAX))
+    }
+
+    /// How many times `slot`'s stream had compacted before frame `seq`.
+    ///
+    /// **The seed a copy rebuilt from the window starts from.** Boundaries
+    /// numbered at or above `seq` are the window's own, and the copy counts
+    /// those as it applies them; counting them here too is how a rebuilt copy
+    /// reported one compaction more than its stream had.
+    fn compactions_before(&self, slot: &SessionSlot, seq: u64) -> u32 {
+        let base = self.compaction_base.get(slot).copied().unwrap_or(0);
+        let boundaries = self
+            .compaction_seqs
+            .get(slot)
+            .map_or(0, |seqs| seqs.iter().filter(|minted| **minted < seq).count());
+        base.saturating_add(u32::try_from(boundaries).unwrap_or(u32::MAX))
     }
 }
 
@@ -418,6 +503,36 @@ impl UpdateFanout {
         self.shared.lock().epoch_opened_with_rows(slot)
     }
 
+    /// How many times `slot`'s stream has compacted: what a copy rebuilt from
+    /// the window reports, since the window holds only the boundaries after
+    /// its front and the count must not shrink with it.
+    pub(crate) fn compactions(&self, slot: &SessionSlot) -> u32 {
+        self.shared.lock().compactions_of(slot)
+    }
+
+    /// How many times `slot`'s stream had compacted before frame `seq`: the
+    /// count a copy rebuilt from the window seeds with, so the boundaries it
+    /// applies are counted exactly once.
+    pub(crate) fn compactions_before(&self, slot: &SessionSlot, seq: u64) -> u32 {
+        self.shared.lock().compactions_before(slot, seq)
+    }
+
+    /// Drop everything this seat's ring holds, for a budget that evicted its
+    /// held conversation.
+    ///
+    /// **The ring and the held copy are one seat's retained memory**, so a
+    /// budget that evicts one drops both. The sequence counter stays: a
+    /// client still subscribed to the seat reads the next frame by its
+    /// number, and a rewind would read as a repeat and be dropped. A cold
+    /// read that follows sends a seal, whose own mint resets the counter.
+    pub(crate) fn evict_ring(&self, slot: &SessionSlot) {
+        let mut shared = self.shared.lock();
+        shared.rings.remove(slot);
+        shared.ring_bytes.remove(slot);
+        shared.unringed.remove(slot);
+        shared.sealed_with_rows.remove(slot);
+    }
+
     /// Drive the ring's cap down, so a test reaches the transcript fallback
     /// without emitting a window's worth of frames.
     #[cfg(any(test, feature = "testing"))]
@@ -432,10 +547,15 @@ impl UpdateFanout {
         self.shared.lock().ring_cap_bytes = bytes;
     }
 
-    /// What `slot`'s ring weighs, for the tests that pin its ceiling.
-    #[cfg(test)]
+    /// What `slot`'s ring weighs, for the budget's accounting and the tests
+    /// that pin its ceiling.
     pub(crate) fn ring_bytes(&self, slot: &SessionSlot) -> usize {
         self.shared.lock().ring_bytes.get(slot).copied().unwrap_or(0)
+    }
+
+    /// What all the rings weigh in total, for the budget's accounting.
+    pub(crate) fn total_ring_bytes(&self) -> usize {
+        self.shared.lock().ring_bytes.values().sum()
     }
 
     /// How many subscribers are attached.
@@ -512,6 +632,7 @@ impl UpdateFanout {
 mod tests {
     use forge_primitives::SessionId;
     use forge_primitives::cloud::service_status::ServiceSeverity;
+    use forge_primitives::messages::Extras;
     use forge_primitives::runtime::CurrentModel;
 
     use super::*;
@@ -1189,5 +1310,74 @@ mod tests {
             Some(3),
             "the delivered frame continues the count rather than reusing a number",
         );
+    }
+
+    /// **Evicting a seat's ring drops its frames, its weight, and nothing
+    /// else.** The budget's transport hands a seat here when it evicts the
+    /// held copy beside it, and a ring left behind would be half an eviction.
+    #[test]
+    fn evicting_a_seat_ring_drops_its_frames_and_its_weight() {
+        let fanout = UpdateFanout::default();
+        let key = seat("a-ring");
+        fanout.send(a_turn_ends(&key));
+        assert!(fanout.ring_bytes(&key) > 0, "the frame weighs on the ring");
+        assert!(fanout.total_ring_bytes() >= fanout.ring_bytes(&key), "and the total counts it");
+        assert_eq!(fanout.frames_between(&key, 1, 1).len(), 1, "the window holds the frame");
+        fanout.evict_ring(&key);
+        assert_eq!(fanout.ring_bytes(&key), 0, "the ring is gone");
+        assert_eq!(fanout.total_ring_bytes(), 0, "and the total with it");
+        assert!(fanout.frames_between(&key, 1, 1).is_empty(), "the window holds nothing");
+        assert_eq!(
+            fanout.next_seq(&key),
+            2,
+            "the number stays: a rewind would read as a repeat and be dropped",
+        );
+    }
+
+    /// **The compaction count survives the ring it was folded from.** A copy
+    /// rebuilt from a window holds only the boundaries after the window's
+    /// front, so the count is the fan-out's to keep.
+    #[test]
+    fn the_compaction_count_survives_a_ring_eviction() {
+        let fanout = UpdateFanout::default();
+        let key = seat("a-compacting-seat");
+        fanout.send(SessionUpdate::SessionReplaced {
+            key: key.clone(),
+            session_id: SessionId("an-occupant".to_owned()),
+            cwd: "/tmp".to_owned(),
+            current_model: CurrentModel::new("m", "m", "m"),
+            available_models: Vec::new(),
+            mode: None,
+            history: Vec::new(),
+            dropped: 0,
+            compaction_count: 2,
+        });
+        assert_eq!(fanout.compactions(&key), 2, "the seal states the epoch's count");
+        fanout.send(SessionUpdate::ChatAppended {
+            key: key.clone(),
+            msg: Message::CompactBoundary {
+                trigger: "auto".to_owned(),
+                pre_tokens: 10,
+                post_tokens: 4,
+                uuid: "c1".to_owned(),
+                session_id: "an-occupant".to_owned(),
+                metadata_extras: Extras::default(),
+                extras: Extras::default(),
+            },
+            source: None,
+        });
+        assert_eq!(fanout.compactions(&key), 3, "a boundary after it adds one");
+        assert_eq!(
+            fanout.compactions_before(&key, 1),
+            2,
+            "a copy rebuilt from a window starting at the boundary seeds with the count before it",
+        );
+        assert_eq!(
+            fanout.compactions_before(&key, 2),
+            3,
+            "and one starting after it seeds with the boundary already counted",
+        );
+        fanout.evict_ring(&key);
+        assert_eq!(fanout.compactions(&key), 3, "and the eviction does not reset it");
     }
 }

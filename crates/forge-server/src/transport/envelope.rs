@@ -613,10 +613,11 @@ pub enum ServerMessage {
         /// included.
         span: u64,
     },
-    /// A page of one conversation, in answer to `more`: whole turns, each with
-    /// the key the server named it by and the messages it ran as. Grouping a
-    /// run of calls inside a turn is the client's, so the messages cross and no
-    /// drawing of them does.
+    /// A page of one conversation, in answer to `more`: turns, each with the
+    /// key the server named it by and the messages it ran as - and a turn over
+    /// the page's budget as several pieces of itself. Grouping a run of calls
+    /// inside a turn is the client's, so the messages cross and no drawing of
+    /// them does.
     Page {
         conversation: SessionSlot,
         turns: Vec<crate::transport::wire::TurnWire>,

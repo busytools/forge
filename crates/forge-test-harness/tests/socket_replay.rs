@@ -353,7 +353,7 @@ census!(Command,
         RespondVaultAsk struct,
         BiometricEnrol struct, BiometricRewrite struct, BiometricRelease struct,
         BiometricRevoke struct,
-        VaultLock unit, VaultEnrolmentMaterial struct,
+        VaultLock unit, VaultEnrolmentMaterial struct, VaultUnlock struct,
         RespondQuestion struct, SetDictateOverride struct, ResetDictateOverrides struct,
         DictateCatalogueCheck struct, DictateInstall struct,
         DictateActivate struct, DictateDeactivate struct, DictateBench struct,
@@ -2098,6 +2098,21 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
         sample(Command::VaultEnrolmentMaterial { respond: None }),
     );
     sampled.insert("VaultLock".to_owned(), sample(Command::VaultLock));
+    // The settings page's direct unlock, which the client writes by hand: a
+    // rename of `password`, `two_factor` or `released` would leave its
+    // literal writing a key nothing reads with both sides' suites green.
+    sampled.insert(
+        "VaultUnlock".to_owned(),
+        sample(Command::VaultUnlock {
+            password: Some("sample".to_owned()),
+            two_factor: Some("123456".to_owned()),
+            released: Some(forge_primitives::vault::VaultReleased {
+                refresh_token: "sample-refresh".to_owned(),
+                user_key: "sample-user-key".to_owned(),
+            }),
+            respond: None,
+        }),
+    );
     // **The held Slack draft's answer**, which the dock writes by hand: a
     // rename of `answer` or of the send-back's own `note` would leave the
     // client's literal writing a key nothing reads, with both sides' suites

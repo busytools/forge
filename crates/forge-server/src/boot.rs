@@ -986,12 +986,52 @@ pub fn stop_result(unready: &[forge_primitives::SessionSlot]) -> anyhow::Result<
     );
 }
 
+/// How long the exit waits for blocking work still in flight.
+///
+/// Dropping a tokio runtime joins its blocking pool with no bound, and the
+/// boot's own work can run long: the voice prewarm loads the speaking model
+/// there, and a stop can land inside that load on a server nobody has
+/// connected to yet (#3050). The stop path already bounds session teardown;
+/// this is the same promise for the blocking pool, and a blocking thread
+/// dies with the process, so nothing it held outlives the exit.
+pub const BLOCKING_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Close the runtime the process is exiting from, bounded by
+/// [`BLOCKING_DRAIN_GRACE`].
+///
+/// `shutdown_timeout` rather than a drop: a drop waits for every
+/// `spawn_blocking` task to finish, so a stop inside a boot-time model load
+/// held the process open for the whole load (#3050).
+pub fn close_runtime(runtime: tokio::runtime::Runtime) {
+    close_runtime_within(runtime, BLOCKING_DRAIN_GRACE);
+}
+
+/// [`close_runtime`] with the budget injected, so a case can drive the
+/// expiry without sitting out the production grace.
+pub(crate) fn close_runtime_within(runtime: tokio::runtime::Runtime, grace: std::time::Duration) {
+    let started = std::time::Instant::now();
+    runtime.shutdown_timeout(grace);
+    let waited = started.elapsed();
+    // `shutdown_timeout` answers when the pool drains or when the grace runs
+    // out, and it reports neither, so the clock is the only signal there is.
+    // A clean drain descheduled across the deadline therefore reads as an
+    // expiry: this line is a coarse flag, not a precise verdict.
+    if waited >= grace {
+        tracing::warn!(
+            event_name = "shutdown_blocking_drain_expired",
+            grace_ms = grace.as_millis(),
+            waited_ms = waited.as_millis(),
+            "the exit's grace ran out with blocking work still running and left it behind"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        BOOT_WAVE_WAIT, install_crypto_provider, install_shipped_skills, panic_record,
-        run_startup_gate, start_boot_wave, start_config_watch, start_subsystems, stop_result,
-        wait_for_accounts,
+        BLOCKING_DRAIN_GRACE, BOOT_WAVE_WAIT, close_runtime, close_runtime_within,
+        install_crypto_provider, install_shipped_skills, panic_record, run_startup_gate,
+        start_boot_wave, start_config_watch, start_subsystems, stop_result, wait_for_accounts,
     };
     #[cfg(target_os = "macos")]
     use super::{configure_fleet_profiles, reap_then_prune};
@@ -1208,6 +1248,116 @@ mod tests {
         let rendered = format!("{error}");
         assert!(rendered.contains("2 sessions"), "two sessions read as two: {rendered}");
         assert!(rendered.contains("their process trees"), "and take the plural: {rendered}");
+    }
+
+    /// **The exit's wait on blocking work is bounded.** The voice prewarm
+    /// loads the speaking model on the blocking pool, so a stop inside an
+    /// idle boot's warm used to hold the process open for the whole load
+    /// (#3050). The parked task here stands in for that load: the close must
+    /// answer on its grace, not when the load ends.
+    #[test]
+    fn the_runtime_close_answers_on_its_grace_with_a_blocking_task_parked() {
+        // The task's own timeout is the test's escape, not the property: a
+        // close that waits for the task fails the elapsed bound below
+        // instead of hanging the suite.
+        const PARKED: Duration = Duration::from_secs(2);
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let (started, started_rx) = std::sync::mpsc::channel();
+        let (_release, parked) = std::sync::mpsc::channel::<()>();
+        runtime.spawn(async move {
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = started.send(());
+                let _ = parked.recv_timeout(PARKED);
+            })
+            .await;
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the blocking task starts before the close is asked for");
+
+        let grace = Duration::from_millis(250);
+        let began = std::time::Instant::now();
+        let events = crate::test_support::logged(|| close_runtime_within(runtime, grace));
+        let waited = began.elapsed();
+
+        assert!(
+            waited < grace + Duration::from_secs(1),
+            "the close answers on its grace, not when the parked task ends: waited {waited:?}"
+        );
+        assert!(
+            events.iter().any(|(level, fields)| {
+                *level == tracing::Level::WARN
+                    && fields.contains("event_name=\"shutdown_blocking_drain_expired\"")
+                    && fields.contains("grace_ms=250")
+                    && fields.contains("waited_ms=")
+            }),
+            "an expired drain names its event, its grace and the wait: {events:?}"
+        );
+    }
+
+    /// **The production entry is the one under test.** The seam case injects
+    /// its own budget, so a `close_runtime` that dropped instead, or passed
+    /// any other grace, would leave it green: this case parks the task well
+    /// past the production grace and reads the production constant off the
+    /// warning it must write.
+    #[test]
+    fn the_production_close_answers_on_the_production_grace() {
+        // Well past the production grace; the test's escape, not the
+        // property.
+        const PARKED: Duration = Duration::from_secs(20);
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let (started, started_rx) = std::sync::mpsc::channel();
+        let (_release, parked) = std::sync::mpsc::channel::<()>();
+        runtime.spawn(async move {
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = started.send(());
+                let _ = parked.recv_timeout(PARKED);
+            })
+            .await;
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the blocking task starts before the close is asked for");
+
+        let began = std::time::Instant::now();
+        let events = crate::test_support::logged(|| close_runtime(runtime));
+        let waited = began.elapsed();
+
+        assert!(
+            waited >= BLOCKING_DRAIN_GRACE,
+            "the close spends its grace on the parked task rather than answering early: waited \
+             {waited:?}"
+        );
+        assert!(
+            waited < BLOCKING_DRAIN_GRACE + Duration::from_secs(1),
+            "the production close answers on its grace, not when the parked task ends: waited \
+             {waited:?}"
+        );
+        let fields = events
+            .iter()
+            .find(|(level, fields)| {
+                *level == tracing::Level::WARN
+                    && fields.contains("event_name=\"shutdown_blocking_drain_expired\"")
+            })
+            .map(|(_, fields)| fields.clone())
+            .expect("the production grace expired, so the drain reports it");
+        assert!(
+            fields.contains(&format!("grace_ms={}", BLOCKING_DRAIN_GRACE.as_millis())),
+            "the warning names the production grace: {fields}"
+        );
+        assert!(fields.contains("waited_ms="), "the warning carries the wait: {fields}");
+    }
+
+    /// **A clean close is silent.** Nothing was parked, so the drain never
+    /// spends its grace and the warning a stop can point at must not appear.
+    #[test]
+    fn a_close_with_nothing_parked_writes_no_drain_warning() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let events = crate::test_support::logged(|| close_runtime(runtime));
+        assert!(
+            !events.iter().any(|(_, fields)| fields.contains("shutdown_blocking_drain_expired")),
+            "a drain that never met its grace is not a problem to report: {events:?}"
+        );
     }
 
     /// A bare boot fixture: one project whose account is base-url'd at a dead

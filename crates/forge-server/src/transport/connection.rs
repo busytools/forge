@@ -2948,9 +2948,11 @@ where
             // Paging walks nothing: the walk belongs to the seat's hold and
             // its loop now, so a page reads the store the way every other read
             // does - and a seat nobody held is a seat nothing walks.
-            // The window slices the boundaries the fold reported, so a turn
-            // crosses whole. Slicing on a count of messages instead is what
-            // would hand a client half a turn.
+            // The window slices the boundaries the fold reported, so a page
+            // cuts on turns - and inside one only where a turn alone is over
+            // the byte budget, each piece opening exactly where the page
+            // above ended. Slicing on a count of messages instead is what
+            // would hand a client a piece with no handle to the rest of it.
             //
             // The fold runs in a blocking task and NOT under the lock: the
             // socket folds the core's stream in one task for every seat, so a
@@ -2959,8 +2961,15 @@ where
             // A page is not the open path, so the timings a subscribing read
             // reports are not this one's to gather: the throwaway goes with
             // the call.
+            // **A seed says how far the seat's stream stood when it was read**,
+            // so a seat the budget evicted seeds with the number its answer
+            // would carry and a later fill does not re-apply the same rows.
+            // **No read guard here**: this path holds the `Arc` it is handed,
+            // and an eviction can drop the map entry without touching the copy
+            // the page is built from.
+            let cover = state.surface.seat_next_seq(&conversation).saturating_sub(1);
             let Some(held) =
-                conversation_for(state, &conversation, &mut OpenTimings::default()).await
+                conversation_for(state, &conversation, &mut OpenTimings::default(), cover).await
             else {
                 // **A question that cannot be answered is REFUSED rather than
                 // answered with a value that looks like one.** An empty page
@@ -5212,6 +5221,12 @@ fn dispatch_answering(
             let command = Command::VaultEnrolmentMaterial { respond: Some(tx) };
             answered(state, command, to, rx, reply_tx);
         }
+        Command::VaultUnlock { password, two_factor, released, .. } => {
+            let (tx, rx) = oneshot::channel();
+            let command =
+                Command::VaultUnlock { password, two_factor, released, respond: Some(tx) };
+            answered(state, command, to, rx, reply_tx);
+        }
         // Every other command is fire-and-forget: success sends nothing
         // extra, because the update arrives through the subscription the
         // client already has.
@@ -5418,6 +5433,7 @@ fn answers_through_a_reply(command: &Command) -> bool {
             | Command::BiometricEnrol { .. }
             | Command::BiometricRewrite { .. }
             | Command::VaultEnrolmentMaterial { .. }
+            | Command::VaultUnlock { .. }
             // The file uploads are the transport's own, answered from the
             // inbox registry before the workspace sees them.
             | Command::FileUploadBegin { .. }
@@ -5818,6 +5834,55 @@ mod tests {
         };
         assert_eq!(reply_to, 8);
         assert_eq!(body, serde_json::json!(false), "an unknown id cannot be created");
+    }
+
+    /// **The unlock answers through the reply route.** Missing from
+    /// `dispatch_answering` it falls to the fire-and-forget arm with no
+    /// sender; missing from `answers_through_a_reply` the transport refuses
+    /// it before dispatch. Either omission leaves the settings dialog busy
+    /// until its bound with nothing saying why - the same double omission
+    /// the rewrite's test names, and the one the live dialog hit.
+    #[tokio::test]
+    async fn a_vault_unlock_answers_through_its_reply() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fleet = crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        let transport = a_transport(fleet.workspace());
+
+        assert!(
+            answers_through_a_reply(&Command::VaultUnlock {
+                password: Some("open sesame".to_owned()),
+                two_factor: None,
+                released: None,
+                respond: None,
+            }),
+            "the unlock reports through its reply",
+        );
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        dispatch_answering(
+            &transport,
+            Command::VaultUnlock {
+                password: Some("open sesame".to_owned()),
+                two_factor: None,
+                released: None,
+                respond: None,
+            },
+            7,
+            &tx,
+        );
+        let Some(Answer::Reply(message)) = rx.try_recv().ok() else {
+            panic!("the unlock's answer is written inside its dispatch");
+        };
+        let ServerMessage::Reply { reply_to, body } = *message else {
+            panic!("the unlock's answer is not a reply");
+        };
+        assert_eq!(reply_to, 7);
+        assert_eq!(body["outcome"], "refused", "no vault refuses by name");
+        assert!(
+            body["reason"].as_str().is_some_and(|reason| reason.contains("[vault]")),
+            "the refusal names the missing section: {body}",
+        );
     }
 
     /// **A submitted review carries its summary into the same spend**, and

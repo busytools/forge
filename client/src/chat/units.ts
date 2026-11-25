@@ -57,28 +57,37 @@ import { formatRateLimitSummary, rateLimitNoticeKey } from './rate-limit';
 import { firstLine, isSlackId, stripEscapes } from './text';
 
 /**
- * The stops the held turns carry, resolved across every one of them.
+ * The facts a single turn's fold needs from the whole page it sits in.
  *
  * **Page-level, because a prompt opens a turn.** A job started in one prompt
- * and stopped in the next has its launch in an earlier turn than its stop, so
- * a fold that resolved stops within the turn it was folding would mark nothing
- * and draw the stop as a stray row. The held turns are the page, and `fold`
- * reads these.
+ * and stopped in the next has its launch in an earlier turn than its stop; a
+ * sub-agent's ending arrives in a later turn than the dispatch that opened it.
+ * A fold that resolved either within the turn it was folding would draw a
+ * stray row, or the wrong one. The held turns are the page, and `fold` reads
+ * these.
  */
-export interface PageStops {
+export interface PageFacts {
   /** The task a stop ended, by the call it settled - only calls whose
    * `tool_use` the page holds, because those are the rows a mark can land on. */
   settled: ReadonlyMap<string, string>;
   /** The stop calls whose target the page holds, by the stop's own call id:
    * the stops drawn on a call's row rather than as rows of their own. */
   drawn: ReadonlySet<string>;
+  /** The `Task`/`Agent` dispatch calls the page holds, by call id: a task
+   * ending naming one of these draws on that dispatch's row rather than as a
+   * notice of its own. */
+  dispatches: ReadonlySet<string>;
 }
 
-/** What a page with no stops gets: one shared value, so its turns memoize as they did before. */
-export const NO_STOPS: PageStops = { settled: new Map(), drawn: new Set() };
+/** What a page with no facts gets: one shared value, so its turns memoize as they did before. */
+export const NO_FACTS: PageFacts = {
+  settled: new Map(),
+  drawn: new Set(),
+  dispatches: new Set(),
+};
 
 /**
- * The stops the held turns carry, resolved as a folded turn reads them.
+ * The page facts the held turns carry, resolved as a folded turn reads them.
  *
  * **Carried per turn, not walked per frame**: the derive that asks this sits in
  * the live path, and a walk of the page per arriving frame is the cost the
@@ -86,9 +95,11 @@ export const NO_STOPS: PageStops = { settled: new Map(), drawn: new Set() };
  * extended, and only by the frames it gained.
  *
  * The frames are read by the same `addJoinFrame` the strip uses, so the two
- * cannot disagree on a launch's link or a stop's success.
+ * cannot disagree on a launch's link or a stop's success. The dispatch set is
+ * the join's own held calls filtered by name, so it is the calls whose ROWS
+ * the page holds and no others.
  */
-export function stopsOf(turns: readonly { messages: readonly unknown[] }[]): PageStops {
+export function pageFactsOf(turns: readonly { messages: readonly unknown[] }[]): PageFacts {
   const pages = turns.map((turn) => carriedValue(turn, 'stops', seedJoin, addJoinFrame));
   const merged = seedJoin();
   // The CLI's own link first, then a launch sentence only where nothing has
@@ -106,6 +117,9 @@ export function stopsOf(turns: readonly { messages: readonly unknown[] }[]): Pag
   }
   for (const facts of pages) {
     for (const id of facts.held) merged.held.add(id);
+    // The names are what the dispatch set is filtered by, so they merge with
+    // the calls rather than being left per turn.
+    for (const [call, name] of facts.names) merged.names.set(call, name);
     for (const [stop, task] of facts.asks) merged.asks.set(stop, task);
     for (const [stop, ok] of facts.answers) merged.answers.set(stop, ok);
   }
@@ -120,7 +134,15 @@ export function stopsOf(turns: readonly { messages: readonly unknown[] }[]): Pag
     settled.set(call, task);
     drawn.add(stop);
   }
-  return settled.size === 0 ? NO_STOPS : { settled, drawn };
+  // The pages' dispatches: held calls whose own name says they opened an
+  // instance. A name the CLI reports some other way stays out, so an ending
+  // naming it keeps its own row.
+  const dispatches = new Set<string>();
+  for (const [call, name] of merged.names) {
+    if (merged.held.has(call) && (name === 'Task' || name === 'Agent')) dispatches.add(call);
+  }
+  if (settled.size === 0 && dispatches.size === 0) return NO_FACTS;
+  return { settled, drawn, dispatches };
 }
 
 /** One question the assistant asked, with what was answered. */
@@ -352,13 +374,18 @@ export interface HookGroupLeaf {
 }
 
 /**
- * What one turn's stop hooks did, as a row of the turn's work.
+ * What one stop of a turn's hooks did.
  *
  * **The frame carries no per-hook run**, only the commands and how many errors
- * the batch reported - and the errors name no hook - so the row holds the
+ * the batch reported - and the errors name no hook - so the batch holds the
  * counts and the lists rather than folding them onto runs. It arrives once the
- * batch has settled, so the row lands where it fired: among the calls around it
- * rather than as a line of its own.
+ * batch has settled.
+ *
+ * **Where it draws depends on what it carries.** A batch carrying output, an
+ * error, additional context or a prevented continuation is a row of the turn's
+ * work, where it fired; a silent one is counted at the turn's foot by
+ * {@link HookFootLeaf}. Both shapes are this leaf, so the two surfaces read one
+ * set of fields.
  */
 export interface HookBatchLeaf {
   /** The frame the batch arrived on, which is what the row is keyed by. */
@@ -367,6 +394,101 @@ export interface HookBatchLeaf {
   infos: HookInfo[];
   /** The errors the CLI reported against the batch, which name no hook. */
   errors: string[];
+  /** Whether any hook in the batch printed something (wire `hasOutput`). */
+  hasOutput: boolean;
+  /** What the batch added to the session's context, from the wire's
+   * `hookAdditionalContext` - a hook's way of saying something to the model. */
+  additionalContext: string[];
+  /** Whether any hook held the turn open (wire `preventedContinuation`). */
+  preventedContinuation: boolean;
+}
+
+/**
+ * A turn's silent hook batches, as one row at its foot.
+ *
+ * **The batch still draws; the row it costs changes.** Every stop runs the
+ * same few silent hooks (issue #3054: three, on every stop), and one full
+ * disclosure row per stop buried the turn's own work in a long session. A
+ * silent batch is counted here and listed whole behind the chip, so nothing
+ * is hidden (rule 25) and a reader who cares can still see every command and
+ * its duration. A batch that carries anything is not silent and keeps its own
+ * row where it fired.
+ */
+export interface HookFootLeaf {
+  /** The first silent batch's key, which is what the row is keyed by. */
+  key: string;
+  /** Every silent batch the turn ran, in arrival order. */
+  batches: HookBatchLeaf[];
+  /** The hooks they counted, summed - what the closed chip says. */
+  actions: number;
+}
+
+/** The strings of a wire list, dropping anything that is not one. */
+function stringsOf(value: unknown): string[] {
+  return (Array.isArray(value) ? value : []).filter(
+    (held): held is string => typeof held === 'string',
+  );
+}
+
+/**
+ * A `stop_hook_summary` frame as the row shape both folds draw it.
+ *
+ * **The wire's own names, not the Rust fields they stand for**: the message
+ * renames them on the way out (`hookCount`, `hookInfos`, `hookErrors`,
+ * `hookAdditionalContext`, `hasOutput`, `preventedContinuation`), so a read of
+ * `actions`/`hook_infos` is always undefined and a row reading them has never
+ * drawn on a real session. One parser for the session's fold and a dispatch's
+ * timeline, so the two cannot drift on what a batch is.
+ */
+export function hookBatchOf(frame: unknown, key: string): HookBatchLeaf {
+  const held = obj(frame);
+  const count = held['hookCount'];
+  const infos = Array.isArray(held['hookInfos']) ? held['hookInfos'] : [];
+  return {
+    key,
+    actions: typeof count === 'number' ? count : 0,
+    infos: infos.map((info) => {
+      const took = obj(info)['durationMs'];
+      return {
+        command: str(info, 'command') ?? '',
+        ...(typeof took === 'number' ? { durationMs: took } : {}),
+      };
+    }),
+    // The errors name no hook, so they are carried beside the hook rows
+    // rather than against one of them.
+    errors: stringsOf(held['hookErrors']),
+    hasOutput: held['hasOutput'] === true,
+    additionalContext: stringsOf(held['hookAdditionalContext']),
+    preventedContinuation: held['preventedContinuation'] === true,
+  };
+}
+
+/**
+ * Whether a batch carries anything a reader is owed without opening it.
+ *
+ * **Silent is the everyday case**: the reported seat's every stop ran the same
+ * three hooks with no output, no errors and no context (#3054). A batch that
+ * reports any of the four keeps its own row; the rest go behind the turn
+ * foot's chip.
+ */
+export function carryingBatch(batch: HookBatchLeaf): boolean {
+  return (
+    batch.errors.length > 0 ||
+    batch.hasOutput ||
+    batch.additionalContext.length > 0 ||
+    batch.preventedContinuation
+  );
+}
+
+/** Whether a batch has anything to draw behind its open. */
+export function batchHasBody(batch: HookBatchLeaf): boolean {
+  return (
+    batch.infos.length > 0 ||
+    batch.errors.length > 0 ||
+    batch.additionalContext.length > 0 ||
+    batch.hasOutput ||
+    batch.preventedContinuation
+  );
 }
 
 /**
@@ -383,6 +505,7 @@ export type WorkRow =
   | ({ tag: 'hook' } & HookLeaf)
   | ({ tag: 'hookgroup' } & HookGroupLeaf)
   | ({ tag: 'hookbatch' } & HookBatchLeaf)
+  | ({ tag: 'hookfoot' } & HookFootLeaf)
   | ({ tag: 'inbound' } & InboundLeaf)
   | ({ tag: 'nudge' } & NudgeLeaf)
   | ({ tag: 'procedure' } & ProcedureLeaf);
@@ -698,11 +821,17 @@ function brief(value: unknown): string {
  * **The transcript read filters the same list** (its own
  * `SYSTEM_ROWS_DRAWN_ELSEWHERE`), because the read and the live path are one
  * obligation - a subtype added here belongs there, and the other way round.
+ *
+ * **`task_notification` is the one the lists divide on, and the division is
+ * the carriers'.** A transcript never holds the frame - the CLI persists the
+ * same event as a user notice row, which the read draws - so the read's list
+ * still names it. The live wire sends the frame and no user row at all, so
+ * the live fold draws the notice itself (the arm below); leaving it in this
+ * set would silence the only carrier the live path has.
  */
 const SYSTEM_DRAWN_ELSEWHERE: ReadonlySet<string> = new Set([
   'task_started',
   'task_updated',
-  'task_notification',
   'background_tasks_changed',
   'commands_changed',
   'init',
@@ -729,6 +858,9 @@ interface Frame {
   hookCount?: unknown;
   hookInfos?: unknown;
   hookErrors?: unknown;
+  hookAdditionalContext?: unknown;
+  hasOutput?: unknown;
+  preventedContinuation?: unknown;
   /** The run three frames report on: a start, its progress, and its response. */
   hook_id?: unknown;
   hook_name?: unknown;
@@ -2029,17 +2161,18 @@ function noticeFields(words: string): {
  * unterminated call and settles failed. The resume in the view this client
  * replaced did the same, where leaving it pending spins the row forever.
  *
- * `stops` is the PAGE's own facts, not this turn's: a prompt opens a turn, so
+ * `page` is the PAGE's own facts, not this turn's: a prompt opens a turn, so
  * a job started in one prompt and stopped in the next has its launch in a
- * turn this fold does not hold. The caller resolves them across every held
- * turn (`stopsOf`); the default is a page that carries none.
+ * turn this fold does not hold, and a sub-agent's ending arrives in a later
+ * turn than its dispatch. The caller resolves them across every held turn
+ * (`pageFactsOf`); the default is a page that carries none.
  */
 export function fold(
   messages: readonly unknown[],
   self: Self | null = null,
   live = false,
   ended = false,
-  stops: PageStops = NO_STOPS,
+  page: PageFacts = NO_FACTS,
 ): Unit[] {
   const frames = messages as Frame[];
   /**
@@ -2266,6 +2399,25 @@ export function fold(
    * the traffic: the list is one sequence, and an item joins it where it lands.
    */
   let pending: WorkRow[] = [];
+  /**
+   * The turn's silent hook batches, in arrival order: the turn foot's chip.
+   *
+   * Kept apart from `pending` because the chip is drawn once, at the foot,
+   * however many batches it counts - and a batch that carries anything is not
+   * silent and went into `pending` as its own row.
+   */
+  const silentBatches: HookBatchLeaf[] = [];
+  /**
+   * The endings this fold suppressed because the page holds the dispatch
+   * they name.
+   *
+   * **A turn must never draw as a blank band**, and the page facts can change
+   * under a held turn: an older page landing can bring a dispatch the turn's
+   * ending was drawn without. The suppression is right - the dispatch row is
+   * the finish - but a turn left with nothing at all still needs its marker,
+   * so the suppressed line is kept until the fold can tell.
+   */
+  const suppressed: { key: string; text: string }[] = [];
   let model: string | null = null;
   let thinking: number | null = null;
   /**
@@ -2677,31 +2829,18 @@ export function fold(
         continue;
       }
       if (frame.subtype === 'stop_hook_summary') {
-        // The wire's own names, not the Rust fields they stand for: the
-        // message renames both on the way out (`hookCount`, `hookInfos`), so a
-        // read of `actions`/`hook_infos` is always undefined and the row has
-        // never drawn on a real session.
-        const actions = typeof frame.hookCount === 'number' ? frame.hookCount : 0;
-        if (actions > 0) {
-          // A row of the turn's work rather than a unit of its own: the batch
-          // is work the turn did, so it lands among the calls it fired between
-          // - the rule the hook rows beside it already follow.
-          pending.push({
-            tag: 'hookbatch',
-            key: keyOf(at, frame, 'hookbatch'),
-            actions,
-            infos: (Array.isArray(frame.hookInfos) ? frame.hookInfos : []).map((info) => ({
-              command: str(info, 'command') ?? '',
-              ...(typeof obj(info)['durationMs'] === 'number'
-                ? { durationMs: obj(info)['durationMs'] as number }
-                : {}),
-            })),
-            // The errors name no hook, so they are carried beside the hook
-            // rows rather than against one of them.
-            errors: (Array.isArray(frame.hookErrors) ? frame.hookErrors : []).filter(
-              (error): error is string => typeof error === 'string',
-            ),
-          });
+        const batch = hookBatchOf(frame, keyOf(at, frame, 'hookbatch'));
+        // A zero-action frame draws nothing: there is no batch to speak of.
+        if (batch.actions > 0) {
+          // **A row of the turn's work, where it fired, or a count at the
+          // turn's foot.** A batch that carries anything - output, an error,
+          // additional context, a prevented continuation - is information the
+          // reader is owed without opening it, so it keeps its own disclosure
+          // row among the calls it fired between. A silent batch (the same
+          // three plugin hooks on every stop, #3054) is collected and drawn as
+          // one chip at the foot, counted and listed whole behind it.
+          if (carryingBatch(batch)) pending.push({ tag: 'hookbatch', ...batch });
+          else silentBatches.push(batch);
         }
         continue;
       }
@@ -3094,6 +3233,31 @@ export function fold(
       // card, so its phase and agent tree has no other surface and keeps the
       // row below - a tick drawn nowhere is a tick the reader never sees.
       if (system === 'task_progress' && !Array.isArray(frame['workflow_progress'])) continue;
+      // **The live carrier of a background completion.** The wire sends this
+      // frame and no user row, so drawing it here is what keeps the live and
+      // read paths one obligation: the read's carrier is the notice row the
+      // CLI persisted, and both draw the same line. An agent's ending draws on
+      // its dispatch row instead, so its notice stays off the page.
+      if (system === 'task_notification') {
+        const call = str(frame, 'tool_use_id');
+        const summary = str(frame, 'summary');
+        const shown = summary !== null && summary.trim() !== '';
+        if (shown && call !== null && page.dispatches.has(call)) {
+          // The ending's row is the dispatch row; kept only as this turn's
+          // marker should the turn otherwise draw nothing (below).
+          suppressed.push({ key: keyOf(at, frame, 'notice'), text: summary });
+          continue;
+        }
+        if (shown) {
+          push({
+            kind: 'notice',
+            key: keyOf(at, frame, 'notice'),
+            notice: { severity: 'info', text: summary },
+          });
+          continue;
+        }
+        // No summary: the frame falls through and draws as itself (rule 25).
+      }
       if (system === null || !SYSTEM_DRAWN_ELSEWHERE.has(system)) {
         push({
           kind: 'notice',
@@ -3271,9 +3435,22 @@ export function fold(
           // as itself, the default rule 25 keeps.
           const taskEnd = taskNotificationOf(stripped);
           if (taskEnd !== null) {
+            // **A sub-agent's ending draws on the sub-agent's row.** The
+            // dispatch row already carries the finish - its card flips when
+            // the agent ends - so a notice beside it is the same fact twice
+            // (Ved, 2026-11-24). The frame is not dropped: it is what that
+            // row ends on, the way a tool result is what its call's row
+            // carries. A call the page does not hold keeps the notice, which
+            // is then the only row the fact has (rule 25).
+            const said = noticeFields(stripEscapes(stripped));
+            const key = keyOf(at, frame, blockAt);
+            if (said.call !== null && page.dispatches.has(said.call)) {
+              suppressed.push({ key, text: taskEnd });
+              continue;
+            }
             push({
               kind: 'notice',
-              key: keyOf(at, frame, blockAt),
+              key,
               notice: { severity: 'info', text: taskEnd },
             });
             continue;
@@ -3471,9 +3648,16 @@ export function fold(
           // two carriers agree on what counts as a summary.
           const said = noticeFields(stripEscapes(words));
           if (said.summary !== null && said.summary !== '') {
+            // The dispatch row is the finish row here too: the text and
+            // queued carriers are one fact, and both read the same field.
+            const key = keyOf(at, frame, blockAt);
+            if (said.call !== null && page.dispatches.has(said.call)) {
+              suppressed.push({ key, text: said.summary });
+              continue;
+            }
             push({
               kind: 'notice',
-              key: keyOf(at, frame, blockAt),
+              key,
               notice: { severity: 'info', text: said.summary },
             });
             continue;
@@ -3560,7 +3744,7 @@ export function fold(
 
         // A stop whose call the page holds draws as that call's own mark, in
         // the call's turn, rather than as a second row beside it.
-        if (name === 'TaskStop' && id !== '' && stops.drawn.has(id)) continue;
+        if (name === 'TaskStop' && id !== '' && page.drawn.has(id)) continue;
 
         const card = outbound(
           name,
@@ -3611,7 +3795,7 @@ export function fold(
           // A call the CLI refused on permission grounds is settled by that
           // refusal: no result frame follows it.
           abandoned || refused,
-          stops.settled.get(id) ?? null,
+          page.settled.get(id) ?? null,
           refusals.get(id) ?? null,
         );
         // Recorded before the row is pushed: whatever settles a call later,
@@ -3668,6 +3852,37 @@ export function fold(
   }
 
   flushWork();
+  // The turn foot's chip: every silent batch as one row, above the turn's own
+  // report where it drew one, because the chip is the last row of the WORK
+  // rather than a footer under the accounting.
+  if (silentBatches.length > 0) {
+    const first = silentBatches[0];
+    const foot: WorkRow = {
+      tag: 'hookfoot',
+      key: first === undefined ? 'hookfoot' : `${first.key}#hookfoot`,
+      batches: silentBatches,
+      actions: silentBatches.reduce((sum, batch) => sum + batch.actions, 0),
+    };
+    const reports = units.map((unit) => unit.kind);
+    const lastReport = reports.lastIndexOf('report');
+    const at = lastReport < 0 ? units.length : lastReport;
+    const held = units[at - 1];
+    if (held !== undefined && held.kind === 'leaves') {
+      units.splice(at - 1, 1, { ...held, rows: [...held.rows, foot] });
+    } else {
+      units.splice(at, 0, { kind: 'leaves', key: foot.key, rows: [foot] });
+    }
+  }
+  // **A turn with nothing else keeps its endings' markers.** The suppression
+  // above is the dispatch-row rule; a page that later gains the dispatch can
+  // take away the only line a held turn had, and a turn drawing nothing is
+  // the 24px blank band the list gives every turn. A live turn is not blank -
+  // its running report is its row - so only a settled fold takes markers.
+  if (units.length === 0 && suppressed.length > 0 && !(live && !sawResult)) {
+    for (const held of suppressed) {
+      push({ kind: 'notice', key: held.key, notice: { severity: 'info', text: held.text } });
+    }
+  }
   // A live turn that has not settled draws its own row from what its frames
   // already carry: the stamps give the span so far, the assistant messages'
   // usage gives the token side, the counter frames give thinking. The
@@ -3737,8 +3952,8 @@ interface TurnMemo {
   self: Self | null;
   live: boolean;
   ended: boolean;
-  /** The page's stops this memo folded with, compared by value below. */
-  stops: PageStops;
+  /** The page facts this memo folded with, compared by value below. */
+  facts: PageFacts;
   /** The fold this memo holds. */
   units: Unit[];
   /** The running row this fold drew, when it drew one, whose figures move. */
@@ -3759,21 +3974,30 @@ interface TurnMemo {
 const memos = new WeakMap<object, TurnMemo>();
 
 /**
- * Whether two pages' stops say the same thing.
+ * Whether two pages' facts say the same thing.
  *
- * **By value, not by identity.** The stops are re-derived from the held turns
+ * **By value, not by identity.** The facts are re-derived from the held turns
  * on every arriving frame, and a fresh object with the same content must not
  * cost a re-fold of every turn on screen - which is what identity would do to
- * every turn for as long as any stop is on the page.
+ * every turn for as long as any fact is on the page.
  */
-function sameStops(a: PageStops, b: PageStops): boolean {
+function sameFacts(a: PageFacts, b: PageFacts): boolean {
   if (a === b) return true;
-  if (a.settled.size !== b.settled.size || a.drawn.size !== b.drawn.size) return false;
+  if (
+    a.settled.size !== b.settled.size ||
+    a.drawn.size !== b.drawn.size ||
+    a.dispatches.size !== b.dispatches.size
+  ) {
+    return false;
+  }
   for (const [call, task] of a.settled) {
     if (b.settled.get(call) !== task) return false;
   }
   for (const stop of a.drawn) {
     if (!b.drawn.has(stop)) return false;
+  }
+  for (const call of a.dispatches) {
+    if (!b.dispatches.has(call)) return false;
   }
   return true;
 }
@@ -4011,7 +4235,7 @@ function memoOf(
   self: Self | null,
   live: boolean,
   ended: boolean,
-  stops: PageStops,
+  facts: PageFacts,
 ): TurnMemo {
   const reportAt = units.findIndex((unit) => unit.kind === 'report' && unit.key === 'live-report');
   const running = units[reportAt];
@@ -4021,7 +4245,7 @@ function memoOf(
     self,
     live,
     ended,
-    stops,
+    facts,
     units,
     report,
     reportAt,
@@ -4036,7 +4260,7 @@ function memoOf(
  * The fold of one turn, carried between frames: see [`TurnMemo`].
  *
  * A turn that did not grow since the last fold, folded with the same seat, the
- * same running facts and the same page stops, is answered from the memo as it
+ * same running facts and the same page facts, is answered from the memo as it
  * stands.
  */
 export function turnFold(
@@ -4044,7 +4268,7 @@ export function turnFold(
   self: Self | null,
   live: boolean,
   ended: boolean,
-  stops: PageStops = NO_STOPS,
+  facts: PageFacts = NO_FACTS,
 ): Unit[] {
   const messages = turn.messages;
   const head = messages[0];
@@ -4054,7 +4278,7 @@ export function turnFold(
     memo.self === self &&
     memo.live === live &&
     memo.ended === ended &&
-    sameStops(memo.stops, stops) &&
+    sameFacts(memo.facts, facts) &&
     extendsFrom(memo.messages, messages)
   ) {
     const tail = messages.slice(memo.messages.length) as Frame[];
@@ -4064,9 +4288,9 @@ export function turnFold(
       return units;
     }
   }
-  const units = fold(messages, self, live, ended, stops);
+  const units = fold(messages, self, live, ended, facts);
   if (head !== null && typeof head === 'object') {
-    memos.set(head, memoOf(messages, units, self, live, ended, stops));
+    memos.set(head, memoOf(messages, units, self, live, ended, facts));
   }
   return units;
 }

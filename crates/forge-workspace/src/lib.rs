@@ -130,7 +130,7 @@ pub use target::{ProjectKey, SessionSlot, SessionTarget};
 pub use tts::{TtsSettings, TtsSnapshot, TtsView};
 
 pub use forge_tools::vault::VaultState;
-pub use update_fanout::SeatUpdate;
+pub use update_fanout::{ConversationEvictor, SeatUpdate};
 pub use views::{
     AccountGatewayView, AccountLoadingRow, AccountPoolView, AccountUsageView, ProjectView,
 };

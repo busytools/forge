@@ -60,7 +60,7 @@ fn run() -> anyhow::Result<()> {
     forge_server::startup::report_build_provenance();
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async move {
+    let outcome = rt.block_on(async move {
         // Every stop signal a system sends a long-lived server is registered
         // BEFORE anything binds: a SIGTERM racing the socket's bind would
         // otherwise meet the default disposition and kill the process
@@ -140,7 +140,13 @@ fn run() -> anyhow::Result<()> {
         }
         stopped?;
         Ok(())
-    })
+    });
+    // **The exit does not wait on the blocking pool without a bound.** The
+    // boot's voice warm loads the speaking model there, so a stop that lands
+    // inside it used to hold the process open for the whole load (#3050);
+    // the runtime is closed on a grace rather than dropped.
+    forge_server::boot::close_runtime(rt);
+    outcome
 }
 
 fn extract_app_error(err: &anyhow::Error) -> Option<AppError> {

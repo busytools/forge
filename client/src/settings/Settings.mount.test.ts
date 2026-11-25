@@ -106,13 +106,14 @@ describe('the settings page', () => {
       'browser',
       'server',
     ]);
-    expect(cards()[1]?.querySelector('.settings-card-count')?.textContent).toBe('2 keys');
+    expect(cards()[1]?.querySelector('.settings-card-count')?.textContent).toBe('3 keys');
     expect(cards()[0]?.querySelector('.settings-card-count')?.textContent).toBe('1 key');
 
     expect(rowKeys(), 'a line draws its leaf, not the path its card already names').toEqual([
       'idle_minutes',
       'port',
       'first_frame_cap_kb',
+      'conversation_memory_budget_bytes',
     ]);
     const port = rows().find(
       (row) => row.querySelector('code')?.getAttribute('title') === 'server.port',
@@ -329,8 +330,8 @@ describe('the settings page', () => {
             },
           ],
         },
-        device: { outcome: 'ready' },
-        onEnrolDevice: () => {},
+        device: { outcome: 'ready', biometric: true },
+        onVaultAction: () => {},
         vault: { locked: false, idle_minutes: 15 },
       },
     });
@@ -338,12 +339,12 @@ describe('the settings page', () => {
 
     expect(document.body.textContent).toContain("Ved's MacBook Pro");
     expect(document.body.textContent, 'the revoke is drawn with its purpose').toContain('revoke');
-    expect(document.body.textContent, 'this device draws its own gate state').toContain(
-      'not enrolled - enrol while the vault is unlocked',
+    expect(document.body.textContent, 'this client draws its own gate state').toContain(
+      'not enrolled',
     );
     expect(
       [...document.querySelectorAll('button')].some(
-        (button) => button.textContent?.trim() === 'enrol',
+        (button) => button.textContent?.trim() === 'enrol this client',
       ),
       "the enrol control is the person's own press",
     ).toBe(true);

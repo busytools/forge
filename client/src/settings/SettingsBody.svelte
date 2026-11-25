@@ -3,8 +3,7 @@
 
   import Brand from '../components/Brand.svelte';
   import ClassMark from '../components/ClassMark.svelte';
-  import BiometricCard from './BiometricCard.svelte';
-  import VaultLockCard from './VaultLockCard.svelte';
+  import VaultCard from './VaultCard.svelte';
   import type { DeviceGate } from '../biometric/device';
   import type { BiometricEnrolment, VaultWire } from '../wire/home';
   import { PROTOCOL_VERSION } from '../protocol';
@@ -63,7 +62,7 @@
     biometric = null,
     onRevokeBiometric = () => {},
     device = { outcome: 'reading' },
-    onEnrolDevice = () => {},
+    onVaultAction = () => {},
     vault = undefined,
     onLockVault = () => {},
   }: {
@@ -125,9 +124,9 @@
       | { outcome: 'failed'; value: string }
       | null;
     onRevokeBiometric?: (enrolment: string, purpose: string) => void;
-    /** This device's own gate state, for the enrol control. */
+    /** This client's own gate state, for the card's one action. */
     device?: DeviceGate;
-    onEnrolDevice?: () => void;
+    onVaultAction?: (action: 'enrol' | 'unlock') => void;
     /** The shared vault session's state: `undefined` before a home read,
      *  `null` for a config with no `[vault]`. */
     vault?: VaultWire | null | undefined;
@@ -376,22 +375,21 @@
             {/each}
           </InstanceCard>
           {#if area.id === 'connectors' && group.label === 'vault'}
-            <VaultLockCard state={vault} onlock={onLockVault} />
             <!-- **No enrol door without a vault**: the catalogue always emits
-                 this group, so the card is what must not draw an enrol press
-                 that can never succeed. `undefined` is a home not read yet. -->
-            {#if vault !== null && vault !== undefined}
-              <BiometricCard
-                read={biometric ?? {
-                  outcome: 'failed',
-                  value: 'this server does not report biometric enrolments',
-                }}
-                onrevoke={(enrolment: string, purpose: string) =>
-                  onRevokeBiometric(enrolment, purpose)}
-                {device}
-                onenrol={onEnrolDevice}
-              />
-            {/if}
+                 this group, so the card is what must not draw a press that
+                 can never succeed. `undefined` is a home not read yet. -->
+            <VaultCard
+              {vault}
+              read={biometric ?? {
+                outcome: 'failed',
+                value: 'this server does not report biometric enrolments',
+              }}
+              {device}
+              onaction={onVaultAction}
+              onrevoke={(enrolment: string, purpose: string) =>
+                onRevokeBiometric(enrolment, purpose)}
+              onlock={onLockVault}
+            />
           {/if}
         {/each}
         {#each added as entry (entry.path)}

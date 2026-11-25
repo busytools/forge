@@ -1911,6 +1911,30 @@ mod record_session_tool_surface_tests {
     }
 }
 
+/// The transport's seam onto the workspace's per-seat ring.
+///
+/// The transport owns the conversation budget and decides when a seat's held
+/// copy goes; the ring lives in the fan-out the workspace owns. This struct
+/// carries the fan-out's handle across that boundary so the eviction drops
+/// both halves of one seat's retained memory.
+struct WorkspaceRingEvictor {
+    update_tx: UpdateFanout,
+}
+
+impl crate::ConversationEvictor for WorkspaceRingEvictor {
+    fn evict_ring(&self, slot: &forge_primitives::SessionSlot) {
+        self.update_tx.evict_ring(slot);
+    }
+
+    fn total_ring_bytes(&self) -> usize {
+        self.update_tx.total_ring_bytes()
+    }
+
+    fn ring_bytes(&self, slot: &forge_primitives::SessionSlot) -> usize {
+        self.update_tx.ring_bytes(slot)
+    }
+}
+
 impl Workspace {
     /// Builds a Workspace, kicks off the background catalog scan and the
     /// claude version probe, and loads `<config_dir>/forge.toml`. Errors if
@@ -2649,6 +2673,15 @@ impl Workspace {
     /// socket - the workspace never does.
     pub fn server_config(&self) -> forge_primitives::ServerConfig {
         self.config_arc().server.clone()
+    }
+
+    /// The evictor the transport's conversation budget uses to drop a seat's
+    /// retained ring when it evicts that seat's held conversation.
+    ///
+    /// The transport owns the budget and the eviction; the workspace owns the
+    /// ring. This seam hands the ring's drop across so the two go together.
+    pub fn conversation_evictor(&self) -> Arc<dyn crate::ConversationEvictor> {
+        Arc::new(WorkspaceRingEvictor { update_tx: self.update_tx.clone() })
     }
 
     /// The live config as one owned snapshot. A reload swaps the whole
@@ -5829,6 +5862,20 @@ impl Workspace {
         self.update_tx.oldest_kept(key)
     }
 
+    /// How many times `key`'s stream has compacted: what a copy rebuilt from
+    /// the seat's window reports, since the window holds only the boundaries
+    /// after its front.
+    pub fn seat_compaction_count(&self, key: &SessionSlot) -> u32 {
+        self.update_tx.compactions(key)
+    }
+
+    /// How many times `key`'s stream had compacted before frame `seq`: the
+    /// count a copy rebuilt from the window seeds with, so the boundaries it
+    /// applies are counted exactly once.
+    pub fn seat_compaction_count_before(&self, key: &SessionSlot, seq: u64) -> u32 {
+        self.update_tx.compactions_before(key, seq)
+    }
+
     /// How many of the numbers in `from..=to` on `key`'s stream no window
     /// holds: the frames that close an epoch are numbered but kept out of the
     /// ring, so a reader measuring whether a copy covers a stretch leaves them
@@ -7939,6 +7986,11 @@ impl Workspace {
                     if let Some(respond) = respond {
                         let _ = respond.send(material);
                     }
+                }
+                // The settings page's own unlock: the session's network work
+                // runs in its spawned task and the outcome rides the reply.
+                Command::VaultUnlock { password, two_factor, released, respond } => {
+                    self.start_vault_unlock(password, two_factor, released, respond);
                 }
                 // **The socket's own.** A file upload's registry, its
                 // partials and its inbox write live on the transport,

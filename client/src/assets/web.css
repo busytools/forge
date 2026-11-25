@@ -2597,6 +2597,11 @@ details.hookrow > summary .ev strong, details.hookrow > summary .ev code { color
    thought's expansion is, so the hooks read as what the firing carried rather
    than as rows beside it. */
 details.hookgroup > .body { border-left: 1px solid var(--line); padding: 2px 0 2px 13px; }
+/* The turn foot's silent batches: one chip per turn, its batches listed whole
+   under it by the same body a carrying batch draws. Each batch is a group of
+   its own, spaced off the last so two stops' commands do not read as one. */
+details.hookfoot > .body { border-left: 1px solid var(--line); padding: 2px 0 2px 13px; }
+details.hookfoot .bfoot + .bfoot { margin-top: 7px; }
 /* An inbound row's tail line: the delivery's first line, at the warning tone
    where the wire said the delivery is elevated - clamped to its one line and
    taking the width the name leaves, the way the hook row's tail does. */
@@ -5203,6 +5208,10 @@ details[open] > summary .arw { opacity: 1; }
 .settings-page .settings-pane-body { padding-top: 2px; }
 .settings-page .settings-empty { font-family: var(--mono); font-size: var(--fs-label);
   color: var(--dim); margin: 14px 0; }
+/* **Inside a card the empty line takes the rows' own inset.** Measured on the
+   running app: a row's text starts 16px inside the card while the empty line
+   started at the border, which read as an unpadded description. */
+.settings-page .settings-card .settings-empty { padding: 0 16px; }
 
 /* an instance card: its head band, then one line per setting */
 .settings-page .settings-card { border: 1px solid var(--line); border-radius: 12px;
@@ -5355,8 +5364,25 @@ details[open] > summary .arw { opacity: 1; }
 .settings-dialog .s { font-size: var(--fs-data); color: var(--muted);
   margin: 8px 0 16px; }
 .settings-dialog .acts { display: flex; justify-content: flex-end; gap: 8px; }
+/* The vault unlock's one extra: the password path under the gesture, and the
+   server's own refusal in place. **The gap before the actions is the actions'
+   own**, so it is the same whether or not the error line is drawn; the line
+   supplies only its own height, never the spacing. */
+.settings-dialog .reveal { margin-top: 10px; }
+.settings-dialog .fields { display: flex; flex-direction: column; gap: 6px;
+  margin-top: 14px; }
+.settings-dialog .fields label { font-family: var(--mono); font-size: 10.5px;
+  color: var(--dim); }
+.settings-dialog .fields label:not(:first-child) { margin-top: 4px; }
+.settings-dialog .fields input { font-family: var(--mono); font-size: 13px;
+  color: var(--text); background: var(--bg); border: 1px solid var(--ctl);
+  border-radius: 7px; padding: 8px 9px; }
+.settings-dialog .why { font-family: var(--mono); font-size: var(--fs-label);
+  color: var(--bad); margin-top: 12px; }
+.settings-dialog .vault-acts { margin-top: 16px; }
 
 @media (pointer: coarse) {
+  .settings-dialog .fields input { min-height: 44px; }
   .settings-page .settings-rail-item, .settings-page .settings-link,
   .settings-page .back, .settings-page .settings-mode, .settings-page .settings-add,
   .settings-page .settings-row-action, .settings-btn,

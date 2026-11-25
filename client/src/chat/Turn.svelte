@@ -10,7 +10,7 @@
   import Report from './Report.svelte';
   import Skill from './Skill.svelte';
   import type { Part } from './rows';
-  import { NO_STOPS, turnFold, type PageStops, type Self, type Unit } from './units';
+  import { NO_FACTS, turnFold, type PageFacts, type Self, type Unit } from './units';
 
   /**
    * One turn of the conversation, as the page draws it: what the reader said,
@@ -33,7 +33,7 @@
     turns = null,
     carried = null,
     onreadoutput = null,
-    stops = NO_STOPS,
+    facts = NO_FACTS,
   }: {
     turn: HeldTurn;
     /**
@@ -74,17 +74,18 @@
     /** Passed straight through: a call row's ask for its own output. */
     onreadoutput?: ((callId: string) => void) | null;
     /**
-     * The page's stops, resolved across every held turn.
+     * The page's own facts, resolved across every held turn.
      *
      * **The page's, not this turn's**: a stop issued in a later prompt opens a
      * turn of its own, so the call it ends sits in an earlier one and this
-     * turn's frames never mention it.
+     * turn's frames never mention it - and a sub-agent's ending arrives after
+     * the turn that dispatched it.
      */
-    stops?: PageStops;
+    facts?: PageFacts;
   } = $props();
 
   const folded = $derived(
-    part === null ? turnFold(turn, slot, inFlight(turn), !inFlight(turn), stops) : part.units,
+    part === null ? turnFold(turn, slot, inFlight(turn), !inFlight(turn), facts) : part.units,
   );
 
   /**

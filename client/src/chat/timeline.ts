@@ -17,14 +17,16 @@
 
 import { taskStatus } from './families';
 import { blocksOf, leafOf, type Block, type Denial, type TaskFact, type ToolLeaf } from './leaves';
-import { carriedValue } from './units';
+import { carriedValue, hookBatchOf, type HookBatchLeaf } from './units';
 
 /** One line of the instance's own work. */
 type SubLine =
   | { kind: 'call'; leaf: ToolLeaf }
   | { kind: 'prose'; text: string }
   | { kind: 'thought'; text: string }
-  | { kind: 'hook'; text: string }
+  /** One of the instance's own stop-hook batches, drawn with the batch's
+   * hooks behind it: its steps and its hooks in the same expansion. */
+  | { kind: 'hook'; batch: HookBatchLeaf }
   /** A notice with no call on the page to attach it to: it draws with the
    * session notice's level glyph and the wire's own subtype as its chip. */
   | { kind: 'notice'; text: string; mark: string };
@@ -183,7 +185,8 @@ export function dispatchTimeline(
 export function dispatchFrames(messages: Iterable<unknown>, dispatchId: string): DispatchFrames {
   const lines: (
     | CallDraft
-    | { kind: 'prose' | 'thought' | 'hook'; text: string }
+    | { kind: 'prose' | 'thought'; text: string }
+    | { kind: 'hook'; batch: HookBatchLeaf }
     | { kind: 'notice'; text: string; mark: string }
   )[] = [];
   const at = new Map<string, CallDraft>();
@@ -219,19 +222,14 @@ export function dispatchFrames(messages: Iterable<unknown>, dispatchId: string):
       continue;
     }
 
-    // A hook summary under the dispatch draws as a plain line rather than
-    // being dropped: rule 25's default for a frame with no vocabulary here.
+    // A hook summary under the dispatch draws WHERE THE INSTANCE'S OWN STEPS
+    // ARE, with the batch whole behind it - Ved's rule for #3054: opening a
+    // sub-agent shows its steps and its hooks together, never the hooks in the
+    // main conversation. The batch is the same shape the session's fold
+    // builds, read by the same parser.
     if (frame.type === 'system' && parent === dispatchId) {
       if (frame.subtype === 'stop_hook_summary') {
-        // The wire's own name, not the Rust field it stands for: the message
-        // renames `actions` on the way out (`hookCount`), so a read of
-        // `actions` is always undefined and the line has never drawn a count.
-        const actions = typeof frame.hookCount === 'number' ? frame.hookCount : null;
-        lines.push({
-          kind: 'hook',
-          text:
-            actions === null ? 'hooks ran' : `hooks · ${actions} action${actions === 1 ? '' : 's'}`,
-        });
+        lines.push({ kind: 'hook', batch: hookBatchOf(frame, `hooks-${lines.length}`) });
       }
       // **A refusal draws through the call it names.** The call's own row
       // carries the refusal's words, so a line here would say them twice; a

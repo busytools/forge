@@ -138,12 +138,30 @@ read as one system.
   Every hook still opens onto the whole of what it printed, a start whose
   hooks all finished silent opens onto a line saying so, and a hook
   outside a start keeps a row of its own.
-- **A turn's stop-hook batch** is one row of the run of rows, at the point
-  its frame arrived: `hook summary` counts the batch's actions, and the row
-  takes the hook glyph and the chevron every call beside it draws. A batch
-  that carries errors takes the failure tone and counts them in the label,
-  and the row opens onto each hook's command and duration with every error
-  under them.
+- **A turn's stop hooks draw in two shapes, because most stops carry
+  nothing.** A batch that carries something - output, an error, additional
+  context, or a stop a hook held back - is one row of the run of rows, at
+  the point its frame arrived: `hook summary` counts the batch's actions,
+  the row takes the hook glyph and the chevron every call beside it draws, a
+  batch that carries errors takes the failure tone and counts them in the
+  label, and the row opens onto each hook's command and duration with every
+  error and every line of context under them. **A batch that carries nothing
+  is the everyday case** - a set of plugin hooks that run on every stop -
+  so those collect into one `hooks` chip at the turn's foot, counting the
+  batches and opening onto every batch's commands and durations. One chip
+  per turn, however many stops it ran, and no batch is hidden: the chip is
+  where each one is drawn. **A sub-agent's batches draw inside its own
+  expansion**, among the steps it took, with the same disclosure - the
+  session's conversation never carries another agent's hooks. And **a
+  sub-agent's ending is its dispatch row's own finish**: the row's mark and
+  figures change when the agent actually ends, and no "Agent ... finished"
+  notice draws beside it. An ending whose call the page does not hold - a
+  page opened past it - still draws as its own line. **A background command's
+  completion is a turn head**, and its `Background command ...` line is the
+  head's row: a reloaded conversation shows the stretch where the command
+  woke the session as its own turn. The live wire carries that completion as
+  a system frame rather than the notice row a page holds, and the two draw
+  the same line, so both paths cut the same boundary.
 - **A read** draws by what the file is, from the same per-format policy the
   Files reader uses: markdown renders as prose, code stays coloured with the
   file's own grammar (a `Justfile` is `just`, a script's shebang names its
@@ -435,10 +453,15 @@ fills the room or ends.
 seat keeps whatever the reader pulls, and the server answers every page below
 its own window from the transcript under the same `[server] more_page_cap_kb`
 byte budget as any other `more` page, so a page is never a whole transcript
-read. One turn over the budget still rides whole, so a long walk can still
-hold more than 8 MiB: when the reader comes back to the latest, the oldest
-pages are dropped until the held set fits 8 MiB, and a seat the reader has
-left settles on each page that lands while it is away. Dropping is by whole
+read. A turn over the budget arrives in pages. **Its pieces draw as separate
+turns today**: the page above holds a turn's head and the newest page its
+tail, and the list names each piece as its own turn, so one exchange reads as
+a prompt turn and a continuation below it. Merging a turn's pieces into one
+row is owed on this page, and until it lands the seam is stated rather than
+hidden. A long walk
+can still hold more than 8 MiB, and when the reader comes back to the latest,
+the oldest pages are dropped until the held set fits 8 MiB; a seat the reader
+has left settles on each page that lands while it is away. Dropping is by whole
 page and never under the row at the column's top edge: a page's rows share
 the cursor that re-fetches it, so a row cut from inside one would be skipped.
 The newest page

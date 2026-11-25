@@ -38,20 +38,50 @@ pub struct ServerConfig {
     /// turns of a large conversation are megabytes: seconds over a network,
     /// from a frame a client spends milliseconds on locally. The newest
     /// turns are kept while they fit and the rest is paged through `more` as
-    /// it always was, so nothing is dropped and the order does not move.
-    /// `0` serves the page the turn count asks for, for a reader who would
+    /// it always was, so no turn is dropped and the order does not move. A
+    /// turn that alone is over the budget is served in pages of its own
+    /// rather than whole, so the reader's fold is bounded and the history
+    /// above stays reachable through `more`. The bytes counted are the bytes
+    /// SERVED: a turn's repeated progress frames are pruned to one copy each
+    /// before the cut, while every lifecycle frame and a workflow's
+    /// `task_progress` tick are served every time because the live path draws
+    /// a row for each.
+    /// `0` turns off the byte cut (no turn is split), not the pruning, and
+    /// serves the page the turn count asks for, for a reader who would
     /// rather have the whole window in one frame.
     pub first_frame_cap_kb: u64,
     /// How many bytes of conversation a `more` page carries, in KB.
     ///
     /// **A page past the first frame is unbounded by its turn count alone**:
-    /// the page contract is whole turns, so one large turn crossed whole and
-    /// a `more` answer could be tens of megabytes. The newest whole turns are
-    /// kept while they fit, the newest rides even when it alone is over, and
-    /// the cursor names the history above the page as it always did - nothing
-    /// is dropped and the walk above it still reaches every turn.
-    /// `0` serves the page the turn count asks for.
+    /// one large turn could cross a `more` answer as tens of megabytes. The
+    /// newest turns are kept while they fit; a turn over the budget is served
+    /// in pages of its own, its newest frames first, and the cursor names the
+    /// row above the page - no turn is dropped, and the walk reaches every
+    /// turn and every row the pages serve. The bytes counted are the bytes
+    /// served, after the repeated progress frames are pruned.
+    /// `0` serves the page the turn count asks for, whole and unsplit, with
+    /// the pruning still applied.
     pub more_page_cap_kb: u64,
+    /// The total bytes of conversation the transport keeps cached across all
+    /// seats, in bytes.
+    ///
+    /// **The per-seat window is bounded; the total across seats is not.**
+    /// Each seat's copy is capped at 64 MiB, and its repair ring at 64 MiB
+    /// beside it, but every seat that opens a conversation keeps both for the
+    /// process's life, so N seats cost N windows. This budget bounds the sum:
+    /// when the retained bytes pass it, the least recently touched seat is
+    /// evicted, its copy and ring dropped together. The next read of that
+    /// seat serves the newest window still in its ring, or seeds from the
+    /// transcript when nothing was minted since the eviction; older turns
+    /// page in from the transcript as they always do. `0` means no total
+    /// budget.
+    ///
+    /// The default is 1 GiB. A fresh server of this build settles at a
+    /// ~470 MB current / ~624 MB peak footprint with no conversation
+    /// retention, and the live server this bound exists for reached a 3.0 GB
+    /// peak; 1 GiB puts the worst case near 1.7 GB and leaves the rest of the
+    /// line for allocator slack and everything that is not a seat's window.
+    pub conversation_memory_budget_bytes: u64,
     /// Extra browser origins allowed to open the socket, beside the shell's
     /// own, the server's own, and any page served on the user's own machine -
     /// the `localhost` name or any loopback IP address, any port, http or
@@ -91,6 +121,11 @@ pub const DEFAULT_FIRST_FRAME_CAP_KB: u64 = 512;
 /// absent. See `ServerConfig::more_page_cap_kb`.
 pub const DEFAULT_MORE_PAGE_CAP_KB: u64 = 512;
 
+/// The total retained-conversation budget when `[server]
+/// conversation_memory_budget_bytes` is absent. See
+/// `ServerConfig::conversation_memory_budget_bytes`.
+pub const DEFAULT_CONVERSATION_MEMORY_BUDGET_BYTES: u64 = 1_073_741_824;
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -100,6 +135,7 @@ impl Default for ServerConfig {
             tool_record_cap_kb: DEFAULT_TOOL_RECORD_CAP_KB,
             first_frame_cap_kb: DEFAULT_FIRST_FRAME_CAP_KB,
             more_page_cap_kb: DEFAULT_MORE_PAGE_CAP_KB,
+            conversation_memory_budget_bytes: DEFAULT_CONVERSATION_MEMORY_BUDGET_BYTES,
             allowed_origins: Vec::new(),
             startup_gate: None,
         }
@@ -145,6 +181,30 @@ mod tests {
         let parsed: ServerConfig =
             serde_json::from_str(r#"{"first_frame_cap_kb": 0}"#).expect("the key parses");
         assert_eq!(parsed.first_frame_cap_kb, 0);
+    }
+
+    /// The shipped default, the opt-out, and a file's own value: absent means
+    /// 1 GiB, `0` means no total budget, and anything else crosses as written.
+    /// Pinned as a literal for the same reason as the other caps'.
+    #[test]
+    fn the_conversation_memory_budget_defaults_to_1_gib_and_zero_means_unbounded() {
+        assert_eq!(
+            ServerConfig::default().conversation_memory_budget_bytes,
+            1_073_741_824,
+            "the documented default"
+        );
+        assert_eq!(
+            DEFAULT_CONVERSATION_MEMORY_BUDGET_BYTES, 1_073_741_824,
+            "and the constant the default is built from"
+        );
+        let parsed: ServerConfig =
+            serde_json::from_str(r#"{"conversation_memory_budget_bytes": 0}"#)
+                .expect("the key parses");
+        assert_eq!(parsed.conversation_memory_budget_bytes, 0);
+        let set: ServerConfig =
+            serde_json::from_str(r#"{"conversation_memory_budget_bytes": 536870912}"#)
+                .expect("a set value parses");
+        assert_eq!(set.conversation_memory_budget_bytes, 536_870_912);
     }
 
     /// The gate is opt-in: an absent key runs nothing, and a set one carries
