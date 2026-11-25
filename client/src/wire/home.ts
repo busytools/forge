@@ -7,7 +7,7 @@
  * read is its own subject. The row narrowing here is shared with that file.
  */
 
-import type { SessionUpdate } from '../protocol';
+import { slotOf, type SessionUpdate } from '../protocol';
 import { reportFrom, type ServiceReport } from './fleet';
 import {
   modelStateFrom,
@@ -1063,4 +1063,147 @@ function biometricFrom(value: unknown): HomeWire['biometric'] {
   // The elements are the server's own records; their fields are read by the
   // settings page, which is where a malformed row is worth failing over.
   return { outcome: 'read', value: held['value'] as BiometricEnrolment[] };
+}
+
+/**
+ * The folds that draw a home field from the frame that carries it.
+ *
+ * **A fold is only for a value the frame carries exactly.** A frame that
+ * lacks the field, or whose value a drawn row cannot reproduce, is left to
+ * the read: the failure direction is a read rather than a wrong value on
+ * screen. Each reader below answers `null` for every shape this build cannot
+ * read, and the caller keeps its read on `null`.
+ */
+
+/** The core's fatal, when the frame is one. */
+export function fatalErrorFrame(update: SessionUpdate): string | null {
+  if (typeof update === 'string') return null;
+  const payload = (update as { fatal_error?: { message?: unknown } }).fatal_error;
+  if (payload === undefined) return null;
+  return typeof payload.message === 'string' ? payload.message : null;
+}
+
+/** The shared vault session's lock, when the frame is one. */
+export function vaultLockFrame(update: SessionUpdate): boolean | null {
+  if (typeof update === 'string') return null;
+  const payload = (update as { vault_lock_changed?: { locked?: unknown } }).vault_lock_changed;
+  if (payload === undefined) return null;
+  return typeof payload.locked === 'boolean' ? payload.locked : null;
+}
+
+/** The device enrolments, whole, when the frame is one. */
+export function biometricFrame(update: SessionUpdate): unknown[] | null {
+  if (typeof update === 'string') return null;
+  const payload = (update as { biometric_enrolments_changed?: { enrolments?: unknown } })
+    .biometric_enrolments_changed;
+  if (payload === undefined) return null;
+  return Array.isArray(payload.enrolments) ? payload.enrolments : null;
+}
+
+/** One prompt's place in its seat's queue, when the frame is one. */
+export function promptLifecycleFrame(
+  update: SessionUpdate,
+): { slot: SessionSlot; state: string } | null {
+  if (typeof update === 'string') return null;
+  const payload = (update as { prompt_lifecycle?: { state?: unknown } }).prompt_lifecycle;
+  if (payload === undefined || typeof payload.state !== 'string') return null;
+  const slot = slotOf(update);
+  if (slot === null) return null;
+  return { slot, state: payload.state };
+}
+
+/** The CLI's background registry, as the fact a row draws, when the frame is one. */
+export function backgroundWorkFrame(
+  update: SessionUpdate,
+): { slot: SessionSlot; has: boolean } | null {
+  if (typeof update === 'string') return null;
+  const payload = (update as { chat_appended?: { msg?: unknown } }).chat_appended;
+  if (payload === undefined) return null;
+  const msg = payload.msg;
+  if (msg === null || typeof msg !== 'object') return null;
+  const frame = msg as Record<string, unknown>;
+  if (frame['type'] !== 'system' || frame['subtype'] !== 'background_tasks_changed') return null;
+  const tasks = frame['tasks'];
+  if (!Array.isArray(tasks)) return null;
+  const slot = slotOf(update);
+  if (slot === null) return null;
+  return { slot, has: tasks.length > 0 };
+}
+
+/** Apply the core's held service report to the drawn home, without a read. */
+export function applyServiceStatus(wire: HomeWire | null, report: ServiceReport): HomeWire | null {
+  if (wire === null) return null;
+  return { ...wire, service_status: report };
+}
+
+/** Apply the core's fatal to the drawn home, without a read. */
+export function applyFatalError(wire: HomeWire | null, message: string): HomeWire | null {
+  if (wire === null) return null;
+  return { ...wire, fatal_error: message };
+}
+
+/** Apply the vault's lock to the drawn home, without a read. */
+export function applyVaultLock(wire: HomeWire | null, locked: boolean): HomeWire | null {
+  // A home that states no vault has nowhere to put the move: the read is the
+  // failure direction.
+  if (wire === null || wire.vault === null) return null;
+  return { ...wire, vault: { ...wire.vault, locked } };
+}
+
+/** Apply the enrolment list to the drawn home, without a read. */
+export function applyBiometric(
+  wire: HomeWire | null,
+  enrolments: readonly unknown[],
+): HomeWire | null {
+  if (wire === null) return null;
+  return { ...wire, biometric: biometricFrom({ outcome: 'read', value: enrolments }) };
+}
+
+/** Two slots are the same seat; the session id is the occupant, not the address. */
+function sameSlot(a: SessionSlot, b: SessionSlot): boolean {
+  return a.org === b.org && a.project === b.project && a.label === b.label;
+}
+
+/**
+ * Apply one seat's lifecycle to the drawn home, without a read.
+ *
+ * Returns the same `wire` when the row already reads this way, so a caller
+ * can tell a frame it consumed from a frame it could not apply (`null`).
+ */
+export function applyLifecycle(
+  wire: HomeWire | null,
+  slot: SessionSlot,
+  lifecycle: Lifecycle,
+): HomeWire | null {
+  if (wire === null) return null;
+  const at = wire.agents.findIndex((agent) => sameSlot(agent.slot, slot));
+  if (at === -1) return null;
+  const held = wire.agents[at];
+  if (held === undefined) return null;
+  if (held.lifecycle === lifecycle) return wire;
+  const agents = [...wire.agents];
+  agents[at] = { ...held, lifecycle };
+  return { ...wire, agents };
+}
+
+/**
+ * Apply the CLI's background registry to one seat's row, without a read.
+ *
+ * Returns the same `wire` when the row already reads this way, like
+ * [`applyLifecycle`].
+ */
+export function applyBackgroundWork(
+  wire: HomeWire | null,
+  slot: SessionSlot,
+  has: boolean,
+): HomeWire | null {
+  if (wire === null) return null;
+  const at = wire.agents.findIndex((agent) => sameSlot(agent.slot, slot));
+  if (at === -1) return null;
+  const held = wire.agents[at];
+  if (held === undefined) return null;
+  if (held.has_background_work === has) return wire;
+  const agents = [...wire.agents];
+  agents[at] = { ...held, has_background_work: has };
+  return { ...wire, agents };
 }

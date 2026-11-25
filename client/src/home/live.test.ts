@@ -97,6 +97,52 @@ const POOL_HOME = {
 const POOL_HOME_OLD = { ...POOL_HOME, accounts: POOL_OLD };
 
 /**
+ * The fixture's seat, idle with no ask, so the lifecycle fold owns its mark.
+ * `stateOf` promotes a pending ask and a background task over the lifecycle,
+ * so the cases that move the lifecycle clear both.
+ */
+const IDLE_AGENT = {
+  slot: LEAD,
+  label: 'lead',
+  lifecycle: 'Idle',
+  heal_attempt: null,
+  heal_attempts: null,
+  has_background_work: false,
+  pending: null,
+  pending_depth: 0,
+  pending_seq: 0,
+  last_activity: null,
+  reason: null,
+  failed_turn: null,
+  died: false,
+  tree: null,
+  work: { branch: null, changed: null, gate: 'gone' },
+};
+
+/** A home whose one seat is idle, for the folds that move its mark. */
+function idleHome() {
+  return { ...homeWire, agents: [{ ...IDLE_AGENT }] };
+}
+
+/** One prompt-lifecycle frame for the fixture's seat. */
+function life(state: string): ServerMessage {
+  return { kind: 'update', update: { prompt_lifecycle: { key: LEAD, uuid: 'p1', state } } };
+}
+
+/** One CLI background-registry frame for the fixture's seat. */
+function background(tasks: unknown[]): ServerMessage {
+  return {
+    kind: 'update',
+    update: {
+      chat_appended: {
+        key: LEAD,
+        msg: { type: 'system', subtype: 'background_tasks_changed', tasks },
+      },
+    },
+  } as unknown as ServerMessage;
+}
+
+/**
  * A connection a test drives by hand: what the home asked it to do, and a way
  * to hand it a frame.
  *
@@ -527,50 +573,183 @@ describe('the home over a connection', () => {
   });
 
   /**
-   * **The turn's start is a read, and #1887 is what a page that skipped it
-   * drew.** A prompt's lifecycle is the earliest frame that says a turn was
-   * accepted: the roster's `running` comes from `turn_pending`, stamped when
-   * the prompt is routed, so a read asked at `queued` or `started` is
-   * answered with the turn already on. Without it the row kept the idle it
-   * last read until some unrelated frame happened to be news, measured at
-   * ~40s while an agent ran underneath.
+   * **A prompt's life is folded into the drawn row, not answered with a
+   * read.** The frame carries the prompt's own state and the seat it names,
+   * and the row's lifecycle is the one value a per-seat count reproduces: a
+   * `queued` prompt starts it, a terminal state ends it. **The count is
+   * derived from frames the seat received and re-based by every snapshot
+   * answer**, so a reconnect's first answer resets it rather than adding to
+   * it; a turn that never reports terminal leaves a Running mark only until
+   * the next home read, which the residual completion frames and every
+   * return still ask for.
    */
-  it("reads when a prompt's life moves", async () => {
+  it("folds a prompt's life into the drawn row without a read", async () => {
     const forge = fakeConnection();
-    const stop = watchHome(forge.connection).subscribe(() => {});
-
-    forge.arrive({
-      kind: 'update',
-      update: { prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } },
+    const seen: HomeRead[] = [];
+    const stop = watchHome(forge.connection).subscribe(($next) => {
+      seen.push($next);
     });
+    const wire = idleHome();
+    forge.stores.get(HOME)?.set(wire);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: wire });
+
+    forge.arrive(life('queued'));
     await settle();
-    expect(forge.refreshed, "a turn's start did not ask for exactly one read").toEqual(['home']);
+    expect(forge.refreshed, "a prompt's queue asked for a whole read").toEqual([]);
+    expect(seen.at(-1)?.wire?.agents[0]?.lifecycle, 'the queued prompt did not start the row').toBe(
+      'Running',
+    );
+
+    forge.arrive(life('started'));
+    await settle();
+    expect(forge.refreshed, "a prompt's start asked for a whole read").toEqual([]);
+    expect(seen.at(-1)?.wire?.agents[0]?.lifecycle).toBe('Running');
+
+    forge.arrive(life('completed'));
+    await settle();
+    expect(forge.refreshed, "a prompt's end asked for a whole read").toEqual([]);
+    expect(seen.at(-1)?.wire?.agents[0]?.lifecycle, 'the settled row did not go idle').toBe('Idle');
     stop();
   });
 
   /**
-   * The background registry moves a row too - `has_background_work` is the
-   * promotion that draws an idle session as running - and its read is asked
-   * for through the conversation frame the same CLI event arrives in. The
-   * registry's own mirror is the inspector's copy and stays out of the fleet
-   * table; this is the arm that keeps a backgrounded seat from reading as
-   * idle.
+   * A prompt's life with no drawn row to fold into is the first read still
+   * owed: the frame has nowhere to land, so the read is the failure
+   * direction.
    */
-  it('reads when the CLI announces background work', async () => {
+  it("reads for a prompt's life when the row it names is not drawn", async () => {
     const forge = fakeConnection();
     const stop = watchHome(forge.connection).subscribe(() => {});
+    forge.arrive(life('started'));
+    await settle();
+    expect(forge.refreshed, 'a frame with no drawn row to fold into bought no read').toEqual([
+      HOME,
+    ]);
+    stop();
+  });
+
+  /**
+   * The CLI's background registry moves `has_background_work`, and the frame
+   * carries the whole registry, so the row is drawn from it rather than
+   * answered with a read. An empty registry clears the promotion the same
+   * way it raised it.
+   */
+  it('folds the CLI background registry into the drawn row without a read', async () => {
+    const forge = fakeConnection();
+    const seen: HomeRead[] = [];
+    const stop = watchHome(forge.connection).subscribe(($next) => {
+      seen.push($next);
+    });
+    const wire = idleHome();
+    forge.stores.get(HOME)?.set(wire);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: wire });
+
+    forge.arrive(background([{ task_id: 'b1' }]));
+    await settle();
+    expect(forge.refreshed, 'a background task starting asked for a whole read').toEqual([]);
+    expect(seen.at(-1)?.wire?.agents[0]?.has_background_work, 'the registry did not land').toBe(
+      true,
+    );
+
+    forge.arrive(background([]));
+    await settle();
+    expect(forge.refreshed, 'a drained registry asked for a whole read').toEqual([]);
+    expect(
+      seen.at(-1)?.wire?.agents[0]?.has_background_work,
+      'the drained registry did not clear',
+    ).toBe(false);
+    stop();
+  });
+
+  /**
+   * **The core's held status and its fatal are the snapshot's own fields**,
+   * and the frames carry them whole, so the banner and the exit line are
+   * drawn from the frame. The service report is one-shot (the probe never
+   * clears it), and a fatal is the last word there is.
+   */
+  it("folds the core's service report and fatal without a read", async () => {
+    const forge = fakeConnection();
+    const seen: HomeRead[] = [];
+    const stop = watchHome(forge.connection).subscribe(($next) => {
+      seen.push($next);
+    });
+    const wire = idleHome();
+    forge.stores.get(HOME)?.set(wire);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: wire });
+
+    forge.arrive({
+      kind: 'update',
+      update: { service_status: { severity: 'error', message: 'the core is down' } },
+    });
+    await settle();
+    expect(forge.refreshed, "the core's status asked for a whole read").toEqual([]);
+    expect(seen.at(-1)?.wire?.service_status, 'the status did not land').toEqual({
+      severity: 'error',
+      message: 'the core is down',
+    });
+    expect(seen.at(-1)?.report, 'the update line did not land').toEqual({
+      severity: 'error',
+      message: 'the core is down',
+    });
+
+    forge.arrive({
+      kind: 'update',
+      update: { fatal_error: { error: 'AppError', message: 'forge is going away' } },
+    });
+    await settle();
+    expect(forge.refreshed, "the core's fatal asked for a whole read").toEqual([]);
+    expect(seen.at(-1)?.wire?.fatal_error, 'the fatal did not land').toBe('forge is going away');
+    stop();
+  });
+
+  /**
+   * The vault's lock and the device enrolments are fields the frames carry
+   * whole (the lock's idle bound is the config's and stays), so the settings
+   * card redraws without a read. A vault the snapshot says this machine has
+   * none of has nowhere to put the lock: the read is the failure direction.
+   */
+  it('folds a vault lock and the enrolment list without a read', async () => {
+    const forge = fakeConnection();
+    const seen: HomeRead[] = [];
+    const stop = watchHome(forge.connection).subscribe(($next) => {
+      seen.push($next);
+    });
+    const wire = {
+      ...idleHome(),
+      vault: { locked: true, idle_minutes: 5 },
+      biometric: { outcome: 'read', value: [] },
+    };
+    forge.stores.get(HOME)?.set(wire);
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: wire });
+
+    forge.arrive({ kind: 'update', update: { vault_lock_changed: { locked: false } } });
+    await settle();
+    expect(forge.refreshed, 'a vault lock asked for a whole read').toEqual([]);
+    expect(seen.at(-1)?.wire?.vault, 'the lock did not land').toEqual({
+      locked: false,
+      idle_minutes: 5,
+    });
 
     forge.arrive({
       kind: 'update',
       update: {
-        chat_appended: {
-          key: LEAD,
-          msg: { type: 'system', subtype: 'background_tasks_changed', tasks: [] },
+        biometric_enrolments_changed: {
+          enrolments: [
+            {
+              id: 'd1',
+              device: 'Mac Studio',
+              created_at: { secs_since_epoch: 1, nanos_since_epoch: 0 },
+              purposes: [],
+            },
+          ],
         },
       },
-    } as unknown as ServerMessage);
+    });
     await settle();
-    expect(forge.refreshed, 'a background task starting asked for no read').toEqual([HOME]);
+    expect(forge.refreshed, 'an enrolment list asked for a whole read').toEqual([]);
+    const held = seen.at(-1)?.wire?.biometric;
+    expect(held?.outcome).toBe('read');
+    expect(held?.value).toHaveLength(1);
     stop();
   });
 

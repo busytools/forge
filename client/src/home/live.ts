@@ -1,22 +1,29 @@
 /**
  * The home over a live connection: the snapshot it is answered with, the
- * read that follows an update the snapshot can carry, and the one fold.
+ * read that follows an update the snapshot cannot carry, and the folds that
+ * draw a field a frame carries exactly.
  *
- * **Nothing is recomputed here, and that is the point.** A row's state is the
- * server's, folded from the core's own `Live` alongside the roster, so it
- * arrives in the row already decided - including the unseen marks. The only
- * states this client makes for itself are `stateOf`'s promotions: the cases
- * where the state read from the wire alone would disagree with the view this
- * client replaced, silently, the first time one of them turned. So an
- * update whose change the snapshot can carry is answered with a fresh read
- * rather than with arithmetic, and one it cannot carry is no read at all.
+ * **A row's state is the server's**, folded from the core's own `Live`
+ * alongside the roster, so it arrives in the row already decided - including
+ * the unseen marks. **A frame that carries a drawn field exactly is applied;
+ * a frame whose value the drawn row cannot reproduce is answered with a
+ * fresh read.** The failure direction is always the read rather than a wrong
+ * value on screen: a frame this build cannot read, a seat the drawn home
+ * does not hold, or a row in a state another source owns keeps the read it
+ * always asked for. The residual reads are named in the issue the folds
+ * landed under (#3063 rows 1-2).
  *
- * `accounts_changed` is the exception, and it is a replace rather than a
- * fold: the frame carries the whole pool field, so the client draws what the
- * server states without asking for an encode - **when the move is usage
+ * `accounts_changed` was the first of these, and it is a replace rather than
+ * a fold: the frame carries the whole pool field, so the client draws what
+ * the server states without asking for an encode - **when the move is usage
  * only.** The loading state, the settled flag, the listener and a probe
  * failure all feed the project rows' `would_bind` and chip, so a change in
  * any of those still asks for the snapshot that refreshes them.
+ *
+ * **`prompt_lifecycle` is the one fold that counts.** The frame carries one
+ * prompt's state, not the row's lifecycle, so the row is drawn from a
+ * per-seat count of prompts in flight; the count is re-based by every
+ * snapshot answer, which is what keeps a reconnect from adding to it.
  */
 
 import { writable, type Readable, type Writable } from 'svelte/store';
@@ -29,13 +36,25 @@ import { coversHome, serviceReport, type ServiceReport } from '../wire/fleet';
 import { tasksFrame } from '../wire/board';
 import {
   accountsPayload,
+  applyBackgroundWork,
+  applyBiometric,
+  applyFatalError,
   applyFleetCounts,
+  applyLifecycle,
+  applyServiceStatus,
+  applyVaultLock,
+  backgroundWorkFrame,
+  biometricFrame,
+  fatalErrorFrame,
   homeFrom,
   poolFactsChanged,
+  promptLifecycleFrame,
   tasksChanged,
+  vaultLockFrame,
   type AccountsWire,
   type HomeWire,
 } from '../wire/home';
+import type { SessionSlot } from '../wire/types';
 
 /**
  * How long an update waits before it is answered with a read.
@@ -207,12 +226,95 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
   let drawn: HomeWire | null = null;
   /** A frame applied while the read in hand was being encoded (#3074). */
   let appliedDuringRead = false;
+  /**
+   * Prompts in flight per seat, for the `prompt_lifecycle` fold.
+   *
+   * **Re-based by every snapshot answer**, so a reconnect's first answer
+   * resets it rather than adding to it, and a seat the server says is running
+   * starts at one. A turn that never reports terminal leaves a Running mark
+   * only until the next home read, which the residual completion frames and
+   * every return still ask for.
+   */
+  const livePrompts = new Map<string, number>();
   let stopMessages: (() => void) | null = null;
   let stopStatus: (() => void) | null = null;
 
   /** Ask for one read, coalescing the updates that arrive inside the beat. */
   function schedule(): void {
     beat.schedule();
+  }
+
+  /** Two slots are the same seat; the session id is the occupant, not the address. */
+  function sameSeat(a: SessionSlot, b: SessionSlot): boolean {
+    return a.org === b.org && a.project === b.project && a.label === b.label;
+  }
+
+  /**
+   * Publish a fold, and drop any read whose answer it outran.
+   *
+   * **A read already in flight was encoded before this frame and will land
+   * after it**: the landing is dropped and the ask goes again rather than
+   * overwriting the frame's news (#3074 review).
+   */
+  function publishFold(next: HomeWire): void {
+    if (next === drawn) return;
+    drawn = next;
+    view.set({ wire: drawn, refused: null, failed: null, report });
+    if (reading) appliedDuringRead = true;
+  }
+
+  /**
+   * Apply one prompt's place in its seat's queue to the drawn row.
+   *
+   * **The count is per seat and re-based by every snapshot answer.** A row in
+   * a state another source owns - an ask, a failure, a heal - is not folded:
+   * the read is the failure direction. Answers whether the frame was
+   * consumed; `false` leaves the read owed.
+   */
+  function foldLifecycle(slot: SessionSlot, state: string): boolean {
+    if (drawn === null) return false;
+    const at = drawn.agents.findIndex((agent) => sameSeat(agent.slot, slot));
+    if (at === -1) return false;
+    const agent = drawn.agents[at];
+    if (agent === undefined) return false;
+    // Another source owns this row's mark: an ask, a failure, a heal.
+    if (agent.lifecycle !== 'Idle' && agent.lifecycle !== 'Running') return false;
+    const key = subjectKey({ session: slot });
+    const held = livePrompts.get(key) ?? (agent.lifecycle === 'Running' ? 1 : 0);
+    let next: number;
+    switch (state) {
+      case 'queued':
+        next = held + 1;
+        break;
+      case 'started':
+        // A prompt the CLI starts was queued on this seat; a frame that
+        // arrives without its queued one still means a turn is running.
+        next = Math.max(held, 1);
+        break;
+      case 'completed':
+      case 'cancelled':
+      case 'discarded':
+      case 'refused':
+        next = Math.max(held - 1, 0);
+        break;
+      default:
+        // A state this build has not seen: the read is the failure direction.
+        return false;
+    }
+    livePrompts.set(key, next);
+    const applied = applyLifecycle(drawn, slot, next > 0 ? 'Running' : 'Idle');
+    if (applied === null) return false;
+    publishFold(applied);
+    return true;
+  }
+
+  /** Apply the CLI's background registry to one seat's drawn row. */
+  function foldBackground(slot: SessionSlot, has: boolean): boolean {
+    if (drawn === null) return false;
+    const applied = applyBackgroundWork(drawn, slot, has);
+    if (applied === null) return false;
+    publishFold(applied);
+    return true;
   }
 
   /**
@@ -255,6 +357,13 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       if (pool !== null) wire.accounts = pool;
       drawnPool = wire.accounts;
       drawn = wire;
+      // **Every answer re-bases the lifecycle fold's count**: a reconnect's
+      // first answer resets it rather than adding to it, and a seat the
+      // server says is running starts at one.
+      livePrompts.clear();
+      for (const agent of wire.agents) {
+        livePrompts.set(subjectKey({ session: agent.slot }), agent.lifecycle === 'Running' ? 1 : 0);
+      }
       view.set({ wire, refused: null, failed: null, report });
     } catch (why) {
       view.set({
@@ -356,6 +465,46 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
         stale = true;
         return;
       }
+      // **A frame that carries a drawn field exactly is applied, not answered
+      // with a read.** Each fold refuses a frame this build cannot read, and
+      // the read is then the failure direction.
+      const said = serviceReport(message.update);
+      if (said !== null) {
+        report = said;
+        const applied = applyServiceStatus(drawn, said);
+        if (applied !== null) {
+          publishFold(applied);
+          return;
+        }
+      }
+      const fatal = fatalErrorFrame(message.update);
+      if (fatal !== null) {
+        const applied = applyFatalError(drawn, fatal);
+        if (applied !== null) {
+          publishFold(applied);
+          return;
+        }
+      }
+      const locked = vaultLockFrame(message.update);
+      if (locked !== null) {
+        const applied = applyVaultLock(drawn, locked);
+        if (applied !== null) {
+          publishFold(applied);
+          return;
+        }
+      }
+      const enrolments = biometricFrame(message.update);
+      if (enrolments !== null) {
+        const applied = applyBiometric(drawn, enrolments);
+        if (applied !== null) {
+          publishFold(applied);
+          return;
+        }
+      }
+      const life = promptLifecycleFrame(message.update);
+      if (life !== null && foldLifecycle(life.slot, life.state)) return;
+      const work = backgroundWorkFrame(message.update);
+      if (work !== null && foldBackground(work.slot, work.has)) return;
       // **The pool's frame carries the pool.** It is the whole field the read
       // would answer with, so folding it spends no encode; a frame from an
       // older server carries none, and falls through to the read it always
@@ -379,11 +528,6 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
           return;
         }
       }
-      // The line is kept BEFORE the read is asked for: the read that follows
-      // is what publishes it, and a report dropped here would leave the page
-      // re-reading with nothing to say why.
-      const said = serviceReport(message.update);
-      if (said !== null) report = said;
       const tasks = tasksChanged(message.update);
       if (tasks !== null) {
         // An unchanged set is no news: the chase used to re-announce every
@@ -428,6 +572,7 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
         // it lands.
         foldRead = null;
         drawn = null;
+        livePrompts.clear();
       }
     });
   }
@@ -442,6 +587,7 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     // nothing draws from stays counted against a seat it is not showing.
     connection.unsubscribe('home');
     held = null;
+    livePrompts.clear();
   }
 
   const view: Writable<HomeRead> = writable(NOTHING, () => {
