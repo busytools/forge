@@ -1111,9 +1111,10 @@ inspected.
     become a poll. A frame that already carries data (a task set, a settings
     row, a status line) is applied from the frame; re-reading to learn what
     the frame already said is the defect this rule names. Measured
-    2026-11-25: the home and board pages re-read whole records about 1.5
-    times a second under a busy fleet, 290 MB in an hour on one client
-    socket, for changes of a line.
+    2026-11-25: with the board held by the session rail, one whole board
+    read is ~3 MB at ~0.39 reads/s (~4.2 GB/hour of active page time), and
+    the home ~198 KB at ~1.8 reads/s (~1.3 GB/hour), all on one client
+    socket.
 
 ## Claude Code worktree interop
 
