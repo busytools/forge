@@ -60,7 +60,7 @@ describe('the vault unlock dialog', () => {
     expect(document.querySelector('input[autocomplete="one-time-code"]')).not.toBeNull();
   });
 
-  it('draws the platform reason and keeps the password path', () => {
+  it('draws the platform reason and reveals the password under it', () => {
     draw({
       variant: 'unlock',
       reason: 'the gesture was cancelled',
@@ -68,12 +68,12 @@ describe('the vault unlock dialog', () => {
       onpassword: vi.fn(),
       oncancel: vi.fn(),
     });
-    button('use the Vaultwarden password').click();
-    flushSync();
 
     expect(document.querySelector('[role="alert"]')?.textContent).toContain(
       'the gesture was cancelled',
     );
+    // **A refusal reveals the fields**: the password is the way forward, so
+    // the link that would have revealed it is gone and the fields are here.
     expect(document.querySelector('input[type="password"]')).not.toBeNull();
   });
 

@@ -225,7 +225,7 @@ describe('the vault press', () => {
     expect(enrol.enrolVault).not.toHaveBeenCalled();
   });
 
-  it('opens the gesture-first dialog from an enrolled client and closes on it', async () => {
+  it('opens straight into the gesture for an enrolled, capable client', async () => {
     gate.readDeviceGate.mockResolvedValue({ outcome: 'enrolled', biometric: true });
     localStorage.setItem('forge.biometric.enrolment.vault', LOCAL_ID);
     enrol.releaseVaultMaterial.mockResolvedValue({
@@ -235,20 +235,46 @@ describe('the vault press', () => {
     drawHome(readEnrolled({ locked: true, idle_minutes: 15 }));
     await settled();
 
+    // **No choice screen**: the client knows this device can release the
+    // vault, so the press asks for the gesture at once (Ved, 2026-11-25).
     button('unlock')?.click();
     await settled();
-    expect(document.body.textContent, 'the unlock variant').toContain('unlock the vault');
-    expect(button('Unlock with this device'), 'the gesture leads').not.toBeNull();
-    expect(document.querySelector('input[type="password"]'), 'the password waits').toBeNull();
 
-    button('Unlock with this device')?.click();
-    await settled();
-
-    expect(enrol.releaseVaultMaterial).toHaveBeenCalledTimes(1);
+    expect(enrol.releaseVaultMaterial, 'the gesture was not asked at once').toHaveBeenCalledTimes(
+      1,
+    );
+    expect(
+      document.querySelector('input[type="password"]'),
+      'the password was offered before the gesture failed',
+    ).toBeNull();
     expect(enrol.unlockVault).toHaveBeenCalledWith(connection, {
       released: { refresh_token: 'refresh', user_key: 'key' },
     });
     expect(document.querySelector('.settings-dialog'), 'the dialog closed').toBeNull();
+  });
+
+  it('reveals the password under the reason when the gesture is refused', async () => {
+    gate.readDeviceGate.mockResolvedValue({ outcome: 'enrolled', biometric: true });
+    localStorage.setItem('forge.biometric.enrolment.vault', LOCAL_ID);
+    enrol.releaseVaultMaterial.mockResolvedValue({
+      outcome: 'refused',
+      reason: 'the gesture was cancelled',
+    });
+    drawHome(readEnrolled({ locked: true, idle_minutes: 15 }));
+    await settled();
+
+    button('unlock')?.click();
+    await settled();
+
+    expect(document.body.textContent).toContain('the gesture was cancelled');
+    expect(
+      document.querySelector('input[type="password"]'),
+      'the password is the way forward and was not shown',
+    ).not.toBeNull();
+    expect(
+      document.querySelector('.settings-dialog'),
+      'the dialog closed on a refusal',
+    ).not.toBeNull();
   });
 
   it('closes the dialog on Back and returns focus to the press', async () => {
