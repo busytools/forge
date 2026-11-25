@@ -1318,6 +1318,12 @@ impl SessionTask {
         uuid: &str,
         source: PromptSource,
     ) {
+        // **The record takes the RAW prompt, the row takes the display.** The
+        // transcript persists what forge sent, so a cron delivery's row in the
+        // file says `run the sweep` and never the `[Cron]` prefix this row
+        // draws - recording the display text would park the read's queue at a
+        // record no row can match (#3073).
+        self.domain.lock().record_delivered_prompt(uuid, text);
         let text = match source {
             PromptSource::Cron => format!("[Cron]\n\n{text}"),
             PromptSource::You
@@ -1333,12 +1339,6 @@ impl SessionTask {
             uuid.to_owned(),
         );
         framed.stamp_if_absent(&crate::install::rfc3339_now());
-        // **The row is what a read re-keys against** (#3073): this is the one
-        // place a display row is forged, so it is the one place the words and
-        // the delivery id are both in hand. Recorded for every source - a
-        // cron's or a peer's row comes back from the transcript under a
-        // CLI-minted id just as a person's does.
-        self.domain.lock().record_delivered_prompt(uuid, &text);
         self.emit(SessionUpdate::ChatAppended {
             key: self.key.clone(),
             msg: framed,
@@ -5084,6 +5084,30 @@ mod tests {
             workspace.stored_seat_state(&key),
             Some(SeatState::InTurn),
             "the CLI starting a queued prompt is a turn start",
+        );
+    }
+
+    /// **The read matches on the RAW prompt.** A cron delivery's display row
+    /// draws a `[Cron]` prefix the transcript never carries, so recording the
+    /// display text would leave a record no row can match at the head of the
+    /// re-key's queue (#3073). An empty-text row is not recorded at all: it
+    /// can never be matched, and a parked record is worse than a duplicate.
+    #[tokio::test]
+    async fn a_cron_delivery_records_the_raw_prompt_for_the_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (workspace, _rx) =
+            crate::Workspace::testing_stub_with_config_dir(dir.path().to_path_buf());
+        let key = SessionSlot::worker("TestOrg", "forge", "cron-record");
+        let (task, _cmds) = command_task_for(&workspace, &key);
+
+        task.emit_prompt_row("run the nightly sweep", &[], "forge_prompt_cron", PromptSource::Cron);
+        task.emit_prompt_row("", &[], "forge_prompt_image", PromptSource::You);
+
+        let log = task.domain.lock().delivered_log();
+        assert_eq!(log.prompts.len(), 1, "the empty row was not recorded");
+        assert_eq!(
+            log.prompts[0].text, "run the nightly sweep",
+            "the record is the raw prompt, not the display prefix",
         );
     }
 

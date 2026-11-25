@@ -5914,12 +5914,9 @@ impl Workspace {
     /// and no client sees this list. It is bounded per occupant, and a row
     /// with no record there keeps the CLI's id, so a miss is a visible
     /// duplicate rather than a lost row.
-    pub fn delivered_prompts(
-        &self,
-        slot: &SessionSlot,
-    ) -> Vec<forge_primitives::messages::DeliveredPrompt> {
+    pub fn delivered_log(&self, slot: &SessionSlot) -> forge_primitives::messages::DeliveredLog {
         self.domain_session_for(slot)
-            .map(|domain| domain.lock().delivered_prompts())
+            .map(|domain| domain.lock().delivered_log())
             .unwrap_or_default()
     }
 

@@ -535,11 +535,12 @@ impl ViewSurface {
         // under an id the CLI minted; this process's own record of what it
         // drew puts its id back, so a client holds one id for one prompt and
         // the live row and the page row are the same row.
-        let delivered = self.workspace.delivered_prompts(slot);
+        let delivered = self.workspace.delivered_log(slot);
         ConversationHistory {
             messages: crate::transcript::rekey_delivered(
                 crate::transcript::notices_as_blocks(read.messages),
                 &delivered,
+                crate::transcript::now_ms(),
             ),
             compaction_count: read.compaction_count,
             session_id: Some(session_id),

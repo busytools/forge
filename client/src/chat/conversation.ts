@@ -966,6 +966,23 @@ function rejoin(
   const baseIndex = new Map<unknown, number>(base.map((message, index) => [message, index]));
   const route = drawnBefore ?? kept;
   const routeAt = frameIndex(route);
+  /**
+   * The frame with the note this client wrote on the drawn copy, if any.
+   *
+   * **`forge_note` is this client's own mark** - the wait a drained prompt
+   * says on its row - and the transcript never carries it. Replacing the drawn
+   * copy with the page's would change the row beyond its id and place, so the
+   * note rides across (#3073).
+   */
+  const heldAt = frameIndex(target);
+  const withHeldNote = (message: unknown): unknown => {
+    if (typeof message !== 'object' || message === null) return message;
+    if ((message as { forge_note?: unknown }).forge_note !== undefined) return message;
+    const from = heldAt(message);
+    const note =
+      from === undefined ? undefined : (target[from] as { forge_note?: unknown }).forge_note;
+    return note === undefined ? message : { ...message, forge_note: note };
+  };
   const floorOf = (message: unknown): number | undefined => {
     const from = routeAt(message);
     if (from === undefined) return undefined;
@@ -1023,7 +1040,7 @@ function rejoin(
     }
     const floor = floorOf(message);
     if (floor !== undefined) anchor = Math.max(anchor, floor);
-    add(anchor, rank, message);
+    add(anchor, rank, withHeldNote(message));
     last = anchor;
   }
   if (base.length === target.length && buckets.size === 0) return target;
@@ -2849,19 +2866,23 @@ export class Chat {
       const beforeOutside = new Map<Turn, unknown[]>();
       const drawn: Turn[] = [];
       /**
-       * The page's own flattened messages, up to and including each row.
+       * The page's own flattened messages, up to and including each row, by
+       * the row's own message array.
        *
        * **What says where a frame sits across a page-row boundary** (#3073): a
        * delivery the read cut into a later row belongs after the frames the
-       * rows before it end on, and a row-local order cannot see that. Built
-       * once per landing so a merge is one lookup.
+       * rows before it end on, and a row-local order cannot see that. **Keyed
+       * by the array, not by an index**: the pile's splice drops rows from
+       * `named`, so an index kept beside the loop names a row that moved. A
+       * repeated row carries the held array instead, which misses here on
+       * purpose - its own order is the held one.
        */
-      const pageThrough: unknown[][] = [];
+      const pageThrough = new Map<unknown[], unknown[]>();
       {
-        const through: unknown[] = [];
+        let through: unknown[] = [];
         for (const row of pageRows) {
-          through.push(...messagesOf(row));
-          pageThrough.push(through.slice());
+          through = [...through, ...messagesOf(row)];
+          pageThrough.set(messagesOf(row), through);
         }
       }
       for (let index = 0; index < named.length; index += 1) {
@@ -2929,7 +2950,7 @@ export class Chat {
             rejoin(
               target.messages,
               copy,
-              pageThrough[index] ?? match.messages,
+              pageThrough.get(copy) ?? match.messages,
               beforeOutside.get(match),
             ),
           );
