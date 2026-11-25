@@ -53,6 +53,7 @@ import {
   vaultLockFrame,
   type AccountsWire,
   type HomeWire,
+  type WireTime,
 } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 
@@ -227,15 +228,23 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
   /** A frame applied while the read in hand was being encoded (#3074). */
   let appliedDuringRead = false;
   /**
-   * Prompts in flight per seat, for the `prompt_lifecycle` fold.
+   * The prompts each seat is running or holding queued, by uuid.
    *
-   * **Re-based by every snapshot answer**, so a reconnect's first answer
-   * resets it rather than adding to it, and a seat the server says is running
-   * starts at one. A turn that never reports terminal leaves a Running mark
-   * only until the next home read, which the residual completion frames and
-   * every return still ask for.
+   * **The frame names the prompt it is about**, so the count is a set of
+   * uuids and not a number: a prompt queued behind a running turn is a second
+   * entry, a repeat of one uuid is no second prompt, and a terminal removes
+   * exactly the prompt it names. A terminal for a uuid this page never
+   * counted folds nothing and keeps the read.
+   *
+   * **A snapshot answer re-bases the set to what the server vouches for**: a
+   * seat it says is idle has nothing in flight, so its set goes; a seat it
+   * says is running keeps the uuids this page has seen, because a queued
+   * prompt has no other source. A socket drop clears every set, so a
+   * reconnect's first answer starts from the snapshot alone. A turn that
+   * never reports terminal therefore leaves a Running mark only while the
+   * server's own lifecycle still says the seat is working.
    */
-  const livePrompts = new Map<string, number>();
+  const livePrompts = new Map<string, Set<string>>();
   let stopMessages: (() => void) | null = null;
   let stopStatus: (() => void) | null = null;
 
@@ -266,12 +275,13 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
   /**
    * Apply one prompt's place in its seat's queue to the drawn row.
    *
-   * **The count is per seat and re-based by every snapshot answer.** A row in
-   * a state another source owns - an ask, a failure, a heal - is not folded:
-   * the read is the failure direction. Answers whether the frame was
-   * consumed; `false` leaves the read owed.
+   * **The identity is the frame's own `uuid`**: `queued` adds it, `started`
+   * keeps it, and a terminal removes it. A frame naming a prompt this page
+   * never counted, or a row in a state another source owns, folds nothing and
+   * keeps the read, because the count cannot be reproduced. Answers whether
+   * the frame was consumed; `false` leaves the read owed.
    */
-  function foldLifecycle(slot: SessionSlot, state: string): boolean {
+  function foldLifecycle(slot: SessionSlot, uuid: string, state: string): boolean {
     if (drawn === null) return false;
     const at = drawn.agents.findIndex((agent) => sameSeat(agent.slot, slot));
     if (at === -1) return false;
@@ -280,29 +290,34 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     // Another source owns this row's mark: an ask, a failure, a heal.
     if (agent.lifecycle !== 'Idle' && agent.lifecycle !== 'Running') return false;
     const key = subjectKey({ session: slot });
-    const held = livePrompts.get(key) ?? (agent.lifecycle === 'Running' ? 1 : 0);
-    let next: number;
+    const held = livePrompts.get(key) ?? new Set<string>();
+    let touched: WireTime | null = null;
     switch (state) {
       case 'queued':
-        next = held + 1;
+        // A repeat of one uuid is the same prompt announced again, not a
+        // second one.
+        held.add(uuid);
         break;
       case 'started':
-        // A prompt the CLI starts was queued on this seat; a frame that
-        // arrives without its queued one still means a turn is running.
-        next = Math.max(held, 1);
+        // A prompt this page never counted cannot be balanced by its terminal:
+        // the read is the failure direction.
+        if (!held.has(uuid)) return false;
+        // The old read refreshed the row's "last moved" at the turn's start;
+        // the fold states the same moment from this side.
+        touched = { secs_since_epoch: Math.floor(Date.now() / 1000), nanos_since_epoch: 0 };
         break;
       case 'completed':
       case 'cancelled':
       case 'discarded':
       case 'refused':
-        next = Math.max(held - 1, 0);
+        if (!held.delete(uuid)) return false;
         break;
       default:
         // A state this build has not seen: the read is the failure direction.
         return false;
     }
-    livePrompts.set(key, next);
-    const applied = applyLifecycle(drawn, slot, next > 0 ? 'Running' : 'Idle');
+    livePrompts.set(key, held);
+    const applied = applyLifecycle(drawn, slot, held.size > 0 ? 'Running' : 'Idle', touched);
     if (applied === null) return false;
     publishFold(applied);
     return true;
@@ -339,13 +354,20 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     const data = held.snapshot();
     // A store that says `ready` and holds no snapshot is a read that lost its
     // answer, not a read still owed: drawing it as loading would wait forever.
+    // **The failed branches clear the drawn record too**, or the next foldable
+    // frame would repaint the last good snapshot as a healthy one and erase
+    // the failure this state exists to draw (rule 22).
     if (data === null) {
       const failed = state.kind === 'ready' ? 'the snapshot was empty' : null;
+      drawn = null;
+      livePrompts.clear();
       view.set({ wire: null, refused: null, failed, report });
       return;
     }
     const malformed = malformedOf(data);
     if (malformed !== null) {
+      drawn = null;
+      livePrompts.clear();
       view.set({ wire: null, refused: null, failed: malformed, report });
       return;
     }
@@ -357,15 +379,23 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       if (pool !== null) wire.accounts = pool;
       drawnPool = wire.accounts;
       drawn = wire;
-      // **Every answer re-bases the lifecycle fold's count**: a reconnect's
-      // first answer resets it rather than adding to it, and a seat the
-      // server says is running starts at one.
-      livePrompts.clear();
+      // **Every answer re-bases the set to what the server vouches for.** A
+      // seat it says is idle has nothing in flight, so its set goes; a seat
+      // it says is running keeps the uuids this page has seen, because a
+      // second queued prompt has no other source. A seat it no longer lists
+      // goes too. A socket drop clears every set, so a reconnect's first
+      // answer starts from the snapshot alone.
+      const listed = new Set(wire.agents.map((agent) => subjectKey({ session: agent.slot })));
+      for (const key of [...livePrompts.keys()]) {
+        if (!listed.has(key)) livePrompts.delete(key);
+      }
       for (const agent of wire.agents) {
-        livePrompts.set(subjectKey({ session: agent.slot }), agent.lifecycle === 'Running' ? 1 : 0);
+        if (agent.lifecycle === 'Idle') livePrompts.delete(subjectKey({ session: agent.slot }));
       }
       view.set({ wire, refused: null, failed: null, report });
     } catch (why) {
+      drawn = null;
+      livePrompts.clear();
       view.set({
         wire: null,
         refused: null,
@@ -502,7 +532,7 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
         }
       }
       const life = promptLifecycleFrame(message.update);
-      if (life !== null && foldLifecycle(life.slot, life.state)) return;
+      if (life !== null && foldLifecycle(life.slot, life.uuid, life.state)) return;
       const work = backgroundWorkFrame(message.update);
       if (work !== null && foldBackground(work.slot, work.has)) return;
       // **The pool's frame carries the pool.** It is the whole field the read

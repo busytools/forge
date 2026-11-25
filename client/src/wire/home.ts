@@ -1100,16 +1100,25 @@ export function biometricFrame(update: SessionUpdate): unknown[] | null {
   return Array.isArray(payload.enrolments) ? payload.enrolments : null;
 }
 
-/** One prompt's place in its seat's queue, when the frame is one. */
+/**
+ * One prompt's place in its seat's queue, when the frame is one.
+ *
+ * **The `uuid` is the prompt's identity**, and a fold that counts prompts
+ * needs it: one queued behind a running turn is a second prompt, and a
+ * terminal names which one it ends. A frame that names none is one this build
+ * cannot count, so the read is kept.
+ */
 export function promptLifecycleFrame(
   update: SessionUpdate,
-): { slot: SessionSlot; state: string } | null {
+): { slot: SessionSlot; uuid: string; state: string } | null {
   if (typeof update === 'string') return null;
-  const payload = (update as { prompt_lifecycle?: { state?: unknown } }).prompt_lifecycle;
-  if (payload === undefined || typeof payload.state !== 'string') return null;
+  const payload = (update as { prompt_lifecycle?: { uuid?: unknown; state?: unknown } })
+    .prompt_lifecycle;
+  if (payload === undefined || typeof payload.uuid !== 'string') return null;
+  if (typeof payload.state !== 'string') return null;
   const slot = slotOf(update);
   if (slot === null) return null;
-  return { slot, state: payload.state };
+  return { slot, uuid: payload.uuid, state: payload.state };
 }
 
 /** The CLI's background registry, as the fact a row draws, when the frame is one. */
@@ -1167,6 +1176,11 @@ function sameSlot(a: SessionSlot, b: SessionSlot): boolean {
 /**
  * Apply one seat's lifecycle to the drawn home, without a read.
  *
+ * `touched` is the moment the frame states the row moved at, where it states
+ * one (`started`): the old read refreshed the row's "last moved" from the
+ * server's own stamp, and a later-attached page must not draw an age older
+ * than the turn it is watching.
+ *
  * Returns the same `wire` when the row already reads this way, so a caller
  * can tell a frame it consumed from a frame it could not apply (`null`).
  */
@@ -1174,15 +1188,16 @@ export function applyLifecycle(
   wire: HomeWire | null,
   slot: SessionSlot,
   lifecycle: Lifecycle,
+  touched: WireTime | null = null,
 ): HomeWire | null {
   if (wire === null) return null;
   const at = wire.agents.findIndex((agent) => sameSlot(agent.slot, slot));
   if (at === -1) return null;
   const held = wire.agents[at];
   if (held === undefined) return null;
-  if (held.lifecycle === lifecycle) return wire;
+  if (held.lifecycle === lifecycle && touched === null) return wire;
   const agents = [...wire.agents];
-  agents[at] = { ...held, lifecycle };
+  agents[at] = { ...held, lifecycle, ...(touched === null ? {} : { last_activity: touched }) };
   return { ...wire, agents };
 }
 
