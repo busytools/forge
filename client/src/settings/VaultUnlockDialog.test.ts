@@ -24,6 +24,7 @@ function draw(props: {
   busy?: boolean;
   reason?: string | null;
   biometric?: boolean;
+  gesture?: boolean;
   fallback?: string | null;
   ongesture?: () => void;
   onpassword?: (password: string, code: string) => void;
