@@ -453,6 +453,78 @@ describe('the board over a connection', () => {
     stop();
   });
 
+  /**
+   * **A connector set is applied into the drawn board, not answered with a
+   * read.** The frame carries both sets whole, exactly as the snapshot's
+   * `ProjectConnectorsWire` holds them, so a project the drawn board holds is
+   * drawn from the frame. A project it does not hold has nowhere to apply
+   * into, and a frame this build cannot read is the same: both keep the read,
+   * because the failure direction is a read rather than a wrong value.
+   */
+  it('applies a connector set without a read, and reads for a project it does not hold', async () => {
+    const forge = fakeConnection();
+    const seen: BoardRead[] = [];
+    const stop = watchBoard(forge.connection).subscribe(($next) => {
+      seen.push($next);
+    });
+    const data = {
+      projects: [
+        { project: { org: 'TestOrg', name: 'proj' }, rows: [], crons: [], connectors: {} },
+      ],
+    };
+    forge.stores.get(BOARD)?.set(data);
+    forge.arrive({ kind: 'snapshot', subject: BOARD, data });
+    expect(forge.refreshed).toEqual([]);
+
+    forge.arrive({
+      kind: 'update',
+      update: {
+        connector_subscriptions_changed: {
+          key: LEAD,
+          gotify: [{ id: 'g1', applications: ['forge'], min_priority: 3, team_role: null }],
+          slack: [{ id: 's1', workspace: 'hub', target: null, team_role: null }],
+        },
+      },
+    });
+    expect(forge.refreshed, 'a connector set asked for a whole read').toEqual([]);
+    const held = seen.at(-1)?.wire?.projects[0]?.connectors as
+      { gotify: unknown[]; slack: unknown[] } | undefined;
+    expect(held?.gotify.length, 'the gotify set did not land').toBe(1);
+    expect(held?.slack.length, 'the slack set did not land').toBe(1);
+
+    // A project the drawn board does not hold: the read is owed.
+    forge.arrive({
+      kind: 'update',
+      update: {
+        connector_subscriptions_changed: {
+          key: { org: 'TestOrg', project: 'other', label: 'lead' },
+          gotify: [],
+          slack: [],
+        },
+      },
+    });
+    await settle();
+    expect(
+      forge.refreshed,
+      'a connector set for a project the board does not hold was applied into nothing',
+    ).toEqual([BOARD]);
+
+    // A frame whose sets this build cannot read is a read, never a silent
+    // drop. Answer the one in flight first.
+    forge.arrive({ kind: 'snapshot', subject: BOARD, data });
+    await settle();
+    forge.arrive({
+      kind: 'update',
+      update: { connector_subscriptions_changed: { key: LEAD } },
+    });
+    await settleFloor();
+    expect(
+      forge.refreshed,
+      'a connector frame this build cannot read was dropped instead of read',
+    ).toEqual([BOARD, BOARD]);
+    stop();
+  });
+
   it('does not read for a seat-liveness variant; the marks beat reconciles', async () => {
     const forge = fakeConnection();
     const stop = watchBoard(forge.connection).subscribe(() => {});
@@ -493,7 +565,7 @@ describe('the board over a connection', () => {
     forge.stores.get(BOARD)?.set(data);
     forge.arrive({ kind: 'snapshot', subject: BOARD, data });
 
-    // A read goes out (the connector set is the one frame that still reads).
+    // A read goes out (a connector frame this build cannot read still reads).
     forge.arrive({ kind: 'update', update: { connector_subscriptions_changed: { key: LEAD } } });
     await settle();
     expect(forge.refreshed, 'the read did not go out').toEqual([BOARD]);
