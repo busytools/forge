@@ -437,7 +437,10 @@
             <div class="settings-setting"><span class="settings-setting-label"><code>macOS (3f2a9c1b)</code><span class="settings-dim">this client</span><span class="settings-dim">enrolled 3h ago</span></span><span class="settings-setting-value"><span class="biometric-purpose"><code>vault</code><span class="settings-dim">last used 12m ago</span><span class="settings-btn ghost">revoke</span></span></span></div>
           </div>
           <!-- The unlock dialog, gesture first, the Vaultwarden password one
-               click beneath it; a refusal stays here with the fields. -->
+               click beneath it; a refusal stays here with the fields. A gate
+               that cannot answer drops the gesture button and opens on the
+               password instead, since a press that can only fail is not an
+               offer. -->
           <div class="settings-dialog">
             <div class="t">unlock the vault</div>
             <div class="s">The vault is locked. Release it with this device, or enter the Vaultwarden password.</div>
