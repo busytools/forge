@@ -16,13 +16,15 @@ leak-timeout = "10s"
 [profile.capture]
 slow-timeout = { period = "60s", terminate-after = 8 }
 
-# These two print what they actually pinned, and that number IS the point of
-# them: it is how a reader learns the record is weaker than it looks before
-# something breaks rather than after. nextest captures a passing test's
-# output, so without this the denominator appears only on the runs where
-# something is already wrong, which is the half that does not need it.
+# These print what they actually pinned, or why they did not run, and that
+# sentence IS the point of them: it is how a reader learns the record is
+# weaker than it looks before something breaks rather than after, and how a
+# skipped macOS staging gate says so instead of passing silently. nextest
+# captures a passing test's output, so without this the denominator - or the
+# skip - appears only on the runs where something is already wrong, which is
+# the half that does not need it.
 [[profile.default.overrides]]
-filter = 'test(the_committed_socket_contract_is_still_what_the_server_emits) or test(every_subject_round_trips_through_its_fixture)'
+filter = 'test(the_committed_socket_contract_is_still_what_the_server_emits) or test(every_subject_round_trips_through_its_fixture) or test(restaging_the_libraries_does_not_invalidate_a_live_mapping)'
 success-output = "immediate"
 
 # **The headless server tests run real child processes**, and every wait on

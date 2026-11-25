@@ -2,12 +2,19 @@
 
 use std::env;
 use std::ffi::OsStr;
-use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
+
+/// The staging code the crate's tests exercise too, compiled here with the
+/// same source file rather than a copy of it.
+mod staging {
+    include!("src/staging.rs");
+}
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    // The staging itself lives beside the crate so the tests can compile the
+    // same file; a change to it must rerun this build.
+    println!("cargo:rerun-if-changed=src/staging.rs");
     // Present only when transcribe built its ggml shared, which is the posture
     // forge's binary needs; a static build has nothing to ship.
     println!("cargo:rerun-if-env-changed=DEP_TRANSCRIBE_CPP_RUNTIME_DIR");
@@ -28,7 +35,7 @@ fn main() {
     let dest = profile_dir.join("transcribe-libs");
     // Warn rather than fail: a plain `cargo build` is not an install, and
     // `scripts/install.sh` refuses an install whose binary cannot start.
-    if let Err(err) = stage(Path::new(&runtime_dir), &dest) {
+    if let Err(err) = staging::stage(Path::new(&runtime_dir), &dest) {
         println!(
             "cargo:warning=staging transcribe's shared libraries into {} failed: {err}",
             dest.display()
@@ -45,55 +52,4 @@ fn profile_dir() -> Option<PathBuf> {
         .ancestors()
         .find(|dir| dir.file_name().and_then(OsStr::to_str) == Some(profile.as_str()))
         .map(Path::to_path_buf)
-}
-
-fn stage(runtime_dir: &Path, dest: &Path) -> io::Result<()> {
-    fs::create_dir_all(dest)?;
-    let mut shipped = Vec::new();
-    for entry in fs::read_dir(runtime_dir)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        if !is_library(&name) {
-            continue;
-        }
-        let target = dest.join(&name);
-        if entry.file_type()?.is_symlink() {
-            remove_if_present(&target)?;
-            // The installed tree names each dylib three ways (versioned file,
-            // SONAME, link name); keeping the links keeps the loader's name
-            // without three copies of every library.
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(fs::read_link(entry.path())?, &target)?;
-            #[cfg(not(unix))]
-            fs::copy(entry.path(), &target)?;
-        } else {
-            fs::copy(entry.path(), &target)?;
-        }
-        shipped.push(name);
-    }
-    // Drop a library this build no longer produces: a stale copy beside the
-    // binary would satisfy the loader with the wrong version.
-    for entry in fs::read_dir(dest)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        if is_library(&name) && !shipped.contains(&name) {
-            remove_if_present(&entry.path())?;
-        }
-    }
-    Ok(())
-}
-
-fn remove_if_present(path: &Path) -> io::Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err),
-    }
-}
-
-/// The runtime files beside the shared object. The link manifest shares the
-/// directory and is not one of them.
-fn is_library(name: &OsStr) -> bool {
-    let name = name.to_string_lossy();
-    name.contains(".so") || name.ends_with(".dylib") || name.ends_with(".dll")
 }
