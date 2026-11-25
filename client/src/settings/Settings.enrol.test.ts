@@ -395,7 +395,7 @@ describe('the vault press', () => {
     await settled();
 
     button('revoke')?.click();
-    await settled();
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalled());
 
     expect(dispatch).toHaveBeenCalledWith({
       biometric_revoke: { enrolment: 'device-1', purpose: 'vault' },
@@ -410,7 +410,9 @@ describe('the vault press', () => {
     await settled();
 
     button('revoke')?.click();
-    await settled();
+    // **Wait for the handler to have run** before asserting it did nothing:
+    // a fixed settle can pass on a slow machine before the code could act.
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalled());
 
     expect(dispatch).toHaveBeenCalledWith({
       biometric_revoke: { enrolment: 'device-2', purpose: 'vault' },
