@@ -15,7 +15,7 @@ import type { BiometricEnrolment } from '../wire/home';
 const AT = { secs_since_epoch: 1_790_000_000, nanos_since_epoch: 0 };
 const LOCAL_ID = '11111111-2222-4333-8444-555555555555';
 /** The key the client mints its enrolment id under, as the module keeps it. */
-const ENROLMENT_KEY = 'forge.biometric.enrolment.vault';
+const ENROLMENT_KEY = 'forge.biometric.device';
 
 let app: Record<string, unknown> | null = null;
 
@@ -109,21 +109,42 @@ describe('the merged vault card', () => {
     expect(button('enrol again')).not.toBeNull();
   });
 
-  it('draws the platform reason and no press when the gate cannot answer', () => {
+  it('draws the platform reason and the password press when the gate cannot answer', () => {
+    const onaction = vi.fn();
+    app = mount(VaultCard, {
+      target: document.body,
+      props: {
+        vault: { locked: true, idle_minutes: 15 },
+        read: { outcome: 'read' as const, value: [] },
+        device: {
+          outcome: 'unavailable' as const,
+          reason: 'no biometric is enrolled on this device',
+        },
+        onaction,
+        onrevoke: () => {},
+        onlock: () => {},
+      },
+    });
+    flushSync();
+
+    expect(document.body.textContent).toContain(
+      "cannot use this device's gesture: no biometric is enrolled on this device",
+    );
+    expect(button('enrol this client'), 'a gate that cannot answer cannot enrol').toBeNull();
+    const unlock = button('unlock');
+    expect(unlock, 'the contract keeps the password reachable').not.toBeNull();
+    unlock?.click();
+    expect(onaction).toHaveBeenCalledWith('unlock');
+
+    document.body.innerHTML = '';
     draw({
       device: {
         outcome: 'unavailable',
         reason: 'the app is not signed for the keychain it stores the blob in',
       },
-      locked: true,
+      locked: false,
     });
-
-    expect(document.body.textContent).toContain(
-      'cannot unlock here: the app is not signed for the keychain it stores the blob in',
-    );
-    expect(button('enrol this client')).toBeNull();
-    expect(button('enrol again')).toBeNull();
-    expect(button('unlock')).toBeNull();
+    expect(button('unlock'), 'an open vault has nothing to unlock').toBeNull();
   });
 
   it('draws the enrolling and failed states with their own press', () => {
@@ -196,6 +217,7 @@ describe('the merged vault card', () => {
     expect(button('enrol this client')).toBeNull();
 
     void unmount(app);
+    app = null;
     document.body.innerHTML = '';
     app = mount(VaultCard, {
       target: document.body,

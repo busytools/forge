@@ -469,6 +469,8 @@ impl Workspace {
             settings_write: parking_lot::Mutex::new(()),
             reload_generation: std::sync::atomic::AtomicU64::new(0),
             reload_gate: std::sync::Mutex::new(()),
+            reload_serial: Mutex::new(()),
+            reload_pause: Mutex::new(None),
             systemone: parking_lot::RwLock::new(systemone),
             voice: std::sync::OnceLock::new(),
             voice_preview_error: std::sync::Mutex::new(None),
@@ -647,6 +649,19 @@ impl Workspace {
         let (reached_tx, reached_rx) = std::sync::mpsc::channel();
         let (resume_tx, resume_rx) = std::sync::mpsc::channel();
         *self.live_seats_gate.lock() = Some((reached_tx, resume_rx));
+        (reached_rx, resume_tx)
+    }
+
+    /// Hold the next reload inside its serialized body: the returned
+    /// receiver fires once it is held, and a message on the returned sender
+    /// releases it. Test-only.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn pause_next_reload(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (reached_tx, reached_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        *self.reload_pause.lock() = Some((reached_tx, resume_rx));
         (reached_rx, resume_tx)
     }
 

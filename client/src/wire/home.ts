@@ -766,6 +766,60 @@ export function rowFrom(entry: unknown): BoardRow {
   };
 }
 
+/**
+ * A `tasks_changed` frame's task set, counted into the fleet row it names.
+ *
+ * **Three of the fleet row's figures are the task set's own**: the ready
+ * queue, the waits on the person and the row count. The frame carries the
+ * whole set, so a task write is applied here rather than answered with a whole
+ * home read (rule 32; the read was ~198 KB at 1.82/s - #3063). `live_workers`,
+ * the marks and the misses are the server's own derivation and stay what the
+ * last read said, refreshed by the floor's read.
+ */
+export function applyFleetCounts(
+  wire: HomeWire | null,
+  project: string,
+  tasks: readonly unknown[],
+): HomeWire | null {
+  if (wire === null) return null;
+  const at = wire.fleet.findIndex((row) => row.project === project);
+  // A project the drawn home does not hold has nowhere to apply into: the
+  // caller still owes a read (#3074 review).
+  if (at === -1) return null;
+  let queue = 0;
+  let waitingOnUser = 0;
+  for (const entry of tasks) {
+    const task = (typeof entry === 'object' && entry !== null ? entry : {}) as Record<
+      string,
+      unknown
+    >;
+    const status = task['status'];
+    const owner = task['owner'];
+    const reserved = task['reserved'];
+    const waiting = waitingFrom(task['waiting_on']);
+    // **The server's own rule** (`tasks::parked_on_user`): a verification
+    // wait parks on the person only when the row carries its own gate; any
+    // other verification park is a plain wait (#3074 review).
+    const onUser =
+      waiting !== null &&
+      (waiting.verification ? task['verify'] === 'user' : waiting.kind === 'decision');
+    if (onUser && status === 'waiting') waitingOnUser += 1;
+    if (
+      status === 'pending' &&
+      (owner === null || owner === undefined) &&
+      reserved !== 'user' &&
+      waiting === null
+    ) {
+      queue += 1;
+    }
+  }
+  const fleet = [...wire.fleet];
+  const held = fleet[at];
+  if (held === undefined) return wire;
+  fleet[at] = { ...held, queue, waiting_on_user: waitingOnUser, rows: tasks.length };
+  return { ...wire, fleet };
+}
+
 /** The row's whole transition count, never below what the row carries. */
 function historyTotalFrom(raw: unknown, shown: number): number {
   return typeof raw === 'number' && Number.isInteger(raw) && raw >= shown ? raw : shown;

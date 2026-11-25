@@ -4,9 +4,14 @@ import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.security.UnrecoverableKeyException
+import javax.crypto.SecretKey
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * The phone gate's pure half: the stored record's codec and the words a
@@ -48,13 +53,36 @@ class BiometricRecordsTest {
 
   @Test
   fun anUnavailableSensorSaysWhichWay() {
+    // **Every branch is pinned, not just the two the card most often draws.**
+    // A branch left unpinned reverts to "fingerprint" green: the suite would
+    // pass while the card quoted the wrong word.
     assertEquals(
-      "no fingerprint is enrolled on this device",
+      "no biometric is enrolled on this device",
       BiometricRecords.availabilityReason(BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED),
     )
     assertEquals(
-      "this device has no fingerprint sensor",
+      "this device has no biometric sensor",
       BiometricRecords.availabilityReason(BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE),
+    )
+    assertEquals(
+      "the biometric sensor is not available right now",
+      BiometricRecords.availabilityReason(BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE),
+    )
+    assertEquals(
+      "this device's security patch is too old for biometric keys",
+      BiometricRecords.availabilityReason(BiometricManager.BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED),
+    )
+    assertEquals(
+      "this device does not support biometric keys",
+      BiometricRecords.availabilityReason(BiometricManager.BIOMETRIC_ERROR_UNSUPPORTED),
+    )
+    assertEquals(
+      "the biometric sensor's state is unknown",
+      BiometricRecords.availabilityReason(BiometricManager.BIOMETRIC_STATUS_UNKNOWN),
+    )
+    assertEquals(
+      "the biometric sensor answered 1234",
+      BiometricRecords.availabilityReason(1234),
     )
   }
 
@@ -65,8 +93,125 @@ class BiometricRecordsTest {
       BiometricRecords.promptError(BiometricPrompt.ERROR_USER_CANCELED, "Canceled"),
     )
     assertEquals(
-      "the fingerprint sensor is locked out; use the password",
+      "the biometric sensor is locked out; use the password",
       BiometricRecords.promptError(BiometricPrompt.ERROR_LOCKOUT, "Too many attempts"),
+    )
+  }
+
+  @Test
+  fun anUnknownPromptErrorCarriesThePlatformMessage() {
+    // **The default branch is pinned too.** A branch left unpinned reverts
+    // to "fingerprint" green in a later edit, and the card quotes it.
+    assertEquals(
+      "the biometric sensor answered 42",
+      BiometricRecords.promptError(42, "the biometric sensor answered 42"),
+    )
+    assertEquals(
+      "the biometric sensor answered 42",
+      BiometricRecords.promptError(42, ""),
+    )
+  }
+
+  /**
+   * The two routes an invalidated key reports on, driven through the same
+   * decision a store makes. **A route that skipped recovery would mint over
+   * the record**, which is the stranded state the device rung catches.
+   */
+  @Test
+  fun theGetKeyRouteRecoversInsteadOfMintingOverTheRecord() {
+    var recovered = false
+    var minted = false
+    BiometricRecords.keyForStore<SecretKey>(
+      read = { throw UnrecoverableKeyException("the key was invalidated") },
+      probe = { true },
+      mint = { minted = true; aKey() },
+      recover = { recovered = true; aKey() },
+    )
+    assertTrue("the getKey route must recover", recovered)
+    assertFalse("the getKey route must not mint over the record", minted)
+  }
+
+  @Test
+  fun theCipherRouteRecoversInsteadOfMintingOverTheRecord() {
+    var recovered = false
+    var minted = false
+    BiometricRecords.keyForStore(
+      read = { aKey() },
+      probe = { false },
+      mint = { minted = true; aKey() },
+      recover = { recovered = true; aKey() },
+    )
+    assertTrue("the cipher route must recover", recovered)
+    assertFalse("the cipher route must not mint over the record", minted)
+  }
+
+  @Test
+  fun aFirstEnrolmentMintsWithoutRecovering() {
+    var recovered = false
+    var minted = false
+    BiometricRecords.keyForStore<SecretKey>(
+      read = { null },
+      probe = { true },
+      mint = { minted = true; aKey() },
+      recover = { recovered = true; aKey() },
+    )
+    assertTrue("a first enrolment mints", minted)
+    assertFalse("there is no record to recover", recovered)
+  }
+
+  /**
+   * The invariant the cancelled-prompt bug broke: the record is gone before
+   * the replacement is minted, so a prompt cancelled after the recovery
+   * cannot leave `enrolled` true beside a key that never sealed it.
+   */
+  @Test
+  fun aCancelledPromptAfterRecoveryLeavesNothingEnrolled() {
+    var record = true
+    var keyMinted = false
+    val cancelled = runCatching {
+      BiometricRecords.recoverInvalidatedKey(
+        removeRecord = { record = false; true },
+        mint = {
+          keyMinted = true
+          throw IllegalStateException("the gesture was cancelled")
+        },
+      )
+    }
+    assertTrue("the cancelled prompt surfaces as a failure", cancelled.isFailure)
+    assertTrue("the replacement key was minted before the prompt", keyMinted)
+    assertFalse("the record must be cleared before the mint", record)
+    assertFalse(
+      "enrolled must be false after the abort",
+      BiometricRecords.isEnrolled(hasRecord = record, hasUsableKey = true),
+    )
+  }
+
+  @Test
+  fun aRecordThatCannotBeClearedAbortsBeforeAnyKeyIsMinted() {
+    var minted = false
+    val failure = runCatching {
+      BiometricRecords.recoverInvalidatedKey(
+        removeRecord = { false },
+        mint = { minted = true; aKey() },
+      )
+    }
+    assertTrue("a failed clear surfaces as a failure", failure.isFailure)
+    assertFalse("nothing is minted over a record still in place", minted)
+  }
+
+  private fun aKey(): SecretKey = SecretKeySpec(ByteArray(32), "AES")
+
+  @Test
+  fun aReleaseRefusalNamesTheInvalidation() {
+    // The two refusals `release` draws when the key is dead or unusable.
+    // Pinned here so a reword cannot land without the card's copy moving.
+    assertEquals(
+      "the device's biometrics changed, so the stored unlock was invalidated; use the password and enrol again",
+      BiometricRecords.invalidatedRelease(),
+    )
+    assertEquals(
+      "the stored unlock cannot be used on this device; use the password and enrol again",
+      BiometricRecords.unusableRelease(),
     )
   }
 }

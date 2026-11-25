@@ -300,7 +300,7 @@ class RustConnection implements Connection {
     this.stops.push(
       await listen<WrittenPayload>('client://written', (event) => {
         const { key, declared, waited_ms: waitedMs } = event.payload;
-        noteSubscribeWritten(seatOfKey(key), declared, waitedMs);
+        noteSubscribeWritten(seatOfKey(key), key, declared, waitedMs);
       }),
     );
     this.stops.push(

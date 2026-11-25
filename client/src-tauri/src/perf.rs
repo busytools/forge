@@ -73,6 +73,15 @@ pub struct ClientPerfRecord {
     /// over one unknown word.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
+    /// The subject a subscribe or snapshot record measured: `home`, `board`,
+    /// `usage`, or `session` for a seat (whose `session` field names it).
+    ///
+    /// The page's perf writer stamps it so a whole read can be attributed to
+    /// the subject it read - the poll-on-frame loop was invisible because a
+    /// string subject logged no name at all (#3063). This struct is the
+    /// boundary: a field it does not name is parsed away.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
     /// What the column measured at a `drawn` mark: the list's own
     /// scroll numbers, the turns it rendered against those with a box, and
     /// whether the foot's pin refused itself on an undrawn newest row. Absent
@@ -512,6 +521,24 @@ mod tests {
         assert_eq!(
             parsed["state"], "waking",
             "the shell must write the state the page marked: {text}",
+        );
+    }
+
+    /// **The subject a whole read was made for survives the write.** A record
+    /// this struct does not name is parsed away before the log, which is how
+    /// the home and board read loop stayed invisible (#3063, #3074).
+    #[test]
+    fn the_subject_a_subscribe_names_survives_the_write() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut subscribe = record("subscribe");
+        subscribe.subject = Some("home".to_owned());
+        append(dir.path(), &[subscribe], MAX_BYTES).expect("append");
+
+        let text = std::fs::read_to_string(dir.path().join(PERF_LOG_NAME)).expect("read back");
+        let parsed: serde_json::Value = serde_json::from_str(text.trim()).expect("a JSON line");
+        assert_eq!(
+            parsed["subject"], "home",
+            "the shell must write the subject the page named: {text}",
         );
     }
 

@@ -75,6 +75,8 @@
   let dialog = $state<null | 'unlock' | 'enrol'>(null);
   let dialogBusy = $state(false);
   let dialogReason = $state<string | null>(null);
+  /** Whether the dialog opens already asking for the gesture (an enrolled, capable client). */
+  let dialogGesture = $state(false);
   /** A close through the dialog's own buttons, waiting on its entry's pop. */
   let vaultClosing = false;
 
@@ -90,8 +92,9 @@
   // hardware Back closes it rather than leaving the page under it. The page
   // already places one entry per dialog; the vault unlock rides that
   // machinery so one pop settles whichever dialog is open.
-  function openDialog(kind: 'unlock' | 'enrol'): void {
+  function openDialog(kind: 'unlock' | 'enrol', startGesture = false): void {
     dialog = kind;
+    dialogGesture = startGesture;
     dialogReason = null;
     if (!dialogEntry) {
       history.pushState({ ...heldState(), forgeSettingsDialog: true }, '', location.href);
@@ -101,6 +104,7 @@
 
   function closeDialog(): void {
     dialog = null;
+    dialogGesture = false;
     dialogReason = null;
     if (!dialogEntry) return;
     vaultClosing = true;
@@ -111,6 +115,25 @@
   function vaultAction(action: 'enrol' | 'unlock'): void {
     if (home.wire?.vault?.locked === false) {
       if (action === 'enrol') void enrolDevice();
+      return;
+    }
+    if (action === 'unlock') {
+      // **The press goes straight to what will satisfy it.** An enrolled
+      // client on a capable device opens the dialog already asking for the
+      // gesture - the choice screen asked the person a question the client
+      // could answer (Ved, 2026-11-25). Everything else opens on the password
+      // with the reason it is being asked.
+      if (device.outcome === 'enrolled' && biometricOf(device)) {
+        openDialog('unlock', true);
+        return;
+      }
+      openDialog('unlock');
+      dialogReason =
+        device.outcome === 'unavailable'
+          ? 'this device cannot use a gesture; enter the vault password'
+          : biometricOf(device)
+            ? 'this client is not enrolled; enter the vault password or enrol it first'
+            : 'this device cannot use a gesture; enter the vault password';
       return;
     }
     openDialog(action);
@@ -125,6 +148,13 @@
   /** Whether the gate's gesture is biometric, from a state that knows. */
   function biometricOf(gate: DeviceGate): boolean {
     return gate.outcome === 'ready' || gate.outcome === 'enrolled' ? gate.biometric : true;
+  }
+
+  /** Whether the gate can be asked for a gesture at all. **An unavailable
+   *  one cannot** - no biometric enrolled, a probe that failed, an unsigned
+   *  build - and the dialog opens on the password instead. */
+  function gestureOf(gate: DeviceGate): boolean {
+    return gate.outcome !== 'unavailable';
   }
 
   async function enrolDevice(): Promise<void> {
@@ -839,9 +869,11 @@
         // material a later rotation would rewrite the deleted row with.
         if (purpose === VAULT_PURPOSE && enrolment === enrolmentIdIfMinted()) {
           forgetVaultMaterial();
-          void remove(VAULT_PURPOSE).then(() => {
-            refreshDevice();
-          });
+          void remove(VAULT_PURPOSE)
+            .catch(() => {})
+            .then(() => {
+              refreshDevice();
+            });
         }
       }}
       {device}
@@ -926,6 +958,8 @@
         busy={dialogBusy}
         reason={dialogReason}
         biometric={biometricOf(device)}
+        gesture={gestureOf(device)}
+        startgesture={dialogGesture}
         ongesture={gestureUnlock}
         onpassword={submitVaultPassword}
         oncancel={closeDialog}

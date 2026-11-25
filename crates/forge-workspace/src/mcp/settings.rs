@@ -71,7 +71,9 @@ impl Tool for Index {
          `accounts.<display_name>.token`). forge's configuration is read and edited through \
          these settings tools, not by opening or editing a file: a direct filesystem read or \
          edit of the config is the wrong door even when it works, because it skips the \
-         catalogue's validation and the reader's approval. Any session may call this."
+         catalogue's validation and the reader's approval. Any session may call this. It \
+         describes the config this server has loaded: only a write adopts a file changed on \
+         disk, so a read may lag an out-of-band edit until one does."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -117,7 +119,9 @@ impl Tool for Get {
          for a session that has no peer channel, report the need to your reader. Nothing reads \
          another project's settings silently. forge's configuration is read and edited through \
          these settings tools, not by opening or editing a file: a direct filesystem read or \
-         edit of the config is the wrong door even when it works."
+         edit of the config is the wrong door even when it works. The value is the loaded \
+         config's: only a write adopts a file changed on disk, so this read may lag an \
+         out-of-band edit until one does."
     }
 
     fn input_schema(&self) -> serde_json::Value {

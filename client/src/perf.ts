@@ -248,6 +248,13 @@ export interface PerfRecord {
    */
   surface?: string | null;
   session?: string | null;
+  /**
+   * A `subscribe` or `snapshot`: the subject the read was for - `home`,
+   * `board`, `usage`, or `session` for a seat, whose `session` names it. The
+   * poll-on-frame loop was invisible because a string subject logged no name
+   * (#3063).
+   */
+  subject?: string;
   window_ms?: number;
   frames?: number;
   slow?: number;
@@ -370,10 +377,15 @@ interface PerfProbe {
   /** A subscribe written to the socket, with the seat its subject names when
    *  it names one (#2513). `write_waited_ms` is the desktop shell's own
    *  queue-and-write time, absent where the page wrote the frame itself. */
-  noteSubscribe(seat: string | null, declare: boolean, writeWaitedMs?: number): void;
+  noteSubscribe(
+    seat: string | null,
+    declare: boolean,
+    writeWaitedMs?: number,
+    subject?: string,
+  ): void;
   /** A snapshot frame, after its JSON.parse: the frame's length and how long
    *  the parse took (#2513). */
-  noteSnapshot(seat: string | null, chars: number, parseMs: number): void;
+  noteSnapshot(seat: string | null, chars: number, parseMs: number, subject?: string): void;
   /** One gesture handed to the browser, as it leaves this side (#2645). */
   noteBrowserInput(kind: string, tab: number, profile: string | null): void;
   /**
@@ -1292,7 +1304,12 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
         session: seat,
       });
     },
-    noteSubscribe(seat: string | null, declare: boolean, writeWaitedMs?: number): void {
+    noteSubscribe(
+      seat: string | null,
+      declare: boolean,
+      writeWaitedMs?: number,
+      subject?: string,
+    ): void {
       const at = now();
       // **An unprompted subscribe follows a snapshot's completion.** No click
       // or conversation opening happened after that completion, which is the
@@ -1318,13 +1335,14 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
         ts_ms: Date.now(),
         declare,
         auto,
+        ...(subject === undefined ? {} : { subject }),
         ...(writeWaitedMs === undefined ? {} : { write_waited_ms: writeWaitedMs }),
         ...(sinceClick === undefined ? {} : { since_click_ms: sinceClick }),
         ...(seat === null ? {} : { session: seat }),
         surface,
       });
     },
-    noteSnapshot(seat: string | null, chars: number, parseMs: number): void {
+    noteSnapshot(seat: string | null, chars: number, parseMs: number, subject?: string): void {
       lastSnapshotAt = now();
       connSnapshotChars += chars;
       connSurface = surface;
@@ -1336,6 +1354,7 @@ export function perfProbe(options: ProbeOptions = {}): PerfProbe {
         ts_ms: Date.now(),
         chars,
         parse_ms: parseMs,
+        ...(subject === undefined ? {} : { subject }),
         ...(seat === null ? {} : { session: seat }),
         surface,
       });
@@ -1480,7 +1499,12 @@ export function noteSeatClick(slot: SessionSlot): void {
  * seat, so its record carries none.
  */
 export function noteSubscribe(subject: Subject, declare: boolean): void {
-  running?.noteSubscribe(typeof subject === 'string' ? null : seatLabel(subject.session), declare);
+  running?.noteSubscribe(
+    typeof subject === 'string' ? null : seatLabel(subject.session),
+    declare,
+    undefined,
+    typeof subject === 'string' ? subject : 'session',
+  );
 }
 
 /**
@@ -1490,10 +1514,15 @@ export function noteSubscribe(subject: Subject, declare: boolean): void {
  */
 export function noteSubscribeWritten(
   seat: string | null,
+  key: string,
   declare: boolean,
   waitedMs: number,
 ): void {
-  running?.noteSubscribe(seat, declare, waitedMs);
+  // **The key the shell read is the subject**, so a home or board subscribe
+  // from the desktop names itself the way the browser's does (#3063): a
+  // `session:...` key is the seat this record's `session` field already names.
+  const subject = key.startsWith('session:') ? 'session' : key;
+  running?.noteSubscribe(seat, declare, waitedMs, subject);
 }
 
 /** One snapshot frame was parsed, with its length and parse time (#2513). */
@@ -1502,6 +1531,7 @@ export function noteSnapshot(subject: Subject, chars: number, parseMs: number): 
     typeof subject === 'string' ? null : seatLabel(subject.session),
     chars,
     parseMs,
+    typeof subject === 'string' ? subject : 'session',
   );
 }
 

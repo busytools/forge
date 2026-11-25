@@ -92,3 +92,130 @@ export function coversBoard(update: SessionUpdate): boolean {
   const [variant] = Object.keys(update);
   return variant !== undefined && BOARD_VARIANTS.includes(variant);
 }
+
+/** One frame's project key, as the board places it: org and project name. */
+function projectOf(key: unknown): { org: string; name: string } | null {
+  if (typeof key !== 'object' || key === null) return null;
+  const org = (key as { org?: unknown }).org;
+  const name = (key as { project?: unknown }).project;
+  if (typeof org !== 'string' || typeof name !== 'string') return null;
+  return { org, name };
+}
+
+/**
+ * The project's task set a `tasks_changed` frame carries, or `null`.
+ *
+ * **The frame carries the whole set**, so a task write is applied to the drawn
+ * rows rather than answered with a whole board read (rule 32; the read was
+ * 3 MB and ran at 0.39/s while a seat was on screen - #3063).
+ */
+export function tasksFrame(
+  update: SessionUpdate,
+): { project: { org: string; name: string }; tasks: unknown[] } | null {
+  if (typeof update === 'string') return null;
+  const payload = (update as { tasks_changed?: { key?: unknown; tasks?: unknown } }).tasks_changed;
+  if (payload === undefined || !Array.isArray(payload.tasks)) return null;
+  const project = projectOf(payload.key);
+  if (project === null) return null;
+  return { project, tasks: payload.tasks };
+}
+
+/** The project's schedule set a `cron_schedules_changed` frame carries, or `null`. */
+export function cronsFrame(
+  update: SessionUpdate,
+): { project: { org: string; name: string }; crons: unknown[] } | null {
+  if (typeof update === 'string') return null;
+  const payload = (update as { cron_schedules_changed?: { key?: unknown; crons?: unknown } })
+    .cron_schedules_changed;
+  if (payload === undefined || !Array.isArray(payload.crons)) return null;
+  const project = projectOf(payload.key);
+  if (project === null) return null;
+  return { project, crons: payload.crons };
+}
+
+/**
+ * Apply one project's task set to the drawn board, without a read.
+ *
+ * **The task facts come from the frame; the board's derived facts stay what
+ * the last read said.** `worked_secs`, the marks, the rollup, the parent's
+ * subject and the transition history are the server's own computation and no
+ * frame carries them - so a row that was drawn keeps them, a row that is new
+ * draws with their empty values, and the marks beat refreshes them (at most
+ * five minutes, the staleness the beat already accepts). A row the frame does
+ * not name is left alone: the core's set is the project's live rows, and a
+ * removal arrives in the same frame as an absence - the beat reconciles the
+ * rest rather than a client guessing that an omission is a delete.
+ *
+ * Returns `null` when the board holds no snapshot to apply into (the first
+ * read is still owed), which is the one case the caller still reads.
+ */
+export function applyTasks(
+  wire: BoardWire | null,
+  project: { org: string; name: string },
+  tasks: readonly unknown[],
+): BoardWire | null {
+  if (wire === null) return null;
+  const at = wire.projects.findIndex(
+    (held) => held.project.org === project.org && held.project.name === project.name,
+  );
+  // A project the drawn board does not hold has nowhere to apply into: the
+  // caller still owes a read (#3074 review).
+  if (at === -1) return null;
+  const held = wire.projects[at];
+  if (held === undefined) return null;
+  const byId = new Map(held.rows.map((row) => [row.task.id, row] as const));
+  const order: string[] = [];
+  for (const entry of tasks) {
+    const fresh = rowFrom({ task: entry });
+    const prior = byId.get(fresh.task.id);
+    byId.set(
+      fresh.task.id,
+      prior === undefined
+        ? fresh
+        : {
+            ...prior,
+            task: fresh.task,
+          },
+    );
+    order.push(fresh.task.id);
+  }
+  // **The frame is the whole live set**, so a row it does not name is gone:
+  // the drawn order stays for the rows it does name (the core's own
+  // `tasks_for_project` and the board's rows are the same population), and a
+  // row the frame introduces is appended.
+  const named = new Set(order);
+  const rows: BoardRow[] = [];
+  for (const row of held.rows) {
+    if (named.has(row.task.id)) {
+      const next = byId.get(row.task.id);
+      if (next !== undefined) rows.push(next);
+    }
+  }
+  for (const id of order) {
+    if (!held.rows.some((row) => row.task.id === id)) {
+      const added = byId.get(id);
+      if (added !== undefined) rows.push(added);
+    }
+  }
+  const projects = [...wire.projects];
+  projects[at] = { ...held, rows };
+  return { projects };
+}
+
+/** Apply one project's schedule set to the drawn board, without a read. */
+export function applyCrons(
+  wire: BoardWire | null,
+  project: { org: string; name: string },
+  crons: readonly unknown[],
+): BoardWire | null {
+  if (wire === null) return null;
+  const at = wire.projects.findIndex(
+    (held) => held.project.org === project.org && held.project.name === project.name,
+  );
+  if (at === -1) return null;
+  const held = wire.projects[at];
+  if (held === undefined) return null;
+  const projects = [...wire.projects];
+  projects[at] = { ...held, crons: crons as CronEntry[] };
+  return { projects };
+}

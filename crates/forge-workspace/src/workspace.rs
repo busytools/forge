@@ -51,8 +51,9 @@ fn resolve_existing_prefix(path: &Path) -> PathBuf {
 pub enum SettingsSaveError {
     /// The file's raw text moved since the page loaded it.
     Stale,
-    /// An edit or the candidate failed validation. `key_path` anchors the
-    /// first edit that fails on its own, where one does.
+    /// An edit or the candidate failed validation, or the file on disk moved
+    /// and cannot be loaded. `key_path` anchors the first edit that fails on
+    /// its own, where one does.
     Invalid { message: String, key_path: Option<String> },
     /// A guard refused the save. `key_path` anchors the refusal at one of the
     /// save's keys where the guard names one.
@@ -76,6 +77,18 @@ impl From<crate::settings_write::WriteError> for SettingsSaveError {
     fn from(error: crate::settings_write::WriteError) -> Self {
         Self::Invalid { message: error.message, key_path: error.key_path }
     }
+}
+
+/// The sentence both written surfaces use when the file on disk has moved
+/// and the loader refuses it: the loader's own words, then a recovery the
+/// caller actually has. One function so the MCP tool and the settings page
+/// cannot drift apart on the one message that must not lie about what a
+/// retry will do.
+pub(crate) fn on_disk_unloadable(error: &WorkspaceError) -> String {
+    format!(
+        "forge.toml on disk differs from what this server loaded and cannot be applied: \
+         {error}. Nothing was written: fix the file and try again, or restart forge to load it"
+    )
 }
 
 /// The state a spawn marks its seat with: open, no turn in flight. The
@@ -638,6 +651,16 @@ pub struct Workspace {
     /// Held across a reload's odd-to-even swap, so a spawn that sees an odd
     /// generation waits on this rather than spinning on the counter.
     reload_gate: std::sync::Mutex<()>,
+    /// One reload at a time: the watch's own reload and a write path's
+    /// on-demand adopt both load a whole config and apply it, and two
+    /// interleaved would pair one load's subsystem state with another's.
+    /// Held across the load and the swap.
+    reload_serial: Mutex<()>,
+    /// Test-only pause inside a reload's serialized body, so a test can hold
+    /// one reload and prove another waits. Armed by a test's own
+    /// `pause_next_reload`.
+    #[cfg(any(test, feature = "testing"))]
+    reload_pause: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
     /// The `[systemone]` decision client, built at boot when the section
     /// is present and enabled; the session MCP servers are handed a
     /// facade over it. `None` keeps the systemone tools out of every
@@ -2535,6 +2558,9 @@ impl Workspace {
             settings_write: parking_lot::Mutex::new(()),
             reload_generation: std::sync::atomic::AtomicU64::new(0),
             reload_gate: std::sync::Mutex::new(()),
+            reload_serial: Mutex::new(()),
+            #[cfg(any(test, feature = "testing"))]
+            reload_pause: Mutex::new(None),
             systemone: parking_lot::RwLock::new(systemone),
             voice: std::sync::OnceLock::new(),
             voice_preview_error: std::sync::Mutex::new(None),
@@ -2726,6 +2752,42 @@ impl Workspace {
     /// The file could not be read, parsed or validated, or the systemone
     /// client could not be built. Nothing was applied.
     pub fn reload_config(self: &Arc<Self>) -> Result<ConfigReload, WorkspaceError> {
+        let _one_at_a_time = self.reload_serial.lock();
+        self.reload_config_serialized()
+    }
+
+    /// Bring the loaded config up to the file when the watch has not.
+    ///
+    /// **The write path cannot depend on the watch.** A watch that never
+    /// armed, or that has gone deaf, leaves `raw_fingerprint` behind the
+    /// file; every settings write is then refused as stale and no retry can
+    /// help. A file whose fingerprint differs from the loaded one is
+    /// reloaded through the same loader a boot uses, so the document and the
+    /// write follow it. A file the loader refuses returns its own error and
+    /// the last good config stays live.
+    pub(crate) fn adopt_config_change(self: &Arc<Self>) -> Result<bool, WorkspaceError> {
+        let _one_at_a_time = self.reload_serial.lock();
+        let unchanged = std::fs::read_to_string(self.config_path()).is_ok_and(|raw| {
+            crate::config::fingerprint_of(&raw) == self.config_arc().raw_fingerprint
+        });
+        if unchanged {
+            return Ok(false);
+        }
+        self.reload_config_serialized()?;
+        Ok(true)
+    }
+
+    /// The reload itself, with the one-at-a-time lock already held by the
+    /// caller.
+    fn reload_config_serialized(self: &Arc<Self>) -> Result<ConfigReload, WorkspaceError> {
+        #[cfg(any(test, feature = "testing"))]
+        {
+            let gate = self.reload_pause.lock().take();
+            if let Some((reached, resume)) = gate {
+                let _ = reached.send(());
+                let _ = resume.recv();
+            }
+        }
         let next = crate::config::load_from_dir(&self.config_dir)?;
         let forge_toml = crate::config::forge_data_dir(&self.config_dir).join("forge.toml");
         let systemone =
@@ -2863,13 +2925,24 @@ impl Workspace {
     /// # Errors
     ///
     /// The file moved since the page loaded it, an edit or the candidate is
-    /// not valid, a guard refused it, or the write failed.
+    /// not valid, the file on disk cannot be loaded, a guard refused it, or
+    /// the write failed.
     pub fn save_settings(
-        &self,
+        self: &Arc<Self>,
         fingerprint: &str,
         edits: &[SettingsEditRequest],
     ) -> Result<(), SettingsSaveError> {
         let _one_at_a_time = self.settings_write.lock();
+        // **The adopt is what makes a stale page recoverable.** A save whose
+        // page loaded an older file adopts the file first, which reloads and
+        // pushes the fresh document; the caller's own fingerprint is then
+        // compared below and refused once, and its next save lands. A file
+        // the loader refuses is named with the loader's words and a recovery
+        // that exists.
+        self.adopt_config_change().map_err(|error| SettingsSaveError::Invalid {
+            message: on_disk_unloadable(&error),
+            key_path: None,
+        })?;
         let path = self.config_path();
         let candidate = self.settings_candidate(&path, fingerprint, edits)?;
         // **The file may have moved between the read and the write.**
@@ -15671,6 +15744,345 @@ provider = "anthropic"
             .expect_err("a stale save is refused");
         assert_eq!(error, SettingsSaveError::Stale);
         assert_eq!(fs::read_to_string(&path).expect("read"), before, "the file did not move");
+    }
+
+    /// Replace `path` the way a sync daemon applies an incoming change: write
+    /// a temp file beside it and rename it over the path, swapping the inode.
+    fn rename_over(path: &std::path::Path, edit: impl FnOnce(&str) -> String) {
+        let raw = fs::read_to_string(path).expect("read the config");
+        let tmp = path.with_extension("toml.tmp");
+        fs::write(&tmp, edit(&raw)).expect("write the temp file");
+        fs::rename(&tmp, path).expect("rename over the config");
+    }
+
+    /// **The write path cannot depend on the watch.** A watch that never
+    /// armed or has gone deaf leaves `raw_fingerprint` behind the file, and
+    /// every settings write is refused as stale with no recovery. The adopt
+    /// reloads the file through the boot loader, so the document and the
+    /// write follow it.
+    #[tokio::test]
+    async fn an_adopt_follows_a_renamed_over_file() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        assert!(!workspace.adopt_config_change().expect("the boot load is current"));
+        let generation = workspace.reload_generation.load(std::sync::atomic::Ordering::Acquire);
+        rename_over(&workspace.config_path(), |raw| {
+            raw.replace(
+                "model = \"claude-sonnet-5\"",
+                "model = \"claude-sonnet-5\"\nmax_workers = 4",
+            )
+        });
+
+        assert!(workspace.adopt_config_change().expect("the moved file is adoptable"));
+
+        assert_eq!(
+            workspace.config_arc().raw_fingerprint,
+            settings_fingerprint(&workspace),
+            "the loaded config follows the file",
+        );
+        assert_eq!(workspace.config_arc().projects[0].max_workers, Some(4));
+        assert!(
+            workspace.reload_generation.load(std::sync::atomic::Ordering::Acquire) > generation,
+            "the adopt went through the loader, not a fingerprint swap",
+        );
+    }
+
+    /// A file the loader already reflects is not reloaded: the adopt is a
+    /// check, not a reload on every write, and a watch-driven reload is not
+    /// duplicated by the write that follows it.
+    #[tokio::test]
+    async fn an_adopt_does_not_reload_a_file_already_loaded() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let generation = workspace.reload_generation.load(std::sync::atomic::Ordering::Acquire);
+        assert!(!workspace.adopt_config_change().expect("the boot load is current"));
+        assert_eq!(
+            workspace.reload_generation.load(std::sync::atomic::Ordering::Acquire),
+            generation,
+            "the boot state was not reloaded",
+        );
+
+        rename_over(&workspace.config_path(), |raw| {
+            raw.replace(
+                "model = \"claude-sonnet-5\"",
+                "model = \"claude-sonnet-5\"\nmax_workers = 4",
+            )
+        });
+        workspace.reload_config().expect("the watcher's reload lands");
+        let generation = workspace.reload_generation.load(std::sync::atomic::Ordering::Acquire);
+
+        assert!(!workspace.adopt_config_change().expect("the watcher's load is current"));
+
+        assert_eq!(
+            workspace.reload_generation.load(std::sync::atomic::Ordering::Acquire),
+            generation,
+            "one file change is one reload, not two",
+        );
+    }
+
+    /// An unloadable file is refused with the loader's own error and the last
+    /// good config stays live, so a half-written save never loses a config.
+    #[tokio::test]
+    async fn an_unloadable_file_is_an_adopt_error_and_keeps_the_last_good_config() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let before = workspace.config_arc().raw_fingerprint.clone();
+        rename_over(&workspace.config_path(), |_| "this is not toml = [".to_owned());
+
+        let error = workspace.adopt_config_change().expect_err("the file cannot be loaded");
+
+        assert!(
+            matches!(error, WorkspaceError::ConfigParse { .. }),
+            "the loader's own refusal is carried: {error:?}",
+        );
+        assert_eq!(
+            workspace.config_arc().raw_fingerprint,
+            before,
+            "the last good config stays live",
+        );
+    }
+
+    /// **One reload at a time.** The watch's own reload and a write path's
+    /// adopt both load and apply a whole config; interleaved, one load's
+    /// subsystem state could pair with another's. The adopt waits for a
+    /// reload already in flight instead of starting a second one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_watcher_reload_holds_an_adopt_until_it_settles() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        rename_over(&workspace.config_path(), |raw| {
+            raw.replace(
+                "model = \"claude-sonnet-5\"",
+                "model = \"claude-sonnet-5\"\nmax_workers = 4",
+            )
+        });
+        let (reached, release) = workspace.pause_next_reload();
+        let watcher = {
+            let workspace = Arc::clone(&workspace);
+            std::thread::spawn(move || workspace.reload_config())
+        };
+        reached.recv_timeout(Duration::from_secs(5)).expect("the watcher reload is in flight");
+        let (started, adopt_started) = std::sync::mpsc::channel::<()>();
+        let adopt = {
+            let workspace = Arc::clone(&workspace);
+            std::thread::spawn(move || {
+                let _ = started.send(());
+                workspace.adopt_config_change()
+            })
+        };
+        adopt_started.recv_timeout(Duration::from_secs(5)).expect("the adopt thread started");
+        // The thread is inside the adopt now; it must still be blocked on the
+        // reload in flight rather than finishing under its own steam.
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(!adopt.is_finished(), "the adopt waited for the reload already in flight");
+
+        release.send(()).expect("release the watcher reload");
+        watcher.join().expect("the watcher reload finished").expect("the file loads");
+        assert!(
+            !adopt.join().expect("the adopt finished").expect("the file is adoptable"),
+            "the adopt found the file already loaded",
+        );
+        assert_eq!(workspace.config_arc().raw_fingerprint, settings_fingerprint(&workspace));
+    }
+
+    /// The reported symptom at the MCP entry: after a rename-replace the
+    /// facade returned "call again" forever. It adopts first, so the write is
+    /// validated and applied against the file now on disk, and the
+    /// out-of-band change survives the save.
+    #[tokio::test]
+    async fn a_settings_set_after_a_renamed_over_file_lands() {
+        use crate::mcp::settings::facade::{
+            ProdSettingsFacade, SettingsSetItem, SettingsWriteOutcome,
+        };
+
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let path = workspace.config_path();
+        rename_over(&path, |raw| {
+            raw.replace(
+                "model = \"claude-sonnet-5\"",
+                "model = \"claude-sonnet-5\"\npermission_mode = \"auto\"",
+            )
+        });
+        let facade = ProdSettingsFacade::from_arc(&workspace);
+        let caller = SessionSlot::lead("Default", "forge");
+        let mut answers = workspace.subscribe_answerer();
+        let write = {
+            let facade = Arc::clone(&facade);
+            let caller = caller.clone();
+            tokio::spawn(async move {
+                facade
+                    .set(
+                        &caller,
+                        vec![SettingsSetItem {
+                            key: "orgs.Default.projects.forge.max_workers".to_owned(),
+                            value: serde_json::json!(7),
+                        }],
+                    )
+                    .await
+            })
+        };
+        let ask = loop {
+            let frame = tokio::time::timeout(Duration::from_secs(5), answers.recv())
+                .await
+                .expect("the ask arrives")
+                .expect("a frame");
+            if let SessionUpdate::SettingsWritePending { ask, .. } = &*frame.update {
+                break ask.clone();
+            }
+        };
+        assert!(
+            workspace.resolve_settings_write(ask.id, &caller, true),
+            "the approval reaches the ask"
+        );
+
+        let outcome = write.await.expect("the write task finished");
+
+        assert_eq!(
+            outcome,
+            Ok(SettingsWriteOutcome::Applied {
+                effects: vec![forge_primitives::EffectClass::NextSession],
+            }),
+            "the write landed against the file on disk",
+        );
+        let saved = fs::read_to_string(&path).expect("read the saved file");
+        assert!(saved.contains("max_workers = 7"), "the edit landed: {saved}");
+        assert!(
+            saved.contains("permission_mode = \"auto\""),
+            "the out-of-band change survived the save: {saved}",
+        );
+    }
+
+    /// The page's save keeps its own guard: a page that loaded the older file
+    /// is refused once, but the save adopts first and pushes the fresh
+    /// document, so the page's retry lands without a restart.
+    #[tokio::test]
+    async fn a_page_save_after_a_renamed_over_file_refuses_once_then_lands() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let path = workspace.config_path();
+        let mut settings = workspace.subscribe_settings();
+        let page = workspace.settings_snapshot().fingerprint.clone();
+        rename_over(&path, |raw| {
+            raw.replace(
+                "model = \"claude-sonnet-5\"",
+                "model = \"claude-sonnet-5\"\npermission_mode = \"auto\"",
+            )
+        });
+        let edit =
+            set_edit(&workspace, "orgs.Default.projects.forge.max_workers", serde_json::json!(7));
+
+        let refused = workspace
+            .save_settings(&page, std::slice::from_ref(&edit))
+            .expect_err("a page that loaded the older file is refused");
+
+        assert_eq!(refused, SettingsSaveError::Stale);
+        let pushed =
+            settings.borrow_and_update().clone().expect("the adopt published the file it loaded");
+        assert_eq!(
+            pushed.fingerprint,
+            settings_fingerprint(&workspace),
+            "the page now holds the file's document",
+        );
+        workspace.save_settings(&pushed.fingerprint, &[edit]).expect("the page's retry lands");
+        let saved = fs::read_to_string(&path).expect("read the saved file");
+        assert!(saved.contains("max_workers = 7"), "the retry landed: {saved}");
+        assert!(
+            saved.contains("permission_mode = \"auto\""),
+            "the out-of-band change survived: {saved}",
+        );
+    }
+
+    /// **The guard is not weakened by the adopt.** A file that moves after
+    /// the adopt and before the write is still refused, and the second change
+    /// is left exactly as it was.
+    #[tokio::test]
+    async fn a_save_after_the_adopt_and_another_change_is_still_stale() {
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let path = workspace.config_path();
+        rename_over(&path, |raw| {
+            raw.replace(
+                "model = \"claude-sonnet-5\"",
+                "model = \"claude-sonnet-5\"\nmax_workers = 4",
+            )
+        });
+        assert!(workspace.adopt_config_change().expect("the moved file is adoptable"));
+        let adopted = workspace.settings_snapshot().fingerprint.clone();
+        rename_over(&path, |raw| raw.replace("max_workers = 4", "max_workers = 5"));
+        let before = fs::read_to_string(&path).expect("read the config");
+        let edit =
+            set_edit(&workspace, "orgs.Default.projects.forge.max_workers", serde_json::json!(7));
+
+        let refused = workspace
+            .save_settings(&adopted, &[edit])
+            .expect_err("a file that moved again is refused");
+
+        assert_eq!(refused, SettingsSaveError::Stale);
+        assert_eq!(
+            fs::read_to_string(&path).expect("read the config"),
+            before,
+            "the write did not touch the concurrent change",
+        );
+    }
+
+    /// **A file the loader refuses is named as itself, on both written
+    /// surfaces.** The message carries the loader's own words and names a
+    /// recovery that exists; it never claims a retry alone will help.
+    #[tokio::test]
+    async fn an_unloadable_on_disk_file_is_named_with_its_loader_error() {
+        use crate::mcp::settings::facade::{ProdSettingsFacade, SettingsSetItem};
+
+        let dir = make_workspace_dir();
+        let workspace = Arc::new(Workspace::new_for_test(dir.path().to_owned()).expect("new"));
+        let unloadable = "this is not toml = [";
+        rename_over(&workspace.config_path(), |_| unloadable.to_owned());
+        let page = workspace.settings_snapshot().fingerprint.clone();
+        let edit =
+            set_edit(&workspace, "orgs.Default.projects.forge.max_workers", serde_json::json!(7));
+
+        let refused =
+            workspace.save_settings(&page, &[edit]).expect_err("the file on disk cannot be loaded");
+        let SettingsSaveError::Invalid { message, key_path } = refused else {
+            panic!("expected the file's own refusal, got {refused:?}");
+        };
+        assert!(message.contains("cannot be applied"), "{message}");
+        assert!(message.contains("failed to parse"), "the loader's words are carried: {message}");
+        assert!(
+            message.contains("fix the file and try again"),
+            "the retry recovery is named: {message}",
+        );
+        assert!(message.contains("restart"), "a recovery that exists is named: {message}");
+        assert_eq!(key_path, None, "no key in the save is at fault");
+
+        let facade = ProdSettingsFacade::from_arc(&workspace);
+        let error = tokio::time::timeout(
+            Duration::from_secs(10),
+            facade.set(
+                &SessionSlot::lead("Default", "forge"),
+                vec![SettingsSetItem {
+                    key: "orgs.Default.projects.forge.max_workers".to_owned(),
+                    value: serde_json::json!(7),
+                }],
+            ),
+        )
+        .await
+        .expect("the refusal precedes the ask, so nothing waits on an approval")
+        .expect_err("the file on disk cannot be loaded");
+        assert!(workspace.settings_writes.lock().is_empty(), "no ask was minted");
+        let said = error.message();
+        assert!(
+            said.contains("cannot be applied")
+                && said.contains("failed to parse")
+                && said.contains("fix the file and try again")
+                && said.contains("restart"),
+            "the facade names the same situation and both recoveries in the same words: {said}",
+        );
+        assert_eq!(
+            fs::read_to_string(workspace.config_path()).expect("read the config"),
+            unloadable,
+            "nothing was written",
+        );
     }
 
     /// **A spawn refused before the pool gives back what it wrote.** The id
