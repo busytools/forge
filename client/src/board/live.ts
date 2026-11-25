@@ -18,9 +18,11 @@ import { ReadPace } from '../read-pace';
 import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import {
+  applyConnectors,
   applyCrons,
   applyTasks,
   boardFrom,
+  connectorsFrame,
   coversBoard,
   cronsFrame,
   tasksFrame,
@@ -269,9 +271,22 @@ function boardStore(connection: Connection): Readable<BoardRead> {
             return;
           }
         } else if (Object.keys(message.update).includes('connector_subscriptions_changed')) {
-          // The connector sets are still a read: their wire shape is
-          // `unknown` here, so folding them is its own change. Rare - a user
-          // action or a door no tool reaches, not a per-second beat.
+          // **The frame carries both sets whole**, so a project the drawn
+          // board holds draws them without a read. A project it does not
+          // hold has nowhere to apply into, and a frame missing either set is
+          // one this build cannot read: both keep the read, because the
+          // failure direction is a read rather than a wrong value on screen.
+          const connectors = connectorsFrame(message.update);
+          const applied =
+            connectors === null
+              ? null
+              : applyConnectors(drawn, connectors.project, connectors.gotify, connectors.slack);
+          if (applied !== null) {
+            drawn = applied;
+            view.set({ wire: drawn, refused: null });
+            if (reading) appliedDuringRead = true;
+            return;
+          }
           if (reading) {
             stale = true;
             return;
@@ -297,7 +312,10 @@ function boardStore(connection: Connection): Readable<BoardRead> {
         reading = false;
         stale = false;
         // A reconnect re-subscribes and answers with a fresh snapshot; the
-        // frames in between have nowhere to land.
+        // frames in between have nowhere to land. **The in-flight answer died
+        // with the socket**, so a frame applied while it was out no longer
+        // outruns the next one.
+        appliedDuringRead = false;
         drawn = null;
       }
     });

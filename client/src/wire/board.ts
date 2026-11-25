@@ -134,6 +134,32 @@ export function cronsFrame(
 }
 
 /**
+ * The project's connector sets a `connector_subscriptions_changed` frame
+ * carries, or `null`.
+ *
+ * **The frame carries both sets whole**, exactly as the snapshot's
+ * `ProjectConnectorsWire` holds them, so a board that already holds the
+ * project draws them from the frame. A frame missing either set is one this
+ * build cannot read: the caller keeps its read, because the failure direction
+ * is a read rather than a wrong value on screen.
+ */
+export function connectorsFrame(
+  update: SessionUpdate,
+): { project: { org: string; name: string }; gotify: unknown[]; slack: unknown[] } | null {
+  if (typeof update === 'string') return null;
+  const payload = (
+    update as {
+      connector_subscriptions_changed?: { key?: unknown; gotify?: unknown; slack?: unknown };
+    }
+  ).connector_subscriptions_changed;
+  if (payload === undefined) return null;
+  if (!Array.isArray(payload.gotify) || !Array.isArray(payload.slack)) return null;
+  const project = projectOf(payload.key);
+  if (project === null) return null;
+  return { project, gotify: payload.gotify, slack: payload.slack };
+}
+
+/**
  * Apply one project's task set to the drawn board, without a read.
  *
  * **The task facts come from the frame; the board's derived facts stay what
@@ -217,5 +243,31 @@ export function applyCrons(
   if (held === undefined) return null;
   const projects = [...wire.projects];
   projects[at] = { ...held, crons: crons as CronEntry[] };
+  return { projects };
+}
+
+/**
+ * Apply one project's connector sets to the drawn board, without a read.
+ *
+ * **Both sets come from the frame whole**, and only into a project the drawn
+ * board holds: a project it does not hold has nowhere to apply into, so the
+ * caller keeps its read. The sets are left `unknown` here and narrowed by
+ * `rowConnectors` at the draw, exactly as the snapshot's own copy is.
+ */
+export function applyConnectors(
+  wire: BoardWire | null,
+  project: { org: string; name: string },
+  gotify: readonly unknown[],
+  slack: readonly unknown[],
+): BoardWire | null {
+  if (wire === null) return null;
+  const at = wire.projects.findIndex(
+    (held) => held.project.org === project.org && held.project.name === project.name,
+  );
+  if (at === -1) return null;
+  const held = wire.projects[at];
+  if (held === undefined) return null;
+  const projects = [...wire.projects];
+  projects[at] = { ...held, connectors: { gotify, slack } };
   return { projects };
 }
