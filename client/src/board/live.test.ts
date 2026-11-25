@@ -359,6 +359,170 @@ describe('the board over a connection', () => {
     stop();
   });
 
+  it('applies a task write into the drawn board without a read', () => {
+    const forge = fakeConnection();
+    const seen: BoardRead[] = [];
+    const stop = watchBoard(forge.connection).subscribe(($next) => {
+      seen.push($next);
+    });
+
+    const data = {
+      projects: [
+        {
+          project: { org: 'TestOrg', name: 'proj' },
+          rows: [
+            {
+              task: { id: 't1', project_name: 'proj', subject: 'old', status: 'pending' },
+              worked_secs: 12,
+            },
+          ],
+          crons: [],
+          connectors: {},
+        },
+      ],
+    };
+    forge.stores.get(BOARD)?.set(data);
+    forge.arrive({ kind: 'snapshot', subject: BOARD, data });
+    expect(forge.refreshed).toEqual([]);
+
+    forge.arrive({
+      kind: 'update',
+      update: {
+        tasks_changed: {
+          key: LEAD,
+          tasks: [
+            { id: 't1', project_name: 'proj', subject: 'renamed', status: 'in_progress' },
+            { id: 't2', project_name: 'proj', subject: 'new', status: 'pending' },
+          ],
+        },
+      },
+    });
+    expect(forge.refreshed, 'a task write asked for a whole read').toEqual([]);
+    const rows = seen.at(-1)?.wire?.projects[0]?.rows ?? [];
+    const renamed = rows.find((row) => row.task.id === 't1');
+    expect(renamed?.task.subject, 'the frame did not reach the row').toBe('renamed');
+    expect(renamed?.worked_secs, 'the server-derived facts survive an apply').toBe(12);
+    expect(
+      rows.some((row) => row.task.id === 't2'),
+      'a row the frame introduced was not added',
+    ).toBe(true);
+
+    // **The frame is the whole live set**, so a row it does not name is gone
+    // (the core's own removal announces it) - it must not linger for five
+    // minutes (#3074 review).
+    forge.arrive({
+      kind: 'update',
+      update: {
+        tasks_changed: {
+          key: LEAD,
+          tasks: [{ id: 't1', project_name: 'proj', subject: 'renamed', status: 'in_progress' }],
+        },
+      },
+    });
+    const after = seen.at(-1)?.wire?.projects[0]?.rows ?? [];
+    expect(
+      after.some((row) => row.task.id === 't2'),
+      'a row the frame dropped stayed on the board',
+    ).toBe(false);
+    expect(after.length, 'the kept row did not survive').toBe(1);
+    stop();
+  });
+
+  it('applies a schedule set without a read', () => {
+    const forge = fakeConnection();
+    const seen: BoardRead[] = [];
+    const stop = watchBoard(forge.connection).subscribe(($next) => {
+      seen.push($next);
+    });
+    const data = {
+      projects: [
+        { project: { org: 'TestOrg', name: 'proj' }, rows: [], crons: [], connectors: {} },
+      ],
+    };
+    forge.stores.get(BOARD)?.set(data);
+    forge.arrive({ kind: 'snapshot', subject: BOARD, data });
+
+    forge.arrive({
+      kind: 'update',
+      update: {
+        cron_schedules_changed: { key: LEAD, crons: [{ id: 'c1', project_name: 'proj' }] },
+      },
+    });
+    expect(forge.refreshed, 'a schedule set asked for a whole read').toEqual([]);
+    expect(seen.at(-1)?.wire?.projects[0]?.crons.length, 'the set did not land').toBe(1);
+    stop();
+  });
+
+  it('does not read for a seat-liveness variant; the marks beat reconciles', async () => {
+    const forge = fakeConnection();
+    const stop = watchBoard(forge.connection).subscribe(() => {});
+    const data = { projects: [] };
+    forge.stores.get(BOARD)?.set(data);
+    forge.arrive({ kind: 'snapshot', subject: BOARD, data });
+
+    forge.arrive({ kind: 'update', update: { releasing: { key: LEAD } } });
+    forge.arrive({ kind: 'update', update: { worker_status_changed: { key: LEAD } } });
+    forge.arrive({ kind: 'update', update: { connected: { key: LEAD } } });
+    // **Past the coalescing beat**, or the assertion runs before any read the
+    // branch could have scheduled (#3074 review).
+    await settle();
+    expect(forge.refreshed, 'a liveness variant bought a 3 MB read').toEqual([]);
+    stop();
+  });
+
+  it('keeps a frame drawn while an older read is in flight', async () => {
+    const forge = fakeConnection();
+    const seen: BoardRead[] = [];
+    const stop = watchBoard(forge.connection).subscribe(($next) => {
+      seen.push($next);
+    });
+    const data = {
+      projects: [
+        {
+          project: { org: 'TestOrg', name: 'proj' },
+          rows: [
+            {
+              task: { id: 't1', project_name: 'proj', subject: 'old', status: 'pending' },
+            },
+          ],
+          crons: [],
+          connectors: {},
+        },
+      ],
+    };
+    forge.stores.get(BOARD)?.set(data);
+    forge.arrive({ kind: 'snapshot', subject: BOARD, data });
+
+    // A read goes out (the connector set is the one frame that still reads).
+    forge.arrive({ kind: 'update', update: { connector_subscriptions_changed: { key: LEAD } } });
+    await settle();
+    expect(forge.refreshed, 'the read did not go out').toEqual([BOARD]);
+
+    // A task frame lands while that read is still in flight.
+    forge.arrive({
+      kind: 'update',
+      update: {
+        tasks_changed: {
+          key: LEAD,
+          tasks: [{ id: 't1', project_name: 'proj', subject: 'renamed', status: 'in_progress' }],
+        },
+      },
+    });
+    expect(seen.at(-1)?.wire?.projects[0]?.rows[0]?.task.subject, 'the frame did not draw').toBe(
+      'renamed',
+    );
+
+    // The older answer lands: the frame's news must not be overwritten.
+    forge.stores.get(BOARD)?.set(data);
+    forge.arrive({ kind: 'snapshot', subject: BOARD, data });
+    await settle();
+    expect(
+      seen.at(-1)?.wire?.projects[0]?.rows[0]?.task.subject,
+      'the older answer overwrote the newer frame',
+    ).toBe('renamed');
+    stop();
+  });
+
   it('re-reads on the marks beat while the board is watched', () => {
     const forge = fakeConnection();
     const stop = watchBoard(forge.connection).subscribe(() => {});

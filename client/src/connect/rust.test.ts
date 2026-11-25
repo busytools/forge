@@ -1058,7 +1058,12 @@ describe("the connection's own facts", () => {
     expect(noteSnapshot).toHaveBeenCalledWith(subject, 2_200_000, 38.5);
 
     fire('client://written', { key: subjectKey(subject), declared: false, waited_ms: 12.5 });
-    expect(noteSubscribeWritten).toHaveBeenCalledWith('Busytools/forge/lead', false, 12.5);
+    expect(noteSubscribeWritten).toHaveBeenCalledWith(
+      'Busytools/forge/lead',
+      subjectKey(subject),
+      false,
+      12.5,
+    );
   });
 
   /**

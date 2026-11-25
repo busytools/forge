@@ -20,6 +20,7 @@
     busy = false,
     reason = null,
     biometric = true,
+    startgesture = false,
     ongesture = () => {},
     onpassword = () => {},
     oncancel,
@@ -31,6 +32,9 @@
     /** Whether the gate's gesture is a biometric one; false is the device
         password fallback, and the button names it. */
     biometric?: boolean;
+    /** Open the unlock already asking for the gesture: an enrolled client on
+        a capable device has nothing to choose between. */
+    startgesture?: boolean;
     ongesture?: () => void;
     onpassword?: (password: string, code: string) => void;
     oncancel: () => void;
@@ -43,7 +47,9 @@
   let returnTo: HTMLElement | null = null;
   /** The password fields: always on for enrol, revealed by the link for unlock. */
   let revealedByLink = $state(false);
-  const revealed = $derived(variant === 'enrol' || revealedByLink);
+  // **A refusal reveals the password**: the reason names why the gesture did
+  // not work, and the way forward is the field underneath it.
+  const revealed = $derived(variant === 'enrol' || revealedByLink || reason !== null);
   let password = $state('');
   let code = $state('');
   let passwordEl: HTMLInputElement | null = null;
@@ -74,6 +80,9 @@
     returnTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     if (variant === 'unlock') {
       dialog?.querySelector<HTMLElement>('button')?.focus();
+      // **The straight path**: an enrolled client on a capable device asks
+      // for the gesture at once rather than drawing a choice it already made.
+      if (startgesture) queueMicrotask(ongesture);
     } else {
       // **The enrol variant starts in the password box**, not on cancel: the
       // page asked for a password. Queued after the mount so the capture
