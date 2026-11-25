@@ -57,6 +57,8 @@ pub mod host;
 pub mod normalize;
 #[cfg(all(test, target_os = "macos"))]
 mod staging;
+#[cfg(test)]
+mod staging_build_tie_test;
 #[cfg(all(test, target_os = "macos"))]
 mod staging_test;
 
