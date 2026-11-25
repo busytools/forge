@@ -2678,7 +2678,91 @@ export class Chat {
     };
     this.fold((held) => {
       const first = !held.loaded;
-      const healed = this.healedOf(held, fromPage);
+      let healed = this.healedOf(held, fromPage);
+      // **A delivered prompt's page copy replaces the display row the live
+      // path drew for it** (#3073). The CLI records a prompt it pressed into a
+      // running turn as its own user row, under an id it minted, so the page's
+      // copy shares no identity with forge's display row for the same prompt;
+      // the words are the only identity the two carriers agree on. One prompt
+      // is one row, and the page is the authority once it lands: the held copy
+      // is dropped and the page's copy, at the position the read recorded, is
+      // the row that stays. A live row the transcript placed elsewhere moves
+      // at most once, to its delivered place, and no later landing moves it.
+      //
+      // **Only within the turn the page row belongs to.** A held display row
+      // in another turn saying the same words is another message, and pairing
+      // across turns dropped a scrolled-in question's row.
+      const onPage = new Set<string>();
+      for (const row of pageRows) {
+        for (const message of messagesOf(row)) {
+          const id = uuidOf(message);
+          if (id !== null) onPage.add(id);
+        }
+      }
+      /** The words a user row carries, in either carrier a page or a frame uses. */
+      const userWords = (message: unknown): string[] => {
+        if ((message as { type?: unknown } | null)?.type !== 'user') return [];
+        const content = (message as { message?: { content?: unknown } } | null)?.message?.content;
+        if (typeof content === 'string') return content === '' ? [] : [content];
+        return wordsOf(message);
+      };
+      const paired = new Map<Turn, Set<string>>();
+      /** Each held turn's display rows by words, consumed once per page copy. */
+      const holders = new Map<Turn, Map<string, unknown[]>>();
+      for (const row of pageRows) {
+        const carried = new Frames(messagesOf(row));
+        const target = healed.turns.findLast((turn) =>
+          turn.messages.some((message) => carried.carries(message, false)),
+        );
+        if (target === undefined) continue;
+        let bucket = holders.get(target);
+        if (bucket === undefined) {
+          bucket = new Map();
+          for (const message of target.messages) {
+            const words = displayWordsOf(message);
+            if (words === null) continue;
+            const id = uuidOf(message);
+            // A display row the page carries under its own id needs no
+            // pairing: the reconcile pairs the two by identity.
+            if (id !== null && onPage.has(id)) continue;
+            const key = JSON.stringify(words);
+            const list = bucket.get(key) ?? [];
+            list.push(message);
+            bucket.set(key, list);
+          }
+          holders.set(target, bucket);
+        }
+        for (const message of messagesOf(row)) {
+          const words = userWords(message);
+          if (words.length === 0) continue;
+          const id = uuidOf(message);
+          // The page's copy IS the held row when the conversation already
+          // carries that id.
+          if (id !== null && healed.turns.some((turn) => heldIds(turn).has(id))) continue;
+          const picked = bucket.get(JSON.stringify(words))?.shift();
+          const pickedId = picked === undefined ? null : uuidOf(picked);
+          if (pickedId === null) continue;
+          const dropped = paired.get(target) ?? new Set<string>();
+          dropped.add(pickedId);
+          paired.set(target, dropped);
+        }
+      }
+      if (paired.size > 0) {
+        healed = {
+          ...healed,
+          turns: healed.turns.map((turn) => {
+            const dropped = paired.get(turn);
+            if (dropped === undefined) return turn;
+            return {
+              ...turn,
+              messages: turn.messages.filter((message) => {
+                const id = uuidOf(message);
+                return id === null || !dropped.has(id);
+              }),
+            };
+          }),
+        };
+      }
       const known = new Map(healed.turns.map((turn) => [turn.key, turn]));
       // A turn a page has settled is also known by the page's own name for it,
       // which is what the next page repeats it under.
@@ -2760,52 +2844,6 @@ export class Chat {
       // turn opening at the forged row with the running frames joined to it,
       // so the row survives the pull - and a copy kept while its words went
       // into the hold would draw beside the card AND drain a second time.
-      // **A delivered prompt's page copy is the row the live path already
-      // drew** (#3073). The page carries the CLI's own row for a prompt it
-      // pressed into a running turn, under an id it minted; the live path's
-      // row for the same prompt is forge's display row under forge's id, so
-      // nothing pairs them by identity and the landing drew the page's copy
-      // as a second row - at the page's position, while the drawn one stayed
-      // where the sequence put it. One prompt is one row: a page copy that
-      // says what a held display row says, whose own id the conversation does
-      // not carry, is that row. Each held copy answers for one page copy, so
-      // two sends of the same text still draw twice.
-      const onPage = new Set<string>();
-      for (const copy of copies) {
-        for (const message of copy) {
-          const id = uuidOf(message);
-          if (id !== null) onPage.add(id);
-        }
-      }
-      const said = new Map<string, number>();
-      for (const turn of healed.turns) {
-        for (const message of turn.messages) {
-          const words = displayWordsOf(message);
-          if (words === null) continue;
-          const id = uuidOf(message);
-          if (id !== null && onPage.has(id)) continue;
-          const key = JSON.stringify(words);
-          said.set(key, (said.get(key) ?? 0) + 1);
-        }
-      }
-      const repeats = (message: unknown): boolean => {
-        // **The CLI's row carries its words as a plain string.** The live
-        // display row carries blocks; the read's copy of a delivered prompt is
-        // `{"role":"user","content":"..."}`, so a words reader that only knows
-        // blocks pairs nothing and the duplicate survives (#3073).
-        const content = (message as { type?: unknown; message?: { content?: unknown } } | null)
-          ?.message?.content;
-        const words =
-          typeof content === 'string' ? (content === '' ? [] : [content]) : wordsOf(message);
-        if (words.length === 0) return false;
-        const id = uuidOf(message);
-        if (id !== null && healed.turns.some((turn) => heldIds(turn).has(id))) return false;
-        const key = JSON.stringify(words);
-        const held = said.get(key) ?? 0;
-        if (held === 0) return false;
-        said.set(key, held - 1);
-        return true;
-      };
       const quiet: unknown[][] = [];
       const quietNamed: Turn[] = [];
       const quietNamedTurn: Array<Turn | null> = [];
@@ -2816,7 +2854,7 @@ export class Chat {
         const row = named[at];
         if (row === undefined) continue;
         const copy = copies[at] ?? [];
-        const kept = copy.filter((message) => !this.heldBack(message) && !repeats(message));
+        const kept = copy.filter((message) => !this.heldBack(message));
         if (kept.length !== copy.length) pulled = true;
         if (kept.length === 0) continue;
         quietNamed.push({ ...row, messages: kept });
