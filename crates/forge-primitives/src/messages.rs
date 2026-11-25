@@ -877,6 +877,23 @@ impl Message {
     }
 }
 
+/// A prompt this forge process drew in a seat's conversation.
+///
+/// **The identity a delivered prompt's read copy comes back without.** The CLI
+/// records a prompt it pressed into a running turn as its own user row, under
+/// an id it minted, so that row and the display row forge drew for the same
+/// prompt share no id. This is the display row's half, kept in the order the
+/// prompts started, so the read that serves a transcript can put the delivery
+/// id back on the row the CLI recorded under its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveredPrompt {
+    /// The prompt id forge minted, the one its display row and lifecycle
+    /// frames were sent under.
+    pub uuid: String,
+    /// The words the display row carried, exactly as a reader sees them.
+    pub text: String,
+}
+
 /// The Anthropic-API-shaped envelope inside an `Assistant` message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AssistantEnvelope {

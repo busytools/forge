@@ -577,25 +577,6 @@ function wordsOf(message: unknown): string[] {
 }
 
 /**
- * The words of a row forge drew for a prompt it delivered, when it is one.
- *
- * **The one live row a page can carry back under another id** (#3073): the
- * CLI records a prompt it pressed into a running turn as its own user row,
- * under an id it minted, so the display row forge drew for the same prompt
- * and the page's copy share no identity. The id's namespace is what says the
- * row is forge's rather than the CLI's, and the words are the only thing the
- * two carriers agree on.
- */
-function displayWordsOf(message: unknown): string[] | null {
-  const frame = message as { type?: unknown; uuid?: unknown } | null;
-  if (frame?.type !== 'user') return null;
-  const id = typeof frame.uuid === 'string' ? frame.uuid : '';
-  if (!id.startsWith('forge_prompt_')) return null;
-  const words = wordsOf(message);
-  return words.length === 0 ? null : words;
-}
-
-/**
  * A list of frames, indexed so a copy can be asked what it already carries.
  *
  * **The scans were the cost.** Asking whether a list holds a frame meant
@@ -924,62 +905,90 @@ function insideRun(runs: readonly FoldedRun[], message: unknown): boolean {
 }
 
 /**
- * `target` with the frames of `copy` it does not hold, each placed where the
- * exchange's own order puts it.
+ * `target` with the rows of `copy` put where the PAGE puts them.
  *
- * **The drawn row and the page row are two cuts of one exchange, so the turn's
- * order is the only thing that anchors both.** `outsidePage` has already taken
- * the frames this page carries in a later row out of the drawn row, which is
- * what leaves the page row's own neighbours useless as anchors: its first frame
- * has none, so it went to the front of the row before, and the end is the same
- * mistake mirrored - a live frame that arrived after the page was read sits
- * there, and the page's frames are older than it. So each frame the page adds
- * goes after the last drawn frame that precedes it in `order`, before the first
- * one that follows it, and at the end only when nothing drawn follows it. **A
- * frame the turn never had has no place in `order`**, so its page row's own
- * neighbours place it: after the drawn frame its row follows, before the one
- * its row leads, and at the walk's position when it has neither - never at the
- * row's front, which is where a page copy of a prompt the live fold already
- * drew would otherwise land above the turn's own head (#3073).
+ * **The page is the authority once it lands** (#3073): a cold reload, the
+ * phone and the web draw only what the read recorded, so a frame both cuts
+ * carry goes where the read put it - even where the live fold drew it first -
+ * and the landing is the one move that row makes. `order` is the page's own
+ * flattened messages up to and including this row, which is what carries a
+ * frame across a page-row boundary: a delivery whose row the read cut into
+ * the NEXT page row belongs after the call the previous row ends on, and a
+ * row-local order has no way to say so.
  *
- * **The fold is `interleave`'s.** A page row's folded counter run replaces the
- * drawn raw counters it covers here, and a drawn run counts the page's raw
- * counters through `have` - the drawn row's own index - so neither is added
- * beside the other.
+ * Frames only the live cut has keep their places and anchor the rest; a frame
+ * the page never had is placed by its page row's neighbours. **The fold is
+ * `interleave`'s**: a page row's folded counter run replaces the drawn raw
+ * counters it covers, and a drawn run counts the page's raw counters through
+ * their own index, so neither is added beside the other.
  */
-function rejoin(target: unknown[], copy: unknown[], order: readonly unknown[]): unknown[] {
-  const have = new Frames(target);
+function rejoin(
+  target: unknown[],
+  copy: unknown[],
+  order: readonly unknown[],
+  drawnBefore?: readonly unknown[],
+): unknown[] {
   const runs: FoldedRun[] = [];
   for (const message of copy) {
     const run = foldedRunMs(message);
     if (run !== null) runs.push(run);
   }
   const kept = runs.length === 0 ? target : target.filter((message) => !insideRun(runs, message));
+  // A counter the drawn row's own folded run already counts is not a frame the
+  // page adds: offering it would draw the growth beside the sum.
+  const haveRuns: FoldedRun[] = [];
+  for (const message of target) {
+    const run = foldedRunMs(message);
+    if (run !== null) haveRuns.push(run);
+  }
+  const counted = (message: unknown): boolean => {
+    const folded = foldedRunMs(message);
+    if (folded !== null) {
+      return haveRuns.some((run) => run.from <= folded.from && folded.through <= run.through);
+    }
+    return withinRuns(haveRuns, counterStampMs(message));
+  };
+  // Frames the page row carries are re-placed by the page's order, so they are
+  // taken out of the fixed part first.
+  const page = new Frames(copy);
+  const base = kept.filter((message) => !page.carries(message));
   const at = frameIndex(order);
-  const position = kept.map((message) => at(message) ?? null);
-  const drawnAt = frameIndex(kept);
-  /** Frames to place after one drawn index, ordered by where the turn had them. */
+  const position = base.map((message) => at(message) ?? null);
+  const baseAt = frameIndex(base);
+  /**
+   * Where a carried frame currently sits among the fixed frames.
+   *
+   * **A frame the page says nothing about is an obstacle, not air** (#3073):
+   * a drawn-only folded run between two page frames must not be jumped by the
+   * later one, because the page cannot place it. So a re-placed frame never
+   * moves earlier than the last fixed frame it already follows.
+   */
+  const baseIndex = new Map<unknown, number>(base.map((message, index) => [message, index]));
+  const route = drawnBefore ?? kept;
+  const routeAt = frameIndex(route);
+  const floorOf = (message: unknown): number | undefined => {
+    const from = routeAt(message);
+    if (from === undefined) return undefined;
+    for (let back = from - 1; back >= 0; back -= 1) {
+      const index = baseIndex.get(route[back]);
+      if (index !== undefined) return index;
+    }
+    return -1;
+  };
+  /** Frames to place after one kept index, ordered by where the page had them. */
   const buckets = new Map<number, Array<{ rank: number; message: unknown }>>();
   const add = (after: number, rank: number, message: unknown): void => {
     const bucket = buckets.get(after);
     if (bucket === undefined) buckets.set(after, [{ rank, message }]);
     else bucket.push({ rank, message });
   };
-  /** The drawn index the page row has reached, which a frame with no order position follows. */
+  /** The kept index the page row has reached, which a frame with no page position follows. */
   let last = -1;
-  /** The turn's position of the frame last placed, which one with none shares. */
+  /** The page's position of the frame last placed, which one with none shares. */
   let rank = -1;
   for (let spot = 0; spot < copy.length; spot += 1) {
     const message = copy[spot];
-    // A frame the drawn row already holds keeps its place, and is the anchor
-    // the next one measures from.
-    if (have.carries(message)) {
-      const index = drawnAt(message);
-      if (index !== undefined) last = index;
-      continue;
-    }
-    // A page counter inside a run the drawn row holds is answered by `have`,
-    // top of this loop: its covers are a superset of any run kept here.
+    if (counted(message)) continue;
     const want = at(message);
     if (want !== undefined) rank = want;
     let anchor = last;
@@ -991,50 +1000,47 @@ function rejoin(target: unknown[], copy: unknown[], order: readonly unknown[]): 
         if (spot < want) before = index;
         else if (following === undefined) following = index;
       });
-      // A frame that leads the row goes before the first drawn frame that
-      // follows it; one nothing drawn follows goes at the end. **Leading every
-      // drawn frame is the defensive arm** - a later page row is a later slice
-      // of the turn, so it has no frame before the drawn row's first one - and
-      // it is kept so a cut the server sends still lands somewhere ordered
-      // rather than at the front of the row.
-      if (before === null) before = following === undefined ? kept.length - 1 : following - 1;
+      // A frame that leads the row goes before the first kept frame that
+      // follows it; one nothing kept follows goes at the end.
+      if (before === null) before = following === undefined ? base.length - 1 : following - 1;
       anchor = before;
     } else {
-      // **A frame the held order never had is placed by ITS page row's
-      // neighbours** (#3073). The held order cannot say where a row the live
-      // fold never drew belongs, and parking it at `last` starts every such
-      // row at -1, ahead of the turn's own head - the front of a row already
-      // drawn. The page row is the only order that has it: it follows the
-      // drawn frame its page row follows and leads the one its page row leads.
+      // **A frame the page row alone carries is placed by ITS neighbours**
+      // (#3073): after the kept frame its row follows, before the one its row
+      // leads, and after what is drawn when it has neither - never at the
+      // row's front.
       let lead: number | undefined;
       for (let next = spot + 1; next < copy.length && lead === undefined; next += 1) {
-        lead = drawnAt(copy[next]);
+        lead = baseAt(copy[next]);
       }
       let behind: number | undefined;
       for (let prev = spot - 1; prev >= 0 && behind === undefined; prev -= 1) {
-        behind = drawnAt(copy[prev]);
+        behind = baseAt(copy[prev]);
       }
       if (lead !== undefined) anchor = Math.max(last, lead - 1);
       else if (behind !== undefined) anchor = Math.max(last, behind);
-      // **A later slice of the turn follows what is drawn.** When nothing this
-      // page row carries sits in the drawn row, the row runs on from its end -
-      // never ahead of it, which is what parking at -1 did (#3073).
-      else anchor = last >= 0 ? last : kept.length - 1;
+      else anchor = last >= 0 ? last : base.length - 1;
     }
+    const floor = floorOf(message);
+    if (floor !== undefined) anchor = Math.max(anchor, floor);
     add(anchor, rank, message);
     last = anchor;
   }
-  if (kept.length === target.length && buckets.size === 0) return target;
-  // Two frames can share an anchor; the turn's own order is what ranks them
-  // (a frame the turn never had keeps the rank of the one before it).
+  if (base.length === target.length && buckets.size === 0) return target;
+  // Two frames can share an anchor; the page's own order is what ranks them
+  // (a frame the page never had keeps the rank of the one before it).
   for (const bucket of buckets.values()) bucket.sort((one, other) => one.rank - other.rank);
   const out: unknown[] = (buckets.get(-1) ?? []).map((entry) => entry.message);
-  kept.forEach((message, index) => {
+  base.forEach((message, index) => {
     out.push(message);
     const bucket = buckets.get(index);
     if (bucket !== undefined) out.push(...bucket.map((entry) => entry.message));
   });
-  return out;
+  // **A landing that moves nothing hands back the row it was given**, so a
+  // page saying what is already drawn is not a new object for the list.
+  if (out.length !== target.length) return out;
+  for (let at = 0; at < out.length; at += 1) if (out[at] !== target[at]) return out;
+  return target;
 }
 
 /**
@@ -2678,91 +2684,13 @@ export class Chat {
     };
     this.fold((held) => {
       const first = !held.loaded;
-      let healed = this.healedOf(held, fromPage);
-      // **A delivered prompt's page copy replaces the display row the live
-      // path drew for it** (#3073). The CLI records a prompt it pressed into a
-      // running turn as its own user row, under an id it minted, so the page's
-      // copy shares no identity with forge's display row for the same prompt;
-      // the words are the only identity the two carriers agree on. One prompt
-      // is one row, and the page is the authority once it lands: the held copy
-      // is dropped and the page's copy, at the position the read recorded, is
-      // the row that stays. A live row the transcript placed elsewhere moves
-      // at most once, to its delivered place, and no later landing moves it.
-      //
-      // **Only within the turn the page row belongs to.** A held display row
-      // in another turn saying the same words is another message, and pairing
-      // across turns dropped a scrolled-in question's row.
-      const onPage = new Set<string>();
-      for (const row of pageRows) {
-        for (const message of messagesOf(row)) {
-          const id = uuidOf(message);
-          if (id !== null) onPage.add(id);
-        }
-      }
-      /** The words a user row carries, in either carrier a page or a frame uses. */
-      const userWords = (message: unknown): string[] => {
-        if ((message as { type?: unknown } | null)?.type !== 'user') return [];
-        const content = (message as { message?: { content?: unknown } } | null)?.message?.content;
-        if (typeof content === 'string') return content === '' ? [] : [content];
-        return wordsOf(message);
-      };
-      const paired = new Map<Turn, Set<string>>();
-      /** Each held turn's display rows by words, consumed once per page copy. */
-      const holders = new Map<Turn, Map<string, unknown[]>>();
-      for (const row of pageRows) {
-        const carried = new Frames(messagesOf(row));
-        const target = healed.turns.findLast((turn) =>
-          turn.messages.some((message) => carried.carries(message, false)),
-        );
-        if (target === undefined) continue;
-        let bucket = holders.get(target);
-        if (bucket === undefined) {
-          bucket = new Map();
-          for (const message of target.messages) {
-            const words = displayWordsOf(message);
-            if (words === null) continue;
-            const id = uuidOf(message);
-            // A display row the page carries under its own id needs no
-            // pairing: the reconcile pairs the two by identity.
-            if (id !== null && onPage.has(id)) continue;
-            const key = JSON.stringify(words);
-            const list = bucket.get(key) ?? [];
-            list.push(message);
-            bucket.set(key, list);
-          }
-          holders.set(target, bucket);
-        }
-        for (const message of messagesOf(row)) {
-          const words = userWords(message);
-          if (words.length === 0) continue;
-          const id = uuidOf(message);
-          // The page's copy IS the held row when the conversation already
-          // carries that id.
-          if (id !== null && healed.turns.some((turn) => heldIds(turn).has(id))) continue;
-          const picked = bucket.get(JSON.stringify(words))?.shift();
-          const pickedId = picked === undefined ? null : uuidOf(picked);
-          if (pickedId === null) continue;
-          const dropped = paired.get(target) ?? new Set<string>();
-          dropped.add(pickedId);
-          paired.set(target, dropped);
-        }
-      }
-      if (paired.size > 0) {
-        healed = {
-          ...healed,
-          turns: healed.turns.map((turn) => {
-            const dropped = paired.get(turn);
-            if (dropped === undefined) return turn;
-            return {
-              ...turn,
-              messages: turn.messages.filter((message) => {
-                const id = uuidOf(message);
-                return id === null || !dropped.has(id);
-              }),
-            };
-          }),
-        };
-      }
+      const healed = this.healedOf(held, fromPage);
+      // **One prompt carries one id on both paths** (#3073). A prompt pressed
+      // into a running turn comes back from the read under the CLI's own id;
+      // the server puts the delivery id back on that row before it serves the
+      // page (`transcript::rekey_delivered`), so the page row and the live
+      // display row share an id and the id-keyed reconcile below is the whole
+      // merge. Nothing here matches a page row to a held row by its words.
       const known = new Map(healed.turns.map((turn) => [turn.key, turn]));
       // A turn a page has settled is also known by the page's own name for it,
       // which is what the next page repeats it under.
@@ -2909,7 +2837,33 @@ export class Chat {
        * and every later one joins it rather than drawing it twice (#2458).
        */
       const placed = new Map<Turn, number>();
+      /**
+       * Each placed exchange's row BEFORE the frames a later page row carries
+       * are taken out of it.
+       *
+       * **The anchor a frame keeps when it comes back in its own row** (#3073):
+       * a carried frame is lifted out of this row and re-joined from the later
+       * row, and where it sat here is the only thing that says it may not jump
+       * a frame the page cannot place - a folded counter run, say.
+       */
+      const beforeOutside = new Map<Turn, unknown[]>();
       const drawn: Turn[] = [];
+      /**
+       * The page's own flattened messages, up to and including each row.
+       *
+       * **What says where a frame sits across a page-row boundary** (#3073): a
+       * delivery the read cut into a later row belongs after the frames the
+       * rows before it end on, and a row-local order cannot see that. Built
+       * once per landing so a merge is one lookup.
+       */
+      const pageThrough: unknown[][] = [];
+      {
+        const through: unknown[] = [];
+        for (const row of pageRows) {
+          through.push(...messagesOf(row));
+          pageThrough.push(through.slice());
+        }
+      }
       for (let index = 0; index < named.length; index += 1) {
         const row = named[index];
         if (row === undefined) continue;
@@ -2971,7 +2925,14 @@ export class Chat {
           // own order, so nothing drawn moves (see `rejoin`).
           const target = drawn[placedAt];
           if (target === undefined) continue;
-          const messages = pairHookRuns(rejoin(target.messages, copy, match.messages));
+          const messages = pairHookRuns(
+            rejoin(
+              target.messages,
+              copy,
+              pageThrough[index] ?? match.messages,
+              beforeOutside.get(match),
+            ),
+          );
           const also = target.also ?? [];
           const later = also.includes(row.key) ? also : [...also, row.key];
           drawn[placedAt] =
@@ -3020,6 +2981,8 @@ export class Chat {
         // beside the row already held.
         const later = match.also ?? [];
         const also = later.includes(row.key) ? later : [...later, row.key];
+        const merged = interleave(own, match.messages);
+        beforeOutside.set(match, merged);
         if (!match.live) {
           // A held turn this page renews under a name it did not have when the
           // first read cut it - a name it did have would have been found
@@ -3027,11 +2990,7 @@ export class Chat {
           // it lacks arrived after its read.
           drawn.push({
             ...match,
-            messages: outsidePage(
-              pairHookRuns(interleave(own, match.messages)),
-              ownFrames,
-              fromPage,
-            ),
+            messages: outsidePage(pairHookRuns(merged), ownFrames, fromPage),
             also,
           });
           continue;
@@ -3054,11 +3013,7 @@ export class Chat {
             ? { ...row, key: match.key, also }
             : {
                 key: match.key,
-                messages: outsidePage(
-                  pairHookRuns(interleave(own, match.messages)),
-                  ownFrames,
-                  fromPage,
-                ),
+                messages: outsidePage(pairHookRuns(merged), ownFrames, fromPage),
                 live: !settledRow(index),
                 // **The record's mark survives a landing.** A rebuilt turn
                 // that forgot it would draw the bar again for a turn the core

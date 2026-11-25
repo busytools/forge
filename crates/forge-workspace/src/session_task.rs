@@ -1327,9 +1327,18 @@ impl SessionTask {
             | PromptSource::Forge => text.to_owned(),
         };
         let images = forge_primitives::display_blocks(attachments);
-        let mut framed =
-            forge_primitives::Message::display_only_user_with_blocks(text, images, uuid.to_owned());
+        let mut framed = forge_primitives::Message::display_only_user_with_blocks(
+            text.clone(),
+            images,
+            uuid.to_owned(),
+        );
         framed.stamp_if_absent(&crate::install::rfc3339_now());
+        // **The row is what a read re-keys against** (#3073): this is the one
+        // place a display row is forged, so it is the one place the words and
+        // the delivery id are both in hand. Recorded for every source - a
+        // cron's or a peer's row comes back from the transcript under a
+        // CLI-minted id just as a person's does.
+        self.domain.lock().record_delivered_prompt(uuid, &text);
         self.emit(SessionUpdate::ChatAppended {
             key: self.key.clone(),
             msg: framed,

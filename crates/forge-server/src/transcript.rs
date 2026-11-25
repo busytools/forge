@@ -606,6 +606,58 @@ pub(crate) fn notices_as_blocks(mut messages: Vec<Message>) -> Vec<Message> {
     messages
 }
 
+/// Put the delivery id back on the rows the CLI recorded under its own.
+///
+/// **One prompt, one id, on both paths** (#3073). The CLI writes a prompt it
+/// pressed into a running turn as its own user row, under an id it minted, so
+/// a page served from the transcript carried a different id from the live
+/// display row forge drew for the same prompt - and a client pairing the two
+/// drew one prompt twice or moved it. `delivered` is this process's own record
+/// of what it drew, oldest first; a row whose words equal the OLDEST unpaired
+/// record takes that record's id.
+///
+/// **Strict FIFO, no skipping.** A row that does not match the oldest record
+/// keeps its CLI id and the record stays waiting; a row never pairs ahead to a
+/// later record, because then a CLI row that happens to repeat the words could
+/// steal a delivery and leave the real one to pair wrongly. One record answers
+/// for at most one row (it is consumed on its match), and a row with no record
+/// keeps its id - so the failure direction is a visible duplicate, never a
+/// lost row.
+pub(crate) fn rekey_delivered(
+    messages: Vec<Message>,
+    delivered: &[forge_primitives::messages::DeliveredPrompt],
+) -> Vec<Message> {
+    if delivered.is_empty() {
+        return messages;
+    }
+    let mut next = 0;
+    let mut out = Vec::with_capacity(messages.len());
+    for mut message in messages {
+        if let Message::User { message: envelope, uuid, .. } = &mut message
+            && let Some(record) = delivered.get(next)
+            && user_row_text(envelope).as_deref() == Some(record.text.as_str())
+        {
+            *uuid = Some(record.uuid.clone());
+            next += 1;
+        }
+        out.push(message);
+    }
+    out
+}
+
+/// The words a user row carries, in either carrier the CLI persists it in.
+fn user_row_text(envelope: &forge_primitives::messages::UserEnvelope) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for block in &envelope.content {
+        match block {
+            ContentBlock::Text { text, .. } => parts.push(text.clone()),
+            ContentBlock::QueuedCommand { prompt, .. } => parts.push(queued_command_text(prompt)),
+            _ => {}
+        }
+    }
+    if parts.is_empty() { None } else { Some(parts.join("\n")) }
+}
+
 /// The ending a persisted notice carries, or `None` when the text is not one
 /// or names no call to end.
 fn task_ending(text: &str) -> Option<TaskEnding> {
@@ -932,6 +984,85 @@ mod tests {
             source_uuid: None,
             extras: serde_json::Map::new(),
         }])
+    }
+
+    /// A plain user row as the CLI writes one, under an id it minted.
+    fn recorded(id: &str, text: &str) -> Message {
+        let mut message = user(vec![ContentBlock::Text {
+            text: text.to_owned(),
+            extras: serde_json::Map::new(),
+        }]);
+        if let Message::User { uuid, .. } = &mut message {
+            *uuid = Some(id.to_owned());
+        }
+        message
+    }
+
+    fn delivered(uuid: &str, text: &str) -> forge_primitives::messages::DeliveredPrompt {
+        forge_primitives::messages::DeliveredPrompt { uuid: uuid.to_owned(), text: text.to_owned() }
+    }
+
+    fn row_id(message: &Message) -> Option<&str> {
+        match message {
+            Message::User { uuid, .. } => uuid.as_deref(),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_delivered_row_takes_its_delivery_id_back() {
+        let records = [delivered("forge_prompt_1", "one")];
+        let out = super::rekey_delivered(
+            vec![recorded("cli-1", "one"), assistant(vec![]), recorded("cli-2", "other")],
+            &records,
+        );
+        assert_eq!(row_id(&out[0]), Some("forge_prompt_1"));
+        assert_eq!(row_id(&out[2]), Some("cli-2"), "a row with no record keeps its id");
+    }
+
+    #[test]
+    fn the_oldest_record_governs_and_a_row_never_skips_ahead() {
+        let records = [delivered("forge_prompt_a", "alpha"), delivered("forge_prompt_b", "beta")];
+        let out = super::rekey_delivered(
+            vec![
+                recorded("cli-beta-1", "beta"),
+                recorded("cli-alpha", "alpha"),
+                recorded("cli-beta-2", "beta"),
+            ],
+            &records,
+        );
+        assert_eq!(row_id(&out[0]), Some("cli-beta-1"), "a row cannot skip the oldest record");
+        assert_eq!(row_id(&out[1]), Some("forge_prompt_a"));
+        assert_eq!(row_id(&out[2]), Some("forge_prompt_b"));
+    }
+
+    #[test]
+    fn two_sends_of_the_same_text_pair_in_delivery_order() {
+        let records = [delivered("forge_prompt_1", "same"), delivered("forge_prompt_2", "same")];
+        let out = super::rekey_delivered(
+            vec![recorded("cli-1", "same"), recorded("cli-2", "same")],
+            &records,
+        );
+        assert_eq!(row_id(&out[0]), Some("forge_prompt_1"));
+        assert_eq!(row_id(&out[1]), Some("forge_prompt_2"));
+    }
+
+    #[test]
+    fn a_queued_attachment_advances_its_record() {
+        let records = [delivered("forge_prompt_1", "one"), delivered("forge_prompt_2", "two")];
+        let out = super::rekey_delivered(
+            vec![
+                user(vec![ContentBlock::QueuedCommand {
+                    prompt: serde_json::Value::String("one".to_owned()),
+                    command_mode: Some("prompt".to_owned()),
+                    source_uuid: Some("forge_prompt_1".to_owned()),
+                    extras: serde_json::Map::new(),
+                }]),
+                recorded("cli-2", "two"),
+            ],
+            &records,
+        );
+        assert_eq!(row_id(&out[1]), Some("forge_prompt_2"), "the next record is not blocked");
     }
 
     /// The same completion notice in the queued carrier the scan hoists an

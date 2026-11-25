@@ -1,15 +1,14 @@
 // @vitest-environment jsdom
 /**
- * A steering prompt keeps one row, at its delivered place, when a page lands
- * (#3073).
+ * A steering prompt is one row, under one id, across a page landing (#3073).
  *
- * The reader sends a message while a turn is running. The live path draws it
- * when the CLI starts it, in the seat's sequence - but that sequence is when
- * the lifecycle event fired, not where the CLI recorded the delivered row. A
- * page read later carries the same words under the id the CLI minted for its
- * own user row, at the position the transcript recorded. The page is the
- * authority once it lands: the row moves at most once, to its delivered
- * place, and no later landing moves it or draws a second copy.
+ * The live path draws the delivery row when the CLI starts the prompt; a page
+ * read carries the CLI's own row for it. The server puts the delivery id back
+ * on that row before serving the page (`transcript::rekey_delivered`), so both
+ * paths name the same message and the id-keyed merge is the whole reconcile.
+ * The tests below cover the orders that broke a word-matching pairing: a page
+ * read ahead of the frame stream, a replay after the landing, and a second
+ * send of the same text still in the queue.
  */
 import { get } from 'svelte/store';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -21,6 +20,8 @@ import { Chat } from './conversation';
 
 const SEAT: SessionSlot = { org: 'Scratch', project: 'steer', label: 'lead' };
 const STEER = 'STEERING-VERIFY-ROW: while that is running, also reply with the single word beta.';
+const DELIVERY = 'forge_prompt_steer';
+const SECOND = 'forge_prompt_second';
 const CLI_STEER = '77e9443d-5902-422c-85d7-6318689d1b9f';
 
 afterEach(() => {
@@ -67,11 +68,14 @@ const userText = (id: string, text: string): unknown => ({
   message: { role: 'user', content: [{ type: 'text', text }] },
 });
 
-/** The CLI's own row for a delivered prompt: the id it minted, not the wire's. */
-const clipped = (id: string, text: string): unknown => ({
+/** A queued prompt as the read carries it: the delivery id rides the block. */
+const queued = (id: string, text: string): unknown => ({
   type: 'user',
-  uuid: id,
-  message: { role: 'user', content: text },
+  uuid: `cli-${id}`,
+  message: {
+    role: 'user',
+    content: [{ type: 'queued_command', prompt: text, source_uuid: id }],
+  },
 });
 
 const thinking = (id: string): unknown => ({
@@ -115,66 +119,20 @@ const answered = (id: string, call: string): unknown => ({
 
 const ended = (id: string): unknown => ({ type: 'result', subtype: 'success', uuid: id });
 
-/**
- * The live seat's frames, as the sequence fires them.
- *
- * The steering row is drawn BEFORE the turn's second call: the lifecycle event
- * the live path follows fires when the CLI starts the prompt, which here is
- * ahead of the frame for the call already in flight. The read records the
- * delivered row after that call - the divergence #3073 is about.
- */
-function liveFrames(): SessionUpdate[] {
-  const frame = (msg: unknown, source?: string): SessionUpdate => ({
-    chat_appended: { key: SEAT, msg, ...(source === undefined ? {} : { source }) },
-  });
-  return [
-    frame(userText('forge_prompt_head', 'Run `sleep 100` in the foreground, then reply alpha.')),
-    frame(thinking('th-1')),
-    frame(called('call-1-msg', 'call-1', 'Bash')),
-    frame(answered('result-1', 'call-1')),
-    frame(userText('forge_prompt_steer', STEER), 'you'),
-    frame(called('call-2-msg', 'call-2', 'Read')),
-    frame(thinking('th-2')),
-    frame(said('said-2', 'alpha beta')),
-    frame(ended('result-2')),
-  ];
-}
+const frame = (msg: unknown, source?: string): SessionUpdate => ({
+  chat_appended: { key: SEAT, msg, ...(source === undefined ? {} : { source }) },
+});
 
-/** The page the read serves: the steering row under the CLI's own id, after call-2. */
-const page = (): ServerMessage =>
+const snapshot = (turns: { key: string; messages: unknown[] }[]): ServerMessage =>
   ({
     kind: 'snapshot',
     subject: { session: SEAT } as Subject,
     data: {
       header: { session_id: 'scratch', turn_in_flight: false },
-      conversation: {
-        cursor: null,
-        turns: [
-          {
-            key: 't1',
-            messages: [
-              userText('forge_prompt_head', 'Run `sleep 100` in the foreground, then reply alpha.'),
-              thinking('th-1'),
-              called('call-1-msg', 'call-1', 'Bash'),
-              answered('result-1', 'call-1'),
-              called('call-2-msg', 'call-2', 'Read'),
-            ],
-          },
-          {
-            key: 't2',
-            messages: [
-              clipped(CLI_STEER, STEER),
-              thinking('th-2'),
-              said('said-2', 'alpha beta'),
-              ended('result-2'),
-            ],
-          },
-        ],
-      },
+      conversation: { cursor: null, turns },
     },
   }) as unknown as ServerMessage;
 
-/** Every message's id, flattened across the turns in order, user rows marked. */
 function drawnIds(chat: Chat): string[] {
   return get(chat.value)
     .turns.flatMap((turn) => turn.messages)
@@ -185,7 +143,7 @@ function steeringRows(chat: Chat): number {
   return get(chat.value)
     .turns.flatMap((turn) => turn.messages)
     .filter((message) => {
-      const held = message as { type?: string; uuid?: string; message?: { content?: unknown } };
+      const held = message as { type?: string; message?: { content?: unknown } };
       if (held.type !== 'user') return false;
       const content = held.message?.content;
       return Array.isArray(content)
@@ -195,108 +153,174 @@ function steeringRows(chat: Chat): number {
 }
 
 describe('a steering row across a page landing', () => {
-  it('moves once to its delivered place and stays there on later landings', () => {
+  it('pairs a page read ahead of the stream by its delivery id', () => {
+    // The held fold has the display row and nothing after it; the page
+    // already carries the frames the client's stream has not delivered. No
+    // id here is one the held turn drew - the delivery id is the only pair.
     const server = fakeConnection();
     const chat = new Chat(server.connection, SEAT);
     const stop = chat.start();
-    for (const update of liveFrames()) server.update(update);
+    server.update(frame(userText('head', 'run it'), 'you'));
+    server.update(frame(userText(DELIVERY, STEER), 'you'));
 
-    const before = drawnIds(chat);
-    const liveSteer = before.indexOf('forge_prompt_steer');
-    const call2 = before.indexOf('call-2-msg');
-    expect(liveSteer, 'the live fold drew the steering row').toBeGreaterThanOrEqual(0);
-    expect(liveSteer, 'live put it before the call the sequence fired it ahead of').toBeLessThan(
-      call2,
+    server.send(
+      snapshot([
+        { key: 't1', messages: [userText('head', 'run it')] },
+        {
+          key: 't2',
+          messages: [userText(DELIVERY, STEER), thinking('th-2'), said('s-2', 'x'), ended('r-2')],
+        },
+      ]),
     );
 
-    server.send(page());
-
-    const after = drawnIds(chat);
     expect(steeringRows(chat), 'one prompt, one row').toBe(1);
-    expect(after.includes('forge_prompt_steer'), 'the live copy is the one that goes').toBe(false);
-    const delivered = after.indexOf(CLI_STEER);
-    expect(delivered, 'the page row drew').toBeGreaterThanOrEqual(0);
-    expect(after[delivered - 1], 'it sits after the call the transcript recorded before it').toBe(
-      'call-2-msg',
-    );
-
-    // A refresh, a reconnect or a scroll-up re-fetches the same page. The row
-    // is already where the read put it, so nothing moves and nothing doubles.
-    server.send(page());
-    expect(drawnIds(chat), 'no move on a later landing').toEqual(after);
-    expect(steeringRows(chat), 'and no second copy').toBe(1);
+    expect(drawnIds(chat).filter((id) => id === DELIVERY).length, 'under the delivery id').toBe(1);
     stop();
   });
 
-  it('does not pair a held row with a page row from another turn', () => {
-    // The held display row is turn B's. A page that lands an OLDER turn whose
-    // user text repeats the same words is another message, and a pairing that
-    // reaches across turns consumes the wrong held row - a row lost on an
-    // ordinary scroll-up.
+  it('keeps the delivery id through a replay after the landing', () => {
     const server = fakeConnection();
     const chat = new Chat(server.connection, SEAT);
     const stop = chat.start();
-    const frame = (msg: unknown, source?: string): SessionUpdate => ({
-      chat_appended: { key: SEAT, msg, ...(source === undefined ? {} : { source }) },
-    });
-    server.update(frame(userText('a1', 'an older question')));
-    server.update(frame(said('a2', 'an older answer')));
-    server.update(frame(ended('a-end')));
-    server.update(frame(userText('head-2', 'Run the slow command')));
-    server.update(frame(userText('forge_prompt_steer', STEER), 'you'));
-    server.update(frame(thinking('th-3')));
-    server.update(frame(said('s-3', 'done')));
-    server.update(frame(ended('r-3')));
-
-    // The page carries the older turn with the same words under a CLI id, and
-    // a turn B read BEFORE the delivery: no steering row of its own.
-    server.send({
-      kind: 'snapshot',
-      subject: { session: SEAT } as Subject,
-      data: {
-        header: { session_id: 'scratch', turn_in_flight: false },
-        conversation: {
-          cursor: null,
-          turns: [
-            {
-              key: 'ta',
-              messages: [clipped('cli-old', STEER), said('a2', 'an older answer'), ended('a-end')],
-            },
-            {
-              key: 'tb',
-              messages: [
-                userText('head-2', 'Run the slow command'),
-                thinking('th-3'),
-                said('s-3', 'done'),
-                ended('r-3'),
-              ],
-            },
-          ],
+    server.update(frame(userText('head', 'run it'), 'you'));
+    server.update(frame(userText(DELIVERY, STEER), 'you'));
+    server.update(frame(thinking('th-2')));
+    server.update(frame(said('s-2', 'x')));
+    server.update(frame(ended('r-2')));
+    server.send(
+      snapshot([
+        { key: 't1', messages: [userText('head', 'run it')] },
+        {
+          key: 't2',
+          messages: [userText(DELIVERY, STEER), thinking('th-2'), said('s-2', 'x'), ended('r-2')],
         },
-      },
-    } as unknown as ServerMessage);
+      ]),
+    );
+
+    // A repair stretch or a replayed frame for the same delivery.
+    server.update(frame(userText(DELIVERY, STEER), 'you'));
+
+    expect(steeringRows(chat), 'still one row').toBe(1);
+    stop();
+  });
+
+  it('leaves the delivered row alone when a same-text send is still queued', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, SEAT);
+    const stop = chat.start();
+    server.update(frame(userText('head', 'run it'), 'you'));
+    server.update(frame(userText(DELIVERY, STEER), 'you'));
+    server.update(frame(thinking('th-2')));
+    server.update(frame(said('s-2', 'x')));
+    server.update(frame(ended('r-2')));
+    server.update({
+      prompt_queued: { key: SEAT, uuid: SECOND, source: 'you', text: STEER },
+    });
+
+    // The page carries the queued second send and no copy of the first: the
+    // pile pulls the queued row, and the delivered row must stay put.
+    server.send(
+      snapshot([
+        { key: 't1', messages: [userText('head', 'run it')] },
+        {
+          key: 't2',
+          messages: [queued(SECOND, STEER), thinking('th-2'), said('s-2', 'x'), ended('r-2')],
+        },
+      ]),
+    );
 
     const ids = drawnIds(chat);
-    expect(ids.includes('forge_prompt_steer'), 'the held row survives the landing').toBe(true);
-    expect(steeringRows(chat), 'one live row, and the older question is its own').toBe(2);
+    expect(ids.filter((id) => id === DELIVERY).length, 'the delivered row survives').toBe(1);
+    expect(steeringRows(chat), 'and it is the only copy in the conversation').toBe(1);
     stop();
   });
 
-  it('lands a page-only steering row where its page row puts it', () => {
-    // The live fold missed the delivery (a page that attached after it), so the
-    // page's row is the only copy - and it belongs between the call it followed
-    // and the frames that came after, not at the turn's head.
+  it('puts the row where the read recorded it and keeps it there', () => {
+    // Live drew the row before the call already in flight; the read records
+    // it after. The delivery id is shared, so the landing moves the one row
+    // to the page's position and a later landing changes nothing.
     const server = fakeConnection();
     const chat = new Chat(server.connection, SEAT);
     const stop = chat.start();
-    for (const update of liveFrames()) {
-      const msg = (update as { chat_appended?: { msg?: unknown } }).chat_appended?.msg as
-        { uuid?: string } | undefined;
-      if (msg?.uuid === 'forge_prompt_steer') continue;
-      server.update(update);
-    }
+    server.update(frame(userText('forge_prompt_head', 'Run the slow command'), 'you'));
+    server.update(frame(thinking('th-1')));
+    server.update(frame(called('call-1-msg', 'call-1', 'Bash')));
+    server.update(frame(answered('result-1', 'call-1')));
+    server.update(frame(userText(DELIVERY, STEER), 'you'));
+    server.update(frame(called('call-2-msg', 'call-2', 'Read')));
+    server.update(frame(thinking('th-2')));
+    server.update(frame(said('said-2', 'alpha beta')));
+    server.update(frame(ended('result-2')));
 
-    server.send(page());
+    const before = drawnIds(chat);
+    expect(before.indexOf(DELIVERY)).toBeLessThan(before.indexOf('call-2-msg'));
+
+    const page = snapshot([
+      {
+        key: 't1',
+        messages: [
+          userText('forge_prompt_head', 'Run the slow command'),
+          thinking('th-1'),
+          called('call-1-msg', 'call-1', 'Bash'),
+          answered('result-1', 'call-1'),
+          called('call-2-msg', 'call-2', 'Read'),
+        ],
+      },
+      {
+        key: 't2',
+        messages: [
+          userText(DELIVERY, STEER),
+          thinking('th-2'),
+          said('said-2', 'alpha beta'),
+          ended('result-2'),
+        ],
+      },
+    ]);
+    server.send(page);
+
+    const after = drawnIds(chat);
+    expect(steeringRows(chat), 'one row').toBe(1);
+    expect(after.indexOf(DELIVERY), 'after the call the transcript recorded before it').toBe(
+      after.indexOf('call-2-msg') + 1,
+    );
+
+    server.send(page);
+    expect(drawnIds(chat), 'no move on a later landing').toEqual(after);
+    stop();
+  });
+
+  it('lands a page-only row where its page row puts it', () => {
+    // No live row at all: the page row is the only copy and the anchor keeps
+    // it beside the frame its page row put it next to.
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, SEAT);
+    const stop = chat.start();
+    server.update(frame(userText('forge_prompt_head', 'Run the slow command'), 'you'));
+    server.update(frame(thinking('th-1')));
+    server.update(frame(called('call-1-msg', 'call-1', 'Bash')));
+    server.update(frame(answered('result-1', 'call-1')));
+    server.update(frame(called('call-2-msg', 'call-2', 'Read')));
+    server.update(frame(thinking('th-2')));
+    server.update(frame(ended('result-2')));
+
+    server.send(
+      snapshot([
+        {
+          key: 't1',
+          messages: [
+            userText('forge_prompt_head', 'Run the slow command'),
+            thinking('th-1'),
+            called('call-1-msg', 'call-1', 'Bash'),
+            answered('result-1', 'call-1'),
+            called('call-2-msg', 'call-2', 'Read'),
+          ],
+        },
+        {
+          key: 't2',
+          messages: [userText(CLI_STEER, STEER), thinking('th-2'), ended('result-2')],
+        },
+      ]),
+    );
 
     const ids = drawnIds(chat);
     const at = ids.indexOf(CLI_STEER);
