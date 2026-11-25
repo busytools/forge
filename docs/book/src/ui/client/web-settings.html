@@ -436,17 +436,21 @@
             <div class="settings-setting"><span class="settings-setting-label"><code>this client</code><span class="settings-dim">enrolled - the gesture unlocks the vault here</span></span><span class="settings-setting-value settings-dim">ready</span></div>
             <div class="settings-setting"><span class="settings-setting-label"><code>macOS (3f2a9c1b)</code><span class="settings-dim">this client</span><span class="settings-dim">enrolled 3h ago</span></span><span class="settings-setting-value"><span class="biometric-purpose"><code>vault</code><span class="settings-dim">last used 12m ago</span><span class="settings-btn ghost">revoke</span></span></span></div>
           </div>
-          <!-- The unlock dialog, gesture first, the Vaultwarden password one
-               click beneath it; a refusal stays here with the fields. A gate
-               that cannot answer drops the gesture button and opens on the
-               password instead, since a press that can only fail is not an
-               offer. -->
+          <!-- The unlock dialog in its third shape: a gate that cannot
+               answer drops the gesture button and opens on the password,
+               since a press that can only fail is not an offer. The gesture
+               variant draws the same dialog with the button first and the
+               password fields beneath the link. -->
           <div class="settings-dialog">
             <div class="t">unlock the vault</div>
-            <div class="s">The vault is locked. Release it with this device, or enter the Vaultwarden password.</div>
-            <span class="settings-btn go">Unlock with this device</span>
-            <div style="margin-top:10px"><span class="settings-link">use the Vaultwarden password</span></div>
-            <div class="acts"><span class="settings-btn ghost">cancel</span></div>
+            <div class="s">This device has no gesture to offer, so enter the Vaultwarden password.</div>
+            <div class="fields">
+              <label for="drawing-vault-password">master password</label>
+              <input id="drawing-vault-password" type="password" placeholder="master password" />
+              <label for="drawing-vault-code">2FA code (optional)</label>
+              <input id="drawing-vault-code" type="text" inputmode="numeric" placeholder="2FA code" />
+            </div>
+            <div class="acts"><span class="settings-btn ghost">cancel</span><span class="settings-btn go">unlock</span></div>
           </div>
         </div>
       </section>
