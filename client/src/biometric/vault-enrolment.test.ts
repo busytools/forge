@@ -12,6 +12,8 @@ import { openVaultMaterial, type VaultMaterial } from './vault';
 import {
   deviceName,
   enrolVault,
+  enrolmentId,
+  enrolmentIdIfMinted,
   forgetVaultMaterial,
   releaseVaultMaterial,
   watchVaultEnrolment,
@@ -130,6 +132,31 @@ describe('enrolling this device', () => {
     expect(deviceName('abcdef12-3456-7890-abcd-ef1234567890')).toMatch(/ \(abcdef12\)$/);
   });
 
+  /// **One id names a DEVICE, not a purpose.** A second purpose on one browser
+  /// is the same device, so the id lives under a key of its own rather than
+  /// one per purpose; every release and every row's revoke names it.
+  it('keeps one id per device, under the device key', () => {
+    const minted = enrolmentId();
+
+    expect(minted).toMatch(/^[0-9a-f-]{36}$/);
+    expect(enrolmentId()).toBe(minted);
+    expect(enrolmentIdIfMinted()).toBe(minted);
+    expect(globalThis.localStorage.getItem('forge.biometric.device')).toBe(minted);
+    expect(
+      globalThis.localStorage.getItem('forge.biometric.enrolment.vault'),
+      'the purpose-scoped key is gone',
+    ).toBeNull();
+  });
+
+  /// A read is a read: only enrolling mints, so a comparison against the
+  /// core's list cannot create an id as a side effect.
+  it('never mints an id from a read', () => {
+    globalThis.localStorage.clear();
+
+    expect(enrolmentIdIfMinted()).toBeNull();
+    expect(globalThis.localStorage.length, 'and stores nothing at all').toBe(0);
+  });
+
   it('enrols nothing while the session is locked', async () => {
     const connection = aConnection(() => null);
 
@@ -166,6 +193,7 @@ describe('releasing the material', () => {
   });
 
   it('refuses when the stored bytes do not open under the released key', async () => {
+    enrolmentId();
     gateRelease.mockResolvedValue({
       outcome: 'released',
       blob: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
@@ -181,14 +209,51 @@ describe('releasing the material', () => {
     expect(answer.outcome).toBe('refused');
   });
 
-  it('passes a refused gesture through without asking the core', async () => {
-    gateRelease.mockResolvedValue({ outcome: 'refused', reason: 'the gesture was cancelled' });
+  /// **No id is no row, and a release never mints one.** A device that never
+  /// enrolled has no row to name, so the passkey prompt is not raised and the
+  /// card draws the password instead.
+  it('answers not_enrolled without a gesture when no id was ever minted', async () => {
+    globalThis.localStorage.clear();
     const connection = aConnection(() => null);
 
     const answer = await releaseVaultMaterial(connection);
 
+    expect(answer).toEqual({ outcome: 'not_enrolled' });
+    expect(
+      gateRelease,
+      'no passkey prompt for a device that never enrolled',
+    ).not.toHaveBeenCalled();
+    expect(connection.calls, 'and nothing is asked of the core').toHaveLength(0);
+    expect(enrolmentIdIfMinted(), 'and the attempt mints no id').toBeNull();
+  });
+
+  /// **The row is read before the gesture.** A device revoked elsewhere has
+  /// no row, so a gesture would be spent on a call that cannot land.
+  it('reads the core row first and drops a revoked device without a gesture', async () => {
+    enrolmentId();
+    const connection = aConnection((command) =>
+      commandName(command) === 'biometric_release' ? null : true,
+    );
+
+    const answer = await releaseVaultMaterial(connection);
+
+    expect(answer).toEqual({ outcome: 'not_enrolled' });
+    expect(gateRelease, 'no gesture for a row that is gone').not.toHaveBeenCalled();
+    expect(gateRemove, 'the gate record goes with the row').toHaveBeenCalledWith('vault');
+    expect(connection.calls.map(commandName)).toEqual(['biometric_release']);
+  });
+
+  /// A refused gesture is the platform's answer after the row said there is
+  /// something to release.
+  it('passes a refused gesture through once the row answers', async () => {
+    enrolmentId();
+    gateRelease.mockResolvedValue({ outcome: 'refused', reason: 'the gesture was cancelled' });
+    const connection = aConnection(() => ({ blob: 'c2VhbGVk' }));
+
+    const answer = await releaseVaultMaterial(connection);
+
     expect(answer).toEqual({ outcome: 'refused', reason: 'the gesture was cancelled' });
-    expect(connection.calls).toHaveLength(0);
+    expect(connection.calls.map(commandName)).toEqual(['biometric_release']);
   });
 });
 
@@ -298,6 +363,10 @@ describe('a rotation', () => {
     const answer = await enrolVault(connection);
     expect(answer.outcome).toBe('failed');
     expect(answer).toMatchObject({ reason: 'the core did not store the enrolment' });
+    expect(
+      gateRemove,
+      'a gate record with no row is an orphan, so it goes with the failed write',
+    ).toHaveBeenCalledWith('vault');
 
     const before = connection.calls.length;
     watchVaultEnrolment(connection);
@@ -355,12 +424,12 @@ describe('a rotation', () => {
       commandName(command) === 'vault_enrolment_material' ? MATERIAL : true,
     );
     await enrolVault(connection);
-    gateRelease.mockResolvedValue({ outcome: 'released', blob: 'a2V5' });
 
     const live = aConnection(() => null);
     const answer = await releaseVaultMaterial(live);
 
     expect(answer.outcome).toBe('not_enrolled');
+    expect(gateRelease, 'and no gesture is asked for the missing row').not.toHaveBeenCalled();
     expect(gateRemove, 'the local item goes with the revoked row').toHaveBeenCalledWith('vault');
     watchVaultEnrolment(live);
     const before = live.calls.length;

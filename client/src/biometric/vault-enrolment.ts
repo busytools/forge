@@ -32,8 +32,14 @@ import {
   type VaultMaterial,
 } from './vault';
 
-/** Where this client keeps the enrolment id it minted for this device. */
-const ENROLMENT_STORAGE = 'forge.biometric.enrolment.vault';
+/**
+ * Where this client keeps the id it minted for this device.
+ *
+ * **One id names a device, not a purpose.** A second purpose on one device is
+ * the same device, so the id lives under a key of its own rather than one per
+ * purpose; every release and every row's revoke name it.
+ */
+const DEVICE_STORAGE = 'forge.biometric.device';
 
 /** The material and wrapping key this app run last held. */
 interface Held {
@@ -99,7 +105,13 @@ export async function enrolVault(connection: VaultConnection): Promise<VaultEnro
   } catch (why) {
     return { outcome: 'failed', reason: reasonOf(why) };
   }
-  if (!written) return { outcome: 'failed', reason: 'the core did not store the enrolment' };
+  if (!written) {
+    // **A gate record with no row is an orphan.** The next release would spend
+    // a gesture on a row that is not there, so the record goes with the failed
+    // write; the next press enrols cleanly.
+    void remove(VAULT_PURPOSE);
+    return { outcome: 'failed', reason: 'the core did not store the enrolment' };
+  }
   // **Held only once the write landed.** Material kept past a refused write
   // would let a later rotation complete an enrolment the card reported
   // failed.
@@ -113,21 +125,26 @@ export async function enrolVault(connection: VaultConnection): Promise<VaultEnro
  * to draw.
  */
 export async function releaseVaultMaterial(connection: VaultConnection): Promise<VaultRelease> {
-  const released = await release(VAULT_PURPOSE);
-  if (released.outcome !== 'released') return released;
-  const enrolment = enrolmentId();
+  // **No id is no row, and a release never mints one.** A device that has
+  // never enrolled has nothing for a gesture to open, so the prompt is not
+  // raised and the card draws the password instead.
+  const enrolment = enrolmentIdIfMinted();
   if (enrolment === null) return { outcome: 'not_enrolled' };
+  // **The row before the gesture.** A device revoked elsewhere holds nothing,
+  // so a passkey prompt would be spent on a call that cannot land; the core's
+  // answer is read first and a missing row is answered without one.
   const sealed = await sealedFrom(connection, enrolment);
   if (sealed === null) {
-    // **The core holds nothing for this device.** The item the gate just
-    // opened is a registration the person already revoked, so it goes too
-    // rather than leaving a gesture that can never succeed, and so does the
-    // material this run held - a later rotation must not rewrite a row the
-    // person deleted.
+    // **The core holds nothing for this device.** The item is a registration
+    // the person already revoked, so it goes too rather than leaving a
+    // gesture that can never succeed, and so does the material this run held -
+    // a later rotation must not rewrite a row the person deleted.
     void remove(VAULT_PURPOSE);
     forgetVaultMaterial();
     return { outcome: 'not_enrolled' };
   }
+  const released = await release(VAULT_PURPOSE);
+  if (released.outcome !== 'released') return released;
   const material = await openVaultMaterial(sealed, released.blob);
   if (material === null) {
     return {
@@ -270,9 +287,10 @@ async function writeRewrite(connection: VaultConnection, blob: string): Promise<
 }
 
 /**
- * The enrolment id this client minted, or null when this page cannot keep
- * one - storage that is refused loses the id across a restart, so the release
- * path falls back to the password rather than naming a device it cannot.
+ * The device id this client minted, minting one when there is none, or null
+ * when this page cannot keep one - storage that is refused loses the id
+ * across a restart, so the release path falls back to the password rather
+ * than naming a device it cannot.
  */
 export function enrolmentId(): string | null {
   try {
@@ -280,7 +298,7 @@ export function enrolmentId(): string | null {
     if (stored !== null) return stored;
     const minted = mintedId();
     if (minted === null) return null;
-    globalThis.localStorage.setItem(ENROLMENT_STORAGE, minted);
+    globalThis.localStorage.setItem(DEVICE_STORAGE, minted);
     return minted;
   } catch {
     return null;
@@ -294,7 +312,7 @@ export function enrolmentId(): string | null {
  */
 export function enrolmentIdIfMinted(): string | null {
   try {
-    const stored = globalThis.localStorage.getItem(ENROLMENT_STORAGE);
+    const stored = globalThis.localStorage.getItem(DEVICE_STORAGE);
     return stored !== null && stored !== '' ? stored : null;
   } catch {
     return null;
