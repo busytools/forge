@@ -47,6 +47,7 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
     private const val PREFERENCES = "forge.biometric"
     private const val TRANSFORMATION = "AES/GCM/NoPadding"
     private const val TAG_BITS = 128
+    private const val GCM_IV_BYTES = 12
     private const val RECORD_SEPARATOR = ":"
   }
 
@@ -72,17 +73,32 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
     background(invoke) {
       val hasRecord = preferences().contains(args.purpose)
       val hasKey = try {
-        keyFor(args.purpose, create = false) != null
-      } catch (invalidated: KeyPermanentlyInvalidatedException) {
-        // A key the OS invalidated after a fingerprint change is not one this
-        // device can release with, which is what the caller is asking.
-        false
+        // **A per-use key still comes back from `getKey` after a biometric
+        // change** and refuses only when a cipher uses it, so its usability
+        // is asked here rather than taken from `getKey` answering at all.
+        // The probe needs no gesture: the auth check lands at `doFinal`.
+        keyFor(args.purpose, create = false)?.let { usable(it) } ?: false
       } catch (unrecoverable: UnrecoverableKeyException) {
         false
       }
       invoke.resolve(JSObject().put("enrolled", hasRecord && hasKey))
     }
   }
+
+  /**
+   * Whether `key` can still release. `Cipher.init` is where a per-use key
+   * reports that the OS invalidated it after a biometric change, and it
+   * reports it without a prompt.
+   */
+  private fun usable(key: SecretKey): Boolean =
+    try {
+      Cipher.getInstance(TRANSFORMATION).init(
+        Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, ByteArray(GCM_IV_BYTES))
+      )
+      true
+    } catch (invalidated: KeyPermanentlyInvalidatedException) {
+      false
+    }
 
   /**
    * Register one purpose's blob, replacing any blob already there.
