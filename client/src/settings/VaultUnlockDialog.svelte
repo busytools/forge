@@ -4,10 +4,12 @@
   import Field from '../composer/Field.svelte';
 
   /**
-   * The settings page's vault unlock, as a modal. Two variants: `unlock`
+   * The settings page's vault unlock, as a modal. Three shapes: `unlock`
    * leads with the platform gesture and reveals the master password beneath
-   * it, while `enrol` opens on the password because nothing is enrolled yet
-   * for the gesture to release.
+   * it; `enrol` opens on the password because nothing is enrolled yet for the
+   * gesture to release; and an `unlock` on a gate that cannot answer drops
+   * the gesture entirely and opens on the password, since a press that can
+   * only fail is not an offer.
    *
    * **It owns no history**: the page that opens it takes the entry Android's
    * Back closes it with. It keeps Tab inside the dialog, closes on Escape,
@@ -20,6 +22,7 @@
     busy = false,
     reason = null,
     biometric = true,
+    gesture = true,
     startgesture = false,
     ongesture = () => {},
     onpassword = () => {},
@@ -32,6 +35,11 @@
     /** Whether the gate's gesture is a biometric one; false is the device
         password fallback, and the button names it. */
     biometric?: boolean;
+    /** Whether this client can attempt a gesture at all. **False is a gate
+        that cannot answer** (no biometric enrolled, an unsigned build, a
+        failed probe): the dialog drops the button and opens on the password,
+        because a press that can only fail is not an offer. */
+    gesture?: boolean;
     /** Open the unlock already asking for the gesture: an enrolled client on
         a capable device has nothing to choose between. */
     startgesture?: boolean;
@@ -45,11 +53,12 @@
   let dialog: HTMLElement | undefined = $state();
   let closed = false;
   let returnTo: HTMLElement | null = null;
-  /** The password fields: always on for enrol, revealed by the link for unlock. */
+  /** The password fields: always on for enrol and for a gate that cannot
+      answer, revealed by the link for an unlock that can. */
   let revealedByLink = $state(false);
   // **A refusal reveals the password**: the reason names why the gesture did
   // not work, and the way forward is the field underneath it.
-  const revealed = $derived(variant === 'enrol' || revealedByLink || reason !== null);
+  const revealed = $derived(variant === 'enrol' || !gesture || revealedByLink || reason !== null);
   let password = $state('');
   let code = $state('');
   let passwordEl: HTMLInputElement | null = null;
@@ -58,9 +67,11 @@
   const body = $derived(
     variant === 'enrol'
       ? 'Enrolling binds a key to this device, and the vault must be open to read its material. Enter the Vaultwarden master password; add the 2FA code when your account asks for one.'
-      : 'The vault is locked. Release it with this device, or enter the Vaultwarden password.',
+      : gesture
+        ? 'The vault is locked. Release it with this device, or enter the Vaultwarden password.'
+        : 'This device has no gesture to offer, so enter the Vaultwarden password.',
   );
-  const gesture = $derived(biometric ? 'this device' : 'the device password');
+  const gestureName = $derived(biometric ? 'this device' : 'the device password');
 
   /** Submit the password path on Enter, the way the dock's unlock card does. */
   function onFieldKey(event: KeyboardEvent): void {
@@ -78,16 +89,16 @@
 
   onMount(() => {
     returnTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    if (variant === 'unlock') {
+    if (variant === 'unlock' && gesture) {
       dialog?.querySelector<HTMLElement>('button')?.focus();
       // **The straight path**: an enrolled client on a capable device asks
       // for the gesture at once rather than drawing a choice it already made.
       if (startgesture) queueMicrotask(ongesture);
     } else {
-      // **The enrol variant starts in the password box**, not on cancel: the
-      // page asked for a password. Queued after the mount so the capture
-      // above still reads the opener, and the keyboard returns to it on
-      // close.
+      // **The password forms start in the password box**, not on cancel: the
+      // page asked for a password, or the gate cannot offer a gesture.
+      // Queued after the mount so the capture above still reads the opener,
+      // and the keyboard returns to it on close.
       queueMicrotask(() => passwordEl?.focus());
     }
 
@@ -137,9 +148,9 @@
   >
     <h2 class="t" id="vault-unlock-title">{title}</h2>
     <p class="s">{body}</p>
-    {#if variant === 'unlock'}
+    {#if variant === 'unlock' && gesture}
       <button type="button" class="settings-btn go" disabled={busy} onclick={ongesture}>
-        {busy ? `waiting for ${gesture}...` : `Unlock with ${gesture}`}
+        {busy ? `waiting for ${gestureName}...` : `Unlock with ${gestureName}`}
       </button>
       {#if !revealed}
         <div class="reveal">

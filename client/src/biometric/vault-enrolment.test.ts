@@ -456,6 +456,40 @@ describe('a rotation', () => {
   });
 
   /**
+   * **A refused gate store is a failed enrolment, and the core is never
+   * written.** The gate goes first, so a store that rejects must stop the
+   * enrol: a sealed blob registered against a key the gate never held would
+   * be a record no release could open. The reason is the gate's own words.
+   */
+  it('reports a refused gate store and writes nothing to the core', async () => {
+    gateStore.mockRejectedValue('the enrolment could not be written on this device');
+    const connection = aConnection((command) => {
+      const name = commandName(command);
+      if (name === 'vault_enrolment_material') return MATERIAL;
+      return true;
+    });
+    const answer = await enrolVault(connection);
+
+    expect(answer).toEqual({
+      outcome: 'failed',
+      reason: 'the enrolment could not be written on this device',
+    });
+    expect(
+      connection.calls.some((command) => commandName(command) === 'biometric_enrol'),
+      'the core never sees an enrolment the gate refused',
+    ).toBe(false);
+
+    const before = connection.calls.length;
+    watchVaultEnrolment(connection);
+    connection.listeners[0]?.({
+      kind: 'update',
+      update: { vault_rotated: { refresh_token: 'refresh-2' } },
+    });
+    await settled();
+    expect(connection.calls.slice(before), 'nothing is held to rewrite with').toHaveLength(0);
+  });
+
+  /**
    * **A revoked device is dropped from the rewrite path.** The enrolments
    * frame names the set the core holds; when this device's id is gone, the
    * material goes, so a rotation that follows has nothing to rewrite.

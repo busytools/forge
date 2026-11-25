@@ -128,9 +128,12 @@
         return;
       }
       openDialog('unlock');
-      dialogReason = biometricOf(device)
-        ? 'this client is not enrolled; enter the vault password or enrol it first'
-        : 'this device cannot use a gesture; enter the vault password';
+      dialogReason =
+        device.outcome === 'unavailable'
+          ? 'this device cannot use a gesture; enter the vault password'
+          : biometricOf(device)
+            ? 'this client is not enrolled; enter the vault password or enrol it first'
+            : 'this device cannot use a gesture; enter the vault password';
       return;
     }
     openDialog(action);
@@ -145,6 +148,13 @@
   /** Whether the gate's gesture is biometric, from a state that knows. */
   function biometricOf(gate: DeviceGate): boolean {
     return gate.outcome === 'ready' || gate.outcome === 'enrolled' ? gate.biometric : true;
+  }
+
+  /** Whether the gate can be asked for a gesture at all. **An unavailable
+   *  one cannot** - no biometric enrolled, a probe that failed, an unsigned
+   *  build - and the dialog opens on the password instead. */
+  function gestureOf(gate: DeviceGate): boolean {
+    return gate.outcome !== 'unavailable';
   }
 
   async function enrolDevice(): Promise<void> {
@@ -948,6 +958,7 @@
         busy={dialogBusy}
         reason={dialogReason}
         biometric={biometricOf(device)}
+        gesture={gestureOf(device)}
         startgesture={dialogGesture}
         ongesture={gestureUnlock}
         onpassword={submitVaultPassword}

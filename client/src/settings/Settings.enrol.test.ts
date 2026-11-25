@@ -294,7 +294,10 @@ describe('the vault press', () => {
 
   it('reveals the password under the reason when the gesture is refused', async () => {
     gate.readDeviceGate.mockResolvedValue({ outcome: 'enrolled', biometric: true });
-    localStorage.setItem('forge.biometric.enrolment.vault', LOCAL_ID);
+    // **This client's id comes from the mock, not the store**: `enrolmentIdIfMinted`
+    // is replaced above, so writing localStorage would leave the card reading
+    // "no row" and never reach the unlock press.
+    enrol.mine.id = LOCAL_ID;
     enrol.releaseVaultMaterial.mockResolvedValue({
       outcome: 'refused',
       reason: 'the gesture was cancelled',
@@ -384,6 +387,52 @@ describe('the vault press', () => {
     finish({ outcome: 'enrolled' });
     await settled();
     expect(document.body.textContent).toContain('enrolled here');
+  });
+
+  /**
+   * The contract's fallback: with no biometric enrolled the gate cannot
+   * answer, and the password must be one press away. Before this the card
+   * drew no press at all for that state, so the only door was a vault tool
+   * ask elsewhere in the app.
+   */
+  it('opens the password dialog when the gate cannot answer', async () => {
+    gate.readDeviceGate.mockResolvedValue({
+      outcome: 'unavailable',
+      reason: 'no biometric is enrolled on this device',
+    });
+    draw({ locked: true, idle_minutes: 15 });
+    await settled();
+
+    expect(document.body.textContent).toContain(
+      "cannot use this device's gesture: no biometric is enrolled on this device",
+    );
+    button('unlock')?.click();
+    await settled();
+
+    expect(document.body.textContent, 'the unlock dialog').toContain('unlock the vault');
+    expect(
+      document.body.textContent,
+      'the reason names the gate, not a missing enrolment',
+    ).toContain('this device cannot use a gesture; enter the vault password');
+    expect(button('Unlock with this device'), 'no gesture the gate cannot answer').toBeNull();
+    expect(
+      document.querySelector('input[type="password"]'),
+      'the password is already open',
+    ).not.toBeNull();
+
+    type('input[type="password"]', 'open sesame');
+    const submit = [
+      ...document.querySelectorAll<HTMLButtonElement>('.settings-dialog button'),
+    ].find((element) => element.textContent?.trim() === 'unlock');
+    submit?.click();
+    await settled();
+
+    expect(enrol.unlockVault).toHaveBeenCalledWith(connection, {
+      password: 'open sesame',
+      two_factor: '',
+    });
+    expect(enrol.releaseVaultMaterial, 'no gesture is attempted').not.toHaveBeenCalled();
+    expect(document.querySelector('.settings-dialog'), 'the dialog closed').toBeNull();
   });
 
   it('draws an unread home as unread, not as a vault that is absent', () => {

@@ -31,7 +31,7 @@ import javax.crypto.spec.GCMParameterSpec
  * **The purpose is the whole key.** One alias and one record per purpose, so
  * a second consumer is a new purpose string - no new code, no new key type -
  * and revocation drops that purpose's record and key, nothing else. A change
- * to the enrolled fingerprints invalidates the key, which is the platform's
+ * to the enrolled biometrics invalidates the key, which is the platform's
  * own invalidation: a per-use key is still returned by `getKey` and refuses
  * at `init`, so a release falls back to the password and a fresh enrolment
  * replaces the dead key.
@@ -47,6 +47,7 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
     private const val PREFERENCES = "forge.biometric"
     private const val TRANSFORMATION = "AES/GCM/NoPadding"
     private const val TAG_BITS = 128
+    private const val GCM_IV_BYTES = 12
     private const val RECORD_SEPARATOR = ":"
   }
 
@@ -72,17 +73,54 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
     background(invoke) {
       val hasRecord = preferences().contains(args.purpose)
       val hasKey = try {
-        keyFor(args.purpose, create = false) != null
-      } catch (invalidated: KeyPermanentlyInvalidatedException) {
-        // A key the OS invalidated after a fingerprint change is not one this
-        // device can release with, which is what the caller is asking.
-        false
+        // **A per-use key still comes back from `getKey` after a biometric
+        // change** and refuses only when a cipher uses it, so its usability
+        // is asked here rather than taken from `getKey` answering at all.
+        // The probe needs no gesture: the auth check lands at `doFinal`.
+        keyFor(args.purpose, create = false)?.let { usable(it) } ?: false
       } catch (unrecoverable: UnrecoverableKeyException) {
         false
+      } catch (transient: Exception) {
+        // **Only a genuine invalidation may mean not-enrolled.** A provider,
+        // auth or key-store error on a healthy key would otherwise draw "not
+        // enrolled" and revoke a working enrolment on every read. Report
+        // conservatively enrolled; release still falls back to the password
+        // if the key truly cannot be used. **A permanently broken keystore is
+        // the trade this makes:** the card stays enrolled and the revoke door
+        // is the only recovery, where the pre-PR path showed not-enrolled and
+        // offered the enrol press. Deliberate: a transient provider failure
+        // must not revoke a healthy enrolment on every read.
+        true
       }
-      invoke.resolve(JSObject().put("enrolled", hasRecord && hasKey))
+      invoke.resolve(
+        JSObject().put("enrolled", BiometricRecords.isEnrolled(hasRecord, hasKey))
+      )
     }
   }
+
+  /**
+   * Whether `key` can still release. `Cipher.init` is where a per-use key
+   * reports that the OS invalidated it after a biometric change, and it
+   * reports it without a prompt.
+   */
+  private fun usable(key: SecretKey): Boolean =
+    try {
+      Cipher.getInstance(TRANSFORMATION).init(
+        Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, ByteArray(GCM_IV_BYTES))
+      )
+      true
+    } catch (invalidated: KeyPermanentlyInvalidatedException) {
+      false
+    } catch (transient: Exception) {
+      // **Only a genuine invalidation may mean not-enrolled.** A provider,
+      // auth or key-store error on a healthy key is not proof the key is
+      // dead; the auth check lands at `doFinal`, and release falls back to
+      // the password if the key truly cannot be used. Report conservatively
+      // enrolled rather than revoke a working enrolment on a read error. A
+      // permanently broken keystore stays enrolled here too, so the revoke
+      // door is its only recovery; the same deliberate trade as `enrolled`.
+      true
+    }
 
   /**
    * Register one purpose's blob, replacing any blob already there.
@@ -93,39 +131,32 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
    * that writes the record is the authorised one (the per-use check lands at
    * `doFinal`, so `init` is expected to succeed).
    *
-   * **A key the OS invalidated is replaced here.** A fingerprint change
-   * invalidates a per-use key at use, not at `getKey`: the key comes back and
-   * `init` throws `KeyPermanentlyInvalidatedException`. Catching it, deleting
-   * the alias and generating again is what makes the card's "enrol again"
-   * true on this device.
+   * **A key the OS invalidated is replaced here, and the record it sealed
+   * goes first.** Both routes an invalidation reports on - `getKey`'s
+   * `UnrecoverableKeyException` and the per-use key's
+   * `KeyPermanentlyInvalidatedException` at `cipher.init` - land in one
+   * recovery that clears the record before minting the replacement. The
+   * prompt can be cancelled after either route, and a record left behind
+   * would answer `enrolled` true beside a key that never sealed it.
    */
   @Command
   fun store(invoke: Invoke) {
     val args = invoke.parseArgs(StoreArgs::class.java)
     background(invoke) {
-      var key = keyFor(args.purpose, create = true)
-        ?: throw IllegalStateException("the keystore refused to make a key")
-      var cipher = Cipher.getInstance(TRANSFORMATION)
+      val key = storeKey(args.purpose)
+      val cipher = Cipher.getInstance(TRANSFORMATION)
       try {
         cipher.init(Cipher.ENCRYPT_MODE, key)
-      } catch (invalidated: KeyPermanentlyInvalidatedException) {
-        deleteKey(args.purpose)
-        key = keyFor(args.purpose, create = true)
-          ?: throw IllegalStateException("the keystore refused to make a key")
-        cipher = Cipher.getInstance(TRANSFORMATION)
-        try {
-          cipher.init(Cipher.ENCRYPT_MODE, key)
-        } catch (unauthenticated: UserNotAuthenticatedException) {
-          // The auth bound is the intended state: the prompt below
-          // authorises this cipher.
-        }
       } catch (unauthenticated: UserNotAuthenticatedException) {
         // The auth bound is the intended state: the prompt below authorises
         // this cipher.
       }
       val host = activity as? androidx.fragment.app.FragmentActivity
       if (host == null) {
-        invoke.resolve(refused("this window cannot show the fingerprint prompt"))
+        // A prompt that never opened wrote nothing, so a resolved answer here
+        // would register an enrolment the gate never stored. Reject like the
+        // prompt-throw and commit-false paths.
+        invoke.reject("this window cannot show the biometric prompt")
         return@background
       }
       val prompt = BiometricPrompt(
@@ -136,9 +167,19 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
             try {
               val ready = result.cryptoObject?.cipher ?: cipher
               val ciphertext = ready.doFinal(Base64.getDecoder().decode(args.blob))
-              preferences().edit()
-                .putString(args.purpose, BiometricRecords.encode(ready.iv, ciphertext))
-                .commit()
+              // **The commit's answer is the enrolment's.** A resolved call
+              // is a record the caller can rely on; a failed write answering
+              // success would register sealed material against a key the gate
+              // does not hold.
+              val wrote =
+                preferences()
+                  .edit()
+                  .putString(args.purpose, BiometricRecords.encode(ready.iv, ciphertext))
+                  .commit()
+              if (!wrote) {
+                invoke.reject("the enrolment could not be written on this device")
+                return
+              }
               invoke.resolve()
             } catch (err: Exception) {
               invoke.reject(err.message ?: err.toString())
@@ -157,14 +198,16 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
         try {
           prompt.authenticate(promptInfo(), BiometricPrompt.CryptoObject(cipher))
         } catch (err: Exception) {
-          invoke.resolve(refused(err.message ?: err.toString()))
+          // The same rule as a refused prompt: a prompt that never opened
+          // wrote nothing, so it must not answer as a stored enrolment.
+          invoke.reject(err.message ?: err.toString())
         }
       }
     }
   }
 
   /**
-   * Release one purpose's blob, asking for the fingerprint first.
+   * Release one purpose's blob, asking for the biometric first.
    *
    * The cipher is initialised before the prompt and completed by it: the key
    * refuses a decrypt until the biometric has been verified, and the prompt's
@@ -186,14 +229,10 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
     val key = try {
       keyFor(args.purpose, create = false)
     } catch (invalidated: KeyPermanentlyInvalidatedException) {
-      invoke.resolve(refused(
-        "the device's fingerprints changed, so the stored unlock was invalidated; use the password and enrol again"
-      ))
+      invoke.resolve(refused(BiometricRecords.invalidatedRelease()))
       return
     } catch (unrecoverable: UnrecoverableKeyException) {
-      invoke.resolve(refused(
-        "the stored unlock cannot be used on this device; use the password and enrol again"
-      ))
+      invoke.resolve(refused(BiometricRecords.unusableRelease()))
       return
     } ?: run {
       invoke.resolve(notEnrolled())
@@ -204,20 +243,16 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
         init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, parts.first))
       }
     } catch (invalidated: KeyPermanentlyInvalidatedException) {
-      invoke.resolve(refused(
-        "the device's fingerprints changed, so the stored unlock was invalidated; use the password and enrol again"
-      ))
+      invoke.resolve(refused(BiometricRecords.invalidatedRelease()))
       return
     } catch (unusable: UnrecoverableKeyException) {
-      invoke.resolve(refused(
-        "the stored unlock cannot be used on this device; use the password and enrol again"
-      ))
+      invoke.resolve(refused(BiometricRecords.unusableRelease()))
       return
     }
 
     val host = activity as? androidx.fragment.app.FragmentActivity
     if (host == null) {
-      invoke.resolve(refused("this window cannot show the fingerprint prompt"))
+      invoke.resolve(refused("this window cannot show the biometric prompt"))
       return
     }
     val prompt = BiometricPrompt(
@@ -298,15 +333,11 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
   private fun keyFor(purpose: String, create: Boolean): SecretKey? {
     val alias = BiometricRecords.alias(purpose)
     val store = keystore()
-    val existing = try {
-      store.getKey(alias, null) as? SecretKey
-    } catch (invalidated: UnrecoverableKeyException) {
-      // **A fingerprint change invalidates the key and `getKey` reports it
-      // this way.** A release cannot use it; a fresh enrolment replaces it
-      // rather than failing, which is what makes "enrol again" true.
-      if (!create) throw invalidated
-      null
-    }
+    // **`getKey` can report an invalidation as `UnrecoverableKeyException`,
+    // and it propagates**: a caller that replaces the key must clear the
+    // record it sealed first, which is `storeKey`'s recovery. A release and
+    // the `enrolled` probe catch it themselves.
+    val existing = store.getKey(alias, null) as? SecretKey
     existing?.let { return it }
     if (!create) return null
     try {
@@ -330,6 +361,47 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
     generator.init(builder.build())
     return generator.generateKey()
   }
+
+  /**
+   * The key a store encrypts under, recovering when the OS reports the old
+   * one invalid. **Both invalidation routes land in one recovery**: `getKey`
+   * reports it as `UnrecoverableKeyException` on the devices that do, and a
+   * per-use key that comes back from `getKey` reports it at `cipher.init` as
+   * `KeyPermanentlyInvalidatedException`. The record is cleared before any
+   * replacement is minted, so a prompt cancelled after either route leaves
+   * `enrolled` false rather than a record sealed under a dead key.
+   */
+  private fun storeKey(purpose: String): SecretKey =
+    BiometricRecords.keyForStore(
+      read = { keyFor(purpose, create = false) },
+      probe = { existing ->
+        try {
+          Cipher.getInstance(TRANSFORMATION).init(Cipher.ENCRYPT_MODE, existing)
+          true
+        } catch (invalidated: KeyPermanentlyInvalidatedException) {
+          false
+        } catch (unauthenticated: UserNotAuthenticatedException) {
+          // The auth bound is the intended state: the prompt authorises it.
+          true
+        }
+      },
+      mint = { mintKey(purpose) },
+      recover = { recoverInvalidated(purpose) },
+    )
+
+  /** Clear the dead key's record, then mint its replacement. */
+  private fun recoverInvalidated(purpose: String): SecretKey =
+    BiometricRecords.recoverInvalidatedKey(
+      removeRecord = { preferences().edit().remove(purpose).commit() },
+      mint = {
+        deleteKey(purpose)
+        mintKey(purpose)
+      },
+    )
+
+  private fun mintKey(purpose: String): SecretKey =
+    keyFor(purpose, create = true)
+      ?: throw IllegalStateException("the keystore refused to make a key")
 
   private fun notEnrolled(): JSObject = JSObject().put("outcome", "not_enrolled")
 
@@ -384,19 +456,81 @@ internal object BiometricRecords {
     }
   }
 
-  /** The platform's own words for a failed availability check. */
-  fun availabilityReason(status: Int): String = when (status) {
-    BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE -> "this device has no fingerprint sensor"
-    BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE ->
-      "the fingerprint sensor is not available right now"
-    BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> "no fingerprint is enrolled on this device"
-    BiometricManager.BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED ->
-      "this device's security patch is too old for fingerprint keys"
-    BiometricManager.BIOMETRIC_ERROR_UNSUPPORTED ->
-      "this device does not support fingerprint keys"
-    BiometricManager.BIOMETRIC_STATUS_UNKNOWN -> "the fingerprint sensor's state is unknown"
-    else -> "the fingerprint sensor answered $status"
+  /**
+   * Whether a purpose is enrolled: a record exists and its key can still
+   * release. **A record without a usable key is the stranded state a
+   * re-enrol must never leave behind**, so both halves are asked.
+   */
+  fun isEnrolled(hasRecord: Boolean, hasUsableKey: Boolean): Boolean =
+    hasRecord && hasUsableKey
+
+  /**
+   * The key a store encrypts under, decided from a read, a usability probe,
+   * a mint and a recovery. **Both invalidation routes land in `recover`**:
+   * `read` throwing `UnrecoverableKeyException` is the route where `getKey`
+   * reports it, and `probe` answering false is the per-use key that came
+   * back from `getKey` and reported it at `cipher.init`; neither route can
+   * reach `mint` with the record still in place. A first enrolment (`read`
+   * answering null) mints with no recovery, because there is no record for
+   * an old key to have sealed.
+   */
+  fun <K> keyForStore(
+    read: () -> K?,
+    probe: (K) -> Boolean,
+    mint: () -> K,
+    recover: () -> K,
+  ): K {
+    // **Only the read can report the `getKey` route**, so only it is caught
+    // here; a mint or a recovery that throws is the caller's failure.
+    val existing = try {
+      read()
+    } catch (invalidated: UnrecoverableKeyException) {
+      return recover()
+    }
+    return when {
+      existing == null -> mint()
+      probe(existing) -> existing
+      else -> recover()
+    }
   }
+
+  /**
+   * The order an invalidated-key re-enrol takes: drop the record the dead key
+   * sealed, then mint its replacement. **The record goes first** because the
+   * mint is followed by a prompt the person can cancel, and a record left
+   * behind answers `enrolled` true beside a key that never sealed it. A clear
+   * that fails aborts, so nothing is minted over a record still in place.
+   */
+  fun <K> recoverInvalidatedKey(removeRecord: () -> Boolean, mint: () -> K): K {
+    if (!removeRecord()) {
+      throw IllegalStateException("the invalidated enrolment could not be removed on this device")
+    }
+    return mint()
+  }
+
+  /** The platform's own words for a failed availability check. **Biometric,
+   *  not fingerprint**: `BIOMETRIC_STRONG` includes face unlock on the
+   *  devices that offer it, and these words are drawn in the card. */
+  fun availabilityReason(status: Int): String = when (status) {
+    BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE -> "this device has no biometric sensor"
+    BiometricManager.BIOMETRIC_ERROR_HW_UNAVAILABLE ->
+      "the biometric sensor is not available right now"
+    BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED -> "no biometric is enrolled on this device"
+    BiometricManager.BIOMETRIC_ERROR_SECURITY_UPDATE_REQUIRED ->
+      "this device's security patch is too old for biometric keys"
+    BiometricManager.BIOMETRIC_ERROR_UNSUPPORTED ->
+      "this device does not support biometric keys"
+    BiometricManager.BIOMETRIC_STATUS_UNKNOWN -> "the biometric sensor's state is unknown"
+    else -> "the biometric sensor answered $status"
+  }
+
+  /** The refusal a release gives when the key itself was invalidated. */
+  fun invalidatedRelease(): String =
+    "the device's biometrics changed, so the stored unlock was invalidated; use the password and enrol again"
+
+  /** The refusal a release gives when the key exists but cannot be used. */
+  fun unusableRelease(): String =
+    "the stored unlock cannot be used on this device; use the password and enrol again"
 
   /** The platform's own words for a prompt that did not succeed. */
   fun promptError(code: Int, message: CharSequence): String = when (code) {
@@ -405,7 +539,7 @@ internal object BiometricRecords {
     BiometricPrompt.ERROR_CANCELED -> "the gesture was cancelled"
     BiometricPrompt.ERROR_LOCKOUT,
     BiometricPrompt.ERROR_LOCKOUT_PERMANENT ->
-      "the fingerprint sensor is locked out; use the password"
-    else -> message.toString().ifEmpty { "the fingerprint sensor answered $code" }
+      "the biometric sensor is locked out; use the password"
+    else -> message.toString().ifEmpty { "the biometric sensor answered $code" }
   }
 }

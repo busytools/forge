@@ -24,6 +24,7 @@ function draw(props: {
   busy?: boolean;
   reason?: string | null;
   biometric?: boolean;
+  gesture?: boolean;
   fallback?: string | null;
   ongesture?: () => void;
   onpassword?: (password: string, code: string) => void;
@@ -119,6 +120,34 @@ describe('the vault unlock dialog', () => {
     });
 
     expect(button('Unlock with the device password')).toBeDefined();
+  });
+
+  /**
+   * **The third shape: a gate that cannot answer.** No gesture button is
+   * drawn at all, the body says why, and the dialog opens on the password
+   * rather than offering a press that can only fail.
+   */
+  it('drops the gesture and opens on the password when the gate cannot answer', async () => {
+    draw({
+      variant: 'unlock',
+      gesture: false,
+      ongesture: vi.fn(),
+      onpassword: vi.fn(),
+      oncancel: vi.fn(),
+    });
+    await Promise.resolve();
+
+    expect(document.body.textContent).toContain(
+      'This device has no gesture to offer, so enter the Vaultwarden password.',
+    );
+    expect(
+      [...document.querySelectorAll('button')].some((element) =>
+        (element.textContent ?? '').includes('Unlock with'),
+      ),
+      'no gesture button is drawn',
+    ).toBe(false);
+    expect(document.querySelector('input[type="password"]')).not.toBeNull();
+    expect(document.activeElement?.getAttribute('type')).toBe('password');
   });
 
   /**
