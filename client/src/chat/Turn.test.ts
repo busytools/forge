@@ -397,13 +397,21 @@ describe('one turn, as the page draws it', () => {
       ]),
       result('q1', 'answered', { answers: { 'Which one?': 'a' } }),
       // A notice is a unit of its own: a static row in the run's inset, but
-      // not a work run, so the count below must not see it as one.
+      // not a work run, so the count below must not see it as one. The second
+      // carries a raw frame, so it draws as the disclosure shape - both shapes
+      // must stay out of a leaves list.
       {
         type: 'system',
         uuid: 'n1',
         subtype: 'forge_notice',
         severity: 'info',
         text: 'Goal cleared',
+      },
+      {
+        type: 'system',
+        uuid: 'n2',
+        subtype: 'notification',
+        text: 'the nightly job holds the lock',
       },
     );
 
@@ -415,6 +423,11 @@ describe('one turn, as the page draws it', () => {
       [];
     expect(body, 'the notice draws straight into its unit').toMatch(
       /<div class="unit"[^>]*>(?:<!--[^>]*-->)*<div class="leaf nrow"/,
+    );
+    // The control for the negative below: the second notice opens, so the
+    // disclosure shape is in the body for it to reject, not merely absent.
+    expect(body, 'the provisional notice draws as a disclosure').toContain(
+      '<details class="leaf nrow"',
     );
     expect(body, 'and no leaves block seats it').not.toMatch(
       /<div class="leaves">(?:<!--[^>]*-->)*(?:<details class="leaf nrow"|<div class="leaf nrow")/,
