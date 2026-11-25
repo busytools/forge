@@ -92,4 +92,32 @@ class BiometricRecordsTest {
       BiometricRecords.promptError(BiometricPrompt.ERROR_LOCKOUT, "Too many attempts"),
     )
   }
+
+  @Test
+  fun anUnknownPromptErrorCarriesThePlatformMessage() {
+    // **The default branch is pinned too.** A branch left unpinned reverts
+    // to "fingerprint" green in a later edit, and the card quotes it.
+    assertEquals(
+      "the biometric sensor answered 42",
+      BiometricRecords.promptError(42, "the biometric sensor answered 42"),
+    )
+    assertEquals(
+      "the biometric sensor answered 42",
+      BiometricRecords.promptError(42, ""),
+    )
+  }
+
+  @Test
+  fun aReleaseRefusalNamesTheInvalidation() {
+    // The two refusals `release` draws when the key is dead or unusable.
+    // Pinned here so a reword cannot land without the card's copy moving.
+    assertEquals(
+      "the device's biometrics changed, so the stored unlock was invalidated; use the password and enrol again",
+      BiometricRecords.invalidatedRelease(),
+    )
+    assertEquals(
+      "the stored unlock cannot be used on this device; use the password and enrol again",
+      BiometricRecords.unusableRelease(),
+    )
+  }
 }

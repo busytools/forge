@@ -217,6 +217,7 @@ describe('the merged vault card', () => {
     expect(button('enrol this client')).toBeNull();
 
     void unmount(app);
+    app = null;
     document.body.innerHTML = '';
     app = mount(VaultCard, {
       target: document.body,

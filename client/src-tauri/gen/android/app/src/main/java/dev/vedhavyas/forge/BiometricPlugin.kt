@@ -85,7 +85,11 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
         // auth or key-store error on a healthy key would otherwise draw "not
         // enrolled" and revoke a working enrolment on every read. Report
         // conservatively enrolled; release still falls back to the password
-        // if the key truly cannot be used.
+        // if the key truly cannot be used. **A permanently broken keystore is
+        // the trade this makes:** the card stays enrolled and the revoke door
+        // is the only recovery, where the pre-PR path showed not-enrolled and
+        // offered the enrol press. Deliberate: a transient provider failure
+        // must not revoke a healthy enrolment on every read.
         true
       }
       invoke.resolve(JSObject().put("enrolled", hasRecord && hasKey))
@@ -110,7 +114,9 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
       // auth or key-store error on a healthy key is not proof the key is
       // dead; the auth check lands at `doFinal`, and release falls back to
       // the password if the key truly cannot be used. Report conservatively
-      // enrolled rather than revoke a working enrolment on a read error.
+      // enrolled rather than revoke a working enrolment on a read error. A
+      // permanently broken keystore stays enrolled here too, so the revoke
+      // door is its only recovery; the same deliberate trade as `enrolled`.
       true
     }
 
@@ -139,6 +145,19 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
       try {
         cipher.init(Cipher.ENCRYPT_MODE, key)
       } catch (invalidated: KeyPermanentlyInvalidatedException) {
+        // **The stale record goes with the key it was sealed under.** The old
+        // record is undecryptable from this moment, so leaving it behind means
+        // a cancelled or failed re-enrol strands the client: `enrolled` reads
+        // true off the record and the new key, the card offers no enrol door,
+        // and every unlock refuses at `doFinal`. Removing the record first
+        // means the abort leaves `enrolled` false and the card offers the
+        // enrol press again. A key removal that fails is harmless once the
+        // record is gone; a record removal that fails aborts the re-enrol.
+        val removed = preferences().edit().remove(args.purpose).commit()
+        if (!removed) {
+          invoke.reject("the invalidated enrolment could not be removed on this device")
+          return@background
+        }
         deleteKey(args.purpose)
         key = keyFor(args.purpose, create = true)
           ?: throw IllegalStateException("the keystore refused to make a key")
@@ -231,14 +250,10 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
     val key = try {
       keyFor(args.purpose, create = false)
     } catch (invalidated: KeyPermanentlyInvalidatedException) {
-      invoke.resolve(refused(
-        "the device's biometrics changed, so the stored unlock was invalidated; use the password and enrol again"
-      ))
+      invoke.resolve(refused(BiometricRecords.invalidatedRelease()))
       return
     } catch (unrecoverable: UnrecoverableKeyException) {
-      invoke.resolve(refused(
-        "the stored unlock cannot be used on this device; use the password and enrol again"
-      ))
+      invoke.resolve(refused(BiometricRecords.unusableRelease()))
       return
     } ?: run {
       invoke.resolve(notEnrolled())
@@ -249,14 +264,10 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
         init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, parts.first))
       }
     } catch (invalidated: KeyPermanentlyInvalidatedException) {
-      invoke.resolve(refused(
-        "the device's biometrics changed, so the stored unlock was invalidated; use the password and enrol again"
-      ))
+      invoke.resolve(refused(BiometricRecords.invalidatedRelease()))
       return
     } catch (unusable: UnrecoverableKeyException) {
-      invoke.resolve(refused(
-        "the stored unlock cannot be used on this device; use the password and enrol again"
-      ))
+      invoke.resolve(refused(BiometricRecords.unusableRelease()))
       return
     }
 
@@ -444,6 +455,14 @@ internal object BiometricRecords {
     BiometricManager.BIOMETRIC_STATUS_UNKNOWN -> "the biometric sensor's state is unknown"
     else -> "the biometric sensor answered $status"
   }
+
+  /** The refusal a release gives when the key itself was invalidated. */
+  fun invalidatedRelease(): String =
+    "the device's biometrics changed, so the stored unlock was invalidated; use the password and enrol again"
+
+  /** The refusal a release gives when the key exists but cannot be used. */
+  fun unusableRelease(): String =
+    "the stored unlock cannot be used on this device; use the password and enrol again"
 
   /** The platform's own words for a prompt that did not succeed. */
   fun promptError(code: Int, message: CharSequence): String = when (code) {
