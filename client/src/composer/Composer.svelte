@@ -10,6 +10,7 @@
   import { clearControlRefusal, closeTerminal, handOff } from '../terminal/surface.svelte';
   import Icon from '../components/Icon.svelte';
   import { slotOf, subjectKey } from '../protocol';
+  import { NOT_SENT } from '../refusals';
   import { variantOf } from '../session/apply';
   import { report } from '../socket';
   import { mintPromptId } from '../wire/ids';
@@ -517,7 +518,8 @@
   // landing memory's own answer.
   const notice = $derived(
     owns
-      ? (box.dictateLine ??
+      ? (box.sendLine ??
+          box.dictateLine ??
           // **The words this DRAFT took, not the arm.** A row that read the
           // arm appeared on the bare press - nothing had landed, the record
           // still carried the previous notice - and left a 21px row growing
@@ -1266,10 +1268,17 @@
     // **The press's own number, which a refusal echoes back** (#1583): it is
     // what tells this send from another seat's when the reason arrives.
     const dispatch = echoes.mint();
+    // A new press retires the line the last failed one left.
+    box.sendLine = null;
+    let crossing: Promise<unknown>;
     try {
       // A prompt is fire-and-forget: its outcome rides the subscription rather
-      // than a reply, so there is nothing here to await.
-      void connection.dispatch(
+      // than a reply. **The words leave the box only once the frame has
+      // crossed** (#3072): a socket that is not open throws here, and a
+      // transport whose write is refused rejects below - and either way the
+      // send never happened, so the box keeps the words and says why rather
+      // than clearing as though they went.
+      crossing = connection.dispatch(
         {
           prompt_under: {
             key: slot,
@@ -1283,37 +1292,50 @@
         slot,
       );
     } catch {
-      // A closed socket throws rather than answering, and it is the one
-      // channel left: the words stay in the box rather than going with a
-      // command that never left the browser.
+      // A closed socket throws rather than answering: the words stay and the
+      // box says why.
+      box.sendLine = { tone: 'bad', text: NOT_SENT };
       return;
     }
-    const [first = ''] = text.split(/\s+/);
-    // **A prompt the core answers itself draws no row** (#2816): a forge
-    // command, a misuse or a slash name this session cannot run never reaches
-    // a model, so no turn carries its words and the echo would stand as a row
-    // nothing clears. The core's answer is the feedback.
-    const advertised = advisoriesFrom(record.slash_commands).map((row) => row.name);
-    const answered = coreAnswers(first, advertised);
-    // **And it never starts a turn either**, so the blocked "Running <command>"
-    // line has nothing to wait for: no record update follows to clear it, and
-    // the field would stay away with it. The id is kept so a refusal of this
-    // press lands on this seat's box and no other.
-    box.answeredDispatch = answered ? dispatch : null;
-    if (first.startsWith('/') && !answered) box.sent = first;
-    if (!answered) {
-      // What the seat was doing when the words left: a send that starts a turn
-      // is taken by it, one sent into a turn already running is not (it is
-      // settled by the conversation carrying the words, or by a refusal).
-      //
-      // **Read from the connection's store rather than from the record this box
-      // draws.** The record is written once per painted frame, so a turn-start
-      // frame can be applied and not yet drawn - and a send posted as
-      // not-running is taken by the very publish that carries the turn, where a
-      // refusal can no longer reach it.
-      echoes.post(boxKey(slot), text, runningAt(connection, slot, running), uuid, dispatch);
-    }
-    box.draft = '';
+    void crossing.then(
+      () => {
+        const [first = ''] = text.split(/\s+/);
+        // **A prompt the core answers itself draws no row** (#2816): a forge
+        // command, a misuse or a slash name this session cannot run never
+        // reaches a model, so no turn carries its words and the echo would
+        // stand as a row nothing clears. The core's answer is the feedback.
+        const advertised = advisoriesFrom(record.slash_commands).map((row) => row.name);
+        const answered = coreAnswers(first, advertised);
+        // **And it never starts a turn either**, so the blocked "Running
+        // <command>" line has nothing to wait for: no record update follows to
+        // clear it, and the field would stay away with it. The id is kept so a
+        // refusal of this press lands on this seat's box and no other.
+        box.answeredDispatch = answered ? dispatch : null;
+        if (first.startsWith('/') && !answered) box.sent = first;
+        if (!answered) {
+          // What the seat was doing when the words left: a send that starts a
+          // turn is taken by it, one sent into a turn already running is not
+          // (it is settled by the conversation carrying the words, or by a
+          // refusal).
+          //
+          // **Read from the connection's store rather than from the record this
+          // box draws.** The record is written once per painted frame, so a
+          // turn-start frame can be applied and not yet drawn - and a send
+          // posted as not-running is taken by the very publish that carries the
+          // turn, where a refusal can no longer reach it.
+          echoes.post(boxKey(slot), text, runningAt(connection, slot, running), uuid, dispatch);
+        }
+        // What the reader typed while the frame crossed is not this send's to
+        // take: the box empties only while it still holds exactly the words
+        // that left it.
+        if (box.draft.trim() === text) box.draft = '';
+      },
+      () => {
+        // The frame did not cross, so this send did not happen: the words stay
+        // where they were typed and the box says why.
+        box.sendLine = { tone: 'bad', text: NOT_SENT };
+      },
+    );
   }
 
   /**
@@ -1374,6 +1396,11 @@
 
   /** The reader's own typing is what dismisses a notice row. */
   function oninput(): void {
+    // **A failed send's line goes with the words it was about.** The reader
+    // types over the words that never left, so the line would otherwise stand
+    // over a draft it no longer describes - and a later failure with the same
+    // words must be free to draw again.
+    box.sendLine = null;
     box.dismissed = notice?.text ?? null;
   }
 

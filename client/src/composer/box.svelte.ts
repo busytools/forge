@@ -52,6 +52,17 @@ export class Box {
   answeredKey = $state<string | null>(null);
   refusal = $state<string | null>(null);
   /**
+   * Why the last send from this box never left: the socket was not open, or
+   * the transport refused the write.
+   *
+   * Held per seat like the words themselves, because the failure belongs to
+   * the box it happened in - a line for one seat's lost send must not stand
+   * over another seat's draft. The reader's next keystroke takes it away: the
+   * words are still in the box, so once they type over them the line is about
+   * a send they have already moved past.
+   */
+  sendLine = $state<{ tone: string; text: string } | null>(null);
+  /**
    * Why the draft this box was drawing left the core without this reader
    * answering, drawn where the dock stood.
    *
