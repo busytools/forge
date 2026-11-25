@@ -92,7 +92,9 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
         // must not revoke a healthy enrolment on every read.
         true
       }
-      invoke.resolve(JSObject().put("enrolled", hasRecord && hasKey))
+      invoke.resolve(
+        JSObject().put("enrolled", BiometricRecords.isEnrolled(hasRecord, hasKey))
+      )
     }
   }
 
@@ -129,45 +131,22 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
    * that writes the record is the authorised one (the per-use check lands at
    * `doFinal`, so `init` is expected to succeed).
    *
-   * **A key the OS invalidated is replaced here.** A biometric change
-   * invalidates a per-use key at use, not at `getKey`: the key comes back and
-   * `init` throws `KeyPermanentlyInvalidatedException`. Catching it, deleting
-   * the alias and generating again is what makes the card's "enrol again"
-   * true on this device.
+   * **A key the OS invalidated is replaced here, and the record it sealed
+   * goes first.** Both routes an invalidation reports on - `getKey`'s
+   * `UnrecoverableKeyException` and the per-use key's
+   * `KeyPermanentlyInvalidatedException` at `cipher.init` - land in one
+   * recovery that clears the record before minting the replacement. The
+   * prompt can be cancelled after either route, and a record left behind
+   * would answer `enrolled` true beside a key that never sealed it.
    */
   @Command
   fun store(invoke: Invoke) {
     val args = invoke.parseArgs(StoreArgs::class.java)
     background(invoke) {
-      var key = keyFor(args.purpose, create = true)
-        ?: throw IllegalStateException("the keystore refused to make a key")
-      var cipher = Cipher.getInstance(TRANSFORMATION)
+      val key = storeKey(args.purpose)
+      val cipher = Cipher.getInstance(TRANSFORMATION)
       try {
         cipher.init(Cipher.ENCRYPT_MODE, key)
-      } catch (invalidated: KeyPermanentlyInvalidatedException) {
-        // **The stale record goes with the key it was sealed under.** The old
-        // record is undecryptable from this moment, so leaving it behind means
-        // a cancelled or failed re-enrol strands the client: `enrolled` reads
-        // true off the record and the new key, the card offers no enrol door,
-        // and every unlock refuses at `doFinal`. Removing the record first
-        // means the abort leaves `enrolled` false and the card offers the
-        // enrol press again. A key removal that fails is harmless once the
-        // record is gone; a record removal that fails aborts the re-enrol.
-        val removed = preferences().edit().remove(args.purpose).commit()
-        if (!removed) {
-          invoke.reject("the invalidated enrolment could not be removed on this device")
-          return@background
-        }
-        deleteKey(args.purpose)
-        key = keyFor(args.purpose, create = true)
-          ?: throw IllegalStateException("the keystore refused to make a key")
-        cipher = Cipher.getInstance(TRANSFORMATION)
-        try {
-          cipher.init(Cipher.ENCRYPT_MODE, key)
-        } catch (unauthenticated: UserNotAuthenticatedException) {
-          // The auth bound is the intended state: the prompt below
-          // authorises this cipher.
-        }
       } catch (unauthenticated: UserNotAuthenticatedException) {
         // The auth bound is the intended state: the prompt below authorises
         // this cipher.
@@ -354,15 +333,11 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
   private fun keyFor(purpose: String, create: Boolean): SecretKey? {
     val alias = BiometricRecords.alias(purpose)
     val store = keystore()
-    val existing = try {
-      store.getKey(alias, null) as? SecretKey
-    } catch (invalidated: UnrecoverableKeyException) {
-      // **A biometric change invalidates the key and `getKey` reports it
-      // this way.** A release cannot use it; a fresh enrolment replaces it
-      // rather than failing, which is what makes "enrol again" true.
-      if (!create) throw invalidated
-      null
-    }
+    // **`getKey` can report an invalidation as `UnrecoverableKeyException`,
+    // and it propagates**: a caller that replaces the key must clear the
+    // record it sealed first, which is `storeKey`'s recovery. A release and
+    // the `enrolled` probe catch it themselves.
+    val existing = store.getKey(alias, null) as? SecretKey
     existing?.let { return it }
     if (!create) return null
     try {
@@ -386,6 +361,47 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
     generator.init(builder.build())
     return generator.generateKey()
   }
+
+  /**
+   * The key a store encrypts under, recovering when the OS reports the old
+   * one invalid. **Both invalidation routes land in one recovery**: `getKey`
+   * reports it as `UnrecoverableKeyException` on the devices that do, and a
+   * per-use key that comes back from `getKey` reports it at `cipher.init` as
+   * `KeyPermanentlyInvalidatedException`. The record is cleared before any
+   * replacement is minted, so a prompt cancelled after either route leaves
+   * `enrolled` false rather than a record sealed under a dead key.
+   */
+  private fun storeKey(purpose: String): SecretKey =
+    BiometricRecords.keyForStore(
+      read = { keyFor(purpose, create = false) },
+      probe = { existing ->
+        try {
+          Cipher.getInstance(TRANSFORMATION).init(Cipher.ENCRYPT_MODE, existing)
+          true
+        } catch (invalidated: KeyPermanentlyInvalidatedException) {
+          false
+        } catch (unauthenticated: UserNotAuthenticatedException) {
+          // The auth bound is the intended state: the prompt authorises it.
+          true
+        }
+      },
+      mint = { mintKey(purpose) },
+      recover = { recoverInvalidated(purpose) },
+    )
+
+  /** Clear the dead key's record, then mint its replacement. */
+  private fun recoverInvalidated(purpose: String): SecretKey =
+    BiometricRecords.recoverInvalidatedKey(
+      removeRecord = { preferences().edit().remove(purpose).commit() },
+      mint = {
+        deleteKey(purpose)
+        mintKey(purpose)
+      },
+    )
+
+  private fun mintKey(purpose: String): SecretKey =
+    keyFor(purpose, create = true)
+      ?: throw IllegalStateException("the keystore refused to make a key")
 
   private fun notEnrolled(): JSObject = JSObject().put("outcome", "not_enrolled")
 
@@ -438,6 +454,58 @@ internal object BiometricRecords {
     } catch (err: IllegalArgumentException) {
       null
     }
+  }
+
+  /**
+   * Whether a purpose is enrolled: a record exists and its key can still
+   * release. **A record without a usable key is the stranded state a
+   * re-enrol must never leave behind**, so both halves are asked.
+   */
+  fun isEnrolled(hasRecord: Boolean, hasUsableKey: Boolean): Boolean =
+    hasRecord && hasUsableKey
+
+  /**
+   * The key a store encrypts under, decided from a read, a usability probe,
+   * a mint and a recovery. **Both invalidation routes land in `recover`**:
+   * `read` throwing `UnrecoverableKeyException` is the route where `getKey`
+   * reports it, and `probe` answering false is the per-use key that came
+   * back from `getKey` and reported it at `cipher.init`; neither route can
+   * reach `mint` with the record still in place. A first enrolment (`read`
+   * answering null) mints with no recovery, because there is no record for
+   * an old key to have sealed.
+   */
+  fun <K> keyForStore(
+    read: () -> K?,
+    probe: (K) -> Boolean,
+    mint: () -> K,
+    recover: () -> K,
+  ): K {
+    // **Only the read can report the `getKey` route**, so only it is caught
+    // here; a mint or a recovery that throws is the caller's failure.
+    val existing = try {
+      read()
+    } catch (invalidated: UnrecoverableKeyException) {
+      return recover()
+    }
+    return when {
+      existing == null -> mint()
+      probe(existing) -> existing
+      else -> recover()
+    }
+  }
+
+  /**
+   * The order an invalidated-key re-enrol takes: drop the record the dead key
+   * sealed, then mint its replacement. **The record goes first** because the
+   * mint is followed by a prompt the person can cancel, and a record left
+   * behind answers `enrolled` true beside a key that never sealed it. A clear
+   * that fails aborts, so nothing is minted over a record still in place.
+   */
+  fun <K> recoverInvalidatedKey(removeRecord: () -> Boolean, mint: () -> K): K {
+    if (!removeRecord()) {
+      throw IllegalStateException("the invalidated enrolment could not be removed on this device")
+    }
+    return mint()
   }
 
   /** The platform's own words for a failed availability check. **Biometric,

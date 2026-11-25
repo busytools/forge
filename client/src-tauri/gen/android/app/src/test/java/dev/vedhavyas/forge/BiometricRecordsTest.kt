@@ -4,9 +4,14 @@ import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.security.UnrecoverableKeyException
+import javax.crypto.SecretKey
+import javax.crypto.spec.SecretKeySpec
 
 /**
  * The phone gate's pure half: the stored record's codec and the words a
@@ -106,6 +111,95 @@ class BiometricRecordsTest {
       BiometricRecords.promptError(42, ""),
     )
   }
+
+  /**
+   * The two routes an invalidated key reports on, driven through the same
+   * decision a store makes. **A route that skipped recovery would mint over
+   * the record**, which is the stranded state the device rung catches.
+   */
+  @Test
+  fun theGetKeyRouteRecoversInsteadOfMintingOverTheRecord() {
+    var recovered = false
+    var minted = false
+    BiometricRecords.keyForStore<SecretKey>(
+      read = { throw UnrecoverableKeyException("the key was invalidated") },
+      probe = { true },
+      mint = { minted = true; aKey() },
+      recover = { recovered = true; aKey() },
+    )
+    assertTrue("the getKey route must recover", recovered)
+    assertFalse("the getKey route must not mint over the record", minted)
+  }
+
+  @Test
+  fun theCipherRouteRecoversInsteadOfMintingOverTheRecord() {
+    var recovered = false
+    var minted = false
+    BiometricRecords.keyForStore(
+      read = { aKey() },
+      probe = { false },
+      mint = { minted = true; aKey() },
+      recover = { recovered = true; aKey() },
+    )
+    assertTrue("the cipher route must recover", recovered)
+    assertFalse("the cipher route must not mint over the record", minted)
+  }
+
+  @Test
+  fun aFirstEnrolmentMintsWithoutRecovering() {
+    var recovered = false
+    var minted = false
+    BiometricRecords.keyForStore<SecretKey>(
+      read = { null },
+      probe = { true },
+      mint = { minted = true; aKey() },
+      recover = { recovered = true; aKey() },
+    )
+    assertTrue("a first enrolment mints", minted)
+    assertFalse("there is no record to recover", recovered)
+  }
+
+  /**
+   * The invariant the cancelled-prompt bug broke: the record is gone before
+   * the replacement is minted, so a prompt cancelled after the recovery
+   * cannot leave `enrolled` true beside a key that never sealed it.
+   */
+  @Test
+  fun aCancelledPromptAfterRecoveryLeavesNothingEnrolled() {
+    var record = true
+    var keyMinted = false
+    val cancelled = runCatching {
+      BiometricRecords.recoverInvalidatedKey(
+        removeRecord = { record = false; true },
+        mint = {
+          keyMinted = true
+          throw IllegalStateException("the gesture was cancelled")
+        },
+      )
+    }
+    assertTrue("the cancelled prompt surfaces as a failure", cancelled.isFailure)
+    assertTrue("the replacement key was minted before the prompt", keyMinted)
+    assertFalse("the record must be cleared before the mint", record)
+    assertFalse(
+      "enrolled must be false after the abort",
+      BiometricRecords.isEnrolled(hasRecord = record, hasUsableKey = true),
+    )
+  }
+
+  @Test
+  fun aRecordThatCannotBeClearedAbortsBeforeAnyKeyIsMinted() {
+    var minted = false
+    val failure = runCatching {
+      BiometricRecords.recoverInvalidatedKey(
+        removeRecord = { false },
+        mint = { minted = true; aKey() },
+      )
+    }
+    assertTrue("a failed clear surfaces as a failure", failure.isFailure)
+    assertFalse("nothing is minted over a record still in place", minted)
+  }
+
+  private fun aKey(): SecretKey = SecretKeySpec(ByteArray(32), "AES")
 
   @Test
   fun aReleaseRefusalNamesTheInvalidation() {
