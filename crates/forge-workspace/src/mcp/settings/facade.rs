@@ -169,6 +169,14 @@ impl ProdSettingsFacade {
             ));
         }
         let ws = self.workspace()?;
+        // **The write path cannot depend on the watch.** A watch that never
+        // armed, or that has gone deaf, leaves the loaded config behind the
+        // file, and every write would be refused as stale with no recovery.
+        // Adopt the file through the loader first, so the fingerprint this
+        // write carries is the file's; a file the loader refuses is named as
+        // itself, in the loader's own words.
+        ws.adopt_config_change()
+            .map_err(|error| SettingsError::Wanted(crate::workspace::on_disk_unloadable(&error)))?;
         let config = ws.config_arc();
         let document = ws.settings_snapshot();
 
@@ -950,7 +958,8 @@ provider = "anthropic"
     }
 
     /// A config that cannot be read to validate the batch refuses it before
-    /// the ask, and the words do not claim a reader approved anything.
+    /// the ask: the words name the file and a recovery that exists, never a
+    /// reader's approval and never a bare "call again".
     #[tokio::test]
     async fn an_unreadable_config_refuses_the_batch_before_the_ask() {
         let (ws, _dir) = fixture();
@@ -973,7 +982,9 @@ provider = "anthropic"
         .expect_err("an unreadable config refuses the write");
 
         let message = error.message();
-        assert!(message.contains("could not be read"), "{message}");
+        assert!(message.contains("differs from what this server loaded"), "{message}");
+        assert!(message.contains("not found"), "the loader's own words are carried: {message}");
+        assert!(message.contains("restart"), "a recovery that exists is named: {message}");
         assert!(!message.contains("approved"), "no reader was asked: {message}");
         assert!(ws.settings_writes.lock().is_empty(), "no ask was minted");
     }

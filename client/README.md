@@ -309,18 +309,63 @@ client would need a manual reinstall onto a new key. The same discipline the
 release keystore carries, for the same reason.
 
 `bundle.createUpdaterArtifacts` makes the app bundle target emit
-`forge.app.tar.gz` and its `.sig` beside it. The release recipes fail rather
-than skip when the key is missing, the way the Android half fails on its
-keystore, because a release that publishes no signed tarball is a release
+`forge.app.tar.gz` and its `.sig` beside it. Tauri creates that pair during
+the build, before the profile is embedded and the app signed again, so
+`client-release` regenerates the tarball from the re-signed bundle and signs
+it with the updater key, replacing the build's pair. The release recipes fail
+rather than skip when the key is missing, the way the Android half fails on
+its keystore, because a release that publishes no signed tarball is a release
 no client can update from. And `client-release` reads the built pair back
 before swapping anything in: the CLI signs with whatever key the environment
 names and only warns when that is not the pinned one, so
 `scripts/check_updater_signature.py` compares the signature's key id with
-`tauri.conf.json`'s pubkey and the signed version with the release's, the way
-`client-android-release` reads the APK's signer back.
+`tauri.conf.json`'s pubkey and the signed version with the release's, and
+checks that the tarball carries the app's embedded profile and keychain pair,
+the way `client-android-release` reads the APK's signer back.
+
+### The keychain profile
+
+The app's keychain entitlements - `com.apple.application-identifier` and
+`keychain-access-groups` - are only honoured when a Developer ID provisioning
+profile carrying the same team and application identifier is embedded in the
+bundle. The profile is a separate artifact from the codesign identity and the
+updater key, and it lives outside the repo beside them:
+
+```sh
+~/.tauri/forge.provisionprofile
+```
+
+Mint it once in the Developer portal: Certificates, Identifiers & Profiles ->
+Profiles -> + -> Developer ID, pick the `dev.vedhavyas.forge` app id and the
+Developer ID Application certificate, and download it. The profile carries the
+team's keychain wildcard (`KALKD5L7NF.*`), which authorizes the literal group
+the app's entitlements name. It also pins the Developer ID Application
+certificate it was minted with, so it must be re-minted when that certificate
+renews (the current one renews on 2027-12-22; the profile itself runs to
+2044). `check_client_entitlements.py` refuses a profile whose
+`DeveloperCertificates` does not carry the certificate the app is signed
+with.
+
+`client-release` reads `FORGE_PROVISION_PROFILE`, else
+`~/.tauri/forge.provisionprofile`. When a Developer ID identity is present it
+fails rather than skip if the profile is missing, the way the updater key and
+the Android keystore do. After the build it embeds the profile at
+`Contents/embedded.provisionprofile`, signs the app again with
+`client/src-tauri/entitlements.plist` and a secure timestamp, and reads the
+signature back.
+
+Nothing in this recipe notarises. Tauri 2.12 notarises and staples inside
+the build when `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID` are set;
+`--skip-stapling` only leaves the staple off, it does not turn notarisation
+on. The embed and re-sign above would invalidate a staple, so a notarised
+build needs the final signature notarised and stapled after this recipe, or
+the shipped app carries a stale staple.
 
 A release publishes five assets: `forge.app.tar.gz` and its `.sig`, the arm64
 APK, the web archive, and `latest.json` - the manifest all three halves read.
+The tarball is regenerated from the re-signed bundle after the profile is
+embedded, so the desktop updater installs the app that carries the profile
+and the keychain pair, not the build's pre-embed one.
 `scripts/update_manifest.py` writes the manifest with the `.sig`'s content
 (only its trailing newline trimmed, because the plugin base64-decodes the
 value whole), the web archive's sha256, and the release URLs; the `android`

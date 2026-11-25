@@ -192,6 +192,20 @@ async function settle(): Promise<void> {
   await vi.advanceTimersByTimeAsync(COALESCE_MS);
 }
 
+/**
+ * The floor between two whole reads, which the product promises: a stream of
+ * frames buys at most one read per floor, however fast it arrives (#3060).
+ *
+ * Spelled out rather than imported, so the cases state the cadence the
+ * product promises rather than reading it back off the code they check.
+ */
+const FLOOR_MS = 2_000;
+
+/** Advance past the floor: the wait a read owes while one has just gone. */
+async function settleFloor(): Promise<void> {
+  await vi.advanceTimersByTimeAsync(FLOOR_MS);
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
 });
@@ -267,9 +281,12 @@ describe('the home over a connection', () => {
     await settle();
     expect(forge.refreshed, 'a second read ran while the first was in flight').toEqual(['home']);
 
-    // Its answer lands, and the update that arrived meanwhile is asked for.
+    // Its answer lands, and the update that arrived meanwhile is asked for -
+    // at the floor, because a whole read has just gone.
     forge.arrive({ kind: 'snapshot', subject: HOME, data: null });
     await settle();
+    expect(forge.refreshed, 'a second read went inside the floor').toEqual(['home']);
+    await settleFloor();
     expect(forge.refreshed, 'the update that landed mid-read was dropped').toEqual([
       'home',
       'home',
@@ -283,6 +300,83 @@ describe('the home over a connection', () => {
    * from the error arm at all - the update's mark must survive the refusal
    * and be spent by the snapshot that re-establishes the subject (#2559).
    */
+  /**
+   * **A stream of fleet news buys one whole read per floor, not one per
+   * frame.** The coalescing beat folds a burst, but a busy fleet's frames
+   * arrive closer together than an answer comes back, so the beat alone fires
+   * as fast as the round trip: measured on a live fleet at 1-3 whole reads a
+   * second, ~195 KB each (#3060).
+   */
+  it('bounds a stream of fleet news to one read per floor', async () => {
+    const forge = fakeConnection();
+    const stop = watchHome(forge.connection).subscribe(() => {});
+
+    // Twenty seconds of news, one frame a second, each read answered as the
+    // server would answer it.
+    for (let second = 0; second < 20; second += 1) {
+      const before = forge.refreshed.length;
+      forge.arrive(UPDATE);
+      await vi.advanceTimersByTimeAsync(1_000);
+      if (forge.refreshed.length > before) {
+        forge.arrive({ kind: 'snapshot', subject: HOME, data: POOL_HOME });
+      }
+    }
+
+    expect(
+      forge.refreshed.length,
+      'the stream bought more than one read per floor',
+    ).toBeLessThanOrEqual(Math.ceil(20_000 / FLOOR_MS) + 1);
+    expect(forge.refreshed.length, 'the stream stopped being read at all').toBeGreaterThan(1);
+    stop();
+  });
+
+  /**
+   * **The floor delays a read; it never drops one.** News that lands while
+   * the floor holds is read when it lifts, because the read in hand was
+   * encoded before it - the same reason the mid-read update is kept (#1885).
+   */
+  it('reads the news that arrives inside the floor once it lifts', async () => {
+    const forge = fakeConnection();
+    const stop = watchHome(forge.connection).subscribe(() => {});
+
+    forge.arrive(UPDATE);
+    await settle();
+    expect(forge.refreshed, 'the first update did not ask for a read').toEqual([HOME]);
+
+    // The read is answered and the next frame lands at once.
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: POOL_HOME });
+    forge.arrive(UPDATE);
+    await settle();
+    expect(forge.refreshed, 'a second read went inside the floor').toEqual([HOME]);
+
+    await settleFloor();
+    expect(forge.refreshed, 'the news behind the floor was dropped').toEqual([HOME, HOME]);
+    stop();
+  });
+
+  /**
+   * **A return's own read starts the floor too.** It asks directly rather
+   * than through the beat, so without the floor a frame landing right behind
+   * its answer would buy a second whole encode inside the beat - two reads
+   * where the return already answered.
+   */
+  it('a return starts the floor for the frame behind it', async () => {
+    const forge = fakeConnection();
+    const stop = watchHome(forge.connection).subscribe(() => {});
+
+    rereadHome(forge.connection);
+    expect(forge.refreshed, 'the return did not ask for a read').toEqual([HOME]);
+
+    forge.arrive({ kind: 'snapshot', subject: HOME, data: POOL_HOME });
+    forge.arrive(UPDATE);
+    await settle();
+    expect(forge.refreshed, 'a frame right behind a return read again at once').toEqual([HOME]);
+
+    await settleFloor();
+    expect(forge.refreshed, 'the frame behind the floor was dropped').toEqual([HOME, HOME]);
+    stop();
+  });
+
   it('keeps the mid-read update for the snapshot that re-establishes a refused subject', async () => {
     const forge = fakeConnection();
     const stop = watchHome(forge.connection).subscribe(() => {});
@@ -306,10 +400,10 @@ describe('the home over a connection', () => {
     expect(forge.refreshed, 'no read can go out while the subject is refused').toEqual(['home']);
 
     // The subject comes back: its snapshot is newer than the update, and the
-    // mark it spends asks for the read the refusal could not.
+    // mark it spends asks for the read the refusal could not - at the floor.
     forge.stores.get('home')?.set({});
     forge.arrive({ kind: 'snapshot', subject: HOME, data: {} });
-    await settle();
+    await settleFloor();
     expect(forge.refreshed, 'the update that landed mid-read was dropped').toEqual([
       'home',
       'home',
@@ -343,7 +437,7 @@ describe('the home over a connection', () => {
     expect(forge.refreshed, "another subject's refusal freed the home's ask").toEqual(['home']);
 
     forge.arrive({ kind: 'snapshot', subject: HOME, data: {} });
-    await settle();
+    await settleFloor();
     expect(forge.refreshed, 'and the answer spends the update behind it').toEqual(['home', 'home']);
     stop();
   });
@@ -482,7 +576,7 @@ describe('the home over a connection', () => {
     expect(forge.refreshed, 'an unchanged task set asked for another read').toEqual([HOME]);
 
     forge.arrive(moved);
-    await settle();
+    await settleFloor();
     expect(forge.refreshed, 'a moved task set did not ask for a read').toEqual([HOME, HOME]);
     stop();
   });
@@ -523,13 +617,13 @@ describe('the home over a connection', () => {
     expect(forge.refreshed, 'an unchanged empty set asked again').toEqual([HOME]);
 
     forge.arrive(one);
-    await settle();
+    await settleFloor();
     expect(forge.refreshed, 'a task added did not ask for a read').toEqual([HOME, HOME]);
     forge.arrive({ kind: 'snapshot', subject: HOME, data: {} });
     await settle();
 
     forge.arrive(empty);
-    await settle();
+    await settleFloor();
     expect(forge.refreshed, 'a deletion did not ask for a read').toEqual([HOME, HOME, HOME]);
     stop();
   });
