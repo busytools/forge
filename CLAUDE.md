@@ -1102,6 +1102,18 @@ inspected.
     whichever half is older. Passive tolerance in decoding is the design, not
     compatibility code. An explicit version-gated behaviour found in the tree
     is reported to Ved for approval, never removed unilaterally.
+32. **A subscription is a stream: one whole read, then updates only.** A
+    subscription's first answer is its only whole read. After that a view
+    applies the frames it receives and never answers an update by
+    re-subscribing to the whole subject. A whole re-read is allowed only on
+    an explicit user refresh, a reconnect, or a frame that says the client
+    lost data - and even then it is bounded, so a stream of frames cannot
+    become a poll. A frame that already carries data (a task set, a settings
+    row, a status line) is applied from the frame; re-reading to learn what
+    the frame already said is the defect this rule names. Measured
+    2026-11-25: the home and board pages re-read whole records about 1.5
+    times a second under a busy fleet, 290 MB in an hour on one client
+    socket, for changes of a line.
 
 ## Claude Code worktree interop
 
