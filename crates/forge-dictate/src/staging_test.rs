@@ -8,8 +8,10 @@
 //! writes a new file and renames it over the target never touches the
 //! inode a running binary holds. The gate exercises that property
 //! against the same `stage()` a build runs: a child process maps the
-//! staged library, the test restages a second build, and the child must
-//! survive its next executable fault.
+//! staged library, the test restages a second build, the child must
+//! survive its next executable fault, and a NEW process must then load
+//! the restaged build and answer with its own version - survival alone
+//! would also pass an empty, corrupt or foreign replacement.
 //!
 //! The child is a small C program the test builds with clang, because
 //! the workspace forbids `unsafe`, and mapping and calling into a dylib
@@ -215,11 +217,39 @@ fn restaging_the_libraries_does_not_invalidate_a_live_mapping()
         "the restage must install a new inode: rewriting the mapped file in place is what macOS \
          rejects, and a refused remap must not be read as survival when the file never changed"
     );
-    let last = rest.last().map_or("", String::as_str);
-    assert!(
-        last == "after 47" || last == "refused",
-        "the helper must read the new content or have its remap refused, got {rest:?}"
+    let observed = rest.last().map_or("nothing after the release", String::as_str);
+
+    // **The first child's survival is only half the proof.** Its late remap
+    // is refused on this machine because the path is a different file now,
+    // and an empty, corrupt or foreign-architecture replacement would leave
+    // it just as alive. The restaged build must load in a process that never
+    // saw the earlier one - dyld deduplicates by path inside a process - so
+    // run the helper a second time and require the later build's answer.
+    let mut verifier =
+        Command::new(&helper).arg(&staged).arg(&release).stdout(Stdio::piped()).spawn()?;
+    let stdout = verifier
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("the verifier's stdout must be piped"))?;
+    let mut verifier_lines = BufReader::new(stdout).lines();
+    let loaded = verifier_lines
+        .next()
+        .ok_or_else(|| std::io::Error::other("the verifier must report its first call"))??;
+    assert_eq!(
+        loaded.trim(),
+        "first 47",
+        "a new process must load the restaged build; an empty, corrupt or foreign file at a new \
+         inode must not pass"
     );
-    println!("the restage left the live mapping valid ({last})");
+    let verifier_rest: Vec<String> = verifier_lines.collect::<std::io::Result<Vec<String>>>()?;
+    let verifier_status = verifier.wait()?;
+    assert!(
+        verifier_status.success(),
+        "the verifier must exit cleanly: {verifier_status:?}; it said {verifier_rest:?}"
+    );
+    println!(
+        "the restage left the live mapping valid ({observed}) and a new process loads the later \
+         build"
+    );
     Ok(())
 }
