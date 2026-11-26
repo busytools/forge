@@ -10,7 +10,7 @@
 //!
 //! **One cadence, not three.** A finite overrun asks once and parks the
 //! row, and the lead hears the escalation once if the ask goes unanswered;
-//! every other held state repeats at [`CHASE_CADENCE_SECS`] until it
+//! every other held state repeats at `CHASE_CADENCE_SECS` until it
 //! clears. **The chase log is the whole slate**: every naming is deduped
 //! by it, so a restart re-reads it rather than re-firing, and a state that
 //! clears has its naming forgotten - off the log, where a fresh process
