@@ -73,9 +73,17 @@
     archiveReading = false;
   }
 
+  // The page's own clock, declared first: the card ages and the wall times
+  // read it.
+  let nowSecs = $state(Math.floor(Date.now() / 1_000));
+  $effect(() => {
+    const id = setInterval(() => (nowSecs = Math.floor(Date.now() / 1_000)), 5_000);
+    return () => clearInterval(id);
+  });
+
   // An empty board before the read lands: the lanes draw nothing, and the
   // markup says which state it is in rather than calling the project unknown.
-  const view = $derived(boardView(wire, board.wire ?? { projects: [] }, org, project));
+  const view = $derived(boardView(wire, board.wire ?? { projects: [] }, org, project, nowSecs));
   /**
    * The reader's own drags, applied at once and reconciled against the
    * wire: a card that waits seconds for the server's snapshot reads as a
@@ -253,12 +261,6 @@
    * A live clock, so "wrote 12s ago" ticks between the server's pushes -
    * a board that only changes when someone else moves reads as dead.
    */
-  let nowSecs = $state(Math.floor(Date.now() / 1_000));
-  $effect(() => {
-    const id = setInterval(() => (nowSecs = Math.floor(Date.now() / 1_000)), 5_000);
-    return () => clearInterval(id);
-  });
-
   /** The window's own derivation: needs, exceptions, live, next. Not named
    *  `window`: that is the global the pop's history and the drop's motion
    *  read. */
@@ -585,7 +587,9 @@
           {board.refused === null ? 'reading the board...' : 'no board'}
         {:else}
           {#if view.read.onYou > 0}<b>{view.read.onYou} waiting on you</b> &middot;
-          {/if}{view.read.rows} rows &middot; {view.read.running} running
+          {/if}<span class="b-read-counts"
+            >{view.read.rows} rows &middot; {view.read.running} running</span
+          >
         {/if}
       </span>
     </span>

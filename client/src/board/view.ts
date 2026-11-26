@@ -358,6 +358,7 @@ export function boardView(
   board: BoardWire,
   org: string,
   project: string,
+  nowSecs: number = Math.floor(Date.now() / 1_000),
 ): BoardView {
   const row = board.projects.find(
     (entry) => entry.project.org === org && entry.project.name === project,
@@ -439,7 +440,13 @@ export function boardView(
           (link) => artifact === null || link.href !== artifact.href,
         ),
         artifact,
-        age: fmtSecs(entry.updated_secs_ago),
+        // The wait's own age, never the row's last edit: a wait that gained a
+        // link or a park is no younger a wait.
+        age: fmtSecs(
+          entry.task.waiting_on?.since === null || entry.task.waiting_on?.since === undefined
+            ? entry.updated_secs_ago
+            : Math.max(0, nowSecs - entry.task.waiting_on.since.secs_since_epoch),
+        ),
         root: entry.task.parent === null,
         // Counted from the rows themselves, NOT from the rollup: the rollup's
         // first number counts completed children, and a failed or canceled

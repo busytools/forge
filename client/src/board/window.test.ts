@@ -231,8 +231,12 @@ describe('the window', () => {
       ],
     });
     const idle = { org: ORG, project: PROJECT, label: 'watcher' };
+    const second = task('t2', 'in_progress', {
+      owner: seat,
+      active_form: 'Sweeping the archive',
+    });
     const asked = viewOf(
-      [row(held)],
+      [row(held), row(second)],
       [
         {
           slot: seat,
@@ -248,6 +252,7 @@ describe('the window', () => {
     expect(builder?.since).toBe(5_000);
     expect(builder?.artifact).toBe('PR #9');
     expect(builder?.next).toBe('2h');
+    expect(builder?.held, 'one line per seat, counting the rest').toBe(2);
     const watcher = asked.live.find((line) => line.label === 'watcher');
     expect(watcher?.doing).toBeNull();
     expect(watcher?.since).toBeNull();

@@ -62,6 +62,8 @@ export interface LiveLine {
   artifact: string | null;
   /** The row's estimate or cadence, the next thing it is measured by. */
   next: string | null;
+  /** How many rows the seat holds in progress: one line, all of them. */
+  held: number;
 }
 
 /** One row of the ranked ready queue. */
@@ -152,8 +154,12 @@ function needCardOf(row: BoardRow, nowSecs: number): NeedCard | null {
   const verification = wait?.verification === true;
   const at = waitAt(task);
   const decision = task.decision ?? null;
+  const artifact = artifactOf(task);
+  // The ask says what to do, and a look names the thing to look at: the
+  // artifact's own label when the row carries one, else the row.
+  const looked = artifact === null ? task.subject : artifact.label;
   const question = verification
-    ? `Approve ${task.subject} or say what to change`
+    ? `Approve ${looked} or say what to change`
     : (decision?.question ?? wait?.detail?.trim() ?? `A decision is waiting on ${task.subject}`);
   return {
     id: task.id,
@@ -163,7 +169,7 @@ function needCardOf(row: BoardRow, nowSecs: number): NeedCard | null {
     options: verification ? [] : (decision?.options ?? []),
     evidence: task.evidence?.excerpt ?? null,
     evidenceState: evidenceStateOf(task),
-    artifact: artifactOf(task),
+    artifact,
     owner: task.owner === null ? null : task.owner.label,
     at,
     age: fmtSecs(Math.max(0, nowSecs - at)),
@@ -276,19 +282,23 @@ export function windowView(
   // agent rows are the home's; the row is the board's. A seat between turns
   // holds its row and is not doing anything yet - drawn as unknown, never as
   // progress.
-  const byOwner = new Map<string, BoardRow>();
+  const byOwner = new Map<string, BoardRow[]>();
   for (const row of rows) {
     const label = row.task.owner?.label;
-    if (label !== undefined && row.task.status === 'in_progress' && !byOwner.has(label)) {
-      byOwner.set(label, row);
+    if (label !== undefined && row.task.status === 'in_progress') {
+      byOwner.set(label, [...(byOwner.get(label) ?? []), row]);
     }
   }
   const live: LiveLine[] = wire.agents
     .filter((agent) => agent.slot.org === org && agent.slot.project === project)
     .map((agent) => {
-      const busy = byOwner.get(agent.label);
+      const held = byOwner.get(agent.label) ?? [];
+      // The line names one row and counts the rest: a seat holding three
+      // rows is one seat, and a line per row would draw the same seat three
+      // times.
+      const busy = held[0];
       const last = agent.last_activity?.secs_since_epoch ?? null;
-      const link = busy === undefined ? null : artifactOf(busy.task);
+      const link = busy === undefined ? undefined : artifactOf(busy.task);
       const measure =
         busy === undefined ? null : (busy.task.estimate?.words ?? busy.task.cadence?.words ?? null);
       return {
@@ -296,8 +306,9 @@ export function windowView(
         seat: { ...agent.slot },
         doing: busy === undefined ? null : (busy.task.active_form ?? busy.task.subject),
         since: last ?? (busy === undefined ? null : busy.task.updated_at.secs_since_epoch),
-        artifact: link === null ? null : link.label,
+        artifact: link === undefined || link === null ? null : link.label,
         next: measure,
+        held: held.length,
       };
     })
     .sort((a, b) => a.label.localeCompare(b.label));

@@ -108,9 +108,7 @@
                   class="b-in"
                   data-editor="board"
                   type="text"
-                  placeholder={card.options.length > 0
-                    ? 'a note with it (optional)'
-                    : 'your answer'}
+                  placeholder={card.options.length > 0 ? 'note (optional)' : 'your answer'}
                   aria-label="the note sent with the answer"
                   bind:value={notes[card.id]}
                 />
@@ -204,7 +202,7 @@
 
   <section class="w-part" aria-labelledby="w-live-h">
     <h2 id="w-live-h" class="w-h">
-      live {#if view.counts.inProgress > 0}<span class="w-n">{view.counts.inProgress}</span>{/if}
+      live {#if view.live.length > 0}<span class="w-n">{view.live.length}</span>{/if}
     </h2>
     {#if view.live.length === 0}
       <p class="w-quiet">no seats are open on this project</p>
@@ -228,6 +226,9 @@
                 <span class="w-why">no artifact touched</span>
               {/if}
               <span class="w-why">{line.next === null ? 'no estimate' : `next ${line.next}`}</span>
+              {#if line.held > 1}
+                <span class="w-why">and {line.held - 1} more held</span>
+              {/if}
             {/if}
           </li>
         {/each}

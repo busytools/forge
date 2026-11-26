@@ -845,6 +845,9 @@ button.b-epic-pill { cursor: pointer; }
   .w-needs { grid-template-columns: 1fr; }
   .w-exc, .w-live { flex-direction: column; gap: 2px; align-items: flex-start; }
   .w-discuss { margin-left: 0; }
+  /* A phone's top bar keeps the one count that asks something of the
+     reader; the row totals wrap into noise at this width. */
+  .b-read-counts { display: none; }
 }
 
 /* ---------- the drawer: one row's own page over the board ---------- */
