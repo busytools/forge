@@ -42,6 +42,15 @@ pub enum TaskStatus {
     Canceled,
 }
 
+impl TaskStatus {
+    /// Whether nothing more happens on a row in this state. The one
+    /// terminal predicate: the board, the chase and the store's cascade
+    /// all read it rather than spelling the set out again.
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Canceled)
+    }
+}
+
 /// What a waiting row waits on. A decision routes to the user; a
 /// dependency and a resource route to the lead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +98,42 @@ pub struct Waiting {
     /// before the field existed, which reads back as its creation.
     #[serde(default)]
     pub since: Option<SystemTime>,
+}
+
+/// Whether a row is finite work with a finish line, or standing work
+/// that never finishes: the watcher, a growth loop, a weekly sweep. A
+/// finite row carries an estimate and is the chase's re-plan trigger; a
+/// standing row carries a cadence, is never chased for overrun, and is
+/// checked when its cadence comes due.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskKind {
+    #[default]
+    Finite,
+    Standing,
+}
+
+/// The answer a decision reached: what was chosen, when, and the note
+/// the user left with it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecisionAnswer {
+    pub choice: String,
+    #[serde(default)]
+    pub note: Option<String>,
+    pub at: SystemTime,
+}
+
+/// A question a row is waiting on the user for: the ask, the options the
+/// lead enumerated, and the answer once one is given. The board records
+/// decisions, not conversations - the thread lives in the chat, and
+/// nothing but the answer is ever written here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Decision {
+    pub question: String,
+    #[serde(default)]
+    pub options: Vec<String>,
+    #[serde(default)]
+    pub answer: Option<DecisionAnswer>,
 }
 
 /// A duration estimate: the words a reader sees ("2h", "1d") and the
@@ -175,6 +220,10 @@ pub struct Task {
     pub active_form: Option<String>,
     pub detail: Option<String>,
     pub status: TaskStatus,
+    /// Finite work or standing work; a row stored before the field is
+    /// finite, which is what every row was.
+    #[serde(default)]
+    pub kind: TaskKind,
     /// The session holding it. `None` is `unclaimed`.
     pub owner: Option<SessionSlot>,
     /// The task this one belongs under, in the same project.
@@ -182,7 +231,17 @@ pub struct Task {
     /// Why this row cannot proceed, when `status` is waiting.
     #[serde(default)]
     pub waiting_on: Option<Waiting>,
+    /// The question a decision wait asks the user, its options and its
+    /// answer. Absent on a row that is not a decision.
+    #[serde(default)]
+    pub decision: Option<Decision>,
+    /// A finite row's finish line, and the chase's re-plan trigger.
     pub estimate: Option<Estimate>,
+    /// A standing row's check interval, in the same grammar as an
+    /// estimate: when the row is due to be asked whether it is still
+    /// doing its job.
+    #[serde(default)]
+    pub cadence: Option<Estimate>,
     /// Queue order; lower reads first, ties break by creation.
     #[serde(default)]
     pub rank: Option<i64>,
@@ -199,14 +258,41 @@ pub struct Task {
     pub reserved: Option<ReservedBy>,
     #[serde(default)]
     pub links: Vec<TaskLink>,
-    /// Claims and send-backs, so a loop is visible.
+    /// How many writes the row has taken. An update states the version it
+    /// read, so a lost write is refused visibly rather than overwriting
+    /// what another seat wrote. Row creation is version 0.
     #[serde(default)]
-    pub attempt: u32,
+    pub version: u64,
     /// Set when the tree archived; archived rows are history, not live work.
     #[serde(default)]
     pub archived_at: Option<SystemTime>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
+}
+
+impl Task {
+    /// Whether a seat could start this row: pending, holding no wait, and
+    /// not reserved for the user. The one ready predicate; a caller that
+    /// needs more - an unowned row for dispatch, a live holder for a
+    /// claim - adds that condition rather than restating this one.
+    pub fn is_ready(&self) -> bool {
+        self.status == TaskStatus::Pending && self.waiting_on.is_none() && self.reserved.is_none()
+    }
+
+    /// When the row's current wait began, stamped as the wait is raised.
+    /// A wait stored before the stamp reads as the row's creation, never
+    /// its last edit: an edit that moved the row answered nothing. The
+    /// one wait start the marks, the chase and the attention item read.
+    pub fn wait_started(&self) -> Option<SystemTime> {
+        let wait = self.waiting_on.as_ref()?;
+        Some(wait.since.unwrap_or(self.created_at))
+    }
+
+    /// How long the row has held its wait, from that same start.
+    pub fn wait_age_secs(&self, now: SystemTime) -> Option<u64> {
+        let started = self.wait_started()?;
+        Some(now.duration_since(started).map_or(0, |d| d.as_secs()))
+    }
 }
 
 /// Who moved a row: the seat that called, the user from the board, or the
@@ -281,9 +367,20 @@ mod tests {
             active_form: Some("Merging peers and workers into agents".to_owned()),
             detail: Some("One agents__ MCP family.".to_owned()),
             status: TaskStatus::InProgress,
+            kind: TaskKind::Finite,
             owner: Some(SessionSlot::worker("Busytools", "forge", "agents-merge")),
             parent: None,
+            decision: Some(Decision {
+                question: "Merge the families?".to_owned(),
+                options: vec!["merge".to_owned(), "wait".to_owned()],
+                answer: Some(DecisionAnswer {
+                    choice: "merge".to_owned(),
+                    note: Some("after the bench".to_owned()),
+                    at: std::time::SystemTime::UNIX_EPOCH,
+                }),
+            }),
             estimate: Some(Estimate { words: "1d".to_owned(), secs: 86_400 }),
+            cadence: None,
             rank: Some(10),
             verify: Some(Verify::User),
             attested: Some(Attestation {
@@ -299,7 +396,7 @@ mod tests {
                 added_at: std::time::SystemTime::UNIX_EPOCH,
             }],
             waiting_on: None,
-            attempt: 2,
+            version: 3,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
@@ -312,6 +409,155 @@ mod tests {
         let json = serde_json::to_vec(&task).expect("serialize");
         let back: Task = serde_json::from_slice(&json).expect("deserialize");
         assert_eq!(back, task, "every field survives a store round trip");
+    }
+
+    /// A standing row is checked on its cadence, never chased for
+    /// overrun, so it carries a cadence where a finite row carries an
+    /// estimate.
+    #[test]
+    fn a_standing_row_carries_a_cadence() {
+        let task = Task {
+            kind: TaskKind::Standing,
+            cadence: Estimate::parse("1d"),
+            estimate: None,
+            ..sample_task()
+        };
+        let json = serde_json::to_vec(&task).expect("serialize");
+        let back: Task = serde_json::from_slice(&json).expect("deserialize");
+        assert_eq!(back.kind, TaskKind::Standing);
+        assert_eq!(back.cadence, Estimate::parse("1d"));
+        assert_eq!(back.estimate, None, "a standing row has no finish line to overrun");
+        assert_eq!(
+            serde_json::to_string(&TaskKind::Standing).expect("serialize"),
+            "\"standing\"",
+            "the spelling the store writes and the tools read",
+        );
+    }
+
+    /// The board records decisions, not conversations: the question, the
+    /// options the lead enumerated, and the answer once given - what was
+    /// chosen, when, and the note. Nothing else is written to it.
+    #[test]
+    fn a_decision_record_keeps_its_question_options_and_answer() {
+        let decision = Decision {
+            question: "Ship the parser rewrite behind a flag?".to_owned(),
+            options: vec!["flag it".to_owned(), "ship it outright".to_owned()],
+            answer: Some(DecisionAnswer {
+                choice: "flag it".to_owned(),
+                note: Some("until the bench is green".to_owned()),
+                at: std::time::SystemTime::UNIX_EPOCH,
+            }),
+        };
+        let json = serde_json::to_vec(&decision).expect("serialize");
+        let back: Decision = serde_json::from_slice(&json).expect("deserialize");
+        assert_eq!(back, decision, "the record keeps the ask, the options and the answer");
+        let unanswered = Decision { answer: None, ..decision };
+        let back: Decision =
+            serde_json::from_slice(&serde_json::to_vec(&unanswered).expect("serialize"))
+                .expect("deserialize");
+        assert_eq!(back.answer, None, "a row waiting on the question carries no answer yet");
+    }
+
+    /// The stored rows outlive the struct that wrote them: a row written
+    /// before the kind, the cadence, the decision and the version reads
+    /// back as finite work at version zero rather than failing the set.
+    #[test]
+    fn a_row_written_before_the_new_fields_reads_as_finite_and_unversioned() {
+        let mut older = serde_json::to_value(sample_task()).expect("serialize");
+        let object = older.as_object_mut().expect("a row is an object");
+        for gone in ["kind", "cadence", "decision", "version", "attempt"] {
+            object.remove(gone);
+        }
+        object.insert("attempt".to_owned(), serde_json::json!(3));
+        let read: Task = serde_json::from_value(older).expect("a row written before the fields");
+        assert_eq!(read.kind, TaskKind::Finite, "an old row is finite work");
+        assert_eq!(read.cadence, None);
+        assert_eq!(read.decision, None);
+        assert_eq!(read.version, 0, "nothing names a version it has never written");
+    }
+
+    /// The one terminal predicate: the statuses nothing more happens on.
+    /// `failed` is terminal without being done, and `canceled` is a
+    /// deliberate withdrawal - both end the row.
+    #[test]
+    fn the_terminal_statuses_are_the_ones_nothing_more_happens_on() {
+        for live in [TaskStatus::Pending, TaskStatus::InProgress, TaskStatus::Waiting] {
+            assert!(!live.is_terminal(), "{live:?} is work in play");
+        }
+        for ended in [TaskStatus::Completed, TaskStatus::Failed, TaskStatus::Canceled] {
+            assert!(ended.is_terminal(), "{ended:?} is an end");
+        }
+    }
+
+    /// The one ready predicate: pending, holding no wait, not reserved.
+    /// Callers that need more (an unowned row for dispatch, a live holder
+    /// for a claim) add their own condition rather than restating this one.
+    #[test]
+    fn a_row_is_ready_only_when_pending_unwaited_and_unreserved() {
+        let plain =
+            Task { status: TaskStatus::Pending, reserved: None, waiting_on: None, ..sample_task() };
+        let ready = plain.clone();
+        assert!(ready.is_ready(), "a pending row with nothing in its way can be started");
+        let held = Task {
+            waiting_on: Some(Waiting {
+                kind: Some(WaitingKind::Dependency),
+                detail: None,
+                on: None,
+                verification: false,
+                parked: false,
+                since: None,
+            }),
+            ..plain.clone()
+        };
+        assert!(!held.is_ready(), "a wait the status does not show still blocks a start");
+        let kept = Task { reserved: Some(ReservedBy::User), ..plain.clone() };
+        assert!(!kept.is_ready(), "a pick reserved for the user is nobody else's to start");
+        for live in [TaskStatus::InProgress, TaskStatus::Waiting, TaskStatus::Completed] {
+            assert!(!Task { status: live, ..plain.clone() }.is_ready(), "{live:?} is not a start");
+        }
+    }
+
+    /// The one wait age: from the wait's own start, never from the row's
+    /// last edit (which moves for a link, a park or a drag that answered
+    /// nothing), and from the creation for a wait stored before the stamp.
+    #[test]
+    fn the_wait_age_runs_from_the_waits_own_start() {
+        let waiting = |since: Option<SystemTime>| Waiting {
+            kind: Some(WaitingKind::Resource),
+            detail: Some("a CI run".to_owned()),
+            on: None,
+            verification: false,
+            parked: false,
+            since,
+        };
+        let started = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(150);
+        let row = Task {
+            created_at: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100),
+            updated_at: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(200),
+            waiting_on: Some(waiting(Some(started))),
+            ..sample_task()
+        };
+        let now = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(400);
+        assert_eq!(row.wait_started(), Some(started), "the wait's own start, not the edit");
+        assert_eq!(row.wait_age_secs(now), Some(250), "the age counts from that start");
+
+        let older = Task { waiting_on: Some(waiting(None)), ..row.clone() };
+        assert_eq!(
+            older.wait_started(),
+            Some(older.created_at),
+            "a wait stored before the stamp reads as its creation",
+        );
+        let not_waiting = Task { waiting_on: None, ..row };
+        assert_eq!(not_waiting.wait_age_secs(now), None, "a row holding no wait has no wait age");
+    }
+
+    /// The attempt tick is cut: nothing acted on it, and the board keeps
+    /// the reason a row was sent back in its detail instead.
+    #[test]
+    fn a_row_no_longer_carries_an_attempt() {
+        let json = serde_json::to_value(sample_task()).expect("serialize");
+        let wrote_attempt = json.get("attempt").is_some();
+        assert!(!wrote_attempt, "the record writes no attempt any more: {json}");
     }
 
     #[test]

@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::time::SystemTime;
 
-use forge_primitives::tasks::{LinkKind, Task, TaskId, TaskStatus, TaskTransition};
+use forge_primitives::tasks::{LinkKind, Task, TaskId, TaskKind, TaskStatus, TaskTransition};
 
 use crate::workspace::Workspace;
 
@@ -37,20 +37,18 @@ pub(crate) fn fmt_secs(secs: u64) -> String {
 }
 
 /// The derived facts about one row, as the board draws them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Marks {
     /// Pending with nothing waiting on it and not reserved for the user.
     pub ready: bool,
     /// Has a pull-request link not known to be merged.
     pub in_review: bool,
-    /// Its worked time is past its estimate.
+    /// Does this row owe a re-plan? Its worked time is past its estimate,
+    /// or it has been waiting past the window.
     pub overdue: bool,
-    /// No touch for longer than the window.
-    pub no_movement: bool,
-    /// Waiting for longer than the window.
-    pub waiting_too_long: bool,
-    /// Its owner has no session behind it.
+    /// Is anyone actually on this? No touch past the band, or an owner
+    /// with no session behind it.
     pub stale: bool,
     /// Every child terminal, its retro run - an epic the lead may close.
     pub to_close: bool,
@@ -65,6 +63,11 @@ pub struct BoardRow {
     pub worked_secs: u64,
     /// Time since any touch.
     pub updated_secs_ago: u64,
+    /// Whether the owner has a session behind it. The `stale` mark folds
+    /// this in with the no-movement window, but the chase's death rung
+    /// names only the dead holder - a live owner who has not touched the
+    /// row is stuck, not gone.
+    pub owner_live: bool,
     pub marks: Marks,
     /// A parent's children: how many are completed, of how many.
     pub rollup: Option<(usize, usize)>,
@@ -180,10 +183,6 @@ fn secs_ago(at: SystemTime, now: SystemTime) -> u64 {
     now.duration_since(at).map_or(0, |d| d.as_secs())
 }
 
-fn is_terminal(status: TaskStatus) -> bool {
-    matches!(status, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Canceled)
-}
-
 /// The retro marker: a link labelled `retro` on the epic.
 fn retro_ran(task: &Task) -> bool {
     task.links.iter().any(|l| l.label.as_deref() == Some("retro"))
@@ -237,6 +236,16 @@ impl Workspace {
         for mine in by_task.values_mut() {
             mine.sort_by_key(|t| t.at);
         }
+        // The hierarchy in one pass: a row's children and its parent's
+        // subject are lookups below, not a walk of the whole set per row.
+        let mut children_by_parent: HashMap<&TaskId, Vec<&Task>> = HashMap::new();
+        let mut subjects_by_id: HashMap<&TaskId, &str> = HashMap::new();
+        for task in &tasks {
+            subjects_by_id.entry(&task.id).or_insert(task.subject.as_str());
+            if let Some(parent) = &task.parent {
+                children_by_parent.entry(parent).or_default().push(task);
+            }
+        }
         tasks
             .iter()
             .map(|task| {
@@ -246,30 +255,37 @@ impl Workspace {
                 // A wait parked by design is the user's own deferral: its age
                 // is not a stall (#2472).
                 let parked = task.waiting_on.as_ref().is_some_and(|wait| wait.parked);
-                let children: Vec<&Task> =
-                    tasks.iter().filter(|c| c.parent.as_ref() == Some(&task.id)).collect();
+                let children = children_by_parent.get(&task.id).map_or(&[][..], Vec::as_slice);
                 let children_terminal =
-                    !children.is_empty() && children.iter().all(|c| is_terminal(c.status));
-                let marks = Marks {
-                    ready: task.status == TaskStatus::Pending
-                        && task.waiting_on.is_none()
-                        && task.reserved.is_none(),
-                    in_review: task
-                        .links
-                        .iter()
-                        .any(|l| l.kind == LinkKind::Pr && l.state.as_deref() != Some("merged")),
-                    overdue: task.estimate.as_ref().is_some_and(|e| e.secs > 0 && worked > e.secs),
-                    no_movement: !parked && updated_secs_ago > stale_secs,
-                    waiting_too_long: task.status == TaskStatus::Waiting
-                        && !parked
-                        && updated_secs_ago > stale_secs,
-                    stale: task.owner.as_ref().is_some_and(|owner| !self.seat_is_live(owner)),
-                    to_close: task.parent.is_none() && children_terminal && retro_ran(task),
+                    !children.is_empty() && children.iter().all(|c| c.status.is_terminal());
+                let owner_live = task.owner.as_ref().is_none_or(|owner| self.seat_is_live(owner));
+                // Terminal rows carry no marks: they are history, and a mark
+                // on one reads as work that still needs someone.
+                let marks = if task.status.is_terminal() {
+                    Marks::default()
+                } else {
+                    Marks {
+                        ready: task.is_ready(),
+                        in_review: task.links.iter().any(|l| {
+                            l.kind == LinkKind::Pr && l.state.as_deref() != Some("merged")
+                        }),
+                        overdue: (task.kind == TaskKind::Finite
+                            && task
+                                .estimate
+                                .as_ref()
+                                .is_some_and(|e| e.secs > 0 && worked > e.secs))
+                            || (task.status == TaskStatus::Waiting
+                                && !parked
+                                && task.wait_age_secs(now).is_some_and(|age| age > stale_secs)),
+                        stale: !parked && (updated_secs_ago > stale_secs || !owner_live),
+                        to_close: task.parent.is_none() && children_terminal && retro_ran(task),
+                    }
                 };
                 BoardRow {
                     task: task.clone(),
                     worked_secs: worked,
                     updated_secs_ago,
+                    owner_live,
                     marks,
                     rollup: (!children.is_empty()).then(|| {
                         (
@@ -277,9 +293,10 @@ impl Workspace {
                             children.len(),
                         )
                     }),
-                    parent_subject: task.parent.as_ref().and_then(|id| {
-                        tasks.iter().find(|p| p.id == *id).map(|p| p.subject.clone())
-                    }),
+                    parent_subject: task
+                        .parent
+                        .as_ref()
+                        .and_then(|id| subjects_by_id.get(id).map(|subject| (*subject).to_owned())),
                     history: capped_history(mine),
                     history_total: mine.len(),
                 }
@@ -302,15 +319,9 @@ impl Workspace {
                     .find(|p| p.name == name)
                     .and_then(|p| p.max_workers)
                     .unwrap_or(crate::config::DEFAULT_MAX_WORKERS_PER_PROJECT);
-                let queue = tasks
-                    .iter()
-                    .filter(|t| {
-                        t.status == TaskStatus::Pending
-                            && t.owner.is_none()
-                            && t.waiting_on.is_none()
-                            && t.reserved.is_none()
-                    })
-                    .count();
+                // The queue is the dispatchable slice of the one ready
+                // predicate: nothing in the row's way, and nobody holding it.
+                let queue = tasks.iter().filter(|t| t.is_ready() && t.owner.is_none()).count();
                 let waiting_on_user = tasks
                     .iter()
                     .filter(|t| t.status == TaskStatus::Waiting && crate::tasks::parked_on_user(t))
@@ -365,12 +376,7 @@ impl Workspace {
         let mut open: Vec<String> = self
             .tasks_for_project(project)
             .iter()
-            .filter(|t| {
-                matches!(
-                    t.status,
-                    TaskStatus::Pending | TaskStatus::InProgress | TaskStatus::Waiting
-                )
-            })
+            .filter(|t| !t.status.is_terminal())
             .filter_map(|t| t.owner.as_ref().map(|o| o.label().to_owned()))
             .collect();
         open.sort();
@@ -393,8 +399,8 @@ mod tests {
     use super::*;
     use crate::SessionSlot;
     use forge_primitives::tasks::{
-        By, Estimate, LinkKind, Task, TaskId, TaskLink, TaskStatus, TaskTransition, Verify,
-        Waiting, WaitingKind,
+        By, Estimate, LinkKind, Task, TaskId, TaskKind, TaskLink, TaskStatus, TaskTransition,
+        Verify, Waiting, WaitingKind,
     };
     use tempfile::tempdir;
 
@@ -421,19 +427,30 @@ mod tests {
             active_form: None,
             detail: None,
             status,
+            kind: TaskKind::Finite,
             owner: None,
             parent: None,
             waiting_on: None,
+            decision: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: None,
             attested: None,
             reserved: None,
             links: Vec::new(),
-            attempt: 0,
+            version: 0,
             archived_at: None,
             created_at: epoch(0),
             updated_at: epoch(0),
+        }
+    }
+
+    fn named(id: &str, subject: &str, project: &str) -> Task {
+        Task {
+            subject: subject.to_owned(),
+            project_name: project.to_owned(),
+            ..task(id, TaskStatus::Pending)
         }
     }
 
@@ -623,10 +640,11 @@ mod tests {
         );
     }
 
-    /// A row without an estimate falls back to the no-movement window,
-    /// which is its own mark - not an overdue one.
+    /// A row without a touch for longer than the window reads stale - the
+    /// `no_movement` mark folded into it - and staleness is not an
+    /// overrun: the two marks answer different questions.
     #[test]
-    fn a_row_without_an_estimate_uses_the_no_movement_window() {
+    fn a_row_with_no_movement_reads_stale() {
         let dir = tempdir().expect("tempdir");
         let ws = fixture(dir.path());
         let mut stale_row = task("old", TaskStatus::Pending);
@@ -639,9 +657,201 @@ mod tests {
 
         let now = epoch(WINDOW + 1);
         let rows = ws.board_rows(PROJECT, now, WINDOW);
-        assert!(row(&rows, "old").marks.no_movement, "a day without a touch is no movement");
+        assert!(row(&rows, "old").marks.stale, "a day without a touch is no one on it");
         assert!(!row(&rows, "old").marks.overdue, "and it is not called overdue");
-        assert!(!row(&rows, "new").marks.no_movement, "a fresh touch is movement");
+        assert!(!row(&rows, "new").marks.stale, "a fresh touch is movement");
+    }
+
+    /// A row whose owner has no session behind it reads stale whether or
+    /// not it was touched: the mark answers "is anyone actually on
+    /// this?", and a dead holder is a no.
+    #[test]
+    fn a_dead_owner_reads_stale_however_fresh_the_touch() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let mut dead = task("t-dead", TaskStatus::InProgress);
+        dead.owner = Some(SessionSlot::worker("TestOrg", PROJECT, "w-gone"));
+        dead.updated_at = epoch(1_000);
+        ws.seed_test_task(dead);
+        let mut live = task("t-live", TaskStatus::InProgress);
+        live.owner = Some(SessionSlot::worker("TestOrg", PROJECT, "w-1"));
+        live.updated_at = epoch(1_000);
+        ws.seed_test_task(live);
+        live_worker(&ws, "w-1");
+
+        let rows = ws.board_rows(PROJECT, epoch(1_001), WINDOW);
+        assert!(row(&rows, "t-dead").marks.stale, "a dead holder is nobody on the row");
+        assert!(!row(&rows, "t-live").marks.stale, "the live control keeps no mark");
+    }
+
+    /// The wait's own age is what makes a row overdue, not the row's last
+    /// edit: a waiting row that gains a link or is dragged is no fresher a
+    /// wait.
+    #[test]
+    fn a_waiting_row_past_the_window_reads_overdue() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let mut waiting = task("t-1", TaskStatus::Waiting);
+        waiting.updated_at = epoch(WINDOW + 1);
+        waiting.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Decision),
+            detail: Some("which shape".to_owned()),
+            on: None,
+            verification: false,
+            parked: false,
+            since: Some(epoch(0)),
+        });
+        ws.seed_test_task(waiting);
+
+        let rows = ws.board_rows(PROJECT, epoch(WINDOW + 1), WINDOW);
+        assert!(
+            row(&rows, "t-1").marks.overdue,
+            "the wait's own age is the signal, however fresh the edit",
+        );
+    }
+
+    /// A wait parked by design is the user's own deferral, so the row
+    /// carries neither stalled mark however old it is; un-parking restores
+    /// both from its real age (#2472).
+    #[test]
+    fn a_parked_wait_carries_neither_stalled_mark() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let wait = |parked: bool| Waiting {
+            kind: Some(WaitingKind::Resource),
+            detail: Some("needs the owner's dashboard".to_owned()),
+            on: None,
+            verification: false,
+            parked,
+            since: Some(epoch(0)),
+        };
+        let mut parked = task("t-parked", TaskStatus::Waiting);
+        parked.waiting_on = Some(wait(true));
+        parked.updated_at = epoch(0);
+        ws.seed_test_task(parked);
+        let mut unsettled = task("t-unparked", TaskStatus::Waiting);
+        unsettled.waiting_on = Some(wait(false));
+        unsettled.updated_at = epoch(0);
+        ws.seed_test_task(unsettled);
+
+        let rows = ws.board_rows(PROJECT, epoch(WINDOW + 1), WINDOW);
+        assert!(
+            !row(&rows, "t-parked").marks.stale,
+            "a parked wait is a deferral, not a row nobody has moved",
+        );
+        assert!(
+            !row(&rows, "t-parked").marks.overdue,
+            "and its age is no overrun while it is parked"
+        );
+        assert!(row(&rows, "t-unparked").marks.stale, "the un-parked control keeps the stale mark");
+        assert!(row(&rows, "t-unparked").marks.overdue, "and keeps the overdue mark");
+
+        ws.update_task(PROJECT, &TaskId::from("t-parked"), By::System, |task| {
+            if let Some(wait) = task.waiting_on.as_mut() {
+                wait.parked = false;
+            }
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        let updated_at = ws
+            .tasks_for_project(PROJECT)
+            .into_iter()
+            .find(|task| task.id == TaskId::from("t-parked"))
+            .expect("the row survived")
+            .updated_at;
+        let later = updated_at + Duration::from_secs(WINDOW + 1);
+        let rows = ws.board_rows(PROJECT, later, WINDOW);
+        let marks = row(&rows, "t-parked").marks;
+        assert!(marks.stale, "un-parked, its real age is the mark again");
+        assert!(marks.overdue, "both marks come back with the park gone");
+    }
+
+    /// A terminal row carries no marks at all: completed, failed and
+    /// canceled rows are history, and an attention mark on one is what
+    /// kept 37 finished October rows looking like work in play.
+    #[test]
+    fn a_terminal_row_carries_no_marks() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        for (id, status) in [
+            ("t-done", TaskStatus::Completed),
+            ("t-failed", TaskStatus::Failed),
+            ("t-canceled", TaskStatus::Canceled),
+        ] {
+            let mut ended = task(id, status);
+            // Every condition that raises a mark on a live row, set at
+            // once: the terminal row still carries none.
+            ended.owner = Some(SessionSlot::worker("TestOrg", PROJECT, "w-gone"));
+            ended.estimate = Some(Estimate { words: "1s".to_owned(), secs: 1 });
+            ended.links.push(TaskLink {
+                kind: LinkKind::Pr,
+                label: None,
+                target: "https://example.invalid/pull/1".to_owned(),
+                state: Some("open".to_owned()),
+                added_at: epoch(0),
+            });
+            ended.updated_at = epoch(0);
+            ws.seed_test_task(ended);
+        }
+
+        let rows = ws.board_rows(PROJECT, epoch(WINDOW + 1), WINDOW);
+        for id in ["t-done", "t-failed", "t-canceled"] {
+            let marks = row(&rows, id).marks;
+            assert_eq!(marks, Marks::default(), "{id} is over; it owes no attention mark");
+        }
+    }
+
+    /// A standing row is checked on its cadence, never chased for
+    /// overrun: worked time past an estimate is not a mistake it can make.
+    #[test]
+    fn a_standing_row_is_not_overdue_for_worked_time() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let mut standing = task("t-standing", TaskStatus::InProgress);
+        standing.kind = TaskKind::Standing;
+        standing.cadence = Estimate::parse("1d");
+        standing.estimate = Some(Estimate { words: "1s".to_owned(), secs: 1 });
+        standing.updated_at = epoch(1_000);
+        ws.seed_test_task(standing);
+        {
+            let db = ws.db.lock();
+            crate::store::task_history::append(
+                db.as_ref().expect("db"),
+                &[transition("t-standing", TaskStatus::Pending, TaskStatus::InProgress, 10)],
+            )
+            .expect("history");
+        }
+
+        let rows = ws.board_rows(PROJECT, epoch(1_000), WINDOW);
+        let row = row(&rows, "t-standing");
+        assert!(row.worked_secs > 1, "precondition: the worked time is past the estimate");
+        assert!(!row.marks.overdue, "a standing row is never chased for overrun");
+    }
+
+    /// The board reads parents and children in one pass and still fills
+    /// both facts a row draws: a grandchild's `parent_subject`, and the
+    /// epic's rollup over its direct children only.
+    #[test]
+    fn the_board_fills_the_hierarchy_in_one_read() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        ws.seed_test_task(named("epic", "the epic", PROJECT));
+        let mut child = named("sub-a", "the child", PROJECT);
+        child.parent = Some(TaskId::from("epic"));
+        child.status = TaskStatus::Completed;
+        ws.seed_test_task(child);
+        let mut grandchild = named("sub-a-1", "the grandchild", PROJECT);
+        grandchild.parent = Some(TaskId::from("sub-a"));
+        ws.seed_test_task(grandchild);
+
+        let rows = ws.board_rows(PROJECT, epoch(10), WINDOW);
+        assert_eq!(
+            row(&rows, "sub-a-1").parent_subject.as_deref(),
+            Some("the child"),
+            "a grandchild names its own parent, not the epic above it",
+        );
+        assert_eq!(row(&rows, "epic").rollup, Some((1, 1)), "the rollup counts direct children");
+        assert_eq!(row(&rows, "sub-a-1").rollup, None, "a leaf has no rollup");
     }
 
     /// A row can be Pending and still not ready. The wait outlives the status
@@ -692,90 +902,6 @@ mod tests {
         assert!(row(&rows, "t-plain").marks.ready, "the plain row is the control");
         let fleet = ws.fleet_rows().into_iter().find(|r| r.project == PROJECT).expect("the row");
         assert_eq!(fleet.queue, 1, "only the plain row is dispatchable, so no stall is owed");
-    }
-
-    #[test]
-    fn a_waiting_row_past_the_window_carries_waiting_too_long() {
-        let dir = tempdir().expect("tempdir");
-        let ws = fixture(dir.path());
-        let mut waiting = task("t-1", TaskStatus::Waiting);
-        waiting.waiting_on = Some(Waiting {
-            kind: Some(WaitingKind::Decision),
-            detail: Some("which shape".to_owned()),
-            on: None,
-            verification: false,
-            parked: false,
-            since: None,
-        });
-        waiting.updated_at = epoch(0);
-        ws.seed_test_task(waiting);
-
-        let rows = ws.board_rows(PROJECT, epoch(WINDOW + 1), WINDOW);
-        assert!(row(&rows, "t-1").marks.waiting_too_long, "the wait's own age is the signal");
-    }
-
-    /// A wait parked by design is the user's own deferral, so the row carries
-    /// neither stalled mark however old it is; un-parking restores both from
-    /// its real age (#2472).
-    #[test]
-    fn a_parked_wait_carries_neither_stalled_mark() {
-        let dir = tempdir().expect("tempdir");
-        let ws = fixture(dir.path());
-        let wait = |parked: bool| Waiting {
-            kind: Some(WaitingKind::Resource),
-            detail: Some("needs the owner's dashboard".to_owned()),
-            on: None,
-            verification: false,
-            parked,
-            since: None,
-        };
-        let mut parked = task("t-parked", TaskStatus::Waiting);
-        parked.waiting_on = Some(wait(true));
-        parked.updated_at = epoch(0);
-        ws.seed_test_task(parked);
-        let mut unsettled = task("t-unparked", TaskStatus::Waiting);
-        unsettled.waiting_on = Some(wait(false));
-        unsettled.updated_at = epoch(0);
-        ws.seed_test_task(unsettled);
-
-        let rows = ws.board_rows(PROJECT, epoch(WINDOW + 1), WINDOW);
-        assert!(
-            !row(&rows, "t-parked").marks.no_movement,
-            "a parked wait is a deferral, not a row nobody has moved",
-        );
-        assert!(
-            !row(&rows, "t-parked").marks.waiting_too_long,
-            "and its age is no stall while it is parked",
-        );
-        assert!(
-            row(&rows, "t-unparked").marks.no_movement,
-            "the un-parked control keeps the no-movement mark",
-        );
-        assert!(row(&rows, "t-unparked").marks.waiting_too_long, "and keeps the wait-stall mark");
-
-        ws.update_task(PROJECT, &TaskId::from("t-parked"), By::System, |task| {
-            if let Some(wait) = task.waiting_on.as_mut() {
-                wait.parked = false;
-            }
-        })
-        .expect("no refusal")
-        .expect("the row is there");
-        let updated_at = ws
-            .tasks_for_project(PROJECT)
-            .into_iter()
-            .find(|task| task.id == TaskId::from("t-parked"))
-            .expect("the row survived")
-            .updated_at;
-        let later = updated_at + Duration::from_secs(WINDOW + 1);
-        let rows = ws.board_rows(PROJECT, later, WINDOW);
-        assert!(
-            row(&rows, "t-parked").marks.no_movement,
-            "un-parked, its real age is the mark again",
-        );
-        assert!(
-            row(&rows, "t-parked").marks.waiting_too_long,
-            "both marks come back with the park gone",
-        );
     }
 
     /// A withdrawn park leaves the waiting-on-you presentation (#2340):

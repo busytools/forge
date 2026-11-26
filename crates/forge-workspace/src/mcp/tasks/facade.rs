@@ -80,6 +80,12 @@ pub(crate) struct TaskDraft {
     pub parent: Option<String>,
     #[serde(default)]
     pub estimate: Option<String>,
+    /// Finite work or standing work; omitted reads as finite.
+    #[serde(default)]
+    pub kind: Option<forge_primitives::tasks::TaskKind>,
+    /// A standing row's check interval, in the estimate grammar.
+    #[serde(default)]
+    pub cadence: Option<String>,
     /// Queue order; lower reads first.
     #[serde(default)]
     pub rank: Option<i64>,
@@ -273,14 +279,8 @@ pub(crate) trait TasksFacade: Send + Sync {
     fn delete_task(&self, caller: &SessionSlot, id: &TaskId)
     -> Result<RemovedTaskTree, TasksError>;
 
-    /// Claim `id`, or the first ready row of `epic` by rank, for the
-    /// caller. Backs `tasks__claim`.
-    fn claim_task(
-        &self,
-        caller: &SessionSlot,
-        id: Option<&str>,
-        epic: Option<&str>,
-    ) -> Result<Task, TasksError>;
+    /// Claim `id` for the caller. Backs `tasks__claim`.
+    fn claim_task(&self, caller: &SessionSlot, id: &str) -> Result<Task, TasksError>;
 
     /// Put the caller's row `id` into waiting. Backs `tasks__wait`.
     fn wait_task(
@@ -325,6 +325,12 @@ impl TasksFacade for ProdTasksFacade {
             ),
             None => None,
         };
+        let cadence = match draft.cadence.as_deref() {
+            Some(words) => Some(
+                Estimate::parse(words).ok_or_else(|| TasksError::BadEstimate(words.to_owned()))?,
+            ),
+            None => None,
+        };
         let links = draft.links.iter().map(|draft| draft.to_link(now)).collect();
         let task = Task {
             id: TaskId::from(uuid::Uuid::new_v4().to_string()),
@@ -333,18 +339,21 @@ impl TasksFacade for ProdTasksFacade {
             active_form: draft.active_form,
             detail: draft.detail,
             status: draft.status.unwrap_or(TaskStatus::Pending),
+            kind: draft.kind.unwrap_or_default(),
             owner: draft
                 .owner
                 .map(|label| SessionSlot::new(&cx.project_org, &cx.project_name, label)),
             parent: resolve_parent(&ws, &cx.project_name, draft.parent.as_deref())?,
             waiting_on: None,
+            decision: None,
             estimate,
+            cadence,
             rank: draft.rank,
             verify: draft.verify,
             attested: None,
             reserved: draft.reserved,
             links,
-            attempt: 0,
+            version: 0,
             archived_at: None,
             created_at: now,
             updated_at: now,
@@ -428,27 +437,13 @@ impl TasksFacade for ProdTasksFacade {
         Ok(RemovedTaskTree { task, descendants_removed: removed.len() - 1 })
     }
 
-    fn claim_task(
-        &self,
-        caller: &SessionSlot,
-        id: Option<&str>,
-        epic: Option<&str>,
-    ) -> Result<Task, TasksError> {
+    fn claim_task(&self, caller: &SessionSlot, id: &str) -> Result<Task, TasksError> {
         let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
-        let by_id = id.map(TaskId::from);
-        let in_epic = epic.map(TaskId::from);
-        match ws.claim_task(&cx.project_name, caller, by_id.as_ref(), in_epic.as_ref()) {
+        let stated = TaskId::from(id);
+        match ws.claim_task(&cx.project_name, caller, &stated) {
             Ok(task) => Ok(task),
-            Err(ClaimError::NotFound) => {
-                // A claim states one of the two; the core answers
-                // NotReady when it states neither.
-                let stated = by_id.as_ref().or(in_epic.as_ref());
-                Err(match stated {
-                    Some(stated) => missing_task_error(&ws, &cx.project_name, stated),
-                    None => TasksError::Refused(ClaimError::NotFound.to_string()),
-                })
-            }
+            Err(ClaimError::NotFound) => Err(missing_task_error(&ws, &cx.project_name, &stated)),
             Err(refused) => Err(TasksError::Refused(refused.to_string())),
         }
     }
@@ -512,16 +507,19 @@ fn mock_task(caller: &SessionSlot) -> Task {
         active_form: None,
         detail: None,
         status: TaskStatus::Pending,
+        kind: forge_primitives::tasks::TaskKind::Finite,
         owner: None,
         parent: None,
         waiting_on: None,
+        decision: None,
         estimate: None,
+        cadence: None,
         rank: None,
         verify: None,
         attested: None,
         reserved: None,
         links: Vec::new(),
-        attempt: 0,
+        version: 0,
         archived_at: None,
         created_at: now,
         updated_at: now,
@@ -532,9 +530,9 @@ fn mock_task(caller: &SessionSlot) -> Task {
 #[cfg(test)]
 type ListCall = (Option<String>, Option<String>, Option<TaskStatus>, Option<bool>);
 
-/// One `tasks__claim` call: the caller, the epic and the project it asked for.
+/// One `tasks__claim` call: the caller and the row it asked for.
 #[cfg(test)]
-type ClaimCall = (SessionSlot, Option<String>, Option<String>);
+type ClaimCall = (SessionSlot, String);
 
 /// One `tasks__wait` call: the caller, the row, the kind, the detail and the row waited on.
 #[cfg(test)]
@@ -581,6 +579,7 @@ impl TasksFacade for MockTasksFacade {
             active_form: draft.active_form.clone(),
             detail: draft.detail.clone(),
             status: draft.status.unwrap_or(TaskStatus::Pending),
+            kind: draft.kind.unwrap_or_default(),
             owner: draft
                 .owner
                 .clone()
@@ -590,13 +589,15 @@ impl TasksFacade for MockTasksFacade {
             // read a prefix here as unresolved.
             parent: draft.parent.as_deref().map(TaskId::from),
             waiting_on: None,
+            decision: None,
             estimate: draft.estimate.as_deref().and_then(Estimate::parse),
+            cadence: draft.cadence.as_deref().and_then(Estimate::parse),
             rank: draft.rank,
             verify: draft.verify,
             attested: None,
             reserved: draft.reserved,
             links: draft.links.iter().map(|draft| draft.to_link(now)).collect(),
-            attempt: 0,
+            version: 0,
             archived_at: None,
             created_at: now,
             updated_at: now,
@@ -605,13 +606,8 @@ impl TasksFacade for MockTasksFacade {
         Ok(task)
     }
 
-    fn claim_task(
-        &self,
-        caller: &SessionSlot,
-        id: Option<&str>,
-        epic: Option<&str>,
-    ) -> Result<Task, TasksError> {
-        self.claimed.lock().push((caller.clone(), id.map(str::to_owned), epic.map(str::to_owned)));
+    fn claim_task(&self, caller: &SessionSlot, id: &str) -> Result<Task, TasksError> {
+        self.claimed.lock().push((caller.clone(), id.to_owned()));
         self.claim_result.lock().clone().unwrap_or_else(|| Ok(mock_task(caller)))
     }
 
@@ -718,16 +714,19 @@ mod prod_facade_tests {
             active_form: None,
             detail: None,
             status: TaskStatus::Pending,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner: None,
             parent: None,
             waiting_on: None,
+            decision: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: None,
             attested: None,
             reserved: None,
             links: Vec::new(),
-            attempt: 0,
+            version: 0,
             archived_at: None,
             created_at: SystemTime::UNIX_EPOCH,
             updated_at: SystemTime::UNIX_EPOCH,
@@ -743,6 +742,8 @@ mod prod_facade_tests {
             owner: owner.map(str::to_owned),
             parent: parent.map(str::to_owned),
             estimate: None,
+            kind: None,
+            cadence: None,
             rank: None,
             verify: None,
             reserved: None,
@@ -913,14 +914,9 @@ mod prod_facade_tests {
             project: "otherproj".to_owned(),
         };
         assert_eq!(
-            facade.claim_task(&lead, Some("other-1"), None),
+            facade.claim_task(&lead, "other-1"),
             Err(foreign()),
             "a claim naming another project's row says which project holds it",
-        );
-        assert_eq!(
-            facade.claim_task(&lead, None, Some("other-1")),
-            Err(foreign()),
-            "an epic naming another project's row says the same",
         );
         assert_eq!(
             facade.wait_task(&lead, &TaskId::from("other-1"), WaitingKind::Resource, None, None),
@@ -940,12 +936,12 @@ mod prod_facade_tests {
         );
 
         assert_eq!(
-            facade.claim_task(&lead, Some("other"), None),
+            facade.claim_task(&lead, "other"),
             Err(TasksError::NoSuchTask { id: "other".to_owned() }),
             "a prefix of another project's id names no row here",
         );
         assert_eq!(
-            facade.claim_task(&lead, Some("nope"), None),
+            facade.claim_task(&lead, "nope"),
             Err(TasksError::NoSuchTask { id: "nope".to_owned() }),
         );
         assert_eq!(
@@ -1237,11 +1233,10 @@ mod prod_facade_tests {
 
     /// A parent is an id too, and the store holds the row it names: a
     /// child created - or re-parented - under a short form is the epic's
-    /// child for every literal comparison the board makes, the claim by
-    /// epic included.
+    /// child for every literal comparison the board makes.
     #[test]
     fn a_stated_parent_is_stored_as_the_row_it_names() {
-        let (ws, facade, lead, worker) = fixture();
+        let (ws, facade, lead, _worker) = fixture();
         let epic = "7ed0aaaa-0000-4000-8000-000000000001";
         ws.seed_test_task(seeded_task(epic, "the epic"));
 
@@ -1252,11 +1247,6 @@ mod prod_facade_tests {
             Some(TaskId::from(epic)),
             "the store holds the row the stated prefix named",
         );
-
-        let claimed = facade
-            .claim_task(&worker, None, Some("7ed0aaaa"))
-            .expect("the epic's own prefix pulls the child it now holds");
-        assert_eq!(claimed.id, child.id);
 
         let moved = facade
             .update_task(

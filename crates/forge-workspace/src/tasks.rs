@@ -23,13 +23,13 @@ use crate::workspace::Workspace;
 /// Why a claim was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ClaimError {
-    /// No row carries the id (or the epic has nothing ready).
+    /// No row carries the id.
     NotFound,
     /// The stated id matched more than one row, each named.
     Ambiguous(Vec<IdCandidate>),
     /// The row is held by a live seat, named.
     OwnedByLiveSeat(String),
-    /// The row is waiting on something, or nothing ready was there to take.
+    /// The row is not pending, holds a wait, or is reserved for the user.
     NotReady,
     /// The caller already has a row in progress.
     AlreadyWorking,
@@ -163,7 +163,7 @@ impl std::fmt::Display for ClaimError {
             Self::NotFound => write!(f, "no such row"),
             Self::Ambiguous(candidates) => write!(f, "{}", ambiguous_words(candidates)),
             Self::OwnedByLiveSeat(label) => write!(f, "{label} holds this row"),
-            Self::NotReady => write!(f, "nothing ready to claim there"),
+            Self::NotReady => write!(f, "this row is not ready to claim"),
             Self::AlreadyWorking => write!(f, "you already have a row in progress"),
         }
     }
@@ -325,11 +325,6 @@ fn find_task_index(tasks: &[Task], project_name: &str, stated: &TaskId) -> Resul
                 .collect(),
         )),
     }
-}
-
-/// Whether a status is an end: nothing more happens on the row.
-fn is_terminal(status: TaskStatus) -> bool {
-    matches!(status, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Canceled)
 }
 
 /// The verify a row is bound by: the gate it was MINTED with, or none.
@@ -556,7 +551,7 @@ impl Workspace {
                     .filter(|t| {
                         t.project_name == project_name
                             && t.parent.as_ref() == Some(&next.id)
-                            && !is_terminal(t.status)
+                            && !t.status.is_terminal()
                     })
                     .map(|t| t.subject.clone())
                     .collect();
@@ -602,10 +597,12 @@ impl Workspace {
                     .collect();
                 for task in &mut removed {
                     task.archived_at = Some(at);
+                    task.version = task.version.saturating_add(1);
                 }
                 tasks.retain(|t| !(t.project_name == project_name && doomed.contains(&t.id)));
             }
 
+            next.version = next.version.saturating_add(1);
             next.updated_at = at;
             if removed.is_empty() {
                 tasks[index] = next.clone();
@@ -637,7 +634,7 @@ impl Workspace {
         if prior != task.status {
             self.record_transition(project_name, &task.id, Some(prior), task.status, by);
         }
-        if is_terminal(task.status) {
+        if task.status.is_terminal() {
             self.resolve_wait_on(project_name, &task.id);
         }
         self.announce_tasks_changed(project_name);
@@ -756,7 +753,8 @@ impl Workspace {
     }
 
     /// The user sends a verified row back: it returns to its owner in
-    /// progress, the words land in the detail, and the attempt ticks.
+    /// progress, and the words land in the detail - the reason a row was
+    /// sent back is the record, not a counter.
     pub(crate) fn send_back_task(
         &self,
         project_name: &str,
@@ -771,7 +769,6 @@ impl Workspace {
             }
             task.waiting_on = None;
             task.status = TaskStatus::InProgress;
-            task.attempt += 1;
             append_words(task, words);
             Ok(())
         })
@@ -841,6 +838,7 @@ impl Workspace {
             queue.insert(target, moved);
             for (rank, i) in queue.iter().enumerate() {
                 tasks[*i].rank = Some(i64::try_from(rank).unwrap_or(i64::MAX));
+                tasks[*i].version = tasks[*i].version.saturating_add(1);
             }
             tasks[index].updated_at = at;
             // The queue was renumbered: one write per row it holds.
@@ -873,17 +871,16 @@ impl Workspace {
         Ok(moved.map(|task| (task, prior)))
     }
 
-    /// Claim the top of a queue: the row `by_id`, or the first ready row
-    /// of `in_epic` by rank. Owner and in_progress land in one write, the
-    /// attempt ticks, and the claim is refused - by name - for a row a
-    /// live seat holds, a row that is waiting, or a caller already
-    /// working another row.
+    /// Claim a row by id: owner and in_progress land in one write, and the
+    /// claim is refused - by name - for a row a live seat holds, a row
+    /// that is not ready (pending, nothing waiting on it, not reserved),
+    /// or a caller already working another row. Epics are unchanged: a
+    /// claim names the row it wants.
     pub(crate) fn claim_task(
         &self,
         project_name: &str,
         slot: &SessionSlot,
-        by_id: Option<&TaskId>,
-        in_epic: Option<&TaskId>,
+        id: &TaskId,
     ) -> Result<Task, ClaimError> {
         let outcome = self.with_tasks_mut(|tasks| {
             let already = tasks.iter().any(|t| {
@@ -894,34 +891,8 @@ impl Workspace {
             if already {
                 return Err(ClaimError::AlreadyWorking);
             }
-            let index = match (by_id, in_epic) {
-                (Some(id), _) => find_task_index(tasks, project_name, id)?,
-                (None, Some(epic)) => {
-                    let epic = tasks[find_task_index(tasks, project_name, epic)?].id.clone();
-                    let mut ready: Vec<usize> = tasks
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, t)| {
-                            t.project_name == project_name
-                                && t.parent.as_ref() == Some(&epic)
-                                && t.status == TaskStatus::Pending
-                                && t.waiting_on.is_none()
-                                && t.owner.is_none()
-                                && t.reserved.is_none()
-                        })
-                        .map(|(i, _)| i)
-                        .collect();
-                    ready.sort_by_key(|i| {
-                        (tasks[*i].rank.unwrap_or(i64::MAX), tasks[*i].created_at)
-                    });
-                    ready.first().copied().ok_or(ClaimError::NotReady)?
-                }
-                (None, None) => return Err(ClaimError::NotReady),
-            };
-            let status = tasks[index].status;
-            let waiting = tasks[index].waiting_on.is_some();
-            let reserved = tasks[index].reserved.is_some();
-            if status != TaskStatus::Pending || waiting || reserved {
+            let index = find_task_index(tasks, project_name, id)?;
+            if !tasks[index].is_ready() {
                 return Err(ClaimError::NotReady);
             }
             let holder = tasks[index].owner.clone();
@@ -934,7 +905,7 @@ impl Workspace {
             let prior = tasks[index].status;
             tasks[index].owner = Some(slot.clone());
             tasks[index].status = TaskStatus::InProgress;
-            tasks[index].attempt += 1;
+            tasks[index].version = tasks[index].version.saturating_add(1);
             tasks[index].updated_at = SystemTime::now();
             self.persist_task(&tasks[index]);
             Ok((tasks[index].clone(), prior))
@@ -997,6 +968,7 @@ impl Workspace {
                 since: Some(since),
             });
             tasks[index].status = TaskStatus::Waiting;
+            tasks[index].version = tasks[index].version.saturating_add(1);
             tasks[index].updated_at = at;
             self.persist_task(&tasks[index]);
             Ok((tasks[index].clone(), prior))
@@ -1032,6 +1004,7 @@ impl Workspace {
                 }
                 task.waiting_on = None;
                 task.status = TaskStatus::Pending;
+                task.version = task.version.saturating_add(1);
                 task.updated_at = SystemTime::now();
                 released.push(task.clone());
             }
@@ -1285,16 +1258,19 @@ mod tests {
             active_form: None,
             detail: None,
             status: TaskStatus::Pending,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner: None,
             parent: None,
             waiting_on: None,
+            decision: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: None,
             attested: None,
             reserved: None,
             links: Vec::new(),
-            attempt: 0,
+            version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,
@@ -1464,7 +1440,7 @@ mod tests {
         still_seeded("an update naming no loaded row");
 
         assert_eq!(
-            ws.claim_task("proj", &worker, Some(&TaskId::from("seed-1")), None),
+            ws.claim_task("proj", &worker, &TaskId::from("seed-1")),
             Err(ClaimError::NotFound),
             "precondition: the empty in-memory set holds no such row to claim",
         );
@@ -1508,8 +1484,7 @@ mod tests {
 
         // Doors that DO change something, each on a loaded row: a whole-set
         // write gated behind the change takes the unloaded rows with it.
-        ws.claim_task("proj", &worker, Some(&TaskId::from("created")), None)
-            .expect("the loaded row is free");
+        ws.claim_task("proj", &worker, &TaskId::from("created")).expect("the loaded row is free");
         still_seeded("a claim of a loaded row");
 
         ws.wait_task(
@@ -1549,8 +1524,7 @@ mod tests {
         // A released wait: the sweep writes each row it hands back.
         ws.push_task(sample_task("blocker", "proj"));
         ws.push_task(sample_task("waiter", "proj"));
-        ws.claim_task("proj", &other, Some(&TaskId::from("waiter")), None)
-            .expect("the loaded row is free");
+        ws.claim_task("proj", &other, &TaskId::from("waiter")).expect("the loaded row is free");
         ws.wait_task(
             "proj",
             &TaskId::from("waiter"),
@@ -1913,7 +1887,7 @@ mod tests {
     }
 
     #[test]
-    fn a_send_back_returns_the_row_and_ticks_the_attempt() {
+    fn a_send_back_returns_the_row_with_the_reason() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project("proj", "/tmp/tp-sendback");
@@ -1925,7 +1899,6 @@ mod tests {
             .expect("no refusal")
             .expect("the row is there");
         assert_eq!(sent.status, TaskStatus::InProgress, "back to its owner's hands");
-        assert_eq!(sent.attempt, 1, "the send-back ticks the attempt");
         assert_eq!(
             sent.detail.as_deref(),
             Some("the rail elides wrong"),
@@ -1956,7 +1929,7 @@ mod tests {
         ws.seed_test_project("proj", "/tmp/tp-answer");
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
         ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
         ws.wait_task("proj", &TaskId::from("t-1"), &worker, WaitingKind::Decision, None, None)
             .expect("wait");
 
@@ -2070,7 +2043,7 @@ mod tests {
     }
 
     #[test]
-    fn claim_sets_owner_and_in_progress_in_one_write_and_ticks_the_attempt() {
+    fn claim_sets_owner_and_in_progress_in_one_write() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project("proj", "/tmp/tp-claim");
@@ -2078,18 +2051,46 @@ mod tests {
         ws.push_task(sample_task("t-1", "proj"));
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
 
-        let claimed = ws
-            .claim_task("proj", &worker, Some(&TaskId::from("t-1")), None)
-            .expect("the row is free");
+        let claimed =
+            ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("the row is free");
         assert_eq!(claimed.owner.as_ref().map(SessionSlot::label), Some("w-1"));
         assert_eq!(claimed.status, TaskStatus::InProgress, "owner and status in one write");
-        assert_eq!(claimed.attempt, 1, "each claim ticks the attempt");
+        assert_eq!(claimed.version, 1, "the claim is the row's first write");
         let history = history_of(&ws, "proj");
         assert_eq!(history.len(), 2, "creation and the claim: {history:?}");
         let claim = history.last().expect("the claim's transition");
         assert_eq!(claim.from, Some(TaskStatus::Pending));
         assert_eq!(claim.to, TaskStatus::InProgress);
         assert_eq!(claim.by, By::Seat(worker));
+    }
+
+    /// Every write the row takes moves its version, so an update naming
+    /// the version it read can tell a lost write from a clean one. Row
+    /// creation is version 0; nothing else leaves it where it was.
+    #[test]
+    fn every_write_bumps_the_version() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-version");
+        install_db(&ws, dir.path());
+        ws.push_task(sample_task("t-1", "proj"));
+        let version = |ws: &Workspace| {
+            ws.tasks_for_project("proj").into_iter().next().expect("the row").version
+        };
+        assert_eq!(version(&ws), 0, "creation is version 0");
+
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.update_task("proj", &TaskId::from("t-1"), By::Seat(worker.clone()), |task| {
+            task.active_form = Some("fixing the rail".to_owned());
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+        assert_eq!(version(&ws), 1, "an update is a write");
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
+        assert_eq!(version(&ws), 2, "a claim is a write");
+        ws.wait_task("proj", &TaskId::from("t-1"), &worker, WaitingKind::Resource, None, None)
+            .expect("wait");
+        assert_eq!(version(&ws), 3, "a wait is a write");
     }
 
     #[test]
@@ -2104,7 +2105,7 @@ mod tests {
         let other = SessionSlot::worker("TestOrg", "proj", "w-2");
 
         assert_eq!(
-            ws.claim_task("proj", &other, Some(&TaskId::from("t-1")), None),
+            ws.claim_task("proj", &other, &TaskId::from("t-1")),
             Err(ClaimError::OwnedByLiveSeat("w-1".to_owned())),
             "a live seat's row is refused by name",
         );
@@ -2123,7 +2124,7 @@ mod tests {
         let worker = SessionSlot::worker("TestOrg", "proj", "w-2");
 
         let claimed = ws
-            .claim_task("proj", &worker, Some(&TaskId::from("t-1")), None)
+            .claim_task("proj", &worker, &TaskId::from("t-1"))
             .expect("a dead owner does not hold a row");
         assert_eq!(claimed.owner.as_ref().map(SessionSlot::label), Some("w-2"));
     }
@@ -2136,67 +2137,33 @@ mod tests {
         ws.push_task(sample_task("t-1", "proj"));
         ws.push_task(sample_task("t-2", "proj"));
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("first claim");
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("first claim");
 
         assert_eq!(
-            ws.claim_task("proj", &worker, Some(&TaskId::from("t-2")), None),
+            ws.claim_task("proj", &worker, &TaskId::from("t-2")),
             Err(ClaimError::AlreadyWorking),
             "one in progress per worker",
         );
     }
 
-    #[test]
-    fn claim_by_epic_takes_the_top_ready_row_by_rank() {
-        let dir = tempdir().expect("tempdir");
-        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project("proj", "/tmp/tp-claim-rank");
-        ws.push_task(sample_task_with_parent("epic", None, "proj"));
-        ws.push_task(Task {
-            rank: Some(20),
-            ..sample_task_with_parent("late", Some("epic"), "proj")
-        });
-        ws.push_task(Task {
-            rank: Some(10),
-            ..sample_task_with_parent("early", Some("epic"), "proj")
-        });
-        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
-
-        let claimed = ws
-            .claim_task("proj", &worker, None, Some(&TaskId::from("epic")))
-            .expect("a ready row is there");
-        assert_eq!(claimed.id, TaskId::from("early"), "the top ready row by rank");
-    }
-
-    /// A pick reserved for the user is nobody's to claim: neither by id nor
-    /// through its epic's ready row (#2423/C).
+    /// A pick reserved for the user is nobody's to claim (#2423/C).
     #[test]
     fn a_reserved_pick_is_not_claimable() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project("proj", "/tmp/tp-claim-reserved");
-        ws.push_task(sample_task_with_parent("epic", None, "proj"));
-        // The reserved row OUTRANKS the free one, so only the reservation
-        // filter can keep the epic pull off it.
-        ws.push_task(Task {
-            rank: Some(1),
-            reserved: Some(ReservedBy::User),
-            ..sample_task_with_parent("kept", Some("epic"), "proj")
-        });
-        ws.push_task(Task {
-            rank: Some(10),
-            ..sample_task_with_parent("free", Some("epic"), "proj")
-        });
+        ws.push_task(Task { reserved: Some(ReservedBy::User), ..sample_task("kept", "proj") });
+        ws.push_task(sample_task("free", "proj"));
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
 
         assert_eq!(
-            ws.claim_task("proj", &worker, Some(&TaskId::from("kept")), None),
+            ws.claim_task("proj", &worker, &TaskId::from("kept")),
             Err(ClaimError::NotReady),
             "a named reserved row is refused as not ready",
         );
-        let claimed = ws
-            .claim_task("proj", &worker, None, Some(&TaskId::from("epic")))
-            .expect("the free row is still there");
-        assert_eq!(claimed.id, TaskId::from("free"), "the epic pull skips the reserved row");
+        let claimed =
+            ws.claim_task("proj", &worker, &TaskId::from("free")).expect("the free row is there");
+        assert_eq!(claimed.id, TaskId::from("free"), "the unreserved row is claimable");
     }
 
     /// The reservation is the user's to set and release, and the write
@@ -2238,22 +2205,17 @@ mod tests {
         ws.seed_test_project("proj", "/tmp/tp-claim-prefix");
         ws.push_task(named_task("7ed0aaaa-0000-4000-8000-000000000001", "fix the rail", "proj"));
         ws.push_task(named_task("7ed0bbbb-0000-4000-8000-000000000002", "add tests", "proj"));
-        ws.push_task(named_task("epic-7ed0aaaa-0000-4000-8000-000000000003", "the epic", "proj"));
-        ws.push_task(Task {
-            parent: Some(TaskId::from("epic-7ed0aaaa-0000-4000-8000-000000000003")),
-            ..named_task("child-1", "the child", "proj")
-        });
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
 
         let refused = ws
-            .claim_task("proj", &worker, Some(&TaskId::from("7ed0")), None)
+            .claim_task("proj", &worker, &TaskId::from("7ed0"))
             .expect_err("two rows carry that prefix");
         let said = refused.to_string();
         assert!(said.contains("7ed0aaaa-0000-4000-8000-000000000001"), "one row is named: {said}");
         assert!(said.contains("7ed0bbbb-0000-4000-8000-000000000002"), "and the other: {said}");
 
         let unknown = ws
-            .claim_task("proj", &worker, Some(&TaskId::from("ffff")), None)
+            .claim_task("proj", &worker, &TaskId::from("ffff"))
             .expect_err("no row carries that prefix");
         assert!(
             unknown.to_string().contains("no such row"),
@@ -2261,22 +2223,12 @@ mod tests {
         );
 
         let claimed = ws
-            .claim_task("proj", &worker, Some(&TaskId::from("7ed0bb")), None)
+            .claim_task("proj", &worker, &TaskId::from("7ed0bb"))
             .expect("one row carries that prefix");
         assert_eq!(
             claimed.id,
             TaskId::from("7ed0bbbb-0000-4000-8000-000000000002"),
             "the prefix landed on its row",
-        );
-
-        let other = SessionSlot::worker("TestOrg", "proj", "w-2");
-        let by_epic = ws
-            .claim_task("proj", &other, None, Some(&TaskId::from("epic-7ed0")))
-            .expect("one row carries that prefix");
-        assert_eq!(
-            by_epic.id,
-            TaskId::from("child-1"),
-            "an epic is named the same way: the prefix pulled its ready child",
         );
     }
 
@@ -2327,8 +2279,7 @@ mod tests {
         ws.push_task(named_task("7ed0aaaa-0000-4000-8000-000000000001", "fix the rail", "proj"));
         ws.push_task(named_task("7ed0bbbb-0000-4000-8000-000000000002", "add tests", "proj"));
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
-        ws.claim_task("proj", &worker, Some(&TaskId::from("7ed0bb")), None)
-            .expect("claim by prefix");
+        ws.claim_task("proj", &worker, &TaskId::from("7ed0bb")).expect("claim by prefix");
 
         // The blocker resolves the same way, and the full id is what
         // lands in the wait - the release matches it exactly.
@@ -2367,7 +2318,7 @@ mod tests {
         ws.seed_test_project("proj", "/tmp/tp-wait-owner-first");
         ws.push_task(sample_task("t-1", "proj"));
         let holder = SessionSlot::worker("TestOrg", "proj", "w-1");
-        ws.claim_task("proj", &holder, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.claim_task("proj", &holder, &TaskId::from("t-1")).expect("claim");
 
         let other = SessionSlot::worker("TestOrg", "proj", "w-2");
         assert_eq!(
@@ -2396,7 +2347,7 @@ mod tests {
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
 
         let claimed = ws
-            .claim_task("proj", &worker, Some(&TaskId::from("7ed0")), None)
+            .claim_task("proj", &worker, &TaskId::from("7ed0"))
             .expect("the exact id names its row");
         assert_eq!(claimed.id, TaskId::from("7ed0"), "the exact row, not the one it prefixes");
     }
@@ -2409,7 +2360,7 @@ mod tests {
         ws.push_task(sample_task("blocker", "proj"));
         ws.push_task(sample_task("t-2", "proj"));
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-2")), None)
+        ws.claim_task("proj", &worker, &TaskId::from("t-2"))
             .expect("claim the row before waiting it");
         ws.wait_task(
             "proj",
@@ -2421,7 +2372,7 @@ mod tests {
         )
         .expect("the owner may wait its own row");
         assert_eq!(
-            ws.claim_task("proj", &worker, Some(&TaskId::from("t-2")), None),
+            ws.claim_task("proj", &worker, &TaskId::from("t-2")),
             Err(ClaimError::NotReady),
             "a waiting row is not claimable",
         );
@@ -2439,7 +2390,7 @@ mod tests {
         let t2 = t2.expect("t-2 is live");
         assert_eq!(t2.status, TaskStatus::Pending, "a canceled blocker still clears the wait");
         assert_eq!(t2.waiting_on, None);
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-2")), None)
+        ws.claim_task("proj", &worker, &TaskId::from("t-2"))
             .expect("and the row is claimable again");
     }
 
@@ -2454,7 +2405,7 @@ mod tests {
         ws.seed_test_project("proj", "/tmp/tp-complete-parked");
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
         ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
         ws.wait_task(
             "proj",
             &TaskId::from("t-1"),
@@ -2529,7 +2480,7 @@ mod tests {
             owner: Some(worker.clone()),
             ..sample_task("t-1", "proj")
         });
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
         ws.wait_task(
             "proj",
             &TaskId::from("t-1"),
@@ -2592,7 +2543,7 @@ mod tests {
             owner: Some(worker.clone()),
             ..sample_task("t-1", "proj")
         });
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
         ws.wait_task(
             "proj",
             &TaskId::from("t-1"),
@@ -2839,7 +2790,7 @@ mod tests {
         ws.seed_test_project("proj", "/tmp/tp-withdraw-question");
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
         ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
         ws.wait_task(
             "proj",
             &TaskId::from("t-1"),
@@ -2886,7 +2837,7 @@ mod tests {
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
         ws.push_task(sample_task("blocker", "proj"));
         ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
         ws.wait_task(
             "proj",
             &TaskId::from("t-1"),
@@ -3141,7 +3092,7 @@ mod tests {
         ws.push_task(sample_task("epic", "proj"));
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
         ws.push_task(sample_task_with_parent("t-1", Some("epic"), "proj"));
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
         ws.wait_task(
             "proj",
             &TaskId::from("t-1"),
@@ -3175,7 +3126,7 @@ mod tests {
         ws.push_task(sample_task_with_parent("branch", Some("root"), "proj"));
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
         ws.push_task(sample_task_with_parent("asked", Some("branch"), "proj"));
-        ws.claim_task("proj", &worker, Some(&TaskId::from("asked")), None).expect("claim");
+        ws.claim_task("proj", &worker, &TaskId::from("asked")).expect("claim");
         ws.wait_task(
             "proj",
             &TaskId::from("asked"),
@@ -3517,7 +3468,7 @@ mod tests {
         install_db(&ws, dir.path());
         ws.push_task(sample_task("t-1", "proj"));
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
-        ws.claim_task("proj", &worker, Some(&TaskId::from("t-1")), None).expect("claim");
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
         ws.update_task("proj", &TaskId::from("t-1"), By::Seat(worker.clone()), |task| {
             task.status = TaskStatus::Completed;
         })

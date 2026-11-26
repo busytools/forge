@@ -91,6 +91,7 @@ fn task_to_json(task: &Task) -> serde_json::Value {
     map.insert("project".to_owned(), serde_json::json!(task.project_name));
     map.insert("subject".to_owned(), serde_json::json!(task.subject));
     map.insert("status".to_owned(), serde_json::json!(status_str(task.status)));
+    map.insert("kind".to_owned(), serde_json::json!(kind_str(task.kind)));
     // An unclaimed task omits `owner` rather than writing a sentinel: a
     // caller that reads the field back and filters on it would otherwise
     // find none, and a session actually labelled `unclaimed` would read the
@@ -100,6 +101,7 @@ fn task_to_json(task: &Task) -> serde_json::Value {
         ("detail", task.detail.as_deref()),
         ("artifact", artifact(task)),
         ("estimate", task.estimate.as_ref().map(|e| e.words.as_str())),
+        ("cadence", task.cadence.as_ref().map(|c| c.words.as_str())),
         ("parent", task.parent.as_ref().map(TaskId::as_str)),
         ("owner", task.owner.as_ref().map(SessionSlot::label)),
     ] {
@@ -123,8 +125,39 @@ fn task_to_json(task: &Task) -> serde_json::Value {
             }),
         );
     }
+    if let Some(decision) = &task.decision {
+        map.insert("decision".to_owned(), decision_json(decision));
+    }
+    map.insert("version".to_owned(), serde_json::json!(task.version));
     map.insert("created_at".to_owned(), serde_json::json!(fmt_rfc3339(task.created_at)));
     map.insert("updated_at".to_owned(), serde_json::json!(fmt_rfc3339(task.updated_at)));
+    serde_json::Value::Object(map)
+}
+
+/// The kind as the tool schema spells it.
+fn kind_str(kind: forge_primitives::tasks::TaskKind) -> &'static str {
+    match kind {
+        forge_primitives::tasks::TaskKind::Finite => "finite",
+        forge_primitives::tasks::TaskKind::Standing => "standing",
+    }
+}
+
+/// The decision record as the tool output reads it: the ask, its options,
+/// and the answer once given.
+fn decision_json(decision: &forge_primitives::tasks::Decision) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    map.insert("question".to_owned(), serde_json::json!(decision.question));
+    map.insert("options".to_owned(), serde_json::json!(decision.options));
+    if let Some(answer) = &decision.answer {
+        map.insert(
+            "answer".to_owned(),
+            serde_json::json!({
+                "choice": answer.choice,
+                "note": answer.note,
+                "at": fmt_rfc3339(answer.at),
+            }),
+        );
+    }
     serde_json::Value::Object(map)
 }
 
@@ -181,6 +214,10 @@ impl Tool for Create {
          `parent` names another task in the same project this one belongs under, `estimate` a \
          duration, `rank` the queue order, `verify` whether completion waits on the user, \
          `links` the references it carries (issues, PRs, specs, paths), `detail` free prose. \
+         `kind` is `finite` (the default) for work with a finish line, or `standing` for work \
+         that never finishes - the watcher, a growth loop, a weekly sweep - which carries a \
+         `cadence` (a duration like the estimate) instead of an estimate and is checked when \
+         that cadence comes due rather than chased for overrun. \
          `status` defaults to pending. A row whose deliverable IS the user's own read or \
          decision - a report the user asked to read, a verdict the user asked to give - is \
          minted `verify: \"user\"` explicitly: it ends parked on the user, and the board's \
@@ -231,6 +268,18 @@ impl Tool for Create {
                 "estimate": {
                     "type": "string",
                     "description": "A duration estimate (e.g. \"1d\").",
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["finite", "standing"],
+                    "description": "Finite work with a finish line (the default), or standing \
+                                    work that never finishes and is checked on a cadence.",
+                },
+                "cadence": {
+                    "type": "string",
+                    "description": "A standing row's check interval as a duration (e.g. \
+                                    \"1d\"): when it comes due the row is asked whether it is \
+                                    still doing its job.",
                 },
                 "rank": {
                     "type": "integer",
@@ -518,8 +567,6 @@ fn mark_names(marks: crate::board::Marks) -> Vec<&'static str> {
         (marks.ready, "ready"),
         (marks.in_review, "in_review"),
         (marks.overdue, "overdue"),
-        (marks.no_movement, "no_movement"),
-        (marks.waiting_too_long, "waiting_too_long"),
         (marks.stale, "stale"),
         (marks.to_close, "to_close"),
     ] {
@@ -574,9 +621,11 @@ fn board_row_compact(row: &crate::board::BoardRow) -> serde_json::Value {
     map.insert("id".to_owned(), serde_json::json!(task.id.as_str()));
     map.insert("subject".to_owned(), serde_json::json!(task.subject));
     map.insert("status".to_owned(), serde_json::json!(status_str(task.status)));
+    map.insert("kind".to_owned(), serde_json::json!(kind_str(task.kind)));
     for (key, value) in [
         ("artifact", artifact(task)),
         ("estimate", task.estimate.as_ref().map(|e| e.words.as_str())),
+        ("cadence", task.cadence.as_ref().map(|c| c.words.as_str())),
         ("owner", task.owner.as_ref().map(SessionSlot::label)),
     ] {
         if let Some(value) = value {
@@ -618,9 +667,9 @@ impl Tool for List {
     fn description(&self) -> &'static str {
         "List the board of YOUR project. The default read returns pending, in_progress, \
          waiting and failed rows as compact rows: id, subject, status, owner, \
-         estimate, artifact, verify and reserved state, plus what the board derives: `worked` \
-         time against the estimate, the marks (ready, in_review, overdue, no_movement, \
-         waiting_too_long, stale, to_close), the wait it is on, and a parent's rollup - under \
+         estimate, kind, artifact, verify and reserved state, plus what the board derives: \
+         `worked` time against the estimate, the marks (ready, in_review, overdue, stale, \
+         to_close), the wait it is on, and a parent's rollup - under \
          a dated line, so no session does date arithmetic. A completed \
          or canceled row is left out, and the read ends with a line counting what was \
          withheld by status and naming `status` as the door; a `status` \
@@ -803,10 +852,7 @@ struct Claim {
 
 #[derive(serde::Deserialize)]
 struct ClaimArgs {
-    #[serde(default)]
-    id: Option<String>,
-    #[serde(default)]
-    epic: Option<String>,
+    id: String,
 }
 
 #[async_trait::async_trait]
@@ -817,15 +863,13 @@ impl Tool for Claim {
 
     fn description(&self) -> &'static str {
         "Claim a task in YOUR project: one atomic write that makes you its owner and marks it \
-         in progress, ticking the attempt. Pass `id` for a named row, or `epic` to pull the top \
-         ready row of that epic by rank - exactly one of the two. `id` and `epic` each take a \
-         full task id or any unique prefix of one; an exact id wins over any longer id that \
-         starts with it, and a prefix matching more than one row is refused with the matching \
-         rows named. Refused when a live seat holds the row (named), when it is not pending, \
-         when it is reserved for the user (`reserved: \"user\"` - the sweep's pick and nobody \
-         else's), or when you already have a row in progress: one in progress per worker. \
-         Claiming is for unassigned rows: a row a lead created for you already names you as \
-         `owner`, so work it without claiming. Returns the claimed record."
+         in progress. Pass `id`, a full task id or any unique prefix of one; an exact id wins \
+         over any longer id that starts with it, and a prefix matching more than one row is \
+         refused with the matching rows named. Refused when a live seat holds the row (named), \
+         when it is not pending, when it is reserved for the user (`reserved: \"user\"` - the \
+         sweep's pick and nobody else's), or when you already have a row in progress: one in \
+         progress per worker. Claiming is for unassigned rows: a row a lead created for you \
+         already names you as `owner`, so work it without claiming. Returns the claimed record."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -836,12 +880,8 @@ impl Tool for Claim {
                     "type": "string",
                     "description": "The task id to claim, or any unique prefix of one.",
                 },
-                "epic": {
-                    "type": "string",
-                    "description": "The epic whose top ready row to pull, by rank; a full id or \
-                                    any unique prefix of one.",
-                },
             },
+            "required": ["id"],
             "additionalProperties": false,
         })
     }
@@ -851,11 +891,7 @@ impl Tool for Claim {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        match (&args.id, &args.epic) {
-            (Some(_), None) | (None, Some(_)) => {}
-            _ => return tool_error("state exactly one of id or epic".to_owned()),
-        }
-        match self.facade.claim_task(&self.slot, args.id.as_deref(), args.epic.as_deref()) {
+        match self.facade.claim_task(&self.slot, &args.id) {
             Ok(task) => match serde_json::to_string_pretty(&task_to_json(&task)) {
                 Ok(json) => ToolOutput::text(json),
                 Err(err) => tool_error(format!("response serialization failed: {err}")),
@@ -1344,16 +1380,19 @@ mod tests {
             active_form: None,
             detail: None,
             status: TaskStatus::Pending,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner: None,
             parent: None,
             waiting_on: None,
+            decision: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: None,
             attested: None,
             reserved: None,
             links: Vec::new(),
-            attempt: 0,
+            version: 0,
             archived_at: None,
             created_at: SystemTime::UNIX_EPOCH,
             updated_at: SystemTime::UNIX_EPOCH,
@@ -1559,7 +1598,7 @@ mod tests {
         let create = Create { facade: facade.clone(), slot: slot.clone() };
         let list = List { facade: facade.clone(), slot: slot.clone() };
         for (name, description, schema, also_named) in [
-            ("tasks__claim", claim.description(), claim.input_schema(), &["epic"] as &[&str]),
+            ("tasks__claim", claim.description(), claim.input_schema(), &[] as &[&str]),
             ("tasks__update", update.description(), update.input_schema(), &[]),
             ("tasks__wait", wait.description(), wait.input_schema(), &["on"]),
             ("tasks__delete", delete.description(), delete.input_schema(), &[]),
@@ -2046,12 +2085,11 @@ mod tests {
             task,
             worked_secs: 0,
             updated_secs_ago: 0,
+            owner_live: true,
             marks: crate::board::Marks {
                 ready: false,
                 in_review: false,
                 overdue: false,
-                no_movement: false,
-                waiting_too_long: false,
                 stale: false,
                 to_close: false,
             },
@@ -2281,8 +2319,8 @@ mod tests {
         assert_eq!(
             keys,
             [
-                "artifact", "estimate", "id", "marks", "owner", "reserved", "rollup", "status",
-                "subject", "verify", "waiting", "worked",
+                "artifact", "estimate", "id", "kind", "marks", "owner", "reserved", "rollup",
+                "status", "subject", "verify", "waiting", "worked",
             ],
             "the compact row is exactly the promised set: {row}",
         );
@@ -2290,6 +2328,7 @@ mod tests {
             ("artifact", serde_json::json!("PR #9")),
             ("estimate", serde_json::json!("2h")),
             ("id", serde_json::json!("t-1")),
+            ("kind", serde_json::json!("finite")),
             ("marks", serde_json::json!(["in_review", "overdue"])),
             ("owner", serde_json::json!("w-1")),
             ("reserved", serde_json::json!("user")),
@@ -2494,7 +2533,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claim_by_epic_threads_the_epic_and_echoes_the_row() {
+    async fn claim_threads_the_stated_id_and_echoes_the_row() {
         let facade = Arc::new(MockTasksFacade::default());
         let mut task = sample_task();
         task.status = TaskStatus::InProgress;
@@ -2503,13 +2542,12 @@ mod tests {
         let slot = SessionSlot::worker("TestOrg", "myproj", "w-1");
         let out = Claim { facade: facade.clone(), slot }
             .call(input(serde_json::json!({
-                "epic": "epic-1"
+                "id": "t-1"
             })))
             .await;
         assert!(!out.is_error, "claim succeeds: {out:?}");
         let calls = facade.claimed.lock();
-        assert_eq!(calls[0].1, None, "no id carried");
-        assert_eq!(calls[0].2.as_deref(), Some("epic-1"));
+        assert_eq!(calls[0].1, "t-1", "the stated id reaches the facade");
         let json: serde_json::Value =
             serde_json::from_str(text_of(&out)).expect("the result is the claimed record");
         assert_eq!(json["status"], "in_progress");
@@ -2517,16 +2555,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claim_with_both_id_and_epic_is_refused_without_touching_the_facade() {
+    async fn a_claim_with_no_id_is_refused_without_touching_the_facade() {
         let facade = Arc::new(MockTasksFacade::default());
-        let out = Claim { facade: facade.clone(), slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "t-1", "epic": "epic-1" })))
-            .await;
-        assert!(out.is_error, "exactly one of id or epic");
         let out = Claim { facade: facade.clone(), slot: lead_slot() }
             .call(input(serde_json::json!({})))
             .await;
-        assert!(out.is_error, "neither is not one either");
+        assert!(out.is_error, "a claim names the row it wants");
         assert!(facade.claimed.lock().is_empty(), "invalid input never reaches the facade");
     }
 

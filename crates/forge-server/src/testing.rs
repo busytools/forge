@@ -574,10 +574,13 @@ impl Fleet {
             active_form: None,
             detail: None,
             status: TaskStatus::InProgress,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner: Some(SessionSlot::worker(org, project, owner)),
             parent: None,
             waiting_on: None,
+            decision: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: None,
             attested: None,
@@ -592,10 +595,13 @@ impl Fleet {
                 })
                 .into_iter()
                 .collect(),
-            attempt: 0,
+            version: 0,
             archived_at: None,
-            created_at: std::time::SystemTime::UNIX_EPOCH,
-            updated_at: std::time::SystemTime::UNIX_EPOCH,
+            // A seeded row is a row someone just wrote: stamped now, so the
+            // board's no-movement mark reads it as in play rather than as a
+            // row nobody has touched since the epoch.
+            created_at: std::time::SystemTime::now(),
+            updated_at: std::time::SystemTime::now(),
         });
         Ok(())
     }

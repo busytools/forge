@@ -232,7 +232,7 @@ pub(crate) fn crossings(
         }
         if row.marks.ready
             && row.task.owner.is_none()
-            && row.marks.no_movement
+            && row.marks.stale
             && due(fired, ChaseRung::QueueStall, id, None, CADENCE_STUCK_SECS, now)
         {
             out.push(Crossing {
@@ -249,7 +249,7 @@ pub(crate) fn crossings(
             });
         }
         let wait_kind = row.task.waiting_on.as_ref().and_then(|wait| wait.kind);
-        if row.marks.waiting_too_long
+        if row.marks.overdue
             && matches!(wait_kind, Some(WaitingKind::Dependency | WaitingKind::Resource))
             && due(fired, ChaseRung::WaitStall, id, None, CADENCE_STUCK_SECS, now)
         {
@@ -261,7 +261,7 @@ pub(crate) fn crossings(
                 text: format!(
                     "task board: \"{}\" has waited {} on a {} - unblock it or change its plan.",
                     row.task.subject,
-                    fmt_secs(row.updated_secs_ago),
+                    fmt_secs(row.task.wait_age_secs(now).unwrap_or(row.updated_secs_ago)),
                     match wait_kind {
                         Some(WaitingKind::Dependency) => "dependency",
                         Some(WaitingKind::Resource) => "resource",
@@ -271,7 +271,7 @@ pub(crate) fn crossings(
             });
         }
         let died = row.task.status == TaskStatus::Failed;
-        let stranded = running && row.marks.stale;
+        let stranded = running && !row.owner_live;
         // The death repeats at the stuck cadence, counted from the death
         // itself: a row that moved and died again is a new occurrence.
         if (died || stranded)
@@ -329,21 +329,17 @@ pub(crate) fn crossings(
             && !row.task.links.iter().any(|l| l.label.as_deref() == Some("retro"))
             && due(fired, ChaseRung::Retro, &row.task.id, None, CADENCE_STUCK_SECS, now)
             && rows.iter().any(|child| child.task.parent.as_ref() == Some(&row.task.id))
-            && rows.iter().filter(|child| child.task.parent.as_ref() == Some(&row.task.id)).all(
-                |child| {
-                    matches!(
-                        child.task.status,
-                        TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Canceled
-                    )
-                },
-            )
+            && rows
+                .iter()
+                .filter(|child| child.task.parent.as_ref() == Some(&row.task.id))
+                .all(|child| child.task.status.is_terminal())
         {
             out.push(Crossing {
                 rung: ChaseRung::Retro,
                 task_id: Some(row.task.id.clone()),
                 subject: None,
                 seat: Some(lead.clone()),
-                text: retro_prompt(row, rows),
+                text: retro_prompt(row, rows, history),
             });
         }
     }
@@ -359,7 +355,7 @@ pub(crate) fn crossings(
         row.task.status == TaskStatus::Waiting
             && parked_on_user(&row.task)
             && row.task.waiting_on.as_ref().is_some_and(|wait| !wait.parked)
-            && row.updated_secs_ago > CADENCE_STUCK_SECS
+            && row.task.wait_age_secs(now).is_some_and(|age| age > CADENCE_STUCK_SECS)
     }) {
         let since = waiting_since(history, &row.task.id).unwrap_or(SystemTime::UNIX_EPOCH);
         if fired_since(fired, ChaseRung::UserWaitDigest, &row.task.id, since) {
@@ -380,7 +376,7 @@ pub(crate) fn crossings(
                 "task board: \"{}\" ({}) is waiting on the user: {what}. Confirm it's really \
                  theirs, or re-plan.",
                 row.task.subject,
-                fmt_secs(row.updated_secs_ago),
+                fmt_secs(row.task.wait_age_secs(now).unwrap_or(row.updated_secs_ago)),
             ),
         });
     }
@@ -408,7 +404,7 @@ pub(crate) fn crossings(
 
 /// What an epic's owner is asked when its children have all stopped: the
 /// numbers, computed here and authoritative, and the ask.
-fn retro_prompt(epic: &BoardRow, rows: &[BoardRow]) -> String {
+fn retro_prompt(epic: &BoardRow, rows: &[BoardRow], history: &[TaskTransition]) -> String {
     let children: Vec<&BoardRow> =
         rows.iter().filter(|row| row.task.parent.as_ref() == Some(&epic.task.id)).collect();
     let worked: u64 = children.iter().map(|child| child.worked_secs).sum();
@@ -417,12 +413,20 @@ fn retro_prompt(epic: &BoardRow, rows: &[BoardRow]) -> String {
         .filter_map(|child| child.task.estimate.as_ref())
         .map(|estimate| estimate.secs)
         .sum();
-    let mut reopened = 0usize;
+    // Rework is read from the history rather than counted on the row: a
+    // child sent back after a wait is the reopened one.
+    let reopened = children
+        .iter()
+        .filter(|child| {
+            history.iter().any(|transition| {
+                transition.task_id == child.task.id
+                    && transition.from == Some(TaskStatus::Waiting)
+                    && transition.to == TaskStatus::InProgress
+            })
+        })
+        .count();
     let mut failed = 0usize;
     for child in &children {
-        if child.task.attempt > 1 {
-            reopened += 1;
-        }
         if child.task.status == TaskStatus::Failed {
             failed += 1;
         }
@@ -665,16 +669,19 @@ mod tests {
             active_form: None,
             detail: None,
             status,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner: None,
             parent: None,
             waiting_on: None,
+            decision: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: None,
             attested: None,
             reserved: None,
             links: Vec::new(),
-            attempt: 0,
+            version: 0,
             archived_at: None,
             created_at: epoch(0),
             updated_at: epoch(0),
@@ -1093,13 +1100,15 @@ mod tests {
         let ws = fixture(dir.path());
         let _lead_rx = live_lead(&ws);
         let mut row = task("t-1", TaskStatus::Waiting);
+        // The wait's own start, so un-parking restores an age the assertion
+        // can name: the row's last edit is no longer what the age counts.
         row.waiting_on = Some(Waiting {
             kind: Some(WaitingKind::Resource),
             detail: Some("needs the owner's dashboard".to_owned()),
             on: None,
             verification: false,
             parked: true,
-            since: None,
+            since: Some(SystemTime::now()),
         });
         row.updated_at = epoch(0);
         ws.seed_test_task(row);
@@ -1136,7 +1145,7 @@ mod tests {
         let moved = rows.iter().find(|row| row.task.id == TaskId::from("t-1")).expect("the row");
         assert!(!moved.task.waiting_on.as_ref().expect("the wait holds").parked, "un-parked");
         assert!(
-            moved.marks.waiting_too_long,
+            moved.marks.overdue,
             "its real age is the stall again: status={:?} age={} updated={:?} now={:?} wait={:?}",
             moved.task.status,
             moved.updated_secs_ago,

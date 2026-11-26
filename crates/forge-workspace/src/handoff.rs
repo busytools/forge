@@ -583,15 +583,7 @@ pub(crate) fn live_state_sections(
         ));
     }
 
-    let open: Vec<&Task> = board
-        .iter()
-        .filter(|task| {
-            matches!(
-                task.status,
-                TaskStatus::Pending | TaskStatus::InProgress | TaskStatus::Waiting
-            )
-        })
-        .collect();
+    let open: Vec<&Task> = board.iter().filter(|task| !task.status.is_terminal()).collect();
     let rows = if live.is_some_and(|live| live.board_unreadable) {
         vec![
             "not read - this run could not load the durable board; the rows on disk are \
@@ -640,7 +632,7 @@ fn board_door(task: &Task, seat: &SessionSlot) -> &'static str {
         };
     }
     if task.owner.is_none() {
-        return if task.status == TaskStatus::Pending && task.waiting_on.is_none() {
+        return if task.is_ready() {
             "claim with `tasks__claim`"
         } else {
             "nobody holds it - take it with `tasks__update`"
@@ -2007,10 +1999,13 @@ mod tests {
             active_form: None,
             detail: None,
             status: TaskStatus::InProgress,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner,
             parent: None,
             waiting_on: None,
+            decision: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: None,
             attested: None,
@@ -2025,7 +2020,7 @@ mod tests {
                 })
                 .into_iter()
                 .collect(),
-            attempt: 0,
+            version: 0,
             archived_at: None,
             created_at: SystemTime::UNIX_EPOCH,
             updated_at: SystemTime::UNIX_EPOCH,

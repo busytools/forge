@@ -45,7 +45,13 @@ struct TaskRecord {
     #[serde(default)]
     links: Vec<TaskLink>,
     #[serde(default)]
-    attempt: u32,
+    kind: forge_primitives::tasks::TaskKind,
+    #[serde(default)]
+    cadence: Option<Estimate>,
+    #[serde(default)]
+    decision: Option<forge_primitives::tasks::Decision>,
+    #[serde(default)]
+    version: u64,
     #[serde(default)]
     archived_at: Option<std::time::SystemTime>,
     created_at: std::time::SystemTime,
@@ -105,8 +111,10 @@ impl TaskRecord {
             active_form: self.active_form,
             detail: self.detail,
             status,
+            kind: self.kind,
             owner: self.owner,
             parent: self.parent,
+            decision: self.decision,
             waiting_on: if blocked {
                 // The migration's unstated wait: the board draws it as a
                 // miss, which is what an old blocked row was.
@@ -130,12 +138,13 @@ impl TaskRecord {
                 }
                 RecordEstimate::Parsed(parsed) => parsed,
             }),
+            cadence: self.cadence,
             rank: self.rank,
             verify: self.verify,
             attested: self.attested,
             reserved: self.reserved,
             links,
-            attempt: self.attempt,
+            version: self.version,
             archived_at: self.archived_at,
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -227,16 +236,19 @@ mod tests {
             active_form: None,
             detail: None,
             status: TaskStatus::Pending,
+            kind: forge_primitives::tasks::TaskKind::Finite,
             owner: None,
             parent: None,
             waiting_on: None,
+            decision: None,
             estimate: None,
+            cadence: None,
             rank: None,
             verify: None,
             attested: None,
             reserved: None,
             links: Vec::new(),
-            attempt: 0,
+            version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
             updated_at: std::time::SystemTime::UNIX_EPOCH,

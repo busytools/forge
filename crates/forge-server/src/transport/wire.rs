@@ -4857,6 +4857,7 @@ mod tests {
                 active_form: None,
                 detail: None,
                 status: forge_primitives::tasks::TaskStatus::Waiting,
+                kind: forge_primitives::tasks::TaskKind::Finite,
                 owner: Some(forge_primitives::SessionSlot::worker("TestOrg", "proj", "w1")),
                 parent: None,
                 waiting_on: Some(forge_primitives::tasks::Waiting {
@@ -4869,13 +4870,15 @@ mod tests {
                         std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(5),
                     ),
                 }),
+                decision: None,
                 estimate: None,
+                cadence: None,
                 rank: None,
                 verify: None,
                 attested: None,
                 reserved: None,
                 links: Vec::new(),
-                attempt: 0,
+                version: 0,
                 archived_at: None,
                 created_at: std::time::SystemTime::UNIX_EPOCH,
                 // An edit after the wait began must not move the item's date.
@@ -5079,6 +5082,8 @@ mod tests {
 
         let board = encode_subject(&state, &Subject::Board).await.expect("encode");
         let gone_chip = |board: &Value| board["projects"][0]["rows"][0]["marks"]["stale"].clone();
+        let owner_live = |board: &Value| board["projects"][0]["rows"][0]["owner_live"].clone();
+        assert_eq!(owner_live(&board), Value::Bool(false), "the seat is not live: {board}");
         assert_eq!(
             gone_chip(&board),
             Value::Bool(true),
@@ -5088,6 +5093,7 @@ mod tests {
         // The seat comes up: the next read clears the chip.
         let _commands = fleet.install_agent("TestOrg", "proj", "w1");
         let board = encode_subject(&state, &Subject::Board).await.expect("encode");
+        assert_eq!(owner_live(&board), Value::Bool(true), "the seat is live now: {board}");
         assert_eq!(
             gone_chip(&board),
             Value::Bool(false),
