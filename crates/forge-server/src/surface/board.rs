@@ -77,6 +77,7 @@ mod tests {
             attested: None,
             reserved: None,
             links: Vec::new(),
+            evidence: None,
             version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,

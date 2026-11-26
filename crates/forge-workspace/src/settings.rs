@@ -148,6 +148,10 @@ const PERMISSION_MODES: &[&str] =
 /// The two engines a session can launch on. The loader parses the same
 /// set in `Engine::from_stored`, and a test holds the two together.
 const ENGINES: &[&str] = &["default", "forge"];
+
+/// The outward connectors a project may name. `None` is not a value here:
+/// the key's absence is the self-contained default.
+const CONNECTORS: &[&str] = &["github"];
 const DICTATE_BINDS: &[&str] = &["right_cmd", "left_cmd", "off"];
 const DICTATE_MODES: &[&str] = &["auto", "toggle", "hold"];
 const DICTATE_STYLINGS: &[&str] = &["casual", "semi_casual", "semi_formal", "formal"];
@@ -194,6 +198,7 @@ fn edit_spec(path: &str) -> EditSpec {
         "orgs[].projects[].handoff.enabled" => named(BOOLEAN, "project"),
         "orgs[].projects[].permission_mode" => named(choice(PERMISSION_MODES), "project"),
         "orgs[].projects[].engine" => named(choice(ENGINES), "project"),
+        "orgs[].projects[].connector" => named(choice(CONNECTORS), "project"),
         "orgs[].projects[].max_workers"
         | "orgs[].projects[].handoff.at_percent"
         | "orgs[].projects[].handoff.after_compactions" => named(NUMBER, "project"),
@@ -589,6 +594,26 @@ const PROJECT_KEYS: &[ConfigKey] = &[
                 .projects
                 .iter()
                 .map(|p| text(project_path(p, "permission_mode"), p.permission_mode.as_wire()))
+                .collect()
+        },
+    },
+    ConfigKey {
+        path: "orgs[].projects[].connector",
+        area: "projects",
+        class: EffectClass::Live,
+        rows: |config| {
+            config
+                .projects
+                .iter()
+                .map(|p| {
+                    text(
+                        project_path(p, "connector"),
+                        match p.connector {
+                            Some(crate::config::ConnectorKind::Github) => "github",
+                            None => "not set",
+                        },
+                    )
+                })
                 .collect()
         },
     },
@@ -1930,6 +1955,7 @@ name = "proj"
 path = "/tmp/proj"
 model = "glm-5.3-flash"
 permission_mode = "auto"
+connector = "github"
 max_workers = 3
 env_file = "/tmp/forge-settings-test.env"
 document_roots = ["/tmp"]

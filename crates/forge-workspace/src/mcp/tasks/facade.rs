@@ -11,7 +11,7 @@ use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
 use forge_primitives::tasks::{
-    By, Estimate, LinkKind, Task, TaskId, TaskLink, TaskStatus, WaitingKind,
+    By, Estimate, Evidence, LinkKind, Task, TaskId, TaskLink, TaskStatus, WaitingKind,
 };
 
 use crate::SessionSlot;
@@ -56,7 +56,41 @@ impl TaskLinkDraft {
             label: self.label.clone(),
             target: self.target.clone(),
             state: None,
+            last_check: None,
             added_at: at,
+        }
+    }
+}
+
+/// What a completion rests on, as a caller states it. The verdict is
+/// forge's own: a stated claim always arrives unchecked, so a new claim
+/// never inherits the last one's stamp.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub(crate) struct EvidenceDraft {
+    #[serde(default)]
+    pub commit: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub excerpt: Option<String>,
+}
+
+impl EvidenceDraft {
+    fn to_evidence(&self) -> Evidence {
+        let named = |value: &Option<String>| {
+            value.as_deref().map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned)
+        };
+        Evidence {
+            commit: named(&self.commit),
+            path: named(&self.path),
+            excerpt: self
+                .excerpt
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(Evidence::bounded_excerpt),
+            verified_at: None,
+            problem: None,
         }
     }
 }
@@ -97,6 +131,10 @@ pub(crate) struct TaskDraft {
     pub reserved: Option<forge_primitives::tasks::ReservedBy>,
     #[serde(default)]
     pub links: Vec<TaskLinkDraft>,
+    /// What the completion will rest on. Stated at create so a row can be
+    /// minted with its claim, or later by an update.
+    #[serde(default)]
+    pub evidence: Option<EvidenceDraft>,
 }
 
 /// The tree a `tasks__delete` removed: the named task as it stood, and how
@@ -139,6 +177,10 @@ pub(crate) struct TaskPatch {
     /// Links to take off, by exact target.
     #[serde(default)]
     pub links_remove: Vec<String>,
+    /// A new completion claim. It arrives unchecked, so restating it
+    /// clears any earlier verdict - the gate stamps the next check.
+    #[serde(default)]
+    pub evidence: Option<EvidenceDraft>,
 }
 
 impl TaskPatch {
@@ -189,6 +231,9 @@ impl TaskPatch {
             }
         }
         task.links.retain(|l| !self.links_remove.contains(&l.target));
+        if let Some(evidence) = &self.evidence {
+            task.evidence = Some(evidence.to_evidence());
+        }
         if let Some(estimate) = estimate {
             task.estimate = Some(estimate);
         }
@@ -332,7 +377,7 @@ impl TasksFacade for ProdTasksFacade {
             None => None,
         };
         let links = draft.links.iter().map(|draft| draft.to_link(now)).collect();
-        let task = Task {
+        let mut task = Task {
             id: TaskId::from(uuid::Uuid::new_v4().to_string()),
             project_name: cx.project_name.clone(),
             subject: draft.subject,
@@ -353,11 +398,19 @@ impl TasksFacade for ProdTasksFacade {
             attested: None,
             reserved: draft.reserved,
             links,
+            evidence: draft.evidence.as_ref().map(EvidenceDraft::to_evidence),
             version: 0,
             archived_at: None,
             created_at: now,
             updated_at: now,
         };
+        // A row minted straight into `completed` is a completion claim
+        // like any other, and goes through the same gate: creation is not
+        // a way around the evidence.
+        if task.status == TaskStatus::Completed {
+            ws.verify_completion_evidence(&cx.project_name, &mut task)
+                .map_err(|refused| TasksError::Refused(refused.to_string()))?;
+        }
         ws.push_task(task.clone());
         Ok(task)
     }
@@ -519,6 +572,7 @@ fn mock_task(caller: &SessionSlot) -> Task {
         attested: None,
         reserved: None,
         links: Vec::new(),
+        evidence: None,
         version: 0,
         archived_at: None,
         created_at: now,
@@ -597,6 +651,7 @@ impl TasksFacade for MockTasksFacade {
             attested: None,
             reserved: draft.reserved,
             links: draft.links.iter().map(|draft| draft.to_link(now)).collect(),
+            evidence: draft.evidence.as_ref().map(EvidenceDraft::to_evidence),
             version: 0,
             archived_at: None,
             created_at: now,
@@ -726,6 +781,13 @@ mod prod_facade_tests {
             attested: None,
             reserved: None,
             links: Vec::new(),
+            evidence: Some(Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
             version: 0,
             archived_at: None,
             created_at: SystemTime::UNIX_EPOCH,
@@ -748,6 +810,14 @@ mod prod_facade_tests {
             verify: None,
             reserved: None,
             links: Vec::new(),
+            // A claim the stub verifier accepts: the gate's own refusals
+            // have their own tests, and every other row here is about a
+            // different rule.
+            evidence: Some(EvidenceDraft {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+            }),
         }
     }
 
@@ -1231,6 +1301,27 @@ mod prod_facade_tests {
         );
     }
 
+    /// Minting a row straight into `completed` is a completion claim too,
+    /// so it goes through the same gate rather than around it.
+    #[test]
+    fn a_row_created_completed_is_gated_like_a_move() {
+        let (_ws, facade, lead, _worker) = fixture();
+        let refused = facade
+            .create_task(
+                &lead,
+                TaskDraft {
+                    status: Some(TaskStatus::Completed),
+                    evidence: None,
+                    ..draft("a finished row", Some("lead"), None)
+                },
+            )
+            .expect_err("a completion with no evidence is refused");
+        assert!(
+            matches!(&refused, TasksError::Refused(said) if said.contains("evidence")),
+            "the refusal names the claim: {refused:?}",
+        );
+    }
+
     /// A parent is an id too, and the store holds the row it names: a
     /// child created - or re-parented - under a short form is the epic's
     /// child for every literal comparison the board makes.
@@ -1312,6 +1403,11 @@ mod prod_facade_tests {
                 &worker,
                 TaskDraft {
                     verify: Some(forge_primitives::tasks::Verify::User),
+                    evidence: Some(EvidenceDraft {
+                        commit: Some("test-commit".to_owned()),
+                        path: None,
+                        excerpt: None,
+                    }),
                     ..draft("the parked row", Some("reviewer"), Some("epic"))
                 },
             )
@@ -1361,6 +1457,11 @@ mod prod_facade_tests {
                 &worker,
                 TaskDraft {
                     verify: Some(forge_primitives::tasks::Verify::User),
+                    evidence: Some(EvidenceDraft {
+                        commit: Some("test-commit".to_owned()),
+                        path: None,
+                        excerpt: None,
+                    }),
                     ..draft("the parked row", Some("reviewer"), Some("epic"))
                 },
             )

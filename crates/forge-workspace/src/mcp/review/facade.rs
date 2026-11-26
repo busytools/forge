@@ -542,6 +542,7 @@ mod resolve_scope_tests {
         config.projects.push(crate::config::LoadedProject {
             name: "myproj".to_owned(),
             path: PathBuf::from(cwd),
+            connector: None,
             display_path: cwd.to_owned(),
             org: "TestOrg".to_owned(),
             accounts: Vec::new(),

@@ -591,10 +591,12 @@ impl Fleet {
                     label: None,
                     target: target.to_owned(),
                     state: None,
+                    last_check: None,
                     added_at: std::time::SystemTime::UNIX_EPOCH,
                 })
                 .into_iter()
                 .collect(),
+            evidence: None,
             version: 0,
             archived_at: None,
             // A seeded row is a row someone just wrote: stamped now, so the

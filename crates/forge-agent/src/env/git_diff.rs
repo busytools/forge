@@ -2022,6 +2022,126 @@ fn pr_cache_fresh(
         })
 }
 
+/// One pull request as a project's connector sees it: the state, the head
+/// it points at, and the CI verdict over its checks.
+///
+/// Every field is optional except `problem`, because a connector that
+/// could not answer must read as unknown rather than as success: a
+/// missing state is not open, and a missing verdict is not passing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestState {
+    /// `gh`'s state, lowercased: open / closed / merged.
+    pub state: Option<String>,
+    pub head: Option<String>,
+    /// passing / failing / pending. `None` when the rollup is absent.
+    pub ci: Option<String>,
+    /// Why the check could not answer, when it could not.
+    pub problem: Option<String>,
+}
+
+/// Check one pull request by URL through `gh`, for the board's
+/// per-project connector.
+///
+/// Off by default: a project opts in with `connector = "github"`, and
+/// nothing calls this for a project that did not. The child is bounded by
+/// the same command timeout every other `gh` call in this module uses.
+pub async fn check_pull_request<S: std::hash::BuildHasher>(
+    repo: &Path,
+    env: &HashMap<String, String, S>,
+    url: &str,
+) -> PullRequestState {
+    let args = ["pr", "view", url, "--json", "state,headRefOid,statusCheckRollup"];
+    match run_gh(repo, env, &args, GhNotFound::Fail, COMMAND_TIMEOUT).await {
+        GitOutput::Ok(text) => parse_pull_request(&text),
+        GitOutput::Empty => PullRequestState {
+            state: None,
+            head: None,
+            ci: None,
+            problem: Some("gh answered nothing for the pull request".to_owned()),
+        },
+        GitOutput::Failed => PullRequestState {
+            state: None,
+            head: None,
+            ci: None,
+            problem: Some(
+                "the gh check did not run (gh missing, signed out, or rate limited)".to_owned(),
+            ),
+        },
+        GitOutput::Oversize => PullRequestState {
+            state: None,
+            head: None,
+            ci: None,
+            problem: Some("gh's answer exceeded the size cap".to_owned()),
+        },
+    }
+}
+
+/// Parse `gh pr view --json state,headRefOid,statusCheckRollup` into the
+/// connector's answer. Separate from the spawn so the mapping is testable
+/// without a GitHub.
+fn parse_pull_request(text: &str) -> PullRequestState {
+    #[derive(serde::Deserialize)]
+    struct PrView {
+        state: String,
+        #[serde(rename = "headRefOid")]
+        head_ref_oid: Option<String>,
+        #[serde(rename = "statusCheckRollup")]
+        status_check_rollup: Option<Vec<serde_json::Value>>,
+    }
+    let view: PrView = match serde_json::from_str(text) {
+        Ok(view) => view,
+        Err(err) => {
+            return PullRequestState {
+                state: None,
+                head: None,
+                ci: None,
+                problem: Some(format!("gh's answer was not the expected json: {err}")),
+            };
+        }
+    };
+    PullRequestState {
+        state: Some(view.state.to_lowercase()),
+        head: view.head_ref_oid,
+        ci: view.status_check_rollup.as_deref().and_then(ci_verdict).map(str::to_owned),
+        problem: None,
+    }
+}
+
+/// The CI verdict over a `statusCheckRollup`: any failure fails it, any
+/// unfinished check keeps it pending, and an empty rollup is unknown.
+fn ci_verdict(rollup: &[serde_json::Value]) -> Option<&'static str> {
+    if rollup.is_empty() {
+        return None;
+    }
+    let mut pending = false;
+    let text = |node: &serde_json::Value, key: &str| {
+        node.get(key).and_then(serde_json::Value::as_str).map(str::to_owned)
+    };
+    for check in rollup {
+        if let Some(conclusion) = text(check, "conclusion") {
+            match conclusion.as_str() {
+                "SUCCESS" | "NEUTRAL" | "SKIPPED" => {}
+                "FAILURE" | "ERROR" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED"
+                | "STARTUP_FAILURE" => return Some("failing"),
+                _ => pending = true,
+            }
+        }
+        if let Some(status) = text(check, "status")
+            && status != "COMPLETED"
+        {
+            pending = true;
+        }
+        if let Some(state) = text(check, "state") {
+            match state.as_str() {
+                "SUCCESS" => {}
+                "FAILURE" | "ERROR" => return Some("failing"),
+                _ => pending = true,
+            }
+        }
+    }
+    Some(if pending { "pending" } else { "passing" })
+}
+
 /// What one PR lookup produced. `Failed` is kept apart from `None`
 /// so a transient `gh` blip cannot evict a known-good cached PR.
 enum PrLookup {
@@ -5415,5 +5535,56 @@ mod tests {
         let out = clipped(&text, STDERR_LOG_CAP);
         assert!(out.ends_with('…'), "the clip marks itself: {out:?}");
         assert!(!out.contains('é'), "the character the cap landed inside is dropped, not split");
+    }
+
+    /// `gh pr view`'s answer maps to the connector's state, head and CI
+    /// verdict; every check shape GitHub reports is read, and a failure
+    /// anywhere fails the whole rollup.
+    #[test]
+    fn a_pull_requests_state_head_and_ci_are_read_from_gh() {
+        let merged = parse_pull_request(
+            r#"{"state":"MERGED","headRefOid":"abc123","statusCheckRollup":[
+                {"conclusion":"SUCCESS","status":"COMPLETED"},
+                {"state":"SUCCESS"}
+            ]}"#,
+        );
+        assert_eq!(merged.state.as_deref(), Some("merged"));
+        assert_eq!(merged.head.as_deref(), Some("abc123"));
+        assert_eq!(merged.ci.as_deref(), Some("passing"));
+        assert_eq!(merged.problem, None);
+
+        let failing = parse_pull_request(
+            r#"{"state":"OPEN","headRefOid":"def456","statusCheckRollup":[
+                {"conclusion":"SUCCESS"},
+                {"conclusion":"FAILURE"}
+            ]}"#,
+        );
+        assert_eq!(failing.ci.as_deref(), Some("failing"), "one failure fails the rollup");
+
+        let pending = parse_pull_request(
+            r#"{"state":"OPEN","statusCheckRollup":[
+                {"conclusion":null,"status":"IN_PROGRESS"},
+                {"state":"PENDING"}
+            ]}"#,
+        );
+        assert_eq!(pending.ci.as_deref(), Some("pending"), "an unfinished check keeps it pending");
+
+        let unknown = parse_pull_request(r#"{"state":"OPEN"}"#);
+        assert_eq!(unknown.ci, None, "no rollup is unknown, never passing");
+        assert_eq!(unknown.state.as_deref(), Some("open"));
+    }
+
+    /// A connector that cannot answer reads as unknown with why, not as a
+    /// pull request that passed.
+    #[test]
+    fn an_unreadable_gh_answer_is_a_problem() {
+        let refused = parse_pull_request("not json");
+        assert_eq!(refused.state, None, "no state is not an open pull request");
+        assert_eq!(refused.ci, None, "and no verdict is not passing");
+        assert!(
+            refused.problem.as_deref().is_some_and(|problem| problem.contains("json")),
+            "the problem says what went unread: {:?}",
+            refused.problem,
+        );
     }
 }

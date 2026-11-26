@@ -605,6 +605,10 @@ impl Workspace {
                             "terminal task trees archived by retention",
                         );
                     }
+                    // A project that opted into a connector refreshes its
+                    // pull-request links on the same beat; a project with
+                    // none does nothing here.
+                    workspace.refresh_connectors(now).await;
                     let delivered = workspace
                         .chase_sweep(&PromptDeliver { workspace: Arc::clone(&workspace) }, now);
                     if delivered > 0 {
@@ -691,6 +695,7 @@ mod tests {
             attested: None,
             reserved: None,
             links: Vec::new(),
+            evidence: None,
             version: 0,
             archived_at: None,
             created_at: epoch(0),
@@ -1545,6 +1550,7 @@ mod tests {
                     label: Some("retro".to_owned()),
                     target: "docs/retro.md".to_owned(),
                     state: None,
+                    last_check: None,
                     added_at: epoch(0),
                 });
             },

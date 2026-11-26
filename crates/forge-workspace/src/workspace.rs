@@ -633,6 +633,12 @@ pub struct Workspace {
     /// `[gotify]` section. Swapped whole by [`Workspace::reload_config`],
     /// which is why readers take an owned snapshot rather than a reference.
     pub(crate) config: parking_lot::RwLock<Arc<LoadedConfig>>,
+    /// The project's own check of a completion's artifact. Production is
+    /// the self-contained git check ([`crate::env::evidence::GitEvidence`]);
+    /// the testing stub accepts, so a test that is not about the gate needs
+    /// no repository behind it.
+    pub(crate) evidence_verifier:
+        parking_lot::RwLock<Arc<dyn crate::env::evidence::EvidenceVerifier>>,
     /// The effective-config document, rebuilt on every applied reload and
     /// shared by every socket connection. `None` until the server names the
     /// build that carries it.
@@ -1136,7 +1142,7 @@ pub struct Workspace {
     /// Connected-hook respawn trigger without writing a
     /// real `forge.toml`. Empty in production.
     #[cfg(any(test, feature = "testing"))]
-    test_extra_projects: Mutex<Vec<LoadedProject>>,
+    pub(crate) test_extra_projects: Mutex<Vec<LoadedProject>>,
     /// Test-only stand-in for the CLI's per-user preferences document, so
     /// a view fixture reads an ignore preference without the machine's
     /// real `$HOME/.claude.json`. `None` means no fixture seeded one, and
@@ -2553,6 +2559,9 @@ impl Workspace {
         let workspace = Self {
             config_dir,
             config: parking_lot::RwLock::new(Arc::new(config)),
+            evidence_verifier: parking_lot::RwLock::new(Arc::new(
+                crate::env::evidence::GitEvidence,
+            )),
             settings,
             settings_version: std::sync::OnceLock::new(),
             settings_write: parking_lot::Mutex::new(()),
@@ -8038,6 +8047,13 @@ impl Workspace {
                         attested: None,
                         reserved: None,
                         links: Vec::new(),
+                        evidence: Some(forge_primitives::tasks::Evidence {
+                            commit: Some("test-commit".to_owned()),
+                            path: None,
+                            excerpt: None,
+                            verified_at: None,
+                            problem: None,
+                        }),
                         version: 0,
                         archived_at: None,
                         created_at: now,
@@ -11981,6 +11997,7 @@ mod account_stamp_tests {
         LoadedProject {
             name: "forge".to_owned(),
             path: PathBuf::from("/tmp/forge"),
+            connector: None,
             display_path: "~/Projects/forge".to_owned(),
             org: "Personal".to_owned(),
             accounts: vec!["Stargate".to_owned()],
@@ -12411,6 +12428,13 @@ mod tests {
             attested: None,
             reserved: None,
             links: Vec::new(),
+            evidence: Some(forge_primitives::tasks::Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
             version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
@@ -12470,6 +12494,13 @@ mod tests {
             attested: None,
             reserved: None,
             links: Vec::new(),
+            evidence: Some(forge_primitives::tasks::Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
             version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
@@ -12494,6 +12525,13 @@ mod tests {
             attested: None,
             reserved: None,
             links: Vec::new(),
+            evidence: Some(forge_primitives::tasks::Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
             version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
@@ -12558,6 +12596,13 @@ mod tests {
             attested: None,
             reserved: None,
             links: Vec::new(),
+            evidence: Some(forge_primitives::tasks::Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
             version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
@@ -12696,6 +12741,13 @@ mod tests {
             attested: None,
             reserved: None,
             links: Vec::new(),
+            evidence: Some(forge_primitives::tasks::Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
             version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
@@ -12796,6 +12848,13 @@ mod tests {
             attested: None,
             reserved: None,
             links: Vec::new(),
+            evidence: Some(forge_primitives::tasks::Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
             version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
@@ -12929,6 +12988,13 @@ mod tests {
             attested: None,
             reserved: None,
             links: Vec::new(),
+            evidence: Some(forge_primitives::tasks::Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
             version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
@@ -12979,6 +13045,13 @@ mod tests {
             attested: None,
             reserved: None,
             links: Vec::new(),
+            evidence: Some(forge_primitives::tasks::Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
             version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
@@ -13027,6 +13100,13 @@ mod tests {
             attested: None,
             reserved: None,
             links: Vec::new(),
+            evidence: Some(forge_primitives::tasks::Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
             version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
@@ -13124,6 +13204,13 @@ path = "{}"
             attested: None,
             reserved: None,
             links: Vec::new(),
+            evidence: Some(forge_primitives::tasks::Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
             version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,

@@ -180,6 +180,9 @@ pub mod env {
     pub mod documents {
         pub use forge_agent::env::documents::*;
     }
+    pub mod evidence {
+        pub use forge_agent::env::evidence::*;
+    }
     pub mod file_index {
         pub use forge_agent::env::file_index::*;
     }

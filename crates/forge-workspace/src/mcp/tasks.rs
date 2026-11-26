@@ -128,6 +128,20 @@ fn task_to_json(task: &Task) -> serde_json::Value {
     if let Some(decision) = &task.decision {
         map.insert("decision".to_owned(), decision_json(decision));
     }
+    if let Some(evidence) = &task.evidence {
+        map.insert(
+            "evidence".to_owned(),
+            serde_json::json!({
+                "commit": evidence.commit,
+                "path": evidence.path,
+                "excerpt": evidence.excerpt,
+                // The wire's `verified at`: absent until the gate's check
+                // passed, so an unchecked claim reads as unknown.
+                "verified_at": evidence.verified_at.map(fmt_rfc3339),
+                "problem": evidence.problem,
+            }),
+        );
+    }
     map.insert("version".to_owned(), serde_json::json!(task.version));
     map.insert("created_at".to_owned(), serde_json::json!(fmt_rfc3339(task.created_at)));
     map.insert("updated_at".to_owned(), serde_json::json!(fmt_rfc3339(task.updated_at)));
@@ -320,6 +334,21 @@ impl Tool for Create {
                         "required": ["target"],
                     },
                 },
+                "evidence": {
+                    "type": "object",
+                    "description": "What the completion will rest on. `commit` is a sha the \
+                                    repository must hold; `path` a file that must exist at that \
+                                    commit (or at HEAD when no commit is named). `excerpt` is a \
+                                    bounded output sample for the reader - it is never the claim \
+                                    itself. A row cannot complete without one of the two \
+                                    artifacts.",
+                    "properties": {
+                        "commit": { "type": "string" },
+                        "path": { "type": "string" },
+                        "excerpt": { "type": "string" },
+                    },
+                    "additionalProperties": false,
+                },
             },
             "required": ["subject"],
             "additionalProperties": false,
@@ -375,7 +404,11 @@ impl Tool for Update {
          tree. A child of an epic completes when its deliverable is out - for a change, \
          delivered means the PR exists and the delivering worker's own checks ran at its \
          head; for a report or a sweep, concluded means it is handed over. A local commit \
-         alone completes nothing. Any session in the \
+         alone completes nothing. **A move to `completed` needs `evidence`** - a `commit` the \
+         repository holds, or a `path` at that commit (at HEAD when no commit is named), with \
+         an `excerpt` for the reader - and forge checks it on the move: a completion with no \
+         evidence, or with evidence the repository cannot back, is refused rather than landed. \
+         Any session in the \
          project may move any of its tasks, so a lead can \
          complete a worker's task and a worker can put a row it holds into waiting - and a row \
          waiting on the user's own look cannot be completed here: the board's approve completes \
@@ -474,6 +507,21 @@ impl Tool for Update {
                     "type": "array",
                     "description": "Links to take off, by exact target.",
                     "items": { "type": "string" },
+                },
+                "evidence": {
+                    "type": "object",
+                    "description": "The completion's claim: `commit` (a sha the repository must \
+                                    hold), `path` (a file that must exist at that commit, or at \
+                                    HEAD when no commit is named), and `excerpt` (a bounded \
+                                    sample of the output, for the reader). A move to completed \
+                                    is refused while the claim is missing or does not check \
+                                    out; restating the claim clears its last verdict.",
+                    "properties": {
+                        "commit": { "type": "string" },
+                        "path": { "type": "string" },
+                        "excerpt": { "type": "string" },
+                    },
+                    "additionalProperties": false,
                 },
                 "estimate": { "type": "string", "description": "A duration estimate." },
             },
@@ -1392,6 +1440,7 @@ mod tests {
             attested: None,
             reserved: None,
             links: Vec::new(),
+            evidence: None,
             version: 0,
             archived_at: None,
             created_at: SystemTime::UNIX_EPOCH,
@@ -1467,6 +1516,7 @@ mod tests {
                 label: Some("PR #9".to_owned()),
                 target: "https://example.invalid/pull/9".to_owned(),
                 state: None,
+                last_check: None,
                 added_at: SystemTime::UNIX_EPOCH,
             }],
             parent: Some(TaskId::from("epic")),
@@ -2147,6 +2197,7 @@ mod tests {
                 label: Some("PR #9".to_owned()),
                 target: "https://example.invalid/pull/9".to_owned(),
                 state: None,
+                last_check: None,
                 added_at: SystemTime::UNIX_EPOCH,
             }],
             waiting_on: Some(Waiting {

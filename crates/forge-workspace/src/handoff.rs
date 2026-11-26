@@ -2016,10 +2016,12 @@ mod tests {
                     label: None,
                     target: target.to_owned(),
                     state: None,
+                    last_check: None,
                     added_at: SystemTime::UNIX_EPOCH,
                 })
                 .into_iter()
                 .collect(),
+            evidence: None,
             version: 0,
             archived_at: None,
             created_at: SystemTime::UNIX_EPOCH,

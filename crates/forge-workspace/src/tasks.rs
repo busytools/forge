@@ -13,7 +13,8 @@ use std::time::SystemTime;
 
 use forge_primitives::tasks::Verify;
 use forge_primitives::tasks::{
-    Attestation, By, ReservedBy, Task, TaskId, TaskStatus, TaskTransition, Waiting, WaitingKind,
+    Attestation, By, LinkKind, ReservedBy, Task, TaskId, TaskStatus, TaskTransition, Waiting,
+    WaitingKind,
 };
 
 use crate::SessionSlot;
@@ -88,6 +89,12 @@ pub(crate) enum MoveError {
     /// A reopen named a row carrying no lead attestation: there is no
     /// attested look to strike.
     NotAttested,
+    /// A completion claim carries no evidence at all: absence is never
+    /// success, so there is nothing for forge to check.
+    EvidenceMissing,
+    /// The evidence names an artifact the project's repository does not
+    /// hold, or the check could not run. The reason is the check's own.
+    EvidenceUnverified(String),
 }
 
 /// How long a terminal tree stays in the live set before the retention
@@ -96,6 +103,11 @@ pub(crate) enum MoveError {
 /// just-finished row can be read, linked or reopened without a restore
 /// first. A tree under a live epic waits for the epic, which closes it.
 pub(crate) const RETENTION_SECS: u64 = 24 * 3_600;
+
+/// How long a connector's check of a link stays fresh. The sweep refreshes
+/// the stale ones, and a completion that rests on an older or failed check
+/// is refused - a cached verdict is evidence only while it is current.
+pub(crate) const CONNECTOR_REFRESH_SECS: u64 = 300;
 
 /// Whether a row is parked on the user's own look - the verification wait
 /// the gate lands a user-bound completion on. The completion guard reads
@@ -246,6 +258,16 @@ impl std::fmt::Display for MoveError {
             Self::NotAttested => {
                 write!(f, "this row carries no lead attestation to reopen")
             }
+            Self::EvidenceMissing => write!(
+                f,
+                "this row names no evidence for its completion; state `evidence` with the commit \
+                 (sha) or the path the work left, so forge can check it"
+            ),
+            Self::EvidenceUnverified(reason) => write!(
+                f,
+                "the completion's evidence did not verify: {reason}. Fix the artifact or the \
+                 evidence and move the row again"
+            ),
         }
     }
 }
@@ -521,6 +543,14 @@ impl Workspace {
                 next.detail.clone_from(&tasks[index].detail);
                 append_words(&mut next, &reason);
             }
+            // The evidence gate: a claim of completion rests on an artifact
+            // forge checks on this move, and a claim with nothing to check
+            // refuses. It fires before the look gate parks a verify=user
+            // row, so a park carries verified evidence for the approve
+            // that follows.
+            if next.status == TaskStatus::Completed {
+                self.verify_completion_evidence(project_name, &mut next)?;
+            }
             // A move off `waiting` drops the wait the row was holding.
             if prior == TaskStatus::Waiting && next.status != TaskStatus::Waiting {
                 next.waiting_on = None;
@@ -647,6 +677,185 @@ impl Workspace {
         }
         self.announce_tasks_changed(project_name);
         Ok(Some(task))
+    }
+
+    /// Check a completion's claim on the move that lands it: the artifact
+    /// must exist in the project's repository, and the row keeps the stamp
+    /// of that check. A claim naming nothing refuses, and a failed check
+    /// refuses with the reason it found.
+    pub(crate) fn verify_completion_evidence(
+        &self,
+        project_name: &str,
+        task: &mut Task,
+    ) -> Result<(), MoveError> {
+        let Some(evidence) = task.evidence.as_mut() else {
+            return Err(MoveError::EvidenceMissing);
+        };
+        let commit = evidence.commit.as_deref().map(str::trim).filter(|value| !value.is_empty());
+        let path = evidence.path.as_deref().map(str::trim).filter(|value| !value.is_empty());
+        if commit.is_none() && path.is_none() {
+            return Err(MoveError::EvidenceMissing);
+        }
+        let repo = self
+            .list_projects()
+            .into_iter()
+            .find(|view| view.name == project_name)
+            .map(|view| view.path)
+            .ok_or_else(|| {
+                MoveError::EvidenceUnverified(format!(
+                    "no project named {project_name} is loaded, so there is no repository to \
+                     check the claim against"
+                ))
+            })?;
+        let verifier = std::sync::Arc::clone(&self.evidence_verifier.read());
+        match verifier.verify(&repo, commit, path) {
+            Ok(()) => {
+                evidence.verified_at = Some(SystemTime::now());
+                evidence.problem = None;
+            }
+            Err(reason) => return Err(MoveError::EvidenceUnverified(reason)),
+        }
+        // A project that opted into a connector also waits on its pull
+        // requests: the head and CI the connector reports are the claim's
+        // other half, and a check that is stale, failed or red is not a
+        // verification. A project with no connector asks for nothing here.
+        if self.project_connector(project_name).is_some() {
+            let now = SystemTime::now();
+            for link in task.links.iter().filter(|link| link.kind == LinkKind::Pr) {
+                let fresh = link.last_check.as_ref().filter(|check| {
+                    check.problem.is_none()
+                        && now.duration_since(check.at).map_or(0, |age| age.as_secs())
+                            <= CONNECTOR_REFRESH_SECS
+                });
+                let Some(check) = fresh else {
+                    let why = link
+                        .last_check
+                        .as_ref()
+                        .and_then(|check| check.problem.clone())
+                        .unwrap_or_else(|| "it has not been checked recently".to_owned());
+                    return Err(MoveError::EvidenceUnverified(format!(
+                        "the project's connector cannot vouch for {}: {why}. It refreshes every \
+                         five minutes; check the link and move the row again",
+                        link.target,
+                    )));
+                };
+                if check.ci.as_deref() == Some("failing") {
+                    return Err(MoveError::EvidenceUnverified(format!(
+                        "{} reports failing CI; a red pull request does not complete a row",
+                        link.target,
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A project's outward connector, when it opted into one. The
+    /// test-only project overlay is read too, the way `list_projects`
+    /// reads it, so a test can seed an opted-in project.
+    fn project_connector(&self, project_name: &str) -> Option<crate::config::ConnectorKind> {
+        let config = self.config_arc();
+        if let Some(connector) = config
+            .projects
+            .iter()
+            .find(|project| project.name == project_name)
+            .and_then(|project| project.connector)
+        {
+            return Some(connector);
+        }
+        #[cfg(any(test, feature = "testing"))]
+        {
+            return self
+                .test_extra_projects
+                .lock()
+                .iter()
+                .find(|project| project.name == project_name)
+                .and_then(|project| project.connector);
+        }
+        #[cfg(not(any(test, feature = "testing")))]
+        None
+    }
+
+    /// Refresh every opted-in project's pull-request links through its
+    /// connector, caching each check on the link with its timestamp.
+    ///
+    /// A project with no connector contributes nothing: no link is looked
+    /// at and no child is spawned, which is what keeps the default board
+    /// self-contained. Refreshes land on the row as a versioned write;
+    /// `updated_at` is left alone, because a connector's read is not
+    /// someone touching the row.
+    pub async fn refresh_connectors(&self, now: SystemTime) {
+        // The project list is taken and every lock released before the
+        // first await: a guard held across a spawn would keep this future
+        // off the supervisor's Send bound.
+        let opted_in: Vec<(String, std::path::PathBuf, std::collections::HashMap<String, String>)> = {
+            let config = self.config_arc();
+            #[cfg(any(test, feature = "testing"))]
+            let extra = self.test_extra_projects.lock();
+            let projects: Box<dyn Iterator<Item = &crate::config::LoadedProject>> = {
+                #[cfg(any(test, feature = "testing"))]
+                {
+                    Box::new(config.projects.iter().chain(extra.iter()))
+                }
+                #[cfg(not(any(test, feature = "testing")))]
+                {
+                    Box::new(config.projects.iter())
+                }
+            };
+            projects
+                .filter(|project| project.connector.is_some())
+                .map(|project| (project.name.clone(), project.path.clone(), project.env.clone()))
+                .collect()
+        };
+        for (project, path, env) in opted_in {
+            let mut changed = false;
+            for task in self.tasks_for_project(&project) {
+                if task.status.is_terminal() {
+                    continue;
+                }
+                let mut links = task.links.clone();
+                let mut dirty = false;
+                for link in links.iter_mut().filter(|link| link.kind == LinkKind::Pr) {
+                    let fresh = link.last_check.as_ref().is_some_and(|check| {
+                        now.duration_since(check.at).map_or(0, |age| age.as_secs())
+                            <= CONNECTOR_REFRESH_SECS
+                    });
+                    if fresh {
+                        continue;
+                    }
+                    let checked =
+                        crate::env::git_diff::check_pull_request(&path, &env, &link.target).await;
+                    link.state.clone_from(&checked.state);
+                    link.last_check = Some(forge_primitives::tasks::LinkCheck {
+                        at: now,
+                        state: checked.state,
+                        head: checked.head,
+                        ci: checked.ci,
+                        problem: checked.problem,
+                    });
+                    dirty = true;
+                }
+                if !dirty {
+                    continue;
+                }
+                let id = task.id.clone();
+                let project_name = project.clone();
+                self.with_tasks_mut(|tasks| {
+                    if let Some(stored) = tasks
+                        .iter_mut()
+                        .find(|stored| stored.id == id && stored.project_name == project_name)
+                    {
+                        stored.links = links;
+                        stored.version = stored.version.saturating_add(1);
+                        self.persist_task(stored);
+                    }
+                });
+                changed = true;
+            }
+            if changed {
+                self.announce_tasks_changed(&project);
+            }
+        }
     }
 
     /// The user moves a row's state directly - the drag across the board.
@@ -1357,8 +1566,63 @@ mod tests {
     use super::*;
     use crate::SeatUpdate;
     use crate::{SessionSlot, SessionUpdate};
-    use forge_primitives::tasks::{By, Task, TaskId, TaskStatus, Waiting, WaitingKind};
+    use forge_primitives::tasks::{
+        By, Evidence, LinkCheck, Task, TaskId, TaskLink, TaskStatus, Waiting, WaitingKind,
+    };
     use tempfile::tempdir;
+
+    /// A pull-request link as a row carries it, unchecked by default.
+    fn pr_link(target: &str) -> TaskLink {
+        TaskLink {
+            kind: forge_primitives::tasks::LinkKind::Pr,
+            label: None,
+            target: target.to_owned(),
+            state: None,
+            last_check: None,
+            added_at: std::time::SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    /// A pull-request link with a connector check stamped now.
+    fn pr_link_checked(target: &str, ci: Option<&str>) -> TaskLink {
+        TaskLink {
+            state: Some("open".to_owned()),
+            last_check: Some(LinkCheck {
+                at: std::time::SystemTime::now(),
+                state: Some("open".to_owned()),
+                head: Some("abc123".to_owned()),
+                ci: ci.map(str::to_owned),
+                problem: None,
+            }),
+            ..pr_link(target)
+        }
+    }
+
+    /// A verifier that answers exactly what the test tells it: the
+    /// workspace's own check is the trait, so the gate's refusals are
+    /// driven without a repository.
+    struct FixedVerifier(std::sync::Mutex<Result<(), String>>);
+
+    impl FixedVerifier {
+        fn accepting() -> std::sync::Arc<Self> {
+            std::sync::Arc::new(Self(std::sync::Mutex::new(Ok(()))))
+        }
+        fn refusing(reason: &str) -> std::sync::Arc<Self> {
+            std::sync::Arc::new(Self(std::sync::Mutex::new(Err(reason.to_owned()))))
+        }
+    }
+
+    impl crate::env::evidence::EvidenceVerifier for FixedVerifier {
+        fn verify(
+            &self,
+            _repo: &std::path::Path,
+            _commit: Option<&str>,
+            _path: Option<&str>,
+        ) -> Result<(), String> {
+            let answer = self.0.lock().expect("the test's verifier lock");
+            answer.clone()
+        }
+    }
 
     fn install_db(ws: &Workspace, dir: &std::path::Path) {
         let db = crate::store::Db::open(&dir.join("db.redb")).expect("open db");
@@ -1436,6 +1700,18 @@ mod tests {
         tasks.iter().map(|task| task.subject.clone()).collect()
     }
 
+    /// A claim the stub verifier accepts: this suite is about the moves,
+    /// and the gate's own refusals have their own tests below.
+    fn passing_evidence() -> Option<forge_primitives::tasks::Evidence> {
+        Some(forge_primitives::tasks::Evidence {
+            commit: Some("test-commit".to_owned()),
+            path: None,
+            excerpt: None,
+            verified_at: None,
+            problem: None,
+        })
+    }
+
     fn sample_task(id: &str, project: &str) -> Task {
         Task {
             id: TaskId::from(id),
@@ -1456,6 +1732,7 @@ mod tests {
             attested: None,
             reserved: None,
             links: Vec::new(),
+            evidence: passing_evidence(),
             version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
@@ -1477,6 +1754,7 @@ mod tests {
     fn a_task_can_be_updated_by_a_session_that_does_not_own_it() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("forge", "/tmp/tp-update-any");
         // A child row: a completing ROOT closes and archives (own test).
         let mut seeded = sample_task("t-1", "forge");
         seeded.parent = Some(TaskId::from("epic"));
@@ -2057,6 +2335,7 @@ mod tests {
     fn a_user_move_still_takes_the_verify_gate() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("forge", "/tmp/tp-verify-gate");
         let mut row = sample_task("t-1", "forge");
         row.verify = Some(Verify::User);
         ws.push_task(row);
@@ -3428,6 +3707,9 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project("proj", "/tmp/tp-delete-foreign");
+        // The row's own project is loaded too: the evidence gate checks a
+        // completion against the project's repository.
+        ws.seed_test_project("elsewhere", "/tmp/tp-delete-foreign-e");
         ws.push_task(Task { verify: Some(Verify::User), ..sample_task("t-1", "elsewhere") });
         ws.update_task("elsewhere", &TaskId::from("t-1"), By::System, |task| {
             task.status = TaskStatus::Completed;
@@ -3454,6 +3736,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project("proj", "/tmp/tp-close-scope");
+        ws.seed_test_project("elsewhere", "/tmp/tp-close-scope-e");
         // The tree being closed: a root and its child, both unparked.
         ws.push_task(sample_task("root", "proj"));
         ws.push_task(sample_task_with_parent("child", Some("root"), "proj"));
@@ -3744,6 +4027,312 @@ mod tests {
             Ok(None),
             "an id the archive does not hold is absent, not an error",
         );
+    }
+
+    /// Absence is never success: a row with no evidence at all cannot
+    /// claim completion, whatever door it is moved through.
+    #[test]
+    fn a_completion_without_evidence_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-gate-missing");
+        ws.push_task(Task { evidence: None, ..sample_task("t-1", "proj") });
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+
+        assert_eq!(
+            ws.update_task("proj", &TaskId::from("t-1"), By::Seat(worker), |task| {
+                task.status = TaskStatus::Completed;
+            }),
+            Err(MoveError::EvidenceMissing),
+            "there is nothing to check, so the claim is refused",
+        );
+        assert_eq!(
+            ws.tasks_for_project("proj")[0].status,
+            TaskStatus::Pending,
+            "the row did not move",
+        );
+    }
+
+    /// An evidence block naming no artifact is the same absence wearing a
+    /// shape: refused, not accepted as a checked claim.
+    #[test]
+    fn a_completion_whose_evidence_names_nothing_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-gate-empty");
+        ws.install_evidence_verifier(FixedVerifier::accepting());
+        ws.push_task(Task {
+            evidence: Some(Evidence {
+                commit: None,
+                path: None,
+                excerpt: Some("looks fine to me".to_owned()),
+                verified_at: None,
+                problem: None,
+            }),
+            ..sample_task("t-1", "proj")
+        });
+
+        assert_eq!(
+            ws.update_task("proj", &TaskId::from("t-1"), By::User, |task| {
+                task.status = TaskStatus::Completed;
+            }),
+            Err(MoveError::EvidenceMissing),
+            "an excerpt is the reader's evidence, never the claim",
+        );
+    }
+
+    /// A claim the repository cannot back refuses, naming the check's own
+    /// reason so the caller can fix the artifact.
+    #[test]
+    fn a_completion_with_unverifiable_evidence_is_refused_naming_the_check() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-gate-refused");
+        ws.install_evidence_verifier(FixedVerifier::refusing(
+            "commit deadbeef does not exist in /tmp/tp-gate-refused",
+        ));
+        ws.push_task(sample_task("t-1", "proj"));
+
+        let refused = ws
+            .update_task("proj", &TaskId::from("t-1"), By::User, |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect_err("the artifact is not there");
+        assert_eq!(
+            refused,
+            MoveError::EvidenceUnverified(
+                "commit deadbeef does not exist in /tmp/tp-gate-refused".to_owned()
+            ),
+        );
+        assert!(
+            refused.to_string().contains("deadbeef"),
+            "the refusal carries the check's reason: {refused}",
+        );
+    }
+
+    /// A verified completion carries the stamp of the check that passed,
+    /// which is the wire's `verified at`.
+    #[test]
+    fn a_verified_completion_stamps_the_check() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-gate-stamp");
+        ws.install_evidence_verifier(FixedVerifier::accepting());
+        ws.push_task(sample_task("t-1", "proj"));
+
+        let done = ws
+            .update_task("proj", &TaskId::from("t-1"), By::User, |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(done.status, TaskStatus::Completed);
+        let evidence = done.evidence.expect("the claim rides the row");
+        assert!(evidence.verified_at.is_some(), "the passing check is stamped");
+        assert_eq!(evidence.problem, None);
+    }
+
+    /// The look gate follows the same rule: a verify=user row's completion
+    /// verifies before it parks, so the row the user is asked to approve
+    /// carries a claim forge has already checked.
+    #[test]
+    fn a_look_park_carries_verified_evidence() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-gate-park");
+        ws.install_evidence_verifier(FixedVerifier::accepting());
+        let mut row = sample_task("t-1", "proj");
+        row.verify = Some(Verify::User);
+        ws.push_task(row);
+
+        let parked = ws
+            .update_task("proj", &TaskId::from("t-1"), By::User, |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(parked.status, TaskStatus::Waiting, "the look gate parks it");
+        assert!(
+            parked.evidence.as_ref().is_some_and(|evidence| evidence.verified_at.is_some()),
+            "the park carries a verified claim",
+        );
+    }
+
+    /// The approve door re-runs the check on the move: a repository that no
+    /// longer holds the artifact refuses the approve even though the park's
+    /// stamp is on the row.
+    #[test]
+    fn an_approve_reverifies_the_evidence() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-gate-approve");
+        ws.install_evidence_verifier(FixedVerifier::accepting());
+        let mut row = sample_task("t-1", "proj");
+        row.verify = Some(Verify::User);
+        ws.push_task(row);
+        ws.update_task("proj", &TaskId::from("t-1"), By::User, |task| {
+            task.status = TaskStatus::Completed;
+        })
+        .expect("no refusal")
+        .expect("the row is there");
+
+        ws.install_evidence_verifier(FixedVerifier::refusing("the commit was force-pushed away"));
+        let refused =
+            ws.approve_task("proj", &TaskId::from("t-1")).expect_err("the artifact is gone now");
+        assert_eq!(
+            refused,
+            MoveError::EvidenceUnverified("the commit was force-pushed away".to_owned()),
+        );
+        assert_eq!(
+            ws.tasks_for_project("proj")[0].status,
+            TaskStatus::Waiting,
+            "the row stays parked for the look",
+        );
+    }
+
+    /// A project that opted into the GitHub connector waits on its pull
+    /// requests too: an unchecked link is the wire's unknown, and unknown
+    /// does not complete a row.
+    #[test]
+    fn a_connector_project_refuses_a_completion_on_an_unchecked_pull_request() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_connector(
+            "proj",
+            "/tmp/tp-connector",
+            crate::config::ConnectorKind::Github,
+        );
+        ws.install_evidence_verifier(FixedVerifier::accepting());
+        let mut row = sample_task("t-1", "proj");
+        row.links.push(pr_link("https://example.invalid/pull/7"));
+        ws.push_task(row);
+
+        let refused = ws
+            .update_task("proj", &TaskId::from("t-1"), By::User, |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect_err("the connector has not seen the pull request");
+        assert!(
+            matches!(&refused, MoveError::EvidenceUnverified(reason)
+                if reason.contains("connector") && reason.contains("pull/7")),
+            "the refusal names the connector and the link: {refused}",
+        );
+    }
+
+    /// A fresh red check is a refusal of its own: a failing pull request
+    /// does not complete a row.
+    #[test]
+    fn a_connector_project_refuses_a_completion_on_failing_ci() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_connector(
+            "proj",
+            "/tmp/tp-connector-red",
+            crate::config::ConnectorKind::Github,
+        );
+        ws.install_evidence_verifier(FixedVerifier::accepting());
+        let mut row = sample_task("t-1", "proj");
+        row.links.push(pr_link_checked("https://example.invalid/pull/7", Some("failing")));
+        ws.push_task(row);
+
+        let refused = ws
+            .update_task("proj", &TaskId::from("t-1"), By::User, |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect_err("red CI cannot complete a row");
+        assert!(
+            matches!(&refused, MoveError::EvidenceUnverified(reason)
+                if reason.contains("failing CI")),
+            "the refusal names the verdict: {refused}",
+        );
+    }
+
+    /// A fresh green check lets the completion through, and the same row
+    /// with no connector is not asked about its link at all.
+    #[test]
+    fn a_connector_project_completes_on_a_fresh_green_check() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_connector(
+            "proj",
+            "/tmp/tp-connector-green",
+            crate::config::ConnectorKind::Github,
+        );
+        ws.install_evidence_verifier(FixedVerifier::accepting());
+        let mut row = sample_task("t-1", "proj");
+        row.links.push(pr_link_checked("https://example.invalid/pull/7", Some("passing")));
+        ws.push_task(row);
+
+        let done = ws
+            .update_task("proj", &TaskId::from("t-1"), By::User, |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(done.status, TaskStatus::Completed);
+
+        // The control: the same unchecked link in a project with no
+        // connector completes, because nothing there asks for a PR.
+        let (plain, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        plain.seed_test_project("proj", "/tmp/tp-connector-none");
+        plain.install_evidence_verifier(FixedVerifier::accepting());
+        let mut row = sample_task("t-1", "proj");
+        row.links.push(pr_link("https://example.invalid/pull/7"));
+        plain.push_task(row);
+        plain
+            .update_task("proj", &TaskId::from("t-1"), By::User, |task| {
+                task.status = TaskStatus::Completed;
+            })
+            .expect("a self-contained project asks for no pull request");
+    }
+
+    /// An old check is not fresh: a cached verdict is evidence only while
+    /// it is current, so a link checked past the window refuses.
+    #[test]
+    fn an_expired_connector_check_is_not_evidence() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project_with_connector(
+            "proj",
+            "/tmp/tp-connector-stale",
+            crate::config::ConnectorKind::Github,
+        );
+        ws.install_evidence_verifier(FixedVerifier::accepting());
+        let mut row = sample_task("t-1", "proj");
+        let mut link = pr_link_checked("https://example.invalid/pull/7", Some("passing"));
+        if let Some(check) = link.last_check.as_mut() {
+            check.at = SystemTime::now()
+                - std::time::Duration::from_secs(crate::tasks::CONNECTOR_REFRESH_SECS + 1);
+        }
+        row.links.push(link);
+        ws.push_task(row);
+
+        assert!(
+            matches!(
+                ws.update_task("proj", &TaskId::from("t-1"), By::User, |task| {
+                    task.status = TaskStatus::Completed;
+                }),
+                Err(MoveError::EvidenceUnverified(reason)) if reason.contains("connector")
+            ),
+            "an expired check is refused",
+        );
+    }
+
+    /// The default is off: a project with no connector refreshes nothing,
+    /// so no child runs and no link moves.
+    #[tokio::test]
+    async fn a_project_without_a_connector_refreshes_nothing() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-no-connector");
+        let mut row = sample_task("t-1", "proj");
+        row.links.push(pr_link("https://example.invalid/pull/7"));
+        ws.push_task(row);
+
+        ws.refresh_connectors(SystemTime::now()).await;
+        let stored = &ws.tasks_for_project("proj")[0];
+        assert_eq!(stored.links[0].last_check, None, "nothing checked the link");
+        assert_eq!(stored.version, 0, "and nothing was written");
     }
 
     #[test]

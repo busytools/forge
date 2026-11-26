@@ -44,6 +44,7 @@ export const ENTRY_FIELDS: Readonly<Record<string, EntryField[]>> = {
       allowed: ['default', 'acceptEdits', 'plan', 'dontAsk', 'auto', 'bypassPermissions'],
     },
     { key: 'max_workers', kind: 'number', required: false },
+    { key: 'connector', kind: 'enum', required: false, allowed: ['github'] },
   ],
   slack: [
     { key: 'workspace', kind: 'string', required: true },

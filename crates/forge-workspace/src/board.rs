@@ -399,8 +399,8 @@ mod tests {
     use super::*;
     use crate::SessionSlot;
     use forge_primitives::tasks::{
-        By, Estimate, LinkKind, Task, TaskId, TaskKind, TaskLink, TaskStatus, TaskTransition,
-        Verify, Waiting, WaitingKind,
+        By, Estimate, Evidence, LinkKind, Task, TaskId, TaskKind, TaskLink, TaskStatus,
+        TaskTransition, Verify, Waiting, WaitingKind,
     };
     use tempfile::tempdir;
 
@@ -439,6 +439,13 @@ mod tests {
             attested: None,
             reserved: None,
             links: Vec::new(),
+            evidence: Some(Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
             version: 0,
             archived_at: None,
             created_at: epoch(0),
@@ -788,6 +795,7 @@ mod tests {
                 label: None,
                 target: "https://example.invalid/pull/1".to_owned(),
                 state: Some("open".to_owned()),
+                last_check: None,
                 added_at: epoch(0),
             });
             ended.updated_at = epoch(0);
@@ -1179,6 +1187,7 @@ mod tests {
             label: Some("retro".to_owned()),
             target: "docs/retro.md".to_owned(),
             state: None,
+            last_check: None,
             added_at: epoch(0),
         });
         ws.seed_test_task(epic);

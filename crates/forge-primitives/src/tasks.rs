@@ -196,6 +196,72 @@ impl LinkKind {
     }
 }
 
+/// The most of an output excerpt a row keeps. A completion's excerpt is
+/// the reader's evidence, not a log dump: four thousand characters is
+/// enough to show a test result or a diff stat, and short enough that a
+/// list answer carrying a project's rows stays deliverable.
+pub const EVIDENCE_EXCERPT_MAX: usize = 4_000;
+
+/// What a completion rests on, and forge's own check of it.
+///
+/// A row that changes code, docs or a page cannot move to completed
+/// without one of the artifact forms: a commit that must exist in the
+/// project's repository, or a path that must exist at that commit (or at
+/// `HEAD` when no commit is named). The excerpt travels beside them for
+/// the reader; it is never the whole claim, because output cannot be
+/// checked.
+///
+/// `verified_at` is stamped by the gate on the move that checks the
+/// artifact, and `problem` carries why the last check failed - absence is
+/// never success, and an unchecked claim reads as unknown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Evidence {
+    #[serde(default)]
+    pub commit: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub excerpt: Option<String>,
+    #[serde(default)]
+    pub verified_at: Option<SystemTime>,
+    #[serde(default)]
+    pub problem: Option<String>,
+}
+
+impl Evidence {
+    /// The excerpt as a row keeps it: at most [`EVIDENCE_EXCERPT_MAX`]
+    /// characters, cut on a character boundary so a multi-byte glyph is
+    /// never split.
+    pub fn bounded_excerpt(excerpt: &str) -> String {
+        match excerpt.char_indices().nth(EVIDENCE_EXCERPT_MAX) {
+            Some((cut, _)) => excerpt[..cut].to_owned(),
+            None => excerpt.to_owned(),
+        }
+    }
+}
+
+/// One connector's look at a link, cached on the row so the board never
+/// waits on a network read and a blip draws as unknown rather than as
+/// success.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkCheck {
+    pub at: SystemTime,
+    /// The target's state as the connector spells it (open / closed /
+    /// merged), absent when the check could not say.
+    #[serde(default)]
+    pub state: Option<String>,
+    /// The head revision the connector reported.
+    #[serde(default)]
+    pub head: Option<String>,
+    /// The CI verdict: `passing`, `failing` or `pending`. Absent is
+    /// unknown, which is never read as passing.
+    #[serde(default)]
+    pub ci: Option<String>,
+    /// Why the last check failed, when it did.
+    #[serde(default)]
+    pub problem: Option<String>,
+}
+
 /// One reference a row carries: the epic's spec and plan, a task's issues
 /// and PRs, anything else.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,6 +272,10 @@ pub struct TaskLink {
     pub target: String,
     /// Read back where forge can (open / closed / merged).
     pub state: Option<String>,
+    /// The connector's cached look at the target. `None` means nothing has
+    /// checked it - the board's unknown.
+    #[serde(default)]
+    pub last_check: Option<LinkCheck>,
     pub added_at: SystemTime,
 }
 
@@ -258,6 +328,10 @@ pub struct Task {
     pub reserved: Option<ReservedBy>,
     #[serde(default)]
     pub links: Vec<TaskLink>,
+    /// What the completion rests on: the artifact forge checks, the
+    /// excerpt the reader sees, and when the check last ran.
+    #[serde(default)]
+    pub evidence: Option<Evidence>,
     /// How many writes the row has taken. An update states the version it
     /// read, so a lost write is refused visibly rather than overwriting
     /// what another seat wrote. Row creation is version 0.
@@ -393,9 +467,17 @@ mod tests {
                 label: Some("PR #1889".to_owned()),
                 target: "https://example.invalid/pull/1889".to_owned(),
                 state: Some("open".to_owned()),
+                last_check: None,
                 added_at: std::time::SystemTime::UNIX_EPOCH,
             }],
             waiting_on: None,
+            evidence: Some(Evidence {
+                commit: Some("0123456789abcdef".to_owned()),
+                path: Some("crates/forge-primitives/src/tasks.rs".to_owned()),
+                excerpt: Some("cargo nextest run: 206 passed".to_owned()),
+                verified_at: Some(std::time::SystemTime::UNIX_EPOCH),
+                problem: None,
+            }),
             version: 3,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
@@ -465,7 +547,7 @@ mod tests {
     fn a_row_written_before_the_new_fields_reads_as_finite_and_unversioned() {
         let mut older = serde_json::to_value(sample_task()).expect("serialize");
         let object = older.as_object_mut().expect("a row is an object");
-        for gone in ["kind", "cadence", "decision", "version", "attempt"] {
+        for gone in ["kind", "cadence", "decision", "version", "attempt", "evidence"] {
             object.remove(gone);
         }
         object.insert("attempt".to_owned(), serde_json::json!(3));
@@ -473,6 +555,7 @@ mod tests {
         assert_eq!(read.kind, TaskKind::Finite, "an old row is finite work");
         assert_eq!(read.cadence, None);
         assert_eq!(read.decision, None);
+        assert_eq!(read.evidence, None, "a row written before the gate carries no claim");
         assert_eq!(read.version, 0, "nothing names a version it has never written");
     }
 
@@ -551,6 +634,60 @@ mod tests {
         assert_eq!(not_waiting.wait_age_secs(now), None, "a row holding no wait has no wait age");
     }
 
+    /// The evidence block is what a completion rests on: the artifact, the
+    /// excerpt, and the gate's own verdict. An unverified claim carries no
+    /// stamp, which is the wire's `unknown`.
+    #[test]
+    fn an_evidence_block_keeps_the_artifact_its_excerpt_and_its_verdict() {
+        let evidence = Evidence {
+            commit: Some("0123456789abcdef".to_owned()),
+            path: Some("crates/forge-workspace/src/board.rs".to_owned()),
+            excerpt: Some("12 tests run: 12 passed".to_owned()),
+            verified_at: Some(std::time::SystemTime::UNIX_EPOCH),
+            problem: None,
+        };
+        let json = serde_json::to_vec(&evidence).expect("serialize");
+        let back: Evidence = serde_json::from_slice(&json).expect("deserialize");
+        assert_eq!(back, evidence, "every part of the claim survives the store");
+
+        let unchecked = Evidence { verified_at: None, problem: None, ..evidence.clone() };
+        let back: Evidence =
+            serde_json::from_slice(&serde_json::to_vec(&unchecked).expect("serialize"))
+                .expect("deserialize");
+        assert_eq!(back.verified_at, None, "nothing verified it, so it reads as unknown");
+        let failed = Evidence {
+            verified_at: None,
+            problem: Some("commit deadbeef is not in /tmp/repo".to_owned()),
+            ..evidence
+        };
+        assert_eq!(
+            serde_json::from_slice::<Evidence>(&serde_json::to_vec(&failed).expect("serialize"))
+                .expect("deserialize")
+                .problem
+                .as_deref(),
+            Some("commit deadbeef is not in /tmp/repo"),
+            "a failed lookup keeps why",
+        );
+    }
+
+    /// The excerpt is bounded on a character boundary: a long log does not
+    /// ride, and a split glyph does not corrupt the record.
+    #[test]
+    fn an_excerpt_is_bounded_on_a_character_boundary() {
+        let short = "12 tests run: 12 passed";
+        assert_eq!(Evidence::bounded_excerpt(short), short, "a short excerpt rides whole");
+
+        let long = "y".repeat(EVIDENCE_EXCERPT_MAX + 500);
+        assert_eq!(Evidence::bounded_excerpt(&long).chars().count(), EVIDENCE_EXCERPT_MAX);
+
+        // A multi-byte glyph straddling the cut is dropped whole rather
+        // than split into an invalid string.
+        let glyphs = "é".repeat(EVIDENCE_EXCERPT_MAX + 1);
+        let cut = Evidence::bounded_excerpt(&glyphs);
+        assert_eq!(cut.chars().count(), EVIDENCE_EXCERPT_MAX);
+        assert!(cut.is_char_boundary(cut.len()));
+    }
+
     /// The attempt tick is cut: nothing acted on it, and the board keeps
     /// the reason a row was sent back in its detail instead.
     #[test]
@@ -610,6 +747,7 @@ mod tests {
             label: Some("PR #1889".to_owned()),
             target: "https://example.invalid/pull/1".to_owned(),
             state: Some("open".to_owned()),
+            last_check: None,
             added_at: std::time::SystemTime::UNIX_EPOCH,
         };
         let json = serde_json::to_vec(&link).expect("serialize");

@@ -45,6 +45,8 @@ struct TaskRecord {
     #[serde(default)]
     links: Vec<TaskLink>,
     #[serde(default)]
+    evidence: Option<forge_primitives::tasks::Evidence>,
+    #[serde(default)]
     kind: forge_primitives::tasks::TaskKind,
     #[serde(default)]
     cadence: Option<Estimate>,
@@ -101,6 +103,7 @@ impl TaskRecord {
                 label: None,
                 target: artifact.clone(),
                 state: None,
+                last_check: None,
                 added_at: self.created_at,
             });
         }
@@ -144,6 +147,7 @@ impl TaskRecord {
             attested: self.attested,
             reserved: self.reserved,
             links,
+            evidence: self.evidence,
             version: self.version,
             archived_at: self.archived_at,
             created_at: self.created_at,
@@ -248,6 +252,7 @@ mod tests {
             attested: None,
             reserved: None,
             links: Vec::new(),
+            evidence: None,
             version: 0,
             archived_at: None,
             created_at: std::time::SystemTime::UNIX_EPOCH,
@@ -405,6 +410,7 @@ mod tests {
             label: Some("#1886".to_owned()),
             target: "https://example.invalid/issues/1886".to_owned(),
             state: Some("open".to_owned()),
+            last_check: None,
             added_at: std::time::SystemTime::UNIX_EPOCH,
         });
         upsert(&db, &task).expect("write");
