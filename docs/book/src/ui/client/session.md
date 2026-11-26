@@ -166,9 +166,9 @@ read as one system.
   call that outlives the CLI's task threshold ends with a system frame whose
   summary is the call's own description, which the row already draws and its
   status already states, so no second line appears. A completion that arrives
-  after other rows keeps its notice - the ending is then the news - and an
-  ending whose words the row does not carry, a failure's or a background
-  command's, always draws. The call is matched by the id the frame names, so
+  after other rows keeps its notice - the ending is then the news - and a
+  failure's, a stopped run's or a background command's ending always draws,
+  whatever its words say. The call is matched by the id the frame names, so
   two calls sharing a description never take each other's ending.
 - **A read** draws by what the file is, from the same per-format policy the
   Files reader uses: markdown renders as prose, code stays coloured with the
