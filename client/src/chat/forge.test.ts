@@ -838,6 +838,20 @@ describe('the tasks card', () => {
     ]);
   });
 
+  it('draws a cut list envelope with what it withheld and how to narrow', () => {
+    const envelope = {
+      rows: [RECORD],
+      returned: 1,
+      total: 47,
+      truncated: true,
+      narrow: 'narrow with `owner`, `parent`, `status`, `kind` or `ready`',
+    };
+    const card = forgeCardOf('mcp__forge__tasks__list', {}, result(JSON.stringify(envelope)));
+    expect(card?.figure, 'the figure counts what the answer carries').toBe('1 in flight');
+    const said = card?.pieces.find((piece) => piece.kind === 'text');
+    expect(said?.kind === 'text' ? said.text : '').toContain('showing 1 of 47');
+  });
+
   it('reads the tasks list past the clock line the tool opens it with', () => {
     // The real result text, as `tasks__list` writes it: the `now <rfc3339>`
     // line the server pins first (crates/forge-workspace/src/mcp/tasks.rs),

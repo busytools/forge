@@ -1885,7 +1885,7 @@ function verbOf(name: string): string {
  * delete an envelope, list an array.
  */
 function tasksCard(verb: string, input: unknown, answer: unknown): ForgeCard | null {
-  if (verb === 'create' || verb === 'update' || verb === 'claim') {
+  if (verb === 'create' || verb === 'update' || verb === 'claim' || verb === 'get') {
     const record = taskOf(answer);
     if (record === null || record.subject === null) return null;
     const pieces: ForgePiece[] = [];
@@ -1952,9 +1952,18 @@ function tasksCard(verb: string, input: unknown, answer: unknown): ForgeCard | n
     };
   }
   if (verb === 'list') {
-    if (!Array.isArray(answer)) return null;
+    // The list answer is an envelope - `rows` beside `returned`, `total`,
+    // `truncated` and `narrow`. A bare array is an older server's answer
+    // and reads the same way, so a skewed pair still draws its rows.
+    const envelope = Array.isArray(answer) ? null : obj(answer);
+    const rows = Array.isArray(answer)
+      ? answer
+      : Array.isArray(envelope?.['rows'])
+        ? (envelope['rows'] as unknown[])
+        : null;
+    if (rows === null) return null;
     const items: ForgeListItem[] = [];
-    for (const held of answer) {
+    for (const held of rows) {
       const record = taskOf(held);
       if (record === null || record.subject === null) return null;
       items.push({
@@ -1965,19 +1974,31 @@ function tasksCard(verb: string, input: unknown, answer: unknown): ForgeCard | n
         when: taskWhen(record),
       });
     }
+    const pieces: ForgePiece[] =
+      items.length === 0
+        ? [
+            {
+              kind: 'empty',
+              text: 'no tasks in flight - anything this project declares lands here',
+            },
+          ]
+        : [{ kind: 'list', items }];
+    // A cut answer says so and names the doors: the figure counts what the
+    // answer carries, and the total says what there is.
+    if (envelope !== null && envelope['truncated'] === true) {
+      const returned = countOf(envelope['returned']);
+      const total = countOf(envelope['total']);
+      const narrow = str(envelope, 'narrow') ?? 'narrow the read';
+      pieces.push({
+        kind: 'text',
+        text: `showing ${returned ?? items.length} of ${total ?? '?'} - ${narrow}`,
+      });
+    }
     return {
       title: 'tasks',
       chips: [],
       figure: items.length === 0 ? null : `${items.length} in flight`,
-      pieces:
-        items.length === 0
-          ? [
-              {
-                kind: 'empty',
-                text: 'no tasks in flight - anything this project declares lands here',
-              },
-            ]
-          : [{ kind: 'list', items }],
+      pieces,
     };
   }
   return null;

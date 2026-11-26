@@ -651,11 +651,15 @@ pub enum Command {
         approve: bool,
         words: Option<String>,
     },
-    /// The user answers a row waiting on a question: the words go into
-    /// the detail, the row resumes in progress, and its owner hears once.
+    /// The user answers a row waiting on a question: `choice` is the
+    /// option they picked, when the row asked with options, and `words`
+    /// the note they left. The answer is stored as the row's decision
+    /// record, the row resumes in progress, and its owner hears once.
     TaskAnswer {
         project: String,
         id: String,
+        #[serde(default)]
+        choice: Option<String>,
         words: String,
     },
     /// The user moves a row in its queue.
@@ -3764,6 +3768,7 @@ mod workers_command_tests {
             Command::TaskAnswer {
                 project: "p".to_owned(),
                 id: "t".to_owned(),
+                choice: None,
                 words: "w".to_owned(),
             },
             Command::TaskRank { project: "p".to_owned(), id: "t".to_owned(), to: RankMove::Top },

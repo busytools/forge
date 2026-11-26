@@ -95,6 +95,11 @@ pub(crate) enum MoveError {
     /// The evidence names an artifact the project's repository does not
     /// hold, or the check could not run. The reason is the check's own.
     EvidenceUnverified(String),
+    /// An update named a version the row is not at: another writer got
+    /// there first, and the caller is reading a stale record.
+    VersionMismatch { expected: u64, current: u64 },
+    /// A decision answer named a choice the row's options do not carry.
+    NotAnOption(String),
 }
 
 /// How long a terminal tree stays in the live set before the retention
@@ -268,6 +273,19 @@ impl std::fmt::Display for MoveError {
                 "the completion's evidence did not verify: {reason}. Fix the artifact or the \
                  evidence and move the row again"
             ),
+            Self::VersionMismatch { expected, current } => write!(
+                f,
+                "this row is at version {current} and you named {expected}: another write got \
+                 there first. Read the row again (tasks__get) and restate the change"
+            ),
+            Self::NotAnOption(choice) if choice.trim().is_empty() => {
+                write!(f, "an answer needs a choice: state the option the user picked")
+            }
+            Self::NotAnOption(choice) => write!(
+                f,
+                "\"{choice}\" is not one of the options this row asks about; answer with one of \
+                 them, or state the choice the user gave"
+            ),
         }
     }
 }
@@ -290,7 +308,7 @@ pub(crate) enum IdError {
 
 /// The rows an ambiguous id matched, as one line: each row's id and what
 /// it is, so a caller picks one without going back to the board.
-fn ambiguous_words(candidates: &[IdCandidate]) -> String {
+pub(crate) fn ambiguous_words(candidates: &[IdCandidate]) -> String {
     let named = candidates
         .iter()
         .map(|candidate| format!("{} ({})", candidate.id.as_str(), candidate.subject))
@@ -483,7 +501,22 @@ impl Workspace {
         by: By,
         f: impl FnOnce(&mut Task),
     ) -> Result<Option<Task>, MoveError> {
-        self.move_task(project_name, id, by, true, |task| {
+        self.update_task_at_version(project_name, id, by, None, f)
+    }
+
+    /// [`Workspace::update_task`] with the version the caller read. A
+    /// stated version the row is no longer at refuses the write, naming
+    /// both, so a lost update is visible instead of silently overwriting
+    /// another writer's work.
+    pub(crate) fn update_task_at_version(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        by: By,
+        expected_version: Option<u64>,
+        f: impl FnOnce(&mut Task),
+    ) -> Result<Option<Task>, MoveError> {
+        self.move_task(project_name, id, by, true, expected_version, |task| {
             f(task);
             Ok(())
         })
@@ -499,6 +532,7 @@ impl Workspace {
         id: &TaskId,
         by: By,
         gate: bool,
+        expected_version: Option<u64>,
         f: impl FnOnce(&mut Task) -> Result<(), MoveError>,
     ) -> Result<Option<Task>, MoveError> {
         let at = SystemTime::now();
@@ -510,6 +544,11 @@ impl Workspace {
                 Err(IdError::NotFound) => return Ok(None),
                 Err(error) => return Err(error.into()),
             };
+            if let Some(expected) = expected_version
+                && tasks[index].version != expected
+            {
+                return Err(MoveError::VersionMismatch { expected, current: tasks[index].version });
+            }
             let mut next = tasks[index].clone();
             let prior = next.status;
             f(&mut next)?;
@@ -894,7 +933,7 @@ impl Workspace {
             return Err(MoveError::AttestNeedsEvidence);
         }
         let at = SystemTime::now();
-        self.move_task(project_name, id, By::Seat(slot.clone()), false, |task| {
+        self.move_task(project_name, id, By::Seat(slot.clone()), false, None, |task| {
             if task.status != TaskStatus::Waiting || !parked_on_look(task) {
                 return Err(MoveError::NotWaitingVerification);
             }
@@ -928,7 +967,7 @@ impl Workspace {
         id: &TaskId,
     ) -> Result<Option<Task>, MoveError> {
         let at = SystemTime::now();
-        self.move_task(project_name, id, By::User, false, |task| {
+        self.move_task(project_name, id, By::User, false, None, |task| {
             if task.attested.is_none() {
                 return Err(MoveError::NotAttested);
             }
@@ -956,7 +995,7 @@ impl Workspace {
         project_name: &str,
         id: &TaskId,
     ) -> Result<Option<Task>, MoveError> {
-        self.move_task(project_name, id, By::User, false, |task| {
+        self.move_task(project_name, id, By::User, false, None, |task| {
             if task.status != TaskStatus::Waiting
                 || !task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
             {
@@ -978,7 +1017,7 @@ impl Workspace {
         id: &TaskId,
         words: &str,
     ) -> Result<Option<Task>, MoveError> {
-        self.move_task(project_name, id, By::User, false, |task| {
+        self.move_task(project_name, id, By::User, false, None, |task| {
             if task.status != TaskStatus::Waiting
                 || !task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
             {
@@ -999,7 +1038,7 @@ impl Workspace {
         id: &TaskId,
         words: &str,
     ) -> Result<Option<Task>, MoveError> {
-        self.move_task(project_name, id, By::User, false, |task| {
+        self.move_task(project_name, id, By::User, false, None, |task| {
             if task.status != TaskStatus::Waiting
                 || task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
             {
@@ -1008,6 +1047,60 @@ impl Workspace {
             task.waiting_on = None;
             task.status = TaskStatus::InProgress;
             append_words(task, words);
+            Ok(())
+        })
+    }
+
+    /// Answer a row waiting on a decision: the choice the user picked,
+    /// when they picked one, and the note they left with it. The record is
+    /// the row's own and nothing else is written to it; the row resumes in
+    /// progress. A row carrying no decision record - one that waited
+    /// before the record existed - takes the words as before.
+    pub(crate) fn answer_decision(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        by: By,
+        choice: &str,
+        note: Option<&str>,
+    ) -> Result<Option<Task>, MoveError> {
+        let choice = choice.trim();
+        let at = SystemTime::now();
+        self.move_task(project_name, id, by, false, None, |task| {
+            if task.status != TaskStatus::Waiting
+                || task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
+            {
+                return Err(MoveError::NotWaitingQuestion);
+            }
+            match task.decision.as_mut() {
+                Some(decision) => {
+                    if choice.is_empty() {
+                        return Err(MoveError::NotAnOption(String::new()));
+                    }
+                    if !decision.options.is_empty()
+                        && !decision.options.iter().any(|option| option == choice)
+                    {
+                        return Err(MoveError::NotAnOption(choice.to_owned()));
+                    }
+                    // The record is the answer and nothing more: what was
+                    // chosen, when, and the note. A second answer to the
+                    // same question is refused by the wait check above,
+                    // because answering resumes the row.
+                    decision.answer = Some(forge_primitives::tasks::DecisionAnswer {
+                        choice: choice.to_owned(),
+                        note: note
+                            .map(str::trim)
+                            .filter(|note| !note.is_empty())
+                            .map(str::to_owned),
+                        at,
+                    });
+                }
+                // A row written before the record: the words are the
+                // answer, and they land in the detail as they always did.
+                None => append_words(task, choice),
+            }
+            task.waiting_on = None;
+            task.status = TaskStatus::InProgress;
             Ok(())
         })
     }
@@ -1080,7 +1173,7 @@ impl Workspace {
         owner: Option<SessionSlot>,
     ) -> Result<Option<(Task, Option<SessionSlot>)>, MoveError> {
         let mut prior = None;
-        let moved = self.move_task(project_name, id, By::User, false, |task| {
+        let moved = self.move_task(project_name, id, By::User, false, None, |task| {
             prior.clone_from(&task.owner);
             task.owner = owner;
             Ok(())
@@ -1149,6 +1242,42 @@ impl Workspace {
         detail: Option<String>,
         on: Option<&TaskId>,
     ) -> Result<Task, MoveError> {
+        self.wait_task_recording(project_name, id, slot, kind, detail, on, None)
+    }
+
+    /// [`Workspace::wait_task`] for a decision: the row takes the question
+    /// the lead is asking and the options it enumerated, so the user's
+    /// card carries the ask rather than a thread.
+    pub(crate) fn wait_decision_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        slot: &SessionSlot,
+        detail: Option<String>,
+        question: String,
+        options: Vec<String>,
+    ) -> Result<Task, MoveError> {
+        self.wait_task_recording(
+            project_name,
+            id,
+            slot,
+            WaitingKind::Decision,
+            detail,
+            None,
+            Some(forge_primitives::tasks::Decision { question, options, answer: None }),
+        )
+    }
+
+    fn wait_task_recording(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        slot: &SessionSlot,
+        kind: WaitingKind,
+        detail: Option<String>,
+        on: Option<&TaskId>,
+        decision: Option<forge_primitives::tasks::Decision>,
+    ) -> Result<Task, MoveError> {
         let at = SystemTime::now();
         let outcome = self.with_tasks_mut(|tasks| {
             let index = find_task_index(tasks, project_name, id)?;
@@ -1184,6 +1313,11 @@ impl Workspace {
                 parked: false,
                 since: Some(since),
             });
+            if let Some(decision) = decision {
+                // A new question replaces the last one: the record is the
+                // ask in front of the user, not a history of asks.
+                tasks[index].decision = Some(decision);
+            }
             tasks[index].status = TaskStatus::Waiting;
             tasks[index].version = tasks[index].version.saturating_add(1);
             tasks[index].updated_at = at;
@@ -2407,6 +2541,81 @@ mod tests {
         assert_eq!(answered.detail.as_deref(), Some("keep the window raise"));
     }
 
+    /// A decision wait records the question and the options the lead
+    /// enumerated, and the answer is the record: what was chosen, when and
+    /// the note, with the row resumed.
+    #[test]
+    fn a_decision_wait_records_its_question_and_the_answer_is_the_record() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-decision");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
+
+        let waited = ws
+            .wait_decision_task(
+                "proj",
+                &TaskId::from("t-1"),
+                &worker,
+                Some("why it needs the user".to_owned()),
+                "Ship the parser behind a flag?".to_owned(),
+                vec!["flag it".to_owned(), "ship it outright".to_owned()],
+            )
+            .expect("the owner may wait its own row");
+        let decision = waited.decision.expect("the ask rides the row");
+        assert_eq!(decision.question, "Ship the parser behind a flag?");
+        assert_eq!(decision.options, ["flag it", "ship it outright"]);
+        assert_eq!(decision.answer, None, "a waiting row has no answer yet");
+        assert_eq!(waited.status, TaskStatus::Waiting);
+
+        let answered = ws
+            .answer_decision(
+                "proj",
+                &TaskId::from("t-1"),
+                By::User,
+                "flag it",
+                Some("until the bench is green"),
+            )
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(answered.status, TaskStatus::InProgress, "the answer resumes the row");
+        assert_eq!(answered.waiting_on, None, "and clears the wait");
+        let answer = answered.decision.expect("the record keeps the ask").answer.expect("answered");
+        assert_eq!(answer.choice, "flag it");
+        assert_eq!(answer.note.as_deref(), Some("until the bench is green"));
+    }
+
+    /// A choice the row did not offer is refused by name; answering is not
+    /// a way to put words in the options list.
+    #[test]
+    fn an_answer_naming_a_choice_the_row_does_not_offer_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-decision-refused");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
+        ws.wait_decision_task(
+            "proj",
+            &TaskId::from("t-1"),
+            &worker,
+            None,
+            "Which shape?".to_owned(),
+            vec!["small".to_owned(), "large".to_owned()],
+        )
+        .expect("the wait lands");
+
+        assert_eq!(
+            ws.answer_decision("proj", &TaskId::from("t-1"), By::User, "huge", None),
+            Err(MoveError::NotAnOption("huge".to_owned())),
+            "a choice the row does not offer is refused",
+        );
+        assert_eq!(
+            ws.tasks_for_project("proj")[0].status,
+            TaskStatus::Waiting,
+            "and the row stays waiting for the user",
+        );
+    }
+
     #[test]
     fn a_verdict_on_a_row_not_waiting_for_look_is_refused() {
         let dir = tempdir().expect("tempdir");
@@ -2556,6 +2765,44 @@ mod tests {
         ws.wait_task("proj", &TaskId::from("t-1"), &worker, WaitingKind::Resource, None, None)
             .expect("wait");
         assert_eq!(version(&ws), 3, "a wait is a write");
+    }
+
+    /// An update that names the version it read lands; one naming a version
+    /// the row has left is refused with both numbers, and nothing moves.
+    #[test]
+    fn a_stale_version_is_refused_naming_both() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-version-mismatch");
+        ws.push_task(sample_task("t-1", "proj"));
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+
+        ws.update_task_at_version(
+            "proj",
+            &TaskId::from("t-1"),
+            By::Seat(worker.clone()),
+            Some(0),
+            |task| {
+                task.active_form = Some("the first write".to_owned());
+            },
+        )
+        .expect("no refusal")
+        .expect("the row is there");
+
+        assert_eq!(
+            ws.update_task_at_version(
+                "proj",
+                &TaskId::from("t-1"),
+                By::Seat(worker),
+                Some(0),
+                |task| task.active_form = Some("the lost write".to_owned()),
+            ),
+            Err(MoveError::VersionMismatch { expected: 0, current: 1 }),
+            "a write naming the version it read before another landed is refused",
+        );
+        let stored = &ws.tasks_for_project("proj")[0];
+        assert_eq!(stored.active_form.as_deref(), Some("the first write"), "nothing moved");
+        assert_eq!(stored.version, 1, "and the refused write did not bump the version");
     }
 
     #[test]

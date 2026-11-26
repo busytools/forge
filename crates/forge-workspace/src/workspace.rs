@@ -7754,27 +7754,34 @@ impl Workspace {
                         }
                     }
                 }
-                Command::TaskAnswer { project, id, words } => {
+                Command::TaskAnswer { project, id, choice, words } => {
                     let id = TaskId::from(id.as_str());
-                    match self.answer_task(&project, &id, &words) {
+                    let answered = match &choice {
+                        Some(choice) => self.answer_decision(
+                            &project,
+                            &id,
+                            forge_primitives::tasks::By::User,
+                            choice,
+                            Some(words.as_str()),
+                        ),
+                        None => self.answer_task(&project, &id, &words),
+                    };
+                    match answered {
                         Ok(Some(task)) => {
-                            // The words ride the notice: the owner should read
-                            // what the user said where it is told to resume,
-                            // not go looking for it.
+                            // The choice and the words ride the notice: the
+                            // owner should read what the user said where it
+                            // is told to resume, not go looking for it.
+                            let said = match (&choice, words.is_empty()) {
+                                (Some(choice), _) => format!("\"{choice}\""),
+                                (None, false) => format!("\"{words}\""),
+                                (None, true) => "with no words".to_owned(),
+                            };
                             self.tell_row_owner(
                                 &task,
-                                if words.is_empty() {
-                                    format!(
-                                        "task board: the user answered \"{}\" with no words - \
-                                         resume it.",
-                                        task.subject,
-                                    )
-                                } else {
-                                    format!(
-                                        "task board: the user answered \"{}\": \"{}\" - resume it.",
-                                        task.subject, words,
-                                    )
-                                },
+                                format!(
+                                    "task board: the user answered \"{}\": {said} - resume it.",
+                                    task.subject,
+                                ),
                             );
                         }
                         Ok(None) => {
@@ -12877,6 +12884,7 @@ mod tests {
         ws.dispatch(Command::TaskAnswer {
             project: "proj".to_owned(),
             id: "t-1".to_owned(),
+            choice: None,
             words: "get going".to_owned(),
         })
         .expect("app-level commands are accepted");
@@ -12893,6 +12901,7 @@ mod tests {
         ws.dispatch(Command::TaskAnswer {
             project: "proj".to_owned(),
             id: "t-2".to_owned(),
+            choice: None,
             words: String::new(),
         })
         .expect("accepted");

@@ -42,13 +42,22 @@ pub(crate) fn add_tools(
     let create = Create { facade: facade.clone(), slot: slot.clone() };
     let update = Update { facade: facade.clone(), slot: slot.clone() };
     let list = List { facade: facade.clone(), slot: slot.clone() };
+    let get = Get { facade: facade.clone(), slot: slot.clone() };
     let delete = Delete { facade: facade.clone(), slot: slot.clone() };
     let claim = Claim { facade: facade.clone(), slot: slot.clone() };
     let wait = Wait { facade: facade.clone(), slot: slot.clone() };
-    let builder = builder.tool(create).tool(update).tool(list).tool(delete).tool(claim).tool(wait);
-    // `tasks__approve` is the lead's door: only the lead stands behind the
-    // user's recorded approval, so a worker is not offered the verb at all.
-    if lead { builder.tool(Approve { facade, slot }) } else { builder }
+    let builder =
+        builder.tool(create).tool(update).tool(list).tool(get).tool(delete).tool(claim).tool(wait);
+    // `tasks__approve` and `tasks__answer` are the lead's doors: only the
+    // lead stands behind the user's recorded look or decision, so a worker
+    // is not offered either verb.
+    if lead {
+        builder
+            .tool(Approve { facade: facade.clone(), slot: slot.clone() })
+            .tool(Answer { facade, slot })
+    } else {
+        builder
+    }
 }
 
 fn tool_error(text: String) -> ToolOutput {
@@ -390,9 +399,11 @@ impl Tool for Update {
 
     fn description(&self) -> &'static str {
         "Change a task in YOUR project by id, stating only the fields to move - everything else \
-         is left alone. `status` is the usual one (pending / in_progress / waiting / completed / \
-         failed / canceled), and `owner` takes a session label (\"lead\" for the lead) or the \
-         label of a worker. Pending is the board's Backlog: work kept to look at later, not by \
+         is left alone. Pass `version` with the version you read and a write that would land \
+         on a row another writer has since changed is refused with the current version, so a \
+         lost update is visible. `status` is the usual one (pending / in_progress / waiting / \
+         completed / failed / canceled), and `owner` takes a session label (\"lead\" for the \
+         lead) or the label of a worker. Pending is the board's Backlog: work kept to look at later, not by \
          itself an assignment and not a promise to start. A pending row that reads ready and \
          unowned is dispatchable; take ownership to set it aside. \
          The board is for running work: a landed row with no children and \
@@ -440,6 +451,13 @@ impl Tool for Update {
                 "id": {
                     "type": "string",
                     "description": "The task id to change, or any unique prefix of one.",
+                },
+                "version": {
+                    "type": "integer",
+                    "description": "The row's version as you read it. A stated version the row \
+                                    is no longer at refuses the write and names the current \
+                                    one, so a lost update is visible instead of overwriting \
+                                    another writer. Omit to write without the check.",
                 },
                 "subject": { "type": "string", "description": "New row text." },
                 "active_form": {
@@ -550,6 +568,14 @@ struct List {
     slot: SessionSlot,
 }
 
+/// How many rows a list answer carries when the caller states no limit.
+const DEFAULT_LIST_LIMIT: usize = 20;
+
+/// The most a caller may ask a list answer to carry. A stated limit above
+/// this is clamped rather than honoured: one poll must not put a project's
+/// whole history back through the model's context.
+const MAX_LIST_LIMIT: usize = 100;
+
 #[derive(serde::Deserialize)]
 struct ListArgs {
     #[serde(default)]
@@ -559,9 +585,13 @@ struct ListArgs {
     #[serde(default)]
     status: Option<TaskStatus>,
     #[serde(default)]
+    kind: Option<forge_primitives::tasks::TaskKind>,
+    #[serde(default)]
     ready: Option<bool>,
     #[serde(default)]
     detail: Option<bool>,
+    #[serde(default)]
+    limit: Option<usize>,
 }
 
 fn waiting_kind_str(kind: WaitingKind) -> &'static str {
@@ -659,10 +689,13 @@ fn board_row_to_json(row: &crate::board::BoardRow) -> serde_json::Value {
     serde_json::Value::Object(map)
 }
 
-/// One board row at the size a first orientation reads it: identity,
-/// live state and the derived facts, without the prose, the hierarchy
-/// pointers, the touch age or the raw timestamps.
-/// `tasks__list {detail: true}` returns [`board_row_to_json`] instead.
+/// One board row at the size a first orientation reads it: identity, the
+/// state it is in, what it is waiting on, what the board derives, its
+/// estimate or cadence, and whether its evidence has been checked.
+///
+/// Everything else - the brief, the links, the hierarchy, the worked time,
+/// the history - is the detail verb's, so a list answer stays deliverable
+/// however busy the project is.
 fn board_row_compact(row: &crate::board::BoardRow) -> serde_json::Value {
     let task = &row.task;
     let mut map = serde_json::Map::new();
@@ -671,7 +704,6 @@ fn board_row_compact(row: &crate::board::BoardRow) -> serde_json::Value {
     map.insert("status".to_owned(), serde_json::json!(status_str(task.status)));
     map.insert("kind".to_owned(), serde_json::json!(kind_str(task.kind)));
     for (key, value) in [
-        ("artifact", artifact(task)),
         ("estimate", task.estimate.as_ref().map(|e| e.words.as_str())),
         ("cadence", task.cadence.as_ref().map(|c| c.words.as_str())),
         ("owner", task.owner.as_ref().map(SessionSlot::label)),
@@ -680,14 +712,6 @@ fn board_row_compact(row: &crate::board::BoardRow) -> serde_json::Value {
             map.insert(key.to_owned(), serde_json::json!(value));
         }
     }
-    for (key, value) in
-        [("verify", task.verify.map(verify_str)), ("reserved", task.reserved.map(|_| "user"))]
-    {
-        if let Some(value) = value {
-            map.insert(key.to_owned(), serde_json::json!(value));
-        }
-    }
-    map.insert("worked".to_owned(), serde_json::json!(crate::board::fmt_secs(row.worked_secs)));
     map.insert("marks".to_owned(), serde_json::json!(mark_names(row.marks)));
     if let Some(wait) = &task.waiting_on {
         map.insert(
@@ -700,10 +724,21 @@ fn board_row_compact(row: &crate::board::BoardRow) -> serde_json::Value {
             }),
         );
     }
-    if let Some((done, total)) = row.rollup {
-        map.insert("rollup".to_owned(), serde_json::json!(format!("{done}/{total}")));
+    if let Some(evidence) = &task.evidence {
+        map.insert("evidence".to_owned(), serde_json::json!(evidence_state(evidence)));
     }
     serde_json::Value::Object(map)
+}
+
+/// The evidence's own state, in one word: checked and passed, checked and
+/// refused, or not checked at all. Absence of a verdict is `unknown`, never
+/// success.
+fn evidence_state(evidence: &forge_primitives::tasks::Evidence) -> &'static str {
+    match (&evidence.verified_at, &evidence.problem) {
+        (Some(_), _) => "verified",
+        (None, Some(_)) => "failed",
+        (None, None) => "unchecked",
+    }
 }
 
 #[async_trait::async_trait]
@@ -713,25 +748,27 @@ impl Tool for List {
     }
 
     fn description(&self) -> &'static str {
-        "List the board of YOUR project. The default read returns pending, in_progress, \
-         waiting and failed rows as compact rows: id, subject, status, owner, \
-         estimate, kind, artifact, verify and reserved state, plus what the board derives: \
-         `worked` time against the estimate, the marks (ready, in_review, overdue, stale, \
-         to_close), the wait it is on, and a parent's rollup - under \
-         a dated line, so no session does date arithmetic. A completed \
-         or canceled row is left out, and the read ends with a line counting what was \
-         withheld by status and naming `status` as the door; a `status` \
-         filter overrides that default, so `status: \"completed\"` returns the completed rows. \
-         Pass `detail: true` for each row's whole record - the parent and its subject, the \
-         `detail` prose, `active_form`, the wait's detail words, any attestation quote, how \
-         long since the last touch, and the created/updated timestamps. Narrow with `owner` \
-         (a session label), `parent` (a \
-         task id), `status`, or `ready` (true = pending with nothing waiting on it and not \
-         reserved for the user; ownership is NOT part of the mark, so read `owner` too when \
-         the question is an unowned row). \
-         An empty array means your project has no tasks in flight (or only terminal rows, \
-         which the closing line names), or that your project could not be resolved, or that \
-         this run could not read its stored tasks. Any session in the project may call this."
+        "List the board of YOUR project. The answer is an envelope: `rows`, then `returned` (how \
+         many this answer carries), `total` (how many the filters match), `truncated` (true \
+         when `returned` is smaller), and `narrow`, the doors that cut it down. The default \
+         limit is 20 and the most a caller may ask for is 100, so an answer always fits. \
+         Each row is compact: id, subject, status, kind, owner, the wait it is on, the five \
+         marks (ready, in_review, overdue, stale, to_close), its estimate or cadence, and \
+         whether its evidence is `verified`, `failed` or `unchecked`. The default read \
+         carries pending, in_progress, waiting and failed rows - a completed or canceled row \
+         is history and is left out, and the read ends with a line counting what was withheld \
+         by status and naming `status` as the door. A `status` filter overrides that default, \
+         so `status: \"completed\"` returns the completed rows. For one row's whole record - \
+         the `detail` prose, the links, the parent and its subject, the wait's words, the \
+         evidence and its check, and the history - use `tasks__get`; `detail: true` here is \
+         the heavier per-row echo and is meant for a short, narrowed read. Narrow with `owner` \
+         (a session label), `parent` (a task id), `status`, `kind` (finite or standing), or \
+         `ready` (true = pending with nothing waiting on it and not reserved for the user; \
+         ownership is NOT part of the mark, so read `owner` too when the question is an \
+         unowned row). An empty `rows` means your project has no tasks in flight (or only \
+         terminal rows, which the closing line names), or that your project could not be \
+         resolved, or that this run could not read its stored tasks. Any session in the \
+         project may call this."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -752,6 +789,11 @@ impl Tool for List {
                     "enum": ["pending", "in_progress", "waiting", "completed", "failed", "canceled"],
                     "description": "Only tasks in this state.",
                 },
+                "kind": {
+                    "type": "string",
+                    "enum": ["finite", "standing"],
+                    "description": "Only finite work or only standing work.",
+                },
                 "ready": {
                     "type": "boolean",
                     "description": "True lists only rows something can start: pending, \
@@ -766,7 +808,13 @@ impl Tool for List {
                                     the `detail` prose, `active_form`, the wait's detail \
                                     words, any attestation quote, how long since the last \
                                     touch, and the created/updated timestamps. Off by \
-                                    default; read the compact row first.",
+                                    default; for one row use tasks__get.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "How many rows this answer carries. Defaults to 20 and is \
+                                    clamped to 100; `total` in the envelope says how many \
+                                    the filters matched.",
                 },
             },
             "additionalProperties": false,
@@ -784,6 +832,7 @@ impl Tool for List {
             args.owner.as_deref(),
             parent.as_ref(),
             args.status,
+            args.kind,
             args.ready,
         );
         // A first orientation read has to fit (#3030), so the default is
@@ -795,18 +844,33 @@ impl Tool for List {
             Some(_) => (rows, Vec::new()),
             None => rows.into_iter().partition(|row| !is_finished(row.task.status)),
         };
+        // The envelope: how many came back of how many there are, whether
+        // the answer was cut, and the doors that narrow it. A caller never
+        // has to infer a truncation from a row count.
+        let total = rows.len();
+        let limit = args.limit.unwrap_or(DEFAULT_LIST_LIMIT).clamp(1, MAX_LIST_LIMIT);
         let full = args.detail.unwrap_or(false);
-        let arr: Vec<serde_json::Value> = rows
+        let shown: Vec<serde_json::Value> = rows
             .iter()
+            .take(limit)
             .map(|row| if full { board_row_to_json(row) } else { board_row_compact(row) })
             .collect();
-        match serde_json::to_string_pretty(&serde_json::Value::Array(arr)) {
+        let truncated = total > shown.len();
+        let envelope = serde_json::json!({
+            "rows": shown,
+            "returned": shown.len(),
+            "total": total,
+            "truncated": truncated,
+            "narrow": "narrow with `owner`, `parent`, `status`, `kind` or `ready`, or raise \
+                       `limit` (max 100); `tasks__get` reads one row whole",
+        });
+        match serde_json::to_string_pretty(&envelope) {
             Ok(json) => {
                 let mut blocks = vec![ToolOutputBlock::Text {
                     text: format!("now {}\n{json}", fmt_rfc3339(SystemTime::now())),
                 }];
                 // The closing line is its OWN block: the first block stays
-                // the clock line plus the rows array, which is what a card
+                // the clock line plus the envelope, which is what a card
                 // parses, and the extra block is drawn beside it rather
                 // than swallowed.
                 if let Some(line) = withheld_line(&withheld) {
@@ -815,6 +879,71 @@ impl Tool for List {
                 ToolOutput { blocks, is_error: false }
             }
             Err(err) => tool_error(format!("task-list serialization failed: {err}")),
+        }
+    }
+}
+
+struct Get {
+    facade: Arc<dyn TasksFacade>,
+    slot: SessionSlot,
+}
+
+#[derive(serde::Deserialize)]
+struct GetArgs {
+    id: String,
+}
+
+#[async_trait::async_trait]
+impl Tool for Get {
+    fn name(&self) -> &'static str {
+        "tasks__get"
+    }
+
+    fn description(&self) -> &'static str {
+        "Read ONE task of YOUR project whole: its identity and state, the `detail` brief, the \
+         links, the parent and its subject, the wait it is on with its words, its evidence and \
+         the gate's check of it, what the board derives (the marks, the worked time, the touch \
+         age, the rollup) and its history - the newest transitions, with `history_total` \
+         saying how many there are when the tail is capped. A row that has left the live board \
+         reads from the archive, with `archived_at` set and no history. A task is named by its \
+         full id or any unique prefix of one; an exact id wins over a longer id it prefixes, \
+         and a prefix matching more than one row is refused with the matching rows named. Use \
+         this after `tasks__list` names a row you need the rest of; keep the list read \
+         compact. Any session in the project may call this."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "The task id to read, or any unique prefix of one.",
+                },
+            },
+            "required": ["id"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: GetArgs = match serde_json::from_value(input.value) {
+            Ok(args) => args,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        match self.facade.get_task(&self.slot, &TaskId::from(args.id.as_str())) {
+            Ok(row) => {
+                let mut body = board_row_to_json(&row);
+                if let serde_json::Value::Object(map) = &mut body {
+                    map.insert("history".to_owned(), serde_json::json!(row.history));
+                    map.insert("history_total".to_owned(), serde_json::json!(row.history_total));
+                }
+                match serde_json::to_string_pretty(&body) {
+                    Ok(json) => ToolOutput::text(json),
+                    Err(err) => tool_error(format!("response serialization failed: {err}")),
+                }
+            }
+            Err(err) => tool_error(format_tasks_error(&err)),
         }
     }
 }
@@ -962,6 +1091,12 @@ struct WaitArgs {
     detail: Option<String>,
     #[serde(default)]
     on: Option<String>,
+    /// A decision's question and the options the lead enumerated: the
+    /// card the user answers is built from these.
+    #[serde(default)]
+    question: Option<String>,
+    #[serde(default)]
+    options: Vec<String>,
 }
 
 #[async_trait::async_trait]
@@ -973,7 +1108,9 @@ impl Tool for Wait {
     fn description(&self) -> &'static str {
         "Put one of YOUR rows into waiting and state what it waits on. `kind` is decision \
          (which routes to the user), dependency (another task: put its id in `on`), or resource \
-         (an account, a CI run, a machine). A decision wait is the at-convenience channel to \
+         (an account, a CI run, a machine). A decision also states `question`, the ask in one \
+         sentence, and `options`, the alternatives the user picks between: the card they answer \
+         is built from both, and the chosen one is recorded on the row. A decision wait is the at-convenience channel to \
          the user: a lead who can continue but wants the person's look puts the ask here on a \
          board row rather than saying it in prose, because prose is not a surface and a wait \
          left in prose is invisible once your turn ends. Do not use it to park work the \
@@ -1025,6 +1162,19 @@ impl Tool for Wait {
                     "description": "For a dependency: the task id it waits on, or any unique \
                                     prefix of one.",
                 },
+                "question": {
+                    "type": "string",
+                    "description": "For a decision: the question the user is being asked, in \
+                                    one sentence. It becomes the card's headline, so state the \
+                                    ask rather than the background.",
+                },
+                "options": {
+                    "type": "array",
+                    "description": "For a decision: the choices the lead enumerated, each a \
+                                    short phrase. The user answers by picking one, so list the \
+                                    real alternatives rather than one option and a rest.",
+                    "items": { "type": "string" },
+                },
             },
             "required": ["id", "kind"],
             "additionalProperties": false,
@@ -1046,6 +1196,8 @@ impl Tool for Wait {
             args.kind,
             args.detail,
             on.as_ref(),
+            args.question,
+            args.options,
         ) {
             Ok(task) => match serde_json::to_string_pretty(&task_to_json(&task)) {
                 Ok(json) => ToolOutput::text(json),
@@ -1122,6 +1274,96 @@ impl Tool for Approve {
             );
         }
         match self.facade.attest_task(&self.slot, &TaskId::from(args.id.as_str()), approval) {
+            Ok(task) => match serde_json::to_string_pretty(&task_to_json(&task)) {
+                Ok(json) => ToolOutput::text(json),
+                Err(err) => tool_error(format!("response serialization failed: {err}")),
+            },
+            Err(err) => tool_error(format_tasks_error(&err)),
+        }
+    }
+}
+
+struct Answer {
+    facade: Arc<dyn TasksFacade>,
+    slot: SessionSlot,
+}
+
+#[derive(serde::Deserialize)]
+struct AnswerArgs {
+    id: String,
+    /// The option the user picked.
+    choice: String,
+    /// The note they left with it, when they left one.
+    #[serde(default)]
+    note: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl Tool for Answer {
+    fn name(&self) -> &'static str {
+        "tasks__answer"
+    }
+
+    fn description(&self) -> &'static str {
+        "Lead-only. Record the user's answer to a row waiting on a DECISION: `choice` is the \
+         option they picked (one of the options the row asks about) and `note` the short note \
+         they left with it, when they left one. The answer is stored as the row's decision \
+         record - what was chosen, when, and the note - and the row resumes in progress. \
+         **Never answer with your own opinion**: a decision is the user's to make, and if they \
+         have not answered the row stays waiting for them. A look is not a decision - that door \
+         is tasks__approve. A task is named by its full id or any unique prefix of one. Refused \
+         when the row is not waiting on a decision, when the choice is not one of its options, \
+         or when the caller is not the lead."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "The row waiting on the decision, or any unique prefix of \
+                                    its id.",
+                },
+                "choice": {
+                    "type": "string",
+                    "description": "The option the user picked, as one of the row's options.",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "The short note the user left with the choice, if any.",
+                },
+            },
+            "required": ["id", "choice"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        if self.slot.label() != crate::LEAD_LABEL {
+            return tool_error(
+                "only the project lead records the user's decision; this session is a worker"
+                    .to_owned(),
+            );
+        }
+        let args: AnswerArgs = match serde_json::from_value(input.value) {
+            Ok(args) => args,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        let choice = args.choice.trim();
+        if choice.is_empty() {
+            return tool_error(
+                "an answer needs `choice`: the option the user picked, as one of the row's \
+                 options"
+                    .to_owned(),
+            );
+        }
+        match self.facade.answer_task(
+            &self.slot,
+            &TaskId::from(args.id.as_str()),
+            choice,
+            args.note.as_deref(),
+        ) {
             Ok(task) => match serde_json::to_string_pretty(&task_to_json(&task)) {
                 Ok(json) => ToolOutput::text(json),
                 Err(err) => tool_error(format!("response serialization failed: {err}")),
@@ -1593,7 +1835,7 @@ mod tests {
             .description()
             .to_owned();
         for clause in [
-            "An empty array means your project has no tasks in flight",
+            "An empty `rows` means your project has no tasks in flight",
             "or that your project could not be resolved",
             "or that this run could not read its stored tasks",
         ] {
@@ -2218,6 +2460,13 @@ mod tests {
         row.updated_secs_ago = 60;
         row.marks.in_review = true;
         row.marks.overdue = true;
+        row.task.evidence = Some(forge_primitives::tasks::Evidence {
+            commit: Some("abc123".to_owned()),
+            path: None,
+            excerpt: None,
+            verified_at: Some(SystemTime::UNIX_EPOCH),
+            problem: None,
+        });
         row.rollup = Some((2, 5));
         row.parent_subject = Some("the epic".to_owned());
         row
@@ -2228,14 +2477,15 @@ mod tests {
     /// finished rows.
     fn listed(out: &ToolOutput) -> (serde_json::Value, Option<String>) {
         let text = text_of(out);
-        let body = text.split_once('\n').expect("a header line then the rows").1;
-        let json = serde_json::from_str(body).expect("the body is the rows array");
+        let body = text.split_once('\n').expect("a header line then the envelope").1;
+        let json = serde_json::from_str(body).expect("the body is the list envelope");
         let tail = out.blocks.get(1).map(block_text).map(str::to_owned);
         (json, tail)
     }
 
+    /// The envelope's `rows`, which is what a card draws.
     fn listed_json(out: &ToolOutput) -> serde_json::Value {
-        listed(out).0
+        listed(out).0["rows"].clone()
     }
 
     fn row_with(id: &str, status: TaskStatus) -> crate::board::BoardRow {
@@ -2263,7 +2513,6 @@ mod tests {
             ("status", "pending"),
             ("owner", "w-1"),
             ("estimate", "2h"),
-            ("worked", "1h"),
         ] {
             assert_eq!(row[key], value, "the compact row carries {key}: {row}");
         }
@@ -2276,6 +2525,12 @@ mod tests {
             "parent",
             "parent_subject",
             "updated_ago",
+            "worked",
+            "artifact",
+            "rollup",
+            "verify",
+            "reserved",
+            "links",
             "created_at",
             "updated_at",
         ] {
@@ -2311,9 +2566,9 @@ mod tests {
             "the withheld line is its own block, so the rows stay parseable: {out:?}",
         );
         let (json, tail) = listed(&out);
-        let ids: Vec<&str> = json
+        let ids: Vec<&str> = json["rows"]
             .as_array()
-            .expect("an array of rows")
+            .expect("the rows")
             .iter()
             .map(|row| row["id"].as_str().expect("an id"))
             .collect();
@@ -2347,8 +2602,9 @@ mod tests {
         assert!(!out.is_error, "list succeeds: {out:?}");
         assert_eq!(out.blocks.len(), 1, "a stated status withholds nothing: {out:?}");
         let (json, tail) = listed(&out);
-        assert_eq!(json[0]["id"], "t-done", "the asked-for status is returned: {json}");
-        assert_eq!(json.as_array().expect("an array").len(), 1);
+        let rows = json["rows"].as_array().expect("the rows");
+        assert_eq!(rows[0]["id"], "t-done", "the asked-for status is returned: {json}");
+        assert_eq!(rows.len(), 1);
         assert!(tail.is_none(), "nothing was withheld from a stated status: {tail:?}");
     }
 
@@ -2363,30 +2619,28 @@ mod tests {
         assert!(!out.is_error, "list succeeds: {out:?}");
         let (json, tail) = listed(&out);
         assert!(tail.is_none(), "nothing was withheld from a pending row: {tail:?}");
-        let row = &json[0];
+        let rows = json["rows"].as_array().expect("the rows");
+        let row = &rows[0];
         let mut keys: Vec<&str> =
             row.as_object().expect("a row object").keys().map(String::as_str).collect();
         keys.sort_unstable();
         assert_eq!(
             keys,
             [
-                "artifact", "estimate", "id", "kind", "marks", "owner", "reserved", "rollup",
-                "status", "subject", "verify", "waiting", "worked",
+                "estimate", "evidence", "id", "kind", "marks", "owner", "status", "subject",
+                "waiting",
             ],
             "the compact row is exactly the promised set: {row}",
         );
         for (key, value) in [
-            ("artifact", serde_json::json!("PR #9")),
             ("estimate", serde_json::json!("2h")),
+            ("evidence", serde_json::json!("verified")),
             ("id", serde_json::json!("t-1")),
             ("kind", serde_json::json!("finite")),
             ("marks", serde_json::json!(["in_review", "overdue"])),
             ("owner", serde_json::json!("w-1")),
-            ("reserved", serde_json::json!("user")),
-            ("rollup", serde_json::json!("2/5")),
             ("status", serde_json::json!("pending")),
             ("subject", serde_json::json!("Merge peers and workers")),
-            ("verify", serde_json::json!("user")),
             (
                 "waiting",
                 serde_json::json!({
@@ -2396,10 +2650,10 @@ mod tests {
                     "parked": true,
                 }),
             ),
-            ("worked", serde_json::json!("1h")),
         ] {
             assert_eq!(row[key], value, "the compact row's {key}: {row}");
         }
+        assert!(row.get("detail").is_none(), "the brief is the detail verb's: {row}");
     }
 
     /// `detail: true` is the whole record, and its promised values are
@@ -2437,6 +2691,108 @@ mod tests {
         );
     }
 
+    /// Every list answer is an envelope: what it carries, how much there
+    /// is, whether it was cut, and the doors that narrow it. A long board
+    /// cannot come back whole by accident.
+    #[tokio::test]
+    async fn the_list_envelope_says_what_it_holds() {
+        let facade = Arc::new(MockTasksFacade::default());
+        facade
+            .rows
+            .lock()
+            .extend((0..25).map(|n| row_with(&format!("t-{n}"), TaskStatus::Pending)));
+        let out = List { facade: facade.clone(), slot: lead_slot() }
+            .call(input(serde_json::json!({})))
+            .await;
+        let (json, _) = listed(&out);
+        assert_eq!(json["returned"], 20, "the default limit: {json}");
+        assert_eq!(json["total"], 25, "the filters matched 25: {json}");
+        assert_eq!(json["truncated"], true);
+        assert!(
+            json["narrow"].as_str().is_some_and(|said| said.contains("tasks__get")),
+            "the envelope says where the whole row lives: {json}",
+        );
+
+        let out = List { facade: facade.clone(), slot: lead_slot() }
+            .call(input(serde_json::json!({ "limit": 5 })))
+            .await;
+        let (json, _) = listed(&out);
+        assert_eq!(json["returned"], 5, "a stated limit is honoured: {json}");
+        assert_eq!(json["total"], 25);
+
+        let out = List { facade, slot: lead_slot() }
+            .call(input(serde_json::json!({ "limit": 500 })))
+            .await;
+        let (json, _) = listed(&out);
+        assert_eq!(json["returned"], 25, "the clamp is above the board, so all 25 ride");
+        assert_eq!(json["truncated"], false);
+    }
+
+    /// The detail verb reads one row whole: the brief, the facts, the
+    /// evidence and the history, which the compact list leaves behind.
+    #[tokio::test]
+    async fn the_detail_verb_returns_one_row_whole() {
+        let facade = Arc::new(MockTasksFacade::default());
+        facade.rows.lock().push(populated_row());
+        let out =
+            Get { facade, slot: lead_slot() }.call(input(serde_json::json!({ "id": "t-1" }))).await;
+        assert!(!out.is_error, "get succeeds: {out:?}");
+        let json: serde_json::Value = serde_json::from_str(text_of(&out)).expect("the row is json");
+        assert_eq!(json["id"], "t-1");
+        assert_eq!(json["detail"], "why", "the brief is the detail verb's");
+        assert_eq!(json["evidence"]["verified_at"], "1970-01-01T00:00:00Z");
+        assert_eq!(json["history"], serde_json::json!([]));
+        assert_eq!(json["history_total"], 0);
+        assert_eq!(json["marks"], serde_json::json!(["in_review", "overdue"]));
+    }
+
+    /// The answer verb threads the user's choice and note to the core and
+    /// is the lead's door only.
+    #[tokio::test]
+    async fn answer_threads_the_choice_and_the_note() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let out = Answer { facade: facade.clone(), slot: lead_slot() }
+            .call(input(serde_json::json!({
+                "id": "t-1",
+                "choice": "flag it",
+                "note": "until the bench is green",
+            })))
+            .await;
+        assert!(!out.is_error, "answer succeeds: {out:?}");
+        let calls = facade.answered.lock();
+        assert_eq!(calls[0].1, TaskId::from("t-1"));
+        assert_eq!(calls[0].2, "flag it");
+        assert_eq!(calls[0].3.as_deref(), Some("until the bench is green"));
+    }
+
+    #[tokio::test]
+    async fn a_worker_is_not_offered_the_answer_door() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let worker = SessionSlot::worker("TestOrg", "myproj", "w-1");
+        let out = Answer { facade: facade.clone(), slot: worker }
+            .call(input(serde_json::json!({ "id": "t-1", "choice": "flag it" })))
+            .await;
+        assert!(out.is_error, "a decision is the user's to answer through the lead");
+        assert!(facade.answered.lock().is_empty(), "and the facade is never reached");
+    }
+
+    /// A versioned update threads the version the caller read down to the
+    /// core's own check.
+    #[tokio::test]
+    async fn update_threads_the_version_it_was_given() {
+        let facade = Arc::new(MockTasksFacade::default());
+        *facade.update_result.lock() = Some(Ok(sample_task()));
+        let out = Update { facade: facade.clone(), slot: lead_slot() }
+            .call(input(serde_json::json!({
+                "id": "t-1",
+                "version": 7,
+                "active_form": "Fixing the rail",
+            })))
+            .await;
+        assert!(!out.is_error, "update succeeds: {out:?}");
+        assert_eq!(facade.updated.lock()[0].2.version, Some(7));
+    }
+
     /// The compact default, the terminal exclusion and the detail opt-in
     /// are shipped text a session reads as it reaches for the tool, so
     /// every lever is named where the caller meets it.
@@ -2444,11 +2800,14 @@ mod tests {
     fn the_list_description_states_the_compact_default_and_the_detail_opt_in() {
         let tool = List { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
         for clause in [
-            "The default read returns pending, in_progress, waiting and failed rows",
-            "A completed or canceled row is left out",
+            "The default read carries pending, in_progress, waiting and failed rows",
+            "a completed or canceled row is history and is left out",
             "the read ends with a line counting what was withheld by status",
-            "a `status` filter overrides that default",
+            "A `status` filter overrides that default",
             "`detail: true`",
+            "`returned`",
+            "`truncated`",
+            "The default limit is 20",
         ] {
             assert!(
                 tool.description().contains(clause),
@@ -2478,21 +2837,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_listed_row_carries_worked_time_and_its_marks() {
+    async fn a_listed_row_carries_its_marks_and_evidence_state() {
         let facade = Arc::new(MockTasksFacade::default());
         let mut row = board_row(sample_task());
-        row.worked_secs = 3 * 3_600;
-        row.updated_secs_ago = 12 * 60;
         row.marks.in_review = true;
         row.marks.overdue = true;
+        row.task.evidence = Some(forge_primitives::tasks::Evidence {
+            commit: Some("abc123".to_owned()),
+            path: None,
+            excerpt: None,
+            verified_at: Some(SystemTime::UNIX_EPOCH),
+            problem: None,
+        });
         facade.rows.lock().push(row);
         let out = List { facade, slot: lead_slot() }.call(input(serde_json::json!({}))).await;
         assert!(!out.is_error, "list succeeds: {out:?}");
-        let text = text_of(&out);
-        let body = text.split_once('\n').expect("a header line then the rows").1;
-        let json: serde_json::Value =
-            serde_json::from_str(body).expect("the body is the rows array");
-        assert_eq!(json[0]["worked"], "3h", "worked time in the board's words: {json}");
+        let json = listed_json(&out);
         let marks: Vec<&str> = json[0]["marks"]
             .as_array()
             .expect("marks array")
@@ -2501,6 +2861,10 @@ mod tests {
             .collect();
         assert!(marks.contains(&"overdue"), "marks name the facts: {marks:?}");
         assert!(marks.contains(&"in_review"), "marks name the facts: {marks:?}");
+        assert_eq!(
+            json[0]["evidence"], "verified",
+            "the list carries the evidence's own state: {json}",
+        );
     }
 
     #[tokio::test]
