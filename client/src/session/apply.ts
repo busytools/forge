@@ -478,10 +478,11 @@ export const IGNORED: readonly string[] = [
    */
   'notice',
   'slack_message_appended',
-  // The project's task set, its schedules and its connector subscriptions:
-  // all three sections are read off the board's project row, and this record
-  // has no field for any of them.
+  // The project's task set, one row read whole for the board's drawer, its
+  // schedules and its connector subscriptions: all of them are read off the
+  // board's project row, and this record has no field for any.
   'tasks_changed',
+  'task_detail',
   // The seat's voice frames: the playback queue and the control read the
   // stream directly, and this record has no field for either.
   'voice_audio',

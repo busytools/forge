@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { repoPath } from '../repo';
-import { BOARD_VARIANTS, boardFrom, coversBoard, type BoardWire } from './board';
+import { BOARD_VARIANTS, applyDetail, boardFrom, coversBoard, type BoardWire } from './board';
 import type { SessionSlot } from './types';
 
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
@@ -148,5 +148,77 @@ describe('the task fields the board marks', () => {
     expect(task['reserved']).toBeNull();
     const wait = task['waiting_on'] as { parked?: boolean } | null;
     expect(wait?.parked, 'an older server sent no parked flag').toBe(false);
+  });
+});
+
+/**
+ * The drawer's own read: the bulk board carries the window's fields only, so
+ * a `task_detail` frame lands here - one row whole, with its brief and its
+ * history - and replaces what the bulk read said about it.
+ */
+describe("the drawer's row", () => {
+  function row(over: Record<string, unknown>, history: unknown[] = []): Record<string, unknown> {
+    return {
+      task: {
+        id: 't-1',
+        project_name: 'proj',
+        subject: 'the row',
+        status: 'in_progress',
+        links: [],
+        created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+        updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+        ...over,
+      },
+      worked_secs: 0,
+      updated_secs_ago: 0,
+      owner_live: true,
+      marks: { ready: false, in_review: false, overdue: false, stale: false, to_close: false },
+      rollup: null,
+      parent_subject: null,
+      history,
+      history_total: history.length,
+    };
+  }
+
+  const wire = (): BoardWire =>
+    boardFrom({
+      projects: [
+        {
+          project: { org: 'TestOrg', name: 'proj' },
+          rows: [row({})],
+          crons: [],
+          connectors: { gotify: [], slack: [] },
+        },
+      ],
+    } as unknown as BoardWire);
+
+  it('replaces the bulk row with the whole record', () => {
+    const step = {
+      task_id: 't-1',
+      project_name: 'proj',
+      from: 'pending',
+      to: 'in_progress',
+      at: { secs_since_epoch: 5, nanos_since_epoch: 0 },
+      by: 'system',
+    };
+    const applied = applyDetail(
+      wire(),
+      { org: 'TestOrg', name: 'proj' },
+      row({ detail: 'the brief the drawer reads' }, [step]),
+    );
+    const held = applied?.projects[0]?.rows[0];
+    expect(held?.task.detail).toBe('the brief the drawer reads');
+    expect(held?.history, 'the history rode the frame').toHaveLength(1);
+    expect(applied?.projects[0]?.rows, 'the row was replaced, not duplicated').toHaveLength(1);
+  });
+
+  it('keeps a closed row out of the lanes, and a null answer changes nothing', () => {
+    const closed = applyDetail(
+      wire(),
+      { org: 'TestOrg', name: 'proj' },
+      row({ id: 't-9', subject: 'an ended row', status: 'completed' }),
+    );
+    expect(closed?.projects[0]?.rows, "a closed row stays the drawer's").toHaveLength(1);
+    expect(applyDetail(wire(), { org: 'TestOrg', name: 'proj' }, null)).toBeNull();
   });
 });

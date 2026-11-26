@@ -396,14 +396,14 @@ variant's own name rather than on `kind`:
 }
 ```
 
-A command's variant is its name around its field bag - `Command` has 75
-variants, 68 of them struct variants; the seven unit variants,
+A command's variant is its name around its field bag - `Command` has 76
+variants, 69 of them struct variants; the seven unit variants,
 `dictate_catalogue_check`, `dictate_bench_stop`, `voice_bench_start`,
 `voice_bench_stop`, `plugin_update_all`, `plugin_check_updates` and
 `vault_lock`, cross as the name alone. An update is the same
 shape one level in,
 `{"kind": "update", "update": {"chat_appended": {"key": ..., "msg": ...}}}`,
-and 79 of `SessionUpdate`'s 82 variants are struct variants too. The other
+and 80 of `SessionUpdate`'s 83 variants are struct variants too. The other
 three are why the update payload is not one shape: they are unit variants and
 cross as the name alone - `"catalog_loaded"`, `"cli_version_changed"` and
 `"dictate_availability"`.
@@ -1260,9 +1260,10 @@ fields were most of a ~708 KB home read for a page that draws none of them
 
 | Field      | What it is                                                                                                                                                                                                                                                               |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `projects` | One entry per project: `project` (its identity - `org` and `name`; the rest of a project's view is the home's), `rows` (the board: each one a task with its worked time, ages and marks, plus its rollup and its epic's subject), `crons`, and `connectors` (this project's own gotify and slack subscription sets). |
+| `projects` | One entry per project: `project` (its identity - `org` and `name`; the rest of a project's view is the home's), `rows` (the window's fields only: each row a task with its worked time, ages, owner liveness and marks, plus its rollup and its epic's subject - a row's `detail` brief and its history are `tasks__get`'s, or a `task_detail` command's when a drawer opens), `crons`, and `connectors` (this project's own gotify and slack subscription sets). |
 
 **`board` hears the variants that move it**: `tasks_changed`,
+`task_detail` (one row read whole, answering a `task_detail` command),
 `cron_schedules_changed` and `connector_subscriptions_changed`, plus the
 seat events its rows' `stale` mark is read from (`spawning`, `connected`,
 `session_replaced`, `releasing`, `connection_failed`,

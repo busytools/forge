@@ -1,11 +1,13 @@
 # Board
 
-One project's task board, opened as a takeover at
-`/board/{org}/{project}`: a slim bar, the rows waiting on the reader, the
-project's cards in lanes by state, and the line that cuts a new row. The
-fleet stays the glance; this is the world. Nothing of any other project
-appears here. The drawing it is held against is
-[web-board.html](./web-board.html), beside this page.
+One project's board, opened as a takeover at
+`/board/{org}/{project}`. It opens on the **window**: what needs the
+reader, what looks wrong, who is doing what, and what is next, in that
+order. The **full board** of lanes and the **archive** of closed rows are
+one toggle away on the same page, never the front door. The fleet stays the
+glance; this is the world, and nothing of any other project appears here.
+The drawing it is held against is [web-board.html](./web-board.html),
+beside this page.
 
 It is reached from two doors: `open board` on the project's row on the
 [home](./home.md), and the tasks strip in a session's chat, which carries
@@ -13,69 +15,132 @@ It is reached from two doors: `open board` on the project's row on the
 return the reader where they came from, and a deep link with nothing to go
 back to lands on the home.
 
-The page draws from the `board` subject: a project's rows, schedules and
-connector sets ride in that subject's entry, and it hears the updates that
-move them. The seat chips and the fleet's `waiting on you` count come from
-the home snapshot beside it; the row and running counts are the board's own.
-So a seat that claims a row, a row that is cut, or a move made in another view
-arrives as an update, and the page re-reads without the reader doing
-anything. While it is mounted and the page is being watched, it also re-reads
-on a slow five-minute beat: a row's time-derived marks are computed by the
-server at read time, and no update announces that a window crossed. A page
-nobody is watching releases the beat entirely, and the return re-read the
-page already makes when it comes back from a hidden spell of at least two
-seconds asks the board once through the same guards. Only the `wrote ... ago`
-line keeps ticking off the page's own clock; the card's worked time and the
-chip and waiting-card ages advance only on a read, so they are refreshed at
-most five minutes after the page is watched again, and can be up to the time
-it was away plus five minutes old.
+The page draws from the `board` subject, which carries only the window's
+fields: a row's worked time, its ages, whether its owner is live, its
+marks, its wait, its rollup and its epic's subject. The row's `detail`
+brief and its transition history are **not** in that read - they load on
+demand through the `task_detail` command when a drawer opens, and come back
+as a `task_detail` update for that one row - so a board read is bounded by
+its row count rather than by how much each row has accumulated. The closed
+view is its own subject, `archived`, read once each time the toggle opens.
+The seat chips and the fleet's `waiting on you` count come from the home
+snapshot beside it; the row and running counts are the board's own.
 
-## What it draws
+The page hears the updates that move what it draws: a task write, a
+schedule set, a connector set, a drawer's row, and the seat events a row's
+liveness is read from. So a seat that claims a row, a row that is cut, or a
+move made in another view arrives as an update, and the page re-reads
+without the reader doing anything. While it is mounted and the page is
+being watched, it also re-reads on a slow five-minute beat: a row's
+time-derived marks are computed by the server at read time, and no update
+announces that a window crossed. A page nobody is watching releases the
+beat entirely, and the return re-read the page already makes when it comes
+back from a hidden spell of at least two seconds asks the board once
+through the same guards. Only the `wrote ... ago` line keeps ticking off
+the page's own clock; the card's worked time and the ages on cards advance
+only on a read, so they are refreshed at most five minutes after the page
+is watched again.
+
+## The window
+
+Exceptions first, aggregated by outcome: a reader of a fleet does not want
+one card per agent, they want what needs them, what looks wrong, who is
+doing what, and what is next. Four regions, in that order, each drawn
+under a heading with its count.
+
+### Needs you
+
+The rows waiting on the reader, as cards - a look ahead of a decision,
+then the oldest wait first, because a look is a finished row nobody can
+close until it is given.
+
+A **decision card** leads with the question the lead asked, then the
+options it enumerated as buttons the reader answers with one press (a note
+box beside them, optional), then the row's subject and owner, the
+artifact's door when the row carries a followable link, the bounded
+excerpt of the evidence behind the ask, the gate's own word on that
+evidence (`evidence verified`, `evidence unchecked`, `evidence refused`),
+and a `discuss` door into the owner's session - where the conversation
+happens, and what it reaches is written back to the row. A wait minted
+before decisions carried questions falls back to the wait's own words and
+a free-text answer box.
+
+A **look card** is the same shape with the look's own ask - `Approve
+<artifact> or say what to change` - and the strip's controls: `approve`,
+a `what to change` box and `send back`.
+
+Both cards say how long the ask has waited, counted from the wait's own
+start, never from the row's last edit; a `open the row` line opens the
+drawer.
+
+### Exceptions
+
+What contradicts the state, each a labelled fact rather than a badge:
+
+| Line | Means | Read from |
+|---|---|---|
+| `the gate refused its evidence: <why>` | the row carries an evidence claim the repository could not back | the row's `evidence.problem` |
+| `<owner> has no session behind it - no change since HH:MM` | the owner is gone | `owner_live` and the last touch |
+| `no change since HH:MM` | nobody has touched the row past the band | the `stale` mark and the last touch |
+| `<worker> holds no row - feed it or despawn it` | a live worker with nothing to do | the fleet row's `unaccounted_worker` miss |
+
+**Staleness is a timestamp, not an adjective.** The line says when the row
+last changed, in the reader's own clock, because motion is not progress
+and a bare `stale` asks the reader to do the arithmetic.
+
+### Live
+
+One line per seat this project has, saying what it holds: the seat's label
+(its door into the session), the row's running words and when the seat was
+last active, the artifact the row last touched, the measure the row is
+next judged by, and how many more rows the seat holds when it holds more
+than one. A seat holding nothing says so. What cannot be known is drawn as
+unknown, never as progress.
+
+### Next
+
+The ranked ready queue: the ready and unowned rows in the order the lead
+would dispatch them (rank, then creation), each with its estimate - or its
+cadence, marked `standing`, for work that never finishes.
+
+## The full board
+
+The lanes face, under the `full board` toggle.
 
 | Region | Shows | Read from |
 |---|---|---|
-| Top bar | `back`, the project's name with its own read (`N waiting on you`, `N rows`, `N running`), `done` | the route and the snapshot |
-| Seats | one chip per seat this project holds, linking to its session page; a card dropped on one assigns it | `agents` filtered to the project |
-| Waiting on you | the rows whose wait is a decision, each card leading with the wait's ask: the verify gate (`approve`, a words box, `send back`) on a row minted `verify: user`, or a worker's question (an answer box), with the row's links and a look's artifact beside it. A root whose children are not all done draws the count and the send-back instead of `approve`, because a row closes only when its children do | `waiting_on` with `kind: decision` (a verification park only where the row's own `verify` is `user`), the wait's `detail`, the row's links, and the row's `rollup` |
+| Top bar | `back`, the project's name with its own read (`N waiting on you`, `N rows`, `N running`), the project's seat chips, `done` | the route and the snapshot |
+| The switch | `window`, `full board`, `archived` | the page's own state |
+| Waiting on you | the rows whose wait is a decision, each card leading with the wait's ask, with the row's links and a look's artifact beside it; the verify gate (`approve`, a words box, `send back`), or an answer box; a root whose children are not all done draws the count and the send-back instead of `approve` | `waiting_on`, the wait's own start for the age, the row's links, and the row's `rollup` |
 | Lanes | every card, in its state's lane, with the grown groups folded - the finished ones to their five most recent, Backlog to its ten | the board's `projects[].rows` |
 | Create | a subject box, an epic picker and `+ add`, which files the row at the queue's end | `task_create` |
-
-## The lanes
 
 Six lanes, always drawn in this order, because a missing lane would read as
 a missing state: **Backlog** (pending), **Waiting**, **In progress**,
 **Completed**, **Failed**, **Canceled**. The pool of everything not yet
 started leads, then the lane that wants the reader, then the work. Backlog is
 the `pending` status: work kept to look at later, not by itself an assignment
-and not a promise to start. Its ready, unowned cards are the dispatch queue,
-not a promise to run. A lane is a name, its count and a rule, with its cards
-under it - no box around the column - and the lanes wrap to a second row
-rather than scroll sideways.
+and not a promise to start. A lane is a name, its count and a rule, with its
+cards under it - no box around the column - and the lanes wrap to a second
+row rather than scroll sideways.
 
 **The grown groups fold.** A finished row accumulates for the life of the
 project and a queue accumulates for the life of the work, so Completed,
 Failed, Canceled and Backlog are the lanes that grow without bound. The three
 finished groups draw their five most recently finished rows - by when they
 last moved, whatever their place in the lane - and the Backlog draws its top
-ten, larger than the finished groups' five because the queue's order is the
-lead's dispatch order and the head of it is what stays in view. The rest of
-each group waits behind a `show all (N)` control under the last card. `N` is
-the lane's true count, which the head carries whether or not the group is
-open; pressing the control draws every row and it reads `show less`, and a
-group at or under its limit draws whole with no control. A card the reader is
-dropping into a folded group stays drawn while the core's answer is in
-flight, and a jump aimed at a folded row - an epic pill, a row page's task
-list - opens the fold and lands on it. In progress and Waiting never fold: they
-are the live work.
+ten. The rest of each group waits behind a `show all (N)` control under the
+last card. A card the reader is dropping into a folded group stays drawn
+while the core's answer is in flight, and a jump aimed at a folded row opens
+the fold and lands on it. In progress and Waiting never fold.
 
 ### A card
 
 Three lines, top to bottom:
 
 - the mark, then the subject. A row in progress displays its `active_form`
-  where it has one, with the subject under it, because that is what the
-  reader wants to know - subjects are what a row is, active forms are what it
-  is doing. A completed row's subject is struck through.
+  where it has one, with the subject under it. A completed row's subject is
+  struck through.
 - the owner (their initial in a disc, linking to their session page, or
   `unclaimed`), the epic it belongs under where it has one, its links, and
   its chips - with a `done/total` rollup beside them on a parent.
@@ -85,11 +150,8 @@ Three lines, top to bottom:
 
 **The tree reads in two marks.** A parent's card wears an `epic` pill and a
 solid left spine; each child wears the epic's name in a pill with a return
-arrow and a dimmer spine, so a tree reads across lanes at a glance and the
-board still works without colour. The child's card pill is a door: it brings
-the epic's own card into view and flashes it. On the row's page the same pill
-is a label, and the doors there are the tasks it lists - what a parent's
-tasks are, and how to reach one, lives on that page.
+arrow and a dimmer spine. The child's card pill is a door: it brings the
+epic's own card into view and flashes it.
 
 The mark carries shape as well as colour, so the board reads without colour:
 
@@ -109,61 +171,55 @@ The chips are the server's derived marks, named in words:
 | `waiting on you` | warn | a decision wait, or a look park on a row minted `verify: user` |
 | `on <row>` | warn | waiting on another row's completion |
 | `waiting on a resource` | warn | waiting on something outside the board |
-| `waiting` | warn | a verification wait whose row carries no own gate: an inherited park, left behind by the old rule |
-| `waiting <3h>` | bad | the wait has outlived the threshold |
+| `waiting <3h>` | bad | the wait's own age has passed the window |
 | `overdue` | bad | worked time has crossed the estimate |
-| `no movement <5h>` | dim | untouched, and nothing is waiting |
+| `no change <5h` | dim | untouched past the band, and its owner is still live |
 | `owner gone` | bad | its owner is no longer a live seat |
 | `in review` | blue | completed with the verify gate up |
 | `lead attested` | blue | the lead completed the look, citing the user's own approval |
 | `to close` | blue | a root whose children are all done, waiting for its close |
-| `reserved for you` | dim | the user reserved this pick: the sweep leaves it, it never reads ready, and no claim takes it |
-| `attempt N` | dim | sent back with words N times |
+| `reserved for you` | dim | the user reserved this pick: the drive leaves it, it never reads ready, and no claim takes it |
 
 **The look has two doors, and the row page draws both.** The user's own
-`approve` sits on the waiting strip; a lead who watched the user approve in
-chat completes the row through `tasks__approve`, which requires the approval
-quoted and records it on the row. The completed card then wears
-`lead attested`, and the row page draws the quote with a `reopen` button:
-reopening strikes the attestation, re-mints the look gate and parks the row
-on the user again. The page's `pick` line is the other side of the sweep:
-`reserve for you` marks the row so the sweep never dispatches it, and
-`release` takes that back. A reserved row is not ready and no seat's claim
-takes it: the pick is the user's alone. The line draws only while the row is
-live - a completed, failed or canceled row has no pick left to reserve.
+`approve` sits on the window's look card and on the strip; a lead who
+watched the user approve in chat completes the row through `tasks__approve`,
+which requires the approval quoted and records it on the row. The completed
+card then wears `lead attested`, and the row page draws the quote with a
+`reopen` button: reopening strikes the attestation and parks the row on the
+user again. The page's `pick` line is the other side of the drive:
+`reserve for you` marks the row so the drive never dispatches it, and
+`release` takes that back.
 
-**A wait leads with its ask.** The waiting card and the row page both open
-on the wait's own `detail` where it states one, else the row's `detail` - a
-look parks with no wait detail, and its ask is the row's own words - and a
-wait with neither falls back to the state's sentence ("A decision is waiting
-on you", "A look: this row is finished and waits on your approval"). That
-fallback is a seeded or legacy wait, or a look minted with no ask, and a
-blank detail counts as none. The row's links follow the ask as references in the sheet's own
-link grammar - the app's link colour with an underline set off the text, and
-a fuller rule under the pointer; no bare anchor reaches the strip, so none
-draws the browser's purple. In a look the artifact is its own door,
-`look at <name>`, wearing the same pill grammar as `approve` and `send back`
-rather than sitting in the sentence as another link; when the artifact is
-already one of the row's references, the door is its only showing and the
-links line keeps the others, so one reference appears once. A good ask says what
-the question is, why it needs the user, and links the thing to look at; a
-bare "waiting on you" is a card with no question on it.
+**A wait leads with its ask.** The card and the row page both open on the
+wait's own `detail` where it states one, else the row's `detail`, and a wait
+with neither falls back to the state's sentence. In a look the artifact is
+its own door, `look at <name>`, in the same pill grammar as `approve` and
+`send back`; when the artifact is already one of the row's references, the
+door is its only showing and the links line keeps the others.
 
 The links come off the row's own list: a URL follows in a new tab under its
 label, and a path or a branch draws as text rather than a dead anchor.
 
+## The archive
+
+The `archived` toggle reads the closed view: the terminal rows still in the
+live set, then the archive, each with its state, when it was archived (a row
+closed but not yet archived says so), and a `restore` that brings the row
+and the tree it took back to the live set. The read happens once per
+opening; a task write while it is open is not applied to it, because the
+closed set is history and the opening is the reader's own ask.
+
 ## Moving a card
 
-The drag is the board's interaction, and what the card lands on decides the
-command: another lane is a move carrying its place (`task_move`), a position
-inside its own lane is a re-rank by drop position (`task_rank`), and a seat
-chip is an assignment (`task_assign`). A lane's whole column takes the drop,
-an empty one included, and the place the drop chose is the priority the row
-keeps on either path. A press that never passes six pixels is a click, which
-opens the row's own page. A dropped card lands where it was put at once and
-the wire's own snapshot reconciles it a moment later; it animates into place
-unless the reader has asked for reduced motion, and the card under the
-pointer tilts and lifts.
+The drag is the full board's interaction, and what the card lands on decides
+the command: another lane is a move carrying its place (`task_move`), a
+position inside its own lane is a re-rank by drop position (`task_rank`), and
+a seat chip is an assignment (`task_assign`). A lane's whole column takes the
+drop, an empty one included, and the place the drop chose is the priority the
+row keeps on either path. A press that never passes six pixels is a click,
+which opens the row's own page. A dropped card lands where it was put at once
+and the wire's own snapshot reconciles it a moment later; it animates into
+place unless the reader has asked for reduced motion.
 
 The keyboard has the same power without a row of buttons: the arrow keys on
 a focused card re-order it within its lane, and the owner picker on the card
@@ -171,56 +227,47 @@ is a control like any other.
 
 ## The row's page
 
-A click - or Enter or Space on a focused card - opens the row over the board: its
-fields (state, owner, estimate, worked, both clocks, its parent, its `pick`
-line and its links), **Its tasks** on a parent - each row a door that closes
-the page and lands on that card - **Waiting on you** when the wait is a
-decision, carrying the wait's ask, its links and a look's artifact, then the
-waiting strip's own controls (`approve`, the send-back box, the answer box),
-while a dependency or resource wait draws the section without them, its
-**History** - the row's own transitions, which the core already records for
-the worked time - and the way into the owner's session. The read caps what a
-row carries at its newest twenty, so a long trail reaches the page without
-riding every board encode, and the section words what it withholds
-(`showing the last 20 of 43`). The button, the scrim
-and Escape all close it, and the card has the keyboard back when it goes; a
-jump hands it to the card jumped to instead. The board stays behind it, so a
-reader never loses the lane they were in.
+A click - or Enter or Space on a focused card, or `open the row` on a window
+card - opens the row over the board. The drawer asks for the row whole
+(`task_detail`) as it opens, so its `detail` brief and its history - which
+the board's own read leaves out - arrive a moment later and draw where they
+belong: its fields (state, owner, estimate, worked, both clocks, its parent,
+its `pick` line and its links), **Its tasks** on a parent, **Waiting on
+you** when the wait is a decision, the strip's own controls, its **History**
+(the row's own transitions, the newest twenty, with `showing the last N of
+M` when the tail is capped), and the way into the owner's session. The
+button, the scrim and Escape all close it, and the card has the keyboard
+back when it goes.
 
 **Every control is one command on the socket, carrying this project on it.**
 `task_move` moves a row between lanes and lands it at the drop's place,
-`task_rank` re-orders it,
-`task_assign` changes its owner, `task_verdict` approves or sends back a
-verify row, `task_answer` answers a question, `task_create` files a row,
-`task_reopen` strikes a lead's attestation and parks the row on the user
-again, and `task_reserve` reserves or releases the pick. A refused edit says
-so on the service line rather than silently reverting, and every one of them
-stamps the change as the user's.
+`task_rank` re-orders it, `task_assign` changes its owner, `task_verdict`
+approves or sends back a verify row, `task_answer` answers a question
+(carrying `choice` when the row offered options, and the note in `words`),
+`task_create` files a row, `task_reopen` strikes a lead's attestation,
+`task_reserve` reserves or releases the pick, `task_restore` brings a closed
+row back, and `task_detail` asks for one row whole. A refused edit says so
+on the service line rather than silently reverting.
 
 ## The states the page can be in
 
-- **A board**, the ordinary case.
-- **Waiting on the reader**: the strip draws only when at least one row's
-  wait is a decision. Its absence is not a state - an empty frame above the
-  cards would read as a board with nothing for the reader, which is a
-  different claim from the strip not being there.
-- **Empty**: a project with no live rows draws one line naming its two moves
-  - cut a row in the create line, or tell the lead what is next - with the
-  six lanes still drawn under it.
+- **A window**, the ordinary case.
 - **Before the first frame**: a route can be addressed before the snapshot
-  lands. The page arrives with the connection rather than drawing a second
-  loading state of its own, and a subscription the server turns down says so
-  in its own words instead of reading forever.
+  lands; the page says it is reading, and a subscription the server turns
+  down says so in its own words instead of reading forever.
 - **Unknown**: a project the snapshot does not carry draws its name and one
-  line saying this forge does not hold it, with no lanes and no create line -
-  a row filed there would name a project `forge.toml` has no entry for.
-- **A set of seats**: the seat chips draw only when the project holds one; a
-  project with nothing running draws none.
+  line saying this forge does not hold it, with no regions and no create line.
+- **Empty**: a project with no live rows says so under the window; the full
+  board draws its six empty lanes and the create line.
+- **The archive reading, refused, or empty**: the toggle says which.
 
 ## The two widths
 
-Checked at **1600** and at **430**, against the drawing beside it. The lanes
-are a grid of `minmax(260px, 1fr)` columns, so a wide window fits them side
-by side, a phone stacks them, and neither scrolls sideways. Every control a
-finger reaches takes a 44px target under `@media (pointer: coarse)`, and the
-drag is a pointer gesture, so it is the same one under a finger.
+Checked at **1600** and at **430**, against the drawing beside it. The window's
+need cards are a grid of `minmax(330px, 1fr)` columns, so a wide window sets
+two asks side by side and a phone stacks them; the lanes are
+`minmax(260px, 1fr)` columns, so a phone stacks them too, and neither scrolls
+sideways. A phone's top bar keeps the count that asks something of the reader
+and drops the row totals. Every control a finger reaches takes a 44px target
+under `@media (pointer: coarse)`, and the drag is a pointer gesture, so it is
+the same one under a finger.

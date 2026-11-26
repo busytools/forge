@@ -217,6 +217,7 @@ fn board_detail(update: &SessionUpdate) -> bool {
         update,
         SessionUpdate::CronSchedulesChanged { .. }
             | SessionUpdate::ConnectorSubscriptionsChanged { .. }
+            | SessionUpdate::TaskDetail { .. }
     )
 }
 

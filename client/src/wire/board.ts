@@ -76,6 +76,8 @@ export function boardFrom(data: BoardWire): BoardWire {
  */
 export const BOARD_VARIANTS: readonly string[] = [
   'tasks_changed',
+  // One row read whole, answering a drawer's own ask.
+  'task_detail',
   'cron_schedules_changed',
   'connector_subscriptions_changed',
   // A row's owner-gone chip is read from seat liveness.
@@ -223,6 +225,62 @@ export function applyTasks(
       if (added !== undefined) rows.push(added);
     }
   }
+  const projects = [...wire.projects];
+  projects[at] = { ...held, rows };
+  return { projects };
+}
+
+/**
+ * The one row a `task_detail` frame carries, or `null`.
+ *
+ * The frame answers a drawer's ask: the record with its brief and its
+ * history, which the board's bulk read leaves out. `row` is null when the id
+ * named nothing live or archived - a row can close between a read and the
+ * ask.
+ */
+export function taskDetailFrame(
+  update: SessionUpdate,
+): { project: { org: string; name: string }; row: unknown } | null {
+  if (typeof update === 'string') return null;
+  const payload = (
+    update as {
+      task_detail?: { key?: unknown; project?: unknown; row?: unknown };
+    }
+  ).task_detail;
+  if (payload === undefined) return null;
+  const project = projectOf(payload.key);
+  if (project === null || typeof payload.project !== 'string') return null;
+  return { project, row: payload.row ?? null };
+}
+
+/**
+ * Apply one full row into the drawn board, replacing the row the bulk read
+ * carried for its id. A row the drawn board does not hold is appended only
+ * when it is live: a closed row read on demand belongs to the drawer, not to
+ * the lanes.
+ */
+export function applyDetail(
+  wire: BoardWire | null,
+  project: { org: string; name: string },
+  row: unknown,
+): BoardWire | null {
+  if (wire === null || row === null || row === undefined) return null;
+  const at = wire.projects.findIndex(
+    (held) => held.project.org === project.org && held.project.name === project.name,
+  );
+  if (at === -1) return null;
+  const held = wire.projects[at];
+  if (held === undefined) return null;
+  const full = rowFrom(row);
+  const known = held.rows.some((entry) => entry.task.id === full.task.id);
+  const ended =
+    full.task.status === 'completed' ||
+    full.task.status === 'failed' ||
+    full.task.status === 'canceled';
+  const rows = held.rows.map((entry) => (entry.task.id === full.task.id ? full : entry));
+  // A closed row read on demand belongs to the drawer that asked, not to the
+  // lanes: the bulk board draws only work in play.
+  if (!known && !ended) rows.push(full);
   const projects = [...wire.projects];
   projects[at] = { ...held, rows };
   return { projects };

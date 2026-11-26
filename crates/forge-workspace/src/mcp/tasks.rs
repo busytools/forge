@@ -248,7 +248,7 @@ impl Tool for Create {
          to its lead instead. The gate is minted on the row that owes the look; an \
          epic's `verify: \"user\"` governs the epic's own completion, and a child never \
          inherits it - a child that owes no look completes on its own terms. `reserved: \
-         \"user\"` reserves the pick for the user: the board sweep leaves it, it never reads \
+         \"user\"` reserves the pick for the user: the drive leaves it, it never reads \
          ready, and no seat's claim takes it. Returns the stored task \
          with its id (use it with tasks__update / tasks__delete). Any session in the project \
          may call this."
@@ -275,8 +275,8 @@ impl Tool for Create {
                     "enum": ["pending", "in_progress", "waiting", "completed", "failed", "canceled"],
                     "description": "Where the task starts. Defaults to pending, the board's \
                                     Backlog: work kept to look at later, not by itself an \
-                                    assignment. The sweep dispatches only unowned ready rows, \
-                                    so take ownership to set one aside.",
+                                    assignment. The drive nudges the lead about unowned ready \
+                                    work, so take ownership to set one aside.",
                 },
                 "owner": {
                     "type": "string",
@@ -321,9 +321,8 @@ impl Tool for Create {
                 "reserved": {
                     "type": "string",
                     "enum": ["user"],
-                    "description": "Set `user` to reserve this pick for the user: the board \
-                                    sweep leaves a reserved row for them instead of \
-                                    dispatching it.",
+                    "description": "Set `user` to reserve this pick for the user: the drive \
+                                    leaves a reserved row for them, and no claim takes it.",
                 },
                 "links": {
                     "type": "array",
@@ -1044,7 +1043,7 @@ impl Tool for Claim {
          over any longer id that starts with it, and a prefix matching more than one row is \
          refused with the matching rows named. Refused when a live seat holds the row (named), \
          when it is not pending, when it is reserved for the user (`reserved: \"user\"` - the \
-         sweep's pick and nobody else's), or when you already have a row in progress: one in \
+         drive's pick and nobody else's), or when you already have a row in progress: one in \
          progress per worker. Claiming is for unassigned rows: a row a lead created for you \
          already names you as `owner`, so work it without claiming. Returns the claimed record."
     }
@@ -2094,7 +2093,7 @@ mod tests {
     /// where an existing row is moved and the create's status property is
     /// where a new one is filed, so both say what pending means and name
     /// ownership as the way to set a row aside. Without it, pending reads as
-    /// a parking space and the sweep then dispatches it.
+    /// a parking space the drive then treats as work nobody has taken.
     #[test]
     fn the_task_text_says_pending_is_the_backlog() {
         let facade = MockTasksFacade::new().into_arc();
@@ -2120,7 +2119,8 @@ mod tests {
         for clause in [
             "Defaults to pending, the board's Backlog: work kept to look at later, not by \
              itself an assignment",
-            "The sweep dispatches only unowned ready rows, so take ownership to set one aside",
+            "The drive nudges the lead about unowned ready work, so take ownership to set one \
+             aside",
         ] {
             assert!(
                 status.contains(clause),

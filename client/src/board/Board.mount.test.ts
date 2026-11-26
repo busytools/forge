@@ -1097,6 +1097,20 @@ describe("the row's own page", () => {
    * approval in the drawer, and the drawer's reopen hands the user's own
    * strike back as one command (#2423/B).
    */
+  /** The bulk read carries the window's fields only; the drawer asks for the
+   *  rest once, and a second opening does not repeat the ask. */
+  it('asks for the row whole when the drawer opens, once', () => {
+    summon(wireWith([row(task('d1', 'a row', 'in_progress'))]));
+    const card = document.querySelector('.b-card[data-id="d1"]');
+    if (card === null) throw new Error('no card');
+    press(card);
+    expect(acts[0]).toEqual({ task_detail: { project: 'proj', id: 'd1' } });
+    document.querySelector<HTMLElement>('.dr-x')?.click();
+    flushSync();
+    press(card);
+    expect(acts.filter((command) => 'task_detail' in command)).toHaveLength(1);
+  });
+
   it('draws a lead-attested row and hands reopen out as a command', () => {
     const attested = {
       evidence: 'Looks right - merge',
@@ -1112,7 +1126,9 @@ describe("the row's own page", () => {
     expect(drawer?.textContent, 'the quote the lead recorded').toContain('Looks right - merge');
     byText('reopen')?.click();
     flushSync();
-    expect(acts[0]).toEqual({ task_reopen: { project: 'proj', id: 'a1' } });
+    // Opening the drawer asks for the row whole first (`task_detail`); the
+    // press is the command that follows.
+    expect(acts.at(-1)).toEqual({ task_reopen: { project: 'proj', id: 'a1' } });
   });
 
   /** The user reserves a pick from the row page, and the board says so. */
@@ -1123,7 +1139,7 @@ describe("the row's own page", () => {
     press(card);
     byText('reserve for you')?.click();
     flushSync();
-    expect(acts[0]).toEqual({ task_reserve: { project: 'proj', id: 'r1', reserved: true } });
+    expect(acts.at(-1)).toEqual({ task_reserve: { project: 'proj', id: 'r1', reserved: true } });
 
     // And a reserved row draws the mark, with the release door.
     summon(wireWith([row(task('r2', 'a reserved pick', 'pending', { reserved: 'user' }))]));
@@ -1133,7 +1149,7 @@ describe("the row's own page", () => {
     press(reserved);
     byText('release')?.click();
     flushSync();
-    expect(acts[1]).toEqual({ task_reserve: { project: 'proj', id: 'r2', reserved: false } });
+    expect(acts.at(-1)).toEqual({ task_reserve: { project: 'proj', id: 'r2', reserved: false } });
   });
 
   /**

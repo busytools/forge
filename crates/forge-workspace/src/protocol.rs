@@ -711,6 +711,15 @@ pub enum Command {
         project: String,
         id: String,
     },
+    /// A view asks for one row whole: its brief and its history, which the
+    /// board's bulk read leaves out so a wide board stays light. The answer
+    /// is a `task_detail` update, and an id naming nothing answers with
+    /// nothing rather than an error - a row can close between a read and
+    /// the ask.
+    TaskDetail {
+        project: String,
+        id: String,
+    },
     /// Cross-project delivery (#114 v1). Dispatched by the
     /// `mcp__forge__agents__send_message` tool impl via
     /// `WorkspaceFacade::deliver_peer_prompt`. Routed to
@@ -1095,6 +1104,7 @@ impl Command {
             | Self::TaskReopen { .. }
             | Self::TaskReserve { .. }
             | Self::TaskRestore { .. }
+            | Self::TaskDetail { .. }
             | Self::PluginInstall { .. }
             | Self::PluginUpdate { .. }
             | Self::PluginUpdateAll
@@ -1409,6 +1419,11 @@ impl std::fmt::Debug for Command {
                 .finish_non_exhaustive(),
             Self::TaskRestore { project, id } => f
                 .debug_struct("TaskRestore")
+                .field("project", project)
+                .field("id", id)
+                .finish_non_exhaustive(),
+            Self::TaskDetail { project, id } => f
+                .debug_struct("TaskDetail")
                 .field("project", project)
                 .field("id", id)
                 .finish_non_exhaustive(),
@@ -1881,6 +1896,16 @@ pub enum SessionUpdate {
     TasksChanged {
         key: SessionSlot,
         tasks: Vec<forge_primitives::tasks::Task>,
+    },
+    /// One row read whole, answering a `TaskDetail` command: the record
+    /// with its brief and its history, which the board's bulk read leaves
+    /// out so a wide board stays light. `row` is `None` when the id names
+    /// nothing live or archived. `key` is the project's lead seat, as the
+    /// board's own announcements are.
+    TaskDetail {
+        key: SessionSlot,
+        project: String,
+        row: Option<crate::board::BoardRow>,
     },
     /// The project's schedules moved, as the whole set the core holds.
     ///
@@ -2501,6 +2526,7 @@ impl SessionUpdate {
             | Self::McpSnapshot { key, .. }
             | Self::WorkChanged { key, .. }
             | Self::TasksChanged { key, .. }
+            | Self::TaskDetail { key, .. }
             | Self::CronSchedulesChanged { key, .. }
             | Self::ConnectorSubscriptionsChanged { key, .. }
             | Self::SlashCommandsChanged { key, .. }
@@ -2670,6 +2696,12 @@ impl std::fmt::Debug for SessionUpdate {
             Self::WorkChanged { key, .. } => {
                 f.debug_struct("WorkChanged").field("key", key).finish_non_exhaustive()
             }
+            Self::TaskDetail { key, project, row } => f
+                .debug_struct("TaskDetail")
+                .field("key", key)
+                .field("project", project)
+                .field("found", &row.is_some())
+                .finish(),
             Self::TasksChanged { key, tasks } => f
                 .debug_struct("TasksChanged")
                 .field("key", key)

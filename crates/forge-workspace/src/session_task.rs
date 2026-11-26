@@ -3050,6 +3050,7 @@ pub(crate) fn execute_command_via_handle(
         | Command::TaskReopen { .. }
         | Command::TaskReserve { .. }
         | Command::TaskRestore { .. }
+        | Command::TaskDetail { .. }
         | Command::PluginInstall { .. }
         | Command::PluginUpdate { .. }
         | Command::PluginUpdateAll

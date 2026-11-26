@@ -197,6 +197,50 @@
 
   /* ---------- the drawer: one row's own page over the board ---------- */
 
+  /* the window: the page's front door - what needs the reader, what looks
+     wrong, who is doing what, and what is next. The full board and the
+     archive are one toggle away, drawn below as their own faces. */
+  .w-switch { display: flex; gap: 6px; margin: 0 0 20px; flex-wrap: wrap; }
+  .w-tab { font-family: var(--mono); font-size: 12.5px; color: var(--dim);
+    background: var(--s2); border: 1px solid transparent; border-radius: 999px;
+    padding: 7px 14px; cursor: pointer; }
+  .w-tab[aria-selected="true"] { color: var(--text); background: var(--s3); border-color: var(--line); }
+  .w-window { display: flex; flex-direction: column; gap: 30px; margin-bottom: 40px; }
+  .w-h { display: flex; align-items: center; gap: 8px; margin: 0 0 10px;
+    font-family: var(--mono); font-size: 12.5px; font-weight: 500;
+    letter-spacing: .05em; color: var(--dim); }
+  .w-n { background: var(--s3); color: var(--text); border-radius: 999px; padding: 1px 8px; }
+  .w-quiet { color: var(--dim); font-size: 14px; }
+  .w-needs { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; }
+  .w-need { background: var(--sel); border-radius: var(--r); padding: 16px 18px 14px; position: relative; }
+  .w-need::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px;
+    background: var(--accent); border-radius: var(--r) 0 0 var(--r); opacity: .8; }
+  .w-kind { display: flex; gap: 10px; align-items: center; margin-bottom: 6px;
+    font-family: var(--mono); font-size: 12.5px; color: var(--hot); }
+  .w-age { color: var(--dim); }
+  .w-q { margin: 0 0 4px; font-size: 16px; font-weight: 500; color: var(--text); }
+  .w-sub { font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .w-detail { margin-top: 8px; font-size: 12.5px; color: var(--muted); }
+  .w-ev { margin: 10px 0 0; padding: 8px 10px; background: var(--s1);
+    border-left: 2px solid var(--line); border-radius: 6px;
+    font-family: var(--mono); font-size: 12.5px; color: var(--muted); white-space: pre-wrap; }
+  .w-options { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .w-open { margin-top: 10px; background: none; border: none; color: var(--dim);
+    font-family: var(--mono); font-size: 12.5px; cursor: pointer; padding: 6px 0; }
+  .w-list { list-style: none; }
+  .w-exc, .w-live { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline;
+    font-size: 14px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .w-strong { color: var(--text); }
+  .w-why { font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .w-who { font-family: var(--mono); font-size: 12.5px; color: var(--blue); text-decoration: none; }
+  .w-link { background: none; border: none; color: var(--text); font: inherit;
+    cursor: pointer; padding: 0; text-align: left; }
+  .w-restore { margin-left: auto; }
+  /* A face drawn below the window's own: labelled, so one page can hold
+     every surface the board draws without pretending they share a screen. */
+  .face-cap { font-family: var(--mono); font-size: 12.5px; color: var(--hot);
+    letter-spacing: .05em; margin: 34px 0 14px; padding-top: 18px; border-top: 1px solid var(--line); }
+
   .dr-scrim { position: fixed; inset: 0; background: rgba(4,5,10,.55); z-index: 40; }
   .dr {
     position: fixed; width: min(520px, calc(100% - var(--safe-right) - var(--safe-left)));
@@ -295,6 +339,86 @@
     <button class="b-done">done</button>
   </div>
 
+  <div class="w-switch" role="tablist" aria-label="which board">
+    <button class="w-tab" role="tab" aria-selected="true">window</button>
+    <button class="w-tab" role="tab" aria-selected="false">full board</button>
+    <button class="w-tab" role="tab" aria-selected="false">archived</button>
+  </div>
+
+  <!-- The window: needs, exceptions, live, next. The front door on every
+       address this page is opened at. -->
+  <section class="w-window" aria-label="the board window">
+    <section aria-labelledby="d-needs">
+      <h2 class="w-h" id="d-needs">needs you <span class="w-n">2</span></h2>
+      <div class="w-needs">
+        <article class="w-need">
+          <div class="w-kind">a look <span class="w-age">waiting 1h</span></div>
+          <h3 class="w-q">Approve PR #3086 or say what to change</h3>
+          <div class="w-sub">the retrofit's board window &middot; lead</div>
+          <div class="w-detail"><a class="b-door" href="./web-session.html">look at <span class="nm">PR #3086</span></a></div>
+          <blockquote class="w-ev">212 client tests pass; the window draws needs, exceptions, live, next</blockquote>
+          <div class="w-detail"><span class="b-chip blue">evidence verified</span></div>
+          <div class="b-do">
+            <button class="b-btn b-ok">approve</button>
+            <input class="b-in" placeholder="what to change" aria-label="what to change (sent back with it)">
+            <button class="b-btn b-no">send back</button>
+            <a class="b-door" href="./web-session.html">discuss</a>
+          </div>
+          <button class="w-open">open the row</button>
+        </article>
+        <article class="w-need">
+          <div class="w-kind">decision <span class="w-age">waiting 3h</span></div>
+          <h3 class="w-q">Ship the window with the full board one toggle away?</h3>
+          <div class="w-sub">retrofit the task board &middot; lead</div>
+          <blockquote class="w-ev">the window drew 2 needs, 1 exception, 1 live line and 1 next row</blockquote>
+          <div class="w-detail"><span class="b-chip blue">evidence verified</span></div>
+          <div class="w-options" role="group" aria-label="answer with one of">
+            <button class="b-btn b-plain">ship it</button>
+            <button class="b-btn b-plain">iterate on the look first</button>
+          </div>
+          <div class="b-do">
+            <input class="b-in" placeholder="note (optional)" aria-label="the note sent with the answer">
+            <a class="b-door" href="./web-session.html">discuss</a>
+          </div>
+          <button class="w-open">open the row</button>
+        </article>
+      </div>
+    </section>
+
+    <section aria-labelledby="d-exc">
+      <h2 class="w-h" id="d-exc">exceptions <span class="w-n">2</span></h2>
+      <ul class="w-list">
+        <li class="w-exc"><button class="w-link">fold the session rail</button>
+          <span class="w-why">no change since 19:36</span></li>
+        <li class="w-exc"><span class="w-strong">reviewer</span>
+          <span class="w-why">holds no row - feed it or despawn it</span></li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="d-live">
+      <h2 class="w-h" id="d-live">live <span class="w-n">1</span></h2>
+      <ul class="w-list">
+        <li class="w-live"><a class="w-who" href="./web-session.html">lead</a>
+          <span class="w-strong">fold the session rail</span>
+          <span class="w-why">since 00:36</span>
+          <span class="w-why">no artifact touched</span>
+          <span class="w-why">next 2h</span>
+          <span class="w-why">and 1 more held</span></li>
+      </ul>
+    </section>
+
+    <section aria-labelledby="d-next">
+      <h2 class="w-h" id="d-next">next <span class="w-n">3</span></h2>
+      <ol class="w-list">
+        <li><button class="w-link">write the archive toggle's test</button> <span class="w-why">2h</span></li>
+        <li><button class="w-link">watch the live board</button> <span class="w-why">standing &middot; every 1d</span></li>
+        <li><button class="w-link">draw the chase's cadence check</button> <span class="w-why">1d</span></li>
+      </ol>
+    </section>
+  </section>
+
+  <div class="face-cap">the full board, one toggle away</div>
+
   <section class="b-you" aria-label="waiting on you">
     <h2>waiting on you <span class="b-n">2</span></h2>
     <div class="b-asks">
@@ -334,7 +458,7 @@
         </div>
         <div class="b-meta">
           <span class="b-meta"><span class="b-muted">unclaimed</span></span>
-          <span class="b-chips"><span class="b-chip dim">no movement 5h</span></span>
+          <span class="b-chips"><span class="b-chip dim">no change 5h</span></span>
         </div>
         <div class="b-last">
           <span class="b-prog"><span class="b-time">worked 0s</span></span>
@@ -521,7 +645,7 @@
           <span class="b-owner"><span class="b-ava">F</span>forge</span>
           <button class="b-chip blue b-epic-pill">&#8627; the board walk</button>
           <a href="#">spec</a><a href="#">#1886</a>
-          <span class="b-chips"><span class="b-chip dim">attempt 1</span></span>
+          <span class="b-chips"><span class="b-chip dim">no change 4h</span></span>
         </div>
         <div class="b-last">
           <span class="b-prog">
@@ -718,7 +842,7 @@
         </div>
         <div class="b-meta">
           <span class="b-owner"><span class="b-ava">S</span>steward</span>
-          <span class="b-chips"><span class="b-chip dim">attempt 2</span></span>
+          <span class="b-chips"><span class="b-chip dim">no change 5h</span></span>
         </div>
         <div class="b-last">
           <span class="b-prog"><span class="b-time">worked 3h</span></span>
@@ -815,6 +939,19 @@
     <button class="b-pick">no epic &#9662;</button>
     <button class="b-btn b-add">+ add</button>
   </div>
+
+  <div class="face-cap">the archive, one toggle away</div>
+
+  <ul class="w-list" aria-label="closed rows">
+    <li class="w-exc"><span class="w-strong">rate the chase's cadence</span>
+      <span class="w-why">completed</span>
+      <span class="w-why">closed, not yet archived</span>
+      <button class="b-btn b-plain w-restore">restore</button></li>
+    <li class="w-exc"><span class="w-strong">an October row that ended</span>
+      <span class="w-why">completed</span>
+      <span class="w-why">archived 2d ago</span>
+      <button class="b-btn b-plain w-restore">restore</button></li>
+  </ul>
 
   <!-- The row's own page, which a click opens: what the row is, what it is
        waiting on - answerable here - and where it has been. -->

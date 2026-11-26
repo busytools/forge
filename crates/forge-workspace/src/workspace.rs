@@ -7974,6 +7974,51 @@ impl Workspace {
                         }
                     }
                 }
+                Command::TaskDetail { project, id } => {
+                    // **One row whole, on demand.** The board's bulk read
+                    // carries the window's fields only, so a drawer asks for
+                    // the brief and the history when it opens; the answer is
+                    // a `task_detail` update on the project's lead seat, the
+                    // same route every other board announcement takes.
+                    let id = TaskId::from(id.as_str());
+                    let now = SystemTime::now();
+                    let row = self
+                        .board_rows(&project, now, crate::board::DEFAULT_STALE_SECS)
+                        .into_iter()
+                        .find(|row| row.task.id == id)
+                        .or_else(|| {
+                            self.archived_tasks_for_project(&project)
+                                .into_iter()
+                                .find(|task| task.id == id)
+                                .map(|task| crate::board::BoardRow {
+                                    task,
+                                    worked_secs: 0,
+                                    updated_secs_ago: 0,
+                                    owner_live: true,
+                                    marks: crate::board::Marks::default(),
+                                    rollup: None,
+                                    parent_subject: None,
+                                    history: Vec::new(),
+                                    history_total: 0,
+                                })
+                        });
+                    match self.lead_slot_for_project(&project) {
+                        Some(key) => {
+                            let _ = self.update_tx.send(SessionUpdate::TaskDetail {
+                                key,
+                                project: project.clone(),
+                                row,
+                            });
+                        }
+                        None => {
+                            tracing::debug!(
+                                target: "forge_workspace::tasks",
+                                project = %project,
+                                "a row-detail read named a project no project carries",
+                            );
+                        }
+                    }
+                }
                 Command::TaskAssign { project, id, owner } => {
                     // A project this forge does not carry has no seat to name
                     // and no row to hold: an assignment to it is refused

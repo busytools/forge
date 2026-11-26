@@ -10819,33 +10819,31 @@ mod lead_charter_tests {
     /// when it is merged" would reproduce the 36-completed-rows board the
     /// tool text was fixed to prevent.
     #[test]
-    fn the_charter_carries_the_landing_rule() {
-        for (clause, why) in [
-            (
-                "a landed row with no children and no epic above it is deleted in the same \
-                 pass (`tasks__delete`), never left completed, while a landed row under an \
-                 epic - open or already terminal - is completed and left terminal, because \
-                 the epic reads `to close` only once every child is terminal (a verify=user \
-                 child parks in waiting on the user and counts only once the user approves)",
-                "the row-true bullet carries the delete and its epic carve-out together",
-            ),
-            (
-                "`tasks__delete` clears a row created in error, and a landed row with no \
-                 children and no epic above it - never a child of an open epic, whose terminal \
-                 state its epic's close depends on",
-                "the close-epics bullet states what the delete is for",
-            ),
-            (
-                "completing the ROOT row closes it and archives the tree",
-                "the archive that closes an epic is pinned, so the carve-out's close signal \
-                 has an action behind it",
-            ),
-        ] {
-            assert!(
-                DEFAULT_LEAD_CHARTER.contains(clause),
-                "the lead charter does not carry the landing rule ({why}): {clause}",
-            );
-        }
+    fn the_charter_points_at_the_tools_for_the_landing_rule() {
+        // **One shipped statement, not two.** The delete-on-landing rule and
+        // its epic carve-out live in the `tasks__update` and `tasks__delete`
+        // descriptions, where a caller meets them at the moment it acts; a
+        // test beside those pins the clauses. The charter carries the pointer
+        // and the lead's own obligation, and restating the mechanics here is
+        // the drift this test forbids.
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("**The `tasks__*` tool descriptions are the board's rules.**"),
+            "the charter names the tool descriptions as the board's rules",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER.contains("state the completion's evidence before the row lands"),
+            "the charter keeps the lead's obligation to end a row with its evidence",
+        );
+        assert!(
+            !DEFAULT_LEAD_CHARTER.contains("is deleted in the same pass"),
+            "the charter restates the delete-on-landing rule the tools own",
+        );
+        assert!(
+            DEFAULT_LEAD_CHARTER
+                .contains("completing the ROOT row closes it and archives the tree"),
+            "the close-epics bullet keeps the archive that closes an epic",
+        );
     }
 
     /// Every client text box takes dictation, and a lead planning client
@@ -11231,7 +11229,7 @@ mod lead_charter_tests {
     fn lead_charter_carries_the_backlog_rule() {
         for clause in [
             "a ready row is a dispatch candidate, not work already queued to start",
-            "Dispatch is your act: keep the row owned (the sweep dispatches only unowned rows) \
+            "Dispatch is your act: keep the row owned (the drive speaks about unowned work) \
              to set it aside",
         ] {
             assert!(
@@ -11253,14 +11251,17 @@ mod lead_charter_tests {
     /// advice sits above that section, so the scan leaves it alone.
     #[test]
     fn the_charter_carries_the_board_sweep() {
-        const SWEEP: &str = "**Sweep the board at the start of every session, when forge injects \
-             a sweep (it does when you have been idle, at most once every two hours, or six \
-             hours after the last sweep), and on demand.** First `cron__list` and delete any \
-             sweep cron an older version of this charter had you create (`cron__delete`) - it \
-             keeps firing its sweep prompt into this session until it is removed. Never create a \
-             standing sweep cron. End every sweep with the next three lead-owned backlog rows, \
-             each with one line on why it comes next; they are proposals, not dispatches, and \
-             only you start a worker on one.";
+        const SWEEP: &str = "**Sweep the board at the start of every session, when the drive \
+             nudges you, and on demand.** The drive speaks when you have stopped with work on \
+             the board - a row you hold in progress, ready and unowned work, a row blocked on \
+             one of yours, or a live worker holding nothing - carrying those facts and one ask: \
+             continue, hand off, or say why not. It never speaks for a project whose only claim \
+             on you is a wait on the user. First `cron__list` and delete any sweep cron an older \
+             version of this charter had you create (`cron__delete`) - it keeps firing its sweep \
+             prompt into this session until it is removed. Never create a standing sweep cron. \
+             End every sweep with the next three lead-owned backlog rows, each with one line on \
+             why it comes next; they are proposals, not dispatches, and only you start a worker \
+             on one.";
         const CLEANUP: &str = "First `cron__list` and delete any sweep cron an older version of \
              this charter had you create (`cron__delete`)";
         const REASON: &str =
@@ -11290,12 +11291,19 @@ mod lead_charter_tests {
             (CLEANUP, "the old standing entry is removed, not only forbidden"),
             (REASON, "the reason the cleanup is owed"),
             (
-                "when forge injects a sweep (it does when you have been idle, at most once every \
-                 two hours, or six hours after the last sweep)",
-                "the injected trigger, its throttle and its six-hour fallback",
+                "when you have stopped with work on the board - a row you hold in progress, \
+                 ready and unowned work, a row blocked on one of yours, or a live worker \
+                 holding nothing",
+                "the drive's four triggers",
             ),
-            ("at most once every two hours", "the idle throttle"),
-            ("six hours after the last sweep", "the fallback is measured from the last sweep"),
+            (
+                "It never speaks for a project whose only claim on you is a wait on the user",
+                "a wait on the user is never chased",
+            ),
+            (
+                "carrying those facts and one ask: continue, hand off, or say why not",
+                "the nudge's content and its one ask",
+            ),
             ("End every sweep with the next three lead-owned backlog rows", "the next-pick rule"),
             ("each with one line on why it comes next", "each pick says why it comes next"),
             ("they are proposals, not dispatches", "a pick is not a dispatch"),

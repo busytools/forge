@@ -335,7 +335,18 @@
       history.pushState({ ...heldState(), [DRAWER_ENTRY]: true }, '', location.href);
     }
     opened = id;
+    // **The brief and the history load on demand.** The board's bulk read
+    // carries the window's fields only, so the drawer asks for this row whole
+    // once; the answer lands as a `task_detail` frame and the drawer draws it.
+    if (!askedDetail.includes(id)) {
+      askedDetail.push(id);
+      act({ task_detail: { project, id } });
+    }
   }
+
+  /** The rows this page has already asked for whole, so a second opening
+   *  does not repeat the read. An array, not a Set: nothing draws it. */
+  const askedDetail: string[] = [];
 
   /** Close the drawer and hand the keyboard back to the card it opened from. */
   function closeDrawer(): void {

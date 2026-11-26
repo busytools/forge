@@ -20,11 +20,13 @@ import type { Store } from '../stores';
 import {
   applyConnectors,
   applyCrons,
+  applyDetail,
   applyTasks,
   boardFrom,
   connectorsFrame,
   coversBoard,
   cronsFrame,
+  taskDetailFrame,
   tasksFrame,
   type BoardRead,
   type BoardWire,
@@ -260,6 +262,21 @@ function boardStore(connection: Connection): Readable<BoardRead> {
           if (reading) appliedDuringRead = true;
           return;
         }
+      } else if (Object.keys(message.update).includes('task_detail')) {
+        // **A drawer's own ask, applied where it lands.** The frame carries
+        // one row whole - its brief and its history - so the drawer opens
+        // from the frame rather than a whole board read: a pending row is
+        // amended, and one the bulk board already dropped is left to the
+        // drawer that asked.
+        const detail = taskDetailFrame(message.update);
+        const applied =
+          detail === null ? null : applyDetail(drawn, detail.project, detail.row ?? null);
+        if (applied !== null) {
+          drawn = applied;
+          view.set({ wire: drawn, refused: null });
+          if (reading) appliedDuringRead = true;
+        }
+        return;
       } else {
         const crons = cronsFrame(message.update);
         if (crons !== null) {

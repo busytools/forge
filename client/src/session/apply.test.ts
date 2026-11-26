@@ -1785,6 +1785,7 @@ const EVERY_VARIANT = [
   'background_tasks_changed',
   'work_changed',
   'tasks_changed',
+  'task_detail',
   'cron_schedules_changed',
   'connector_subscriptions_changed',
   'slash_commands_changed',
@@ -1899,9 +1900,9 @@ describe('the variant list', () => {
     // raise it in the same edit that adds a variant, as the plan says.
     expect(
       EVERY_VARIANT.length,
-      'the census no longer carries every variant the enum declares (82 of them): a truncated ' +
+      'the census no longer carries every variant the enum declares (83 of them): a truncated ' +
         'census leaves the assertions below checking only the names it still has',
-    ).toBe(82);
+    ).toBe(83);
   });
 
   it('classifies every variant the core can send', () => {
