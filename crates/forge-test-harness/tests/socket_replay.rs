@@ -294,7 +294,7 @@ census!(OutdatedReasonWire,
     outdated_reason_census, OUTDATED_REASON_VARIANTS);
 
 census!(Subject,
-    [Home struct, Board struct, Session tuple, Usage struct, DictateModels struct,
+    [Home struct, Board struct, Archived struct, Session tuple, Usage struct, DictateModels struct,
      Extensions struct, Dictate struct],
     subject_census, SUBJECT_VARIANTS);
 
@@ -365,6 +365,7 @@ census!(Command,
         SpawnProject struct,
         TaskVerdict struct, TaskAnswer struct, TaskRank struct, TaskAssign struct,
         TaskCreate struct, TaskMove struct, TaskReopen struct, TaskReserve struct,
+        TaskRestore struct,
         DeliverPeerPrompt struct,
         SpawnWorker struct, CloseWorker struct, DespawnWorker struct,
         DeliverWorkerPrompt struct, DeliverWorkerPromptToLead struct,
@@ -976,6 +977,7 @@ fn frames_record() -> Value {
     let subjects = [
         Subject::Home,
         Subject::Board,
+        Subject::Archived,
         Subject::Usage,
         Subject::Session(seat.clone()),
         Subject::DictateModels,

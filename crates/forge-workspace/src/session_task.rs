@@ -3049,6 +3049,7 @@ pub(crate) fn execute_command_via_handle(
         | Command::TaskMove { .. }
         | Command::TaskReopen { .. }
         | Command::TaskReserve { .. }
+        | Command::TaskRestore { .. }
         | Command::PluginInstall { .. }
         | Command::PluginUpdate { .. }
         | Command::PluginUpdateAll

@@ -700,6 +700,13 @@ pub enum Command {
         id: String,
         reserved: bool,
     },
+    /// The user takes a row back off the archive: it and the tree it took
+    /// return to the live set, terminal, so a reopen or a move can reach
+    /// it again.
+    TaskRestore {
+        project: String,
+        id: String,
+    },
     /// Cross-project delivery (#114 v1). Dispatched by the
     /// `mcp__forge__agents__send_message` tool impl via
     /// `WorkspaceFacade::deliver_peer_prompt`. Routed to
@@ -1083,6 +1090,7 @@ impl Command {
             | Self::TaskMove { .. }
             | Self::TaskReopen { .. }
             | Self::TaskReserve { .. }
+            | Self::TaskRestore { .. }
             | Self::PluginInstall { .. }
             | Self::PluginUpdate { .. }
             | Self::PluginUpdateAll
@@ -1394,6 +1402,11 @@ impl std::fmt::Debug for Command {
                 .field("project", project)
                 .field("id", id)
                 .field("reserved", reserved)
+                .finish_non_exhaustive(),
+            Self::TaskRestore { project, id } => f
+                .debug_struct("TaskRestore")
+                .field("project", project)
+                .field("id", id)
                 .finish_non_exhaustive(),
             Self::PluginInstall { plugin_id, scope, project } => f
                 .debug_struct("PluginInstall")

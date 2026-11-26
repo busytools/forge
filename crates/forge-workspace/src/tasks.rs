@@ -8,6 +8,7 @@
 //! a cancel of a row waiting on the user carries the reason it records,
 //! and every status change lands in the history.
 
+use std::collections::HashSet;
 use std::time::SystemTime;
 
 use forge_primitives::tasks::Verify;
@@ -88,6 +89,13 @@ pub(crate) enum MoveError {
     /// attested look to strike.
     NotAttested,
 }
+
+/// How long a terminal tree stays in the live set before the retention
+/// archives it. The bulk board hides terminal rows at once; this window is
+/// only how long the row stays in the live set and its store, so a
+/// just-finished row can be read, linked or reopened without a restore
+/// first. A tree under a live epic waits for the epic, which closes it.
+pub(crate) const RETENTION_SECS: u64 = 24 * 3_600;
 
 /// Whether a row is parked on the user's own look - the verification wait
 /// the gate lands a user-bound completion on. The completion guard reads
@@ -1133,6 +1141,167 @@ impl Workspace {
         Ok(removed)
     }
 
+    /// Archive every terminal tree that has stood still past
+    /// [`RETENTION_SECS`], returning the rows taken. A top-level row goes
+    /// only with a tree in which every row has ended: an open child holds
+    /// its parent where it is, and a completed child stays under its live
+    /// epic because the epic's rollup reads it. Called from the same sweep
+    /// as the chase, so a row leaves without anyone asking.
+    pub(crate) fn retain_terminal_rows(&self, now: SystemTime) -> Vec<Task> {
+        let mut archived = Vec::new();
+        let projects: Vec<String> =
+            self.list_projects().into_iter().map(|view| view.name).collect();
+        for project in projects {
+            let age = |task: &Task| {
+                now.duration_since(task.updated_at).map_or(0, |elapsed| elapsed.as_secs())
+            };
+            let taken = self.with_tasks_mut(|tasks| {
+                let mut children: std::collections::HashMap<&TaskId, Vec<usize>> =
+                    std::collections::HashMap::new();
+                for (index, task) in tasks.iter().enumerate() {
+                    if task.project_name == project
+                        && let Some(parent) = &task.parent
+                    {
+                        children.entry(parent).or_default().push(index);
+                    }
+                }
+                let mut doomed: Vec<TaskId> = Vec::new();
+                for task in tasks.iter() {
+                    if task.project_name != project
+                        || task.parent.is_some()
+                        || !task.status.is_terminal()
+                        || age(task) < RETENTION_SECS
+                    {
+                        continue;
+                    }
+                    let mut tree = vec![task.id.clone()];
+                    let mut whole = true;
+                    let mut cursor = 0;
+                    while cursor < tree.len() && whole {
+                        let current = tree[cursor].clone();
+                        cursor += 1;
+                        for index in children.get(&current).into_iter().flatten() {
+                            if !tasks[*index].status.is_terminal() {
+                                whole = false;
+                                break;
+                            }
+                            tree.push(tasks[*index].id.clone());
+                        }
+                    }
+                    if whole {
+                        doomed.extend(tree);
+                    }
+                }
+                if doomed.is_empty() {
+                    return Vec::new();
+                }
+                let doomed: HashSet<TaskId> = doomed.into_iter().collect();
+                let mut taken = Vec::new();
+                tasks.retain(|task| {
+                    let taking = task.project_name == project && doomed.contains(&task.id);
+                    if taking {
+                        taken.push(task.clone());
+                    }
+                    !taking
+                });
+                for task in &mut taken {
+                    task.archived_at = Some(now);
+                    task.version = task.version.saturating_add(1);
+                    self.delete_stored_task(&project, &task.id);
+                }
+                taken
+            });
+            if taken.is_empty() {
+                continue;
+            }
+            if let Some(db) = self.db.lock().as_ref()
+                && let Err(error) = crate::store::task_archive::append(db, &taken)
+            {
+                tracing::error!(
+                    target: "forge_workspace::tasks",
+                    project = %project,
+                    %error,
+                    "retaining a terminal tree failed to archive it; the rows are gone from the live set",
+                );
+            }
+            self.announce_tasks_changed(&project);
+            archived.extend(taken);
+        }
+        archived
+    }
+
+    /// A project's archived rows, oldest archive first.
+    pub fn archived_tasks_for_project(&self, project_name: &str) -> Vec<Task> {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else { return Vec::new() };
+        let mut rows = match crate::store::task_archive::list_for_project(db, project_name) {
+            Ok(rows) => rows,
+            Err(error) => {
+                tracing::error!(
+                    target: "forge_workspace::tasks",
+                    project = %project_name,
+                    %error,
+                    "reading the task archive failed; the closed view draws live rows only",
+                );
+                return Vec::new();
+            }
+        };
+        rows.sort_by_key(|task| task.archived_at);
+        rows
+    }
+
+    /// Bring an archived row and the tree it took back to the live set,
+    /// with its stamp cleared. The row returns terminal: the bulk board
+    /// still keeps it out of the way, and the reopened door is a move. An
+    /// id the archive does not hold is absent, not an error.
+    pub(crate) fn restore_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+    ) -> Result<Option<Task>, MoveError> {
+        let archived = self.archived_tasks_for_project(project_name);
+        if !archived.iter().any(|task| task.id == *id) {
+            return Ok(None);
+        }
+        let mut tree: Vec<TaskId> = vec![id.clone()];
+        let mut cursor = 0;
+        while cursor < tree.len() {
+            let current = tree[cursor].clone();
+            cursor += 1;
+            for task in &archived {
+                if task.parent.as_ref() == Some(&current) && !tree.contains(&task.id) {
+                    tree.push(task.id.clone());
+                }
+            }
+        }
+        let mut restored: Vec<Task> =
+            archived.into_iter().filter(|task| tree.contains(&task.id)).collect();
+        if let Some(db) = self.db.lock().as_ref()
+            && let Err(error) = crate::store::task_archive::remove(db, &restored)
+        {
+            tracing::error!(
+                target: "forge_workspace::tasks",
+                project = %project_name,
+                %error,
+                "restoring a row failed to take it off the archive; it may read twice",
+            );
+        }
+        let at = SystemTime::now();
+        for task in &mut restored {
+            task.archived_at = None;
+            task.version = task.version.saturating_add(1);
+            task.updated_at = at;
+        }
+        self.with_tasks_mut(|tasks| {
+            for task in &restored {
+                self.persist_task(task);
+                tasks.push(task.clone());
+            }
+        });
+        self.announce_tasks_changed(project_name);
+        Ok(restored.into_iter().find(|task| task.id == *id))
+    }
+
     /// Tell every view the project's task set moved, as the set the write
     /// just left. It routes on the project's lead seat, which is the seat a
     /// project-scoped section belongs to; a name no project carries has no
@@ -1244,6 +1413,23 @@ mod tests {
             Ok(SessionUpdate::TasksChanged { key, tasks }) => (key, tasks),
             other => panic!("expected a TasksChanged on the stream, got {other:?}"),
         }
+    }
+
+    /// The LAST `TasksChanged` a test's stream holds: every task write
+    /// announces its project's set, so the frame a test is asking about is
+    /// the one its own write left, not the creation that came before it.
+    fn last_tasks_changed(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<SeatUpdate>,
+    ) -> (SessionSlot, Vec<Task>) {
+        let mut last = None;
+        while let Ok(frame) = rx.try_recv() {
+            if let SessionUpdate::TasksChanged { key, tasks } =
+                std::sync::Arc::unwrap_or_clone(frame.update)
+            {
+                last = Some((key, tasks));
+            }
+        }
+        last.expect("the stream holds a TasksChanged")
     }
 
     fn subjects(tasks: &[Task]) -> Vec<String> {
@@ -3419,6 +3605,145 @@ mod tests {
         let archived = archived_of(&ws, "proj");
         assert_eq!(archived.len(), 2, "the epic and its child went to the archive: {archived:?}");
         assert!(archived.iter().all(|t| t.archived_at.is_some()), "each row carries its stamp");
+    }
+
+    /// A terminal tree stands quiet past the retention window and then
+    /// leaves the live board on its own, stamped into the archive - the
+    /// rows were history the moment they ended, and the window is only how
+    /// long they stay readable before the archive takes them.
+    #[test]
+    fn a_terminal_tree_past_the_window_archives_itself() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-retain");
+        install_db(&ws, dir.path());
+        let mut root = sample_task("epic", "proj");
+        root.status = TaskStatus::Completed;
+        ws.push_task(root);
+        let mut child = sample_task_with_parent("child", Some("epic"), "proj");
+        child.status = TaskStatus::Completed;
+        ws.push_task(child);
+
+        let now = std::time::SystemTime::UNIX_EPOCH
+            + std::time::Duration::from_secs(crate::tasks::RETENTION_SECS + 1);
+        let archived = ws.retain_terminal_rows(now);
+        assert_eq!(archived.len(), 2, "the whole tree leaves together: {archived:?}");
+        assert!(ws.tasks_for_project("proj").is_empty(), "nothing terminal is left on the board");
+        let kept = archived_of(&ws, "proj");
+        assert_eq!(kept.len(), 2, "both rows are in the archive: {kept:?}");
+        assert!(kept.iter().all(|t| t.archived_at == Some(now)), "each row carries the stamp");
+        assert!(kept.iter().all(|t| t.version == 1), "archiving is a write");
+        let (_, announced) = last_tasks_changed(&mut rx);
+        assert!(announced.is_empty(), "the board is told the row left: {announced:?}");
+    }
+
+    /// A row inside its window stays: the retention is a delay, not an
+    /// instant sweep.
+    #[test]
+    fn a_terminal_row_inside_its_window_stays() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-retain-window");
+        install_db(&ws, dir.path());
+        let mut done = sample_task("done", "proj");
+        done.status = TaskStatus::Completed;
+        done.updated_at = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(100);
+        ws.push_task(done);
+
+        let now = std::time::SystemTime::UNIX_EPOCH
+            + std::time::Duration::from_secs(100 + crate::tasks::RETENTION_SECS - 1);
+        assert!(ws.retain_terminal_rows(now).is_empty(), "the window has not passed");
+        assert_eq!(ws.tasks_for_project("proj").len(), 1, "the row is still live");
+        assert!(archived_of(&ws, "proj").is_empty(), "and not archived");
+    }
+
+    /// A terminal root with an open child is still a tree in play: the
+    /// archive never takes a parent out from under work that has not
+    /// ended.
+    #[test]
+    fn a_terminal_root_with_an_open_child_stays() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-retain-open");
+        install_db(&ws, dir.path());
+        let mut root = sample_task("epic", "proj");
+        root.status = TaskStatus::Canceled;
+        ws.push_task(root);
+        ws.push_task(sample_task_with_parent("child", Some("epic"), "proj"));
+
+        let now = std::time::SystemTime::UNIX_EPOCH
+            + std::time::Duration::from_secs(crate::tasks::RETENTION_SECS + 1);
+        assert!(
+            ws.retain_terminal_rows(now).is_empty(),
+            "an open child holds the tree where it is",
+        );
+        assert_eq!(ws.tasks_for_project("proj").len(), 2, "nothing moved");
+    }
+
+    /// A completed child of a live epic stays: the epic's rollup reads it
+    /// until the epic itself closes.
+    #[test]
+    fn a_completed_child_of_a_live_epic_stays_live() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-retain-child");
+        install_db(&ws, dir.path());
+        ws.push_task(sample_task("epic", "proj"));
+        let mut child = sample_task_with_parent("child", Some("epic"), "proj");
+        child.status = TaskStatus::Completed;
+        ws.push_task(child);
+
+        let now = std::time::SystemTime::UNIX_EPOCH
+            + std::time::Duration::from_secs(crate::tasks::RETENTION_SECS + 1);
+        assert!(ws.retain_terminal_rows(now).is_empty(), "the epic still holds its child");
+        assert_eq!(ws.tasks_for_project("proj").len(), 2, "nothing moved");
+    }
+
+    /// A restored tree comes back to the live board whole, with its stamp
+    /// cleared and the write recorded - the archive is a shelf, not a
+    /// grave.
+    #[test]
+    fn a_restored_tree_returns_to_the_live_board() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-restore");
+        install_db(&ws, dir.path());
+        ws.push_task(sample_task_with_parent("epic", None, "proj"));
+        ws.push_task(Task {
+            status: TaskStatus::Completed,
+            ..sample_task_with_parent("child", Some("epic"), "proj")
+        });
+        let lead = SessionSlot::lead("TestOrg", "proj");
+        ws.update_task("proj", &TaskId::from("epic"), By::Seat(lead), |task| {
+            task.status = TaskStatus::Completed;
+        })
+        .expect("no refusal");
+        assert!(ws.tasks_for_project("proj").is_empty(), "precondition: the tree is archived");
+
+        let restored = ws
+            .restore_task("proj", &TaskId::from("epic"))
+            .expect("no refusal")
+            .expect("the archive holds the tree");
+        assert_eq!(restored.id, TaskId::from("epic"));
+        assert_eq!(restored.archived_at, None, "the restored row is live again");
+        assert_eq!(ws.tasks_for_project("proj").len(), 2, "the whole tree came back");
+        assert!(archived_of(&ws, "proj").is_empty(), "and left the archive");
+        let (_, announced) = last_tasks_changed(&mut rx);
+        assert_eq!(announced.len(), 2, "the board is told: {announced:?}");
+    }
+
+    #[test]
+    fn restoring_an_id_the_archive_does_not_hold_is_absent() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-restore-absent");
+        install_db(&ws, dir.path());
+
+        assert_eq!(
+            ws.restore_task("proj", &TaskId::from("nope")),
+            Ok(None),
+            "an id the archive does not hold is absent, not an error",
+        );
     }
 
     #[test]

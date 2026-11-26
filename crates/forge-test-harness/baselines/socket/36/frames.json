@@ -108,6 +108,7 @@
     "WorkerStatusChanged": "worker_status_changed"
   },
   "subject": {
+    "Archived": "archived",
     "Board": "board",
     "Dictate": "dictate",
     "DictateModels": "dictate_models",
@@ -182,6 +183,7 @@
     "TaskRank": "task_rank",
     "TaskReopen": "task_reopen",
     "TaskReserve": "task_reserve",
+    "TaskRestore": "task_restore",
     "TaskVerdict": "task_verdict",
     "UpsertReviewThread": "upsert_review_thread",
     "VaultEnrolmentMaterial": "vault_enrolment_material",

@@ -30,6 +30,21 @@ pub fn append(db: &Db, tasks: &[Task]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Take `tasks` back off the archive. A row that is not there is not an
+/// error: the caller read the set it is removing, and a concurrent restore
+/// that already took it leaves nothing to do.
+pub fn remove(db: &Db, tasks: &[Task]) -> anyhow::Result<()> {
+    let txn = db.database().begin_write()?;
+    {
+        let mut table = txn.open_table(TASK_ARCHIVE)?;
+        for task in tasks {
+            table.remove(row_key(task).as_str())?;
+        }
+    }
+    txn.commit()?;
+    Ok(())
+}
+
 /// `project`'s archived rows.
 pub fn list_for_project(db: &Db, project: &str) -> anyhow::Result<Vec<Task>> {
     let txn = db.database().begin_read()?;

@@ -593,10 +593,20 @@ impl Workspace {
                     let Some(workspace) = weak.upgrade() else {
                         return;
                     };
-                    let delivered = workspace.chase_sweep(
-                        &PromptDeliver { workspace: Arc::clone(&workspace) },
-                        SystemTime::now(),
-                    );
+                    let now = SystemTime::now();
+                    // The retention rides the same beat: a terminal tree
+                    // leaves the live set once its window has passed,
+                    // without anyone asking it to.
+                    let retained = workspace.retain_terminal_rows(now);
+                    if !retained.is_empty() {
+                        tracing::debug!(
+                            target: "forge_workspace::tasks",
+                            retained = retained.len(),
+                            "terminal task trees archived by retention",
+                        );
+                    }
+                    let delivered = workspace
+                        .chase_sweep(&PromptDeliver { workspace: Arc::clone(&workspace) }, now);
                     if delivered > 0 {
                         tracing::debug!(
                             target: "forge_workspace::chase",

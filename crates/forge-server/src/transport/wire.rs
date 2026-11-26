@@ -234,6 +234,23 @@ pub struct BoardWire {
     pub projects: Vec<ProjectBoardWire>,
 }
 
+/// The board's closed view, for the page's archived toggle: every
+/// project's terminal rows, the live ones first and the archive after
+/// them. `archived_at` says which shelf a row is on, and `None` means it
+/// has ended but has not reached the archive yet - or was just restored.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ArchivedWire {
+    pub projects: Vec<ProjectArchivedWire>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ProjectArchivedWire {
+    pub project: ProjectBoardIdentity,
+    pub rows: Vec<forge_primitives::tasks::Task>,
+}
+
 /// One project's identity, which is all a board row needs to place it.
 ///
 /// The rest of [`ProjectView`] - its sessions, its accounts, its paths - is
@@ -2367,6 +2384,7 @@ pub(crate) async fn encode_subject_timed(
     match subject {
         Subject::Home => Ok((serde_json::to_value(home(state, surface).await)?, timings)),
         Subject::Board => Ok((serde_json::to_value(board(surface))?, timings)),
+        Subject::Archived => Ok((serde_json::to_value(archived(surface))?, timings)),
         Subject::Session(slot) => {
             let at = std::time::Instant::now();
             let roster = surface.roster();
@@ -2589,6 +2607,20 @@ fn board(surface: &ViewSurface) -> BoardWire {
         });
     }
     BoardWire { projects }
+}
+
+/// The board's closed view: one project's terminal rows, live first and
+/// archived after.
+fn archived(surface: &ViewSurface) -> ArchivedWire {
+    let roster = surface.roster();
+    let mut projects = Vec::with_capacity(roster.projects.len());
+    for project in &roster.projects {
+        projects.push(ProjectArchivedWire {
+            project: ProjectBoardIdentity { org: project.org.clone(), name: project.name.clone() },
+            rows: surface.archived_rows(&project.name),
+        });
+    }
+    ArchivedWire { projects }
 }
 
 /// How long an encode waits for the fold loop to catch up before filling the
@@ -5060,6 +5092,59 @@ mod tests {
             Some(1),
             "the fleet row's total does not match the board's rows: {home}",
         );
+    }
+
+    /// The closed view is its own subject: the bulk board drops a terminal
+    /// row at once, and the archived read carries it with the shelf it is
+    /// on. A page that never opens the toggle pays for none of it.
+    #[tokio::test]
+    async fn the_archived_subject_carries_the_rows_the_board_drops() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.add_task("TestOrg", "proj", "a live row", "w1", None).expect("the task is seeded");
+        let now = std::time::SystemTime::now();
+        fleet.seed_task(forge_primitives::tasks::Task {
+            id: forge_primitives::tasks::TaskId::from("an ended row"),
+            project_name: "proj".to_owned(),
+            subject: "an ended row".to_owned(),
+            active_form: None,
+            detail: None,
+            status: forge_primitives::tasks::TaskStatus::Completed,
+            kind: forge_primitives::tasks::TaskKind::Finite,
+            owner: None,
+            parent: None,
+            waiting_on: None,
+            decision: None,
+            estimate: None,
+            cadence: None,
+            rank: None,
+            verify: None,
+            attested: None,
+            reserved: None,
+            links: Vec::new(),
+            version: 0,
+            archived_at: None,
+            created_at: now,
+            updated_at: now,
+        });
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            settings: crate::transport::settings_channel(),
+            browser_host: None,
+            heartbeat: Heartbeat::default(),
+        };
+        let board = encode_subject(&state, &Subject::Board).await.expect("encode");
+        assert_eq!(board["projects"][0]["rows"].as_array().map(Vec::len), Some(1), "{board}");
+
+        let archived = encode_subject(&state, &Subject::Archived).await.expect("encode");
+        let rows = archived["projects"][0]["rows"].as_array().expect("the rows");
+        assert_eq!(rows.len(), 1, "the closed view carries the ended row: {archived}");
+        assert_eq!(rows[0]["subject"], "an ended row");
+        assert_eq!(rows[0]["status"], "completed");
+        assert!(rows[0]["archived_at"].is_null(), "closed but not archived yet: {archived}");
     }
 
     /// **A board row's owner-gone chip is read from the seat registry on the

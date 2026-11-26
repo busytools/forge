@@ -7938,6 +7938,26 @@ impl Workspace {
                         }
                     }
                 }
+                Command::TaskRestore { project, id } => {
+                    let id = TaskId::from(id.as_str());
+                    match self.restore_task(&project, &id) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => self.board_edit_refused(
+                            "a restore",
+                            "the archive does not hold the row it named",
+                        ),
+                        Err(refused) => {
+                            tracing::debug!(
+                                target: "forge_workspace::tasks",
+                                project = %project,
+                                id = %id.as_str(),
+                                refusal = %refused,
+                                "a board restore was refused",
+                            );
+                            self.board_edit_refused("a restore", &refused.to_string());
+                        }
+                    }
+                }
                 Command::TaskAssign { project, id, owner } => {
                     // A project this forge does not carry has no seat to name
                     // and no row to hold: an assignment to it is refused

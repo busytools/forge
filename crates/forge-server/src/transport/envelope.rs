@@ -30,6 +30,15 @@ pub enum Subject {
     /// and carrying every project's rows made a home read about 708 KB, most
     /// of it board data a home page draws none of (#2517).
     Board,
+    /// Every project's closed rows: the terminal rows still in the live
+    /// set followed by the archive, one read.
+    ///
+    /// A subject of its own because the board page draws it only when its
+    /// toggle is open, and the archive grows without bound: a page that
+    /// never opens the toggle should not carry the history. It hears the
+    /// same task writes the board does, since a write can archive or
+    /// restore a row.
+    Archived,
     Session(SessionSlot),
     /// The token/cost pool, scanned on the ask.
     ///
@@ -121,6 +130,12 @@ impl Subject {
                     || matches!(update, SessionUpdate::TasksChanged { .. })
                     || seat_liveness(update)
             }
+            // The closed view moves when the board's rows do: a task write
+            // is what archives, restores and ends a row. A client holding
+            // the toggle open reads the closed subject once more on the
+            // frame - the frame carries the live set, not the archive, so
+            // this is the one re-read its subject needs.
+            Self::Archived => matches!(update, SessionUpdate::TasksChanged { .. }),
             // **A take is not the seat's.** The `Dictate*` family names the
             // seat it records for, so the slot test alone would keep carrying
             // it here; it belongs to the connection's dictate subscription,

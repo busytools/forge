@@ -13,12 +13,32 @@ use crate::surface::ViewSurface;
 
 impl ViewSurface {
     /// `project`'s live rows, with their derived facts.
+    ///
+    /// Terminal rows are not here: a finished row is history, and the bulk
+    /// board is work in play. They leave the moment they end, and the
+    /// closed view is [`ViewSurface::archived_rows`].
     pub fn board_rows(&self, project: &str) -> Vec<BoardRow> {
-        self.workspace.board_rows(
-            project,
-            SystemTime::now(),
-            forge_workspace::board::DEFAULT_STALE_SECS,
-        )
+        self.workspace
+            .board_rows(project, SystemTime::now(), forge_workspace::board::DEFAULT_STALE_SECS)
+            .into_iter()
+            .filter(|row| !row.task.status.is_terminal())
+            .collect()
+    }
+
+    /// `project`'s closed rows: the terminal rows still in the live set,
+    /// then the archive. One read, because the toggle that opens it wants
+    /// everything that has ended rather than the storage boundary between
+    /// them; a restored row is still terminal and stays here, where the
+    /// reopen door can reach it.
+    pub fn archived_rows(&self, project: &str) -> Vec<forge_primitives::tasks::Task> {
+        let mut rows: Vec<_> = self
+            .workspace
+            .tasks_for_project(project)
+            .into_iter()
+            .filter(|task| task.status.is_terminal())
+            .collect();
+        rows.extend(self.workspace.archived_tasks_for_project(project));
+        rows
     }
 
     /// One row per project, for the fleet page.
@@ -77,6 +97,16 @@ mod tests {
         assert_eq!(rows.len(), 1, "the seeded row is on the board");
         assert!(rows[0].marks.ready, "a pending unowned row is ready");
         assert!(surface.board_rows("other").is_empty(), "and another project sees none");
+
+        // A terminal row leaves the bulk board at once and is reachable
+        // through the closed read instead.
+        workspace
+            .seed_test_task(Task { status: TaskStatus::Completed, ..sample_task("t-2", "forge") });
+        assert_eq!(surface.board_rows("forge").len(), 1, "a finished row is not live work");
+        let closed = surface.archived_rows("forge");
+        assert_eq!(closed.len(), 1, "the closed read carries it: {closed:?}");
+        assert_eq!(closed[0].id, TaskId::from("t-2"));
+        assert!(closed[0].archived_at.is_none(), "it is closed, not archived yet");
 
         let fleet = surface.fleet();
         let row = fleet.iter().find(|row| row.project == "forge").expect("the project's row");
