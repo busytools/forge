@@ -9,7 +9,7 @@
 
 import { followable } from '../home/view';
 import type { BoardWire } from '../wire/board';
-import type { BoardRow, HomeWire, Marks, Task, TaskStatus } from '../wire/home';
+import type { BoardRow, HomeWire, Task, TaskStatus } from '../wire/home';
 
 /** One card on the board, resolved for the markup. */
 export interface BoardCardView {
@@ -211,7 +211,9 @@ export function waitOnUser(task: Task): boolean {
 }
 
 /** The chips a row's marks and its wait imply, in reading order. */
-function chipsOf(task: Task, marks: Marks, updatedSecsAgo: number): BoardCardView['chips'] {
+function chipsOf(row: BoardRow): BoardCardView['chips'] {
+  const task = row.task;
+  const marks = row.marks;
   const chips: BoardCardView['chips'] = [];
   if (task.waiting_on !== null) {
     const wait = task.waiting_on;
@@ -224,19 +226,22 @@ function chipsOf(task: Task, marks: Marks, updatedSecsAgo: number): BoardCardVie
             ? { label: 'waiting on a resource', tone: 'warn' }
             : { label: 'waiting', tone: 'warn' },
     );
-    if (marks.waiting_too_long)
-      chips.push({ label: `waiting ${fmtSecs(updatedSecsAgo)}`, tone: 'bad' });
+    if (marks.overdue) {
+      chips.push({ label: `waiting ${fmtSecs(row.updated_secs_ago)}`, tone: 'bad' });
+    }
   }
-  if (marks.overdue) chips.push({ label: 'overdue', tone: 'bad' });
-  if (marks.no_movement && task.waiting_on === null) {
-    chips.push({ label: `no movement ${fmtSecs(updatedSecsAgo)}`, tone: 'dim' });
+  if (marks.overdue && task.waiting_on === null) chips.push({ label: 'overdue', tone: 'bad' });
+  if (marks.stale && task.waiting_on === null) {
+    chips.push(
+      row.owner_live
+        ? { label: `no change ${fmtSecs(row.updated_secs_ago)}`, tone: 'dim' }
+        : { label: 'owner gone', tone: 'bad' },
+    );
   }
-  if (marks.stale) chips.push({ label: 'owner gone', tone: 'bad' });
   if (marks.in_review) chips.push({ label: 'in review', tone: 'blue' });
   if ((task.attested ?? null) !== null) chips.push({ label: 'lead attested', tone: 'blue' });
   if (marks.to_close) chips.push({ label: 'to close', tone: 'blue' });
   if (task.reserved === 'user') chips.push({ label: 'reserved for you', tone: 'dim' });
-  if (task.attempt > 1) chips.push({ label: `attempt ${task.attempt}`, tone: 'dim' });
   return chips;
 }
 
@@ -334,7 +339,7 @@ function cardView(
     estimate: estimate === null ? null : estimate.words,
     ratio,
     tone,
-    chips: chipsOf(task, row.marks, row.updated_secs_ago),
+    chips: chipsOf(row),
     links: linksOf(task),
     rollup: row.rollup === null ? null : `${row.rollup[0]}/${row.rollup[1]}`,
     updatedAt: task.updated_at.secs_since_epoch,

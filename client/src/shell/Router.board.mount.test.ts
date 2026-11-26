@@ -89,7 +89,8 @@ function boardWithWaiting(): BoardWire {
     rank: null,
     verify: 'user',
     links: [],
-    attempt: 1,
+    kind: 'finite',
+    version: 1,
     archived_at: null,
     created_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
     updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
@@ -104,12 +105,11 @@ function boardWithWaiting(): BoardWire {
             task: waiting,
             worked_secs: 60,
             updated_secs_ago: 60,
+            owner_live: true,
             marks: {
               ready: false,
               in_review: false,
               overdue: false,
-              no_movement: false,
-              waiting_too_long: false,
               stale: false,
               to_close: false,
             },
@@ -162,7 +162,10 @@ describe('a board edit through the router', () => {
     summon([]);
     expect(document.querySelector('.b-top')).not.toBeNull();
     expect(document.body.textContent).toContain('proj');
-    expect(document.body.textContent).toContain('waiting on you');
+    // The window opens on the app's board route: the look is drawn as a card
+    // under "needs you", with the ask itself as its title.
+    expect(document.body.textContent).toContain('needs you');
+    expect(document.body.textContent).toContain('a look');
     expect(document.body.textContent).toContain(LEAD.label);
   });
 

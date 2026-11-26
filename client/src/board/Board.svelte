@@ -9,8 +9,11 @@
   import { ago } from '../components/age';
   import Picker from './Picker.svelte';
   import TaskDrawer from './TaskDrawer.svelte';
+  import Window from './Window.svelte';
   import { applyMoves, boardView, landed } from './view';
   import type { BoardCardView, LaneView, PendingMove } from './view';
+  import { clockOf, windowView } from './window';
+  import type { ArchivedRead } from './archive';
 
   /**
    * One project's board, opened as a takeover: a slim top bar with back and
@@ -30,6 +33,8 @@
     project,
     onact = null,
     notice = null,
+    onarchived = null,
+    initialMode = 'window',
   }: {
     /** The home's read: the seats the owner picker offers and the fleet's
      *  own `onYou` count. The rows are the board's read (#2517). */
@@ -41,7 +46,32 @@
     onact?: ((command: Record<string, Record<string, unknown>>) => void) | null;
     /** The core's last service report, which carries a refused edit's words. */
     notice?: ServiceReport | null;
+    /** The closed view's read, asked when the archived toggle opens. */
+    onarchived?: (() => Promise<ArchivedRead>) | null;
+    /** Which face opens first. The app opens the window; a test that drives
+     *  the lanes' own interactions opens them directly. */
+    initialMode?: 'window' | 'board' | 'archived';
   } = $props();
+
+  /**
+   * Which face of the board is drawn: the WINDOW (the default - what needs
+   * the reader, what looks wrong, who is doing what, what is next), the
+   * FULL board of lanes, or the ARCHIVE of closed rows. The full board and
+   * the archive are one press away, never the front door.
+   */
+  // svelte-ignore state_referenced_locally
+  let mode = $state<'window' | 'board' | 'archived'>(initialMode);
+  let archived = $state<ArchivedRead>({ wire: null, refused: null });
+  let archiveReading = $state(false);
+
+  /** Ask for the closed view, once per opening of the toggle. */
+  async function openArchive(): Promise<void> {
+    mode = 'archived';
+    if (onarchived === null || archiveReading) return;
+    archiveReading = true;
+    archived = await onarchived();
+    archiveReading = false;
+  }
 
   // An empty board before the read lands: the lanes draw nothing, and the
   // markup says which state it is in rather than calling the project unknown.
@@ -228,6 +258,13 @@
     const id = setInterval(() => (nowSecs = Math.floor(Date.now() / 1_000)), 5_000);
     return () => clearInterval(id);
   });
+
+  /** The window's own derivation: needs, exceptions, live, next. Not named
+   *  `window`: that is the global the pop's history and the drop's motion
+   *  read. */
+  const windowed = $derived(
+    windowView(wire, board.wire ?? { projects: [] }, org, project, nowSecs),
+  );
 
   /** A row is live while it is running and wrote within the last two minutes. */
   function live(row: { status: string; updatedAt: number }): boolean {
@@ -561,306 +598,393 @@
     <button type="button" class="b-done" onclick={close}>done</button>
   </div>
 
+  <div class="w-switch" role="tablist" aria-label="which board">
+    <button
+      type="button"
+      role="tab"
+      class="w-tab"
+      aria-selected={mode === 'window'}
+      onclick={() => (mode = 'window')}>window</button
+    >
+    <button
+      type="button"
+      role="tab"
+      class="w-tab"
+      aria-selected={mode === 'board'}
+      onclick={() => (mode = 'board')}>full board</button
+    >
+    <button
+      type="button"
+      role="tab"
+      class="w-tab"
+      aria-selected={mode === 'archived'}
+      onclick={() => void openArchive()}>archived</button
+    >
+  </div>
+
   {#if line !== null}
     <!-- The core's own words for an edit that did not land. A press that did
          nothing and a press the core refused must not read the same. -->
     <p class="b-said {line.severity}" role="status">{line.message}</p>
   {/if}
 
-  {#if view.waiting.length > 0}
-    <section class="b-you" aria-label="waiting on you">
-      <h2>waiting on you <span class="b-n">{view.waiting.length}</span></h2>
-      <div class="b-asks">
-        {#each view.waiting as row (row.id)}
-          <div class="b-ask">
-            <!-- The ASK leads: the wait's own detail (else the row's) is what
+  {#if mode === 'archived'}
+    <section class="w-part w-archive" aria-labelledby="w-archive-h">
+      <h2 id="w-archive-h" class="w-h">closed rows</h2>
+      {#if archived.wire === null}
+        <p class="w-quiet">{archived.refused ?? 'reading the archive...'}</p>
+      {:else}
+        {@const held = archived.wire.projects.find(
+          (entry) => entry.project.org === org && entry.project.name === project,
+        )}
+        {#if held === undefined || held.rows.length === 0}
+          <p class="w-quiet">nothing has closed on this project</p>
+        {:else}
+          <ul class="w-list">
+            {#each held.rows as row (row.id)}
+              <li class="w-exc">
+                <span class="b-mark {markClass(row.status)}" aria-hidden="true">
+                  {#if row.status === 'completed'}<Icon
+                      name="check"
+                    />{:else if row.status === 'failed'}<Icon name="x" />{/if}
+                </span>
+                <span class="w-strong">{row.subject}</span>
+                <span class="w-why">{row.status}</span>
+                {#if row.archived_at !== null}
+                  <span class="w-why">archived {clockOf(row.archived_at.secs_since_epoch)}</span>
+                {:else}
+                  <span class="w-why">closed, not yet archived</span>
+                {/if}
+                <button
+                  type="button"
+                  class="b-btn b-plain w-restore"
+                  onclick={() => act({ task_restore: { project, id: row.id } })}>restore</button
+                >
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      {/if}
+    </section>
+  {:else if mode === 'window'}
+    {#if board.wire === null}
+      <p class="b-empty">{board.refused ?? 'reading the board...'}</p>
+    {:else if !view.known}
+      <p class="b-empty">
+        {project} is not one of this forge's projects - check the name in forge.toml, or open the board
+        from its row on the home.
+      </p>
+    {:else}
+      <Window view={windowed} onact={act} onopen={openDrawer} />
+      {#if windowed.state === 'empty'}
+        <p class="b-empty">
+          nothing owned, nothing waiting - cut a row on the full board, or tell the lead what is
+          next
+        </p>
+      {/if}
+    {/if}
+  {:else}
+    {#if view.waiting.length > 0}
+      <section class="b-you" aria-label="waiting on you">
+        <h2>waiting on you <span class="b-n">{view.waiting.length}</span></h2>
+        <div class="b-asks">
+          {#each view.waiting as row (row.id)}
+            <div class="b-ask">
+              <!-- The ASK leads: the wait's own detail (else the row's) is what
                  the reader is being asked, so it is the card's title; a wait
                  with neither falls back to the state's sentence. The subject
                  is the line under it, never the title. -->
-            <div class="b-q" title={row.ask}>{row.ask}</div>
-            <div class="b-why"><span>{row.subject}</span></div>
-            <div class="b-why">
-              {#if row.owner !== null}<span>{row.owner}</span>{/if}
-              <span>{row.age}</span>
-            </div>
-            {#if row.links.length > 0}
-              <div class="b-detail">
-                {#each row.links as link, at (at)}
-                  {#if at > 0}<span> &middot; </span>{/if}
-                  {#if link.href !== null}
-                    <a class="b-ref" href={link.href} target="_blank" rel="noreferrer"
-                      >{link.label}</a
-                    >
-                  {:else}
-                    <span>{link.label}</span>
-                  {/if}
-                {/each}
+              <div class="b-q" title={row.ask}>{row.ask}</div>
+              <div class="b-why"><span>{row.subject}</span></div>
+              <div class="b-why">
+                {#if row.owner !== null}<span>{row.owner}</span>{/if}
+                <span>{row.age}</span>
               </div>
-            {/if}
-            {#if row.artifact !== null}
-              <div class="b-detail">
-                <!-- The artifact is a DOOR in the card's own control grammar,
+              {#if row.links.length > 0}
+                <div class="b-detail">
+                  {#each row.links as link, at (at)}
+                    {#if at > 0}<span> &middot; </span>{/if}
+                    {#if link.href !== null}
+                      <a class="b-ref" href={link.href} target="_blank" rel="noreferrer"
+                        >{link.label}</a
+                      >
+                    {:else}
+                      <span>{link.label}</span>
+                    {/if}
+                  {/each}
+                </div>
+              {/if}
+              {#if row.artifact !== null}
+                <div class="b-detail">
+                  <!-- The artifact is a DOOR in the card's own control grammar,
                      not a bare anchor in a sentence. -->
-                <a class="b-door" href={row.artifact.href} target="_blank" rel="noreferrer"
-                  >look at <span class="nm">{row.artifact.label}</span></a
-                >
-              </div>
-            {/if}
-            {#if row.verification}
-              <div class="b-do">
-                {#if row.root && row.open > 0}
-                  <!-- A root cannot complete while a child is non-terminal,
+                  <a class="b-door" href={row.artifact.href} target="_blank" rel="noreferrer"
+                    >look at <span class="nm">{row.artifact.label}</span></a
+                  >
+                </div>
+              {/if}
+              {#if row.verification}
+                <div class="b-do">
+                  {#if row.root && row.open > 0}
+                    <!-- A root cannot complete while a child is non-terminal,
                        so an approve here is a press the core refuses. The
                        strip says what it still waits on, and offers only the
                        send-back - which the core does take. A CHILD's approve
                        closes no tree, so nothing is held there. -->
-                  <span class="b-hold"
-                    >{row.rollup} done &middot; {row.open} not finished, and a root closes when its children
-                    are</span
-                  >
-                {:else}
+                    <span class="b-hold"
+                      >{row.rollup} done &middot; {row.open} not finished, and a root closes when its
+                      children are</span
+                    >
+                  {:else}
+                    <button
+                      type="button"
+                      class="b-btn b-ok"
+                      onclick={() => act({ task_verdict: { project, id: row.id, approve: true } })}
+                      >approve</button
+                    >
+                  {/if}
+                  <input
+                    class="b-in"
+                    data-editor="board"
+                    type="text"
+                    placeholder="what to change"
+                    aria-label="what to change (sent back with it)"
+                    bind:value={sendBackWords[row.id]}
+                  />
                   <button
                     type="button"
-                    class="b-btn b-ok"
-                    onclick={() => act({ task_verdict: { project, id: row.id, approve: true } })}
-                    >approve</button
+                    class="b-btn b-no"
+                    onclick={() =>
+                      act({
+                        task_verdict: {
+                          project,
+                          id: row.id,
+                          approve: false,
+                          words: sendBackWords[row.id] ?? '',
+                        },
+                      })}>send back</button
                   >
-                {/if}
-                <input
-                  class="b-in"
-                  data-editor="board"
-                  type="text"
-                  placeholder="what to change"
-                  aria-label="what to change (sent back with it)"
-                  bind:value={sendBackWords[row.id]}
-                />
-                <button
-                  type="button"
-                  class="b-btn b-no"
-                  onclick={() =>
-                    act({
-                      task_verdict: {
-                        project,
-                        id: row.id,
-                        approve: false,
-                        words: sendBackWords[row.id] ?? '',
-                      },
-                    })}>send back</button
-                >
-              </div>
-            {:else}
-              <div class="b-do">
-                <input
-                  class="b-in"
-                  data-editor="board"
-                  type="text"
-                  placeholder="your answer"
-                  bind:value={answers[row.id]}
-                />
-                <button
-                  type="button"
-                  class="b-btn b-plain"
-                  onclick={() =>
-                    act({ task_answer: { project, id: row.id, words: answers[row.id] ?? '' } })}
-                  >answer</button
-                >
-              </div>
-            {/if}
-          </div>
-        {/each}
-      </div>
-    </section>
-  {/if}
-
-  {#if board.wire === null}
-    <!-- The board's own read has not landed: a refusal says why, and the
-         silence is the read in flight. Neither is an unknown project. -->
-    <p class="b-empty">{board.refused ?? 'reading the board...'}</p>
-  {:else if !view.known}
-    <!-- The page is a route and this one names a project the fleet does not
-         carry: it has no rows to draw and no board to edit, and the create
-         line would file a row against nothing. -->
-    <p class="b-empty">
-      {project} is not one of this forge's projects - check the name in forge.toml, or open the board
-      from its row on the home.
-    </p>
-  {:else}
-    {#if view.empty}
-      <p class="b-empty">
-        nothing owned, nothing waiting - cut a row below, or tell the lead what is next
-      </p>
+                </div>
+              {:else}
+                <div class="b-do">
+                  <input
+                    class="b-in"
+                    data-editor="board"
+                    type="text"
+                    placeholder="your answer"
+                    bind:value={answers[row.id]}
+                  />
+                  <button
+                    type="button"
+                    class="b-btn b-plain"
+                    onclick={() =>
+                      act({ task_answer: { project, id: row.id, words: answers[row.id] ?? '' } })}
+                    >answer</button
+                  >
+                </div>
+              {/if}
+            </div>
+          {/each}
+        </div>
+      </section>
     {/if}
 
-    <div class="b-lanes">
-      {#each drawnLanes as lane (lane.key)}
-        <section
-          class="b-lane b-lane-{lane.key}"
-          class:drop={dropLane === lane.key}
-          data-state={lane.key}
-        >
-          <div class="b-cap">
-            <span class="b-lane-nm">{lane.name}</span>
-            <span class="b-count">{lane.count}</span>
-            <span class="b-rule"></span>
-          </div>
-          {#each lane.cards as row (row.id)}
-            <!-- The card itself is the interaction: it takes the pointer for a
+    {#if board.wire === null}
+      <!-- The board's own read has not landed: a refusal says why, and the
+         silence is the read in flight. Neither is an unknown project. -->
+      <p class="b-empty">{board.refused ?? 'reading the board...'}</p>
+    {:else if !view.known}
+      <!-- The page is a route and this one names a project the fleet does not
+         carry: it has no rows to draw and no board to edit, and the create
+         line would file a row against nothing. -->
+      <p class="b-empty">
+        {project} is not one of this forge's projects - check the name in forge.toml, or open the board
+        from its row on the home.
+      </p>
+    {:else}
+      {#if view.empty}
+        <p class="b-empty">
+          nothing owned, nothing waiting - cut a row below, or tell the lead what is next
+        </p>
+      {/if}
+
+      <div class="b-lanes">
+        {#each drawnLanes as lane (lane.key)}
+          <section
+            class="b-lane b-lane-{lane.key}"
+            class:drop={dropLane === lane.key}
+            data-state={lane.key}
+          >
+            <div class="b-cap">
+              <span class="b-lane-nm">{lane.name}</span>
+              <span class="b-count">{lane.count}</span>
+              <span class="b-rule"></span>
+            </div>
+            {#each lane.cards as row (row.id)}
+              <!-- The card itself is the interaction: it takes the pointer for a
                drag and the arrows for the keyboard's half of it - up and down
                re-order the row, left and right move it between lanes - so it
                is focusable without being a widget role. `option` and `button`
                are lies over a card that holds a link and a picker, and hidden
                buttons per card would be more tab stops for the moves the
                arrows already reach. -->
-            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-            <article
-              class="b-card"
-              class:dragging={dragging?.id === row.id}
-              class:epic={row.rollup !== null}
-              class:tree={row.epic !== null}
-              data-id={row.id}
-              tabindex="0"
-              onpointerdown={(event) => down(event, row)}
-              onkeydown={(event) => keyMove(event, row)}
-            >
-              <div class="b-row1">
-                <span class="b-mark {markClass(row.status)}" aria-hidden="true">
-                  {#if row.status === 'completed'}<Icon
-                      name="check"
-                    />{:else if row.status === 'failed'}<Icon name="x" />{/if}
-                </span>
-                <span class="b-sub" class:settled={row.status === 'completed'} title={row.subject}>
-                  <span class="b-line">{row.display}</span>
-                  {#if row.display !== row.subject}<span class="b-sub2">{row.subject}</span>{/if}
-                </span>
-              </div>
-              <div class="b-meta">
-                {#if row.owner !== null}
-                  {#if ownerHref(row.owner) !== null}
-                    <a class="b-owner" href={ownerHref(row.owner)}>
-                      <span class="b-ava">{row.initials}</span>{row.owner}
-                    </a>
-                  {:else}
-                    <span class="b-owner"><span class="b-ava">{row.initials}</span>{row.owner}</span
-                    >
-                  {/if}
-                {:else}
-                  <span class="b-un">unclaimed</span>
-                {/if}
-                {#if row.epic !== null}
-                  <button
-                    type="button"
-                    class="b-chip blue b-epic-pill"
-                    aria-label="jump to {row.epic}"
-                    onclick={() => {
-                      if (row.epicId !== null) void jumpTo(row.epicId);
-                    }}>&#8627; {row.epic}</button
+              <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+              <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+              <article
+                class="b-card"
+                class:dragging={dragging?.id === row.id}
+                class:epic={row.rollup !== null}
+                class:tree={row.epic !== null}
+                data-id={row.id}
+                tabindex="0"
+                onpointerdown={(event) => down(event, row)}
+                onkeydown={(event) => keyMove(event, row)}
+              >
+                <div class="b-row1">
+                  <span class="b-mark {markClass(row.status)}" aria-hidden="true">
+                    {#if row.status === 'completed'}<Icon
+                        name="check"
+                      />{:else if row.status === 'failed'}<Icon name="x" />{/if}
+                  </span>
+                  <span
+                    class="b-sub"
+                    class:settled={row.status === 'completed'}
+                    title={row.subject}
                   >
-                {/if}
-                {#if row.rollup !== null}
-                  <span class="b-chip blue b-epic-pill">&#9636; epic</span>
-                {/if}
-                <!-- Keyed on the position: the entries carry no identity the
-                     wire guarantees unique. -->
-                {#each row.links as link, at (at)}
-                  {#if link.href !== null}
-                    <a href={link.href} target="_blank" rel="noreferrer">{link.label}</a>
+                    <span class="b-line">{row.display}</span>
+                    {#if row.display !== row.subject}<span class="b-sub2">{row.subject}</span>{/if}
+                  </span>
+                </div>
+                <div class="b-meta">
+                  {#if row.owner !== null}
+                    {#if ownerHref(row.owner) !== null}
+                      <a class="b-owner" href={ownerHref(row.owner)}>
+                        <span class="b-ava">{row.initials}</span>{row.owner}
+                      </a>
+                    {:else}
+                      <span class="b-owner"
+                        ><span class="b-ava">{row.initials}</span>{row.owner}</span
+                      >
+                    {/if}
                   {:else}
-                    <span class="b-link">{link.label}</span>
+                    <span class="b-un">unclaimed</span>
                   {/if}
-                {/each}
-                <span class="b-chips">
-                  {#if row.rollup !== null}<span class="b-chip">{row.rollup} done</span>{/if}
-                  {#each row.chips as chip (chip.label)}
-                    <span class="b-chip {chip.tone}">{chip.label}</span>
-                  {/each}
-                </span>
-              </div>
-              <div class="b-last">
-                <span
-                  class="b-prog"
-                  class:over={row.tone === 'over'}
-                  class:bad={row.tone === 'bad'}
-                >
-                  <span class="b-time">{row.time}</span>
-                  {#if row.estimate !== null}
-                    <span class="b-bar"><span class="b-fill" style="width:{fill(row)}"></span></span
+                  {#if row.epic !== null}
+                    <button
+                      type="button"
+                      class="b-chip blue b-epic-pill"
+                      aria-label="jump to {row.epic}"
+                      onclick={() => {
+                        if (row.epicId !== null) void jumpTo(row.epicId);
+                      }}>&#8627; {row.epic}</button
                     >
                   {/if}
-                </span>
-                <span class="b-wrote" class:live={live(row)}
-                  >wrote {ago(row.updatedAt, nowSecs)} ago</span
-                >
-                <span class="b-acts">
-                  <Picker
-                    label="the seat holding {row.subject}"
-                    value={row.owner ?? ''}
-                    options={[
-                      { value: '', label: 'unclaimed' },
-                      ...seats.map((seat) => ({ value: seat.label, label: seat.label })),
-                    ]}
-                    onpick={(value) =>
-                      act({
-                        task_assign: {
-                          project,
-                          id: row.id,
-                          owner: value === '' ? null : value,
-                        },
-                      })}
-                  />
-                </span>
-              </div>
-            </article>
-          {/each}
-          {#if folds(lane)}
-            <!-- Under the last card: a control at the lane's head is passed
+                  {#if row.rollup !== null}
+                    <span class="b-chip blue b-epic-pill">&#9636; epic</span>
+                  {/if}
+                  <!-- Keyed on the position: the entries carry no identity the
+                     wire guarantees unique. -->
+                  {#each row.links as link, at (at)}
+                    {#if link.href !== null}
+                      <a href={link.href} target="_blank" rel="noreferrer">{link.label}</a>
+                    {:else}
+                      <span class="b-link">{link.label}</span>
+                    {/if}
+                  {/each}
+                  <span class="b-chips">
+                    {#if row.rollup !== null}<span class="b-chip">{row.rollup} done</span>{/if}
+                    {#each row.chips as chip (chip.label)}
+                      <span class="b-chip {chip.tone}">{chip.label}</span>
+                    {/each}
+                  </span>
+                </div>
+                <div class="b-last">
+                  <span
+                    class="b-prog"
+                    class:over={row.tone === 'over'}
+                    class:bad={row.tone === 'bad'}
+                  >
+                    <span class="b-time">{row.time}</span>
+                    {#if row.estimate !== null}
+                      <span class="b-bar"
+                        ><span class="b-fill" style="width:{fill(row)}"></span></span
+                      >
+                    {/if}
+                  </span>
+                  <span class="b-wrote" class:live={live(row)}
+                    >wrote {ago(row.updatedAt, nowSecs)} ago</span
+                  >
+                  <span class="b-acts">
+                    <Picker
+                      label="the seat holding {row.subject}"
+                      value={row.owner ?? ''}
+                      options={[
+                        { value: '', label: 'unclaimed' },
+                        ...seats.map((seat) => ({ value: seat.label, label: seat.label })),
+                      ]}
+                      onpick={(value) =>
+                        act({
+                          task_assign: {
+                            project,
+                            id: row.id,
+                            owner: value === '' ? null : value,
+                          },
+                        })}
+                    />
+                  </span>
+                </div>
+              </article>
+            {/each}
+            {#if folds(lane)}
+              <!-- Under the last card: a control at the lane's head is passed
                  before the reader knows rows are held back. -->
-            <button
-              type="button"
-              class="b-fold"
-              aria-expanded={openFolds[lane.key] === true}
-              onclick={() => (openFolds[lane.key] = openFolds[lane.key] !== true)}
-              >{openFolds[lane.key] === true ? 'show less' : `show all (${lane.count})`}</button
-            >
-          {/if}
-        </section>
-      {/each}
-    </div>
+              <button
+                type="button"
+                class="b-fold"
+                aria-expanded={openFolds[lane.key] === true}
+                onclick={() => (openFolds[lane.key] = openFolds[lane.key] !== true)}
+                >{openFolds[lane.key] === true ? 'show less' : `show all (${lane.count})`}</button
+              >
+            {/if}
+          </section>
+        {/each}
+      </div>
 
-    <div class="b-create">
-      <input
-        class="b-in"
-        data-editor="board"
-        type="text"
-        placeholder="a new row"
-        bind:value={subject}
-      />
-      <Picker
-        label="the epic it belongs under"
-        value={parent}
-        options={[
-          { value: '', label: 'no epic' },
-          ...epics.map((epic) => ({ value: epic.task.id, label: epic.task.subject })),
-        ]}
-        onpick={(value: string) => {
-          parent = value;
-        }}
-      />
-      <button
-        type="button"
-        class="b-btn b-add"
-        onclick={() => {
-          act({
-            task_create: {
-              project,
-              subject,
-              parent: parent === '' ? null : parent,
-            },
-          });
-          subject = '';
-        }}>+ add</button
-      >
-    </div>
+      <div class="b-create">
+        <input
+          class="b-in"
+          data-editor="board"
+          type="text"
+          placeholder="a new row"
+          bind:value={subject}
+        />
+        <Picker
+          label="the epic it belongs under"
+          value={parent}
+          options={[
+            { value: '', label: 'no epic' },
+            ...epics.map((epic) => ({ value: epic.task.id, label: epic.task.subject })),
+          ]}
+          onpick={(value: string) => {
+            parent = value;
+          }}
+        />
+        <button
+          type="button"
+          class="b-btn b-add"
+          onclick={() => {
+            act({
+              task_create: {
+                project,
+                subject,
+                parent: parent === '' ? null : parent,
+              },
+            });
+            subject = '';
+          }}>+ add</button
+        >
+      </div>
+    {/if}
   {/if}
 
   {#if dragging !== null}

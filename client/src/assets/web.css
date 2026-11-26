@@ -770,6 +770,83 @@ button.b-epic-pill { cursor: pointer; }
   .b-btn, .b-pick, .b-in, .b-seat, .b-item, button.b-chip, .b-fold { min-height: 44px; }
 }
 
+/* ---------- the window: the board drawn for a person, exceptions first ---------- */
+
+.w-switch { display: flex; gap: 6px; margin: 0 0 20px; flex-wrap: wrap; }
+.w-tab {
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+  background: var(--s2); border: 1px solid transparent; border-radius: 999px;
+  padding: 7px 14px; min-height: 32px; cursor: pointer;
+}
+.w-tab[aria-selected="true"] { color: var(--text); background: var(--s3); border-color: var(--line); }
+.w-tab:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.w-window { display: flex; flex-direction: column; gap: 30px; }
+.w-h {
+  display: flex; align-items: center; gap: 8px; margin: 0 0 10px;
+  font-family: var(--mono); font-size: var(--fs-label); font-weight: 500;
+  letter-spacing: .05em; color: var(--dim);
+}
+.w-n { background: var(--s3); color: var(--text); border-radius: 999px; padding: 1px 8px; }
+.w-quiet { margin: 0; color: var(--dim); font-size: var(--fs-data); }
+.w-needs { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; }
+/* The warm surface the strip used, now per card: an ask on the reader is
+   the one thing on this page that is theirs to answer. */
+.w-need { background: var(--sel); border-radius: var(--r); padding: 16px 18px 14px; position: relative; }
+.w-need::before {
+  content: ""; position: absolute; inset: 0 auto 0 0; width: 2px;
+  background: var(--accent); border-radius: var(--r) 0 0 var(--r); opacity: .8;
+}
+.w-kind {
+  display: flex; gap: 10px; align-items: center; margin-bottom: 6px;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--hot);
+}
+.w-kind .ic { width: 12px; height: 12px; }
+.w-age { color: var(--dim); }
+.w-q { margin: 0 0 4px; font-size: 16px; font-weight: 500; color: var(--text); }
+.w-sub { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.w-detail { margin-top: 8px; font-size: var(--fs-label); color: var(--muted); }
+/* The evidence is the excerpt as it was attached, set apart so a reader
+   never mistakes it for the ask's own words. */
+.w-ev {
+  margin: 10px 0 0; padding: 8px 10px; background: var(--s1);
+  border-left: 2px solid var(--line); border-radius: 6px;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
+  white-space: pre-wrap; max-height: 8rem; overflow-y: auto; overflow-x: hidden;
+}
+.w-options { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.w-option { min-height: 36px; text-align: left; }
+.w-do { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.w-discuss { margin-left: auto; }
+.w-open {
+  margin-top: 10px; background: none; border: none; color: var(--dim);
+  font-family: var(--mono); font-size: var(--fs-label); cursor: pointer; padding: 6px 0;
+}
+.w-open:hover { color: var(--blue); }
+.w-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.w-exc, .w-live {
+  display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline;
+  font-size: var(--fs-data); padding: 8px 0; border-bottom: 1px solid var(--line);
+}
+.w-strong { color: var(--text); }
+.w-why { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
+.w-who { font-family: var(--mono); font-size: var(--fs-label); color: var(--blue); text-decoration: none; }
+.w-who:hover { text-decoration: underline; }
+.w-link {
+  background: none; border: none; color: var(--text); font: inherit;
+  cursor: pointer; padding: 0; text-align: left;
+}
+.w-link:hover { color: var(--blue); }
+.w-link:focus-visible, .w-open:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.w-restore { margin-left: auto; }
+@media (pointer: coarse) {
+  .w-tab, .w-open, .w-option, .w-link, .w-discuss { min-height: 44px; }
+}
+@media (max-width: 560px) {
+  .w-needs { grid-template-columns: 1fr; }
+  .w-exc, .w-live { flex-direction: column; gap: 2px; align-items: flex-start; }
+  .w-discuss { margin-left: 0; }
+}
+
 /* ---------- the drawer: one row's own page over the board ---------- */
 
 .dr-scrim { position: fixed; inset: 0; background: rgba(4,5,10,.55); z-index: 40; }

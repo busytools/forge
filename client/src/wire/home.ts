@@ -84,13 +84,51 @@ export interface WaitingWire {
 /** What a link points at. Generic to any VCS. */
 export type LinkKind = 'spec' | 'plan' | 'issue' | 'pr' | 'branch' | 'path' | 'other';
 
+/** One connector's cached look at a link: state, head and CI verdict. */
+export interface LinkCheckWire {
+  at: WireTime;
+  state: string | null;
+  head: string | null;
+  /** `passing`, `failing` or `pending`; absent is unknown, never passing. */
+  ci: string | null;
+  problem: string | null;
+}
+
 /** One reference a row carries. */
 export interface TaskLinkWire {
   kind: LinkKind;
   label: string | null;
   target: string;
   state: string | null;
+  /** A project connector's last check of the target; absent means none. */
+  last_check?: LinkCheckWire | null;
   added_at: WireTime;
+}
+
+/** The options a decision row asks the user to choose between. */
+export interface DecisionAnswerWire {
+  choice: string;
+  note: string | null;
+  at: WireTime;
+}
+
+export interface DecisionWire {
+  question: string;
+  options: string[];
+  answer: DecisionAnswerWire | null;
+}
+
+/**
+ * What a completion rests on: the artifact the gate checks, the excerpt a
+ * reader sees, and the gate's own verdict. `verified_at` absent is
+ * `unknown` - never success.
+ */
+export interface EvidenceWire {
+  commit: string | null;
+  path: string | null;
+  excerpt: string | null;
+  verified_at: WireTime | null;
+  problem: string | null;
 }
 
 /**
@@ -103,12 +141,19 @@ export interface Task {
   project_name: string;
   subject: string;
   active_form: string | null;
+  /** The brief. The board's bulk read drops it; `tasks__get` returns it. */
   detail: string | null;
   status: TaskStatus;
+  /** Finite work with a finish line, or standing work checked on a cadence. */
+  kind: 'finite' | 'standing';
   owner: SessionSlot | null;
   parent: string | null;
   waiting_on: WaitingWire | null;
+  /** The question and options a decision wait asks, and the answer given. */
+  decision?: DecisionWire | null;
   estimate: { words: string; secs: number } | null;
+  /** A standing row's check interval. */
+  cadence?: { words: string; secs: number } | null;
   rank: number | null;
   verify: 'user' | 'none' | null;
   /** A lead's record of the look it completed on the user's behalf. */
@@ -116,7 +161,10 @@ export interface Task {
   /** The user reserved this row's pick: the sweep leaves it for them. */
   reserved?: 'user' | null;
   links: TaskLinkWire[];
-  attempt: number;
+  /** What the completion rests on, and the gate's own check of it. */
+  evidence?: EvidenceWire | null;
+  /** How many writes the row has taken; an update states the one it read. */
+  version: number;
   archived_at: WireTime | null;
   created_at: WireTime;
   updated_at: WireTime;
@@ -176,17 +224,13 @@ function digestOf(tasks: unknown[]): string {
  * them, never re-derives them.
  */
 export interface Marks {
-  /** Pending with nothing waiting on it. */
+  /** Pending with nothing waiting on it and not reserved for the user. */
   ready: boolean;
   /** Has a pull-request link not known to be merged. */
   in_review: boolean;
-  /** Its worked time is past its estimate. */
+  /** Worked time past the estimate, or a wait past its window. */
   overdue: boolean;
-  /** No touch for longer than the window. */
-  no_movement: boolean;
-  /** Waiting for longer than the window. */
-  waiting_too_long: boolean;
-  /** Its owner has no session behind it. */
+  /** Is anyone on this? No touch past the band, or a dead owner. */
   stale: boolean;
   /** Every child terminal, its retro run - an epic the lead may close. */
   to_close: boolean;
@@ -197,16 +241,22 @@ export interface BoardRow {
   task: Task;
   worked_secs: number;
   updated_secs_ago: number;
+  /**
+   * Whether the owner has a session behind it. The `stale` mark folds this
+   * in with the no-movement window; the window's provenance line reads it
+   * alone, because a live owner who has not touched the row is stuck
+   * rather than gone.
+   */
+  owner_live: boolean;
   marks: Marks;
   /** A parent's children: how many are completed, of how many. */
   rollup: [number, number] | null;
   /** A child's parent subject. */
   parent_subject: string | null;
   /**
-   * The row's own transitions, in time order - the detail drawer's history.
-   * The server caps what it carries (the newest of them) and `history_total`
-   * is the whole count, so the drawer words what it withholds; the withheld
-   * tail is not reachable yet (#2242).
+   * The row's own transitions. **The board's bulk read no longer carries
+   * them** - they load on demand (`tasks__get`) - so a frame-applied row
+   * has none; a capture from before the trim may.
    */
   history: BoardTransition[];
   /** How many transitions the row has in all, never fewer than the list above. */
@@ -710,8 +760,6 @@ const NO_MARKS: Marks = {
   ready: false,
   in_review: false,
   overdue: false,
-  no_movement: false,
-  waiting_too_long: false,
   stale: false,
   to_close: false,
 };
@@ -734,6 +782,7 @@ export function rowFrom(entry: unknown): BoardRow {
       ...(task as unknown as Task),
       // The unions of literals every read narrows, the link kinds included.
       status: narrow(spelled(task['status']), TASK_STATUSES, 'pending'),
+      kind: task['kind'] === 'standing' ? 'standing' : 'finite',
       verify:
         task['verify'] === null || task['verify'] === undefined
           ? null
@@ -741,6 +790,10 @@ export function rowFrom(entry: unknown): BoardRow {
       attested: attestedFrom(task['attested']),
       reserved: task['reserved'] === 'user' ? 'user' : null,
       estimate: estimateFrom(task['estimate']),
+      cadence: estimateFrom(task['cadence']),
+      decision: decisionFrom(task['decision']),
+      evidence: evidenceFrom(task['evidence']),
+      version: typeof task['version'] === 'number' ? task['version'] : 0,
       links: linksFrom(task),
       active_form: (task['active_form'] ?? null) as string | null,
       detail: (task['detail'] ?? null) as string | null,
@@ -748,11 +801,13 @@ export function rowFrom(entry: unknown): BoardRow {
       parent: (task['parent'] ?? null) as string | null,
       waiting_on: waitingFrom(task['waiting_on']),
       rank: (task['rank'] ?? null) as number | null,
-      attempt: (task['attempt'] ?? 0) as number,
       archived_at: (task['archived_at'] ?? null) as WireTime | null,
     },
     worked_secs: (raw['worked_secs'] as number | undefined) ?? 0,
     updated_secs_ago: (raw['updated_secs_ago'] as number | undefined) ?? 0,
+    // A payload older than the field counts every owner as live: silence is
+    // not a claim that the seat is gone.
+    owner_live: raw['owner_live'] !== false,
     marks: (raw['marks'] as Marks | undefined) ?? NO_MARKS,
     rollup: (raw['rollup'] as [number, number] | null | undefined) ?? null,
     parent_subject: (raw['parent_subject'] as string | null | undefined) ?? null,
@@ -841,8 +896,62 @@ function linksFrom(task: Record<string, unknown>): TaskLinkWire[] {
     .filter((link): link is Record<string, unknown> => typeof link === 'object' && link !== null)
     .map((link) => {
       const spelled = link as unknown as TaskLinkWire;
-      return { ...spelled, kind: narrow(spelled.kind, LINK_KINDS, 'other') };
+      return {
+        ...spelled,
+        kind: narrow(spelled.kind, LINK_KINDS, 'other'),
+        last_check: linkCheckFrom(link['last_check']),
+      };
     });
+}
+
+/** A connector's cached check, where a link carries one. */
+function linkCheckFrom(raw: unknown): LinkCheckWire | null {
+  if (raw === null || raw === undefined || typeof raw !== 'object') return null;
+  const held = raw as Record<string, unknown>;
+  const at = held['at'] as WireTime | undefined;
+  if (at === undefined || typeof at.secs_since_epoch !== 'number') return null;
+  const text = (key: string): string | null => (typeof held[key] === 'string' ? held[key] : null);
+  return { at, state: text('state'), head: text('head'), ci: text('ci'), problem: text('problem') };
+}
+
+/**
+ * A decision record, where the row carries one. An option list with a
+ * member this client cannot read drops that member rather than the record:
+ * the question and the answer are what it draws, and a lost option is a
+ * choice it does not offer.
+ */
+function decisionFrom(raw: unknown): DecisionWire | null {
+  if (raw === null || raw === undefined || typeof raw !== 'object') return null;
+  const held = raw as Record<string, unknown>;
+  if (typeof held['question'] !== 'string') return null;
+  const options = Array.isArray(held['options'])
+    ? held['options'].filter((option): option is string => typeof option === 'string')
+    : [];
+  const answer = held['answer'];
+  return {
+    question: held['question'],
+    options,
+    answer:
+      typeof answer === 'object' &&
+      answer !== null &&
+      typeof (answer as DecisionAnswerWire).choice === 'string'
+        ? (answer as DecisionAnswerWire)
+        : null,
+  };
+}
+
+/** What a completion rests on, where the row carries a claim. */
+function evidenceFrom(raw: unknown): EvidenceWire | null {
+  if (raw === null || raw === undefined || typeof raw !== 'object') return null;
+  const held = raw as Record<string, unknown>;
+  const text = (key: string): string | null => (typeof held[key] === 'string' ? held[key] : null);
+  return {
+    commit: text('commit'),
+    path: text('path'),
+    excerpt: text('excerpt'),
+    verified_at: (held['verified_at'] as WireTime | null | undefined) ?? null,
+    problem: text('problem'),
+  };
 }
 
 /**

@@ -8,6 +8,7 @@
   import { holdDeviceFor } from '../composer/dictation';
   import { onShellMicAwake, setShellMicHidden } from '../composer/mic-shell';
   import { dictationOffered } from '../composer/view';
+  import { readArchived } from '../board/archive';
   import { watchBoard } from '../board/live';
   import Connect from '../connect/Connect.svelte';
   import Fixture from '../dev/Fixture.svelte';
@@ -253,6 +254,10 @@
       project={route.project}
       onact={boardAct}
       notice={home.report}
+      onarchived={() =>
+        connection === null
+          ? Promise.resolve({ wire: null, refused: 'not connected' })
+          : readArchived(connection)}
     />
   {:else if home.refused}
     <!-- The board's own read has its own refusal in the page; this branch is

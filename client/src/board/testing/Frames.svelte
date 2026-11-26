@@ -28,4 +28,5 @@
   }
 </script>
 
-<Board {wire} {board} org="TestOrg" project="proj" {onact} />
+<!-- The full board: this frame drives the lanes' own interactions. -->
+<Board {wire} {board} org="TestOrg" project="proj" {onact} initialMode="board" />

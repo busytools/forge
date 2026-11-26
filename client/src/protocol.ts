@@ -140,6 +140,8 @@ export function skewMessage(skew: Skew): string {
 export type Subject =
   | 'home'
   | 'board'
+  /** The board's closed view: terminal live rows then the archive. */
+  | 'archived'
   | { session: SessionSlot }
   | 'usage'
   | 'dictate_models'
@@ -168,6 +170,7 @@ export function subjectKey(subject: Subject): string {
 const NAMED_SUBJECTS: readonly string[] = [
   'home',
   'board',
+  'archived',
   'usage',
   'dictate_models',
   'extensions',

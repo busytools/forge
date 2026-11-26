@@ -267,11 +267,15 @@ pub struct ProjectBoardIdentity {
 #[serde(rename_all = "snake_case")]
 pub struct ProjectBoardWire {
     pub project: ProjectBoardIdentity,
-    /// The project's live rows, with what the board derives on each:
-    /// worked time, ages, and the marks. Computed once, in the workspace's
-    /// board module, and passed through - the client never re-derives a
-    /// mark differently.
-    pub rows: Vec<forge_workspace::board::BoardRow>,
+    /// The project's live rows as the window draws them: the record
+    /// without its prose or history, plus what the board derives on each -
+    /// worked time, ages, whether the owner is live, and the marks.
+    ///
+    /// **The bulk read carries only the window's fields.** A row's `detail`
+    /// brief and its transition history load on demand (`tasks__get`), so a
+    /// board read is bounded by its row count rather than by how much each
+    /// row has accumulated.
+    pub rows: Vec<Value>,
     /// The schedules this project holds.
     ///
     /// A view draws its SCHEDULES section from these, and nothing on
@@ -2598,7 +2602,7 @@ fn board(surface: &ViewSurface) -> BoardWire {
         let subscribed = surface.connectors(Some(&project.name));
         projects.push(ProjectBoardWire {
             project: ProjectBoardIdentity { org: project.org.clone(), name: project.name.clone() },
-            rows: surface.board_rows(&project.name),
+            rows: surface.board_rows(&project.name).iter().map(window_row).collect(),
             crons: roster.crons_for_project(&project.name),
             connectors: ProjectConnectorsWire {
                 gotify: subscribed.gotify.subscriptions,
@@ -2607,6 +2611,25 @@ fn board(surface: &ViewSurface) -> BoardWire {
         });
     }
     BoardWire { projects }
+}
+
+/// One row as the board's bulk read carries it.
+///
+/// The record minus its `detail` brief and its history, which are the two
+/// unbounded parts: the brief is prose a drawer reads on open, and the
+/// history is capped at twenty transitions per row yet still what makes a
+/// wide board heavy. Both are `tasks__get`'s, and a row whose detail is
+/// dropped reads it back from there.
+fn window_row(row: &forge_workspace::board::BoardRow) -> Value {
+    let mut value = serde_json::to_value(row).unwrap_or(Value::Null);
+    if let Some(object) = value.as_object_mut() {
+        object.remove("history");
+        object.remove("history_total");
+        if let Some(task) = object.get_mut("task").and_then(Value::as_object_mut) {
+            task.remove("detail");
+        }
+    }
+    value
 }
 
 /// The board's closed view: one project's terminal rows, live first and
@@ -5093,6 +5116,32 @@ mod tests {
             Some(1),
             "the fleet row's total does not match the board's rows: {home}",
         );
+    }
+
+    /// **The bulk board carries only the window's fields.** A row's brief and
+    /// its history are the two unbounded parts, and both are `tasks__get`'s:
+    /// the board read must not grow with how much each row has accumulated.
+    #[tokio::test]
+    async fn a_board_row_carries_no_brief_and_no_history() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.add_task("TestOrg", "proj", "a live row", "w1", None).expect("the task is seeded");
+        let state = TransportState {
+            surface: fleet.surface(),
+            work: Arc::new(WorkCache::new()),
+            conversations: Arc::new(crate::transport::conversation::Conversations::new()),
+            live: Mutex::new(crate::live::Live::new()),
+            settings: crate::transport::settings_channel(),
+            browser_host: None,
+            heartbeat: Heartbeat::default(),
+        };
+        let board = encode_subject(&state, &Subject::Board).await.expect("encode");
+        let row = &board["projects"][0]["rows"][0];
+        assert!(row.get("history").is_none(), "the history loads on demand: {row}");
+        assert!(row.get("history_total").is_none(), "and so does its count: {row}");
+        assert!(row["task"].get("detail").is_none(), "the brief loads on demand: {row}");
+        assert!(row["task"]["subject"].is_string(), "the row itself is there: {row}");
+        assert!(row["marks"].is_object(), "with the server's own marks: {row}");
     }
 
     /// The closed view is its own subject: the bulk board drops a terminal
