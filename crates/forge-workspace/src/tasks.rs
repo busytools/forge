@@ -1338,6 +1338,41 @@ impl Workspace {
         Ok(task)
     }
 
+    /// Park an overrun row waiting on its owner: the chase's re-plan ask is a
+    /// state the board draws, not a message alone. A row already off
+    /// `in_progress` is left alone - the owner got there first.
+    pub(crate) fn park_overrun(&self, project_name: &str, id: &TaskId) -> Option<Task> {
+        let at = SystemTime::now();
+        let outcome = self.with_tasks_mut(|tasks| {
+            let index = tasks
+                .iter()
+                .position(|task| task.project_name == project_name && task.id == *id)?;
+            if tasks[index].status != TaskStatus::InProgress {
+                return None;
+            }
+            tasks[index].waiting_on = Some(Waiting {
+                kind: Some(WaitingKind::Resource),
+                detail: Some(
+                    "over its estimate: re-plan it - rescope, split, or close it with the reason"
+                        .to_owned(),
+                ),
+                on: None,
+                verification: false,
+                parked: false,
+                since: Some(at),
+            });
+            tasks[index].status = TaskStatus::Waiting;
+            tasks[index].version = tasks[index].version.saturating_add(1);
+            tasks[index].updated_at = at;
+            self.persist_task(&tasks[index]);
+            Some(tasks[index].clone())
+        });
+        if outcome.is_some() {
+            self.announce_tasks_changed(project_name);
+        }
+        outcome
+    }
+
     /// Clear every wait on `blocker` - any terminal end of it counts, and
     /// so does its deletion - and hand the released rows back so the
     /// caller can message their owners.

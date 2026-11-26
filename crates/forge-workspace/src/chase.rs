@@ -1,25 +1,25 @@
-//! The chase sweep: the pass that makes the board drive instead of
-//! report.
+//! The chase sweep: the pass that makes the board ask instead of report.
 //!
-//! Every pass derives crossings from the board's own marks and the chase
-//! log: a row past its estimate asks its owner once per estimate, a lead
-//! hears at the rung's class cadence while its state holds, and a row
-//! that died, moved and died again is a new occurrence, named at once.
-//! The cadences are the settled two: five minutes for a state burning a
-//! resource (a drifting worker, a row at 1.5x its estimate), thirty for
-//! one parked and stuck (a dead row, a stalled queue, a stuck wait, a
-//! retro or a close owed). **The chase log is the whole slate**: every
-//! naming is deduped by it, so a restart re-reads it rather than
-//! re-firing, and a state that clears has its naming forgotten - off the
-//! log, where a fresh process reads - so a recurrence is named at once,
-//! whatever happened in between.
+//! Every pass derives crossings from the board's own state and the chase
+//! log, on four signals together: the row's KIND (finite work owes a
+//! re-plan on overrun; standing work is checked on its cadence), MOVEMENT
+//! (no touch past the band with a live owner is stuck), NEW INPUT (a
+//! connector saw something after the last touch) and the WAIT's kind (a
+//! decision on the user is never chased, a resource wait is checked, a
+//! dependency chase goes to the blocker's owner).
+//!
+//! **One cadence, not three.** A finite overrun asks once and parks the
+//! row, and the lead hears the escalation once if the ask goes unanswered;
+//! every other held state repeats at [`CHASE_CADENCE_SECS`] until it
+//! clears. **The chase log is the whole slate**: every naming is deduped
+//! by it, so a restart re-reads it rather than re-firing, and a state that
+//! clears has its naming forgotten - off the log, where a fresh process
+//! reads - so a recurrence is named at once, whatever happened in between.
 //!
 //! Delivery degrades, never wakes: a live owner is asked; with a dead
-//! owner the lead is; with every seat asleep the mark alone stands - except
-//! the user-wait nudge, whose one shot per row is kept unspent until a live
-//! lead takes it. A chase NEVER spawns a session - the board already shows
-//! the state, and waking a project is a cost the chase does not get to
-//! spend.
+//! owner the lead is; with every seat asleep the mark alone stands. A
+//! chase NEVER spawns a session - the board already shows the state, and
+//! waking a project is a cost the chase does not get to spend.
 
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -31,7 +31,6 @@ use tracing::Instrument;
 
 use crate::SessionSlot;
 use crate::board::BoardRow;
-use crate::tasks::parked_on_user;
 use crate::workspace::Workspace;
 
 /// How long between sweeps. The same number bounds how stale a
@@ -41,13 +40,11 @@ pub const CHASE_INTERVAL_SECS: u64 = 30;
 /// How long after a wait resolves its message is still worth sending.
 const WAIT_RESOLVED_WINDOW_SECS: u64 = 600;
 
-/// The cadence of a rung whose state is burning a resource: a drifting
-/// worker, a row past 1.5x its estimate.
-const CADENCE_BURNING_SECS: u64 = 5 * 60;
-
-/// The cadence of a rung whose state is parked and stuck: a dead row, a
-/// stalled queue, a stuck wait, a retro or a close owed.
-const CADENCE_STUCK_SECS: u64 = 30 * 60;
+/// The one cadence every repeated rung waits: a held state is named again
+/// this long after its last naming, and no rung has a cadence of its own.
+/// A re-plan ask is one-shot per estimate, its escalation once, and the
+/// rest repeat here until the state clears.
+const CHASE_CADENCE_SECS: u64 = 30 * 60;
 
 /// What a delivery attempt found.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,16 +145,6 @@ fn failed_at(history: &[TaskTransition], id: &TaskId) -> Option<SystemTime> {
         .max()
 }
 
-/// When the row entered waiting, if the history says: the newest transition
-/// into waiting is the episode a user nudge is deduped on.
-fn waiting_since(history: &[TaskTransition], id: &TaskId) -> Option<SystemTime> {
-    history
-        .iter()
-        .filter(|transition| transition.task_id == *id && transition.to == TaskStatus::Waiting)
-        .map(|transition| transition.at)
-        .max()
-}
-
 /// When a released wait landed, if one did: a transition out of waiting
 /// into pending that the core drove.
 fn released_at(history: &[TaskTransition], id: &TaskId) -> Option<SystemTime> {
@@ -178,6 +165,18 @@ fn fmt_secs(secs: u64) -> String {
 }
 
 /// The crossings one project's board implies, given what already fired.
+///
+/// **Four signals, together rather than blindly.** A row's KIND decides
+/// what an overrun means (finite work owes a re-plan; standing work is
+/// checked on its cadence), MOVEMENT says whether the owner is working or
+/// stuck, NEW INPUT - a connector's look at a link after the last touch -
+/// may make the row obsolete or urgent, and the WAIT's kind decides who
+/// hears: a decision on the user is never chased, a resource wait is
+/// checked, and a dependency chase goes to the blocker's owner.
+///
+/// A finite overrun asks once and parks the row (the sweep does the
+/// write); the lead hears once if the ask goes unanswered past the
+/// cadence, and then the chase stops for that estimate.
 pub(crate) fn crossings(
     lead: &SessionSlot,
     rows: &[BoardRow],
@@ -186,15 +185,22 @@ pub(crate) fn crossings(
     fired: &[TaskChase],
     now: SystemTime,
 ) -> Vec<Crossing> {
+    let stamp = |at: SystemTime| {
+        at.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs()).to_string()
+    };
     let mut out = Vec::new();
     for row in rows {
         let id = &row.task.id;
         let estimate = row.task.estimate.as_ref().filter(|e| e.secs > 0);
         let running = row.task.status == TaskStatus::InProgress;
+        let over = row.task.kind == forge_primitives::tasks::TaskKind::Finite
+            && estimate.is_some_and(|estimate| row.worked_secs > estimate.secs);
+        let wait = row.task.waiting_on.as_ref();
+        let parked = wait.is_some_and(|wait| wait.parked);
 
-        if running
-            && let Some(estimate) = estimate
-            && row.worked_secs > estimate.secs
+        // Signal 1a: finite work past its estimate owes a re-plan. The ask
+        // is one per estimate and parks the row; the sweep writes the park.
+        if let Some(estimate) = estimate.filter(|_| over)
             && !fired_already(fired, ChaseRung::EstimateNudge, id, Some(&estimate.secs.to_string()))
         {
             out.push(Crossing {
@@ -203,37 +209,160 @@ pub(crate) fn crossings(
                 subject: Some(estimate.secs.to_string()),
                 seat: row.task.owner.clone(),
                 text: format!(
-                    "task board: \"{}\" has worked {} against its estimate of {} - status? A new \
-                     estimate, completing it, or parking it clears this.",
+                    "task board: \"{}\" has worked {} against an estimate of {}. It is parked \
+                     waiting on you: rescope it, split it, or close it with the reason - or move \
+                     it back in progress if it is still the work you meant.",
                     row.task.subject,
                     fmt_secs(row.worked_secs),
                     estimate.words,
                 ),
             });
         }
-        if running
+        // The escalation: once per estimate, and only after the ask had its
+        // cadence unanswered. Then this estimate is done being chased.
+        if over
             && let Some(estimate) = estimate
-            && row.worked_secs > estimate.secs + estimate.secs / 2
-            && due(fired, ChaseRung::Escalate, id, None, CADENCE_BURNING_SECS, now)
+            && !fired_already(fired, ChaseRung::Escalate, id, Some(&estimate.secs.to_string()))
+            && let Some(asked) =
+                last_fired(fired, ChaseRung::EstimateNudge, id, Some(&estimate.secs.to_string()))
+            && since_secs(asked, now) >= CHASE_CADENCE_SECS
         {
             out.push(Crossing {
                 rung: ChaseRung::Escalate,
                 task_id: Some(id.clone()),
+                subject: Some(estimate.secs.to_string()),
+                seat: Some(lead.clone()),
+                text: format!(
+                    "task board: \"{}\" passed its estimate of {} and the re-plan ask is \
+                     unanswered; it is at {}. Rescope it, reassign it, or close it with the \
+                     reason.",
+                    row.task.subject,
+                    estimate.words,
+                    fmt_secs(row.worked_secs),
+                ),
+            });
+        }
+        // Signal 1b: standing work is checked when its cadence comes due,
+        // counted from the row's last touch - a check IS a touch.
+        if row.task.kind == forge_primitives::tasks::TaskKind::Standing
+            && !row.task.status.is_terminal()
+            && let Some(cadence) = row.task.cadence.as_ref().filter(|cadence| cadence.secs > 0)
+            && row.updated_secs_ago >= cadence.secs
+            && !fired_already(fired, ChaseRung::Cadence, id, Some(&stamp(row.task.updated_at)))
+        {
+            out.push(Crossing {
+                rung: ChaseRung::Cadence,
+                task_id: Some(id.clone()),
+                subject: Some(stamp(row.task.updated_at)),
+                seat: row.task.owner.clone(),
+                text: format!(
+                    "task board: \"{}\" is due for its check (every {}). Is it still doing its \
+                     job? Change its shape, or end it.",
+                    row.task.subject, cadence.words,
+                ),
+            });
+        }
+        // Signal 2: a row that has not moved past its band with a LIVE
+        // owner is stuck, not gone - the owner is asked, not the lead.
+        if running
+            && !over
+            && row.owner_live
+            && row.marks.stale
+            && !parked
+            && !fired_already(fired, ChaseRung::Stuck, id, Some(&stamp(row.task.updated_at)))
+        {
+            out.push(Crossing {
+                rung: ChaseRung::Stuck,
+                task_id: Some(id.clone()),
+                subject: Some(stamp(row.task.updated_at)),
+                seat: row.task.owner.clone(),
+                text: format!(
+                    "task board: \"{}\" has not changed in {}. What is it waiting on? Park it \
+                     with the reason, hand it on, or say it is still moving.",
+                    row.task.subject,
+                    fmt_secs(row.updated_secs_ago),
+                ),
+            });
+        }
+        // Signal 3: a connector saw something after the row's last touch -
+        // a merged pull request, a CI verdict, a state change - and the row
+        // may now be obsolete or urgent.
+        let newest_check = row
+            .task
+            .links
+            .iter()
+            .filter(|link| link.kind == forge_primitives::tasks::LinkKind::Pr)
+            .filter_map(|link| link.last_check.as_ref().map(|check| (link, check)))
+            .filter(|(_, check)| check.at > row.task.updated_at)
+            .max_by_key(|(_, check)| check.at);
+        if !row.task.status.is_terminal()
+            && let Some((link, check)) = newest_check
+            && !fired_already(fired, ChaseRung::NewInput, id, Some(&stamp(check.at)))
+        {
+            out.push(Crossing {
+                rung: ChaseRung::NewInput,
+                task_id: Some(id.clone()),
+                subject: Some(stamp(check.at)),
+                seat: row.task.owner.clone(),
+                text: format!(
+                    "task board: {} changed after \"{}\" was last touched ({}; CI {}). Does the \
+                     row need to move?",
+                    link.target,
+                    row.task.subject,
+                    check.state.as_deref().unwrap_or("state unknown"),
+                    check.ci.as_deref().unwrap_or("unknown"),
+                ),
+            });
+        }
+        // Signal 4, resource: a wait on something outside the board is
+        // checked at the cadence.
+        if row.marks.overdue
+            && !over
+            && wait.and_then(|wait| wait.kind) == Some(WaitingKind::Resource)
+            && !parked
+            && due(fired, ChaseRung::WaitStall, id, None, CHASE_CADENCE_SECS, now)
+        {
+            out.push(Crossing {
+                rung: ChaseRung::WaitStall,
+                task_id: Some(id.clone()),
                 subject: None,
                 seat: Some(lead.clone()),
                 text: format!(
-                    "task board: \"{}\" is at {} against an estimate of {} - rescope, reassign, \
-                     take over, or restate the expectation.",
+                    "task board: \"{}\" has waited {} on a resource - unblock it or change its \
+                     plan.",
                     row.task.subject,
-                    fmt_secs(row.worked_secs),
-                    estimate.words,
+                    fmt_secs(row.task.wait_age_secs(now).unwrap_or(row.updated_secs_ago)),
+                ),
+            });
+        }
+        // Signal 4, dependency: the chase goes to the BLOCKER's owner, who
+        // is the one who can end it.
+        if row.marks.overdue
+            && wait.and_then(|wait| wait.kind) == Some(WaitingKind::Dependency)
+            && !parked
+            && let Some(blocker_id) = wait.and_then(|wait| wait.on.as_ref())
+            && let Some(blocker) = rows.iter().find(|held| held.task.id == *blocker_id)
+            && !blocker.task.status.is_terminal()
+            && due(fired, ChaseRung::WaitStall, id, None, CHASE_CADENCE_SECS, now)
+        {
+            out.push(Crossing {
+                rung: ChaseRung::WaitStall,
+                task_id: Some(id.clone()),
+                subject: None,
+                seat: blocker.task.owner.clone(),
+                text: format!(
+                    "task board: \"{}\" has waited {} on your row \"{}\" - end it, unblock it, \
+                     or say why it has to stay open.",
+                    row.task.subject,
+                    fmt_secs(row.task.wait_age_secs(now).unwrap_or(row.updated_secs_ago)),
+                    blocker.task.subject,
                 ),
             });
         }
         if row.marks.ready
             && row.task.owner.is_none()
             && row.marks.stale
-            && due(fired, ChaseRung::QueueStall, id, None, CADENCE_STUCK_SECS, now)
+            && due(fired, ChaseRung::QueueStall, id, None, CHASE_CADENCE_SECS, now)
         {
             out.push(Crossing {
                 rung: ChaseRung::QueueStall,
@@ -248,34 +377,12 @@ pub(crate) fn crossings(
                 ),
             });
         }
-        let wait_kind = row.task.waiting_on.as_ref().and_then(|wait| wait.kind);
-        if row.marks.overdue
-            && matches!(wait_kind, Some(WaitingKind::Dependency | WaitingKind::Resource))
-            && due(fired, ChaseRung::WaitStall, id, None, CADENCE_STUCK_SECS, now)
-        {
-            out.push(Crossing {
-                rung: ChaseRung::WaitStall,
-                task_id: Some(id.clone()),
-                subject: None,
-                seat: Some(lead.clone()),
-                text: format!(
-                    "task board: \"{}\" has waited {} on a {} - unblock it or change its plan.",
-                    row.task.subject,
-                    fmt_secs(row.task.wait_age_secs(now).unwrap_or(row.updated_secs_ago)),
-                    match wait_kind {
-                        Some(WaitingKind::Dependency) => "dependency",
-                        Some(WaitingKind::Resource) => "resource",
-                        _ => "wait",
-                    },
-                ),
-            });
-        }
         let died = row.task.status == TaskStatus::Failed;
         let stranded = running && !row.owner_live;
-        // The death repeats at the stuck cadence, counted from the death
+        // The death repeats at the cadence, counted from the death
         // itself: a row that moved and died again is a new occurrence.
         if (died || stranded)
-            && due(fired, ChaseRung::Death, id, failed_at(history, id), CADENCE_STUCK_SECS, now)
+            && due(fired, ChaseRung::Death, id, failed_at(history, id), CHASE_CADENCE_SECS, now)
         {
             out.push(Crossing {
                 rung: ChaseRung::Death,
@@ -305,7 +412,7 @@ pub(crate) fn crossings(
                 ),
             });
         }
-        if row.marks.to_close && due(fired, ChaseRung::EpicClose, id, None, CADENCE_STUCK_SECS, now)
+        if row.marks.to_close && due(fired, ChaseRung::EpicClose, id, None, CHASE_CADENCE_SECS, now)
         {
             out.push(Crossing {
                 rung: ChaseRung::EpicClose,
@@ -327,7 +434,7 @@ pub(crate) fn crossings(
         if row.task.parent.is_none()
             && row.rollup.is_some()
             && !row.task.links.iter().any(|l| l.label.as_deref() == Some("retro"))
-            && due(fired, ChaseRung::Retro, &row.task.id, None, CADENCE_STUCK_SECS, now)
+            && due(fired, ChaseRung::Retro, &row.task.id, None, CHASE_CADENCE_SECS, now)
             && rows.iter().any(|child| child.task.parent.as_ref() == Some(&row.task.id))
             && rows
                 .iter()
@@ -344,42 +451,9 @@ pub(crate) fn crossings(
         }
     }
 
-    // The rows parked on the user: ONE nudge per row per wait episode, so
-    // a row the lead has acted on (attested, withdrawn, or explicitly
-    // parked) drops out and is never named again. The set is the board's
-    // own derivation (`parked_on_user`), so a verification park a row left
-    // behind under an inherited gate is not chased as a user wait (#2423),
-    // and a wait the lead parked by design is left alone (#2423/D). Rows
-    // bounded by a dependency or a resource are not this list's either.
-    for row in rows.iter().filter(|row| {
-        row.task.status == TaskStatus::Waiting
-            && parked_on_user(&row.task)
-            && row.task.waiting_on.as_ref().is_some_and(|wait| !wait.parked)
-            && row.task.wait_age_secs(now).is_some_and(|age| age > CADENCE_STUCK_SECS)
-    }) {
-        let since = waiting_since(history, &row.task.id).unwrap_or(SystemTime::UNIX_EPOCH);
-        if fired_since(fired, ChaseRung::UserWaitDigest, &row.task.id, since) {
-            continue;
-        }
-        let what = if row.task.waiting_on.as_ref().is_some_and(|wait| wait.verification) {
-            "a look - approve it on the board, or complete it with tasks__approve and the \
-             approval quoted"
-        } else {
-            "a decision - answer it on the board"
-        };
-        out.push(Crossing {
-            rung: ChaseRung::UserWaitDigest,
-            task_id: Some(row.task.id.clone()),
-            subject: None,
-            seat: Some(lead.clone()),
-            text: format!(
-                "task board: \"{}\" ({}) is waiting on the user: {what}. Confirm it's really \
-                 theirs, or re-plan.",
-                row.task.subject,
-                fmt_secs(row.task.wait_age_secs(now).unwrap_or(row.updated_secs_ago)),
-            ),
-        });
-    }
+    // **A wait on the user is never chased by an agent.** The board shows
+    // it, the drive excludes it, and no rung names it: a decision, and a
+    // look, are the user's to give when they come back.
 
     for label in unaccounted {
         // **The log is the whole slate**, this rung's included: the newest
@@ -388,7 +462,7 @@ pub(crate) fn crossings(
         // does that, durably - so its next drift is named at once, across a
         // restart too.
         if durable_last_named(fired, label)
-            .is_none_or(|at| since_secs(at, now) >= CADENCE_BURNING_SECS)
+            .is_none_or(|at| since_secs(at, now) >= CHASE_CADENCE_SECS)
         {
             out.push(Crossing {
                 rung: ChaseRung::Unaccounted,
@@ -400,6 +474,25 @@ pub(crate) fn crossings(
         }
     }
     out
+}
+
+/// The newest firing of one rung for one row and subject, if any: the
+/// escalation counts its cadence from the re-plan ask's own firing.
+fn last_fired(
+    fired: &[TaskChase],
+    rung: ChaseRung,
+    id: &TaskId,
+    subject: Option<&str>,
+) -> Option<SystemTime> {
+    fired
+        .iter()
+        .filter(|chase| {
+            chase.rung == rung
+                && chase.task_id.as_ref() == Some(id)
+                && chase.subject.as_deref() == subject
+        })
+        .map(|chase| chase.at)
+        .max()
 }
 
 /// What an epic's owner is asked when its children have all stopped: the
@@ -547,19 +640,19 @@ impl Workspace {
             }
             let crossings = crossings(&lead, &rows, &history, &unaccounted, &fired, now);
             for crossing in crossings {
+                // The re-plan ask is a state, not a message alone: the row
+                // is parked waiting on its owner before the owner hears, so
+                // the board shows the same thing the message says.
+                if crossing.rung == ChaseRung::EstimateNudge
+                    && let Some(id) = &crossing.task_id
+                {
+                    self.park_overrun(&project, id);
+                }
                 let target = ladder(&crossing, &lead, |seat| self.seat_is_live(seat));
-                let mut landed = false;
                 if let Some(target) = &target
                     && deliver.to_seat(target, &crossing.text) == Delivery::Delivered
                 {
                     delivered += 1;
-                    landed = true;
-                }
-                // A user nudge is one shot per row: a tick that found every
-                // seat asleep must not consume it, or the row's only nudge is
-                // lost. Every other rung keeps its mark-alone behaviour.
-                if crossing.rung == ChaseRung::UserWaitDigest && !landed {
-                    continue;
                 }
                 self.record_chase(&TaskChase {
                     task_id: crossing.task_id.clone(),
@@ -856,10 +949,10 @@ mod tests {
         let deliver = Recording::default();
 
         assert_eq!(sweep(&ws, &deliver, 100), 1, "named on appearance");
-        assert_eq!(sweep(&ws, &deliver, 399), 0, "quiet inside the cadence");
-        assert_eq!(sweep(&ws, &deliver, 400), 1, "named again at it");
-        assert_eq!(sweep(&ws, &deliver, 500), 0, "quiet again");
-        assert_eq!(sweep(&ws, &deliver, 701), 1, "and again at the next one");
+        assert_eq!(sweep(&ws, &deliver, 100 + CHASE_CADENCE_SECS - 1), 0, "quiet inside it");
+        assert_eq!(sweep(&ws, &deliver, 100 + CHASE_CADENCE_SECS), 1, "named again at it");
+        assert_eq!(sweep(&ws, &deliver, 200 + CHASE_CADENCE_SECS), 0, "quiet again");
+        assert_eq!(sweep(&ws, &deliver, 100 + 2 * CHASE_CADENCE_SECS), 1, "and at the next one");
     }
 
     /// A worker that accounts resets its slate, durably: the naming goes
@@ -908,7 +1001,11 @@ mod tests {
             "and the naming is on the log, where a fresh process would read it",
         );
         assert_eq!(sweep(&ws, &deliver, 200), 0, "no pass re-names it inside the cadence");
-        assert_eq!(sweep(&ws, &deliver, 401), 1, "the cadence runs off the logged naming");
+        assert_eq!(
+            sweep(&ws, &deliver, 100 + CHASE_CADENCE_SECS + 1),
+            1,
+            "the cadence runs off the logged naming",
+        );
     }
 
     /// The 30-minute class on a rung with no floor: a stalled queue
@@ -985,19 +1082,32 @@ mod tests {
     /// The 1.5x escalation repeats every five minutes while the row
     /// stays over.
     #[test]
-    fn the_escalation_repeats_at_its_cadence() {
+    fn the_escalation_fires_once_after_the_ask_waits_out_the_cadence() {
         let dir = tempdir().expect("tempdir");
         let ws = fixture(dir.path());
         let _lead_rx = live_lead(&ws);
-        running_over_estimate(&ws, "t-1", None);
+        let owner = SessionSlot::worker("TestOrg", PROJECT, "w-1");
+        let _owner_rx = ws.install_testing_stub(&owner);
+        running_over_estimate(&ws, "t-1", Some("w-1"));
         let deliver = Recording::default();
 
+        // The ask lands at once; the escalation waits the cadence from it.
         sweep(&ws, &deliver, 200);
-        assert_eq!(says(&deliver, "is at"), 1, "escalated once: {:?}", deliver.seen.lock());
-        sweep(&ws, &deliver, 400);
-        assert_eq!(says(&deliver, "is at"), 1, "quiet inside the cadence");
-        sweep(&ws, &deliver, 501);
-        assert_eq!(says(&deliver, "is at"), 2, "escalated again at it");
+        assert_eq!(says(&deliver, "parked waiting on you"), 1, "{:?}", deliver.seen.lock());
+        assert_eq!(says(&deliver, "the re-plan ask is unanswered"), 0, "not yet");
+        sweep(&ws, &deliver, 200 + CHASE_CADENCE_SECS);
+        assert_eq!(
+            says(&deliver, "the re-plan ask is unanswered"),
+            1,
+            "the lead hears once the ask waited: {:?}",
+            deliver.seen.lock(),
+        );
+        sweep(&ws, &deliver, 200 + 4 * CHASE_CADENCE_SECS);
+        assert_eq!(
+            says(&deliver, "the re-plan ask is unanswered"),
+            1,
+            "and the chase stops after that, however long the overrun holds",
+        );
     }
 
     /// A row parked on the user - a decision wait, or the look's own
@@ -1018,63 +1128,6 @@ mod tests {
         });
         row.updated_at = epoch(updated);
         ws.seed_test_task(row);
-    }
-
-    /// Every row parked on the user gets ONE nudge of its own, and none
-    /// repeats on the cadence.
-    #[test]
-    fn every_user_wait_takes_one_nudge_and_none_repeats() {
-        let dir = tempdir().expect("tempdir");
-        let ws = fixture(dir.path());
-        let _lead_rx = live_lead(&ws);
-        for id in ["t-1", "t-2", "t-3"] {
-            waiting_on_user(&ws, id, 0, false);
-        }
-        let deliver = Recording::default();
-
-        let now = WINDOW + 1;
-        assert_eq!(sweep(&ws, &deliver, now), 3, "one message per row, not one digest");
-        let seen = deliver.seen.lock();
-        assert_eq!(seen.len(), 3, "three rows, three nudges");
-        for id in ["t-1", "t-2", "t-3"] {
-            assert!(
-                seen.iter().any(|(_, text)| text.contains(&format!("\"subject {id}\""))),
-                "no nudge names {id}: {seen:?}",
-            );
-        }
-        assert!(
-            seen.iter().all(|(seat, _)| *seat == SessionSlot::lead("TestOrg", PROJECT)),
-            "every nudge goes to the lead",
-        );
-        drop(seen);
-
-        assert_eq!(sweep(&ws, &deliver, now + 1799), 0, "a row is nudged once");
-        assert_eq!(sweep(&ws, &deliver, now + 1800), 0, "and not again on the cadence");
-    }
-
-    /// A verification park takes its own nudge, once; a row that starts
-    /// waiting after the sweep gets one of its own.
-    #[test]
-    fn a_verify_park_takes_its_own_nudge_once() {
-        let dir = tempdir().expect("tempdir");
-        let ws = fixture(dir.path());
-        let _lead_rx = live_lead(&ws);
-        waiting_on_user(&ws, "t-1", 0, false);
-        waiting_on_user(&ws, "t-2", 0, true);
-        let deliver = Recording::default();
-
-        let now = WINDOW + 1;
-        assert_eq!(sweep(&ws, &deliver, now), 2, "a decision and a park, one nudge each");
-        let seen = deliver.seen.lock();
-        let park = seen.iter().find(|(_, text)| text.contains("subject t-2")).expect("t-2 named");
-        assert!(park.1.contains("a look"), "the park's nudge names the look: {}", park.1);
-        drop(seen);
-        assert_eq!(sweep(&ws, &deliver, now + 1800), 0, "neither is nudged twice");
-
-        // A row that starts waiting after this sweep is a new episode.
-        waiting_on_user(&ws, "t-3", 0, false);
-        assert_eq!(sweep(&ws, &deliver, now + 3600), 1, "the new wait gets its own nudge");
-        assert!(deliver.seen.lock().last().expect("a nudge").1.contains("subject t-3"));
     }
 
     /// A wait the lead parked by design - the user's own deferral - is left
@@ -1178,67 +1231,27 @@ mod tests {
         );
     }
 
-    /// A verification park whose row owns no gate - the shape an inherited
-    /// gate left behind - is not a user wait (#2423): the digest does not
-    /// name it, and no one is asked to confirm it.
+    /// **A wait on the user is never chased by an agent.** A decision and a
+    /// look are the user's to give when they come back: however old, however
+    /// many, no nudge names them, no rung is logged for them, and a live lead
+    /// is not asked to confirm them.
     #[test]
-    fn a_verification_park_without_an_own_gate_stays_out_of_the_digest() {
+    fn a_wait_on_the_user_is_never_chased() {
         let dir = tempdir().expect("tempdir");
         let ws = fixture(dir.path());
         let _lead_rx = live_lead(&ws);
-        waiting_on_user(&ws, "t-1", 0, true);
-        // The same wait on a row whose gate was never its own: the epic
-        // carried it, so the park is not an ask on the user.
-        let mut inherited = task("t-2", TaskStatus::Waiting);
-        inherited.waiting_on = Some(Waiting {
-            kind: Some(WaitingKind::Decision),
-            detail: None,
-            on: None,
-            verification: true,
-            parked: false,
-            since: None,
-        });
-        inherited.updated_at = epoch(0);
-        ws.seed_test_task(inherited);
-        let deliver = Recording::default();
-
-        assert_eq!(sweep(&ws, &deliver, WINDOW + 1), 1, "only the genuine park is nudged");
-        let seen = deliver.seen.lock();
-        assert_eq!(seen.len(), 1, "one nudge, for the row that owns the gate");
-        let text = &seen[0].1;
-        assert!(text.contains("\"subject t-1\""), "the own-gate park joins: {text}");
-        assert!(!text.contains("\"subject t-2\""), "the inherited park stays out: {text}");
-    }
-
-    /// The user nudge never wakes a sleeping lead, and a tick that found it
-    /// asleep does not consume the row's one nudge (#2423/D): nothing is
-    /// delivered and nothing is marked, so the first tick with a live lead
-    /// delivers it. Every other rung keeps its mark-alone behaviour.
-    #[test]
-    fn a_user_wait_nudge_waits_for_a_live_lead() {
-        let dir = tempdir().expect("tempdir");
-        let ws = fixture(dir.path());
         waiting_on_user(&ws, "t-1", 0, false);
+        waiting_on_user(&ws, "t-2", 0, true);
         let deliver = Recording::default();
 
-        assert_eq!(sweep(&ws, &deliver, WINDOW + 1), 0, "nothing delivered");
-        assert!(deliver.seen.lock().is_empty(), "no seat was reached");
+        assert_eq!(sweep(&ws, &deliver, WINDOW + 1), 0, "nothing is delivered for a user wait");
+        assert!(deliver.seen.lock().is_empty(), "no seat is asked to act on it");
+        assert_eq!(sweep(&ws, &deliver, WINDOW + 3600), 0, "and it stays quiet on the cadence");
         assert!(
-            !ws.chases_for_project(PROJECT)
-                .iter()
-                .any(|chase| chase.rung == ChaseRung::UserWaitDigest),
-            "a tick that found the lead asleep must not spend the row's one nudge",
+            ws.chases_for_project(PROJECT).is_empty(),
+            "no rung is logged for a wait on the user: {:?}",
+            ws.chases_for_project(PROJECT),
         );
-
-        let _lead_rx = live_lead(&ws);
-        assert_eq!(sweep(&ws, &deliver, WINDOW + 2), 1, "the first awake tick delivers it");
-        assert!(
-            ws.chases_for_project(PROJECT)
-                .iter()
-                .any(|chase| chase.rung == ChaseRung::UserWaitDigest),
-            "and the landed nudge is on the log",
-        );
-        assert_eq!(sweep(&ws, &deliver, WINDOW + 1800), 0, "then it is spent");
     }
 
     /// The estimate crossing asks the owner once, ever - a later sweep
@@ -1276,11 +1289,16 @@ mod tests {
         assert_eq!(seen[0].0, SessionSlot::worker("TestOrg", PROJECT, "w-1"));
         assert!(seen[0].1.contains("subject t-1"), "the message names the row: {}", seen[0].1);
         assert!(
-            seen[0].1.contains("A new estimate, completing it, or parking it"),
-            "the ask names what actually clears the overrun, not an update: {}",
+            seen[0].1.contains("It is parked waiting on you: rescope it, split it, or close it"),
+            "the ask names the re-plan the overrun owes: {}",
             seen[0].1,
         );
         drop(seen);
+        assert_eq!(
+            ws.tasks_for_project(PROJECT)[0].status,
+            TaskStatus::Waiting,
+            "the ask is a state: the row is parked waiting on its owner",
+        );
 
         assert_eq!(sweep(&ws, &deliver, 140), 0, "the rung never repeats");
         assert_eq!(deliver.seen.lock().len(), 1, "and nothing more was said");
@@ -1320,86 +1338,150 @@ mod tests {
         );
     }
 
-    /// One nudge per wait EPISODE: the row's own newest transition into
-    /// waiting is the episode key, so a row that left waiting and came back
-    /// takes a fresh nudge rather than inheriting the spent one (#2423/D).
+    /// Standing work is checked when its cadence comes due, counted from the
+    /// row's last touch - a check IS a touch, so touching the row re-arms it.
     #[test]
-    fn a_wait_re_entering_after_a_move_is_a_new_nudge() {
+    fn a_standing_row_is_checked_when_its_cadence_comes_due() {
         let dir = tempdir().expect("tempdir");
         let ws = fixture(dir.path());
         let _lead_rx = live_lead(&ws);
-        let mut row = task("t-1", TaskStatus::Waiting);
-        row.waiting_on = Some(Waiting {
-            kind: Some(WaitingKind::Decision),
-            detail: None,
-            on: None,
-            verification: false,
-            parked: false,
-            since: None,
-        });
-        row.updated_at = epoch(100);
+        let owner = SessionSlot::worker("TestOrg", PROJECT, "w-1");
+        let _owner_rx = ws.install_testing_stub(&owner);
+        let mut row = task("t-1", TaskStatus::InProgress);
+        row.kind = forge_primitives::tasks::TaskKind::Standing;
+        row.cadence = Some(Estimate { words: "1h".to_owned(), secs: 3_600 });
+        row.owner = Some(owner.clone());
+        row.updated_at = epoch(0);
         ws.seed_test_task(row);
-        let append = |from: Option<TaskStatus>, to: TaskStatus, at: u64| {
-            let guard = ws.db.lock();
-            crate::store::task_history::append(
-                guard.as_ref().expect("db"),
-                &[TaskTransition {
-                    task_id: TaskId::from("t-1"),
-                    project_name: PROJECT.to_owned(),
-                    from,
-                    to,
-                    at: epoch(at),
-                    by: By::System,
-                }],
-            )
-            .expect("history");
-        };
-        append(Some(TaskStatus::Pending), TaskStatus::Waiting, 100);
         let deliver = Recording::default();
 
-        assert_eq!(sweep(&ws, &deliver, 3000), 1, "the episode's first nudge");
-        // Off waiting and back: a new episode at 4100.
-        append(Some(TaskStatus::Waiting), TaskStatus::InProgress, 4000);
-        append(Some(TaskStatus::InProgress), TaskStatus::Waiting, 4100);
-        assert_eq!(sweep(&ws, &deliver, 6000), 1, "the new episode is nudged");
-        assert_eq!(sweep(&ws, &deliver, 9000), 0, "and that nudge is spent in turn");
+        assert_eq!(sweep(&ws, &deliver, 3_599), 0, "not due yet");
+        assert_eq!(sweep(&ws, &deliver, 3_601), 1, "due: the owner is asked");
+        let seen = deliver.seen.lock();
+        assert_eq!(seen[0].0, owner, "the check goes to the row's owner");
+        assert!(seen[0].1.contains("due for its check (every 1h)"), "{}", seen[0].1);
+        drop(seen);
+        assert_eq!(sweep(&ws, &deliver, 4_000), 0, "one ask per touch");
+
+        // The owner checks it: the touch re-arms the cadence.
+        ws.with_tasks_mut(|tasks| {
+            let row = tasks.iter_mut().find(|task| task.id == TaskId::from("t-1")).expect("row");
+            row.updated_at = epoch(4_000);
+        });
+        assert_eq!(sweep(&ws, &deliver, 4_100), 0, "a fresh touch is not due");
+        assert_eq!(sweep(&ws, &deliver, 7_601), 1, "the next cadence is a new check");
     }
 
-    /// A dependency or a resource wait is not the user's: neither is nudged
-    /// as a user wait however the rows around it are gated (#2415).
+    /// An in-progress row with a LIVE owner and no movement is stuck, not
+    /// gone: the owner is asked, and a new touch re-arms the ask.
     #[test]
-    fn resource_and_dependency_waits_are_not_the_users() {
+    fn a_stuck_row_is_asked_about() {
         let dir = tempdir().expect("tempdir");
         let ws = fixture(dir.path());
         let _lead_rx = live_lead(&ws);
-        for (id, kind) in [("t-1", WaitingKind::Dependency), ("t-2", WaitingKind::Resource)] {
-            let mut row = task(id, TaskStatus::Waiting);
-            row.waiting_on = Some(Waiting {
-                kind: Some(kind),
-                detail: None,
-                on: None,
-                verification: false,
-                parked: false,
-                since: None,
-            });
-            row.updated_at = epoch(0);
-            ws.seed_test_task(row);
-        }
+        let owner = SessionSlot::worker("TestOrg", PROJECT, "w-1");
+        let _owner_rx = ws.install_testing_stub(&owner);
+        let mut row = task("t-1", TaskStatus::InProgress);
+        row.owner = Some(owner.clone());
+        row.updated_at = epoch(0);
+        ws.seed_test_task(row);
+        let deliver = Recording::default();
+
+        assert_eq!(sweep(&ws, &deliver, WINDOW), 0, "inside the band, no ask");
+        assert_eq!(sweep(&ws, &deliver, WINDOW + 1), 1, "past it, the owner hears");
+        let seen = deliver.seen.lock();
+        assert_eq!(seen[0].0, owner);
+        assert!(seen[0].1.contains("has not changed in"), "{}", seen[0].1);
+        drop(seen);
+        assert_eq!(sweep(&ws, &deliver, WINDOW + 1_000), 0, "one ask per last touch");
+    }
+
+    /// A connector's look at a link AFTER the row's last touch is new
+    /// input: the owner is asked whether the row needs to move, once per
+    /// check - a fresher check is a new fact.
+    #[test]
+    fn a_check_after_the_last_touch_is_new_input() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let owner = SessionSlot::worker("TestOrg", PROJECT, "w-1");
+        let _owner_rx = ws.install_testing_stub(&owner);
+        let check_at = epoch(2_000);
+        let mut row = task("t-1", TaskStatus::Pending);
+        row.owner = Some(owner.clone());
+        row.updated_at = epoch(1_000);
+        row.links.push(forge_primitives::tasks::TaskLink {
+            kind: forge_primitives::tasks::LinkKind::Pr,
+            label: None,
+            target: "https://example.invalid/pull/7".to_owned(),
+            state: Some("merged".to_owned()),
+            last_check: Some(forge_primitives::tasks::LinkCheck {
+                at: check_at,
+                state: Some("merged".to_owned()),
+                head: Some("abc123".to_owned()),
+                ci: Some("passing".to_owned()),
+                problem: None,
+            }),
+            added_at: epoch(0),
+        });
+        ws.seed_test_task(row);
+        let deliver = Recording::default();
+
+        assert_eq!(sweep(&ws, &deliver, 3_000), 1, "the check is news");
+        let seen = deliver.seen.lock();
+        assert_eq!(seen[0].0, owner, "the owner is asked");
+        assert!(seen[0].1.contains("pull/7"), "the link is named: {}", seen[0].1);
+        assert!(seen[0].1.contains("merged; CI passing"), "with what it said: {}", seen[0].1);
+        drop(seen);
+        assert_eq!(sweep(&ws, &deliver, 3_100), 0, "one ask per check");
+
+        // A fresher check is a new fact.
+        ws.with_tasks_mut(|tasks| {
+            let row = tasks.iter_mut().find(|task| task.id == TaskId::from("t-1")).expect("row");
+            let check = row.links[0].last_check.as_mut().expect("check");
+            check.at = epoch(3_200);
+            check.state = Some("open".to_owned());
+        });
+        assert_eq!(sweep(&ws, &deliver, 3_300), 1, "the fresher check is asked about");
+    }
+
+    /// A dependency wait's chase goes to the BLOCKER's owner, never to the
+    /// lead by default: the blocker is the one who can end it.
+    #[test]
+    fn a_dependency_chase_goes_to_the_blocker() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _lead_rx = live_lead(&ws);
+        let blocker_slot = SessionSlot::worker("TestOrg", PROJECT, "w-blocker");
+        let _blocker_rx = ws.install_testing_stub(&blocker_slot);
+        let mut blocker = task("t-blocker", TaskStatus::InProgress);
+        blocker.owner = Some(blocker_slot.clone());
+        blocker.updated_at = epoch(0);
+        ws.seed_test_task(blocker);
+        let mut waiter = task("t-waiter", TaskStatus::Waiting);
+        waiter.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::Dependency),
+            detail: None,
+            on: Some(TaskId::from("t-blocker")),
+            verification: false,
+            parked: false,
+            since: Some(epoch(0)),
+        });
+        waiter.updated_at = epoch(0);
+        ws.seed_test_task(waiter);
         let deliver = Recording::default();
 
         sweep(&ws, &deliver, WINDOW + 1);
-        // The stuck-wait rung may name them to the LEAD ("unblock it"), which
-        // is the task's business; what neither may be is the user's.
+        let seen = deliver.seen.lock();
+        let stalled = seen
+            .iter()
+            .find(|(_, text)| text.contains("on your row"))
+            .unwrap_or_else(|| panic!("no dependency chase: {seen:?}"));
+        assert_eq!(stalled.0, blocker_slot, "the blocker's owner hears it");
         assert!(
-            deliver.seen.lock().iter().all(|(_, text)| !text.contains("waiting on the user")),
-            "a dependency or resource wait was listed as the user's: {:?}",
-            deliver.seen.lock(),
-        );
-        assert!(
-            ws.chases_for_project(PROJECT)
-                .iter()
-                .all(|chase| chase.rung != ChaseRung::UserWaitDigest),
-            "and neither leaves a user-wait mark",
+            stalled.1.contains("\"subject t-waiter\""),
+            "naming the waiting row: {}",
+            stalled.1
         );
     }
 

@@ -759,11 +759,12 @@ fn start_subsystems(workspace: &Arc<Workspace>) {
     // drive instead of report.
     workspace.start_chase_sweep();
 
-    // Start the idle sweep: every ~60s a lead with nothing in flight is
-    // handed the board sweep, once per two hours, with a six-hour
-    // fallback for a lead that never goes idle. Delivery never wakes a
-    // sleeping session.
-    workspace.start_idle_sweep();
+    // Start the drive: every ~60s a lead that has stopped with work on
+    // the board is nudged with the board's facts and one ask - continue,
+    // hand off, or say why not - at most once per 30 minutes per project.
+    // A wait on the user never drives an agent, and delivery never wakes
+    // a sleeping session.
+    workspace.start_drive();
 
     // Start the Gotify subsystem when configured with at least one
     // durable subscription loaded at boot; no-op otherwise.
@@ -1852,21 +1853,21 @@ port = 49201
         );
     }
 
-    /// **The wave starts the idle sweep**: without the call the feature is
-    /// dark in every real boot while every unit test stays green.
+    /// **The wave starts the drive**: without the call the feature is dark
+    /// in every real boot while every unit test stays green.
     #[tokio::test]
-    async fn the_boot_wave_starts_the_idle_sweep() {
+    async fn the_boot_wave_starts_the_drive() {
         let (workspace, _dir) = boot_fixture();
         assert!(
-            !workspace.supervisor().snapshot().iter().any(|member| member.name == "idle_sweep"),
-            "the fixture starts with the idle sweep unstarted, or this test proves nothing",
+            !workspace.supervisor().snapshot().iter().any(|member| member.name == "drive"),
+            "the fixture starts with the drive unstarted, or this test proves nothing",
         );
 
         start_subsystems(&workspace);
 
         assert!(
-            workspace.supervisor().snapshot().iter().any(|member| member.name == "idle_sweep"),
-            "the boot wave starts the idle sweep",
+            workspace.supervisor().snapshot().iter().any(|member| member.name == "drive"),
+            "the boot wave starts the drive",
         );
     }
 

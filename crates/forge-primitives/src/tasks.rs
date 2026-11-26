@@ -396,7 +396,12 @@ pub struct TaskTransition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChaseRung {
+    /// A finite row's worked time passed its estimate: the one re-plan ask
+    /// to its owner (which parks the row), then nothing until an estimate
+    /// is restated.
     EstimateNudge,
+    /// The re-plan ask went unanswered past the cadence: the lead hears
+    /// once.
     Escalate,
     QueueStall,
     WaitStall,
@@ -407,9 +412,17 @@ pub enum ChaseRung {
     Death,
     Retro,
     EpicClose,
-    /// One row parked on the user, untouched: one nudge per row per wait
-    /// episode asks the lead to act on it - the chase never spawns a
-    /// session for it.
+    /// A standing row's cadence came due: is it doing its job, should it
+    /// change shape or end?
+    Cadence,
+    /// An in-progress row has not moved past its band, and its owner is
+    /// live: the row is stuck rather than gone.
+    Stuck,
+    /// A connector reported something about a link after the row's last
+    /// touch: the row may be obsolete or urgent now.
+    NewInput,
+    /// Retired: a wait on the user is never chased by an agent, and no
+    /// code fires this. Kept so a firing already in the log decodes.
     UserWaitDigest,
 }
 
