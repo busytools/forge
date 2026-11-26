@@ -3248,6 +3248,32 @@ export function fold(
           suppressed.push({ key: keyOf(at, frame, 'notice'), text: summary });
           continue;
         }
+        // **A completion whose call is still the run's newest row is that
+        // row's own ending** (#3088). The CLI opens a task for a foreground
+        // call that outlives a few seconds and ends it with this frame, whose
+        // summary IS the call's description; the call row already draws those
+        // words and the task fact has already settled it, so the notice is the
+        // same line twice. Position decides, not a timer: nothing may have
+        // been drawn since the call, and a completion arriving after other
+        // rows keeps its marker because the ending is then the news.
+        //
+        // **Only what the call row already states is skipped** (rule 25): a
+        // completed ending whose words are the row's own title. A failure's
+        // reason, a background command's own summary, or any wording the row
+        // lacks still draws its notice, and the id is what names the call - two
+        // calls can share a description.
+        const tail = pending[pending.length - 1];
+        if (
+          shown &&
+          call !== null &&
+          str(frame, 'status') === 'completed' &&
+          tail !== undefined &&
+          tail.tag === 'call' &&
+          tail.leaf.id === call &&
+          tail.leaf.title === summary
+        ) {
+          continue;
+        }
         if (shown) {
           push({
             kind: 'notice',

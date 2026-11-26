@@ -161,7 +161,15 @@ read as one system.
   head's row: a reloaded conversation shows the stretch where the command
   woke the session as its own turn. The live wire carries that completion as
   a system frame rather than the notice row a page holds, and the two draw
-  the same line, so both paths cut the same boundary.
+  the same line, so both paths cut the same boundary. **A foreground call's
+  own ending folds into its row while the call is still the run's newest**: a
+  call that outlives the CLI's task threshold ends with a system frame whose
+  summary is the call's own description, which the row already draws and its
+  status already states, so no second line appears. A completion that arrives
+  after other rows keeps its notice - the ending is then the news - and a
+  failure's, a stopped run's or a background command's ending always draws,
+  whatever its words say. The call is matched by the id the frame names, so
+  two calls sharing a description never take each other's ending.
 - **A read** draws by what the file is, from the same per-format policy the
   Files reader uses: markdown renders as prose, code stays coloured with the
   file's own grammar (a `Justfile` is `just`, a script's shebang names its
