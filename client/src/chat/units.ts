@@ -383,9 +383,9 @@ export interface HookGroupLeaf {
  *
  * **Where it draws depends on what it carries.** A batch carrying output, an
  * error, additional context or a prevented continuation is a row of the turn's
- * work, where it fired; a silent one is counted at the turn's foot by
- * {@link HookFootLeaf}. Both shapes are this leaf, so the two surfaces read one
- * set of fields.
+ * work, where it fired; a silent one is counted by the turn's one
+ * {@link HookFootLeaf} chip, at the point its first silent stop fired. Both
+ * shapes are this leaf, so the two surfaces read one set of fields.
  */
 export interface HookBatchLeaf {
   /** The frame the batch arrived on, which is what the row is keyed by. */
@@ -404,7 +404,8 @@ export interface HookBatchLeaf {
 }
 
 /**
- * A turn's silent hook batches, as one row at its foot.
+ * A turn's silent hook batches, as one row where the turn's first silent stop
+ * fired.
  *
  * **The batch still draws; the row it costs changes.** Every stop runs the
  * same few silent hooks (issue #3054: three, on every stop), and one full
@@ -468,8 +469,8 @@ export function hookBatchOf(frame: unknown, key: string): HookBatchLeaf {
  *
  * **Silent is the everyday case**: the reported seat's every stop ran the same
  * three hooks with no output, no errors and no context (#3054). A batch that
- * reports any of the four keeps its own row; the rest go behind the turn
- * foot's chip.
+ * reports any of the four keeps its own row; the rest go into the turn's one
+ * chip, at the point its first silent stop fired.
  */
 export function carryingBatch(batch: HookBatchLeaf): boolean {
   return (
@@ -2400,13 +2401,12 @@ export function fold(
    */
   let pending: WorkRow[] = [];
   /**
-   * The turn's silent hook batches, in arrival order: the turn foot's chip.
-   *
-   * Kept apart from `pending` because the chip is drawn once, at the foot,
-   * however many batches it counts - and a batch that carries anything is not
-   * silent and went into `pending` as its own row.
+   * The unit holding the turn's `hooks` chip, once its first silent batch has
+   * landed. One chip per turn, however many batches it counts: a later silent
+   * batch rewrites this unit's row in place. A batch that carries anything is
+   * not silent and went into `pending` as a row of its own.
    */
-  const silentBatches: HookBatchLeaf[] = [];
+  let chipUnit: Extract<Unit, { kind: 'leaves' }> | null = null;
   /**
    * The endings this fold suppressed because the page holds the dispatch
    * they name.
@@ -2761,6 +2761,61 @@ export function fold(
     localCommandAt = null;
   };
 
+  /**
+   * The `hooks` chip a silent batch draws, at the batch's own fold position.
+   *
+   * **A stop is a row of the turn's work like any other**, so it keeps the
+   * place its frame has: the pending work above it flushes, the chip joins the
+   * run that closes there, and every row the turn gains after the stop draws
+   * below it. The chip used to be spliced at the END of the fold instead,
+   * with no position at all - so a live turn, re-folded under every arriving
+   * frame, kept re-deriving it as its last row and grew upward beneath it
+   * (#3092).
+   *
+   * One chip per turn, however many stops ran: a later silent batch rewrites
+   * the same row with the count grown, and the row keeps the key of the batch
+   * that first drew it, so it is named the same across every fold of the
+   * turn.
+   */
+  const drawSilent = (batch: HookBatchLeaf): void => {
+    flushWork();
+    const held = chipUnit?.rows[0];
+    if (chipUnit !== null && held !== undefined && held.tag === 'hookfoot') {
+      const foot: Extract<WorkRow, { tag: 'hookfoot' }> = {
+        ...held,
+        batches: [...held.batches, batch],
+        actions: held.actions + batch.actions,
+      };
+      const replaced = { ...chipUnit, rows: [foot] };
+      const at = units.indexOf(chipUnit);
+      // The unit is the one this fold pushed, and nothing is inserted before
+      // it: units append, and a result's splice lands after the last unit
+      // that is not an arrived row. The push is a fallback that keeps the
+      // batch drawn if that ever stops holding.
+      if (at < 0) units.push(replaced);
+      else units[at] = replaced;
+      chipUnit = replaced;
+      return;
+    }
+    const foot: Extract<WorkRow, { tag: 'hookfoot' }> = {
+      tag: 'hookfoot',
+      key: `${batch.key}#hookfoot`,
+      batches: [batch],
+      actions: batch.actions,
+    };
+    const prior = units[units.length - 1];
+    if (prior !== undefined && prior.kind === 'leaves') {
+      // The run the stop closed keeps the chip as its last row, which draws it
+      // with the work's own spacing rather than as a block of its own.
+      const grown = { ...prior, rows: [...prior.rows, foot] };
+      units[units.length - 1] = grown;
+      chipUnit = grown;
+      return;
+    }
+    chipUnit = { kind: 'leaves', key: foot.key, rows: [foot] };
+    units.push(chipUnit);
+  };
+
   for (const [at, frame] of frames.entries()) {
     // A sub-agent's frames are the SUBAGENTS surface's, not the chat's.
     if (isDispatched(frame)) continue;
@@ -2832,15 +2887,15 @@ export function fold(
         const batch = hookBatchOf(frame, keyOf(at, frame, 'hookbatch'));
         // A zero-action frame draws nothing: there is no batch to speak of.
         if (batch.actions > 0) {
-          // **A row of the turn's work, where it fired, or a count at the
-          // turn's foot.** A batch that carries anything - output, an error,
-          // additional context, a prevented continuation - is information the
-          // reader is owed without opening it, so it keeps its own disclosure
-          // row among the calls it fired between. A silent batch (the same
-          // three plugin hooks on every stop, #3054) is collected and drawn as
-          // one chip at the foot, counted and listed whole behind it.
+          // **A row of the turn's work, where it fired.** A batch that carries
+          // anything - output, an error, additional context, a prevented
+          // continuation - is information the reader is owed without opening
+          // it, so it keeps its own disclosure row among the calls it fired
+          // between. A silent batch (the same three plugin hooks on every
+          // stop, #3054) draws the turn's one chip at the same point, counted
+          // and listed whole behind it.
           if (carryingBatch(batch)) pending.push({ tag: 'hookbatch', ...batch });
-          else silentBatches.push(batch);
+          else drawSilent(batch);
         }
         continue;
       }
@@ -3878,27 +3933,6 @@ export function fold(
   }
 
   flushWork();
-  // The turn foot's chip: every silent batch as one row, above the turn's own
-  // report where it drew one, because the chip is the last row of the WORK
-  // rather than a footer under the accounting.
-  if (silentBatches.length > 0) {
-    const first = silentBatches[0];
-    const foot: WorkRow = {
-      tag: 'hookfoot',
-      key: first === undefined ? 'hookfoot' : `${first.key}#hookfoot`,
-      batches: silentBatches,
-      actions: silentBatches.reduce((sum, batch) => sum + batch.actions, 0),
-    };
-    const reports = units.map((unit) => unit.kind);
-    const lastReport = reports.lastIndexOf('report');
-    const at = lastReport < 0 ? units.length : lastReport;
-    const held = units[at - 1];
-    if (held !== undefined && held.kind === 'leaves') {
-      units.splice(at - 1, 1, { ...held, rows: [...held.rows, foot] });
-    } else {
-      units.splice(at, 0, { kind: 'leaves', key: foot.key, rows: [foot] });
-    }
-  }
   // **A turn with nothing else keeps its endings' markers.** The suppression
   // above is the dispatch-row rule; a page that later gains the dispatch can
   // take away the only line a held turn had, and a turn drawing nothing is

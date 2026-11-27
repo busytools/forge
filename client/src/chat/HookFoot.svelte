@@ -7,7 +7,8 @@
   import type { HookFootLeaf } from './units';
 
   /**
-   * A turn's silent hook batches, as one row at its foot.
+   * A turn's silent hook batches, as one row where the turn's first silent
+   * stop fired.
    *
    * **The frame still draws; the cost is one row per turn instead of one per
    * stop** (#3054). Every stop of a long session runs the same few Stop hooks
@@ -17,6 +18,9 @@
    * counts the batches and lists every one of them behind its open, so a
    * reader who wants the commands and durations still has them (rule 25: a
    * frame drawn behind a disclosure is drawn, not dropped).
+   *
+   * **The chip keeps the place its first batch fired** (#3092): the rows the
+   * turn gains after that stop draw below it rather than above it.
    *
    * A batch that carries anything is not here: it keeps its own row where it
    * fired.

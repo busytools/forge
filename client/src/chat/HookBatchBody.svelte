@@ -9,7 +9,7 @@
    * the session.
    *
    * **One body for the two places a batch draws** - the carrying batch's own
-   * row and a turn foot's chip - so the two cannot drift on what a batch
+   * row and the turn's chip - so the two cannot drift on what a batch
    * contains.
    */
   let { batch }: { batch: HookBatchLeaf } = $props();
@@ -39,7 +39,7 @@
 {/each}
 <!-- The two facts a batch can carry with no line of their own: output the
      summary names no hook for, and a hook that held the stop back. Either one
-     is why the batch is a row rather than a count at the turn's foot. -->
+     is why the batch is a row rather than a count in the turn's chip. -->
 {#if batch.hasOutput && batch.infos.length === 0 && batch.additionalContext.length === 0 && batch.errors.length === 0}
   <div class="term">a hook printed output the CLI named no hook for</div>
 {/if}

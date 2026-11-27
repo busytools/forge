@@ -11,9 +11,9 @@
    * any errors on the summary, every hook and its context behind the open.
    *
    * **Only a carrying batch is a row.** A silent one - the same few plugin
-   * hooks on every stop, printing nothing - goes behind the turn foot's chip
-   * (`HookFoot.svelte`), because a full disclosure row per stop is what filled
-   * the view (#3054). A batch that reports output, an error, additional
+   * hooks on every stop, printing nothing - goes into the turn's chip
+   * (`HookFoot.svelte`), drawn where its first batch fired, because a full
+   * disclosure row per stop is what filled the view (#3054). A batch that reports output, an error, additional
    * context or a prevented continuation is what the reader is owed at a
    * glance, so this row stays.
    *
