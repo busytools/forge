@@ -3,12 +3,18 @@
  *
  * **The core's device list is not this.** That list is every device the
  * server holds; this is whether *this* client can answer the gesture, which
- * is a local question - the gate's item on this machine - and the answer the
- * enrol control needs.
+ * is a local question - the record an enrol minted on this machine - and the
+ * answer the enrol control needs.
+ *
+ * **The keychain is not asked.** On macOS a read that decides whether an item
+ * exists is itself a Touch ID prompt, and a skipped read of a protected item
+ * answers not-found, so the keychain can neither prompt nor lie for this
+ * question. The record is also what the release names: a client whose id is
+ * gone cannot release, so "ready to enrol" is the truthful state.
  */
 
-import { availability, enrolled } from './index';
-import { VAULT_PURPOSE } from './vault';
+import { availability } from './index';
+import { enrolmentIdIfMinted } from './vault-enrolment';
 
 /** A gate that can hold a key, and which gesture answers it. `biometric` is
  *  false on a Mac with no sensor: the device password is the gesture then,
@@ -30,7 +36,7 @@ export async function readDeviceGate(): Promise<DeviceGate> {
     return { outcome: 'unavailable', reason: gate.reason ?? 'this device has no authenticator' };
   }
   const biometric = gate.biometric;
-  return (await enrolled(VAULT_PURPOSE))
+  return enrolmentIdIfMinted() !== null
     ? { outcome: 'enrolled', biometric }
     : { outcome: 'ready', biometric };
 }

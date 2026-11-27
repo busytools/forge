@@ -29,13 +29,16 @@ vi.mock('@tauri-apps/api/core', () => ({
   },
 }));
 
-/** The vault consumer's release, which the card calls as its primary action. */
+/** The vault consumer's release, which the card calls as its primary action,
+ *  and the record this client minted when it enrolled. */
 const consumer = vi.hoisted(() => ({
   releaseVaultMaterial: vi.fn(),
+  enrolmentIdIfMinted: vi.fn(),
 }));
 
 vi.mock('../biometric/vault-enrolment', () => ({
   releaseVaultMaterial: consumer.releaseVaultMaterial,
+  enrolmentIdIfMinted: consumer.enrolmentIdIfMinted,
 }));
 
 import Dock from './Dock.svelte';
@@ -115,8 +118,9 @@ beforeEach(() => {
   shell.inTauri = true;
   shell.answers.clear();
   shell.answers.set('biometric_availability', () => ({ available: true, biometric: true }));
-  shell.answers.set('biometric_enrolled', () => true);
   consumer.releaseVaultMaterial.mockReset();
+  consumer.enrolmentIdIfMinted.mockReset();
+  consumer.enrolmentIdIfMinted.mockReturnValue('device-1');
 });
 
 afterEach(() => {
@@ -173,6 +177,35 @@ describe('the locked vault card with an enrolment', () => {
         },
       },
     });
+  });
+
+  /**
+   * **One approval, one release, and no keychain read to decide the drawing.**
+   * The card asks the platform only whether it can answer a gesture at all;
+   * whether this client holds an item comes from its own record (the id an
+   * enrol minted), because asking the keychain is itself a gesture on macOS.
+   * The press is the probe: a release with nothing stored answers
+   * `not_enrolled` without a prompt, and the card falls to the password.
+   */
+  it('asks the gate only what it can answer without a gesture', async () => {
+    consumer.releaseVaultMaterial.mockResolvedValue({
+      outcome: 'released',
+      material: { refresh_token: 'refresh-1', user_key: 'user-key-1' },
+    });
+    mountDock(aVaultAsk());
+    await settled();
+
+    expect(
+      shell.calls.map((call) => call.command),
+      'the draw asks for availability and nothing else',
+    ).toEqual(['biometric_availability']);
+    expect(consumer.enrolmentIdIfMinted, 'the record decides the gesture').toHaveBeenCalled();
+
+    button('Unlock with this device')?.click();
+    await settled();
+
+    expect(consumer.releaseVaultMaterial, 'one gesture for the approval').toHaveBeenCalledTimes(1);
+    expect(dispatched, 'one answer').toHaveLength(1);
   });
 
   it('draws the working state while the prompt is up', async () => {
@@ -284,15 +317,41 @@ describe('the locked vault card with an enrolment', () => {
   });
 });
 
+describe('the vault card with the vault already unlocked', () => {
+  /**
+   * **An unlocked vault costs no gesture at all.** The card is an ordinary
+   * approve, so it asks the gate for nothing and its answer carries no unlock
+   * material.
+   */
+  it('asks the gate for nothing and approves without unlock material', async () => {
+    mountDock(aVaultAsk(false));
+    await settled();
+
+    expect(shell.calls, 'no probe while no unlock is needed').toEqual([]);
+    button('Approve')?.click();
+    await settled();
+
+    expect(consumer.releaseVaultMaterial, 'no release').not.toHaveBeenCalled();
+    expect(dispatched, 'one answer').toHaveLength(1);
+    expect(dispatched[0]?.[0]).toEqual({
+      respond_vault_ask: { key: SLOT, id: 'vault-1', answer: { decision: 'approve' } },
+    });
+  });
+});
+
 describe('the locked vault card without an enrolment', () => {
-  it('draws the password card when the device has no enrolment', async () => {
-    shell.answers.set('biometric_enrolled', () => false);
+  it('draws the password card when this client minted no record', async () => {
+    consumer.enrolmentIdIfMinted.mockReturnValue(null);
     mountDock(aVaultAsk());
     await settled();
 
     expect(button('Unlock with this device')).toBeNull();
     expect(document.querySelector('input[type="password"]')).not.toBeNull();
     expect(button('Approve'), 'the password card keeps its approve').not.toBeNull();
+    expect(
+      shell.calls.map((call) => call.command),
+      'the keychain is never read to answer this',
+    ).toEqual(['biometric_availability']);
   });
 
   it('draws the password card where the platform has no gate', async () => {

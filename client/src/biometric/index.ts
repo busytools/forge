@@ -39,18 +39,6 @@ export async function availability(): Promise<Availability> {
   }
 }
 
-/** Whether this device holds a blob for `purpose`. */
-export async function enrolled(purpose: string): Promise<boolean> {
-  if (!isTauri()) return web.enrolled(purpose);
-  try {
-    return await invoke<boolean>('biometric_enrolled', { purpose });
-  } catch {
-    // A gate that cannot answer whether it holds an item is a gate that
-    // cannot be offered; the caller draws the password.
-    return false;
-  }
-}
-
 /** Store `purpose`'s wrapped blob, replacing any blob already there. */
 export async function store(purpose: string, blob: string): Promise<void> {
   if (!isTauri()) return web.store(purpose, blob);
