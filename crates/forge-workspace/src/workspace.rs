@@ -8103,40 +8103,61 @@ impl Workspace {
                     // same route every other board announcement takes.
                     let id = TaskId::from(id.as_str());
                     let now = SystemTime::now();
-                    let row = self
+                    let live = self
                         .board_rows(&project, now, crate::board::DEFAULT_STALE_SECS)
                         .into_iter()
-                        .find(|row| row.task.id == id)
-                        .or_else(|| {
-                            self.archived_tasks_for_project(&project)
-                                .into_iter()
-                                .find(|task| task.id == id)
-                                .map(|task| crate::board::BoardRow {
-                                    task,
-                                    worked_secs: 0,
-                                    updated_secs_ago: 0,
-                                    owner_live: true,
-                                    wait_secs: None,
-                                    marks: crate::board::Marks::default(),
-                                    rollup: None,
-                                    parent_subject: None,
-                                    history: Vec::new(),
-                                    history_total: 0,
-                                })
-                        });
-                    match self.lead_slot_for_project(&project) {
-                        Some(key) => {
-                            let _ = self.update_tx.send(SessionUpdate::TaskDetail {
-                                key,
-                                project: project.clone(),
-                                row: row.map(Box::new),
-                            });
-                        }
-                        None => {
-                            tracing::debug!(
+                        .find(|row| row.task.id == id);
+                    // **A closed row's page is derived like a live one's**,
+                    // and a store it could not read is refused as retryable
+                    // rather than answering "no such row".
+                    let row = match live {
+                        Some(row) => Ok(Some(row)),
+                        None => self.archived_tasks_for_project_checked(&project).map(|archived| {
+                            archived.into_iter().find(|task| task.id == id).map(|task| {
+                                let history = {
+                                    let guard = self.db.lock();
+                                    guard.as_ref().map_or_else(Vec::new, |db| {
+                                        crate::store::task_history::list_for_project(db, &project)
+                                            .unwrap_or_default()
+                                    })
+                                };
+                                let owner_live = task
+                                    .owner
+                                    .as_ref()
+                                    .is_none_or(|owner| self.seat_is_live(owner));
+                                crate::board::detail_row(task, &history, now, owner_live)
+                            })
+                        }),
+                    };
+                    match row {
+                        Ok(row) => match self.lead_slot_for_project(&project) {
+                            Some(key) => {
+                                let _ = self.update_tx.send(SessionUpdate::TaskDetail {
+                                    key,
+                                    project: project.clone(),
+                                    row: row.map(Box::new),
+                                });
+                            }
+                            None => {
+                                tracing::debug!(
+                                    target: "forge_workspace::tasks",
+                                    project = %project,
+                                    "a row-detail read named a project no project carries",
+                                );
+                            }
+                        },
+                        Err(error) => {
+                            tracing::warn!(
                                 target: "forge_workspace::tasks",
+                                event_name = "task_detail_archive_read_failed",
                                 project = %project,
-                                "a row-detail read named a project no project carries",
+                                id = %id.as_str(),
+                                %error,
+                                "a row read could not reach the archive; the read is refused as retryable",
+                            );
+                            self.board_edit_refused(
+                                "a row read",
+                                "the task archive could not be read; retry",
                             );
                         }
                     }

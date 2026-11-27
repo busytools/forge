@@ -330,14 +330,23 @@ pub mod wire;
 /// seat, so the two halves move together. The frames themselves are
 /// unchanged. `baselines/socket/34/` is the record a v34 server emitted.
 ///
-/// **v36 is the task board's retrofit.** A row gains `kind`, `cadence`, its
-/// `decision` record and its `version`, loses `attempt`, and the board's
-/// marks drop from seven to five: `no_movement` folds into `stale` and
-/// `waiting_too_long` into `overdue`, each row carries `owner_live`, and a
-/// terminal row carries no marks at all. A v35 client reads the two gone
-/// marks as absent and draws no chip for them, so it would under-report a
-/// stalled row; the two halves move together.
-/// `baselines/socket/36/` is the record a v36 server emitted.
+/// **v36 is the message lifecycle's.** One lifecycle for a message: a
+/// queued send is the CLI's own `started` row, and a stop-hook batch draws
+/// as one frame. `baselines/socket/36/` is the record a v36 server emitted.
+///
+/// **v37 is the delta subscriptions'.** A subscription's first answer is
+/// its whole read; after that a subject moves by typed patches rather than
+/// a periodic whole read. Its baseline lands with that cut.
+///
+/// **v38 is the task board's retrofit.** A row gains `kind`, `cadence`, its
+/// `request` record, its `version` and the window's fields, loses `attempt`,
+/// and the board's marks drop from seven to five: `no_movement` folds into
+/// `stale` and `waiting_too_long` into `overdue`, each row carries
+/// `owner_live` and the derives the digest's item lines read, and a terminal
+/// row carries no marks at all. A v35 client reads the two gone marks as
+/// absent and draws no chip for them, so it would under-report a stalled
+/// row; the two halves move together. `baselines/socket/38/` is the record a
+/// v38 server emitted.
 ///
 /// **Additive fields do not bump.** `diff.base_error` is one, carried on the
 /// v16-era record: a client older than the field draws the vaguer line it

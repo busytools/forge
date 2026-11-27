@@ -243,6 +243,10 @@ pub struct BoardWire {
 #[serde(rename_all = "snake_case")]
 pub struct ArchivedWire {
     pub projects: Vec<ProjectArchivedWire>,
+    /// The archive read failed: the toggle draws the refusal rather than an
+    /// empty shelf, which would read as "nothing has ended" and be believed.
+    #[serde(default)]
+    pub refused: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -2639,6 +2643,18 @@ const SAMPLE_ROTATE_SECS: u64 = 300;
 /// The window a board never looked at samples over.
 const SAMPLE_WINDOW_SECS: u64 = 24 * 3_600;
 
+/// When a never-looked-at project's sample starts, floored to the hour.
+///
+/// **A cache keyed on a moving window never hits**: `now - 24h` differs on
+/// every read, so the sample's walk would lock every held seat on every
+/// board read for a project nobody has looked at. Floored to the hour, the
+/// window moves in steps a cache can answer from.
+fn sample_since(now: SystemTime) -> SystemTime {
+    let since = now.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |age| age.as_secs());
+    let start = since.saturating_sub(SAMPLE_WINDOW_SECS);
+    SystemTime::UNIX_EPOCH + Duration::from_secs(start - start % 3_600)
+}
+
 /// **The window's attention facts.** When the board was last looked at and
 /// what changed since (the digest strip), how many seats acted inside that
 /// window, and a rotating sample of a few agent actions the leads did not
@@ -2647,7 +2663,7 @@ const SAMPLE_WINDOW_SECS: u64 = 24 * 3_600;
 fn attention(state: &TransportState, project: &str, now: SystemTime) -> Value {
     let surface = &state.surface;
     let (last_look, delta) = surface.board_attention(project);
-    let since = last_look.unwrap_or_else(|| now - Duration::from_secs(SAMPLE_WINDOW_SECS));
+    let since = last_look.unwrap_or_else(|| sample_since(now));
     // The held copies' walk is the expensive part, and it is the
     // conversation set's to answer: it caches by the copies' version, so a
     // board read with nothing new touches no seat.
@@ -2731,13 +2747,24 @@ fn window_row(row: &forge_workspace::board::BoardRow) -> Value {
 fn archived(surface: &ViewSurface) -> ArchivedWire {
     let roster = surface.roster();
     let mut projects = Vec::with_capacity(roster.projects.len());
+    let mut refused = None;
     for project in &roster.projects {
-        projects.push(ProjectArchivedWire {
-            project: ProjectBoardIdentity { org: project.org.clone(), name: project.name.clone() },
-            rows: surface.archived_rows(&project.name),
-        });
+        match surface.archived_rows(&project.name) {
+            Ok(rows) => projects.push(ProjectArchivedWire {
+                project: ProjectBoardIdentity {
+                    org: project.org.clone(),
+                    name: project.name.clone(),
+                },
+                rows,
+            }),
+            // One store answers every project, so one failure is the read's.
+            Err(error) => {
+                refused = Some(format!("the task archive could not be read: {error}"));
+                break;
+            }
+        }
     }
-    ArchivedWire { projects }
+    ArchivedWire { projects, refused }
 }
 
 /// How long an encode waits for the fold loop to catch up before filling the

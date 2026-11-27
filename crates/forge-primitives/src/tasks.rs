@@ -182,8 +182,7 @@ pub enum AnswerValue {
 
 /// An answer as it landed: the value the kind needed, when, and the note
 /// the person left with it. A teaching's lesson is kept here too, so the
-/// row carries the note its class was settled by even when the store's
-/// policy write is the thing that failed.
+/// record itself names the note its class was settled by.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Answer {
     pub value: AnswerValue,

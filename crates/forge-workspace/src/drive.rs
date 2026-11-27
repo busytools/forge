@@ -11,8 +11,8 @@
 //!
 //! The nudge carries those facts and one ask: continue, hand off, or say
 //! why not. It is never sent for a project whose only claim on the lead is
-//! a wait on the user - a decision and a look are the user's to give, and
-//! no agent chases them.
+//! a wait on the user - an ask and a look are the user's to give, and no
+//! agent chases them.
 //!
 //! Caps: one outstanding nudge per project - the same claim is never
 //! re-sent, and a CHANGED claim waits out [`DRIVE_MIN_GAP_SECS`] so a

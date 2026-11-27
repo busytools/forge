@@ -264,6 +264,11 @@
     border: 1px solid rgba(224,104,62,.45); }
   .w-ghost { background: transparent; color: var(--dim); border: 1px dashed var(--line); }
   .w-note { flex: 1 1 180px; min-height: 32px; }
+  .w-note-row { display: inline-flex; flex: 1 1 180px; align-items: center; gap: 6px; }
+  .w-note-row .w-note { flex: 1; }
+  .mic { display: inline-flex; flex: none; width: 24px; height: 24px;
+    align-items: center; justify-content: center; color: var(--dim); }
+  .mic svg { width: 16px; height: 16px; }
   .w-hold { margin: 0; color: var(--warn); font-size: 12.5px; flex-basis: 100%; }
   .w-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px;
     padding-top: 8px; border-top: 1px solid var(--line);
@@ -451,7 +456,12 @@
           <div class="w-actions">
             <button class="w-primary">approve</button>
             <button class="w-secondary">send back</button>
-            <button class="w-ghost" aria-expanded="false">add a note</button>
+            <!-- The note box open, with the composer's own mic beside it:
+                 every word box on the board carries one. -->
+            <span class="w-note-row">
+              <input class="b-in w-note" type="text" placeholder="what to change" aria-label="what to change (sent back with it)" />
+              <span class="mic" title="press to dictate" aria-label="dictate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5" /><path d="M5 11a7 7 0 0 0 14 0" /><path d="M12 18v3" /></svg></span>
+            </span>
           </div>
           <div class="w-foot">
             <a class="w-foot-link" href="./web-session.html">discuss</a>
@@ -607,24 +617,32 @@
 
   <section class="w-window" aria-label="the board window with nothing waiting">
     <section class="w-digest" aria-label="since your last look">
-      <button class="w-digest-head" aria-expanded="true">
-        <span class="w-digest-title">since your last look</span>
-        <span class="w-digest-line">2 merged &middot; 3 moved &middot; 1 landed &middot; sampled 3 of 41 agent actions</span>
-      </button>
-      <ul class="w-list w-sample" aria-label="the sampled agent actions">
-        <li class="w-exc"><span class="w-strong">builder</span>
-          <span class="w-why">Bash</span>
-          <span class="w-why">cargo nextest run -p forge-workspace</span>
-          <span class="w-why">13:42</span></li>
-        <li class="w-exc"><span class="w-strong">reviewer</span>
-          <span class="w-why">Read</span>
-          <span class="w-why">crates/forge-server/src/transport/wire.rs</span>
-          <span class="w-why">13:40</span></li>
+      <p class="w-digest-title">since your last look</p>
+      <ul class="w-digest-lines">
+        <li class="w-digest-row"><span class="w-digest-line w-digest-static"><span class="w-digest-label">merged</span><span class="w-n">2</span></span></li>
+        <li class="w-digest-row"><span class="w-digest-line w-digest-static"><span class="w-digest-label">moved</span><span class="w-n">3</span></span></li>
+        <li class="w-digest-row"><span class="w-digest-line w-digest-static"><span class="w-digest-label">landed</span><span class="w-n">1</span></span></li>
+        <li class="w-digest-row"><span class="w-digest-line w-digest-static"><span class="w-digest-label">expired</span><span class="w-n">0</span></span></li>
+        <li class="w-digest-row">
+          <button class="w-digest-line" aria-expanded="true" aria-label="sampled: 3 of 41 agent actions">
+            <span class="w-digest-label">sampled</span><span class="w-n">3 of 41 agent actions</span><span class="w-digest-caret">-</span>
+          </button>
+          <ul class="w-list w-sample" aria-label="the sampled agent actions">
+            <li class="w-exc"><span class="w-strong">builder</span>
+              <span class="w-why">Bash</span>
+              <span class="w-why">cargo nextest run -p forge-workspace</span>
+              <span class="w-why">13:42</span></li>
+            <li class="w-exc"><span class="w-strong">reviewer</span>
+              <span class="w-why">Read</span>
+              <span class="w-why">crates/forge-server/src/transport/wire.rs</span>
+              <span class="w-why">13:40</span></li>
+          </ul>
+        </li>
       </ul>
     </section>
     <section aria-labelledby="d-needs-empty">
       <h2 class="w-h" id="d-needs-empty">needs you</h2>
-      <p class="w-claim">nothing needs you - checked 13:48 &middot; 2 agents ran &middot; 2 merged &middot; 3 moved &middot; 1 landed &middot; sampled 3 of 41 agent actions</p>
+      <p class="w-claim">nothing needs you - checked 13:48 &middot; 2 agents ran &middot; sampled 3 of 41 agent actions</p>
     </section>
   </section>
 
@@ -641,7 +659,7 @@
         <div class="b-detail"><a class="b-door" href="./web-board.html">look at <span class="nm">the board page</span></a></div>
         <div class="b-do">
           <button class="b-btn b-ok">approve</button>
-          <input class="b-in" placeholder="what to change" aria-label="what to change (sent back with it)">
+          <span class="w-note-row"><input class="b-in w-note" placeholder="what to change" aria-label="what to change (sent back with it)"><span class="mic" title="press to dictate" aria-label="dictate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="10" height="12" x="7" y="3" rx="5" /><path d="M5 11a7 7 0 0 0 14 0" /><path d="M12 18v3" /></svg></span></span>
           <button class="b-btn b-no">send back</button>
         </div>
       </div>
@@ -649,9 +667,10 @@
         <div class="b-q">the sliver: reproduce first, or draw none?</div>
         <div class="b-why"><span>the rail's defects</span></div>
         <div class="b-why"><span>steward</span><span>2h</span></div>
+        <!-- A decision's door is its enumerated options, never a words box. -->
         <div class="b-do">
-          <input class="b-in" placeholder="your answer">
-          <button class="b-btn b-plain">answer</button>
+          <button class="b-btn b-plain">reproduce first</button>
+          <button class="b-btn b-plain">draw none</button>
         </div>
       </div>
     </div>

@@ -4,9 +4,9 @@
 //! log, on four signals together: the row's KIND (finite work owes a
 //! re-plan on overrun; standing work is checked on its cadence), MOVEMENT
 //! (no touch past the band with a live owner is stuck), NEW INPUT (a
-//! connector saw something after the last touch) and the WAIT's kind (a
-//! decision on the user is never chased, a resource wait is checked, a
-//! dependency chase goes to the blocker's owner).
+//! connector saw something after the last touch) and the WAIT's kind (an
+//! ask on the user is never chased, a resource wait is checked, a dependency
+//! chase goes to the blocker's owner).
 //!
 //! **One cadence, not three.** A finite overrun asks once and parks the
 //! row, and the lead hears the escalation once if the ask goes unanswered;
@@ -171,8 +171,8 @@ pub(crate) fn fmt_secs(secs: u64) -> String {
 /// checked on its cadence), MOVEMENT says whether the owner is working or
 /// stuck, NEW INPUT - a connector's look at a link after the last touch -
 /// may make the row obsolete or urgent, and the WAIT's kind decides who
-/// hears: a decision on the user is never chased, a resource wait is
-/// checked, and a dependency chase goes to the blocker's owner.
+/// hears: an ask on the user is never chased, a resource wait is checked,
+/// and a dependency chase goes to the blocker's owner.
 ///
 /// A finite overrun asks once and parks the row (the sweep does the
 /// write); the lead hears once if the ask goes unanswered past the

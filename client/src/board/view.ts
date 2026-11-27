@@ -143,6 +143,13 @@ export interface WaitingView {
   owner: string | null;
   /** The verify gate, or a question the worker raised. */
   verification: boolean;
+  /** The ask's kind; `null` for a look and for a row written before the
+   *  record - both answer by their own door. */
+  kind: 'decision' | 'clarification' | 'exception' | 'teaching' | null;
+  /** A decision's enumerated options; empty for every other kind. */
+  options: string[];
+  /** A teaching's class, shown beside the ask. */
+  teachingClass: string | null;
   /** The card's title: the wait's own detail, else the row's, else the state's sentence. */
   ask: string;
   /** The row's references, as doors, beside the ask. */
@@ -199,7 +206,7 @@ export function fmtSecs(secs: number): string {
 }
 
 /**
- * Whether a row's wait is the READER's: a decision, or a look park on a row
+ * Whether a row's wait is the READER's: an ask on the user, or a look park on a row
  * carrying its own `verify: 'user'`. The gate is minted on the row, never
  * inherited from its epic (#2423), so a verification wait an inherited gate
  * left behind is a plain wait, not an ask on the reader.
@@ -444,6 +451,10 @@ export function boardView(
         subject: entry.task.subject,
         owner: entry.task.owner === null ? null : entry.task.owner.label,
         verification: entry.task.waiting_on?.verification === true,
+        kind:
+          entry.task.waiting_on?.verification === true ? null : (entry.task.request?.kind ?? null),
+        options: entry.task.request?.options ?? [],
+        teachingClass: entry.task.request?.class ?? null,
         // The ask is the wait's own detail where it states one, else the row's
         // detail - a look parks with no wait detail, and its ask is the row's
         // own words - else the state's sentence.

@@ -46,9 +46,9 @@ export const COALESCE_MS = 50;
 /**
  * How often a watched board re-reads while nothing writes.
  *
- * **The beat exists for what the server computes at read time.** The marks
- * `no_movement` and `waiting_too_long` are four-hour windows and `overdue`
- * follows the row's own estimate, and no frame announces that one crossed.
+ * **The beat exists for what the server computes at read time.** The `stale`
+ * mark's no-movement window and the `overdue` mark (the row's own estimate,
+ * or a wait past the band) cross with time and no frame announces it.
  * The card's worked figure and the waiting card's age are read values too, so
  * they are refreshed at most five minutes after the page is watched again and
  * can be up to the time it was away plus five minutes old - an accepted

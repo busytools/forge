@@ -1489,6 +1489,11 @@ impl Conversations {
                 if let Some(occupant) = occupant {
                     conversation.set_occupant(Some(occupant.clone()));
                 }
+                // **A reseed is a new conversation in the same copy**: the
+                // board sample's cache keys on this copy's identity and
+                // version, so without the bump it would serve the previous
+                // conversation's actions after a resume or a reconnect.
+                held.bump_content();
                 held.reweigh(&conversation)
             };
             // A reader waiting for a copy of another occupant is waiting for

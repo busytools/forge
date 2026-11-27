@@ -194,6 +194,11 @@ function waitAt(task: Task): number {
   return task.waiting_on?.since?.secs_since_epoch ?? task.updated_at.secs_since_epoch;
 }
 
+/** The core's own end rule, mirrored: a failed or canceled child is terminal. */
+function terminal(status: Task['status']): boolean {
+  return status === 'completed' || status === 'failed' || status === 'canceled';
+}
+
 /** Whether the person's own deferral still holds for `task`. */
 export function snoozedNow(task: Task, nowSecs: number): boolean {
   const snooze = task.waiting_on?.snoozed ?? null;
@@ -205,7 +210,7 @@ export function snoozedNow(task: Task, nowSecs: number): boolean {
   return nowSecs < snooze.until.at.secs_since_epoch;
 }
 
-function needCardOf(row: BoardRow, nowSecs: number): NeedCard | null {
+function needCardOf(row: BoardRow, rows: BoardRow[], nowSecs: number): NeedCard | null {
   const task = row.task;
   if (task.status !== 'waiting' || !waitOnUser(task)) return null;
   const wait = task.waiting_on;
@@ -221,16 +226,20 @@ function needCardOf(row: BoardRow, nowSecs: number): NeedCard | null {
     : (request?.question ?? wait?.detail?.trim() ?? `A decision is waiting on ${task.subject}`);
   // Two holds the core would refuse the press for, drawn instead of a door:
   // a root closes its whole tree on completion and cannot while any child
-  // is open, and a completion or approve rests on evidence the gate has
-  // verified.
+  // is OPEN, and a completion or approve rests on evidence the gate has
+  // verified. **Open is the core's own word**: a failed or canceled child is
+  // terminal, so the close no longer waits for it, while the rollup's first
+  // number counts completed children only.
   const evidenceState = evidenceStateOf(task);
-  const openChildren = row.rollup !== null && row.rollup[0] < row.rollup[1];
+  const openChildren = rows.filter(
+    (child) => child.task.parent === task.id && !terminal(child.task.status),
+  ).length;
   const approveBlocked = !verification
     ? null
-    : task.parent === null && row.rollup !== null && openChildren
-      ? `This row closes its epic: ${row.rollup[1] - row.rollup[0]} child ${
-          row.rollup[1] - row.rollup[0] === 1 ? 'row is' : 'rows are'
-        } still open. Close ${row.rollup[1] - row.rollup[0] === 1 ? 'it' : 'them'} first.`
+    : task.parent === null && openChildren > 0
+      ? `This row closes its epic: ${openChildren} child ${
+          openChildren === 1 ? 'row is' : 'rows are'
+        } still open. Close ${openChildren === 1 ? 'it' : 'them'} first.`
       : evidenceState !== 'verified'
         ? 'This row has no verified evidence behind its completion; move it with an evidence claim first.'
         : null;
@@ -374,7 +383,7 @@ export function windowView(
   // reader looks - then every ask by its wait's own age, whichever kinds
   // they are. The rank is age, never the kind's name.
   const needs = rows
-    .map((row) => needCardOf(row, nowSecs))
+    .map((row) => needCardOf(row, rows, nowSecs))
     .filter((card): card is NeedCard => card !== null)
     .sort((a, b) => {
       const lookA = a.kind === 'look' ? 0 : 1;

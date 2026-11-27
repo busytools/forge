@@ -19,6 +19,8 @@ export interface ProjectArchivedWire {
 
 export interface ArchivedWire {
   projects: ProjectArchivedWire[];
+  /** The store could not be read: the toggle says so rather than an empty shelf. */
+  refused?: string | null;
 }
 
 /** What the toggle draws: the read, the refusal, or the wait for one. */
@@ -36,9 +38,11 @@ export function closedTaskFrom(entry: unknown): Task {
 export function archivedFrom(data: unknown): ArchivedWire {
   const held = (typeof data === 'object' && data !== null ? data : {}) as {
     projects?: unknown;
+    refused?: unknown;
   };
   const projects = Array.isArray(held.projects) ? held.projects : [];
   return {
+    refused: typeof held.refused === 'string' ? held.refused : null,
     projects: projects.flatMap((entry) => {
       const project = (entry as { project?: { org?: unknown; name?: unknown } } | null)?.project;
       if (typeof project?.org !== 'string' || typeof project.name !== 'string') return [];
@@ -71,7 +75,15 @@ export function readArchived(connection: Connection): Promise<ArchivedRead> {
     };
     stop = store.value.subscribe((held) => {
       if (held.state.kind === 'ready') {
-        finish({ wire: archivedFrom(held.snapshot), refused: null });
+        // A read can be answered and still carry a store failure: the shelf
+        // draws the refusal, never an empty list that reads as "nothing has
+        // ended".
+        const wire = archivedFrom(held.snapshot);
+        finish(
+          wire.refused === null || wire.refused === undefined
+            ? { wire, refused: null }
+            : { wire: null, refused: wire.refused },
+        );
       } else if (held.state.kind === 'refused') {
         finish({ wire: null, refused: held.state.why });
       }

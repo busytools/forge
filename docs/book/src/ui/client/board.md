@@ -99,6 +99,12 @@ carries:
 | a look | `Approve <artifact> or say what to change` | `approve` (filled), `send back` (outlined), the send-back words behind `add a note` |
 | decision | the question, with the options the lead enumerated | the options as filled pills, answered with one press; the note optional |
 | clarification | a question whose answer is the reader's own words | `answer in your words` opens the box, `answer` sends it as text |
+
+**Every word box on the board carries the composer's own dictation**: the
+send-back field, the answer box, the lesson box and the note all wear the mic,
+a take draws its bar in the field's place while it runs, and its words land
+back in the box that began them - one take per page, the same rule the
+composer and the review page keep.
 | exception | something the run could not settle | `retry`, `rescope`, `drop`, `diagnose` as filled presses, one disposition |
 | teaching | a recurring trouble and the class it belongs to | `write the lesson` opens the box, `settle the class` sends the words as the answer and the lesson |
 
@@ -185,7 +191,7 @@ The lanes face, under the `full board` toggle.
 |---|---|---|
 | Top bar | `back` and the project's name on the breadcrumb line with the seat chips and `done`, and the counts (`N waiting on you`, `N rows`, `N running`) as their own quiet line under it | the route and the snapshot |
 | The switch | `window`, `full board`, `archived` | the page's own state |
-| Waiting on you | the rows whose wait is a decision, each card leading with the wait's ask, with the row's links and a look's artifact beside it; the verify gate (`approve`, a words box, `send back`), or an answer box; a root whose children are not all done draws the count and the send-back instead of `approve` | `waiting_on`, the wait's own start for the age, the row's links, and the row's `rollup` |
+| Waiting on you | the rows whose wait is on the person - a look, or one of the four asks - each card leading with the wait's ask, with the row's links and a look's artifact beside it; the verify gate (`approve`, a words box, `send back`), or the ask's own door: the option pills, a free-text answer, the four disposals, or the lesson box; a root whose children are not all done draws the count and the send-back instead of `approve` | `waiting_on`, the request's kind and options, the wait's own start for the age, the row's links, and the row's `rollup` |
 | Lanes | every LIVE card, in its state's lane, with the Backlog folded to its ten | the board's `projects[].rows` |
 | Create | a subject box, an epic picker and `+ add`, which files the row at the queue's end | `task_create` |
 
@@ -314,7 +320,7 @@ card - opens the row over the board. The drawer asks for the row whole
 the board's own read leaves out - arrive a moment later and draw where they
 belong: its fields (state, owner, estimate, worked, both clocks, its parent,
 its `pick` line and its links), **Its tasks** on a parent, **Waiting on
-you** when the wait is a decision, the strip's own controls, its **History**
+you** when the wait is on the person, the strip's own controls, its **History**
 (the row's own transitions, the newest twenty, with `showing the last N of
 M` when the tail is capped), and the way into the owner's session. The
 button, the scrim and Escape all close it, and the card has the keyboard
@@ -363,9 +369,11 @@ app, the web client and Android, which draw this one page.
 
 Checked at **1600** and at **430**, against the drawing beside it. The window's
 need cards are a grid of `minmax(330px, 1fr)` columns, so 1600 sets four
-373px asks side by side, a medium window sets two, and a phone stacks them;
+371px asks side by side (373 with an overlay scrollbar), a medium window sets
+two, and a phone stacks them;
 the lanes are `minmax(260px, 1fr)` columns, so a phone stacks them too, and
 neither scrolls sideways. A phone's top bar keeps the count that asks something of the reader
-and drops the row totals. Every control a finger reaches takes a 44px target
-under `@media (pointer: coarse)`, and the drag is a pointer gesture, so it is
-the same one under a finger.
+and drops the row totals. Every control on the window takes a 44px target
+under `@media (pointer: coarse)` - the full board's owner and reference links
+are the pre-existing exception, and nothing here claims them - and the drag is
+a pointer gesture, so it is the same one under a finger.

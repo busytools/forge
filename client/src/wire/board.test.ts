@@ -232,7 +232,7 @@ describe("the drawer's row", () => {
     expect(applyDetail(wire(), { org: 'TestOrg', name: 'proj' }, null)).toBeNull();
   });
 
-  it('carries the drawer set across a whole read, and drops a row the read now has', () => {
+  it('carries the drawer set across a whole read, and keeps it over a stripped live row', () => {
     const first = applyDetail(
       wire(),
       { org: 'TestOrg', name: 'proj' },
@@ -244,13 +244,29 @@ describe("the drawer's row", () => {
       carried.projects[0]?.detail?.map((entry) => entry.task.id),
       "a whole read never carries the drawer's rows, and must not drop them",
     ).toEqual(['t-9']);
-    // The same row back in the lanes' read is the fresher copy: the detail
-    // copy steps aside.
-    const liveAgain = boardFrom({
+    // A bulk read that carries the row only as a window copy - no brief, no
+    // history - must not shadow the whole copy the drawer holds.
+    const stripped = boardFrom({
       projects: [
         {
           project: { org: 'TestOrg', name: 'proj' },
           rows: [row({ id: 't-9', status: 'in_progress' })],
+          crons: [],
+          connectors: { gotify: [], slack: [] },
+        },
+      ],
+    } as unknown as BoardWire);
+    expect(
+      carryDetail(first, stripped).projects[0]?.detail?.map((entry) => entry.task.id),
+      'the stripped live copy left the drawer without its brief',
+    ).toEqual(['t-9']);
+    // A live copy that is itself WHOLE is the fresher one: the detail copy
+    // steps aside.
+    const liveAgain = boardFrom({
+      projects: [
+        {
+          project: { org: 'TestOrg', name: 'proj' },
+          rows: [row({ id: 't-9', status: 'in_progress', detail: 'the brief' })],
           crons: [],
           connectors: { gotify: [], slack: [] },
         },

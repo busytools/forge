@@ -196,7 +196,34 @@ describe("the board's controls", () => {
     byText('answer')?.click();
     flushSync();
     expect(acts[2]).toEqual({
-      task_answer: { project: 'proj', id: 'q1', words: 'keep the window raise' },
+      task_answer: { project: 'proj', id: 'q1', text: 'keep the window raise' },
+    });
+  });
+
+  it('answers an ask from the full board by its kind, never by words alone', () => {
+    // The strip drew one words-only door for every ask, which the core
+    // refuses: each kind now gets its own door, and an exception answers
+    // with the disposition it was given.
+    summon(
+      wireWith([
+        row(
+          task('x1', 'a fault', 'waiting', {
+            request: {
+              kind: 'exception',
+              question: 'The flake is back: what now?',
+              options: [],
+              class: null,
+              answer: null,
+            },
+            waiting_on: { kind: 'user', detail: null, on: null, verification: false },
+          }),
+        ),
+      ]),
+    );
+    byText('retry')?.click();
+    flushSync();
+    expect(acts.at(-1)).toEqual({
+      task_answer: { project: 'proj', id: 'x1', disposition: 'retry' },
     });
   });
 
@@ -1803,7 +1830,17 @@ describe("the window's controls", () => {
   });
 
   it('holds the approve door on a root whose children are still open', () => {
-    windowOver([lookRow(verified, { rollup: [1, 3] })]);
+    // **Open means non-terminal, the core's own word** - the count comes from
+    // the rows, not the rollup's completed-only pair: a failed child is
+    // terminal and no longer holds the close.
+    const openChild = (id: string, status: Task['status']): BoardRow =>
+      row(task(id, `child ${id}`, status, { parent: 'l1' }));
+    windowOver([
+      lookRow(verified, { rollup: [1, 3] }),
+      openChild('c1', 'in_progress'),
+      openChild('c2', 'in_progress'),
+      openChild('c3', 'failed'),
+    ]);
     expect(byText('approve'), 'a root with open children cannot close').toBeNull();
     expect(document.querySelector('.w-hold')?.textContent).toContain('2 child rows are still open');
   });

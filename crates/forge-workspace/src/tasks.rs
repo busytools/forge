@@ -183,7 +183,7 @@ fn parked_on_look(task: &Task) -> bool {
         && task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
 }
 
-/// Whether a row presents as waiting on the user: a decision wait or a
+/// Whether a row presents as waiting on the user: an ask on the user or a
 /// verification park. The removal guards and the withdraw door read this
 /// set - an ask on the user leaves by the user's own answer or approve,
 /// or by a reasoned withdraw. The fleet count and the chase's user nudge
@@ -1294,7 +1294,7 @@ impl Workspace {
 
     /// Re-arm an ask's deadline one period out (the `reask` default).
     pub(crate) fn rearm_ask(&self, project_name: &str, id: &TaskId, next_at: SystemTime) -> bool {
-        self.with_tasks_mut(|tasks| {
+        let changed = self.with_tasks_mut(|tasks| {
             let Some(task) =
                 tasks.iter_mut().find(|task| task.project_name == project_name && task.id == *id)
             else {
@@ -1308,7 +1308,12 @@ impl Workspace {
             task.version = task.version.saturating_add(1);
             self.persist_task(task);
             true
-        })
+        });
+        // A client drawing `due at X` must hear the new deadline.
+        if changed {
+            self.announce_tasks_changed(project_name);
+        }
+        changed
     }
 
     /// Record that an ask's deadline default ran (the `escalate` default,
@@ -1319,7 +1324,7 @@ impl Workspace {
         id: &TaskId,
         now: SystemTime,
     ) -> bool {
-        self.with_tasks_mut(|tasks| {
+        let changed = self.with_tasks_mut(|tasks| {
             let Some(task) =
                 tasks.iter_mut().find(|task| task.project_name == project_name && task.id == *id)
             else {
@@ -1332,7 +1337,12 @@ impl Workspace {
             task.version = task.version.saturating_add(1);
             self.persist_task(task);
             true
-        })
+        });
+        // The deadline moved to `ran`: a client drawing it must hear that.
+        if changed {
+            self.announce_tasks_changed(project_name);
+        }
+        changed
     }
 
     /// The user's approval of a row waiting on their look: the wait
@@ -1524,7 +1534,27 @@ impl Workspace {
     ) -> crate::board::BoardDelta {
         use crate::board::DeltaItem;
         let since = since.unwrap_or(SystemTime::UNIX_EPOCH);
-        let tasks = self.tasks_for_project(project_name);
+        let mut tasks = self.tasks_for_project(project_name);
+        // **A row the store archived is still a row that moved.** A tree
+        // close archives its rows at once and retention takes the rest, so a
+        // digest that read only the live set would report a finished epic as
+        // nothing at all - the very absence the strip exists to disprove.
+        match self.archived_tasks_for_project_checked(project_name) {
+            Ok(archived) => {
+                for task in archived {
+                    if !tasks.iter().any(|live| live.id == task.id) {
+                        tasks.push(task);
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(
+                target: "forge_workspace::tasks",
+                event_name = "board_delta_archive_read_failed",
+                project = %project_name,
+                %error,
+                "the archive could not be read; the digest counts the live rows only",
+            ),
+        }
         let history = {
             let guard = self.db.lock();
             guard.as_ref().map_or_else(Vec::new, |db| {
@@ -1653,8 +1683,9 @@ impl Workspace {
     }
 
     /// Write the policy note that settles `class` - a teaching's answer, or
-    /// the lead's own `tasks__policy` write - and return it. A missing
-    /// store is "not written": the caller logs, the row keeps the lesson.
+    /// the lead's own `tasks__policy` write - and return it. A missing or
+    /// failed store answers `None`, and the teaching's answer door refuses
+    /// on it: a success that left the lesson on nothing is not one.
     pub(crate) fn settle_policy(
         &self,
         project_name: &str,
@@ -1681,7 +1712,8 @@ impl Workspace {
                     project = %project_name,
                     class = %class,
                     %error,
-                    "writing the policy note failed; the lesson is only on the row",
+                    "writing the policy note failed; the teaching's answer is refused rather \
+                     than stored without its note",
                 );
                 None
             }
@@ -2379,7 +2411,7 @@ impl Workspace {
     /// The archive read, with its failure kept apart from an empty archive:
     /// a caller looking a row up must not answer "no such task" for a store
     /// it could not read.
-    pub(crate) fn archived_tasks_for_project_checked(
+    pub fn archived_tasks_for_project_checked(
         &self,
         project_name: &str,
     ) -> Result<Vec<Task>, String> {
@@ -3489,6 +3521,74 @@ mod tests {
             delta.expired_items[0],
         );
         assert!(delta.landed_items.iter().any(|item| item.subject == "subject expired"));
+    }
+
+    /// **A row the store archived is still a row that moved**: a tree close
+    /// archives its rows at once and retention takes the rest, so a digest
+    /// that read only the live set would report a finished epic as nothing.
+    #[test]
+    fn the_board_delta_counts_a_row_the_archive_holds() {
+        use crate::store::{task_archive, task_history};
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-delta-archived");
+        install_db(&ws, dir.path());
+        let since = SystemTime::now();
+        let mut ended = sample_task("archived-1", "proj");
+        ended.status = TaskStatus::Completed;
+        ended.subject = "the epic that ended".to_owned();
+        ended.updated_at = SystemTime::now();
+        {
+            let guard = ws.db.lock();
+            let db = guard.as_ref().expect("db");
+            task_archive::append(db, &[ended.clone()]).expect("archive the row");
+            task_history::append(
+                db,
+                &[TaskTransition {
+                    task_id: TaskId::from("archived-1"),
+                    project_name: "proj".to_owned(),
+                    from: Some(TaskStatus::InProgress),
+                    to: TaskStatus::Completed,
+                    at: SystemTime::now(),
+                    by: By::System,
+                }],
+            )
+            .expect("its transition");
+        }
+        let delta = ws.board_delta("proj", Some(since));
+        assert_eq!(delta.landed, 1, "the archived row landed: {delta:?}");
+        assert_eq!(delta.landed_items[0].subject, "the epic that ended");
+    }
+
+    /// A closed row's page is derived like a live one's: its worked time and
+    /// its history come from the log, not from placeholders.
+    #[test]
+    fn a_closed_rows_detail_derives_its_worked_time_and_history() {
+        let mut task = sample_task("done-1", "proj");
+        task.status = TaskStatus::Completed;
+        let epoch = |secs: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
+        let history = [
+            TaskTransition {
+                task_id: TaskId::from("done-1"),
+                project_name: "proj".to_owned(),
+                from: Some(TaskStatus::Pending),
+                to: TaskStatus::InProgress,
+                at: epoch(0),
+                by: By::Seat(SessionSlot::worker("TestOrg", "proj", "w-1")),
+            },
+            TaskTransition {
+                task_id: TaskId::from("done-1"),
+                project_name: "proj".to_owned(),
+                from: Some(TaskStatus::InProgress),
+                to: TaskStatus::Completed,
+                at: epoch(100),
+                by: By::Seat(SessionSlot::lead("TestOrg", "proj")),
+            },
+        ];
+        let row = crate::board::detail_row(task, &history, epoch(200), false);
+        assert_eq!(row.history_total, 2, "the drawer's whole trail: {row:?}");
+        assert_eq!(row.history.len(), 2);
+        assert_eq!(row.worked_secs, 100, "the worked time is the log's, not zero");
     }
 
     /// **Every park on the user is an ask or a look**: a bare `user` wait

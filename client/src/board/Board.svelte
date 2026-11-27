@@ -31,7 +31,7 @@
   import Window from './Window.svelte';
   import type { BoardFieldHandle, BoardVoice } from './voice';
   import { applyMoves, boardView, landed } from './view';
-  import type { BoardCardView, LaneView, PendingMove } from './view';
+  import type { BoardCardView, LaneView, PendingMove, WaitingView } from './view';
   import { clockOf, windowView } from './window';
   import type { ArchivedRead } from './archive';
 
@@ -121,26 +121,33 @@
           device: () => deviceFor(boxKey(lead)),
           capture: openCapture,
           onStart: () => {
-            if (armedBox !== null) boardLanding.arm(boxKey(lead), seatComposer.notice);
+            // **The box is frozen at the take's start.** A press on another
+            // mic mid-take must not move where these words - or a failure
+            // line - belong; that box was captured at the press that began
+            // the take.
+            takeBox = pressedBox;
+            if (takeBox !== null) boardLanding.arm(boxKey(lead), seatComposer.notice);
             takeLine = null;
           },
           onLine: (line) => {
             // A failed take leaves its line in the box that pressed, and no
             // landing is coming to consume the arm.
-            lineBox = armedBox;
+            lineBox = takeBox;
             takeLine = line;
             boardLanding.drop();
           },
           onRefused: (line) => {
-            lineBox = armedBox;
+            lineBox = takeBox ?? pressedBox;
             takeLine = line;
           },
         });
 
   /** The page's memory of the seat's takes, under the board's own surface. */
   const boardLanding = new Landing('board');
-  /** The box whose mic began the running take, and the line a failed one left. */
-  let armedBox = $state<string | null>(null);
+  /** The last box whose mic was pressed, and the box the running take began
+   *  in - frozen at the start, so a later press cannot steal its landing. */
+  let pressedBox = $state<string | null>(null);
+  let takeBox = $state<string | null>(null);
   let lineBox = $state<string | null>(null);
   let takeLine = $state<TakeLine | null>(null);
   /** Every drawn box's landing target, by the box's own id. */
@@ -162,9 +169,10 @@
       seatComposer.take?.generation ?? null,
     );
     if (words === null) return;
-    if (armedBox !== null) boardBoxes.get(armedBox)?.set(words);
+    if (takeBox !== null) boardBoxes.get(takeBox)?.set(words);
     boardLanding.placed(seatComposer.notice);
-    armedBox = null;
+    takeBox = null;
+    pressedBox = null;
   });
 
   /** What dictation means to this page, handed to every box it draws. */
@@ -174,7 +182,9 @@
       : {
           dictate,
           get activeId() {
-            return armedBox;
+            // Only the take's own box wears the bar: a press elsewhere does
+            // not repaint where the words will land.
+            return takeBox;
           },
           get take() {
             return seatComposer.take;
@@ -195,11 +205,12 @@
             return lineBox;
           },
           press: (id: string) => {
-            armedBox = id;
+            pressedBox = id;
           },
           cancel: () => {
             boardLanding.drop();
-            armedBox = null;
+            takeBox = null;
+            pressedBox = null;
             dictate.act('cancel');
           },
           register: registerBox,
@@ -223,6 +234,20 @@
     archiveReading = true;
     archived = await onarchived();
     archiveReading = false;
+  }
+
+  /**
+   * Restore a shelf row and re-read the shelf: a restored row leaves it, and
+   * a refused restore must not hide the row the server kept.
+   */
+  function restoreRow(id: string): void {
+    act({ task_restore: { project, id } });
+    if (onarchived === null || archiveReading) return;
+    archiveReading = true;
+    void onarchived().then((next) => {
+      archived = next;
+      archiveReading = false;
+    });
   }
 
   // The page's own clock, declared first: the card ages and the wall times
@@ -306,9 +331,43 @@
     );
     return [...(held?.rows ?? []), ...(held?.detail ?? [])];
   }
+
+  /** A row's WHOLE copy when the page holds one: the lanes' bulk copy has
+   *  no brief and no history, and a carried full copy must not be shadowed
+   *  by it. */
+  function wholeRowOf(read: BoardRead, id: string): BoardRow | null {
+    const rows = boardRowsOf(read);
+    return (
+      rows.find(
+        (row) => row.task.id === id && (row.task.detail !== null || row.history_total > 0),
+      ) ??
+      rows.find((row) => row.task.id === id) ??
+      null
+    );
+  }
   /** The epics a new row can nest under: the lanes' rows only, never a
    *  drawer's closed one. */
   const epics = $derived(laneRowsOf(board).filter((entry) => entry.task.parent === null));
+  /** An exception's four disposals, enumerated as the core's are. */
+  const DISPOSITIONS = ['retry', 'rescope', 'drop', 'diagnose'] as const;
+
+  /** A strip note, per row: the optional words sent beside a choice. */
+  const stripNotes: Record<string, string> = $state({});
+
+  /** The answer a kind needs, from the full board's strip: the card bar's
+   *  own rule - never words alone, and a no-option decision's words ARE its
+   *  choice. */
+  function answerRow(
+    row: WaitingView,
+    value: { choice?: string; text?: string; disposition?: string },
+  ): void {
+    const command: Record<string, unknown> = { project, id: row.id, ...value };
+    if (row.kind === 'teaching') command['lesson'] = value.text ?? '';
+    const note = (stripNotes[row.id] ?? '').trim();
+    if (value.text === undefined && note !== '') command['words'] = note;
+    act({ task_answer: command });
+  }
+
   /** The worker's own words on a row it sent back, before it is dispatched. */
   const sendBackWords: Record<string, string> = $state({});
   const answers: Record<string, string> = $state({});
@@ -436,9 +495,11 @@
   $effect(() => {
     if (mode !== 'window') return;
     const seen = project;
-    const drew = untrack(() => board.wire !== null);
     return () => {
-      if (drew) act({ board_seen: { project: seen } });
+      // **Read at the leave, not at the setup.** Home -> board and every deep
+      // link mount with no board read yet, so a flag captured at setup would
+      // say "never drew" and the stamp would never advance.
+      if (untrack(() => board.wire !== null)) act({ board_seen: { project: seen } });
     };
   });
 
@@ -476,12 +537,12 @@
    * project of the same name.
    */
   let opened = $state<string | null>(null);
+  /** The element the drawer was opened from, so its close returns the keyboard. */
+  let opener: HTMLElement | null = null;
   /** The close that follows a jump: the target card takes the keyboard, so
       the drawer does not hand it back to the one it opened from. */
   let jumping = false;
-  const openedRow = $derived(
-    opened === null ? null : (boardRowsOf(board).find((row) => row.task.id === opened) ?? null),
-  );
+  const openedRow = $derived(opened === null ? null : (wholeRowOf(board, opened) ?? null));
 
   /** The waiting view of the open row, where it waits: the approve gate's
    * own instrument - `root` and `open` are the core's close rule, which the
@@ -506,6 +567,10 @@
    */
   function openDrawer(id: string): void {
     if (opened === null) {
+      // **The door that opened the drawer takes the keyboard back**: a window
+      // card, a lane card or a shelf row, whichever was pressed.
+      const from = document.activeElement;
+      opener = from instanceof HTMLElement ? from : null;
       history.pushState({ ...heldState(), [DRAWER_ENTRY]: true }, '', location.href);
     }
     opened = id;
@@ -559,8 +624,13 @@
     const id = opened;
     opened = null;
     if (id !== null && !jumping) {
-      boardEl?.querySelector<HTMLElement>(`.b-card[data-id="${id}"]`)?.focus();
+      // The door it opened from takes the keyboard back, if it is still
+      // drawn; a lane card is the fallback for a door that is gone.
+      const from = opener !== null && opener.isConnected ? opener : null;
+      from?.focus();
+      if (from === null) boardEl?.querySelector<HTMLElement>(`.b-card[data-id="${id}"]`)?.focus();
     }
+    opener = null;
     jumping = false;
   }
 
@@ -843,6 +913,13 @@
       <h2 id="w-archive-h" class="w-h">closed rows</h2>
       {#if archived.wire === null}
         <p class="w-quiet">{archived.refused ?? 'reading the archive...'}</p>
+      {:else if !view.known}
+        <!-- A mistyped project has no shelf: an empty one would read as a
+             project that simply finished nothing. -->
+        <p class="w-quiet">
+          {project} is not one of this forge's projects - check the name in forge.toml, or open the board
+          from its row on the home.
+        </p>
       {:else}
         {@const held = archived.wire.projects.find(
           (entry) => entry.project.org === org && entry.project.name === project,
@@ -873,7 +950,7 @@
                 <button
                   type="button"
                   class="b-btn b-plain w-restore"
-                  onclick={() => act({ task_restore: { project, id: row.id } })}>restore</button
+                  onclick={() => restoreRow(row.id)}>restore</button
                 >
               </li>
             {/each}
@@ -952,13 +1029,13 @@
                       >approve</button
                     >
                   {/if}
-                  <input
-                    class="b-in"
-                    data-editor="board"
-                    type="text"
+                  <BoardField
+                    id="strip:{row.id}:sendback"
+                    value={sendBackWords[row.id] ?? ''}
+                    oninput={(text: string) => (sendBackWords[row.id] = text)}
+                    {voice}
                     placeholder="what to change"
-                    aria-label="what to change (sent back with it)"
-                    bind:value={sendBackWords[row.id]}
+                    label="what to change (sent back with it)"
                   />
                   <button
                     type="button"
@@ -976,20 +1053,74 @@
                 </div>
               {:else}
                 <div class="b-do">
-                  <input
-                    class="b-in"
-                    data-editor="board"
-                    type="text"
-                    placeholder="your answer"
-                    bind:value={answers[row.id]}
-                  />
-                  <button
-                    type="button"
-                    class="b-btn b-plain"
-                    onclick={() =>
-                      act({ task_answer: { project, id: row.id, words: answers[row.id] ?? '' } })}
-                    >answer</button
-                  >
+                  {#if row.kind === 'decision' && row.options.length > 0}
+                    {#each row.options as option (option)}
+                      <button
+                        type="button"
+                        class="b-btn b-plain"
+                        onclick={() => answerRow(row, { choice: option })}>{option}</button
+                      >
+                    {/each}
+                    <BoardField
+                      id="strip:{row.id}:note"
+                      value={stripNotes[row.id] ?? ''}
+                      oninput={(text: string) => (stripNotes[row.id] = text)}
+                      {voice}
+                      placeholder="a note (optional)"
+                      label="the note sent with the choice"
+                    />
+                  {:else if row.kind === 'exception'}
+                    {#each DISPOSITIONS as disposition (disposition)}
+                      <button
+                        type="button"
+                        class="b-btn b-plain"
+                        onclick={() => answerRow(row, { disposition })}>{disposition}</button
+                      >
+                    {/each}
+                    <BoardField
+                      id="strip:{row.id}:note"
+                      value={stripNotes[row.id] ?? ''}
+                      oninput={(text: string) => (stripNotes[row.id] = text)}
+                      {voice}
+                      placeholder="a note (optional)"
+                      label="the note sent with the disposition"
+                    />
+                  {:else if row.kind === 'decision'}
+                    <BoardField
+                      id="strip:{row.id}:answer"
+                      value={answers[row.id] ?? ''}
+                      oninput={(text: string) => (answers[row.id] = text)}
+                      {voice}
+                      placeholder="your choice"
+                      label="the choice you are naming"
+                    />
+                    <button
+                      type="button"
+                      class="b-btn b-plain"
+                      onclick={() => answerRow(row, { choice: (answers[row.id] ?? '').trim() })}
+                      >answer</button
+                    >
+                  {:else}
+                    <BoardField
+                      id="strip:{row.id}:answer"
+                      value={answers[row.id] ?? ''}
+                      oninput={(text: string) => (answers[row.id] = text)}
+                      {voice}
+                      placeholder="your answer"
+                      label="your answer"
+                      onkeydown={(event: KeyboardEvent) => {
+                        if (event.key !== 'Enter' || event.shiftKey) return;
+                        event.preventDefault();
+                        if ((answers[row.id] ?? '').trim() === '') return;
+                        answerRow(row, { text: answers[row.id] ?? '' });
+                      }}
+                    />
+                    <button
+                      type="button"
+                      class="b-btn b-plain"
+                      onclick={() => answerRow(row, { text: answers[row.id] ?? '' })}>answer</button
+                    >
+                  {/if}
                 </div>
               {/if}
             </div>

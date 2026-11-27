@@ -1,11 +1,10 @@
 //! The board: one answer for every derived fact a reader of the task
 //! list needs.
 //!
-//! Worked time, ages, and the marks (ready, in review, overdue, no
-//! movement, waiting too long, stale, to close) are derived here from the
-//! store, the history and session liveness - never stored. The tools, the
-//! chase and the view surface all read THIS answer, so a mark cannot
-//! disagree between two surfaces.
+//! Worked time, ages, and the five marks (ready, in review, overdue, stale,
+//! to close) are derived here from the store, the history and session
+//! liveness - never stored. The tools, the chase and the view surface all
+//! read THIS answer, so a mark cannot disagree between two surfaces.
 
 use std::collections::HashMap;
 use std::time::SystemTime;
@@ -154,8 +153,8 @@ pub enum Miss {
 
 /// One wait that is on the person, named for the surface that raises it.
 ///
-/// **The board is the store; this is the read.** A decision wait is already a
-/// row with a `waiting_on` block, and the rail draws this beside the count so
+/// **The board is the store; this is the read.** A wait on the person is
+/// already a row with a `waiting_on` block, and the rail draws this beside the count so
 /// the person can see what is being asked without opening the board page.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -229,6 +228,36 @@ fn capped_history(mine: &[&TaskTransition]) -> Vec<TaskTransition> {
 
 fn secs_ago(at: SystemTime, now: SystemTime) -> u64 {
     now.duration_since(at).map_or(0, |d| d.as_secs())
+}
+
+/// One row's own record, for a row the bulk board does not carry.
+///
+/// **A closed row's page is derived like a live row's**: its worked time and
+/// its history come from the log already on disk, not from placeholders. A
+/// terminal row carries no marks, by the board's own rule.
+pub fn detail_row(
+    task: Task,
+    history: &[TaskTransition],
+    now: SystemTime,
+    owner_live: bool,
+) -> BoardRow {
+    let mut mine: Vec<&TaskTransition> =
+        history.iter().filter(|step| step.task_id == task.id).collect();
+    mine.sort_by_key(|step| step.at);
+    let worked = worked_secs(&mine, now);
+    let updated_secs_ago = secs_ago(task.updated_at, now);
+    BoardRow {
+        wait_secs: task.wait_age_secs(now),
+        marks: Marks::default(),
+        worked_secs: worked,
+        updated_secs_ago,
+        owner_live,
+        rollup: None,
+        parent_subject: None,
+        history: capped_history(&mine),
+        history_total: mine.len(),
+        task,
+    }
 }
 
 /// The retro marker: a link labelled `retro` on the epic.
