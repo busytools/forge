@@ -23,6 +23,7 @@ import {
   applyDetail,
   applyTasks,
   boardFrom,
+  carryDetail,
   connectorsFrame,
   coversBoard,
   cronsFrame,
@@ -143,7 +144,8 @@ function boardStore(connection: Connection): Readable<BoardRead> {
       return;
     }
     const data = held.snapshot();
-    drawn = data === null ? null : boardFrom(data as unknown as BoardWire);
+    // A whole read never carries the drawer's own rows; they survive it.
+    drawn = data === null ? null : carryDetail(drawn, boardFrom(data as unknown as BoardWire));
     view.set({ wire: drawn, refused: null });
   }
 

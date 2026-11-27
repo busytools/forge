@@ -278,10 +278,20 @@ export function windowView(
   for (const miss of fleet?.misses ?? []) {
     const stopped = stoppedWorkerOf(miss);
     if (stopped !== null) {
+      // The line is a timestamp like the row exceptions': when the seat was
+      // last active is the fact behind "nothing for it to do".
+      const last = wire.agents.find(
+        (agent) =>
+          agent.slot.org === org && agent.slot.project === project && agent.label === stopped,
+      )?.last_activity;
+      const since = last === null || last === undefined ? null : clockOf(last.secs_since_epoch);
       exceptions.push({
         id: null,
         subject: stopped,
-        line: 'holds no row - feed it or despawn it',
+        line:
+          since === null
+            ? 'holds no row - feed it or despawn it'
+            : `holds no row since ${since} - feed it or despawn it`,
         owner: stopped,
       });
     }
@@ -317,7 +327,9 @@ export function windowView(
         label: agent.label,
         seat: { ...agent.slot },
         doing: busy === undefined ? null : (busy.task.active_form ?? busy.task.subject),
-        since: last ?? (busy === undefined ? null : busy.task.updated_at.secs_since_epoch),
+        // The seat's own last activity, never the row's touch: a seat that
+        // has not acted yet is unknown, and the line says so.
+        since: last,
         artifact: link === undefined || link === null ? null : link.label,
         next: measure,
         held: held.length,

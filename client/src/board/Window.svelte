@@ -29,6 +29,17 @@
   const notes: Record<string, string> = $state({});
   /** The words a look's send-back carries, per row. */
   const words: Record<string, string> = $state({});
+  /** Whether a card's note box is open: a card reads as an ask, not a form. */
+  const noteOpen: Record<string, boolean> = $state({});
+  /** Whether a card's evidence is expanded: one summary line until asked. */
+  const evidenceOpen: Record<string, boolean> = $state({});
+
+  /** How much of the evidence a collapsed card shows before it is expanded. */
+  const SUMMARY_CHARS = 90;
+
+  function summaryOf(text: string): string {
+    return text.length > SUMMARY_CHARS ? `${text.slice(0, SUMMARY_CHARS).trimEnd()}...` : text;
+  }
 
   function act(command: Record<string, Record<string, unknown>>): void {
     onact?.(command);
@@ -62,72 +73,92 @@
       <div class="w-needs">
         {#each view.needs as card (card.id)}
           {@const chip = evidenceChip(card.evidenceState)}
+          {@const expanded = evidenceOpen[card.id] === true}
+          {@const note = noteOpen[card.id] === true}
           <article class="w-need" data-id={card.id}>
-            <div class="w-kind">
-              {#if card.kind === 'look'}<Icon name="check" /> a look{:else}decision{/if}
+            <div class="w-meta">
+              <span class="w-kind"
+                >{#if card.kind === 'look'}<Icon name="check" /> a look{:else}decision{/if}</span
+              >
+              <span class="w-ctx"
+                >{card.subject}{#if card.owner !== null}
+                  &middot; {card.owner}{/if}</span
+              >
               <span class="w-age">waiting {card.age}</span>
             </div>
             <h3 class="w-q">{card.question}</h3>
-            <div class="w-sub">
-              {card.subject}{#if card.owner !== null}
-                &middot; {card.owner}{/if}
-            </div>
             {#if card.artifact !== null}
-              <div class="w-detail">
-                <a class="b-door" href={card.artifact.href} target="_blank" rel="noreferrer"
-                  >look at <span class="nm">{card.artifact.label}</span></a
-                >
-              </div>
+              <a class="w-door" href={card.artifact.href} target="_blank" rel="noreferrer"
+                >look at <span class="nm">{card.artifact.label}</span></a
+              >
             {/if}
             {#if card.evidence !== null}
-              <blockquote class="w-ev">{card.evidence}</blockquote>
-            {/if}
-            {#if chip !== null}
-              <div class="w-detail"><span class="b-chip {chip.tone}">{chip.label}</span></div>
-            {/if}
-            {#if card.kind === 'decision'}
-              <div class="w-options" role="group" aria-label="answer with one of">
-                {#each card.options as option (option)}
+              <div class="w-ev" class:open={expanded}>
+                {#if chip !== null}<span class="b-chip {chip.tone}">{chip.label}</span>{/if}
+                <span class="w-ev-text">{expanded ? card.evidence : summaryOf(card.evidence)}</span>
+                {#if card.evidence.length > SUMMARY_CHARS}
                   <button
                     type="button"
-                    class="b-btn b-plain w-option"
-                    onclick={() =>
-                      act({
-                        task_answer: {
-                          project: view.project,
-                          id: card.id,
-                          choice: option,
-                          words: notes[card.id] ?? '',
-                        },
-                      })}>{option}</button
-                  >
-                {/each}
-              </div>
-              <div class="w-do">
-                <input
-                  class="b-in"
-                  data-editor="board"
-                  type="text"
-                  placeholder={card.options.length > 0 ? 'note (optional)' : 'your answer'}
-                  aria-label="the note sent with the answer"
-                  bind:value={notes[card.id]}
-                />
-                {#if card.options.length === 0}
-                  <button
-                    type="button"
-                    class="b-btn b-plain"
-                    onclick={() =>
-                      act({
-                        task_answer: {
-                          project: view.project,
-                          id: card.id,
-                          words: notes[card.id] ?? '',
-                        },
-                      })}>answer</button
+                    class="w-more"
+                    aria-expanded={expanded}
+                    onclick={() => (evidenceOpen[card.id] = !expanded)}
+                    >{expanded ? 'less' : 'more'}</button
                   >
                 {/if}
-                {#if card.seat !== null}
-                  <a class="b-door w-discuss" href={discussHref(card.seat)}>discuss</a>
+              </div>
+            {/if}
+            {#if card.kind === 'decision'}
+              {#if card.options.length > 0}
+                <div class="w-options" role="group" aria-label="answer with one of">
+                  {#each card.options as option (option)}
+                    <button
+                      type="button"
+                      class="w-option"
+                      onclick={() =>
+                        act({
+                          task_answer: {
+                            project: view.project,
+                            id: card.id,
+                            choice: option,
+                            words: notes[card.id] ?? '',
+                          },
+                        })}>{option}</button
+                    >
+                  {/each}
+                </div>
+              {/if}
+              <div class="w-do">
+                {#if note}
+                  <input
+                    class="b-in w-note"
+                    data-editor="board"
+                    type="text"
+                    placeholder={card.options.length > 0 ? 'note (optional)' : 'your answer'}
+                    aria-label="the note sent with the answer"
+                    bind:value={notes[card.id]}
+                  />
+                  {#if card.options.length === 0}
+                    <button
+                      type="button"
+                      class="b-btn b-plain"
+                      onclick={() =>
+                        act({
+                          task_answer: {
+                            project: view.project,
+                            id: card.id,
+                            words: notes[card.id] ?? '',
+                          },
+                        })}>answer</button
+                    >
+                  {/if}
+                {:else}
+                  <button
+                    type="button"
+                    class="w-more"
+                    aria-expanded={note}
+                    onclick={() => (noteOpen[card.id] = true)}
+                    >{card.options.length > 0 ? 'add a note' : 'answer in your words'}</button
+                  >
                 {/if}
               </div>
             {:else}
@@ -144,14 +175,6 @@
                       })}>approve</button
                   >
                 {/if}
-                <input
-                  class="b-in"
-                  data-editor="board"
-                  type="text"
-                  placeholder="what to change"
-                  aria-label="what to change (sent back with it)"
-                  bind:value={words[card.id]}
-                />
                 <button
                   type="button"
                   class="b-btn b-no"
@@ -165,14 +188,33 @@
                       },
                     })}>send back</button
                 >
-                {#if card.seat !== null}
-                  <a class="b-door w-discuss" href={discussHref(card.seat)}>discuss</a>
+                {#if note}
+                  <input
+                    class="b-in w-note"
+                    data-editor="board"
+                    type="text"
+                    placeholder="what to change"
+                    aria-label="what to change (sent back with it)"
+                    bind:value={words[card.id]}
+                  />
+                {:else}
+                  <button
+                    type="button"
+                    class="w-more"
+                    aria-expanded={note}
+                    onclick={() => (noteOpen[card.id] = true)}>add a note</button
+                  >
                 {/if}
               </div>
             {/if}
-            <button type="button" class="w-open" onclick={() => onopen?.(card.id)}
-              >open the row</button
-            >
+            <div class="w-links">
+              {#if card.seat !== null}
+                <a class="w-quiet-link" href={discussHref(card.seat)}>discuss</a>
+              {/if}
+              <button type="button" class="w-quiet-link" onclick={() => onopen?.(card.id)}
+                >open the row</button
+              >
+            </div>
           </article>
         {/each}
       </div>

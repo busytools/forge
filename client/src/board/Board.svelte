@@ -347,6 +347,7 @@
     // once; the answer lands as a `task_detail` frame and the drawer draws it.
     if (!askedDetail.includes(id)) {
       askedDetail.push(id);
+      absentAsk = id;
       act({ task_detail: { project, id } });
     }
   }
@@ -354,6 +355,26 @@
   /** The rows this page has already asked for whole, so a second opening
    *  does not repeat the read. An array, not a Set: nothing draws it. */
   const askedDetail: string[] = [];
+
+  /** The id the page last re-asked for because it was absent, so an
+   *  absence asks once rather than on every repaint. */
+  let absentAsk = $state<string | null>(null);
+
+  /**
+   * **A drawer whose row the page no longer holds asks again.** A drawer can
+   * open on a live row that then ends (the frame drops it from the lanes),
+   * or on a closed row whose detail a fresh read carried past; the page
+   * re-asks once per absence, and the answer lands the row in `detail`.
+   */
+  $effect(() => {
+    if (opened === null || openedRow !== null) {
+      absentAsk = null;
+      return;
+    }
+    if (absentAsk === opened) return;
+    absentAsk = opened;
+    act({ task_detail: { project, id: opened } });
+  });
 
   /** Close the drawer and hand the keyboard back to the card it opened from. */
   function closeDrawer(): void {

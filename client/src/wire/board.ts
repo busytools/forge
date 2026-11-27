@@ -300,6 +300,29 @@ export function applyDetail(
   return { projects };
 }
 
+/**
+ * Carry the drawer's own rows across a whole board read.
+ *
+ * **`detail` is page-held, not read data.** A read replaces the wire, and a
+ * drawer open on a closed row - or on a live row that has since ended -
+ * would lose the only copy the read never carries. Each project's detail
+ * rows survive by id; one whose live copy the new read now carries is
+ * dropped, because the lanes' copy is the fresher one.
+ */
+export function carryDetail(previous: BoardWire | null, next: BoardWire): BoardWire {
+  if (previous === null) return next;
+  const projects = next.projects.map((held) => {
+    const before = previous.projects.find(
+      (entry) => entry.project.org === held.project.org && entry.project.name === held.project.name,
+    );
+    if (before?.detail === undefined) return held;
+    const live = new Set(held.rows.map((row) => row.task.id));
+    const detail = before.detail.filter((row) => !live.has(row.task.id));
+    return { ...held, detail };
+  });
+  return { projects };
+}
+
 /** Apply one project's schedule set to the drawn board, without a read. */
 export function applyCrons(
   wire: BoardWire | null,

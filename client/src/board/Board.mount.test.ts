@@ -1183,6 +1183,22 @@ describe("the row's own page", () => {
     byText('reopen')?.click();
     flushSync();
     expect(acts.at(-1)).toEqual({ task_reopen: { project: 'proj', id: 'a1' } });
+
+    // A read the page applies without the drawer's set leaves the open id
+    // absent; the page asks again rather than drawing a blank page.
+    frame.set({ home: homeWire, board: { ...boardWire, projects: [{ ...first, rows: [] }] } });
+    flushSync();
+    expect(acts.at(-1), 'the absent row is asked again').toEqual({
+      task_detail: { project: 'proj', id: 'a1' },
+    });
+    frame.set({
+      home: homeWire,
+      board: { ...boardWire, projects: [{ ...first, rows: [], detail: [row(ended)] }] },
+    });
+    flushSync();
+    expect(document.querySelector('.dr')?.textContent, 'the page drew again').toContain(
+      'Looks right - merge',
+    );
   });
 
   /** The user reserves a pick from the row page, and the board says so. */
@@ -1343,6 +1359,7 @@ describe("the row's own page", () => {
       'and not the fail cross',
     ).not.toContain('i-x');
     expect(document.querySelector('.w-exc')?.textContent, 'the row is named').toContain('shipped');
+    expect(await violationsOf(document.body.innerHTML), 'the shelf draws clean').toEqual([]);
   });
 
   it("keeps the board reachable through Android's Back", () => {
@@ -1712,6 +1729,13 @@ describe("the window's controls", () => {
     expect(document.querySelector('.w-need'), 'the answered card is still drawn').toBeNull();
   });
 
+  it('draws a decision card with its options as accessible controls', async () => {
+    windowOver([decisionRow()]);
+    expect(byText('ship it'), 'the option is not drawn').not.toBeNull();
+    expect(byText('iterate'), 'the second option is not drawn').not.toBeNull();
+    expect(await violationsOf(document.body.innerHTML)).toEqual([]);
+  });
+
   it('approves a verified look, and sends one back with the words typed', () => {
     windowOver([lookRow(verified)]);
     const approve = byText('approve');
@@ -1722,6 +1746,13 @@ describe("the window's controls", () => {
       task_verdict: { project: 'proj', id: 'l1', approve: true },
     });
 
+    // The note is behind its own control: a card reads as an ask, not a form.
+    const addNote = [...document.querySelectorAll<HTMLElement>('.w-need button')].find(
+      (button) => button.textContent?.trim() === 'add a note',
+    );
+    if (addNote === undefined) throw new Error('the note control is not drawn');
+    addNote.click();
+    flushSync();
     const words = document.querySelector<HTMLInputElement>(
       '[aria-label="what to change (sent back with it)"]',
     );

@@ -780,49 +780,73 @@ button.b-epic-pill { cursor: pointer; }
 }
 .w-tab[aria-selected="true"] { color: var(--text); background: var(--s3); border-color: var(--line); }
 .w-tab:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-.w-window { display: flex; flex-direction: column; gap: 30px; }
+.w-window { display: flex; flex-direction: column; gap: 20px; }
 .w-h {
-  display: flex; align-items: center; gap: 8px; margin: 0 0 10px;
+  display: flex; align-items: center; gap: 8px; margin: 0 0 6px;
   font-family: var(--mono); font-size: var(--fs-label); font-weight: 500;
   letter-spacing: .05em; color: var(--dim);
 }
 .w-n { background: var(--s3); color: var(--text); border-radius: 999px; padding: 1px 8px; }
 .w-quiet { margin: 0; color: var(--dim); font-size: var(--fs-data); }
-.w-needs { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; }
+.w-needs { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 10px; }
 /* The warm surface the strip used, now per card: an ask on the reader is
-   the one thing on this page that is theirs to answer. */
-.w-need { background: var(--sel); border-radius: var(--r); padding: 16px 18px 14px; position: relative; }
+   the one thing on this page that is theirs to answer. **A card is an ask,
+   not a dossier**: a quiet meta line, the question, compact doors, and the
+   detail behind an expand. */
+.w-need { background: var(--sel); border-radius: var(--r); padding: 12px 14px 10px; position: relative; }
 .w-need::before {
   content: ""; position: absolute; inset: 0 auto 0 0; width: 2px;
   background: var(--accent); border-radius: var(--r) 0 0 var(--r); opacity: .8;
 }
-.w-kind {
-  display: flex; gap: 10px; align-items: center; margin-bottom: 6px;
-  font-family: var(--mono); font-size: var(--fs-label); color: var(--hot);
+.w-meta {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
+  margin-bottom: 4px; font-family: var(--mono); font-size: var(--fs-label);
 }
-.w-kind .ic { width: 12px; height: 12px; }
-.w-age { color: var(--dim); }
-.w-q { margin: 0 0 4px; font-size: 16px; font-weight: 500; color: var(--text); }
-.w-sub { font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); }
-.w-detail { margin-top: 8px; font-size: var(--fs-label); color: var(--muted); }
-/* The evidence is the excerpt as it was attached, set apart so a reader
-   never mistakes it for the ask's own words. */
+.w-kind { display: inline-flex; align-items: center; gap: 4px; color: var(--hot); }
+.w-kind .ic { width: 11px; height: 11px; }
+.w-ctx { color: var(--dim); }
+.w-age { margin-left: auto; color: var(--dim); }
+.w-q { margin: 0 0 6px; font-size: 15px; font-weight: 500; line-height: 1.35; color: var(--text); }
+.w-door {
+  display: inline-block; margin-bottom: 6px; font-family: var(--mono);
+  font-size: var(--fs-label); color: var(--blue); text-decoration: none;
+}
+.w-door:hover { text-decoration: underline; }
+/* The evidence is one summary line until the reader asks for the rest; the
+   state word rides it, so a card states its verdict without a second row. */
 .w-ev {
-  margin: 10px 0 0; padding: 8px 10px; background: var(--s1);
-  border-left: 2px solid var(--line); border-radius: 6px;
+  display: flex; align-items: baseline; gap: 8px; margin: 2px 0 0;
   font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
-  white-space: pre-wrap; max-height: 8rem; overflow-y: auto; overflow-x: hidden;
 }
-.w-options { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-.w-option { min-height: 36px; text-align: left; }
-.w-do { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.w-ev-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.w-ev.open .w-ev-text { white-space: normal; }
+.w-more {
+  background: none; border: none; padding: 2px 0; color: var(--dim);
+  font-family: var(--mono); font-size: var(--fs-label); cursor: pointer;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.w-more:hover { color: var(--blue); }
+.w-options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.w-option {
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
+  background: var(--s2); border: 1px solid var(--line); border-radius: 999px;
+  padding: 5px 12px; min-height: 30px; cursor: pointer; text-align: left;
+}
+.w-option:hover { border-color: var(--blue); color: var(--blue); }
+.w-option:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.w-do { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.w-do .b-btn { min-height: 30px; padding: 4px 12px; }
+.w-note { flex: 1 1 180px; }
 .w-hold { margin: 0; color: var(--warn); font-size: var(--fs-label); flex-basis: 100%; }
-.w-discuss { margin-left: auto; }
-.w-open {
-  margin-top: 10px; background: none; border: none; color: var(--dim);
-  font-family: var(--mono); font-size: var(--fs-label); cursor: pointer; padding: 6px 0;
+.w-links { display: flex; gap: 14px; margin-top: 8px; }
+.w-quiet-link {
+  background: none; border: none; padding: 0; color: var(--dim);
+  font-family: var(--mono); font-size: var(--fs-label); cursor: pointer; text-decoration: none;
 }
-.w-open:hover { color: var(--blue); }
+.w-quiet-link:hover { color: var(--blue); }
+.w-quiet-link:focus-visible, .w-more:focus-visible {
+  outline: 2px solid var(--blue); outline-offset: 2px;
+}
 .w-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .w-exc, .w-live {
   display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline;
@@ -837,15 +861,16 @@ button.b-epic-pill { cursor: pointer; }
   cursor: pointer; padding: 0; text-align: left;
 }
 .w-link:hover { color: var(--blue); }
-.w-link:focus-visible, .w-open:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.w-link:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .w-restore { margin-left: auto; }
 @media (pointer: coarse) {
-  .w-tab, .w-open, .w-option, .w-link, .w-discuss { min-height: 44px; }
+  .w-tab, .w-option, .w-more, .w-quiet-link, .w-door, .w-note, .w-do .b-btn, .w-link {
+    min-height: 44px;
+  }
 }
 @media (max-width: 560px) {
   .w-needs { grid-template-columns: 1fr; }
   .w-exc, .w-live { flex-direction: column; gap: 2px; align-items: flex-start; }
-  .w-discuss { margin-left: 0; }
   /* A phone's top bar keeps the one count that asks something of the
      reader; the row totals wrap into noise at this width. */
   .b-read-counts { display: none; }

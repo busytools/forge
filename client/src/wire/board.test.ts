@@ -3,7 +3,14 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { repoPath } from '../repo';
-import { BOARD_VARIANTS, applyDetail, boardFrom, coversBoard, type BoardWire } from './board';
+import {
+  BOARD_VARIANTS,
+  applyDetail,
+  boardFrom,
+  carryDetail,
+  coversBoard,
+  type BoardWire,
+} from './board';
 import type { SessionSlot } from './types';
 
 const LEAD: SessionSlot = { org: 'TestOrg', project: 'proj', label: 'lead' };
@@ -223,6 +230,33 @@ describe("the drawer's row", () => {
     // draws it from this set, since the bulk read never carries it.
     expect(closed?.projects[0]?.detail?.map((entry) => entry.task.id)).toEqual(['t-9']);
     expect(applyDetail(wire(), { org: 'TestOrg', name: 'proj' }, null)).toBeNull();
+  });
+
+  it('carries the drawer set across a whole read, and drops a row the read now has', () => {
+    const first = applyDetail(
+      wire(),
+      { org: 'TestOrg', name: 'proj' },
+      row({ id: 't-9', subject: 'an ended row', status: 'completed' }),
+    );
+    const reread = wire();
+    const carried = carryDetail(first, reread);
+    expect(
+      carried.projects[0]?.detail?.map((entry) => entry.task.id),
+      "a whole read never carries the drawer's rows, and must not drop them",
+    ).toEqual(['t-9']);
+    // The same row back in the lanes' read is the fresher copy: the detail
+    // copy steps aside.
+    const liveAgain = boardFrom({
+      projects: [
+        {
+          project: { org: 'TestOrg', name: 'proj' },
+          rows: [row({ id: 't-9', status: 'in_progress' })],
+          crons: [],
+          connectors: { gotify: [], slack: [] },
+        },
+      ],
+    } as unknown as BoardWire);
+    expect(carryDetail(first, liveAgain).projects[0]?.detail).toEqual([]);
   });
 
   it('updates a drawer row in place rather than growing the set', () => {
