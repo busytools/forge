@@ -652,7 +652,7 @@ mod tests {
 
     /// The claim is scoped to unassigned rows (#2416): a lead assigns a
     /// worker's row at creation, and a worker reading only this block
-    /// would otherwise pull a different row with `claim` by epic.
+    /// would otherwise claim another row than the one it was given.
     #[test]
     fn the_task_instructions_claim_only_an_unassigned_row() {
         assert!(

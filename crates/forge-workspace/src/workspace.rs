@@ -8103,13 +8103,12 @@ impl Workspace {
                         attested: None,
                         reserved: None,
                         links: Vec::new(),
-                        evidence: Some(forge_primitives::tasks::Evidence {
-                            commit: Some("test-commit".to_owned()),
-                            path: None,
-                            excerpt: None,
-                            verified_at: None,
-                            problem: None,
-                        }),
+                        // **A row created on the board carries no evidence.**
+                        // An earlier cut put a placeholder commit here, and it
+                        // reached agents through `tasks__get` as a real claim;
+                        // a completion states its own evidence like any other
+                        // row's.
+                        evidence: None,
                         version: 0,
                         archived_at: None,
                         created_at: now,
@@ -18008,6 +18007,28 @@ provider = "anthropic"
         let key = SessionSlot::from_str_for_test("never-registered");
         let err = workspace.refresh_context_usage(&key).expect_err("unknown session");
         assert!(matches!(err, DispatchError::UnknownSession(_)));
+    }
+
+    /// **A row cut on the board carries no evidence.** An earlier cut wrote a
+    /// placeholder commit into every UI-created row, and it reached agents
+    /// through `tasks__get` as a real claim; a completion states its own.
+    #[test]
+    fn a_row_created_on_the_board_carries_no_evidence() {
+        let (ws, _rx) = Workspace::testing_stub();
+        ws.seed_test_project("proj", "/tmp/tp-board-create");
+        ws.dispatch(Command::TaskCreate {
+            project: "proj".to_owned(),
+            subject: "cut from the board".to_owned(),
+            parent: None,
+        })
+        .expect("the create dispatches");
+        let rows = ws.tasks_for_project("proj");
+        assert_eq!(rows.len(), 1, "one row was cut");
+        assert!(
+            rows[0].evidence.is_none(),
+            "a board-created row states no claim of its own: {:?}",
+            rows[0].evidence,
+        );
     }
 
     /// `dispatch(Command::Cancel)` falls back to synchronous direct
