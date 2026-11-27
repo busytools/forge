@@ -8474,10 +8474,7 @@ async fn an_update_during_a_review_read_crosses_after_its_answer() {
     )
     .await;
     let (_, plain, _) = snapshot_answering(&mut conn).await;
-    let branch = plain["work"]["branch"]
-        .as_str()
-        .expect("the record names its branch")
-        .to_owned();
+    let branch = plain["work"]["branch"].as_str().expect("the record names its branch").to_owned();
 
     forge_workspace::work::set_pinned_gate_wait(10_000);
     let gate = fleet.workspace().hold_work_gate(&lead_seat()).expect("the seat is held");
@@ -8532,10 +8529,7 @@ async fn an_update_during_a_review_read_crosses_after_its_answer() {
     // against the base the answer is about to replace.
     while let Some(frame) = next_server_within(&mut conn, 700).await {
         assert!(
-            !matches!(
-                frame,
-                ServerMessage::Patch { subject: Subject::Session(_), .. }
-            ),
+            !matches!(frame, ServerMessage::Patch { subject: Subject::Session(_), .. }),
             "a patch overtook the read's own answer: {frame:?}",
         );
     }
