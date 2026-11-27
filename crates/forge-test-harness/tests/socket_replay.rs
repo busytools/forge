@@ -62,7 +62,7 @@ use forge_sdk::transport::codec::{DecodedLine, decode_dispatch};
 use forge_server::transport::PROTOCOL_VERSION;
 use forge_server::transport::envelope::{ClientMessage, ClientSettings, ServerMessage, Subject};
 use forge_server::transport::wire::{
-    OutdatedReasonWire, ReviewedThreadWire, ThreadResolutionWire, TurnWire,
+    OutdatedReasonWire, ReviewedThreadWire, StreamVersion, ThreadResolutionWire, TurnWire,
 };
 use forge_server::{Command, SessionUpdate};
 use forge_test_harness::sdk_wire::{baseline_dir, legacy_baseline_dir, load_baseline_from};
@@ -263,7 +263,7 @@ census!(ServerMessage,
     [
         Pong unit,
         Settings struct, SettingsRefused struct, SettingsSaved struct,
-        Greeting struct, Snapshot struct, Update struct, Page struct,
+        Greeting struct, Snapshot struct, Patch struct, Update struct, Page struct,
         SeatFrames struct,
         CommitDiff struct, FileContent struct, Reply struct,
         BrowserView struct, TerminalView struct, TerminalControl struct,
@@ -903,7 +903,11 @@ fn frames_record() -> Value {
                 dictate: forge_workspace::DictateAxes::default(),
             },
         },
-        ServerMessage::Snapshot { subject: Subject::Home, data: Value::Null },
+        ServerMessage::Snapshot {
+            subject: Subject::Home,
+            version: StreamVersion(1),
+            data: Value::Null,
+        },
         ServerMessage::Update {
             update: Box::new(SessionUpdate::CatalogLoaded),
             seq: None,
@@ -1802,10 +1806,31 @@ fn frames_record() -> Value {
         "SnapshotHome".to_owned(),
         shape_of(&ServerMessage::Snapshot {
             subject: Subject::Home,
+            version: StreamVersion(1),
             data: serde_json::from_str::<Value>(include_str!(
                 "../../forge-server/tests/wire_fixtures/home.json"
             ))
             .expect("the home fixture parses"),
+        }),
+    );
+    // **One delta, as the client will read it**: a home patch's outer shape
+    // and one list entry's `op`/`id`/`record` vocabulary, which every subject
+    // shares. The field set inside a record varies by what moved; this pins
+    // the envelope every patch has.
+    payload_sampled.insert(
+        "PatchHome".to_owned(),
+        shape_of(&ServerMessage::Patch {
+            subject: Subject::Home,
+            version: Some(StreamVersion(2)),
+            data: json!({
+                "agents": [{
+                    "op": "set",
+                    "id": { "org": "TestOrg", "project": "proj", "label": "lead" },
+                    "record": {
+                        "slot": { "org": "TestOrg", "project": "proj", "label": "lead" },
+                    },
+                }],
+            }),
         }),
     );
     // **The board's own read (#2517)**, the payload the home used to carry:
@@ -1816,6 +1841,7 @@ fn frames_record() -> Value {
         "SnapshotBoard".to_owned(),
         shape_of(&ServerMessage::Snapshot {
             subject: Subject::Board,
+            version: StreamVersion(1),
             data: serde_json::from_str::<Value>(include_str!(
                 "../../forge-server/tests/wire_fixtures/board.json"
             ))
@@ -1830,6 +1856,7 @@ fn frames_record() -> Value {
         "SnapshotExtensions".to_owned(),
         shape_of(&ServerMessage::Snapshot {
             subject: Subject::Extensions,
+            version: StreamVersion(1),
             data: serde_json::to_value(forge_server::transport::wire::ExtensionsWire {
                 snapshot: Some(PluginsInventorySnapshot {
                     installed: vec![InstalledPluginEntry {

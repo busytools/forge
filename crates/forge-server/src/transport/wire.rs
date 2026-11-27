@@ -3460,6 +3460,196 @@ pub struct ExtensionsPatch {
     pub lsp: Option<Vec<LspCheckWire>>,
 }
 
+/// The patch that carries `new` over `old`, or `None` when nothing moved.
+///
+/// **The record's own serialised keys are the patch's fields.** A change is
+/// found by comparing the two records field by field, so a field added to a
+/// record crosses without this function learning its name - which is what
+/// keeps the patch total (rule 25) without a second table to drift from the
+/// record. Home and the board address their lists by id; every other subject
+/// replaces a whole field, because its lists have no ids to address (the
+/// seat's stream is numbered by its own frames; the small records change
+/// whole).
+pub(crate) fn patch_for_record(subject: &Subject, old: &Value, new: &Value) -> Option<Value> {
+    match subject {
+        Subject::Home => home_patch(old, new),
+        Subject::Board => board_patch(old, new),
+        // A take is not a record: its frames are the deltas, and a subscribe
+        // is answered with nothing to keep.
+        Subject::Dictate => None,
+        Subject::Session(_) | Subject::Usage | Subject::DictateModels | Subject::Extensions => {
+            whole_fields(old, new)
+        }
+    }
+}
+
+/// Every field whose value moved, as itself.
+fn whole_fields(old: &Value, new: &Value) -> Option<Value> {
+    let (Some(old), Some(new)) = (old.as_object(), new.as_object()) else {
+        return None;
+    };
+    let mut patch = serde_json::Map::new();
+    for (key, value) in new {
+        if old.get(key) != Some(value) {
+            patch.insert(key.clone(), value.clone());
+        }
+    }
+    (!patch.is_empty()).then_some(Value::Object(patch))
+}
+
+/// One field's change: the new value when it differs, `None` otherwise.
+fn whole_field(old: Option<&Value>, new: &Value) -> Option<Value> {
+    (old != Some(new)).then(|| new.clone())
+}
+
+/// The home: its three list fields travel by id, and every other field is
+/// replaced whole when it moves.
+fn home_patch(old: &Value, new: &Value) -> Option<Value> {
+    let (Some(old), Some(new)) = (old.as_object(), new.as_object()) else {
+        return None;
+    };
+    let mut patch = serde_json::Map::new();
+    for (key, value) in new {
+        let changed = match key.as_str() {
+            "projects" => {
+                entry_field(old.get(key), value, |entry| entry.pointer("/project").cloned())
+            }
+            "agents" => entry_field(old.get(key), value, |entry| entry.get("slot").cloned()),
+            "fleet" => entry_field(old.get(key), value, |entry| entry.get("project").cloned()),
+            _ => whole_field(old.get(key), value),
+        };
+        if let Some(value) = changed {
+            patch.insert(key.clone(), value);
+        }
+    }
+    (!patch.is_empty()).then_some(Value::Object(patch))
+}
+
+/// The board: each project's entry carries only its moved lists, its rows
+/// addressed by task id; a project that vanished is a removal.
+fn board_patch(old: &Value, new: &Value) -> Option<Value> {
+    let new = new.get("projects").and_then(Value::as_array)?;
+    let old = old.get("projects").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    let old_by_id = by_id(old, |entry| entry.get("project").cloned());
+    let mut entries = Vec::new();
+    let mut kept = std::collections::HashSet::new();
+    for entry in new {
+        let Some(identity) = entry.get("project").cloned() else { continue };
+        let key = id_key(&identity);
+        kept.insert(key.clone());
+        let board = match old_by_id.get(&key) {
+            Some((_, held)) => project_board_field_diff(held, entry),
+            None => Some(whole_board_detail(entry)),
+        };
+        if let Some(board) = board {
+            entries.push(serde_json::json!({
+                "op": "set",
+                "identity": identity,
+                "board": board,
+            }));
+        }
+    }
+    for (key, (identity, _)) in &old_by_id {
+        if !kept.contains(key) {
+            entries.push(serde_json::json!({ "op": "removed", "identity": identity }));
+        }
+    }
+    (!entries.is_empty()).then_some(serde_json::json!({ "projects": entries }))
+}
+
+/// One project's moved board lists: rows by task id, crons and connectors
+/// whole. `project` is the entry's identity and never part of the detail.
+fn project_board_field_diff(old: &Value, new: &Value) -> Option<Value> {
+    let (Some(old), Some(new)) = (old.as_object(), new.as_object()) else {
+        return None;
+    };
+    let mut patch = serde_json::Map::new();
+    for (key, value) in new {
+        let changed = match key.as_str() {
+            "project" => None,
+            "rows" => entry_field(old.get(key), value, |row| {
+                row.get("task").and_then(|task| task.get("id")).cloned()
+            }),
+            _ => whole_field(old.get(key), value),
+        };
+        if let Some(value) = changed {
+            patch.insert(key.clone(), value);
+        }
+    }
+    (!patch.is_empty()).then_some(Value::Object(patch))
+}
+
+/// A project entry the client has never read: every list of its detail.
+fn whole_board_detail(entry: &Value) -> Value {
+    let Some(entry) = entry.as_object() else {
+        return Value::Object(serde_json::Map::new());
+    };
+    Value::Object(
+        entry
+            .iter()
+            .filter(|(key, _)| key.as_str() != "project")
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    )
+}
+
+/// One list field's delta: a `set` for an entry that is new or moved, a
+/// `removed` for an id the new list no longer holds.
+fn entry_field(
+    old: Option<&Value>,
+    new: &Value,
+    id: impl Fn(&Value) -> Option<Value>,
+) -> Option<Value> {
+    let old = old.and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    let new = new.as_array()?;
+    let old_by_id = by_id(old, &id);
+    let mut entries = Vec::new();
+    let mut kept = std::collections::HashSet::new();
+    for entry in new {
+        let Some(entry_id) = id(entry) else { continue };
+        let key = id_key(&entry_id);
+        kept.insert(key.clone());
+        if old_by_id.get(&key).is_none_or(|(_, held)| *held != entry) {
+            entries.push(serde_json::json!({ "op": "set", "id": entry_id, "record": entry }));
+        }
+    }
+    for (key, (entry_id, _)) in &old_by_id {
+        if !kept.contains(key) {
+            entries.push(serde_json::json!({ "op": "removed", "id": entry_id }));
+        }
+    }
+    (!entries.is_empty()).then_some(Value::Array(entries))
+}
+
+/// A list keyed by the id its entries carry, each id kept as it crosses.
+fn by_id(
+    entries: &[Value],
+    id: impl Fn(&Value) -> Option<Value>,
+) -> std::collections::HashMap<String, (Value, &Value)> {
+    entries.iter().filter_map(|entry| id(entry).map(|id| (id_key(&id), (id, entry)))).collect()
+}
+
+/// One id as a stable key: an object's fields in a fixed order, so two
+/// serialisations of the same slot or project identity match.
+fn id_key(id: &Value) -> String {
+    match id {
+        Value::Object(fields) => {
+            let mut names: Vec<&String> = fields.keys().collect();
+            names.sort();
+            let mut key = String::new();
+            for name in names {
+                key.push_str(name);
+                key.push('\u{0}');
+                key.push_str(&id_key(&fields[name]));
+                key.push('\u{1}');
+            }
+            key
+        }
+        Value::Array(items) => items.iter().map(id_key).collect::<Vec<_>>().join("\u{1}"),
+        other => other.to_string(),
+    }
+}
+
 /// The patch types' proof: what a record carries, its patch can carry, and a
 /// field added to either side cannot compile until the other catches up.
 ///
@@ -3776,6 +3966,234 @@ mod patches {
         assert_eq!(
             serde_json::to_value(removed).expect("json"),
             serde_json::json!({ "op": "removed", "id": "row" }),
+        );
+    }
+
+    fn a_slot(org: &str, project: &str, label: &str) -> Value {
+        serde_json::json!({ "org": org, "project": project, "label": label })
+    }
+
+    fn a_home() -> Value {
+        serde_json::json!({
+            "projects": [{
+                "project": { "org": "TestOrg", "name": "proj" },
+                "work": { "branch": "main", "changed": 0, "gate": "in_repo" },
+                "would_bind": true,
+                "chip": null,
+            }],
+            "agents": [{
+                "slot": a_slot("TestOrg", "proj", "lead"),
+                "label": "lead",
+                "lifecycle": "Idle",
+            }],
+            "fleet": [{ "project": "proj", "live_workers": 1, "slots": null, "queue": 0 }],
+            "unseen": [],
+            "accounts": { "loading": [] },
+            "connectors": {
+                "gotify": { "connected": false },
+                "slack": { "connected_workspaces": [], "load_failed": false },
+            },
+            "dictate": { "enabled": false, "snapshot": null, "models_dir": null },
+            "voice": { "enabled": false, "models_dir": null },
+            "cli_version": null,
+            "forge_version": "1.2.3",
+            "forge_version_short": "abc",
+            "boot_id": "boot",
+            "service_status": null,
+            "fatal_error": null,
+            "biometric": { "outcome": "read", "value": [] },
+            "vault": null,
+        })
+    }
+
+    fn a_board() -> Value {
+        serde_json::json!({
+            "projects": [{
+                "project": { "org": "TestOrg", "name": "proj" },
+                "rows": [{
+                    "task": { "id": "t1", "subject": "a row" },
+                    "worked_secs": 1,
+                }],
+                "crons": [],
+                "connectors": { "gotify": [], "slack": [] },
+            }],
+        })
+    }
+
+    fn a_session() -> Value {
+        serde_json::json!({
+            "slot": a_slot("TestOrg", "proj", "lead"),
+            "composer": { "machine": null, "bind": "hold", "mode": "toggle", "notice": null },
+            "header": { "seq": 7 },
+            "resume_sessions": [],
+        })
+    }
+
+    fn an_extensions() -> Value {
+        serde_json::json!({ "snapshot": null, "update_run": null, "lsp": [] })
+    }
+
+    fn dictate_models() -> Value {
+        serde_json::json!({ "enabled": false, "models_dir": null, "bench": null, "rows": [] })
+    }
+
+    fn usage() -> Value {
+        serde_json::json!({
+            "today": { "by_model": [], "by_project": [], "total": { "label": "TOTAL" } },
+            "week": { "by_model": [], "by_project": [], "total": { "label": "TOTAL" } },
+            "month": { "by_model": [], "by_project": [], "total": { "label": "TOTAL" } },
+            "lifetime": { "by_model": [], "by_project": [], "total": { "label": "TOTAL" } },
+            "pricing_available": false,
+        })
+    }
+
+    /// A record that did not move sends nothing at all.
+    #[test]
+    fn an_unchanged_record_makes_no_patch() {
+        for (subject, record) in [
+            (Subject::Home, a_home()),
+            (Subject::Board, a_board()),
+            (Subject::Session(fixture_seat()), a_session()),
+            (Subject::Extensions, an_extensions()),
+            (Subject::DictateModels, dictate_models()),
+            (Subject::Usage, usage()),
+        ] {
+            assert_eq!(
+                patch_for_record(&subject, &record, &record),
+                None,
+                "{subject:?} sent a patch with nothing changed",
+            );
+        }
+    }
+
+    /// Home's lists travel by id: a changed agent is one entry, a vanished
+    /// project is a removal, and a whole field is replaced as itself.
+    #[test]
+    fn a_home_patch_carries_only_what_moved() {
+        let old = a_home();
+        let mut new = old.clone();
+        new["agents"][0]["label"] = serde_json::json!("renamed");
+        let patch = patch_for_record(&Subject::Home, &old, &new).expect("a patch");
+        assert_eq!(
+            patch,
+            serde_json::json!({
+                "agents": [{
+                    "op": "set",
+                    "id": a_slot("TestOrg", "proj", "lead"),
+                    "record": new["agents"][0],
+                }],
+            }),
+            "only the moved agent crosses, addressed by its slot",
+        );
+
+        let mut new = old.clone();
+        new["projects"] = serde_json::json!([]);
+        new["cli_version"] = serde_json::json!({ "installed": "2", "latest": "2" });
+        let patch = patch_for_record(&Subject::Home, &old, &new).expect("a patch");
+        assert_eq!(
+            patch,
+            serde_json::json!({
+                "projects": [{
+                    "op": "removed",
+                    "id": { "org": "TestOrg", "name": "proj" },
+                }],
+                "cli_version": { "installed": "2", "latest": "2" },
+            }),
+            "the removed project is named and the whole field is replaced",
+        );
+    }
+
+    /// Board rows travel by task id inside their project's entry, and a
+    /// vanished project is a removal.
+    #[test]
+    fn a_board_patch_carries_the_moved_rows_and_projects() {
+        let old = a_board();
+        let mut new = old.clone();
+        new["projects"][0]["rows"][0]["worked_secs"] = serde_json::json!(60);
+        let patch = patch_for_record(&Subject::Board, &old, &new).expect("a patch");
+        assert_eq!(
+            patch,
+            serde_json::json!({
+                "projects": [{
+                    "op": "set",
+                    "identity": { "org": "TestOrg", "name": "proj" },
+                    "board": {
+                        "rows": [{
+                            "op": "set",
+                            "id": "t1",
+                            "record": new["projects"][0]["rows"][0],
+                        }],
+                    },
+                }],
+            }),
+            "the row crosses under its task id and nothing else does",
+        );
+
+        let mut new = old.clone();
+        new["projects"] = serde_json::json!([]);
+        let patch = patch_for_record(&Subject::Board, &old, &new).expect("a patch");
+        assert_eq!(
+            patch,
+            serde_json::json!({
+                "projects": [{
+                    "op": "removed",
+                    "identity": { "org": "TestOrg", "name": "proj" },
+                }],
+            }),
+        );
+    }
+
+    /// A seat patch replaces whole fields - the seat's list fields have no
+    /// ids to address, and its stream is versioned by its own frame numbers.
+    #[test]
+    fn a_seat_patch_carries_the_whole_moved_field() {
+        let old = a_session();
+        let mut new = old.clone();
+        new["composer"]["machine"] = serde_json::json!({ "kind": "compacting" });
+        let patch =
+            patch_for_record(&Subject::Session(fixture_seat()), &old, &new).expect("a patch");
+        assert_eq!(
+            patch,
+            serde_json::json!({ "composer": new["composer"] }),
+            "one whole field, no entries",
+        );
+    }
+
+    /// The small records replace a whole field per change, and a field no
+    /// table knows about still crosses - the rule-25 control.
+    #[test]
+    fn the_small_records_carry_any_moved_field() {
+        let old = an_extensions();
+        let mut new = old.clone();
+        new["lsp"] = serde_json::json!([{ "server": "rust-analyzer", "on_path": true }]);
+        assert_eq!(
+            patch_for_record(&Subject::Extensions, &old, &new),
+            Some(serde_json::json!({ "lsp": new["lsp"] })),
+        );
+
+        let old = dictate_models();
+        let mut new = old.clone();
+        new["bench"] = serde_json::json!({ "kind": "running" });
+        assert_eq!(
+            patch_for_record(&Subject::DictateModels, &old, &new),
+            Some(serde_json::json!({ "bench": { "kind": "running" } })),
+        );
+
+        let old = usage();
+        let mut new = old.clone();
+        new["pricing_available"] = serde_json::json!(true);
+        assert_eq!(
+            patch_for_record(&Subject::Usage, &old, &new),
+            Some(serde_json::json!({ "pricing_available": true })),
+        );
+
+        let old = a_home();
+        let mut new = old.clone();
+        new["a_field_added_later"] = serde_json::json!(7);
+        assert_eq!(
+            patch_for_record(&Subject::Home, &old, &new),
+            Some(serde_json::json!({ "a_field_added_later": 7 })),
+            "a field no table knows about still crosses",
         );
     }
 }

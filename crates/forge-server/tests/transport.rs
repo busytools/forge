@@ -381,7 +381,7 @@ async fn snapshot_answering(
             // The effective config is server-wide and unprompted, so it can
             // arrive before the answer like any queued update.
             ServerMessage::Settings { .. } => {}
-            ServerMessage::Snapshot { subject, data } => return (subject, data, passed),
+            ServerMessage::Snapshot { subject, data, .. } => return (subject, data, passed),
             other => panic!("a subscribe is answered with a snapshot, not {other:?}"),
         }
     }
@@ -618,7 +618,7 @@ async fn a_late_subscriber_sees_the_same_board_and_home() {
 /// the row keeps a spent mark until the next unrelated redraw, which can be
 /// half a minute away.
 #[tokio::test]
-async fn showing_a_seat_that_spent_a_mark_re_sends_the_home_the_connection_holds() {
+async fn showing_a_seat_that_spent_a_mark_patches_the_home_the_connection_holds() {
     let (url, fleet) = a_server().await;
     // A mark is drawn on a row, so the seat has to have one: the home lists a
     // project's agents, and a seat nothing has started is not among them.
@@ -661,16 +661,16 @@ async fn showing_a_seat_that_spent_a_mark_re_sends_the_home_the_connection_holds
     let (subject, ..) = snapshot_answering(&mut socket).await;
     assert_eq!(subject, Subject::Session(lead_seat()), "the seat's own read is answered first");
     send(&mut socket, ClientMessage::Showing { seat: Some(lead_seat()) }).await;
-    // Read as an absence, for the reason the failure-mark case gives: the
-    // re-send not coming is what this catches, and it should say so itself.
-    let resent = match next_server_within(&mut socket, 700).await {
-        Some(ServerMessage::Snapshot { subject, .. }) => Some(subject),
+    // **The spent marks cross as a patch, not a re-sent home.** What moved is
+    // the row's diamond, and the diff carries exactly that.
+    let patched = match next_server_within(&mut socket, 700).await {
+        Some(ServerMessage::Patch { subject, .. }) => Some(subject),
         _ => None,
     };
     assert_eq!(
-        resent,
+        patched,
         Some(Subject::Home),
-        "and showing the seat re-sends the home, because it spent the seat's marks",
+        "and showing the seat patches the home, because it spent the seat's marks",
     );
 }
 
@@ -679,7 +679,7 @@ async fn showing_a_seat_that_spent_a_mark_re_sends_the_home_the_connection_holds
 /// connection holding the home a fresh one - so the read the gate is decided
 /// by has to carry the failure, not just the diamond.
 #[tokio::test]
-async fn showing_a_seat_that_spent_a_failure_mark_re_sends_the_home() {
+async fn showing_a_seat_that_spent_a_failure_mark_patches_the_home() {
     let (url, fleet) = a_server().await;
     // The core's own record, seeded by hand: the fold that sets it runs in the
     // session task, which a fixture does not start.
@@ -707,16 +707,16 @@ async fn showing_a_seat_that_spent_a_failure_mark_re_sends_the_home() {
     let (subject, ..) = snapshot_answering(&mut socket).await;
     assert_eq!(subject, Subject::Session(lead_seat()), "the seat's own read is answered first");
     send(&mut socket, ClientMessage::Showing { seat: Some(lead_seat()) }).await;
-    // Read as an absence: the failure this catches is the re-send NOT coming,
+    // Read as an absence: the failure this catches is the patch NOT coming,
     // and the generic wait's own panic would name the wait instead of it.
-    let resent = match next_server_within(&mut socket, 700).await {
-        Some(ServerMessage::Snapshot { subject, .. }) => Some(subject),
+    let patched = match next_server_within(&mut socket, 700).await {
+        Some(ServerMessage::Patch { subject, .. }) => Some(subject),
         _ => None,
     };
     assert_eq!(
-        resent,
+        patched,
         Some(Subject::Home),
-        "showing the seat re-sends the home, because it spent the failure mark",
+        "showing the seat patches the home, because it spent the failure mark",
     );
 }
 
@@ -726,7 +726,7 @@ async fn showing_a_seat_that_spent_a_failure_mark_re_sends_the_home() {
 /// the home the connection holds is re-sent because showing the seat
 /// changed it.
 #[tokio::test]
-async fn showing_a_seat_that_spent_a_death_re_sends_the_home() {
+async fn showing_a_seat_that_spent_a_death_patches_the_home() {
     let (url, fleet) = a_server().await;
     // The row the recovering connect leaves: the seat is up, and the death
     // it has not been shown rides beside a lifecycle that reads the truth.
@@ -775,15 +775,15 @@ async fn showing_a_seat_that_spent_a_death_re_sends_the_home() {
     assert_eq!(subject, Subject::Session(lead_seat()), "the seat's own read is answered first");
     send(&mut socket, ClientMessage::Showing { seat: Some(lead_seat()) }).await;
     // Read as an absence, for the reason the failure-mark case gives: the
-    // re-send not coming is what this catches, and it should say so itself.
-    let resent = match next_server_within(&mut socket, 700).await {
-        Some(ServerMessage::Snapshot { subject, .. }) => Some(subject),
+    // patch not coming is what this catches, and it should say so itself.
+    let patched = match next_server_within(&mut socket, 700).await {
+        Some(ServerMessage::Patch { subject, .. }) => Some(subject),
         _ => None,
     };
     assert_eq!(
-        resent,
+        patched,
         Some(Subject::Home),
-        "showing the seat re-sends the home, because it spent the death",
+        "showing the seat patches the home, because it spent the death",
     );
 
     // The spent trace leaves a row that is still there and clean: the seat
