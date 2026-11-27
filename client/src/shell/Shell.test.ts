@@ -1693,13 +1693,12 @@ describe('a link that is open but has gone quiet', () => {
     await ticked('No word from', true);
     expect(drawn(), 'a quiet link was drawn as live').toContain('showing the last read');
 
-    // A frame that lands moves the stamp. It crosses a real socket, so the
-    // wait is this file's own absence window; the clock then moves so the
-    // next tick has a new value to measure against - a frozen one would leave
-    // the line's cached measurement where it was, however fresh the stamp.
+    // **A frame clears the line through the connection's own announcement,
+    // not the next tick.** The page's clock is frozen here, so a tick can
+    // never carry a new `now` - a page that polled `lastHeard()` on the
+    // ticker would keep its old answer for ever. The clear can only come
+    // from the stamp landing as state.
     forge.home(homeWire);
-    await quiet(QUIET_MS * 3);
-    vi.setSystemTime(Date.now() + 1_000);
     await ticked('No word from', false);
   });
 });

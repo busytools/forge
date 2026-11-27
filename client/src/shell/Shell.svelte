@@ -95,6 +95,16 @@
   let nowAt = $state(Date.now());
   let ticker: ReturnType<typeof setInterval> | null = null;
   /**
+   * When the link last carried a frame, as the connection reports it.
+   *
+   * **State rather than a polled getter.** A pong moves no state a page
+   * tracks, and the shell forwards the browser's and terminal's binary frames
+   * on events of their own, so a derived reading `lastHeard()` would keep its
+   * old answer until the one-second tick - a minute in a throttled tab. The
+   * connection's `onHeard` is the edge; this is the value it lands in.
+   */
+  let heardAt = $state<number | null>(null);
+  /**
    * What the live connection's greeting said this client's protocol does not
    * agree with, or `null`. Set from the connection rather than from the
    * attempt that took it, because a page left open across a forge upgrade
@@ -278,6 +288,10 @@
     if (open === null) return;
     connectionStatus = open.status();
     skew = open.skew();
+    heardAt = open.lastHeard();
+    const stopHeard = open.onHeard((at) => {
+      heardAt = at;
+    });
 
     const stopHome = watchHome(open).subscribe(($home) => {
       home = $home;
@@ -310,6 +324,7 @@
       stopStatus();
       stopGreetings();
       stopVault();
+      stopHeard();
     };
   });
 
@@ -467,7 +482,7 @@
       : silenceOf({
           status: connectionStatus,
           protocol: connection.serverProtocol(),
-          heardAt: connection.lastHeard(),
+          heardAt,
           now: nowAt,
         }),
   );

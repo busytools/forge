@@ -204,7 +204,7 @@ happening to it, and nothing about it is the reader's to act on.
   all has arrived past its own probe window is drawn as quiet, naming how
   long: the transports' deadlines cover a dead socket, and the page's own
   clock is the backstop for a server that stopped answering while the socket
-  stayed up.
+  stayed up, and the line clears as soon as frames are heard again.
 - **A forge on another protocol**: the shell draws one line above the page
   naming the command that updates the stale half and this client's build -
   and the answering build where the greeting carried it - and the page
