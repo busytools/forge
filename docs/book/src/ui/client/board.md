@@ -14,21 +14,20 @@ return the reader where they came from, and a deep link with nothing to go
 back to lands on the home.
 
 The page draws from the `board` subject: a project's rows, schedules and
-connector sets ride in that subject's entry, and it hears the updates that
-move them. The seat chips and the fleet's `waiting on you` count come from
-the home snapshot beside it; the row and running counts are the board's own.
-So a seat that claims a row, a row that is cut, or a move made in another view
-arrives as an update, and the page re-reads without the reader doing
-anything. While it is mounted and the page is being watched, it also re-reads
-on a slow five-minute beat: a row's time-derived marks are computed by the
-server at read time, and no update announces that a window crossed. A page
-nobody is watching releases the beat entirely, and the return re-read the
-page already makes when it comes back from a hidden spell of at least two
-seconds asks the board once through the same guards. Only the `wrote ... ago`
-line keeps ticking off the page's own clock; the card's worked time and the
-chip and waiting-card ages advance only on a read, so they are refreshed at
-most five minutes after the page is watched again, and can be up to the time
-it was away plus five minutes old.
+connector sets ride in that subject's record, and the server patches the
+record when they move. The seat chips and the fleet's `waiting on you` count
+come from the home snapshot beside it; the row and running counts are the
+board's own. So a seat that claims a row, a row that is cut, or a move made
+in another view arrives as a patch, and the page redraws without the reader
+doing anything.
+
+**There is no beat.** A row's ages and time-derived marks are computed at
+draw time from the row's own timestamps and the instant the record landed
+(`client/src/board/clock.ts`), so a watched board ticks every five seconds
+without a read: the `wrote ... ago` line, the card's worked time, and the
+chip and waiting-card ages all move together. A page nobody is watching asks
+nothing; the record and its frames were kept while it was away, and a return
+draws them as they stand.
 
 ## What it draws
 

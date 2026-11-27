@@ -428,9 +428,14 @@ books as a subscribe refusal, and the greeting already said which server it
 is.
 
 **`subscribe {what, answering, review}`** - answered with a `snapshot` of the
-whole subject. The subscription this opens is the one updates arrive on. The
-browser is not a capability a client declares: it lives on the server, and a
-client attaches to it as a viewer (`browser_view` below).
+whole subject and the `version` it is at. **That is the subscription's only
+whole read**: from there it hears `patch` frames carrying only the fields
+that moved, each the next version, and a patch numbered anything but one
+past the version it holds is a gap - the client keeps the record it has and
+asks for one whole read (`subscribe` again), once, never in a loop. Nothing
+is re-sent on a clock: a subject that does not change sends nothing at all.
+The browser is not a capability a client declares: it lives on the server,
+and a client attaches to it as a viewer (`browser_view` below).
 
 **`answering` declares whether this client can answer a prompt, and it is
 off unless you say otherwise.** Every update reaches every subscriber
@@ -471,14 +476,12 @@ without it carries `base: unverified` beside a branch layer and no
 already states: its record looks the PR up on the read, because there is no
 loop to defer that to.)
 
-**The flag follows the page holding the seat rather than one ask**, with one
-deliberate exception: a read a page asks for on a notice - a review write,
-another client's activity - is an ordinary record read, so ten comments in a
-minute are ten records rather than ten base checks. The page's own
-read follows it, and that is what re-states the base. The page says false
-again when it lets the seat go. That last one is the client's own held state
-rather than a frame - nothing on this wire says "forget the scope" - so a
-reconnect after it re-asks an ordinary record.
+**The flag follows the page holding the seat.** A review write or another
+client's activity is a `patch` of the record's review rows, not a read, so
+the page's own read is the one that checks the base and re-states it. The
+page says false again when it lets the seat go. That last one is the client's
+own held state rather than a frame - nothing on this wire says "forget the
+scope" - so a reconnect after it re-asks an ordinary record.
 
 **`browser_view {seat, tab, reply_to}`** and **`browser_view_page {seat,
 target, reply_to}`** - attach this connection to one of a seat's browser
@@ -668,7 +671,7 @@ seat is also watched, it is what spends the needs-you diamond and the failure
 mark, and one of the two things that spend the death trace - the other is a
 prompt the reader themself sent, while a cron's, a peer's or forge's own does
 not count as looking. Subscribing a seat does not show it. Nothing answers it,
-but a `home` snapshot may follow unsolicited when it spent a mark and this
+but a `home` patch may follow unsolicited when it spent a mark and this
 connection holds the home.
 
 **`more {conversation, before, turns}`** - a page of a session's
@@ -1075,8 +1078,21 @@ of prose on either side.
 - **`pong`** - the answer to a `ping`, with no fields. It is the client's
   proof that the link carries frames in both directions, and a client draws
   nothing of it.
-- **`snapshot {subject, data}`** - a subject in full, in answer to a
-  `subscribe`.
+- **`snapshot {subject, version, data}`** - a subject in full, in answer to a
+  `subscribe`, with the number the record is at. It is the only whole record
+  a subscription is sent.
+- **`patch {subject, version, data}`** - one subject's change, as the
+  record type's own patch: **an absent field means unchanged**, a present
+  `null` clears an optional value, and a list field crosses as `set` or
+  `removed` entries addressed by id (`{"op": "set", "id": …, "record": …}`
+  and `{"op": "removed", "id": …}`). `version` is the next number of the
+  subject's stream; a client applies it only as exactly one past the version
+  its store holds, and treats any other number - or a patch for a subject it
+  has never read - as a gap answered by one whole read. **A seat's patch
+  carries no `version`**: a seat's stream is numbered by its own frames
+  (`update.seq`), and its patch is a whole-field replacement applied as it
+  arrives. An unchanged subject sends nothing; no periodic patch, beat or
+  re-send exists.
 - **`update {update, seq, span}`** - one `SessionUpdate`, for whichever
   subjects the client is subscribed to. The subject decides, and a home
   subscription has **two** arms rather than one: an update a home row draws
@@ -1085,13 +1101,18 @@ of prose on either side.
   Read that arm as absent and a page keeps what it read at subscribe for the
   life of the connection. The account pool is a home field as well, and its
   announcement is also a fleet redraw, so it arrives through the first arm
-  too; **the frame carries the pool's own state**, so a usage-only move is
-  applied instead of read. A move in the loading rows, the settled flag, the
-  listener, a probe failure or the selection signal - `at_cap` and `cooling`
-  on each pool row - is still a read, because a project row's `would_bind`
-  and its chip derive from those. A card left at `0 ready, probing` looks like a
-  slow probe rather than like a page that stopped listening, which is why
+  too; **the frame carries the pool's own state**, and a move in the loading
+  rows, the settled flag, the listener, a probe failure or the selection
+  signal - `at_cap` and `cooling` on each pool row - reaches the page in the
+  home's patch as well, because the server re-derives each project row's
+  `would_bind` and chip from it. A card left at `0 ready, probing` looks like
+  a slow probe rather than like a page that stopped listening, which is why
   the frame carries the state rather than staying a bare wake-up.
+
+  **An update is news, not an instruction to read.** The frame still crosses
+  whenever the CLI or the core emitted one, but the subscription's own
+  subject moves by `patch`; nothing on this wire asks a client to re-read a
+  subject it holds.
 
   **The plugin records are keyless without being home fields.** They cross
   to a home subscriber for the same reason - they name no seat - but nothing
@@ -1196,7 +1217,7 @@ content_hash, threads, reviews}`** - in answer to `document_read`: the
   the state (with its `source`), the title and whether a hand-off holds it.
   `terminal` is `null` when the terminal is gone. **It is pushed on every
   real state change** - a command starts, a password is wanted, the shell
-  exits - so the strip's words never wait for a record re-read.
+  exits - so the strip's words never wait for a whole record.
 - **`browser_file_dialog {id, tab, multiple}`** - a page asked for a file.
   The shell opens this machine's picker and answers `browser_file_answer`
   under the same id; `multiple` is whether the page accepts more than one
@@ -1262,16 +1283,18 @@ fields were most of a ~708 KB home read for a page that draws none of them
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `projects` | One entry per project: `project` (its identity - `org` and `name`; the rest of a project's view is the home's), `rows` (the board: each one a task with its worked time, ages and marks, plus its rollup and its epic's subject), `crons`, and `connectors` (this project's own gotify and slack subscription sets). |
 
-**`board` hears the variants that move it**: `tasks_changed`,
+**`board` is patched when the variants that move it land**: `tasks_changed`,
 `cron_schedules_changed` and `connector_subscriptions_changed`, plus the
 seat events its rows' `stale` mark is read from (`spawning`, `connected`,
 `session_replaced`, `releasing`, `connection_failed`,
 `worker_status_changed`). A row's ages and its time-derived marks move with
-the clock and no frame announces that, so a page holding the subject re-reads
-on a slow beat of its own - five minutes - while the page is being watched.
-The home hears `tasks_changed` too, because its fleet row's counts are derived
-from the same tasks; it hears neither of the other two, because its snapshot
-no longer carries them.
+the clock and no frame announces that; **no beat re-sends the record for
+them** - the page derives them at draw time from the row's own timestamps and
+the instant the record landed (`client/src/board/clock.ts`, whose window is
+pinned to the core's own constant by a test). The home is patched for
+`tasks_changed` too, because its fleet row's counts are derived from the same
+tasks; it is not patched for the other two, because its record does not carry
+them.
 
 **`session <org>/<project>/<label>`** is one seat: its record, its
 conversation, and what the composer is doing.
@@ -1290,7 +1313,7 @@ conversation, and what the composer is doing.
 | `processes`                   | The last walk of the session's process tree, or `null` for a seat nothing has walked - a seat a client holds is walked once a second and its movement is pushed as a `processes_changed` update, a seat nobody holds is not walked at all, and a session ending clears it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `background_tasks`            | The seat's live tasks: the CLI's background registry plus the long foreground calls it announces on `task_started` and ends with a `task_notification`, a terminal `task_updated`, or the turn the call ran in, each entry saying whether the CLI backgrounded it (`is_backgrounded`), with the line the row leads with, the command its own call carried and the call that began it. The processes feed leads its rows with these, because a backgrounded bash is detached from claude's tree and the OS walk cannot see it for itself.                                                                                                                                                                                                                                                                                                                                                                                      |
 | `monitors`                    | The watches the session has running.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `terminal`                    | The seat's terminal as the strip draws it, `null` until one is opened: the id, shell, cwd, size, whether the shell is alive, the state (with its `source`), the title and whether a hand-off holds it. Pushed as `terminal_changed` on every real state change, so the strip's words never wait for a record re-read.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `terminal`                    | The seat's terminal as the strip draws it, `null` until one is opened: the id, shell, cwd, size, whether the shell is alive, the state (with its `source`), the title and whether a hand-off holds it. Pushed as `terminal_changed` on every real state change, so the strip's words never wait for a whole record.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `pending_asks`                | Every prompt the seat is holding, oldest first within each kind that keeps arrival order, the held kinds leading (a Slack draft, a browser hand-off, a document hand-off, a terminal hand-off, a held vault call, a held configuration write); the vault registry keeps no arrival order, so its own cards have none to offer. Two questions of one batch or two calls that ran in parallel park several at once, so this is what a client that attached mid-batch reads.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `pending_ask`                 | The front of `pending_asks` - the prompt a client that draws a single ask waits on, `null` when there is none. Kept beside the list so a client reading only this one still draws the oldest ask.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `reviews`                     | The review threads and the submitted reviews, each read separately so an unreadable one is not reported as empty.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -1341,13 +1364,13 @@ a filter, because what an adoption does now is download a model onto this
 machine. **Nothing is adopted without a press**: the page proposes, and the
 person presses - the core only ever does what a `dictate_activate` names.
 
-**The check's landing is the update.** `dictate_catalogue_check` starts a
-fetch, and `dictate_models_changed` carries the re-read view when it
-answers; a refresh due at boot lands the same way, so a page that attached
-mid-check hears the result without asking again. `dictate_availability`
-reaches this subject too: when the preflight finishes loading the models -
-which it announces with that update alone - a page reads again rather than
-drawing `pending` chips until the next check.
+**The check's landing is a patch.** `dictate_catalogue_check` starts a
+fetch, and the record is patched when it answers; a refresh due at boot lands
+the same way, so a page that attached mid-check hears the result without
+asking. `dictate_availability` reaches this subject too: when the preflight
+finishes loading the models - which it announces with that update alone - the
+record is patched, so a page never draws `pending` chips until the next
+check.
 
 **`extensions`** is the Extensions page's read: the plugin inventory, the
 PATH checks the scan cannot carry, and the last update run. A subject of
