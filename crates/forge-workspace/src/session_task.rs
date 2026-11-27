@@ -811,6 +811,11 @@ impl SessionTask {
                             "the handoff failed before this prompt could run",
                             "the occupant went before the prompt started",
                         );
+                        self.record_queue_ending(
+                            &prompt.text,
+                            "the handoff failed before this prompt could run",
+                            prompt.source,
+                        );
                         self.emit(SessionUpdate::PromptLifecycle {
                             key: self.key.clone(),
                             uuid: prompt.uuid,
@@ -944,7 +949,18 @@ impl SessionTask {
                 // the only other word, and a reader that asked to drop it must
                 // not be left guessing.
                 if cancelled {
+                    // The row the ending is about, read before the drop takes
+                    // it: a page attaching after the live frames reads the
+                    // words and the reason from the seat's own record.
+                    let leaving = self.domain.lock().queued_prompt(&uuid).cloned();
                     self.domain.lock().drop_queued_prompt(&uuid);
+                    if let Some(prompt) = leaving {
+                        self.record_queue_ending(
+                            &prompt.text,
+                            "the CLI cancelled it before it ran",
+                            prompt.source,
+                        );
+                    }
                 }
                 self.emit(SessionUpdate::PromptCancelResolved {
                     key: self.key.clone(),
@@ -1159,6 +1175,12 @@ impl SessionTask {
                         .then(|| self.domain.lock().queued_prompt(command_uuid).cloned())
                         .flatten()
                         .filter(|prompt| prompt.source != PromptSource::Forge);
+                    // The row a refusal is about, read before the advance takes
+                    // it out of the pile: its words and sender are what a page
+                    // attaching after the live frame needs for the ending.
+                    let settling = (!matches!(state.as_str(), "queued" | "started" | "completed"))
+                        .then(|| self.domain.lock().queued_prompt(command_uuid).cloned())
+                        .flatten();
                     let known = { self.domain.lock().advance_queued_prompt(command_uuid, state) };
                     // **A judgment prompt the CLI settles without running
                     // ends the handoff**, for the same reason a reader's
@@ -1221,6 +1243,15 @@ impl SessionTask {
                             },
                         )
                     });
+                    // **The read carries the same ending.** The frame below
+                    // speaks once; a page attaching after it draws the pile
+                    // from the seat read, so the words and the reason have to
+                    // be held there too.
+                    if let (crate::protocol::PromptState::NotSent { reason }, Some(prompt)) =
+                        (&drawn, settling)
+                    {
+                        self.record_queue_ending(&prompt.text, reason, prompt.source);
+                    }
                     self.emit(SessionUpdate::PromptLifecycle {
                         key: self.key.clone(),
                         uuid: command_uuid.clone(),
@@ -1377,6 +1408,11 @@ impl SessionTask {
             let (state, source) = forge_not_sent(
                 "the session ended before this prompt ran",
                 "the occupant went with the prompt still waiting",
+            );
+            self.record_queue_ending(
+                &prompt.text,
+                "the session ended before this prompt ran",
+                prompt.source,
             );
             self.emit(SessionUpdate::PromptQueued {
                 key: self.key.clone(),
@@ -1654,6 +1690,11 @@ impl SessionTask {
                                 "the CLI could not be sent this prompt",
                                 "the dispatch to the agent failed",
                             );
+                            self.record_queue_ending(
+                                &text,
+                                "the CLI could not be sent this prompt",
+                                source,
+                            );
                             self.emit(SessionUpdate::PromptLifecycle {
                                 key: self.key.clone(),
                                 uuid,
@@ -1735,6 +1776,12 @@ impl SessionTask {
             severity,
             text: text.into(),
         });
+    }
+
+    /// Record the ending a page that attaches later reads, beside the frame
+    /// the attached pages draw now.
+    fn record_queue_ending(&self, text: &str, reason: &str, source: PromptSource) {
+        self.domain.lock().record_queue_ending(text.to_owned(), reason.to_owned(), source);
     }
 
     /// Flush `caller`'s buffered review activity into its batched
@@ -1952,6 +1999,11 @@ impl SessionTask {
                 let (state, source) = forge_not_sent(
                     "the handoff failed before this prompt could run",
                     "the occupant never asked for its brief",
+                );
+                self.record_queue_ending(
+                    &prompt.text,
+                    "the handoff failed before this prompt could run",
+                    prompt.source,
                 );
                 self.emit(SessionUpdate::PromptLifecycle {
                     key: self.key.clone(),
@@ -2301,6 +2353,10 @@ impl SessionTask {
         }
         for prompt in held {
             let sender = prompt.sender.clone();
+            // Kept for the ending a hand-back failure records: the dispatch
+            // below takes the words.
+            let prompt_text = prompt.text.clone();
+            let prompt_source = prompt.source;
             let uuid = forge_sdk::request_id::next_forged_prompt_id();
             // `route`, not `dispatch`: this is a re-delivery of words already
             // recorded, not a new press, so it takes no dispatch entry's
@@ -2326,6 +2382,11 @@ impl SessionTask {
                 let (state, source) = forge_not_sent(
                     "the aborted handoff could not hand this prompt back",
                     "no occupant took it",
+                );
+                domain.lock().record_queue_ending(
+                    prompt_text.clone(),
+                    "the aborted handoff could not hand this prompt back".to_owned(),
+                    prompt_source,
                 );
                 let _ = update_tx.send(SessionUpdate::PromptLifecycle {
                     key: key.clone(),
@@ -2503,6 +2564,11 @@ impl SessionTask {
                 let (state, source) = forge_not_sent(
                     "the handoff did not run, so this prompt waits no longer",
                     "the seat had no occupant to hand over",
+                );
+                self.record_queue_ending(
+                    &prompt.text,
+                    "the handoff did not run, so this prompt waits no longer",
+                    prompt.source,
                 );
                 self.emit(SessionUpdate::PromptLifecycle {
                     key: self.key.clone(),
@@ -2790,6 +2856,11 @@ impl Drop for SessionTask {
                 let (state, source) = forge_not_sent(
                     "the session ended before this prompt ran",
                     "the task ended during a handoff",
+                );
+                self.record_queue_ending(
+                    &prompt.text,
+                    "the session ended before this prompt ran",
+                    prompt.source,
                 );
                 let _ = self.update_tx.send(SessionUpdate::PromptLifecycle {
                     key: self.key.clone(),

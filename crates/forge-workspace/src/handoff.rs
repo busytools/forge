@@ -1862,6 +1862,13 @@ impl crate::Workspace {
                     "the handoff failed before this prompt could run",
                     "the successor never started",
                 );
+                if let Some(domain) = self.domain_session_for(&request.slot) {
+                    domain.lock().record_queue_ending(
+                        prompt.text.clone(),
+                        "the handoff failed before this prompt could run".to_owned(),
+                        prompt.source,
+                    );
+                }
                 let _ = self.update_tx.send(SessionUpdate::PromptLifecycle {
                     key: request.slot.clone(),
                     uuid: prompt.uuid.clone(),

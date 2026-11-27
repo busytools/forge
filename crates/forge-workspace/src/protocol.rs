@@ -1574,6 +1574,24 @@ pub struct QueuedPrompt {
     pub attachments: Vec<forge_primitives::ImageAttachment>,
 }
 
+/// The last prompt that left the queue without being sent, as a page that
+/// attaches afterwards reads it.
+///
+/// **The live frame is not the only reader.** `PromptLifecycle` speaks once,
+/// and a page that loads, refreshes or switches seats after the frame would
+/// otherwise draw nothing where the card was - a prompt that vanishes
+/// silently reads as delivered. The core holds the last ending per occupant
+/// so the seat read can answer the same line the live path drew.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+pub struct QueueEnding {
+    /// The prompt's words, as they were written.
+    pub text: String,
+    /// The core's own words for why it did not run.
+    pub reason: String,
+    /// Who dispatched it, which is what decides whether a retry is safe.
+    pub source: PromptSource,
+}
+
 /// How loudly a [`SessionUpdate::Notice`] reads.
 ///
 /// Two levels rather than a scale: the core's own answer about a seat, and

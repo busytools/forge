@@ -124,7 +124,7 @@ pub use handoff::{
 };
 pub use protocol::{
     Command, DictateOutcome, DispatchError, FileDecl, LifecycleSource, NoticeSeverity,
-    PromptSource, PromptState, SessionUpdate, TurnErrorClass,
+    PromptSource, PromptState, QueueEnding, SessionUpdate, TurnErrorClass,
 };
 pub use target::{ProjectKey, SessionSlot, SessionTarget};
 pub use tts::{TtsSettings, TtsSnapshot, TtsView};
