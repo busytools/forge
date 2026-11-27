@@ -969,6 +969,6 @@
      what is running and the strip keeps its place right above the box. -->
 {#snippet seatQueue()}
   {#if record !== null}
-    <Queue rows={record.queue} ended={record.queue_ended} {slot} {connection} />
+    <Queue rows={record.queue} ended={record.queue_ended ?? null} {slot} {connection} />
   {/if}
 {/snippet}

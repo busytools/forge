@@ -121,9 +121,25 @@ function idleHome() {
   return { ...homeWire, agents: [{ ...IDLE_AGENT }] };
 }
 
-/** One prompt-lifecycle frame for the fixture's seat. */
+/**
+ * One prompt-lifecycle frame for the fixture's seat, spelled the way these
+ * cases reason about it: a word this build knows maps into the wire's one
+ * vocabulary, and anything else crosses as itself so an unknown shape keeps
+ * the read.
+ */
 function life(state: string, uuid = 'p1'): ServerMessage {
-  return { kind: 'update', update: { prompt_lifecycle: { key: LEAD, uuid, state } } };
+  const wire: unknown =
+    state === 'queued'
+      ? 'queued'
+      : state === 'started' || state === 'completed'
+        ? 'sent'
+        : state === 'cancelled' || state === 'discarded' || state === 'refused'
+          ? { not_sent: { reason: `the CLI ${state} it before it ran` } }
+          : state;
+  return {
+    kind: 'update',
+    update: { prompt_lifecycle: { key: LEAD, uuid, state: wire, source: 'cli' } },
+  };
 }
 
 /** One CLI background-registry frame for the fixture's seat. */
@@ -339,6 +355,48 @@ describe('the home over a connection', () => {
     answer(forge, idleHome());
 
     forge.arrive(life('queued', 'p1'));
+    // The same prompt announced again is no second one.
+    forge.arrive(life('queued', 'p1'));
+    expect(forge.refreshed, 'a duplicate uuid asked for a read').toEqual([]);
+    forge.arrive(life('queued', 'p2'));
+    await settle();
+    const agents = seen.at(-1)?.wire?.agents ?? [];
+    expect(agents[0]?.lifecycle, 'two queued prompts did not draw the row running').toBe('Running');
+
+    // **`sent` is the terminal now**: the prompt left the queue when the CLI
+    // took it. A fold moves a row to Running and never to Idle - the patch the
+    // server derives from the same write is what states the settled row - so
+    // no prompt leaving asks for a read.
+    forge.arrive(life('started', 'p1'));
+    await settle();
+    expect(forge.refreshed, 'a prompt leaving asked for a whole home read').toEqual([]);
+    expect(seen.at(-1)?.wire?.agents[0]?.lifecycle).toBe('Running');
+    forge.arrive(life('started', 'p2'));
+    await settle();
+    expect(forge.refreshed, 'the last prompt leaving asked for a whole home read').toEqual([]);
+
+    // A terminal for a prompt this page never counted folds nothing and asks
+    // for no read either: the patch carries the settled row.
+    forge.arrive(life('completed', 'p3'));
+    await settle();
+    expect(forge.refreshed, 'a terminal for an uncounted prompt asked for a read').toEqual([]);
+    stop();
+  });
+
+  /**
+   * **A snapshot answer must not clobber a count the frames built.** A prompt
+   * queued behind a running turn is a second uuid; an answer that lands while
+   * both are live keeps it, so the running prompt's terminal does not draw
+   * Idle under a queued turn. A reconnect forgets the set, so the next
+   * terminal names a prompt this page never counted and folds nothing.
+   */
+  it('keeps a second queued prompt across a snapshot, and forgets it on a reconnect', async () => {
+    const forge = fakeConnection();
+    const seen: HomeRead[] = [];
+    const stop = watchHome(forge.connection).subscribe((read) => seen.push(read));
+    answer(forge, idleHome());
+
+    forge.arrive(life('queued', 'p1'));
     forge.arrive(life('queued', 'p1'));
     expect(forge.refreshed, 'a duplicate uuid asked for a read').toEqual([]);
     forge.arrive(life('queued', 'p2'));
@@ -347,9 +405,33 @@ describe('the home over a connection', () => {
     expect(agents[0]?.lifecycle, 'two queued prompts did not draw the row running').toBe('Running');
 
     forge.arrive(life('completed', 'p1'));
+    await settle();
+    expect(forge.refreshed, 'the second prompt went uncounted after a snapshot').toEqual([]);
+    expect(
+      seen.at(-1)?.wire?.agents[0]?.lifecycle,
+      'the row went idle while a second prompt was queued',
+    ).toBe('Running');
+
+    forge.arrive(life('started', 'p2'));
+    await settle();
+    expect(forge.refreshed, 'the last prompt leaving asked for a whole home read').toEqual([]);
     forge.arrive(life('completed', 'p2'));
     await settle();
-    expect(forge.refreshed, 'the empty set asked for a read').toEqual([]);
+    expect(forge.refreshed, 'a terminal for an uncounted prompt asked for a read').toEqual([]);
+    expect(seen.at(-1)?.wire?.agents[0]?.lifecycle).toBe('Running');
+
+    // A reconnect forgets every set: a terminal for a prompt the page never
+    // counted folds nothing, and no read is asked for it either.
+    forge.arrive(life('queued', 'p3'));
+    await settle();
+    forge.setStatus('connecting');
+    forge.setStatus('open');
+    const rebased = { ...idleHome(), agents: [{ ...IDLE_AGENT, lifecycle: 'Running' }] };
+    answer(forge, rebased, 2);
+    await settle();
+    forge.arrive(life('completed', 'p3'));
+    await settle();
+    expect(forge.refreshed, 'a terminal for a pre-reconnect prompt asked for a read').toEqual([]);
     stop();
   });
 

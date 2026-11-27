@@ -39,9 +39,15 @@ use serde_json::{Map, Value, json};
 
 use crate::socket::Socket;
 
-/// The lifecycle states that settle a queued-prompt row, as `apply.ts` reads
-/// them.
-const SETTLED_STATES: [&str; 5] = ["started", "completed", "cancelled", "discarded", "refused"];
+/// Whether one lifecycle state settles a queued-prompt row.
+///
+/// The vocabulary is `queued`, `sent` and `not_sent`: the last two settle the
+/// row, and `not_sent` crosses as `{"not_sent": {"reason": ...}}` because its
+/// words ride on it. `queued` leaves the row waiting, and so does anything
+/// this build does not name.
+fn settles(state: &Value) -> bool {
+    state.as_str() == Some("sent") || state.get("not_sent").is_some()
+}
 
 /// `PermissionMode`, as its own serde writes it: camelCase, not snake.
 const MODES: [&str; 6] = ["default", "acceptEdits", "plan", "dontAsk", "auto", "bypassPermissions"];
@@ -371,32 +377,55 @@ fn seat_update(record: &mut Value, name: &str, payload: &Value) -> bool {
                 "text": words,
             }));
             set_queue(record, queue);
+            // A new row is the next thing to look at, so the last ending goes
+            // with it rather than standing beside a queue that has moved on.
+            let state = record.entry("state".to_owned()).or_insert_with(|| json!({}));
+            if let Some(state) = state.as_object_mut() {
+                state.insert("queue_ended".to_owned(), Value::Null);
+            }
             true
         }
         "prompt_lifecycle" => {
-            let (Some(uuid), Some(state)) = (
-                payload.get("uuid").and_then(Value::as_str),
-                payload.get("state").and_then(Value::as_str),
-            ) else {
+            let (Some(uuid), Some(state)) =
+                (payload.get("uuid").and_then(Value::as_str), payload.get("state"))
+            else {
                 return false;
             };
-            // Only a state this build knows settles a row: a word the CLI
-            // adds later leaves it standing, because dropping on a parse miss
+            // Only a state this build names settles a row: a shape it does
+            // not know leaves it standing, because dropping on a parse miss
             // is the one failure a reader cannot see.
-            if !SETTLED_STATES.contains(&state) {
+            if !settles(state) {
                 return false;
             }
             let queue = queue_of(record);
-            if !queue.iter().any(|row| row.get("uuid").and_then(Value::as_str) == Some(uuid)) {
+            let Some(leaving) =
+                queue.iter().find(|row| row.get("uuid").and_then(Value::as_str) == Some(uuid))
+            else {
                 return false;
-            }
+            };
+            // **A refusal leaves the words and its reason where the card was.**
+            // The page draws this line itself while it is attached, and the
+            // record is what a page catching up reads, so the same shape
+            // crosses both ways.
+            let ending = state.get("not_sent").map(|refusal| {
+                json!({
+                    "text": leaving.get("text").cloned().unwrap_or(Value::Null),
+                    "state": "not_sent",
+                    "reason": refusal.get("reason").cloned().unwrap_or(Value::Null),
+                    "source": leaving.get("source").cloned().unwrap_or(Value::Null),
+                })
+            });
             let remaining: Vec<Value> = queue
                 .into_iter()
                 .filter(|row| row.get("uuid").and_then(Value::as_str) != Some(uuid))
                 .collect();
-            // The ending two states leave with is the page's own line from
-            // this same frame; a read carries what waits, never what left.
             set_queue(record, remaining);
+            if let Some(ending) = ending {
+                let state = record.entry("state".to_owned()).or_insert_with(|| json!({}));
+                if let Some(state) = state.as_object_mut() {
+                    state.insert("queue_ended".to_owned(), ending);
+                }
+            }
             true
         }
         "prompt_cancel_resolved" => {
@@ -405,15 +434,32 @@ fn seat_update(record: &mut Value, name: &str, payload: &Value) -> bool {
                 return false;
             }
             let queue = queue_of(record);
+            let Some(leaving) =
+                queue.iter().find(|row| row.get("uuid").and_then(Value::as_str) == Some(uuid))
+            else {
+                return false;
+            };
             let remaining: Vec<Value> = queue
                 .iter()
                 .filter(|row| row.get("uuid").and_then(Value::as_str) != Some(uuid))
                 .cloned()
                 .collect();
-            if remaining.len() == queue.len() {
-                return false;
-            }
             set_queue(record, remaining);
+            // The confirmed cancel leaves the ending itself, the same shape
+            // the page folds: the lifecycle's `not_sent` may arrive after the
+            // row is gone and no longer knows the words.
+            let state = record.entry("state".to_owned()).or_insert_with(|| json!({}));
+            if let Some(state) = state.as_object_mut() {
+                state.insert(
+                    "queue_ended".to_owned(),
+                    json!({
+                        "text": leaving.get("text").cloned().unwrap_or(Value::Null),
+                        "state": "not_sent",
+                        "reason": "the CLI cancelled it before it ran",
+                        "source": leaving.get("source").cloned().unwrap_or(Value::Null),
+                    }),
+                );
+            }
             true
         }
         "pending_interaction_resolved" => {
@@ -1095,18 +1141,27 @@ mod tests {
             "the pile is folded where the read path looks"
         );
         assert!(seen["queue"].is_null(), "and nothing is written where nothing reads");
-        records.apply(&seated("prompt_lifecycle", json!({ "uuid": "u1", "state": "discarded" })));
+        records.apply(&seated(
+            "prompt_lifecycle",
+            json!({ "uuid": "u1", "state": { "not_sent": { "reason": "the CLI cancelled it" } } }),
+        ));
         assert_eq!(held(&records)["state"]["queue"].as_array().expect("queue").len(), 0);
         records.apply(&seated(
             "prompt_queued",
             json!({ "uuid": "u2", "text": "later", "source": "forge" }),
         ));
+        records.apply(&seated("prompt_lifecycle", json!({ "uuid": "u2", "state": "queued" })));
+        assert_eq!(
+            held(&records)["state"]["queue"].as_array().expect("queue").len(),
+            1,
+            "a row the core still holds stays where the queue draws it"
+        );
         records
             .apply(&seated("prompt_lifecycle", json!({ "uuid": "u2", "state": "something_new" })));
         assert_eq!(
             held(&records)["state"]["queue"].as_array().expect("queue").len(),
             1,
-            "a word the CLI adds later leaves the row standing"
+            "a shape this build does not know leaves the row standing"
         );
     }
 

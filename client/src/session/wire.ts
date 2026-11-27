@@ -46,16 +46,20 @@ export interface QueuedPromptRow {
 }
 
 /**
- * The last queued prompt that left by something other than being taken or
- * cancelled - a session that ended with it waiting, or a hook that refused it.
+ * The last queued prompt that left without being sent - a session that ended
+ * with it waiting, a hook that refused it, or the core's own refusal.
  *
  * Held on the record so the pile can say so where the card was: a row that
  * vanishes with no word is indistinguishable from one that was delivered, and
- * the two are not the same thing to a reader.
+ * the two are not the same thing to a reader. The reason is the core's own
+ * words, and `source` is who dispatched it, which is what decides whether a
+ * retry is the sender's to offer.
  */
 export interface QueueEnding {
   text: string;
-  state: string;
+  state: 'not_sent';
+  reason: string;
+  source: string;
 }
 
 /**
@@ -404,11 +408,15 @@ export interface SessionRecord {
    */
   mcp_operation_error: McpOperationFailure | null;
   /**
-   * The last row that left by discard or refusal, which the pile says in one
-   * line where the card was. Not on the wire: the read carries what is
-   * waiting, and this is what this view watched leave.
+   * The last row that was not sent, which the pile says in one line where the
+   * card was.
+   *
+   * **Three values, three facts.** An ending is the line; `null` is the
+   * server saying this seat has none (it clears one when the occupant
+   * changes); `undefined` is a read that did not carry the field at all, so a
+   * live observation this view already holds stands.
    */
-  queue_ended: QueueEnding | null;
+  queue_ended: QueueEnding | null | undefined;
   /**
    * The prompts this seat is holding: a draft leads, then arrival order. The
    * composer's dock draws the front; a parallel batch parks two at once, so
@@ -678,9 +686,10 @@ export function sessionFrom(data: unknown): SessionRecord {
     slot: held['slot'] as SessionSlot,
     state: stateFrom(held['state']),
     queue: queuedFrom(record(held['state'])['queue']),
-    // A read carries what is waiting, never what left: an ending is this
-    // view's own observation, so a seat read starts with none.
-    queue_ended: null,
+    // An ending is this view's own observation while it is attached; the
+    // shell's held copy is what a page catching up reads, so the same shape
+    // crosses that way and a read with none starts with none.
+    queue_ended: endingFrom(record(held['state'])['queue_ended']),
     header: headerFrom(held['header']),
     mcp: mcpFrom(held['mcp']),
     // A failed refresh is a moment this view watched, not a fact a read
@@ -773,6 +782,23 @@ export function patchRecord(held: SessionRecord, patch: unknown): SessionRecord 
 function asksFrom(served: unknown, single: unknown): unknown[] {
   if (Array.isArray(served)) return served;
   return single === null || single === undefined ? [] : [single];
+}
+
+/**
+ * One ending the read carries.
+ *
+ * **Absent is not empty.** `undefined` means the read did not carry the field,
+ * so a live observation this view holds survives; a present value that is not
+ * an ending this build can draw is `null`, which is the server saying this
+ * seat has none.
+ */
+function endingFrom(value: unknown): QueueEnding | null | undefined {
+  if (value === undefined) return undefined;
+  const held = record(value);
+  const words = text(held['text']);
+  const reason = text(held['reason']);
+  if (words === null || reason === null) return null;
+  return { text: words, state: 'not_sent', reason, source: text(held['source']) ?? 'forge' };
 }
 
 /** The pile as the seat read writes it; an entry missing its id or words is not a row. */

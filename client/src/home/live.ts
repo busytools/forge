@@ -52,6 +52,7 @@ import {
   type HomeWire,
   type WireTime,
 } from '../wire/home';
+import type { PromptState } from '../wire/lifecycle';
 import type { SessionSlot } from '../wire/types';
 
 /**
@@ -238,7 +239,7 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
    *
    * Answers whether the frame was consumed; `false` leaves the read owed.
    */
-  function foldLifecycle(slot: SessionSlot, uuid: string, state: string): boolean {
+  function foldLifecycle(slot: SessionSlot, uuid: string, state: PromptState): boolean {
     if (drawn === null) return false;
     const at = drawn.agents.findIndex((agent) => sameSeat(agent.slot, slot));
     if (at === -1) return false;
@@ -249,26 +250,28 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     const key = subjectKey({ session: slot });
     const held = livePrompts.get(key) ?? new Set<string>();
     let touched: WireTime | null = null;
-    switch (state) {
+    switch (state.kind) {
       case 'queued':
         // A repeat of one uuid is the same prompt announced again, not a
         // second one.
         held.add(uuid);
         break;
-      case 'started':
-        // A prompt this page never counted cannot be balanced by its terminal:
-        // the read is the failure direction.
-        if (!held.has(uuid)) return false;
+      case 'sent':
+        // **`sent` is the terminal**: the prompt left the queue when the CLI
+        // took it. A prompt this page never counted cannot be balanced by its
+        // terminal, so the read is the failure direction.
+        if (!held.delete(uuid)) return false;
         // The old read refreshed the row's "last moved" at the turn's start;
         // the frame carries no timestamp, so this is the client clock's
         // reading of the same moment, and a skewed clock draws a briefly wrong
         // age until the next read states the server's own stamp.
         touched = { secs_since_epoch: Math.floor(Date.now() / 1000), nanos_since_epoch: 0 };
+        if (held.size === 0) {
+          livePrompts.delete(key);
+          return false;
+        }
         break;
-      case 'completed':
-      case 'cancelled':
-      case 'discarded':
-      case 'refused':
+      case 'not_sent':
         if (!held.delete(uuid)) return false;
         // The set empties: the drawn Running may count a prompt this page
         // never saw, so Idle is the read's to state.

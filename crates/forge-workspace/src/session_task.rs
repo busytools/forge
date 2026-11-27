@@ -610,13 +610,13 @@ impl SessionTask {
                                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                                     );
                                 } else {
-                                    self.emit(SessionUpdate::Notice {
-                                        key: key.clone(),
-                                        severity: NoticeSeverity::Error,
-                                        text: format!(
+                                    self.notice_to(
+                                        &key,
+                                        NoticeSeverity::Error,
+                                        format!(
                                             "a prompt held during the handoff could not be delivered: {first}"
                                         ),
-                                    });
+                                    );
                                 }
                             }
                         }
@@ -706,11 +706,7 @@ impl SessionTask {
                             "The agent's session ended; forge restarted it under a new id ({dead} -> {session_id})."
                         )
                     };
-                    self.emit(SessionUpdate::Notice {
-                        key: key.clone(),
-                        severity: NoticeSeverity::Error,
-                        text,
-                    });
+                    self.notice_to(&key, NoticeSeverity::Error, text);
                 }
                 // Re-tag must fire on BOTH first-Connected and
                 // post-/new Connected paths: a /new writes a fresh
@@ -808,21 +804,23 @@ impl SessionTask {
                             );
                             continue;
                         }
-                        let first = prompt.text.lines().next().unwrap_or_default();
                         // The composer's mark for this press has no row coming
-                        // either, so it is settled here rather than left
-                        // saying "sending" for a prompt that never ran.
+                        // either. Its own refusal carries the reason, so no
+                        // notice is drawn beside it.
+                        let (state, source) = forge_not_sent(
+                            "the handoff failed before this prompt could run",
+                            "the occupant went before the prompt started",
+                        );
+                        self.record_queue_ending(
+                            &prompt.text,
+                            "the handoff failed before this prompt could run",
+                            prompt.source,
+                        );
                         self.emit(SessionUpdate::PromptLifecycle {
                             key: self.key.clone(),
                             uuid: prompt.uuid,
-                            state: "cancelled".to_owned(),
-                        });
-                        self.emit(SessionUpdate::Notice {
-                            key: self.key.clone(),
-                            severity: NoticeSeverity::Error,
-                            text: format!(
-                                "the handoff failed before this prompt could run: {first}"
-                            ),
+                            state,
+                            source,
                         });
                     }
                     // Worker async spawn failure: classify the
@@ -951,7 +949,18 @@ impl SessionTask {
                 // the only other word, and a reader that asked to drop it must
                 // not be left guessing.
                 if cancelled {
+                    // The row the ending is about, read before the drop takes
+                    // it: a page attaching after the live frames reads the
+                    // words and the reason from the seat's own record.
+                    let leaving = self.domain.lock().queued_prompt(&uuid).cloned();
                     self.domain.lock().drop_queued_prompt(&uuid);
+                    if let Some(prompt) = leaving {
+                        self.record_queue_ending(
+                            &prompt.text,
+                            "the CLI cancelled it before it ran",
+                            prompt.source,
+                        );
+                    }
                 }
                 self.emit(SessionUpdate::PromptCancelResolved {
                     key: self.key.clone(),
@@ -1100,11 +1109,16 @@ impl SessionTask {
                                 );
                             }
                             // The state only drains the card and releases the
-                            // held row; no CLI frame follows on this seat.
+                            // held row; no CLI frame follows on this seat, so
+                            // the state says it is the core's fallback rather
+                            // than the CLI's word.
+                            let (state, source) =
+                                forge_sent("this CLI reports no start, so the core drew it");
                             self.emit(SessionUpdate::PromptLifecycle {
                                 key: self.key.clone(),
                                 uuid: prompt.uuid,
-                                state: "started".to_owned(),
+                                state,
+                                source,
                             });
                         }
                         tracing::warn!(
@@ -1161,6 +1175,12 @@ impl SessionTask {
                         .then(|| self.domain.lock().queued_prompt(command_uuid).cloned())
                         .flatten()
                         .filter(|prompt| prompt.source != PromptSource::Forge);
+                    // The row a refusal is about, read before the advance takes
+                    // it out of the pile: its words and sender are what a page
+                    // attaching after the live frame needs for the ending.
+                    let settling = (!matches!(state.as_str(), "queued" | "started" | "completed"))
+                        .then(|| self.domain.lock().queued_prompt(command_uuid).cloned())
+                        .flatten();
                     let known = { self.domain.lock().advance_queued_prompt(command_uuid, state) };
                     // **A judgment prompt the CLI settles without running
                     // ends the handoff**, for the same reason a reader's
@@ -1209,10 +1229,34 @@ impl SessionTask {
                             crate::store::sessions::SeatState::InTurn,
                         );
                     }
+                    // One vocabulary: a CLI word this build knows maps into
+                    // it; a word it does not know leaves the row waiting,
+                    // with the raw word in the source note rather than a
+                    // settlement guessed from a parse miss.
+                    let (drawn, source) = cli_lifecycle(state).unwrap_or_else(|| {
+                        (
+                            crate::protocol::PromptState::Queued,
+                            crate::protocol::LifecycleSource::Forge {
+                                note: format!(
+                                    "the CLI reported '{state}', which this build does not know"
+                                ),
+                            },
+                        )
+                    });
+                    // **The read carries the same ending.** The frame below
+                    // speaks once; a page attaching after it draws the pile
+                    // from the seat read, so the words and the reason have to
+                    // be held there too.
+                    if let (crate::protocol::PromptState::NotSent { reason }, Some(prompt)) =
+                        (&drawn, settling)
+                    {
+                        self.record_queue_ending(&prompt.text, reason, prompt.source);
+                    }
                     self.emit(SessionUpdate::PromptLifecycle {
                         key: self.key.clone(),
                         uuid: command_uuid.clone(),
-                        state: state.clone(),
+                        state: drawn,
+                        source,
                     });
                 } else {
                     // **A compaction boundary is a frame like any other.** It
@@ -1330,6 +1374,7 @@ impl SessionTask {
             | PromptSource::Gotify
             | PromptSource::Slack
             | PromptSource::Peer
+            | PromptSource::Board
             | PromptSource::Forge => text.to_owned(),
         };
         let images = forge_primitives::display_blocks(attachments);
@@ -1360,6 +1405,15 @@ impl SessionTask {
             // empty read; the announcement restores the row the discarded
             // state then turns into the one line. A page that still holds the
             // row ignores it by uuid.
+            let (state, source) = forge_not_sent(
+                "the session ended before this prompt ran",
+                "the occupant went with the prompt still waiting",
+            );
+            self.record_queue_ending(
+                &prompt.text,
+                "the session ended before this prompt ran",
+                prompt.source,
+            );
             self.emit(SessionUpdate::PromptQueued {
                 key: self.key.clone(),
                 uuid: prompt.uuid.clone(),
@@ -1369,7 +1423,8 @@ impl SessionTask {
             self.emit(SessionUpdate::PromptLifecycle {
                 key: self.key.clone(),
                 uuid: prompt.uuid,
-                state: "discarded".to_owned(),
+                state,
+                source,
             });
         }
     }
@@ -1628,10 +1683,23 @@ impl SessionTask {
                         };
                         if held {
                             self.emit_prompt_row(&text, &attachments, &uuid, source);
+                            // The dispatch failed, so the prompt never
+                            // reached the CLI: its own refusal says so, and
+                            // the row above keeps the words visible.
+                            let (state, origin) = forge_not_sent(
+                                "the CLI could not be sent this prompt",
+                                "the dispatch to the agent failed",
+                            );
+                            self.record_queue_ending(
+                                &text,
+                                "the CLI could not be sent this prompt",
+                                source,
+                            );
                             self.emit(SessionUpdate::PromptLifecycle {
                                 key: self.key.clone(),
                                 uuid,
-                                state: "started".to_owned(),
+                                state,
+                                source: origin,
                             });
                         }
                     }
@@ -1699,6 +1767,23 @@ impl SessionTask {
         }
     }
 
+    /// One of the core's own lines about `key`, with a fresh id so the live
+    /// frame and the message it becomes are one row.
+    fn notice_to(&self, key: &SessionSlot, severity: NoticeSeverity, text: impl Into<String>) {
+        self.emit(SessionUpdate::Notice {
+            key: key.clone(),
+            id: crate::protocol::new_notice_id(),
+            severity,
+            text: text.into(),
+        });
+    }
+
+    /// Record the ending a page that attaches later reads, beside the frame
+    /// the attached pages draw now.
+    fn record_queue_ending(&self, text: &str, reason: &str, source: PromptSource) {
+        self.domain.lock().record_queue_ending(text.to_owned(), reason.to_owned(), source);
+    }
+
     /// Flush `caller`'s buffered review activity into its batched
     /// notices. Every path a turn can end on calls this, so it has to be
     /// idempotent: `drain_review_activity` removes the buffer, and a
@@ -1756,14 +1841,14 @@ impl SessionTask {
             // brief looks like a session that started empty; the brief's first
             // line names the session that handed over, and `/resume` is the
             // recovery.
-            self.emit(SessionUpdate::Notice {
-                key: key.clone(),
-                severity: NoticeSeverity::Error,
-                text: format!(
+            self.notice_to(
+                key,
+                NoticeSeverity::Error,
+                format!(
                     "the handoff brief could not be delivered to this session ({first}); \
                      resume the session that handed over with /resume"
                 ),
-            });
+            );
         }
     }
 
@@ -1779,13 +1864,12 @@ impl SessionTask {
         // to it; the facade's gate refuses that call before it arrives.
         if !domain.handoff.awaiting {
             drop(domain);
-            self.emit(SessionUpdate::Notice {
-                key: self.key.clone(),
-                severity: NoticeSeverity::Error,
-                text: "agents__handoff completes a running handoff; a handoff starts at /handoff \
-                       or at the automatic trigger (fill or compaction)"
-                    .to_owned(),
-            });
+            self.notice_to(
+                &self.key,
+                NoticeSeverity::Error,
+                "agents__handoff completes a running handoff; a handoff starts at /handoff \
+                 or at the automatic trigger (fill or compaction)",
+            );
             return;
         }
         domain.handoff.supplied = Some(note);
@@ -1841,11 +1925,11 @@ impl SessionTask {
     /// successor, and only the judgment prompt is let through.
     fn begin_handoff(&mut self) {
         if self.session_id_string().is_none() {
-            self.emit(SessionUpdate::Notice {
-                key: self.key.clone(),
-                severity: NoticeSeverity::Error,
-                text: "a handoff needs a connected session; this seat has none yet".to_owned(),
-            });
+            self.notice_to(
+                &self.key,
+                NoticeSeverity::Error,
+                "a handoff needs a connected session; this seat has none yet",
+            );
             return;
         }
         let Some(workspace) = self.workspace.upgrade() else { return };
@@ -1910,11 +1994,22 @@ impl SessionTask {
                 );
             }
             for prompt in held {
-                // The press never ran, so its composer mark settles here.
+                // The press never ran, so its composer mark settles here with
+                // its reason on the item itself.
+                let (state, source) = forge_not_sent(
+                    "the handoff failed before this prompt could run",
+                    "the occupant never asked for its brief",
+                );
+                self.record_queue_ending(
+                    &prompt.text,
+                    "the handoff failed before this prompt could run",
+                    prompt.source,
+                );
                 self.emit(SessionUpdate::PromptLifecycle {
                     key: self.key.clone(),
                     uuid: prompt.uuid.clone(),
-                    state: "cancelled".to_owned(),
+                    state,
+                    source,
                 });
                 if let Some(sender) = &prompt.sender {
                     workspace.notice_undelivered_message(
@@ -1922,13 +2017,6 @@ impl SessionTask {
                         &self.key,
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                     );
-                } else {
-                    let first = prompt.text.lines().next().unwrap_or_default();
-                    self.emit(SessionUpdate::Notice {
-                        key: self.key.clone(),
-                        severity: NoticeSeverity::Error,
-                        text: format!("a prompt held for the failed handoff did not run: {first}"),
-                    });
                 }
             }
             self.emit(SessionUpdate::TurnError {
@@ -2253,6 +2341,7 @@ impl SessionTask {
         let held = workspace.end_swap(key);
         if !update_tx.send(SessionUpdate::Notice {
             key: key.clone(),
+            id: crate::protocol::new_notice_id(),
             severity: NoticeSeverity::Info,
             text: why.to_owned(),
         }) {
@@ -2264,7 +2353,10 @@ impl SessionTask {
         }
         for prompt in held {
             let sender = prompt.sender.clone();
-            let first = prompt.text.lines().next().unwrap_or_default().to_owned();
+            // Kept for the ending a hand-back failure records: the dispatch
+            // below takes the words.
+            let prompt_text = prompt.text.clone();
+            let prompt_source = prompt.source;
             let uuid = forge_sdk::request_id::next_forged_prompt_id();
             // `route`, not `dispatch`: this is a re-delivery of words already
             // recorded, not a new press, so it takes no dispatch entry's
@@ -2285,11 +2377,22 @@ impl SessionTask {
                     "a prompt held during an aborted handoff could not be handed back",
                 );
                 // The hand-back failed, so the original press never runs and
-                // its composer mark settles here.
+                // its composer mark settles here. Its own refusal carries the
+                // reason, so no notice is drawn beside it.
+                let (state, source) = forge_not_sent(
+                    "the aborted handoff could not hand this prompt back",
+                    "no occupant took it",
+                );
+                domain.lock().record_queue_ending(
+                    prompt_text.clone(),
+                    "the aborted handoff could not hand this prompt back".to_owned(),
+                    prompt_source,
+                );
                 let _ = update_tx.send(SessionUpdate::PromptLifecycle {
                     key: key.clone(),
                     uuid: prompt.uuid.clone(),
-                    state: "cancelled".to_owned(),
+                    state,
+                    source,
                 });
                 if let Some(sender) = sender {
                     workspace.notice_undelivered_message(
@@ -2297,14 +2400,6 @@ impl SessionTask {
                         key,
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                     );
-                } else {
-                    let _ = update_tx.send(SessionUpdate::Notice {
-                        key: key.clone(),
-                        severity: NoticeSeverity::Error,
-                        text: format!(
-                            "a prompt held during the aborted handoff could not be handed back: {first}"
-                        ),
-                    });
                 }
             }
         }
@@ -2464,11 +2559,22 @@ impl SessionTask {
             self.emit(SessionUpdate::MachineTurn { key: self.key.clone(), machine: None });
             let held = workspace.end_swap(&self.key);
             for prompt in held {
-                // The press never ran, so its composer mark settles here.
+                // The press never ran, so its composer mark settles here with
+                // its reason on the item itself.
+                let (state, source) = forge_not_sent(
+                    "the handoff did not run, so this prompt waits no longer",
+                    "the seat had no occupant to hand over",
+                );
+                self.record_queue_ending(
+                    &prompt.text,
+                    "the handoff did not run, so this prompt waits no longer",
+                    prompt.source,
+                );
                 self.emit(SessionUpdate::PromptLifecycle {
                     key: self.key.clone(),
                     uuid: prompt.uuid.clone(),
-                    state: "cancelled".to_owned(),
+                    state,
+                    source,
                 });
                 if let Some(sender) = &prompt.sender {
                     workspace.notice_undelivered_message(
@@ -2476,19 +2582,11 @@ impl SessionTask {
                         &self.key,
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                     );
-                } else {
-                    let first = prompt.text.lines().next().unwrap_or_default();
-                    self.emit(SessionUpdate::Notice {
-                        key: self.key.clone(),
-                        severity: NoticeSeverity::Error,
-                        text: format!(
-                            "the handoff did not run; this prompt waits no longer: {first}"
-                        ),
-                    });
                 }
             }
             self.emit(SessionUpdate::Notice {
                 key: self.key.clone(),
+                id: crate::protocol::new_notice_id(),
                 severity: NoticeSeverity::Error,
                 text: "a handoff needs a connected session; this seat has none yet".to_owned(),
             });
@@ -2570,8 +2668,7 @@ impl SessionTask {
         // ordering is natural. The sender is not used here: it rides the
         // parked entry for the expiry path alone.
         for entry in pending {
-            let crate::parked::ParkedPeer { wrapped, .. } = entry;
-            let uuid = forge_sdk::request_id::next_prompt_id();
+            let crate::parked::ParkedPeer { wrapped, uuid, .. } = entry;
             crate::spawn::push_peer_user_turn_into_chat(workspace, &self.key, &wrapped, &uuid);
             let text = wrapped.to_prose();
             if let Err(err) =
@@ -2602,7 +2699,7 @@ impl SessionTask {
         }
         for cron in pending {
             let text = crate::spawn::missed_cron_text(&cron.text, cron.missed);
-            let uuid = forge_sdk::request_id::next_prompt_id();
+            let uuid = cron.uuid;
             crate::spawn::push_cron_prompt_into_chat(
                 workspace,
                 &self.key,
@@ -2754,11 +2851,22 @@ impl Drop for SessionTask {
                 );
             }
             for prompt in &held {
-                // The press never ran, so its composer mark settles here.
+                // The press never ran, so its composer mark settles here with
+                // its reason on the item itself.
+                let (state, source) = forge_not_sent(
+                    "the session ended before this prompt ran",
+                    "the task ended during a handoff",
+                );
+                self.record_queue_ending(
+                    &prompt.text,
+                    "the session ended before this prompt ran",
+                    prompt.source,
+                );
                 let _ = self.update_tx.send(SessionUpdate::PromptLifecycle {
                     key: self.key.clone(),
                     uuid: prompt.uuid.clone(),
-                    state: "cancelled".to_owned(),
+                    state,
+                    source,
                 });
                 if let Some(sender) = &prompt.sender {
                     workspace.notice_undelivered_message(
@@ -2766,15 +2874,6 @@ impl Drop for SessionTask {
                         &self.key,
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                     );
-                } else {
-                    let first = prompt.text.lines().next().unwrap_or_default();
-                    let _ = self.update_tx.send(SessionUpdate::Notice {
-                        key: self.key.clone(),
-                        severity: NoticeSeverity::Error,
-                        text: format!(
-                            "a prompt held for the handoff did not run; the session ended: {first}"
-                        ),
-                    });
                 }
             }
             // **Every exit releases the pool, not only `run`'s tail.** A
@@ -2799,6 +2898,49 @@ impl Drop for SessionTask {
 /// no worker rows.
 ///
 /// The slot's label carries the role: only a lead (`None`) owns a team.
+/// One CLI `command_lifecycle` word as the one vocabulary a view draws.
+///
+/// `None` for a word this build does not know. The caller draws that as
+/// still waiting, with the raw word in the source note: a state the CLI adds
+/// later must leave the row visible where it was, never settle it on a
+/// parse miss.
+fn cli_lifecycle(
+    state: &str,
+) -> Option<(crate::protocol::PromptState, crate::protocol::LifecycleSource)> {
+    use crate::protocol::{LifecycleSource, PromptState};
+    let said: &str = match state {
+        "queued" => return Some((PromptState::Queued, LifecycleSource::Cli)),
+        // A prompt the CLI reports as completed was taken by it; its turn
+        // outcome is turn-level and unchanged.
+        "started" | "completed" => return Some((PromptState::Sent, LifecycleSource::Cli)),
+        "cancelled" => "the CLI cancelled it before it ran",
+        "discarded" => "the CLI discarded it before it ran",
+        "refused" => "the CLI refused it before it ran",
+        _ => return None,
+    };
+    Some((PromptState::NotSent { reason: said.to_owned() }, LifecycleSource::Cli))
+}
+
+/// The state the core draws when no CLI frame is coming, with the note that
+/// keeps a fallback from reading as a fact.
+fn forge_sent(note: &str) -> (crate::protocol::PromptState, crate::protocol::LifecycleSource) {
+    (
+        crate::protocol::PromptState::Sent,
+        crate::protocol::LifecycleSource::Forge { note: note.to_owned() },
+    )
+}
+
+/// A prompt that never ran, with its reason and the core's note.
+pub(crate) fn forge_not_sent(
+    reason: &str,
+    note: &str,
+) -> (crate::protocol::PromptState, crate::protocol::LifecycleSource) {
+    (
+        crate::protocol::PromptState::NotSent { reason: reason.to_owned() },
+        crate::protocol::LifecycleSource::Forge { note: note.to_owned() },
+    )
+}
+
 fn maybe_respawn_workers_on_connected(
     workspace: &Arc<crate::Workspace>,
     slot: &crate::SessionSlot,
@@ -4078,6 +4220,31 @@ mod tests {
         crate::SessionSlot::lead("TestOrg", "forge")
     }
 
+    /// One CLI word, one vocabulary. A word this build does not know must
+    /// not settle a row on a parse miss: the caller leaves it waiting with
+    /// the raw word in the source note.
+    #[test]
+    fn a_cli_lifecycle_word_maps_into_the_one_vocabulary() {
+        use crate::protocol::{LifecycleSource, PromptState};
+
+        assert_eq!(cli_lifecycle("queued"), Some((PromptState::Queued, LifecycleSource::Cli)),);
+        for word in ["started", "completed"] {
+            assert_eq!(cli_lifecycle(word), Some((PromptState::Sent, LifecycleSource::Cli)));
+        }
+        for word in ["cancelled", "discarded", "refused"] {
+            let Some((PromptState::NotSent { reason }, LifecycleSource::Cli)) = cli_lifecycle(word)
+            else {
+                panic!("{word} is a refusal, whatever word the CLI spells it with");
+            };
+            assert!(reason.contains(word), "the reason names the CLI's own word: {reason}");
+        }
+        assert_eq!(
+            cli_lifecycle("a-state-from-a-newer-cli"),
+            None,
+            "an unknown word is not a settlement this build can name",
+        );
+    }
+
     /// Drive a worker's Connected through `translate_event` with a session
     /// id the tag write cannot use, so the write fails non-NotFound and the
     /// rollback arm runs, and return the row it left behind.
@@ -4816,12 +4983,13 @@ mod tests {
             "the seat is told why: {said:?}",
         );
         assert!(
-            said.iter().any(|text| text.contains("this prompt waits no longer")),
-            "and the held prompt is accounted for: {said:?}",
-        );
-        assert!(
-            settled.iter().any(|(uuid, state)| uuid == "held-1" && state == "cancelled"),
-            "and the press's composer mark settles: {settled:?}",
+            settled.iter().any(|(uuid, state)| uuid == "held-1"
+                && matches!(
+                    state,
+                    crate::protocol::PromptState::NotSent { reason }
+                        if reason.contains("waits no longer")
+                )),
+            "and the held prompt's own refusal carries its reason: {settled:?}",
         );
         // **The seat keeps its session, so it keeps its composer.** No
         // successor arrives whose record read would clear the machine turn.
@@ -5832,7 +6000,10 @@ mod tests {
             .position(|update| {
                 matches!(
                     update,
-                    SessionUpdate::PromptLifecycle { state, .. } if state == "started"
+                    SessionUpdate::PromptLifecycle {
+                        state: crate::protocol::PromptState::Sent,
+                        ..
+                    }
                 )
             })
             .expect("the state is announced");
@@ -10428,7 +10599,7 @@ provider = "anthropic"
     async fn first_connected_drains_parked_peer_prompts_in_fifo_order() {
         use crate::mcp::peers::types::{MessageId, WrappedKind, WrappedPrompt};
 
-        let (workspace, _update_rx) = crate::Workspace::testing_stub();
+        let (workspace, mut update_rx) = crate::Workspace::testing_stub();
         let sender = SessionSlot::from_str_for_test("sender-proj");
 
         // Park three Messages for the task's slot in known order.
@@ -10436,8 +10607,9 @@ provider = "anthropic"
         let domain =
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
         let bodies = ["first", "second", "third"];
+        let mut parked_ids = Vec::new();
         for body in bodies {
-            workspace.park_peer_prompt(
+            parked_ids.push(workspace.park_peer_prompt(
                 &session_key,
                 &sender,
                 WrappedPrompt {
@@ -10447,7 +10619,7 @@ provider = "anthropic"
                     sender_org: "Default".to_owned(),
                     body: body.to_owned(),
                 },
-            );
+            ));
         }
 
         // connected_once=false → first-Connected arm that drains the
@@ -10496,26 +10668,39 @@ provider = "anthropic"
         // in insertion order. Filter out anything else in case
         // translate_event grows side-effects later.
         let buffered = workspace.drain_test_dispatch_buffer();
-        let drained_bodies: Vec<String> = buffered
+        let drained: Vec<(String, String)> = buffered
             .into_iter()
             .filter_map(|cmd| match cmd {
-                crate::protocol::Command::Prompt { text, .. }
-                | crate::protocol::Command::PromptUnder { text, .. } => Some(text),
+                crate::protocol::Command::Prompt { text, .. } => Some((text, String::new())),
+                crate::protocol::Command::PromptUnder { text, uuid, .. } => Some((text, uuid)),
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            drained_bodies.len(),
-            bodies.len(),
-            "one Command::Prompt per buffered wrapped prompt"
-        );
+        assert_eq!(drained.len(), bodies.len(), "one Command::Prompt per buffered wrapped prompt");
         for (i, expected_body) in bodies.iter().enumerate() {
             assert!(
-                drained_bodies[i].contains(expected_body),
+                drained[i].0.contains(expected_body),
                 "drain position {i}: expected body '{expected_body}' in dispatched text '{}'",
-                drained_bodies[i],
+                drained[i].0,
             );
         }
+        // **One message, one id.** The drain dispatches each prompt under
+        // the id it was parked under, so the delivery's identity survives
+        // the sleeping target (#3076).
+        let dispatched_ids: Vec<String> = drained.iter().map(|(_, uuid)| uuid.clone()).collect();
+        assert_eq!(
+            dispatched_ids, parked_ids,
+            "the drain reuses the id each delivery was accepted under",
+        );
+
+        // The row the page draws for the delivery carries the same id.
+        let announced: Vec<String> = std::iter::from_fn(|| update_rx.try_recv().ok())
+            .filter_map(|frame| match std::sync::Arc::unwrap_or_clone(frame.update) {
+                SessionUpdate::PeerEnvelopeAppended { uuid, .. } => Some(uuid),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(announced, parked_ids, "the drawn row and the dispatched turn are one identity");
         assert!(
             workspace.take_parked_for_slot(&session_key).peer.is_empty(),
             "the parked peer prompts are drained after first-Connected"
@@ -10740,14 +10925,17 @@ provider = "anthropic"
         let (workspace, mut update_rx) = crate::Workspace::testing_stub();
         workspace.seed_test_project("cron-drain", "/tmp/cron-drain");
         let session_key = SessionSlot::lead("TestOrg", "cron-drain");
-        workspace.park_cron(&session_key, &test_cron("c1", "morning reminder"), false);
-        workspace.park_cron(&session_key, &test_cron("c2", "worker digest"), true);
+        let parked_ids = [
+            workspace.park_cron(&session_key, &test_cron("c1", "morning reminder"), false),
+            workspace.park_cron(&session_key, &test_cron("c2", "worker digest"), true),
+        ];
         // A once-off registered without a description: the reply's own
         // contract says the key is null then, and the row falls back to the
         // prompt's first line.
         let mut bare = test_cron("c3", "check the queue");
         bare.description = None;
-        workspace.park_cron(&session_key, &bare, false);
+        let mut parked_ids = parked_ids.to_vec();
+        parked_ids.push(workspace.park_cron(&session_key, &bare, false));
 
         let domain =
             Arc::new(parking_lot::Mutex::new(DomainSession::new(session_key.clone(), None)));
@@ -10794,6 +10982,19 @@ provider = "anthropic"
             ],
             "each echo carries its own entry's identity, and a missing description stays null",
         );
+
+        // **The id the fire was parked under is the id it is dispatched
+        // under.** A sleeping owner's drain used to mint a fresh id, so the
+        // queue row and the chat row were two identities for one message.
+        let dispatched: Vec<String> = workspace
+            .drain_test_dispatch_buffer()
+            .into_iter()
+            .filter_map(|command| match command {
+                crate::protocol::Command::PromptUnder { uuid, .. } => Some(uuid),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dispatched, parked_ids, "the drain keeps each fire's parked id");
     }
 
     /// **A resumed connect hands the WINDOW on, not the read.**
@@ -12790,8 +12991,11 @@ provider = "anthropic"
         assert!(
             drained.iter().any(|update| matches!(
                 update,
-                crate::protocol::SessionUpdate::PromptLifecycle { uuid, state, .. }
-                    if uuid == &first && state == "started"
+                crate::protocol::SessionUpdate::PromptLifecycle {
+                    uuid,
+                    state: crate::protocol::PromptState::Sent,
+                    ..
+                } if uuid == &first
             )),
             "and settles the card it was waiting in: {drained:?}",
         );
@@ -13011,6 +13215,7 @@ provider = "anthropic"
             (crate::protocol::PromptSource::Cron, "cron-1", "a cron fire"),
             (crate::protocol::PromptSource::Gotify, "gotify-1", "a notification"),
             (crate::protocol::PromptSource::Slack, "slack-1", "a slack message"),
+            (crate::protocol::PromptSource::Board, "board-1", "a board chase"),
         ];
         for (source, uuid, text) in cases {
             task.execute_command(Command::PromptUnder {
@@ -13126,8 +13331,11 @@ provider = "anthropic"
         assert!(
             announced.iter().any(|update| matches!(
                 update,
-                SessionUpdate::PromptLifecycle { uuid, state, .. }
-                    if uuid == "forge-1" && state == "started"
+                SessionUpdate::PromptLifecycle {
+                    uuid,
+                    state: crate::protocol::PromptState::Sent,
+                    ..
+                } if uuid == "forge-1"
             )),
             "the lifecycle still advances: {announced:?}",
         );
@@ -13233,8 +13441,11 @@ provider = "anthropic"
         assert!(
             announced.iter().any(|update| matches!(
                 update,
-                SessionUpdate::PromptLifecycle { uuid, state, .. }
-                    if uuid == "failed-1" && state == "started"
+                SessionUpdate::PromptLifecycle {
+                    uuid,
+                    state: crate::protocol::PromptState::NotSent { .. },
+                    ..
+                } if uuid == "failed-1"
             )),
             "and the card settles: {announced:?}",
         );
@@ -13364,8 +13575,11 @@ provider = "anthropic"
                     .position(|update| {
                         matches!(
                             update,
-                            SessionUpdate::PromptLifecycle { uuid: id, state, .. }
-                                if id == uuid && state == "discarded"
+                            SessionUpdate::PromptLifecycle {
+                                uuid: id,
+                                state: crate::protocol::PromptState::NotSent { .. },
+                                ..
+                            } if id == uuid
                         )
                     })
                     .unwrap_or_else(|| panic!("{label}: {uuid}'s card settles into the ending"));
@@ -13426,8 +13640,11 @@ provider = "anthropic"
         assert!(
             announced.iter().any(|update| matches!(
                 update,
-                SessionUpdate::PromptLifecycle { uuid, state, .. }
-                    if uuid == "held-1" && state == "cancelled"
+                SessionUpdate::PromptLifecycle {
+                    uuid,
+                    state: crate::protocol::PromptState::NotSent { .. },
+                    ..
+                } if uuid == "held-1"
             )),
             "the held press is settled: {announced:?}",
         );

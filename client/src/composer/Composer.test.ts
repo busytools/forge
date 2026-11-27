@@ -123,7 +123,7 @@ vi.mock('./mic', () => ({
 
 import Harness from './Harness.svelte';
 import { encodeFrame } from './capture.svelte';
-import { echoes, type Echo } from '../chat/echoes.svelte';
+import { echoes, type PendingSend } from '../chat/echoes.svelte';
 import { pinnedRow } from '../chat/pinnedRow.svelte';
 import type { TurnInfo } from '../chat/units';
 import { boxKey } from './box.svelte';
@@ -300,8 +300,8 @@ afterEach(() => {
   document.body.innerHTML = '';
   // The pending send outlives the page that drew it, so a case that leaves one
   // behind would hand it to the next.
-  echoes.clear(boxKey(SLOT));
-  echoes.clear(boxKey(ELSEWHERE));
+  echoes.clearSeat(boxKey(SLOT));
+  echoes.clearSeat(boxKey(ELSEWHERE));
   // The voice registry outlives a component, so a case's cached voice and
   // its pending release would otherwise decide the next case's switch.
   resetVoices();
@@ -322,9 +322,9 @@ afterEach(() => {
   terminalSurface.control_reason = null;
 });
 
-/** The send a seat is waiting on, which the conversation draws and the box does not. */
-function echoAt(slot: SessionSlot): Echo | undefined {
-  return echoes.of(boxKey(slot));
+/** The most recent send a seat is waiting on, which the pile draws. */
+function echoAt(slot: SessionSlot): PendingSend | undefined {
+  return echoes.of(boxKey(slot)).at(-1);
 }
 
 /** The harness's own state, which a test sets the way a page would re-render it. */
@@ -1714,14 +1714,9 @@ describe('the box', () => {
     harness.page.record = record({ header: { turn_in_flight: true } });
     flushSync();
 
-    // The row is the reader's message from here on: the mark goes and the words
-    // stay, because the core's own copy of them does not arrive as a frame - a
-    // prompt forge injects is not echoed on stream-json - so a row that went
-    // with the mark would take the words off screen for the length of the turn.
-    expect(echoAt(SLOT), 'the words stay where they were sent from').toMatchObject({
-      state: 'taken',
-      words: 'push it once CI is green',
-    });
+    // The press is the core's from here: the sending card goes, and the chat
+    // row the turn drew is the words' one home.
+    expect(echoAt(SLOT), 'the taken send leaves the pile').toBeUndefined();
   });
 
   /**
@@ -1747,9 +1742,9 @@ describe('the box', () => {
     flushSync();
 
     expect(echoAt(SLOT), 'and the refusal has somewhere to land').toMatchObject({
-      state: 'failed',
+      state: 'not_sent',
       words: 'run the gate again',
-      why: 'the session is not running',
+      reason: 'the session is not running',
     });
   });
 
@@ -1819,9 +1814,9 @@ describe('the box', () => {
     flushSync();
 
     expect(echoAt(SLOT), 'the send the reader left behind still hears the refusal').toMatchObject({
-      state: 'failed',
+      state: 'not_sent',
       words: 'send it before I move on',
-      why: 'the session is not running',
+      reason: 'the session is not running',
     });
   });
 
@@ -3625,8 +3620,8 @@ describe('the seat the box belongs to', () => {
     shared.say({ kind: 'error', what: 'dispatch', why: 'the seat is busy' });
     flushSync();
     expect(echoAt(SLOT), 'the seat waiting on it is the one a refusal names').toMatchObject({
-      state: 'failed',
-      why: 'the seat is busy',
+      state: 'not_sent',
+      reason: 'the seat is busy',
     });
 
     // Sent again, and the reader moves on before the core answers. The send
@@ -3650,8 +3645,8 @@ describe('the seat the box belongs to', () => {
     flushSync();
 
     expect(echoAt(SLOT), 'the refusal lands on the seat that sent it').toMatchObject({
-      state: 'failed',
-      why: 'that seat is gone',
+      state: 'not_sent',
+      reason: 'that seat is gone',
     });
     expect(
       echoAt(ELSEWHERE),
@@ -3694,8 +3689,8 @@ describe('the seat the box belongs to', () => {
     flushSync();
 
     expect(echoAt(SLOT), 'the seat the refusal names is the one marked').toMatchObject({
-      state: 'failed',
-      why: 'that seat is gone',
+      state: 'not_sent',
+      reason: 'that seat is gone',
     });
     expect(
       echoAt(ELSEWHERE),
@@ -6579,9 +6574,9 @@ describe('the dock', () => {
       'the session is not running',
     );
     expect(echoAt(SLOT), 'the row carrying the words is the one that says why').toMatchObject({
-      state: 'failed',
+      state: 'not_sent',
       words: 'push it once CI is green',
-      why: 'the session is not running',
+      reason: 'the session is not running',
     });
   });
 
@@ -7549,7 +7544,7 @@ describe('the dock', () => {
     harness.say({ kind: 'error', what: 'dispatch', why: 'the connector is not configured' });
     flushSync();
 
-    expect(echoAt(SLOT)?.state, 'the send is the row that failed').toBe('failed');
+    expect(echoAt(SLOT)?.state, 'the send is the row that failed').toBe('not_sent');
     expect(drawn(), 'and the draft row says nothing of it').not.toContain('another view');
   });
 
@@ -12539,19 +12534,18 @@ describe('dictation in the send-back box', () => {
 });
 
 /**
- * **A send the transport could not carry says so where it was typed** (#3072).
+ * **A send the transport could not carry is `not sent` on its own item.**
  *
  * The socket throws when nothing is open, and a transport whose write is
- * refused rejects instead: either way the words never left, so they stay in
- * the box and the box draws the reason above the field. Before this, the throw
- * kept the words with nothing of the box's own saying so, and a rejection
- * cleared them outright with an echo no running turn draws.
+ * refused rejects instead: either way the words never left, and the pending
+ * row the press posted is where they stay - with the reason and the retry -
+ * rather than a line beside a box that held them.
  */
 describe('a send the transport could not carry', () => {
   const WORDS = 'why are we not using ryot for games as well ?';
-  const NOT_SENT = 'Not sent - the connection is down.';
+  const DOWN = 'the connection is down';
 
-  it('keeps the words and says why in the box when the socket is not open', () => {
+  it('keeps the words on their own row, refused, when the socket is not open', () => {
     const shared = wire();
     open({ record: record({ header: { turn_in_flight: true } }) }, shared);
     type(WORDS);
@@ -12562,32 +12556,34 @@ describe('a send the transport could not carry', () => {
       shared.down = false;
     }
 
-    expect(field().value, 'the words were never sent, so they stay').toBe(WORDS);
-    expect(drawn(), 'and the box itself says why').toContain(NOT_SENT);
-    expect(
-      document.querySelector('.comp .notice')?.className,
-      'as a failure rather than a passing note',
-    ).toContain('bad');
-    expect(echoAt(SLOT), 'no row was posted for a send that never left').toBeUndefined();
+    expect(echoAt(SLOT), 'the row carries the words that never left').toMatchObject({
+      state: 'not_sent',
+      words: WORDS,
+      reason: DOWN,
+    });
+    expect(field().value, "and the box is the queue card's no longer").toBe('');
+    expect(drawn(), 'the box draws no line of its own').not.toContain('Not sent');
   });
 
-  it('keeps the words and says why in the box when the crossing rejects', async () => {
+  it('marks the row refused when the crossing rejects', async () => {
     const shared = wire();
     open({ record: record({ header: { turn_in_flight: true } }) }, shared);
     type(WORDS);
     shared.dead = true;
     try {
       press('Enter');
-      await vi.waitFor(() => expect(drawn()).toContain(NOT_SENT));
+      await vi.waitFor(() => expect(echoAt(SLOT)?.state).toBe('not_sent'));
     } finally {
       shared.dead = false;
     }
 
-    expect(field().value, 'the words stay where they were typed').toBe(WORDS);
-    expect(echoAt(SLOT), 'no sending row is left behind').toBeUndefined();
+    expect(echoAt(SLOT), 'the row keeps the words and names the reason').toMatchObject({
+      words: WORDS,
+      reason: DOWN,
+    });
   });
 
-  it('takes the line away when the reader types again', () => {
+  it('retires the refused row when the reader presses again', () => {
     const shared = wire();
     open({ record: record({ header: { turn_in_flight: true } }) }, shared);
     type(WORDS);
@@ -12597,10 +12593,16 @@ describe('a send the transport could not carry', () => {
     } finally {
       shared.down = false;
     }
-    expect(drawn(), 'the failure is drawn').toContain(NOT_SENT);
+    expect(echoAt(SLOT)?.state, 'precondition: the first press is refused').toBe('not_sent');
 
     type(`${WORDS} and one more thing`);
-    expect(drawn(), 'and the next keystroke takes it away').not.toContain(NOT_SENT);
+    press('Enter');
+
+    expect(echoAt(SLOT), 'a new press is the one the pile draws').toMatchObject({
+      state: 'sending',
+      words: `${WORDS} and one more thing`,
+    });
+    expect(echoes.of(boxKey(SLOT)), 'and the refused row went with it').toHaveLength(1);
   });
 
   it('clears the words and posts the sending row once the crossing has answered', async () => {
@@ -12609,10 +12611,10 @@ describe('a send the transport could not carry', () => {
     press('Enter');
     await vi.waitFor(() => expect(echoAt(SLOT)?.state).toBe('sending'));
     expect(field().value, 'the words left the box').toBe('');
-    expect(drawn(), 'and nothing claims they were not sent').not.toContain(NOT_SENT);
+    expect(drawn(), 'and nothing claims they were not sent').not.toContain('Not sent');
   });
 
-  it('draws the line only in the box whose own send failed', () => {
+  it('posts the row only in the seat whose own send failed', () => {
     const down = wire();
     const up = wire();
     open({ record: record({ header: { turn_in_flight: true } }) }, down);
@@ -12630,10 +12632,7 @@ describe('a send the transport could not carry', () => {
     flushSync();
 
     const fields = Array.from(document.querySelectorAll('textarea'));
-    const boxes = Array.from(document.querySelectorAll('.comp'));
-    if (fields[0] === undefined || boxes[1] === undefined) {
-      throw new Error('both boxes must be drawn');
-    }
+    if (fields[0] === undefined) throw new Error('both boxes must be drawn');
     fields[0].focus();
     type(WORDS);
     down.down = true;
@@ -12643,8 +12642,8 @@ describe('a send the transport could not carry', () => {
       down.down = false;
     }
 
-    expect(boxes[0]?.textContent, 'the failed box says why').toContain(NOT_SENT);
-    expect(boxes[1]?.textContent, "and the other seat's box says nothing").not.toContain(NOT_SENT);
+    expect(echoAt(SLOT)?.state, "the press's seat carries the refusal").toBe('not_sent');
+    expect(echoAt(ELSEWHERE), "and the other seat's box has nothing").toBeUndefined();
   });
 
   it('lands the crossing on the seat it was pressed in', async () => {
@@ -12668,7 +12667,7 @@ describe('a send the transport could not carry', () => {
     expect(field().value, "the press's own box is the one that cleared").toBe('');
   });
 
-  it('draws a failed crossing in the seat it was pressed in', async () => {
+  it('draws a failed crossing on the item of the seat it was pressed in', async () => {
     const shared = wire();
     const harness = open({ record: record({ header: { turn_in_flight: true } }) }, shared);
     type(WORDS);
@@ -12680,19 +12679,17 @@ describe('a send the transport could not carry', () => {
     shared.dead = false;
     await crossed();
 
-    expect(drawn(), 'the seat moved to draws nothing about it').not.toContain(NOT_SENT);
-    harness.page.slot = SLOT;
-    harness.page.record = record({ header: { turn_in_flight: true } });
-    flushSync();
-    expect(drawn(), "the press's own seat says why").toContain(NOT_SENT);
-    expect(field().value, 'and keeps the words').toBe(WORDS);
+    expect(echoAt(ELSEWHERE), 'the seat moved to has no item').toBeUndefined();
+    expect(echoAt(SLOT), "the press's own item is the one refused").toMatchObject({
+      state: 'not_sent',
+      words: WORDS,
+    });
   });
 
   it('skips a second press while the first is still crossing', async () => {
     const shared = wire();
     const harness = open({ record: record({ header: { turn_in_flight: true } }) }, shared);
     type(WORDS);
-    // The words are still in the box, so Enter is offered over them again.
     press('Enter');
     press('Enter');
     await crossed();

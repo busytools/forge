@@ -1263,6 +1263,30 @@ impl Conversations {
             } => {
                 self.reseed(slot, history, *compaction_count, *dropped, Some(session_id));
             }
+            // **A notice becomes a message of the conversation it is about.**
+            // It is still a statement about the moment a command ran - a new
+            // occupant seeds a new conversation and does not inherit it - but
+            // a page attaching after the frame now reads the line instead of
+            // drawing an answer to nothing. The id travels in the row so the
+            // live frame and this held copy are one item.
+            SessionUpdate::Notice { id, severity, text, .. } => {
+                if let Some(held) = self.get(slot) {
+                    let mut conversation = held.lock();
+                    conversation.append_forged(Message::System {
+                        subtype: "forge_notice".to_owned(),
+                        session_id: None,
+                        data: serde_json::json!({
+                            "severity": severity,
+                            "text": text,
+                            "uuid": id,
+                        }),
+                    });
+                    if let Some(seq) = seq {
+                        conversation.set_watermark(seq);
+                    }
+                    delta = held.reweigh(&conversation);
+                }
+            }
             SessionUpdate::ChatAppended { msg, .. } => {
                 // **A compaction boundary is a frame like any other.** It
                 // once dropped the seat so the next ask would reseed it, and
@@ -2104,6 +2128,52 @@ mod tests {
                     .to_owned(),
             ],
             "the notice the connection forges is in the conversation a page is built from",
+        );
+    }
+
+    /// **A notice is a message of the conversation it is about.** It stops
+    /// being live-only: a page attaching after the frame reads the line from
+    /// the held copy instead of drawing an answer to nothing, and the id it
+    /// crosses with is on the row so the two carriers are one item.
+    #[test]
+    fn a_notice_is_held_as_a_message_with_its_id() {
+        let held = Conversations::new();
+        held.insert(&a_seat(), Conversation::new(vec![a_frame("asked")], 0, 0));
+
+        held.apply(
+            &SessionUpdate::Notice {
+                key: a_seat(),
+                id: "forge_notice_1".to_owned(),
+                severity: forge_workspace::NoticeSeverity::Error,
+                text: "the mode was refused".to_owned(),
+            },
+            Some(7),
+        );
+
+        let conversation = held.get(&a_seat()).expect("the seat is held");
+        let conversation = conversation.lock();
+        let Some(Message::System { subtype, data, .. }) = conversation.messages().last() else {
+            panic!("the notice became a message: {:?}", conversation.messages());
+        };
+        assert_eq!(subtype, "forge_notice", "the shape the page already draws");
+        assert_eq!(data["uuid"], serde_json::json!("forge_notice_1"), "under its own id");
+        assert_eq!(data["severity"], serde_json::json!("error"));
+        assert_eq!(data["text"], serde_json::json!("the mode was refused"));
+        // **The id is the row's key on both carriers.** The client names a row
+        // by the frame's top-level `uuid`; a system frame's flattened data is
+        // where that has to land, or the live line and this held copy draw as
+        // two rows.
+        let served = serde_json::to_value(conversation.messages().last().expect("the held row"))
+            .expect("the held message encodes");
+        assert_eq!(
+            served["uuid"],
+            serde_json::json!("forge_notice_1"),
+            "the id is top-level on the served frame: {served}",
+        );
+        assert_eq!(
+            conversation.watermark(),
+            7,
+            "and the frame's number is covered, though it forged a row",
         );
     }
 

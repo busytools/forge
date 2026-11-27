@@ -40,12 +40,11 @@ marked row - is lost to the swap.
 it, which is what makes the CLI emit the lifecycle frames [the queue page](./queue.md) reads;
 without a stamp the CLI emits none.
 
-**A send that never crosses keeps its words and says so.** The field empties only once the
-frame has left for the core, so a socket that is not open, or a transport whose write is
-refused, leaves the words where they were typed with `Not sent - the connection is down.` above
-them. The line belongs to that seat's box, the reader's next keystroke takes it away, and the
-seat's column still draws the refusal as its own notice, the rule every refused dispatch
-follows.
+**The press moves the words to the pile.** On Enter the field empties and the words become the
+pile's `sending` card - [the queue page](./queue.md) draws them from there - so a send that
+never crosses keeps its words on its own item, with the reason and a retry, rather than in the
+box. A core-answered command is the one exception: it draws no card, and its own answer is the
+feedback.
 
 ## The ask's dock
 
