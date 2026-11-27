@@ -373,6 +373,44 @@ describe("the seat's header engine", () => {
 });
 
 /**
+ * **The ending a page that attached late draws.** The live frame speaks once,
+ * so the seat read carries the last prompt that left without being sent; a
+ * page loading or switching seats after a cancel draws the same line from
+ * here. A read with none starts with none.
+ */
+describe("the seat's queue ending", () => {
+  it('reads the reason and the sender the ending line draws', () => {
+    const record = sessionFrom({
+      state: {
+        queue_ended: {
+          text: 'cancelled words',
+          reason: 'the CLI cancelled it before it ran',
+          source: 'you',
+        },
+      },
+    });
+    expect(record.queue_ended).toEqual({
+      text: 'cancelled words',
+      state: 'not_sent',
+      reason: 'the CLI cancelled it before it ran',
+      source: 'you',
+    });
+    expect(
+      sessionFrom({ state: {} }).queue_ended,
+      'a read that cannot speak leaves the live observation standing',
+    ).toBeUndefined();
+    expect(
+      sessionFrom({ state: { queue_ended: null } }).queue_ended,
+      'an explicit null is the server saying the seat has none',
+    ).toBeNull();
+    expect(
+      sessionFrom({ state: { queue_ended: { text: 'no reason' } } }).queue_ended,
+      'a present value that is not an ending is the server saying none',
+    ).toBeNull();
+  });
+});
+
+/**
  * The seat's resumable sessions travel on the record, and this decode is the
  * one link a fixture carrying `[]` cannot see: a wrong key or a dropped line
  * leaves the live composer offering nothing, with the popover's empty-list

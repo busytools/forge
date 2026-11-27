@@ -361,6 +361,8 @@ export function fakeConnection() {
     skew: () => null,
     serverProtocol: () => PROTOCOL_VERSION,
     status: () => 'open',
+    lastHeard: () => null,
+    onHeard: () => () => {},
     probe: () => {},
     close: () => {},
     browserInput: () => false,

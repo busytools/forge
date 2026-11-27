@@ -32,7 +32,9 @@ import type { Connection } from '../socket';
 import type { SessionSlot } from '../wire/types';
 import { places } from './conversations';
 import { cronNames } from './cron-names.svelte';
+import { promptLifecycleFrame } from '../wire/home';
 import { echoes } from './echoes.svelte';
+import { noteArrival } from './motion';
 import { outputs } from './outputs.svelte';
 import { stripEscapes } from './text';
 import {
@@ -1939,7 +1941,7 @@ export class Chat {
    */
   private ownSend(id: string | null): boolean {
     if (id === null) return false;
-    return echoes.of(this.key)?.id === id || echoes.owns(this.key, id);
+    return echoes.isPending(this.key, id) || echoes.owns(this.key, id);
   }
 
   /**
@@ -3497,7 +3499,7 @@ export class Chat {
         // only: two sends of the same text compare equal by words - and only
         // the echo this announcement names, or a send from another surface
         // would clear the composer's mark and take its refusal.
-        if (echoes.of(this.key)?.id === uuid) echoes.clear(this.key);
+        if (echoes.isPending(this.key, uuid)) echoes.take(this.key, uuid);
         // **A row the seat already drew is pulled back into the hold.** A page
         // read can carry a prompt's own row while the queue still lists it -
         // the transcript gained it before this view heard the announcement -
@@ -3529,6 +3531,23 @@ export class Chat {
     // conversation - but its id is what lets a held row go.
     if (variant === 'prompt_lifecycle') {
       this.advanced(update);
+      return;
+    }
+    // **A confirmed cancel settles the hold on its own.** The CLI's terminal
+    // lifecycle frame usually follows, but this control's answer is the one
+    // word the client asked for: a stream that lost the other frame must not
+    // leave a held row no read will ever drain. `cancelled: false` means the
+    // CLI had taken it, so the prompt's own `sent` settles the row instead.
+    if (variant === 'prompt_cancel_resolved') {
+      const resolved = (
+        update as { prompt_cancel_resolved?: { uuid?: unknown; cancelled?: unknown } }
+      ).prompt_cancel_resolved;
+      const uuid = typeof resolved?.uuid === 'string' ? resolved.uuid : null;
+      if (uuid === null || resolved?.cancelled !== true) return;
+      echoes.take(this.key, uuid);
+      this.waiting.delete(uuid);
+      this.drained.delete(uuid);
+      this.dropEmptied(uuid);
       return;
     }
     if (variant === 'chat_appended') {
@@ -3713,14 +3732,24 @@ export class Chat {
     }
     // The core's own line: a command's answer, or why one did not run. It is
     // drawn here because this store is the conversation the page draws, and the
-    // record's copy of the transcript is not. **Live only, deliberately**: the
-    // CLI never wrote such a row, so a page that attaches afterwards has
-    // nothing to read it from and the line is not owed to it.
+    // record's copy of the transcript is not. **The core holds the same line as
+    // a message of the seat's conversation**, so this frame and the copy a
+    // later read serves are one row: `uuid` is the notice's id, which is what
+    // keys both. A frame that names none is from a core older than the field,
+    // and it draws as the arrival it is.
     if (variant === 'notice') {
-      const line = (update as { notice?: { severity?: unknown; text?: unknown } }).notice;
+      const line = (update as { notice?: { id?: unknown; severity?: unknown; text?: unknown } })
+        .notice;
       const text = line?.text;
       if (typeof text !== 'string' || text === '') return;
-      this.append({ type: 'system', subtype: 'forge_notice', severity: line?.severity, text });
+      const id = typeof line?.id === 'string' && line.id !== '' ? line.id : undefined;
+      this.append({
+        type: 'system',
+        subtype: 'forge_notice',
+        severity: line?.severity,
+        text,
+        ...(id === undefined ? {} : { uuid: id }),
+      });
       return;
     }
     // A worker's review turn ended and the core batched the tally onto this
@@ -3927,32 +3956,30 @@ export class Chat {
   }
 
   /**
-   * The CLI moved a prompt, from the frame that names only its id and state.
+   * The prompt moved, from the frame that names only its id, state and the
+   * core's word for how it learned it.
    *
-   * **The per-state table.** `started` is the drain: the held row draws,
-   * carrying how long the prompt waited - the wait being the whole difference
-   * between the card's "queued" and the row's "sent", and the reason the row
-   * was held at all. `completed` draws the same way, which is what saves a
-   * hold whose `started` was lost - a reattached client that missed the frame.
-   * `cancelled`, `refused` and `discarded` draw nothing: none of them reached
-   * a model, so no turn carries the words. A refusal or a discard hands them
-   * to the pile's ending line, which draws them where the card was; a cancel
-   * has said what it had to say by leaving (#2816). Anything else keeps the
-   * hold.
+   * **`sent` is the drain**: the held row draws, carrying how long the prompt
+   * waited - the wait being the whole difference between the card's "queued"
+   * and the row's "sent", and the reason the row was held at all. Where the
+   * core drew the state itself because no CLI frame was coming, the row's
+   * detail carries the core's sentence instead, so a fallback never reads as
+   * a CLI fact.
+   *
+   * **`not_sent` draws no chat row at all.** Nothing reached a model, so the
+   * words are the pile's ending line, in the item's own reason - a cancel
+   * included, because a row that disappears silently reads as delivered.
+   * Anything else keeps the hold.
    */
   private advanced(update: SessionUpdate): void {
-    const uuid = textIn(update, 'prompt_lifecycle', 'uuid');
-    const state = textIn(update, 'prompt_lifecycle', 'state');
-    if (uuid === null || state === null) return;
-    // **The cancel settles on the id alone, before the hold's own guard**: the
-    // pending mark is this prompt's whether or not a row is still held here -
-    // a snapshot's release or a swap can have cleared the hold out from under
-    // it - and skipping that test on the guard would leave the mark saying
-    // "sending" forever. The store holds one send per seat, and the id is
-    // what separates a second send from a first prompt's cancel; words could
-    // not, since two sends of the same text compare equal.
-    if (state === 'cancelled') {
-      if (echoes.of(this.key)?.id === uuid) echoes.clear(this.key);
+    const frame = promptLifecycleFrame(update);
+    if (frame === null) return;
+    const { uuid, state, origin } = frame;
+    if (state.kind === 'unknown' || state.kind === 'queued') return;
+    if (state.kind === 'not_sent') {
+      // A send this client still holds and the core refused before the pile
+      // ever listed it: the pending row is where its reason lands.
+      echoes.refuse(this.key, uuid, state.reason);
       this.waiting.delete(uuid);
       this.drained.delete(uuid);
       this.dropEmptied(uuid);
@@ -3961,19 +3988,8 @@ export class Chat {
     const entry = this.waiting.get(uuid);
     const held = this.drained.get(uuid);
     if (entry === undefined && held === undefined) return;
-    const dropped = state === 'refused' || state === 'discarded';
-    const drawn = state === 'started' || state === 'completed';
-    if (!dropped && !drawn) return;
     this.waiting.delete(uuid);
     this.drained.delete(uuid);
-    // **A prompt that never starts draws no row.** Refused and discarded
-    // leave their words to the pile's ending line, which is the only place
-    // after the card; cancelled leaves nothing, because the reader ended it
-    // (#2816). The page copy never carries any of them.
-    if (dropped) {
-      this.dropEmptied(uuid);
-      return;
-    }
     const into = this.emptied.get(uuid) ?? null;
     this.emptied.delete(uuid);
     // **A trigger the queue alone carried draws from the announcement's own
@@ -3989,7 +4005,8 @@ export class Chat {
     // carries the reader to the foot. The fact is kept in the hold - the row
     // it draws may be built from the announcement's words alone, with no
     // frame to read an id off - and a phone's send is `you` without being it.
-    this.append(this.noted(row, waited), entry?.mine === true, into);
+    const note = origin.kind === 'forge' ? origin.note : null;
+    this.append(this.noted(row, waited, note), entry?.mine === true, into);
   }
 
   /**
@@ -3997,9 +4014,14 @@ export class Chat {
    *
    * A wait under a second is the idle send, where the frames land inside one
    * beat and naming a wait would invent one: the note is "sent" alone.
+   *
+   * **A state the core drew itself says so instead.** Where no CLI frame was
+   * coming, the row's detail carries the core's own sentence, so a fallback
+   * never masquerades as the CLI's word in the line.
    */
-  private noted(message: unknown, waitedMs: number): unknown {
+  private noted(message: unknown, waitedMs: number, fallback: string | null): unknown {
     if (typeof message !== 'object' || message === null) return message;
+    if (fallback !== null && fallback !== '') return { ...message, forge_note: fallback };
     const seconds = Math.floor(waitedMs / 1000);
     const note =
       seconds < 1
@@ -4122,6 +4144,11 @@ export class Chat {
   }
 
   private append(message: unknown, own = false, into: string | null = null): void {
+    // **A row appended live may rise into place on its first mount.** The
+    // window is short and one-shot, so a row the reader later scrolls to
+    // arrives still.
+    const arriving = uuidOf(message);
+    if (arriving !== null) noteArrival(arriving);
     this.stream((held) => {
       const last = held.turns[held.turns.length - 1];
       // What a row of its own would hold, asked of the fold rather than of the

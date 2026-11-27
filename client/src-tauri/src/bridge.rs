@@ -92,6 +92,11 @@ const PARKED_RING: usize = 1024;
 pub enum ClientEvent {
     /// The connection's state moved; the page re-reads it with `client_state`.
     Connection,
+    /// **The socket's liveness beat saw bytes move.** The page's silence
+    /// line counts what reaches it; an idle link carries only the server's
+    /// control pings, so this is the word that keeps a healthy link from
+    /// looking quiet.
+    Alive,
     /// A `ServerMessage`, as itself.
     Inbound(Value),
     /// A forwarded snapshot's own frame facts: its raw length and the parse
@@ -1624,7 +1629,30 @@ impl Bridge {
             SocketEvent::Malformed(text) => {
                 tauri_plugin_log::log::warn!("client socket: {text}");
             }
+            SocketEvent::Alive => self.alive(),
         }
+    }
+
+    /// The socket's beat saw bytes move: the page's silence clock hears it.
+    ///
+    /// **Nothing while the page is presumed parked**, exactly as frames are
+    /// withheld: a sleeping page is not drawing, and its clock restarts when
+    /// it wakes. Unlike a frame there is nothing to hold - a beat that
+    /// passed says nothing the records could rebuild, and the next beat is
+    /// fifteen seconds away.
+    fn alive(&self) {
+        let state = self.lock();
+        // **A hidden page is parked exactly as a stale one is.** Opening a
+        // socket stamps the pulse, so the age alone would let a beat reach a
+        // page that draws none; the visibility the last beat carried is the
+        // other half of the test, and it is the page's own.
+        let fresh = state.visible
+            && state.last_beat.is_some_and(|at| at.elapsed() < Duration::from_millis(FRESH_MS));
+        if !fresh {
+            return;
+        }
+        drop(state);
+        self.emit(ClientEvent::Alive);
     }
 
     fn status_moved(self: &Arc<Self>, status: Status) {
@@ -2758,6 +2786,39 @@ mod tests {
         };
         assert_eq!(seen["kind"], "something_new");
         assert_eq!(seen["payload"]["a"], json!(1));
+    }
+
+    /// **The socket's liveness beat reaches the page as `Alive`**, while the
+    /// page is awake: it is the word that keeps an idle link from looking
+    /// quiet. **A parked page hears nothing** - its clock restarts when it
+    /// wakes, and a beat that passed says nothing the records could rebuild.
+    #[tokio::test]
+    async fn the_liveness_beat_reaches_an_awake_page_and_not_a_parked_one() {
+        let (bridge, mut rx) = bridge();
+        let id = bridge.lock().socket_id;
+        // An awake page is a freshly beating one; the beat only speaks while
+        // the page's own pulse is fresh.
+        bridge.heartbeat(Some(true), None);
+        bridge.socket_event(id, SocketEvent::Alive);
+        assert!(
+            matches!(
+                event(&mut rx, |event| matches!(event, ClientEvent::Alive)).await,
+                ClientEvent::Alive
+            ),
+            "an awake page was not told the link carried bytes",
+        );
+
+        park(&bridge);
+        drain(&mut rx);
+        bridge.socket_event(id, SocketEvent::Alive);
+        assert!(rx.try_recv().is_err(), "a parked page was told the link was alive");
+
+        // **A hidden page is parked too**, even with a pulse a reconnect just
+        // stamped: the beat is a draw-path word, and a page that draws none
+        // has nothing to read it.
+        bridge.heartbeat(Some(false), None);
+        bridge.socket_event(id, SocketEvent::Alive);
+        assert!(rx.try_recv().is_err(), "a hidden page was told the link was alive");
     }
 
     /// **The desktop shell's own subscribe frame carries the review scope.**

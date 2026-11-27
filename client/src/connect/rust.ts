@@ -193,6 +193,8 @@ class RustConnection implements Connection {
   private readonly stores = new Stores();
   private readonly listeners = new Set<(message: ServerMessage) => void>();
   private readonly statuses = new Set<(status: ConnectionStatus) => void>();
+  /** The page's watchers of the link's inbound clock (`onHeard`). */
+  private readonly heardListeners = new Set<(at: number) => void>();
   /** The page's viewers of the relayed frames: the phone's canvas. */
   private readonly frames = new Set<(frame: BrowserFrame) => void>();
   private stops: UnlistenFn[] = [];
@@ -211,6 +213,33 @@ class RustConnection implements Connection {
    */
   private resumed = false;
   private state: ConnectionStatus = 'connecting';
+  /**
+   * When a frame last arrived, for the page's silence line.
+   *
+   * **Stamped here because the shell owns the socket.** The shell's own
+   * status is all a page normally knows, and a shell task whose loop has
+   * stopped reporting sends no status at all; what arrived through the shell
+   * is the only evidence left. **Four events carry it**: the JSON frames on
+   * `client://inbound`, the browser's and terminal's binary frames, which the
+   * shell forwards on events of their own, and the shell's own liveness beat
+   * on `client://alive`.
+   */
+  private heardAt: number | null = null;
+
+  /**
+   * Stamp the link and tell its watchers, which is what makes the stamp
+   * observable to a page rather than a value it has to poll.
+   */
+  private markHeard(at: number): void {
+    this.heardAt = at;
+    for (const fn of this.heardListeners) {
+      try {
+        fn(at);
+      } catch (why) {
+        report('a heard listener threw', why);
+      }
+    }
+  }
   /**
    * The shell's own id for this connection, from `client_connect`.
    *
@@ -247,6 +276,17 @@ class RustConnection implements Connection {
    */
   private generation: number | null = null;
   private transition = false;
+  /**
+   * Sends whose shell invoke has not answered yet.
+   *
+   * **A dead link settles them; it never waits for the writer's own timeout.**
+   * The shell answers a write once the frame is on the wire, so an invoke
+   * still open when the status leaves `open` is a frame that had not crossed -
+   * and a promise left hanging there is a message saying `sending` for as long
+   * as the page is up. Each entry rejects with the one reason a reader needs;
+   * the row that owns it keeps the words and offers a retry.
+   */
+  private crossing = new Set<(why: string) => void>();
   /**
    * The shell's socket task this page last saw, from `client_state`.
    *
@@ -302,8 +342,25 @@ class RustConnection implements Connection {
     // and a connection that subscribed after asking could miss it.
     this.stops.push(await listen('client://connection', () => void this.stateMoved()));
     this.stops.push(
-      await listen('client://inbound', (event) => this.heard(event.payload as ServerMessage)),
+      await listen('client://inbound', (event) => {
+        // The page's own silence clock: this is the seam every JSON frame
+        // crosses, so it is where "last heard" is stamped.
+        this.markHeard(Date.now());
+        this.heard(event.payload as ServerMessage);
+      }),
     );
+    // **The terminal's bytes are inbound too**, and they never reach
+    // `client://inbound`: the shell emits them on their own event, which the
+    // terminal surface listens to directly. A stamp-only listener is the
+    // connection's half of that evidence; a session drawing a busy terminal
+    // must not be called quiet. Two listeners on one event is how Tauri's
+    // event API is meant to be used.
+    this.stops.push(await listen('client://terminal-frame', () => this.markHeard(Date.now())));
+    // **The shell's own liveness beat.** An idle link carries no frames at
+    // all - the server's WebSocket control pings are bytes the shell reads
+    // and drops - so this is the only word the page gets, and without it a
+    // perfectly healthy link would be drawn as quiet.
+    this.stops.push(await listen('client://alive', () => this.markHeard(Date.now())));
     // **The shell half's own facts (#2513).** A snapshot's raw length and the
     // shell's parse travel beside the frame; a subscribe's write time is
     // reported when the frame is on the wire, not when the page asked.
@@ -327,6 +384,9 @@ class RustConnection implements Connection {
     // (the desktop's overlay draws its own and this listener never fires).
     this.stops.push(
       await listen<ShellFrame>('client://browser-frame', (event) => {
+        // A browser frame is inbound even when this page draws none of it:
+        // the stamp is the link's, before the payload is narrowed.
+        this.markHeard(Date.now());
         const frame = frameOf(event.payload);
         if (frame === null) return;
         for (const fn of this.frames) fn(frame);
@@ -484,6 +544,12 @@ class RustConnection implements Connection {
     // generation it belongs to is recorded.
     if (next !== 'open') {
       this.transition = true;
+      // **A link that went down settles every send still crossing it.** The
+      // refusal is the same one a throw makes, so the row it belongs to keeps
+      // its words with the reason and a retry - never a `sending` card that
+      // outlives the connection it was waiting on.
+      for (const refuse of [...this.crossing]) refuse('the connection is down');
+      this.crossing.clear();
       // **The drop took the seat subscriptions with it.** The shell's retry
       // keeps only the string subjects (`socket.rs` retains them and lets
       // every seat go with the socket that carried it), and the page is what
@@ -504,7 +570,12 @@ class RustConnection implements Connection {
     // lost first answer would otherwise leave them loading forever. A watch
     // taken with no socket is the shell's to carry (`Bridge::connect` asks for
     // it), so nothing is re-asked from this side.
-    if (next === 'open') this.bounds.rearmLoading();
+    if (next === 'open') {
+      this.bounds.rearmLoading();
+      // Before the listeners, as the web's `onopen` does: a surface that
+      // draws on `open` reads the stamp.
+      this.markHeard(Date.now());
+    }
     // **Listeners first, then `Showing`.** The page's own re-attach runs on
     // this status and issues its `relist`; the spec's order is re-subscribe,
     // then `Showing`, and the web's `onopen` keeps the same one.
@@ -819,10 +890,14 @@ class RustConnection implements Connection {
   }
 
   dispatch(command: Command, at?: SessionSlot): Promise<unknown> {
+    // **A prompt's refusal is its own row's.** The item carries the reason and
+    // the retry, so a notice line beside it would tell the same loss twice;
+    // every other command has no item, and the line is where its loss draws.
+    const item = variantOf(command) === 'prompt_under';
     // Before anything is registered, so a command that never went leaves no
     // promise behind for a later failure to reject.
     if (this.state !== 'open') {
-      if (at !== undefined) refused(at);
+      if (at !== undefined && !item) refused(at);
       throw new Error('the socket is not open');
     }
     const reply = ANSWERS_THROUGH_A_REPLY.has(variantOf(command));
@@ -831,15 +906,40 @@ class RustConnection implements Connection {
     // **The shell answers once its writer has put the frame on the socket**,
     // so this resolution is the crossing rather than the hand-off, and its
     // rejection is the socket having gone between this page's status and the
-    // write. A caller that ignores it still gets that loss reported; one
-    // that awaits it keeps what it was about to clear.
-    const crossed = answer.then(() => null);
+    // write.
+    //
+    // **A status that leaves `open` settles it too.** The invoke has no
+    // timeout of its own, and a half-dead link never answers one: without the
+    // status arm the promise waits for as long as the page is up, and the
+    // message behind it says `sending` for minutes (measured 2026-11-27:
+    // 15:25-15:46, no frames, no close). The rejection is the same loss the
+    // writer's failure reports, so one path draws it.
+    const crossed = new Promise<null>((resolve, reject) => {
+      let settled = false;
+      const refuse = (why: string): void => {
+        if (settled) return;
+        settled = true;
+        this.crossing.delete(refuse);
+        reject(new Error(why));
+      };
+      this.crossing.add(refuse);
+      answer.then(
+        () => {
+          if (settled) return;
+          settled = true;
+          this.crossing.delete(refuse);
+          resolve(null);
+        },
+        (why: unknown) => refuse(why instanceof Error ? why.message : String(why)),
+      );
+    });
     void crossed.catch((why: unknown) => {
       report('a command could not cross to the shell', why);
       // The same reader-facing line the synchronous refusal draws (#1638):
       // a command that did not leave is the loss the person pressed into,
-      // whichever half of the connection found out.
-      if (at !== undefined) refused(at);
+      // whichever half of the connection found out. A prompt's own row is
+      // that line, so it is not drawn twice.
+      if (at !== undefined && !item) refused(at);
     });
     return crossed;
   }
@@ -953,6 +1053,15 @@ class RustConnection implements Connection {
 
   status(): ConnectionStatus {
     return this.state;
+  }
+
+  lastHeard(): number | null {
+    return this.heardAt;
+  }
+
+  onHeard(fn: (at: number) => void): () => void {
+    this.heardListeners.add(fn);
+    return () => this.heardListeners.delete(fn);
   }
 
   close(): void {

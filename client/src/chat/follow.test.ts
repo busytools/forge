@@ -248,7 +248,7 @@ function stub() {
    * has to make that press, or the frame is a stranger's.
    */
   const localPress = (running: boolean): void => {
-    echoes.post(subjectKey({ session: LEAD }), 'what is this', running, 'said-once', echoes.mint());
+    echoes.post(subjectKey({ session: LEAD }), 'said-once', 'what is this', running, echoes.mint());
   };
 
   return {
@@ -418,14 +418,16 @@ function stub() {
     started(): void {
       send({
         kind: 'update',
-        update: { prompt_lifecycle: { key: LEAD, uuid: 'said-once', state: 'started' } },
+        update: {
+          prompt_lifecycle: { key: LEAD, uuid: 'said-once', state: 'sent', source: 'cli' },
+        },
       });
     },
     /** The same lifecycle for a prompt the read's queue named under another id. */
     startedFor(uuid: string): void {
       send({
         kind: 'update',
-        update: { prompt_lifecycle: { key: LEAD, uuid, state: 'started' } },
+        update: { prompt_lifecycle: { key: LEAD, uuid, state: 'sent', source: 'cli' } },
       });
     },
     /** The seat's own record naming its occupant, the way a subscribe does. */
@@ -661,7 +663,7 @@ beforeEach(() => {
   for (const which of [LEAD, OTHER]) {
     const seat = subjectKey({ session: which });
     places.forget(seat);
-    echoes.clear(seat);
+    echoes.clearSeat(seat);
   }
   // **The suite runs as a reader who asked for less motion.** The glide has
   // its own cases, which turn the query off; every other case is about where
@@ -3313,7 +3315,7 @@ describe('whether the column follows the newest end', () => {
 
     // The press this client made before the drop: the echo carries its prompt
     // id, and the read's queue row names the same one.
-    echoes.post(subjectKey({ session: LEAD }), 'what is this', false, 'said-once', echoes.mint());
+    echoes.post(subjectKey({ session: LEAD }), 'said-once', 'what is this', false, echoes.mint());
     server.readQueue([{ uuid: 'said-once', source: 'you', text: 'what is this' }]);
     await settle();
     server.started();

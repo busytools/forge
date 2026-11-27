@@ -15,7 +15,6 @@
   import { MORE_TURNS, subjectKey } from '../protocol';
   import { scrollAsk } from '../session/scroll-ask';
   import type { Connection } from '../socket';
-  import { mintPromptId } from '../wire/ids';
   import type { SessionSlot } from '../wire/types';
   import { anchoredScroll, heldRow, type Anchor, type RowBox } from './anchor';
   import { latestCompaction } from './compaction-jump';
@@ -26,14 +25,11 @@
     beingWritten,
     inFlight,
     headMoved,
-    runningAt,
     type Conversation,
     type Turn as HeldTurn,
   } from './conversation';
   import { conversationsFor, places, type Place } from './conversations';
-  import Echo from './Echo.svelte';
   import { glideTo as glideToward, wantsMotion } from './glide';
-  import { echoes, ownWords } from './echoes.svelte';
   import { pinnedRow } from './pinnedRow.svelte';
   import { chatRows, firstRowOf, rowOfCall, rowOfKey, SPLIT_AT, type ChatRow } from './rows';
   import Turn from './Turn.svelte';
@@ -295,14 +291,6 @@
    * string, and a string is written only when it changes.
    */
   const seat = $derived(subjectKey({ session: slot }));
-  /**
-   * The reader's words, from submit until the core's own copy of them lands.
-   *
-   * Held per seat by the client rather than by either column, because the
-   * composer writes it and this one draws it: it is one mechanism over both
-   * sending surfaces, and a seat the reader has left keeps its pending send.
-   */
-  const echo = $derived(echoes.of(seat));
 
   /** The newest turn, which is the one a running row is folded for. */
   const newestTurn = $derived(
@@ -525,110 +513,6 @@
       out.push(row as HTMLElement);
     }
     return out;
-  }
-
-  /**
-   * The echo goes the moment the conversation carries the words.
-   *
-   * **The core's own copy is the signal, in either carrier the wire uses**: a
-   * prompt that starts a turn arrives as that message's own text, and one sent
-   * while a turn is already running is held by the CLI as a queued block
-   * instead. The composer's own backstop is the turn going in flight, which is
-   * a signal a queued prompt never gives - so a reconcile that knew one
-   * carrier would leave the row saying "sending" for the rest of the turn.
-   *
-   * **And it reads only the two ENDS of the newest turn.** The core's copy
-   * lands at one end or the other - appended by the live path, at the head of
-   * the turn a page read rebuilds - while a turn can be thousands of messages
-   * long and this runs on every arriving frame. A scan of the whole thing is a
-   * cost that grows with exactly the turn the reader is sending into, which is
-   * #1591's shape one layer down.
-   */
-  $effect(() => {
-    const held = echoes.of(seat);
-    if (held === undefined) return;
-    const turn = newestTurn;
-    if (turn === null) return;
-    if (!carries(turn.messages, held.words)) return;
-    echoes.clear(seat);
-  });
-
-  /**
-   * Whether a turn's own messages carry these words.
-   *
-   * **Each end, and stopped by the first frame that is not the reader's**: a run
-   * of their own words is what either end of a turn holds - the live path
-   * appends one, and a page read opens the turn with one - and everything
-   * between is the work the turn did, which is where the length is.
-   */
-  function carries(messages: unknown[], words: string): boolean {
-    const run = (from: number, step: number): boolean => {
-      for (let at = from; at >= 0 && at < messages.length; at += step) {
-        const message = messages[at];
-        if (message === undefined) break;
-        const said = ownWords(message);
-        if (said.length === 0) break;
-        if (said.includes(words)) return true;
-      }
-      return false;
-    };
-    return run(messages.length - 1, -1) || run(0, 1);
-  }
-
-  /**
-   * Send the words again, from the row that says they did not go.
-   *
-   * The same dispatch the composer makes, because it is the same send: the row
-   * hands back words the reader already typed rather than asking them to type
-   * them again, which is what a refused send used to mean.
-   */
-  function retry(): void {
-    const held = echoes.of(seat);
-    if (held === undefined) return;
-    // Whether this send starts a turn, read from the CONNECTION's own store
-    // rather than from the turn this page draws - `runningAt`'s own doc has the
-    // mechanism. A retry posted as not-running is taken by the very paint that
-    // carries the turn, where a refusal can no longer reach it.
-    //
-    // The id is this send's own, freshly minted: the prompt the first attempt
-    // sent is dead, so the retry is a new prompt that happens to say the same
-    // words - and the pile settles each by id, never by text.
-    const id = mintPromptId();
-    // The retry is this client's own send like the press that failed: the id
-    // is remembered, so it carries a parked reader to the foot rather than
-    // counting in the badge.
-    echoes.remember(seat, id);
-    // The press's own number, echoed by a refusal, exactly as the composer's
-    // own send carries it (#1583): a reason arriving later names this send.
-    const dispatch = echoes.mint();
-    echoes.post(
-      seat,
-      held.words,
-      runningAt(connection, slot, newestTurn?.running === true),
-      id,
-      dispatch,
-    );
-    try {
-      // Fire-and-forget like the composer's own send: the outcome rides the
-      // subscription rather than a reply, so there is nothing here to await.
-      // No seat handed over: this retry's refusal is drawn by the echo row
-      // below, with the retry button the reader came here for - a notice line
-      // beside it would tell the same loss twice.
-      void connection.dispatch({
-        prompt_under: {
-          key: slot,
-          text: held.words,
-          attachments: [],
-          uuid: id,
-          source: 'you',
-          dispatch_id: dispatch,
-        },
-      });
-    } catch {
-      // A closed socket throws rather than answering, so the row says why
-      // rather than the words going with a command that never left.
-      echoes.refuse(seat, 'the socket is closed');
-    }
   }
 
   /**
@@ -3394,33 +3278,19 @@
        asks again. -->
   <div class="conv">
     <p class="hold off">This forge would not answer for this conversation: {held.refused}</p>
-    {#if echo !== undefined}
-      <Echo {echo} onretry={retry} />
-    {/if}
   </div>
 {:else if !held.loaded}
   <!-- Connected, and the first page has not come back. **The band says the
        wait** - every narrative state speaks there - so the column draws no
-       line of its own; the reader's own words still ride here, because a send
-       whose row is nowhere is a send the reader cannot see. -->
-  <div class="conv">
-    {#if echo !== undefined}
-      <Echo {echo} onretry={retry} />
-    {/if}
-  </div>
+       line of its own. A send still on its way draws in the pile above the
+       box, which is the one home it has until the core answers. -->
+  <div class="conv"></div>
 {:else if held.turns.length === 0}
   <div class="conv">
-    {#if echo !== undefined}
-      <!-- A seat with no history still has a message on its way, and that row
-           is the first thing it says: the empty copy would claim nothing was
-           said while the reader watches their own words arrive. -->
-      <Echo {echo} onretry={retry} />
-    {:else}
-      <div class="hold">
-        Nothing said yet
-        <span class="sub">this seat has no history: what is said here starts it</span>
-      </div>
-    {/if}
+    <div class="hold">
+      Nothing said yet
+      <span class="sub">this seat has no history: what is said here starts it</span>
+    </div>
   </div>
 {:else}
   {#if held.refused !== null}
@@ -3489,13 +3359,6 @@
             carried={row.turn.key === newest ? (pinned?.key ?? null) : null}
             onreadoutput={readOutput}
           />
-          <!-- The echo rides the newest row, which is where the words will land:
-               the row it is drawn in is the one the core's own copy opens or
-               joins, so nothing moves when the send is taken. A turn taken apart
-               lands its words at its own foot, which is its last item. -->
-          {#if echo !== undefined && row.turn.key === newest && (row.part === null || row.part.last)}
-            <Echo {echo} onretry={retry} />
-          {/if}
         </div>
       {/snippet}
     </VList>

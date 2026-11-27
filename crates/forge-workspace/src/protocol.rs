@@ -1488,9 +1488,51 @@ pub enum PromptSource {
     Gotify,
     Slack,
     Peer,
+    /// The task board's own chase: a row that has gone ready, stale or
+    /// waiting, delivered to the seat the board keeps it on. **Its own kind**
+    /// because it draws at the CLI's start like any delivery, where forge's
+    /// own machinery keeps the row it forged at dispatch.
+    Board,
     /// forge's own machinery: a worker kick, an auto-continue, a replayed
     /// parked delivery whose kind is no longer known.
     Forge,
+}
+
+/// Where one prompt is in its life: the one vocabulary every surface draws.
+///
+/// `sending` is deliberately absent. It is a view's state for a press the
+/// core has not answered yet, and the core never emits it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptState {
+    /// Accepted and waiting: the core holds it, and the queue draws it.
+    Queued,
+    /// The CLI took it. The chat draws its row; a turn outcome is separate
+    /// and stays turn-level.
+    Sent,
+    /// It did not run, with the words that say why kept on the item itself.
+    NotSent { reason: String },
+}
+
+/// How the core learned a prompt's state.
+///
+/// A CLI fact and the core's own fallback must not read alike, so the
+/// fallback carries the sentence a row's detail shows. The row's line draws
+/// the state alone.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum LifecycleSource {
+    /// The CLI's own `command_lifecycle` frame said it.
+    Cli,
+    /// The core drew it because no CLI frame was coming. `note` says what
+    /// the reader is seeing a fallback about.
+    Forge { note: String },
+}
+
+/// A fresh id for one of forge's own notice lines, so a live frame and the
+/// copy a later read serves are one item rather than two.
+pub(crate) fn new_notice_id() -> String {
+    format!("forge_notice_{}", Uuid::new_v4())
 }
 
 /// Where the user moved a row in its queue.
@@ -1530,6 +1572,24 @@ pub struct QueuedPrompt {
     /// seat record read.
     #[serde(skip)]
     pub attachments: Vec<forge_primitives::ImageAttachment>,
+}
+
+/// The last prompt that left the queue without being sent, as a page that
+/// attaches afterwards reads it.
+///
+/// **The live frame is not the only reader.** `PromptLifecycle` speaks once,
+/// and a page that loads, refreshes or switches seats after the frame would
+/// otherwise draw nothing where the card was - a prompt that vanishes
+/// silently reads as delivered. The core holds the last ending per occupant
+/// so the seat read can answer the same line the live path drew.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
+pub struct QueueEnding {
+    /// The prompt's words, as they were written.
+    pub text: String,
+    /// The core's own words for why it did not run.
+    pub reason: String,
+    /// Who dispatched it, which is what decides whether a retry is safe.
+    pub source: PromptSource,
 }
 
 /// How loudly a [`SessionUpdate::Notice`] reads.
@@ -1666,13 +1726,16 @@ pub enum SessionUpdate {
     /// line is the core's own answer rather than a view's opinion - what a
     /// command found, or why it refused.
     ///
-    /// **Live only, and that is intended.** The CLI writes no transcript row
-    /// for a line it never produced, so a view draws this on arrival and a
-    /// page that attaches afterwards has nothing to read it from. It is a
-    /// statement about the moment a command ran, not a record of the
-    /// conversation.
+    /// **One id, and the message it became.** The line is held as a message
+    /// of the occupant's conversation, so a page attaching afterwards reads
+    /// it rather than drawing an empty answer. `id` keys the live frame to
+    /// that held copy, so the reader sees one row and not two.
+    ///
+    /// It is still a statement about the moment a command ran: a new
+    /// occupant seeds a new conversation and the line is not carried into it.
     Notice {
         key: SessionSlot,
+        id: String,
         severity: NoticeSeverity,
         text: String,
     },
@@ -2168,18 +2231,26 @@ pub enum SessionUpdate {
         source: PromptSource,
         text: String,
     },
-    /// Where one prompt is in the CLI's queue, as the CLI itself reports it:
-    /// `queued`, `started`, `completed` and the terminal states
-    /// (`cancelled`, `discarded`, `refused`). Keyed by the uuid the prompt was
-    /// sent under, which is what lets a view key its queued row to its own
-    /// send by id rather than by order or text.
+    /// Where one prompt is in its life, in the one vocabulary every surface
+    /// draws: waiting in the core's queue, taken by the CLI, or refused.
     ///
-    /// `state` stays a free-form string so a state this build has not seen
-    /// reaches a view rather than being dropped.
+    /// **One vocabulary of four words, and one of them is a view's alone.**
+    /// A view draws `sending` for a press the core has not answered yet;
+    /// that word never crosses this wire, because the core has nothing to
+    /// say about a prompt it has not received.
+    ///
+    /// A refusal keeps its reason here so the item itself carries it: the
+    /// state is `not_sent` with the words the reader needs, not a notice
+    /// beside the row and not a line in a box.
     PromptLifecycle {
         key: SessionSlot,
         uuid: String,
-        state: String,
+        state: PromptState,
+        /// Whether the state is a CLI fact or the core's own fallback, and
+        /// the sentence that says so. A fallback must never read as a fact in
+        /// the row's line, so this rides beside the state and a view shows it
+        /// only in the row's detail.
+        source: LifecycleSource,
     },
     /// The CLI answered a `cancel_async_message`: `cancelled: false` means the
     /// prompt was already dequeued for execution, so a reader that asked to
@@ -2812,11 +2883,12 @@ impl std::fmt::Debug for SessionUpdate {
                 .field("key", key)
                 .field("uuid", uuid)
                 .finish_non_exhaustive(),
-            Self::PromptLifecycle { key, uuid, state } => f
+            Self::PromptLifecycle { key, uuid, state, source } => f
                 .debug_struct("PromptLifecycle")
                 .field("key", key)
                 .field("uuid", uuid)
                 .field("state", state)
+                .field("source", source)
                 .finish(),
             Self::PromptCancelResolved { key, uuid, cancelled } => f
                 .debug_struct("PromptCancelResolved")
@@ -3539,6 +3611,64 @@ mod session_update_variants {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod prompt_lifecycle_wire_tests {
+    use super::*;
+
+    /// **One vocabulary, spelled once.** The state crosses under its own
+    /// name, and a refusal keeps its reason on the state rather than in a
+    /// field beside it, so a client narrows one value instead of pairing a
+    /// word with a sentence that may not belong to it.
+    #[test]
+    fn a_prompt_lifecycle_crosses_as_the_one_vocabulary() {
+        let key = SessionSlot::from_str_for_test("lifecycle-wire".to_owned());
+
+        let sent = SessionUpdate::PromptLifecycle {
+            key: key.clone(),
+            uuid: "p1".to_owned(),
+            state: PromptState::Sent,
+            source: LifecycleSource::Cli,
+        };
+        let encoded = serde_json::to_value(&sent).expect("a lifecycle frame encodes");
+        assert_eq!(encoded["prompt_lifecycle"]["state"], serde_json::json!("sent"));
+        assert_eq!(encoded["prompt_lifecycle"]["source"], serde_json::json!("cli"));
+
+        let refused = SessionUpdate::PromptLifecycle {
+            key,
+            uuid: "p2".to_owned(),
+            state: PromptState::NotSent { reason: "the CLI refused it".to_owned() },
+            source: LifecycleSource::Forge { note: "the occupant went".to_owned() },
+        };
+        let encoded = serde_json::to_value(&refused).expect("a refusal encodes");
+        assert_eq!(
+            encoded["prompt_lifecycle"]["state"],
+            serde_json::json!({ "not_sent": { "reason": "the CLI refused it" } }),
+            "the reason rides the state, not a field beside it",
+        );
+        assert_eq!(
+            encoded["prompt_lifecycle"]["source"],
+            serde_json::json!({ "forge": { "note": "the occupant went" } }),
+            "a fallback carries the sentence that keeps it from reading as a fact",
+        );
+    }
+
+    /// A notice crosses with an id, so the live frame and the message it
+    /// became are one row to the reader.
+    #[test]
+    fn a_notice_crosses_with_its_id() {
+        let key = SessionSlot::from_str_for_test("notice-wire".to_owned());
+        let notice = SessionUpdate::Notice {
+            key,
+            id: "forge_notice_1".to_owned(),
+            severity: NoticeSeverity::Error,
+            text: "a command did not run".to_owned(),
+        };
+        let encoded = serde_json::to_value(&notice).expect("a notice encodes");
+        assert_eq!(encoded["notice"]["id"], serde_json::json!("forge_notice_1"));
+        assert_eq!(encoded["notice"]["severity"], serde_json::json!("error"));
     }
 }
 

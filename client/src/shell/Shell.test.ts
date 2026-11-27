@@ -6,7 +6,8 @@ import { get } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AddressInfo, RawData, WebSocket } from 'ws';
 
-import { DEFAULT_ADDRESS } from '../connect/attempt';
+import { DEFAULT_ADDRESS, displayAddress } from '../connect/attempt';
+import { RETURN_HIDE_MS } from '../connect/resync';
 import { rememberedAddress, rememberAddress, serverParameter } from '../connect/remembered';
 import { homeWire } from '../dev/fixture.data';
 import { goTo } from '../routes';
@@ -15,6 +16,7 @@ import { noteSeatClick } from '../perf';
 import { PROTOCOL_VERSION, subjectKey, type Subject } from '../protocol';
 import { closeSeat, closingSeat } from '../session/close';
 import { pendingShare } from '../share/pending';
+import { SILENCE_MS } from '../silence';
 import { MAX_RETRY_MS, RETRY_MS, type Connection } from '../socket';
 import { fontStack } from '../theme';
 import { watchUpdate } from '../update/state';
@@ -461,6 +463,9 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  // Before the forges close: one case moves the page's clock, and a close
+  // that ran on a frozen clock would hang on its own handshake.
+  vi.useRealTimers();
   for (const forge of forges.splice(0)) await forge.close();
   if (app !== null) await unmount(app);
   app = null;
@@ -1638,5 +1643,116 @@ describe('the switch gap marks (#2513)', () => {
     expect(mockSeatClick).toHaveBeenCalledTimes(1);
     expect(mockSeatClick).toHaveBeenCalledWith({ org, project, label });
     expect(markedAt, 'the mark is taken before the route moves').toBe('/');
+  });
+});
+
+/**
+ * **A link that is open but has stopped answering is drawn as quiet.** The
+ * measured case is the 8 November server wedge: the process stayed up and the
+ * page kept painting a two-hour-old board as live, with no status saying
+ * anything. The transports' own probes cover a healthy socket; this line is
+ * the page's backstop for one whose transport stopped reporting.
+ */
+describe('a link that is open but has gone quiet', () => {
+  /**
+   * Move the page's clock, not the machine's. The line is drawn on the
+   * shell's own one-second tick, and a real wait of the silence bound would
+   * be a test nobody runs. Only `Date` is faked: the tick, the socket and
+   * the waits below stay real.
+   */
+  function quietPast(): void {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + SILENCE_MS + 5_000);
+  }
+
+  /**
+   * Wait for the line to be drawn, or withdrawn.
+   *
+   * `until` reads `Date.now()` for its deadline, and the clock here is
+   * deliberately moved past it, so this poll keeps its deadline on the real
+   * monotonic clock instead.
+   */
+  async function ticked(what: string, shown: boolean): Promise<void> {
+    const deadline = performance.now() + WAIT_MS;
+    for (;;) {
+      flushSync();
+      if (drawn().includes(what) === shown) return;
+      if (performance.now() > deadline) {
+        throw new Error(`timed out waiting for ${shown ? '' : 'no '}${what}: ${drawn()}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  }
+
+  it('says the link has gone quiet, and stops saying it when a frame lands', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/', forge.address);
+    await until(() => forge.homeReads() >= 1, 'the launch to take');
+
+    quietPast();
+    await ticked('No word from', true);
+    expect(drawn(), 'a quiet link was drawn as live').toContain('showing the last read');
+
+    // **The age is drawn, and the announcement is not.** The live region
+    // announces what changes; a clock that moves under it every minute is
+    // noise, so the age is aria-hidden and the stable sentence is the
+    // spoken one.
+    const strip = document.querySelector('.stale');
+    expect(strip?.querySelector('[aria-hidden="true"]')?.textContent, 'the age is drawn').toContain(
+      'for 1m',
+    );
+    expect(strip?.querySelector('.sr')?.textContent, 'the spoken line is stable').toBe(
+      `No word from ${displayAddress(forge.address)} - showing the last read`,
+    );
+
+    // **A frame clears the line through the connection's own announcement,
+    // not the next tick.** The page's clock is frozen here, so a tick can
+    // never carry a new `now` - a page that polled `lastHeard()` on the
+    // ticker would keep its old answer for ever. The clear can only come
+    // from the stamp landing as state.
+    forge.home(homeWire);
+    await ticked('No word from', false);
+  });
+
+  /**
+   * **A return is not silence, and a blink is not a return.** A parked
+   * page's clock stops with it, and a line measured across a long hide would
+   * flash on wake before the shell's next word lands. Only a hide the return
+   * re-read also counts (`RETURN_HIDE_MS`) restarts the window: a brief
+   * alt-tab leaves the read current, and clearing the line for it would
+   * re-arm the bound on a line that is still true.
+   */
+  it('restarts the clock only after a hide long enough to count', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/', forge.address);
+    await until(() => forge.homeReads() >= 1, 'the launch to take');
+
+    quietPast();
+    await ticked('No word from', true);
+
+    const hidden = { value: true };
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden.value });
+    try {
+      // A blink: hidden and visible again inside the re-read's own window,
+      // which `resync.ts` ignores for the same signal.
+      document.dispatchEvent(new Event('visibilitychange'));
+      hidden.value = false;
+      document.dispatchEvent(new Event('visibilitychange'));
+      flushSync();
+      expect(drawn(), 'a brief hide dropped a line that still stood').toContain('No word from');
+
+      // A real return: the window restarts and the line stands down.
+      hidden.value = true;
+      document.dispatchEvent(new Event('visibilitychange'));
+      vi.setSystemTime(Date.now() + RETURN_HIDE_MS);
+      hidden.value = false;
+      document.dispatchEvent(new Event('visibilitychange'));
+      flushSync();
+      expect(drawn(), 'a return did not restart the clock').not.toContain('No word from');
+    } finally {
+      Reflect.deleteProperty(document, 'hidden');
+    }
   });
 });

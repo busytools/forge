@@ -6148,8 +6148,9 @@ impl Workspace {
         // from its typed update downstream), and a live cron fire or Slack
         // batch is retried by its caller under a fresh id, so a row here would
         // paint the failed attempt as well as the delivered one.
-        let fallback = matches!(source, PromptSource::Peer | PromptSource::Gotify)
-            .then(|| Message::display_only_user(text.clone(), uuid.clone()));
+        let fallback =
+            matches!(source, PromptSource::Peer | PromptSource::Gotify | PromptSource::Board)
+                .then(|| Message::display_only_user(text.clone(), uuid.clone()));
         // `route` rather than `dispatch`: the prompt has no frame of its own
         // to forge. Every source draws at the CLI's `started`; a row forged
         // here would draw it at dispatch instead.
@@ -6795,6 +6796,7 @@ impl Workspace {
     pub(crate) fn notice(&self, key: &SessionSlot, severity: NoticeSeverity, text: &str) {
         let _ = self.update_sender().send(SessionUpdate::Notice {
             key: key.clone(),
+            id: crate::protocol::new_notice_id(),
             severity,
             text: text.to_owned(),
         });
@@ -14291,7 +14293,7 @@ provider = "anthropic"
 
         let said = tokio::time::timeout(Duration::from_secs(5), async {
             while let Some(seat) = updates.recv().await {
-                if let SessionUpdate::Notice { key: seen, severity, text } = &*seat.update
+                if let SessionUpdate::Notice { key: seen, severity, text, .. } = &*seat.update
                     && *seen == slot
                 {
                     return (*severity, text.clone());
@@ -28587,7 +28589,7 @@ mod prompt_dispatch_tests {
         let notices: Vec<(SessionSlot, NoticeSeverity, String)> = updates
             .into_iter()
             .filter_map(|frame| match std::sync::Arc::unwrap_or_clone(frame.update) {
-                SessionUpdate::Notice { key, severity, text } => Some((key, severity, text)),
+                SessionUpdate::Notice { key, severity, text, .. } => Some((key, severity, text)),
                 _ => None,
             })
             .collect();
