@@ -1343,6 +1343,7 @@ impl SessionTask {
             | PromptSource::Gotify
             | PromptSource::Slack
             | PromptSource::Peer
+            | PromptSource::Board
             | PromptSource::Forge => text.to_owned(),
         };
         let images = forge_primitives::display_blocks(attachments);
@@ -13143,6 +13144,7 @@ provider = "anthropic"
             (crate::protocol::PromptSource::Cron, "cron-1", "a cron fire"),
             (crate::protocol::PromptSource::Gotify, "gotify-1", "a notification"),
             (crate::protocol::PromptSource::Slack, "slack-1", "a slack message"),
+            (crate::protocol::PromptSource::Board, "board-1", "a board chase"),
         ];
         for (source, uuid, text) in cases {
             task.execute_command(Command::PromptUnder {

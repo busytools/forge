@@ -23,6 +23,7 @@ import { FALLBACK_FLOOR_DB, fractionOf } from '../composer/meter';
 import { surfaceFrom } from '../composer/wire';
 import { noteDictateFrame, type TakePhase } from '../perf';
 import { slotOfPayload, SUBSCRIBE_TURNS, type SessionUpdate } from '../protocol';
+import { promptStateFrom } from '../wire/lifecycle';
 import { METER_CELLS } from '../wire/limits';
 import { terminalSummaryFrom } from '../wire/terminal';
 import {
@@ -48,9 +49,6 @@ import {
 
 /** `EffortLevel`, as the core's own enum serialises. */
 const EFFORTS: Effort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
-
-/** The lifecycle states this build reads as settled - the row leaves the pile. */
-const SETTLED_STATES = new Set(['started', 'completed', 'cancelled', 'discarded', 'refused']);
 
 /** `PermissionMode`, as its own serde writes it: camelCase, not snake. */
 const MODES: PermissionMode[] = [
@@ -89,7 +87,15 @@ export const HANDLERS: Record<string, Apply> = {
     return {
       ...held,
       queue: [],
-      queue_ended: last === undefined ? held.queue_ended : { text: last.text, state: 'discarded' },
+      queue_ended:
+        last === undefined
+          ? held.queue_ended
+          : {
+              text: last.text,
+              state: 'not_sent',
+              reason: 'the session ended before this prompt ran',
+              source: last.source,
+            },
     };
   },
 
@@ -261,26 +267,32 @@ export const HANDLERS: Record<string, Apply> = {
   },
 
   /**
-   * The CLI moved a prompt.
+   * The prompt moved: taken by the CLI, or refused.
    *
-   * The pile holds only prompts still waiting, so a settled state drops the
-   * row. **Only a state this build knows settles it**: a word the CLI adds
-   * later leaves the row standing, because dropping on a parse miss is the
-   * one failure a reader cannot see.
+   * The pile holds only prompts still waiting, so both a `sent` and a
+   * `not_sent` drop the row. **Only a state this build names settles it**: a
+   * shape added later leaves the row standing, because dropping on a parse
+   * miss is the one failure a reader cannot see.
+   *
+   * A refusal is the item's own ending, in the core's words - not a line
+   * beside the row and not a box line. Its source rides along so a refusal of
+   * the reader's own send, or of a cron's, can offer the retry that is safe.
    */
   prompt_lifecycle: (held, payload) => {
     const uuid = text(payload['uuid']);
-    const state = text(payload['state']);
-    if (uuid === null || state === null || !SETTLED_STATES.has(state)) return held;
+    const state = promptStateFrom(payload['state']);
+    if (uuid === null || state.kind === 'unknown' || state.kind === 'queued') return held;
     const leaving = held.queue.find((row) => row.uuid === uuid);
     if (leaving === undefined) return held;
     const queue = held.queue.filter((row) => row.uuid !== uuid);
-    // Two states leave with a word rather than silently: a session that ended
-    // with the prompt waiting, and a hook that refused it. Being taken and
-    // being cancelled are the row doing its job, and neither says anything.
     const ending =
-      state === 'discarded' || state === 'refused'
-        ? { text: leaving.text, state }
+      state.kind === 'not_sent'
+        ? {
+            text: leaving.text,
+            state: 'not_sent' as const,
+            reason: state.reason,
+            source: leaving.source,
+          }
         : held.queue_ended;
     return { ...held, queue, queue_ended: ending };
   },

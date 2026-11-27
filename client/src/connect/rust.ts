@@ -232,6 +232,17 @@ class RustConnection implements Connection {
   private generation: number | null = null;
   private transition = false;
   /**
+   * Sends whose shell invoke has not answered yet.
+   *
+   * **A dead link settles them; it never waits for the writer's own timeout.**
+   * The shell answers a write once the frame is on the wire, so an invoke
+   * still open when the status leaves `open` is a frame that had not crossed -
+   * and a promise left hanging there is a message saying `sending` for as long
+   * as the page is up. Each entry rejects with the one reason a reader needs;
+   * the row that owns it keeps the words and offers a retry.
+   */
+  private crossing = new Set<(why: string) => void>();
+  /**
    * The shell's socket task this page last saw, from `client_state`.
    *
    * **A retried task and a replaced one are different connections to a page.**
@@ -425,6 +436,12 @@ class RustConnection implements Connection {
     // generation it belongs to is recorded.
     if (next !== 'open') {
       this.transition = true;
+      // **A link that went down settles every send still crossing it.** The
+      // refusal is the same one a throw makes, so the row it belongs to keeps
+      // its words with the reason and a retry - never a `sending` card that
+      // outlives the connection it was waiting on.
+      for (const refuse of [...this.crossing]) refuse('the connection is down');
+      this.crossing.clear();
       // **The drop took the seat subscriptions with it.** The shell's retry
       // keeps only the string subjects (`socket.rs` retains them and lets
       // every seat go with the socket that carried it), and the page is what
@@ -760,10 +777,14 @@ class RustConnection implements Connection {
   }
 
   dispatch(command: Command, at?: SessionSlot): Promise<unknown> {
+    // **A prompt's refusal is its own row's.** The item carries the reason and
+    // the retry, so a notice line beside it would tell the same loss twice;
+    // every other command has no item, and the line is where its loss draws.
+    const item = variantOf(command) === 'prompt_under';
     // Before anything is registered, so a command that never went leaves no
     // promise behind for a later failure to reject.
     if (this.state !== 'open') {
-      if (at !== undefined) refused(at);
+      if (at !== undefined && !item) refused(at);
       throw new Error('the socket is not open');
     }
     const reply = ANSWERS_THROUGH_A_REPLY.has(variantOf(command));
@@ -772,15 +793,40 @@ class RustConnection implements Connection {
     // **The shell answers once its writer has put the frame on the socket**,
     // so this resolution is the crossing rather than the hand-off, and its
     // rejection is the socket having gone between this page's status and the
-    // write. A caller that ignores it still gets that loss reported; one
-    // that awaits it keeps what it was about to clear.
-    const crossed = answer.then(() => null);
+    // write.
+    //
+    // **A status that leaves `open` settles it too.** The invoke has no
+    // timeout of its own, and a half-dead link never answers one: without the
+    // status arm the promise waits for as long as the page is up, and the
+    // message behind it says `sending` for minutes (measured 2026-11-27:
+    // 15:25-15:46, no frames, no close). The rejection is the same loss the
+    // writer's failure reports, so one path draws it.
+    const crossed = new Promise<null>((resolve, reject) => {
+      let settled = false;
+      const refuse = (why: string): void => {
+        if (settled) return;
+        settled = true;
+        this.crossing.delete(refuse);
+        reject(new Error(why));
+      };
+      this.crossing.add(refuse);
+      answer.then(
+        () => {
+          if (settled) return;
+          settled = true;
+          this.crossing.delete(refuse);
+          resolve(null);
+        },
+        (why: unknown) => refuse(why instanceof Error ? why.message : String(why)),
+      );
+    });
     void crossed.catch((why: unknown) => {
       report('a command could not cross to the shell', why);
       // The same reader-facing line the synchronous refusal draws (#1638):
       // a command that did not leave is the loss the person pressed into,
-      // whichever half of the connection found out.
-      if (at !== undefined) refused(at);
+      // whichever half of the connection found out. A prompt's own row is
+      // that line, so it is not drawn twice.
+      if (at !== undefined && !item) refused(at);
     });
     return crossed;
   }

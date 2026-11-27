@@ -377,6 +377,12 @@ fn seat_update(record: &mut Value, name: &str, payload: &Value) -> bool {
                 "text": words,
             }));
             set_queue(record, queue);
+            // A new row is the next thing to look at, so the last ending goes
+            // with it rather than standing beside a queue that has moved on.
+            let state = record.entry("state".to_owned()).or_insert_with(|| json!({}));
+            if let Some(state) = state.as_object_mut() {
+                state.insert("queue_ended".to_owned(), Value::Null);
+            }
             true
         }
         "prompt_lifecycle" => {
@@ -392,16 +398,34 @@ fn seat_update(record: &mut Value, name: &str, payload: &Value) -> bool {
                 return false;
             }
             let queue = queue_of(record);
-            if !queue.iter().any(|row| row.get("uuid").and_then(Value::as_str) == Some(uuid)) {
+            let Some(leaving) =
+                queue.iter().find(|row| row.get("uuid").and_then(Value::as_str) == Some(uuid))
+            else {
                 return false;
-            }
+            };
+            // **A refusal leaves the words and its reason where the card was.**
+            // The page draws this line itself while it is attached, and the
+            // record is what a page catching up reads, so the same shape
+            // crosses both ways.
+            let ending = state.get("not_sent").map(|refusal| {
+                json!({
+                    "text": leaving.get("text").cloned().unwrap_or(Value::Null),
+                    "state": "not_sent",
+                    "reason": refusal.get("reason").cloned().unwrap_or(Value::Null),
+                    "source": leaving.get("source").cloned().unwrap_or(Value::Null),
+                })
+            });
             let remaining: Vec<Value> = queue
                 .into_iter()
                 .filter(|row| row.get("uuid").and_then(Value::as_str) != Some(uuid))
                 .collect();
-            // The ending two states leave with is the page's own line from
-            // this same frame; a read carries what waits, never what left.
             set_queue(record, remaining);
+            if let Some(ending) = ending {
+                let state = record.entry("state".to_owned()).or_insert_with(|| json!({}));
+                if let Some(state) = state.as_object_mut() {
+                    state.insert("queue_ended".to_owned(), ending);
+                }
+            }
             true
         }
         "prompt_cancel_resolved" => {

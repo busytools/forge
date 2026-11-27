@@ -46,16 +46,20 @@ export interface QueuedPromptRow {
 }
 
 /**
- * The last queued prompt that left by something other than being taken or
- * cancelled - a session that ended with it waiting, or a hook that refused it.
+ * The last queued prompt that left without being sent - a session that ended
+ * with it waiting, a hook that refused it, or the core's own refusal.
  *
  * Held on the record so the pile can say so where the card was: a row that
  * vanishes with no word is indistinguishable from one that was delivered, and
- * the two are not the same thing to a reader.
+ * the two are not the same thing to a reader. The reason is the core's own
+ * words, and `source` is who dispatched it, which is what decides whether a
+ * retry is the sender's to offer.
  */
 export interface QueueEnding {
   text: string;
-  state: string;
+  state: 'not_sent';
+  reason: string;
+  source: string;
 }
 
 /**
@@ -648,9 +652,10 @@ export function sessionFrom(data: unknown): SessionRecord {
       voice_listeners: number(state['voice_listeners']) ?? 0,
     },
     queue: queuedFrom(state['queue']),
-    // A read carries what is waiting, never what left: an ending is this
-    // view's own observation, so a seat read starts with none.
-    queue_ended: null,
+    // An ending is this view's own observation while it is attached; the
+    // shell's held copy is what a page catching up reads, so the same shape
+    // crosses that way and a read with none starts with none.
+    queue_ended: endingFrom(state['queue_ended']),
     header: {
       session_id: text(header['session_id']),
       seq: number(header['seq']) ?? 1,
@@ -711,6 +716,15 @@ export function sessionFrom(data: unknown): SessionRecord {
 function asksFrom(served: unknown, single: unknown): unknown[] {
   if (Array.isArray(served)) return served;
   return single === null || single === undefined ? [] : [single];
+}
+
+/** One refusal an ending line draws, or `null` when the value is not one. */
+function endingFrom(value: unknown): QueueEnding | null {
+  const held = record(value);
+  const words = text(held['text']);
+  const reason = text(held['reason']);
+  if (words === null || reason === null) return null;
+  return { text: words, state: 'not_sent', reason, source: text(held['source']) ?? 'forge' };
 }
 
 /** The pile as the seat read writes it; an entry missing its id or words is not a row. */

@@ -6148,8 +6148,9 @@ impl Workspace {
         // from its typed update downstream), and a live cron fire or Slack
         // batch is retried by its caller under a fresh id, so a row here would
         // paint the failed attempt as well as the delivered one.
-        let fallback = matches!(source, PromptSource::Peer | PromptSource::Gotify)
-            .then(|| Message::display_only_user(text.clone(), uuid.clone()));
+        let fallback =
+            matches!(source, PromptSource::Peer | PromptSource::Gotify | PromptSource::Board)
+                .then(|| Message::display_only_user(text.clone(), uuid.clone()));
         // `route` rather than `dispatch`: the prompt has no frame of its own
         // to forge. Every source draws at the CLI's `started`; a row forged
         // here would draw it at dispatch instead.

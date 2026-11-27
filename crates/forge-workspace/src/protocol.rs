@@ -1488,6 +1488,11 @@ pub enum PromptSource {
     Gotify,
     Slack,
     Peer,
+    /// The task board's own chase: a row that has gone ready, stale or
+    /// waiting, delivered to the seat the board keeps it on. **Its own kind**
+    /// because it draws at the CLI's start like any delivery, where forge's
+    /// own machinery keeps the row it forged at dispatch.
+    Board,
     /// forge's own machinery: a worker kick, an auto-continue, a replayed
     /// parked delivery whose kind is no longer known.
     Forge,

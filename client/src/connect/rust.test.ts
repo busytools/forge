@@ -1133,6 +1133,55 @@ describe("the connection's own facts", () => {
     await vi.waitFor(() => expect(moves).toEqual(['open']));
   });
 
+  /**
+   * **A send still crossing when the link dies fails in the close path.**
+   *
+   * The shell answers a write once the frame is on the wire, and a half-dead
+   * link never answers one at all - measured 2026-11-27: 21 minutes of no
+   * frames and no close, a message saying `sending` the whole time. The status
+   * moving off `open` is the one signal this side gets, so every invoke still
+   * open settles there with the refusal the reader needs - never a promise
+   * waiting on a socket that is gone, and never a timeout being the first
+   * word.
+   */
+  it('fails a send still crossing when the connection goes down', async () => {
+    const shell: State = { status: 'open', generation: 1, connection: 1, greeting: null };
+    const connection = await opened(shell);
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+
+    let answer: ((value: unknown) => void) | null = null;
+    invoke.mockImplementation((command: string) => {
+      if (command === 'client_state') return Promise.resolve(shell);
+      if (command === 'client_dispatch') {
+        return new Promise((resolve) => {
+          answer = resolve;
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+    const crossing = connection.dispatch(
+      {
+        prompt_under: {
+          key: slot,
+          text: 'the words',
+          attachments: [],
+          uuid: 'u-close',
+          source: 'you',
+          dispatch_id: 1,
+        },
+      },
+      slot,
+    );
+    await vi.waitFor(() => expect(answer).not.toBeNull());
+
+    shell.status = 'closed';
+    fire('client://connection', undefined);
+
+    await expect(crossing, 'the close settles the send, not a timeout').rejects.toThrow(
+      'the connection is down',
+    );
+  });
+
   it("the heartbeat runs on the page's own timer", async () => {
     vi.useFakeTimers();
     const connection = await opened();

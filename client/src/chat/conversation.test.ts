@@ -706,7 +706,7 @@ describe('the conversation the chat draws', () => {
     // The control: the same kind of frame arriving live, under the prompt id
     // this client minted and still holds as the echo, is the reader's own
     // send. (The id is what says so; `source: 'you'` alone is every client.)
-    echoes.post(subjectKey({ session: LEAD }), 'said now', false, 'live-send', echoes.mint());
+    echoes.post(subjectKey({ session: LEAD }), 'live-send', 'said now', false, echoes.mint());
     server.update({
       chat_appended: {
         key: LEAD,
@@ -1100,7 +1100,7 @@ describe('the conversation the chat draws', () => {
       ['p-later', 'later'],
     ] as const) {
       server.update({ prompt_queued: { key: LEAD, uuid, source: 'forge', text } });
-      server.update({ prompt_lifecycle: { key: LEAD, uuid, state: 'started' } });
+      server.update({ prompt_lifecycle: { key: LEAD, uuid, state: 'sent', source: 'cli' } });
       server.update({ chat_appended: { key: LEAD, msg: said(`${text} answer`) } });
       server.update({ chat_appended: { key: LEAD, msg: endedAs(`r-${text}`) } });
     }
@@ -6883,7 +6883,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
   afterEach(() => {
     // The pending send outlives the store, so a case that leaves one behind
     // would hand it to the next.
-    echoes.clear(subjectKey({ session: LEAD }));
+    echoes.clearSeat(subjectKey({ session: LEAD }));
   });
 
   it('holds the forged row while the pile is drawing it, and drains it at started', () => {
@@ -6904,13 +6904,13 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     expect(words(chat), 'queued keeps the wait').not.toContain('hold me');
 
     // `started` is the drain, and the wait is written on the row.
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'sent', source: 'cli' } });
     expect(words(chat), 'the drain draws the words').toContain('hold me');
     expect(words(chat), 'an instant wait is sent, said plainly').toContain('"forge_note":"sent"');
 
     // The lifecycle repeats (a second frame for the same id) and the row is
     // not drawn twice.
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'completed' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'sent', source: 'cli' } });
     expect(words(chat).split('hold me').length - 1, 'one row, once').toBe(1);
   });
 
@@ -6932,7 +6932,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     const id = 'forge_prompt_98_46bd5f17';
     server.update({ prompt_queued: { key: LEAD, uuid: id, source: 'forge', text: chase } });
     server.update({ prompt_lifecycle: { key: LEAD, uuid: id, state: 'queued' } });
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: id, state: 'started' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: id, state: 'sent', source: 'cli' } });
 
     expect(words(chat), 'the drain draws the words the announcement carried').toContain(chase);
     expect(words(chat).split(chase).length - 1, 'one row, once').toBe(1);
@@ -6962,7 +6962,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     const chase = 'task board: worker mic-default-name holds no row - feed it or despawn it.';
     const id = 'forge_prompt_98_46bd5f17';
     server.update({ prompt_queued: { key: LEAD, uuid: id, source: 'forge', text: chase } });
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: id, state: 'started' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: id, state: 'sent', source: 'cli' } });
     server.update({ chat_appended: { key: LEAD, msg: forgedUnder(chase, id) } });
 
     expect(words(chat).split(chase).length - 1, 'one row, once').toBe(1);
@@ -6989,7 +6989,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
       'raced words',
     );
 
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'sent', source: 'cli' } });
     expect(words(chat), 'and the drain draws it once, when it starts').toContain('raced words');
     expect(words(chat).split('raced words').length - 1, 'once').toBe(1);
   });
@@ -7014,7 +7014,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     );
     expect(words(chat), 'the card is the only drawing, page or not').not.toContain('page-carried');
 
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'sent', source: 'cli' } });
     expect(words(chat), 'the drain draws it').toContain('page-carried');
     expect(words(chat).split('page-carried').length - 1, 'once').toBe(1);
   });
@@ -7032,17 +7032,17 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     chat.start();
     server.send(page([turn('t1', 'first')], null));
 
-    echoes.post(seatKey, 'queue words', true, 'p9', echoes.mint());
+    echoes.post(seatKey, 'p9', 'queue words', true, echoes.mint());
     server.update({ prompt_queued: { key: LEAD, uuid: 'p-other', source: 'you', text: 'x' } });
-    expect(echoes.of(seatKey)?.id, "another prompt's queueing is not this send's to settle").toBe(
-      'p9',
-    );
+    expect(
+      echoes.of(seatKey).map((held) => held.uuid),
+      "another prompt's queueing is not this send's to settle",
+    ).toEqual(['p9']);
 
     server.update({ prompt_queued: { key: LEAD, uuid: 'p9', source: 'you', text: 'queue words' } });
-    expect(
-      echoes.of(seatKey),
-      'the card carries them now, so the mark goes with it',
-    ).toBeUndefined();
+    expect(echoes.of(seatKey), 'the card carries them now, so the mark goes with it').toHaveLength(
+      0,
+    );
   });
 
   it('settles the pending mark when its own prompt is cancelled, and only its own', () => {
@@ -7057,20 +7057,37 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     chat.start();
     server.send(page([turn('t1', 'first')], null));
 
-    echoes.post(seatKey, 'same words', true, 'e-other', echoes.mint());
+    echoes.post(seatKey, 'e-other', 'same words', true, echoes.mint());
     server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'same words' } });
     server.update({ chat_appended: { key: LEAD, msg: forgedUnder('same words', 'p1') } });
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'cancelled' } });
+    server.update({
+      prompt_lifecycle: {
+        key: LEAD,
+        uuid: 'p1',
+        state: { not_sent: { reason: 'the CLI cancelled it before it ran' } },
+        source: 'cli',
+      },
+    });
     expect(
-      echoes.of(seatKey)?.id,
+      echoes.of(seatKey).map((held) => held.uuid),
       "a second send of the same words is not this cancel's to settle",
-    ).toBe('e-other');
+    ).toEqual(['e-other']);
 
-    echoes.post(seatKey, 'other words', true, 'p2', echoes.mint());
+    echoes.post(seatKey, 'p2', 'other words', true, echoes.mint());
     server.update({ prompt_queued: { key: LEAD, uuid: 'p2', source: 'you', text: 'other words' } });
     server.update({ chat_appended: { key: LEAD, msg: forgedUnder('other words', 'p2') } });
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p2', state: 'cancelled' } });
-    expect(echoes.of(seatKey), "the prompt's own mark goes with it").toBeUndefined();
+    server.update({
+      prompt_lifecycle: {
+        key: LEAD,
+        uuid: 'p2',
+        state: { not_sent: { reason: 'the CLI cancelled it before it ran' } },
+        source: 'cli',
+      },
+    });
+    expect(
+      echoes.of(seatKey).map((held) => held.uuid),
+      "the prompt's own mark goes with it, and the other send is untouched",
+    ).toEqual(['e-other']);
   });
 
   it('holds a forged row a page joins frames to, which is the ordinary shape', () => {
@@ -7101,7 +7118,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     expect(words(chat), 'the card is the only drawing of the words').not.toContain('partial words');
     expect(words(chat), 'while the frames around them still draw').toContain('answer in between');
 
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'sent', source: 'cli' } });
     expect(words(chat).split('partial words').length - 1, 'the drain draws it once').toBe(1);
     expect(words(chat), 'with the wait on it').toContain('"forge_note":"sent"');
   });
@@ -7137,7 +7154,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
       'fresh words',
     );
 
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'sent', source: 'cli' } });
     expect(words(chat).split('fresh words').length - 1, 'the drain draws it once').toBe(1);
     expect(words(chat), 'with the wait on it').toContain('"forge_note":"sent"');
   });
@@ -7188,7 +7205,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
       'returned words',
     );
 
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'sent', source: 'cli' } });
     expect(words(chat).split('returned words').length - 1, 'the drain draws it once').toBe(1);
   });
 
@@ -7365,7 +7382,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     );
 
     // And the lifecycle still drains it when the CLI takes the prompt.
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'sent', source: 'cli' } });
     expect(words(chat), 'the drain draws it').toContain('stale racing words');
   });
 
@@ -7434,7 +7451,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     );
     expect(words(chat), 'while the frames around it stay').toContain('answer in between');
 
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'sent', source: 'cli' } });
     expect(words(chat).split('early words').length - 1, 'the drain draws it once').toBe(1);
     expect(words(chat), 'with the wait on it').toContain('"forge_note":"sent"');
   });
@@ -7450,7 +7467,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     chat.start();
     server.send(page([turn('t1', 'first')], null));
 
-    echoes.post(seatKey, 'orphan words', true, 'p1', echoes.mint());
+    echoes.post(seatKey, 'p1', 'orphan words', true, echoes.mint());
     server.update({
       prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'orphan words' },
     });
@@ -7461,8 +7478,15 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
       data: { header: { turn_in_flight: true }, state: { queue: [] } },
     });
 
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'cancelled' } });
-    expect(echoes.of(seatKey), 'the id is the whole test, held row or not').toBeUndefined();
+    server.update({
+      prompt_lifecycle: {
+        key: LEAD,
+        uuid: 'p1',
+        state: { not_sent: { reason: 'the CLI cancelled it before it ran' } },
+        source: 'cli',
+      },
+    });
+    expect(echoes.of(seatKey), 'the id is the whole test, held row or not').toHaveLength(0);
   });
 
   it('draws the frame the last pull named, which is what the hold keeps', () => {
@@ -7510,7 +7534,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
       },
     });
 
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'sent', source: 'cli' } });
     expect(words(chat), 'the last pull holds the frame that draws').toContain(
       '"forge_marker":"live"',
     );
@@ -7529,7 +7553,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     });
     server.update({ chat_appended: { key: LEAD, msg: forgedUnder('wait for it', 'p1') } });
     vi.advanceTimersByTime(4_000);
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'sent', source: 'cli' } });
 
     expect(words(chat), 'four seconds of waiting, and the drain').toContain(
       'queued 0:04 \u{b7} sent',
@@ -7575,7 +7599,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     });
     expect(words(chat), 'the snapshot arms the hold').not.toContain('completed words');
 
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'completed' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'sent', source: 'cli' } });
     expect(words(chat), 'completed drains the hold').toContain('completed words');
     expect(words(chat).split('completed words').length - 1, 'one row, once').toBe(1);
   });
@@ -7594,7 +7618,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
 
     // A later lifecycle for the dead occupant's id draws nothing: the wait
     // went with the process that held it.
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'sent', source: 'cli' } });
     expect(words(chat), 'no start is owed to a dead occupant').not.toContain('doomed');
   });
 
@@ -7631,7 +7655,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
 
     // The drain fills the row in place: the same key, the hold over, the words
     // back.
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'sent', source: 'cli' } });
     const drained = get(chat.value).turns;
     expect(drained[drained.length - 1]?.key, 'the drain lands in the same row').toBe(key);
     expect(drained[drained.length - 1]?.held, 'and the hold is over').toBe(false);
@@ -7667,7 +7691,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     expect(held.at(-1)?.key, 'the retraction keeps the row under its key').toBe(built?.key);
     expect(held.at(-1)?.held, 'and marks it held').toBe(true);
 
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'sent', source: 'cli' } });
     const drained = get(chat.value).turns;
     expect(
       drained.filter((row) => fold(row.messages).length === 0),
@@ -7696,7 +7720,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
       page([turn('t1', 'kept'), { key: null, messages: [forgedUnder('the words', 'p1')] }], null),
     );
     server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'the words' } });
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'sent', source: 'cli' } });
     const sent = get(chat.value).turns.at(-1)?.key;
     expect(
       JSON.stringify(get(chat.value).turns.at(-1)?.messages),
@@ -7737,7 +7761,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
       'the held row stays at the foot',
     ).toEqual(['t1', String(built)]);
 
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'sent', source: 'cli' } });
     const drained = get(chat.value).turns;
     expect(
       drained.filter((row) => fold(row.messages).length === 0),
@@ -7771,7 +7795,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     );
     expect(joined.at(-1)?.held, 'and the row is held no longer').toBe(false);
 
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'sent', source: 'cli' } });
     const drained = get(chat.value).turns;
     expect(JSON.stringify(drained), 'the frame survives the drain').toContain('answer in between');
     expect(drained, 'and the words open a row of their own below it').toHaveLength(3);
@@ -7797,7 +7821,14 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'the words' } });
     server.update({ chat_appended: { key: LEAD, msg: said('answer in between') } });
 
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'cancelled' } });
+    server.update({
+      prompt_lifecycle: {
+        key: LEAD,
+        uuid: 'p1',
+        state: { not_sent: { reason: 'the CLI cancelled it before it ran' } },
+        source: 'cli',
+      },
+    });
 
     const turns = get(chat.value).turns;
     expect(JSON.stringify(turns), 'the frame the cancel did not own survives').toContain(
@@ -7872,7 +7903,14 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
     server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'the words' } });
     expect(get(chat.value).turns.at(-1)?.held, 'precondition: the row is held').toBe(true);
 
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'cancelled' } });
+    server.update({
+      prompt_lifecycle: {
+        key: LEAD,
+        uuid: 'p1',
+        state: { not_sent: { reason: 'the CLI cancelled it before it ran' } },
+        source: 'cli',
+      },
+    });
 
     const turns = get(chat.value).turns;
     expect(
@@ -7901,7 +7939,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
 
     // The press this client makes: the queue announcement carries the id it
     // minted, which is what tells this send from one made on another client.
-    echoes.post(subjectKey({ session: LEAD }), 'the words', true, 'p1', echoes.mint());
+    echoes.post(subjectKey({ session: LEAD }), 'p1', 'the words', true, echoes.mint());
     server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'the words' } });
 
     expect(get(chat.value).following, 'the queued send put the foot back under the reader').toBe(
@@ -7984,7 +8022,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
       prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'mid-turn words' },
     });
     server.update({ chat_appended: { key: LEAD, msg: forgedUnder('mid-turn words', 'p1') } });
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'sent', source: 'cli' } });
     expect(words(chat), 'precondition: the drain drew it').toContain('mid-turn words');
 
     // The page's own copy of a mid-turn prompt is its attachment row, whose top
@@ -8035,7 +8073,7 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
 
     server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'held words' } });
     chat.leaving();
-    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } });
+    server.update({ prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'sent', source: 'cli' } });
     chat.showing();
     server.send(
       page([turn('t1', 'first'), { key: 't2', messages: [forgedUnder('held words', 'p1')] }], null),

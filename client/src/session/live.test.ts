@@ -4216,7 +4216,9 @@ describe('the read, and the answer a frame has outrun', () => {
     paint();
     expect(page.read().wire?.queue_ended, 'precondition: the death wrote the ending').toEqual({
       text: 'doomed words',
-      state: 'discarded',
+      state: 'not_sent',
+      reason: 'the session ended before this prompt ran',
+      source: 'you',
     });
 
     // The seat resumes: the answer carries what is waiting, which is nothing,
@@ -4228,7 +4230,12 @@ describe('the read, and the answer a frame has outrun', () => {
     expect(
       page.read().wire?.queue_ended,
       'the ending vanished from the record, and its words draw nowhere',
-    ).toEqual({ text: 'doomed words', state: 'discarded' });
+    ).toEqual({
+      text: 'doomed words',
+      state: 'not_sent',
+      reason: 'the session ended before this prompt ran',
+      source: 'you',
+    });
     page.stop();
   });
 

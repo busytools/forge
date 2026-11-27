@@ -354,7 +354,7 @@ describe('what one update asks of the fleet', () => {
       // The turn's start (#1887). `queued` is the same news as `started`: the
       // roster goes Running the moment the prompt is routed, so the read the
       // first of the two asks for is answered with the turn already on.
-      { prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'started' } },
+      { prompt_lifecycle: { key: LEAD, uuid: 'p1', state: 'sent', source: 'cli' } },
     ];
     for (const update of redraws) {
       expect(fleetNews(update as SessionUpdate), JSON.stringify(update)).toEqual({

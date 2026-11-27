@@ -10,7 +10,7 @@
   import { clearControlRefusal, closeTerminal, handOff } from '../terminal/surface.svelte';
   import Icon from '../components/Icon.svelte';
   import { slotOf, subjectKey } from '../protocol';
-  import { NOT_SENT } from '../refusals';
+  import { CONNECTION_DOWN } from '../refusals';
   import { variantOf } from '../session/apply';
   import { report } from '../socket';
   import { mintPromptId } from '../wire/ids';
@@ -1116,7 +1116,7 @@
   // a send the turn it names actually started.
   $effect(() => {
     if (!owns) return;
-    if (record.header.turn_in_flight) echoes.take(boxKey(slot));
+    if (record.header.turn_in_flight) echoes.takeAll(boxKey(slot));
   });
 
   /**
@@ -1225,7 +1225,7 @@
       // refusal that put the text back in the box landed it over whatever the
       // reader had typed since. The seat to name is the one waiting, which is
       // the only thing the error's own shape can be read against.
-      for (const key of echoes.outstanding()) echoes.refuse(key, message.why);
+      for (const key of echoes.outstanding()) echoes.refuseAll(key, message.why);
     });
   });
 
@@ -1284,8 +1284,8 @@
     // its row and its frames are one thing by id, never by order or text.
     const uuid = mintPromptId();
     // **Every surface that sends is this client's hand.** The id is remembered
-    // beside the echo: a parked reader's own send carries the column to the
-    // foot, and a send from the phone must only count in the badge.
+    // beside the pending row: a parked reader's own send carries the column to
+    // the foot, and a send from the phone must only count in the badge.
     echoes.remember(atKey, uuid);
     // **The press's own number, which a refusal echoes back** (#1583): it is
     // what tells this send from another seat's when the reason arrives.
@@ -1293,14 +1293,24 @@
     at.crossing = dispatch;
     // A new press retires the line the last failed one left.
     at.sendLine = null;
+    // **The message lives in the queue from the press.** Its one home until
+    // the core answers is the pile's card, drawn as `sending`; a refusal keeps
+    // it there with the reason and a retry. The chat draws it only when the
+    // core's own start row arrives.
+    //
+    // **A core-answered command draws no row** (#2816): a forge command or a
+    // slash name this seat cannot run never reaches a model, so nothing would
+    // settle a card for it. The core's own answer is the feedback.
+    if (!answered) {
+      echoes.post(atKey, uuid, text, runningAt(connection, atSlot, wasRunning), dispatch);
+      // The box empties on the press: the words are the queue's now, so a send
+      // that fails is still there to retry rather than lost with the box.
+      if (at.draft.trim() === text) at.draft = '';
+    }
     let crossing: Promise<unknown>;
     try {
       // A prompt is fire-and-forget: its outcome rides the subscription rather
-      // than a reply. **The words leave the box only once the frame has
-      // crossed** (#3072): a socket that is not open throws here, and a
-      // transport whose write is refused rejects below - and either way the
-      // send never happened, so the box keeps the words and says why rather
-      // than clearing as though they went.
+      // than a reply.
       crossing = connection.dispatch(
         {
           prompt_under: {
@@ -1315,10 +1325,10 @@
         atSlot,
       );
     } catch {
-      // A closed socket throws rather than answering: the words stay and the
-      // press's own box says why.
+      // A closed socket throws rather than answering: the pending row says so,
+      // with the retry the reader came back for.
       at.crossing = null;
-      at.sendLine = { tone: 'bad', text: NOT_SENT };
+      echoes.refuse(atKey, uuid, CONNECTION_DOWN);
       return;
     }
     void crossing.then(
@@ -1327,37 +1337,28 @@
         // would be a send the reader has already asked again.
         if (at.crossing !== dispatch) return;
         at.crossing = null;
+        // The transport took the frame; the core's word is what the row waits
+        // for next, and the 30 s bound is measured from here.
+        echoes.accept(atKey, uuid, Date.now());
         // **And it never starts a turn either**, so the blocked "Running
         // <command>" line has nothing to wait for: no record update follows to
         // clear it, and the field would stay away with it. The id is kept so a
         // refusal of this press lands on this seat's box and no other.
         at.answeredDispatch = answered ? dispatch : null;
         if (first.startsWith('/') && !answered) at.sent = first;
-        if (!answered) {
-          // What the seat was doing when the words left: a send that starts a
-          // turn is taken by it, one sent into a turn already running is not
-          // (it is settled by the conversation carrying the words, or by a
-          // refusal).
-          //
-          // **Read from the connection's store rather than from the record this
-          // box draws.** The record is written once per painted frame, so a
-          // turn-start frame can be applied and not yet drawn - and a send
-          // posted as not-running is taken by the very publish that carries the
-          // turn, where a refusal can no longer reach it.
-          echoes.post(atKey, text, runningAt(connection, atSlot, wasRunning), uuid, dispatch);
-        }
         // What the reader typed while the frame crossed is not this send's to
         // take: the box empties only while it still holds exactly the words
-        // that left it.
-        if (at.draft.trim() === text) at.draft = '';
+        // that left it. A core-answered command keeps them until here, because
+        // it draws no card to carry them.
+        if (answered && at.draft.trim() === text) at.draft = '';
       },
       () => {
         // A failure that is not the newest press has nothing left to say.
         if (at.crossing !== dispatch) return;
-        // The frame did not cross, so this send did not happen: the words stay
-        // where they were typed and the press's own box says why.
+        // The frame did not cross, so this send did not happen: its row says
+        // so, with the words kept where the retry can find them.
         at.crossing = null;
-        at.sendLine = { tone: 'bad', text: NOT_SENT };
+        echoes.refuse(atKey, uuid, CONNECTION_DOWN);
       },
     );
   }
