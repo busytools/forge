@@ -2879,6 +2879,16 @@ docs: The sprite a row draws, by the class it belongs to.</div>
         </div>
 
         <div class="leaves">
+          <!-- A silent stop's batches collect into the turn's one chip, drawn
+               where the turn's first silent stop fired: the rows the turn
+               gained after that stop draw below it (#3092). One chip per
+               turn, however many stops ran, opening onto every batch. -->
+          <details class="leaf hookfoot">
+            <summary><svg class="ic gl ok"><use href="#i-hook"/></svg>
+              <span class="tn">hooks &#183; 6 batches</span>
+              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
+          </details>
+
           <!-- A permission refusal draws on the call row it refused, which
                no result will ever settle: the wire's own subtype is the row's
                chip and the CLI's reason is the row's body, so one refusal is
@@ -2935,18 +2945,12 @@ Contains simple_expansion</div>
                batch that carries something - output, an error, additional
                context - keeps a row of the tool list at the point it fired,
                drawn as every call row is. A silent batch, which is most of
-               them, collects into the turn's foot chip, counting the batches
-               and opening onto every one. Both closed here, which is what a
-               reader meets. -->
+               them, collects into the turn's one chip, drawn where the turn's
+               first silent stop fired and counting every batch behind it. A
+               carrying batch closed here, which is what a reader meets. -->
           <details class="leaf hookgroup hookbatch">
             <summary><svg class="ic gl err"><use href="#i-hook"/></svg>
               <span class="tn">hook summary &#183; 1 action &#183; 1 error</span>
-              <svg class="ic arw"><use href="#i-chev"/></svg></summary>
-          </details>
-
-          <details class="leaf hookfoot">
-            <summary><svg class="ic gl ok"><use href="#i-hook"/></svg>
-              <span class="tn">hooks &#183; 6 batches</span>
               <svg class="ic arw"><use href="#i-chev"/></svg></summary>
           </details>
         </div>
@@ -3396,7 +3400,8 @@ branch main, nothing to commit</div>
           <!-- **Inside a sub-agent's expansion every batch is a row**, silent
                ones included: the reader opened the instance to see its work,
                and its hooks are part of it. Only the session's own silent
-               batches fold into the turn foot's chip. -->
+               batches collect into the turn's one chip, drawn where the
+               turn's first silent stop fired. -->
           <div class="leaves">
             <details class="leaf hookgroup hookbatch">
               <summary><svg class="ic gl ok"><use href="#i-hook"/></svg>

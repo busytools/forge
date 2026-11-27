@@ -2193,21 +2193,20 @@ describe('one turn folded into the units a view draws', () => {
     });
   });
 
-  it('collapses a silent batch into the turn foot, counting it', () => {
+  it('draws a silent batch where its frame fired, counting it', () => {
     // Issue #3054: every stop drew the same three silent Stop hooks, so one
-    // row per batch filled the main view. The batch still draws - behind the
-    // turn foot's chip, which counts it and holds it whole (rule 25) - and it
-    // stops costing a work row.
+    // row per batch filled the main view. The batch still draws - as the
+    // turn's chip, which counts it and holds it whole (rule 25) - and it stops
+    // costing a work row. **Issue #3092: the chip keeps the stop's own place**
+    // rather than landing at the fold's end, so the call that arrived after
+    // the stop draws below it.
     const units = fold([call('read', 0), stopHook(3), call('read', 1)]);
-    expect(kinds(units), 'the hooks ride the turn work rather than a unit of their own').toEqual([
-      'leaves',
-    ]);
-    const rows = rowsOf(units[0]);
+    const rows = units.flatMap(rowsOf);
     expect(
       rows.map((row) => row.tag),
-      'no work row for the silent batch; the chip is the turn foot',
-    ).toEqual(['call', 'call', 'hookfoot']);
-    const foot = rows[2];
+      'no work row for the silent batch; the chip sits where the stop fired',
+    ).toEqual(['call', 'hookfoot', 'call']);
+    const foot = rows[1];
     expect(foot?.tag === 'hookfoot' ? foot.actions : null, 'the chip counts every hook').toBe(3);
     expect(
       foot?.tag === 'hookfoot' ? foot.batches.map((batch) => batch.infos.length) : null,
@@ -2258,14 +2257,14 @@ describe('one turn folded into the units a view draws', () => {
     }
   });
 
-  it('carries only the silent batches into the foot when both kinds ran', () => {
-    const rows = rowsOf(
-      fold([stopHook(1, 'uuid_7'), stopHook(2, 'uuid_8', { hasOutput: true })])[0],
+  it('carries only the silent batches into the chip when both kinds ran', () => {
+    const rows = fold([stopHook(1, 'uuid_7'), stopHook(2, 'uuid_8', { hasOutput: true })]).flatMap(
+      rowsOf,
     );
-    expect(rows.map((row) => row.tag)).toEqual(['hookbatch', 'hookfoot']);
+    expect(rows.map((row) => row.tag)).toEqual(['hookfoot', 'hookbatch']);
     expect(
-      rows[1]?.tag === 'hookfoot' ? rows[1].batches.map((batch) => batch.key) : null,
-      'the carrying batch is its own row and stays out of the chip',
+      rows[0]?.tag === 'hookfoot' ? rows[0].batches.map((batch) => batch.key) : null,
+      'the carrying batch is its own row, stays out of the chip, and draws after the chip it fired behind',
     ).toEqual(['uuid_7#hookbatch']);
   });
 

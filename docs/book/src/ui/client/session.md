@@ -147,10 +147,12 @@ read as one system.
   label, and the row opens onto each hook's command and duration with every
   error and every line of context under them. **A batch that carries nothing
   is the everyday case** - a set of plugin hooks that run on every stop -
-  so those collect into one `hooks` chip at the turn's foot, counting the
-  batches and opening onto every batch's commands and durations. One chip
-  per turn, however many stops it ran, and no batch is hidden: the chip is
-  where each one is drawn. **A sub-agent's batches draw inside its own
+  so those collect into one `hooks` chip, counting the batches and opening
+  onto every batch's commands and durations. One chip per turn, however many
+  stops it ran, and no batch is hidden: the chip is where each one is drawn.
+  **The chip keeps the place the turn's first silent stop fired**, so every
+  row the turn gains after that stop draws below it, never above it.
+  **A sub-agent's batches draw inside its own
   expansion**, among the steps it took, with the same disclosure - the
   session's conversation never carries another agent's hooks. And **a
   sub-agent's ending is its dispatch row's own finish**: the row's mark and
