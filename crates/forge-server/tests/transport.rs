@@ -8428,6 +8428,156 @@ async fn a_subscribe_behind_a_review_read_is_answered_while_it_waits() {
     forge_workspace::work::set_pinned_gate_wait(0);
 }
 
+/// **An update that lands during an off-loop read crosses after the answer,
+/// never before it.** The review read is answered from a record encoded before
+/// the update; a patch fired on the old base would be reverted by that stale
+/// answer, and the reverted field would stay reverted - which is how a review
+/// canvas showed pre-park rounds after a notice. The seat is held at its gate
+/// for longer than a patch coalesce, so a patch fired on the old base shows up
+/// during the wait; the fixed ordering is silent until the answer has seeded
+/// the base, and the client's final record carries the review the write moved.
+#[tokio::test]
+async fn an_update_during_a_review_read_crosses_after_its_answer() {
+    use forge_primitives::review::{
+        ReviewAnchor, ReviewAuthor, ReviewComment, ReviewSide, ReviewStatus, ReviewThread,
+    };
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let upstream = tempfile::tempdir().expect("upstream");
+    let fleet = Fleet::in_dir_with_server_and_env(root.path(), &[("TestOrg", &["proj"])], "", &[])
+        .expect("the fleet builds");
+    fleet.start("TestOrg", "proj").expect("the project starts");
+    let repo = root.path().join("proj");
+    std::fs::create_dir_all(&repo).expect("the project directory");
+    a_repo_with_a_stale_base(&repo, upstream.path());
+
+    let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let updates = state.surface.subscribe_mirror();
+    let served = Arc::clone(&state);
+    tokio::spawn(async move {
+        let _ = forge_server::transport::serve(served, listener, updates).await;
+    });
+    let url = format!("ws://{addr}/socket");
+
+    // The first read seeds the base the review read's patches are diffed
+    // against, and names the branch the review rows live under.
+    let mut conn = connect(&url).await;
+    send(
+        &mut conn,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: false,
+        },
+    )
+    .await;
+    let (_, plain, _) = snapshot_answering(&mut conn).await;
+    let branch = plain["work"]["branch"]
+        .as_str()
+        .expect("the record names its branch")
+        .to_owned();
+
+    forge_workspace::work::set_pinned_gate_wait(10_000);
+    let gate = fleet.workspace().hold_work_gate(&lead_seat()).expect("the seat is held");
+    let in_flight = gate.lock().await;
+
+    send(
+        &mut conn,
+        ClientMessage::Subscribe {
+            what: Subject::Session(lead_seat()),
+            answering: true,
+            review: true,
+        },
+    )
+    .await;
+
+    // While the read is in flight, the review state moves and its notice is
+    // announced - exactly what a worker's answer does.
+    let thread = ReviewThread {
+        id: "t-during".to_owned(),
+        anchor: ReviewAnchor {
+            path: "feat.txt".to_owned(),
+            side: ReviewSide::New,
+            line: 1,
+            content_hash: 1,
+            context: vec!["feat".to_owned()],
+            base_ref: "main".to_owned(),
+        },
+        comments: vec![ReviewComment {
+            author: ReviewAuthor::Agent { label: "lead".to_owned() },
+            text: "answered".to_owned(),
+            at: "2026-11-28T00:00:00Z".to_owned(),
+            review_id: None,
+        }],
+        status: ReviewStatus::Addressed,
+        created_at: "2026-11-28T00:00:00Z".to_owned(),
+        updated_at: "2026-11-28T00:00:00Z".to_owned(),
+        commit: None,
+    };
+    assert!(
+        fleet.workspace().upsert_review_thread("proj", &branch, thread),
+        "the review write landed",
+    );
+    fleet.emit(SessionUpdate::ReviewActivityNotice {
+        key: lead_seat(),
+        branch: branch.clone(),
+        waiting: 1,
+        message: "a worker answered".to_owned(),
+    });
+
+    // **Nothing is patched while the read is in flight.** Two coalesces pass
+    // with the read still held; an unfixed ordering sends its patch here,
+    // against the base the answer is about to replace.
+    while let Some(frame) = next_server_within(&mut conn, 700).await {
+        assert!(
+            !matches!(
+                frame,
+                ServerMessage::Patch { subject: Subject::Session(_), .. }
+            ),
+            "a patch overtook the read's own answer: {frame:?}",
+        );
+    }
+
+    drop(in_flight);
+    forge_workspace::work::set_pinned_gate_wait(0);
+
+    // The answer itself cannot carry an update that landed after its encode,
+    // so it either carries the review or a patch behind it does; what must
+    // never happen is the final record losing it.
+    let mut record: Option<serde_json::Value> = None;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline && record.is_none() {
+        match next_server_within(&mut conn, 5_000).await {
+            Some(ServerMessage::Snapshot { subject, data, .. })
+                if subject == Subject::Session(lead_seat()) =>
+            {
+                record = Some(data);
+            }
+            Some(_) => {}
+            None => break,
+        }
+    }
+    let mut record = record.expect("the review read's answer arrived");
+    while let Some(frame) = next_server_within(&mut conn, 400).await {
+        if let ServerMessage::Patch { subject: Subject::Session(_), data, .. } = frame
+            && let (Some(held), Some(patch)) = (record.as_object_mut(), data.as_object())
+        {
+            for (key, value) in patch {
+                held.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    let threads = record["reviews"]["threads"]["value"]
+        .as_array()
+        .expect("the record carries its review threads");
+    assert!(
+        threads.iter().any(|held| held["id"] == "t-during"),
+        "the client's final record lost the review the notice announced: {record}",
+    );
+}
+
 /// **A release during an off-loop read ends the read, answers its ask and
 /// leaves nothing behind.** The seat's hold goes back, the asks queued behind
 /// the read are served, and the client's oldest-first bookkeeping is answered

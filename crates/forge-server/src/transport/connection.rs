@@ -83,16 +83,16 @@ struct Watching {
     /// A burst of updates marks the same subject many times and is re-read
     /// once, at the deadline.
     dirty: HashSet<Subject>,
-    /// Subjects marked while no base existed yet.
+    /// Subjects with a read in flight off the loop.
     ///
-    /// **A mark with no base is kept, not dropped.** The subscribe's own
+    /// **A patch must never overtake the read of the same subject.** The
     /// off-loop read encodes the record before its answer seeds the base, so
-    /// an update landing inside that window has nothing to diff against. The
-    /// mark waits here, `write_snapshot` re-marks the subject when it seeds,
-    /// and the patch crosses one coalesce later. A subject nobody marked is
-    /// not re-read, so an ordinary subscribe pays nothing for a race it did
-    /// not have.
-    unseeded: HashSet<Subject>,
+    /// a patch fired while it runs is diffed against the OLD base and then
+    /// the stale answer reverts it - the reverted field stays reverted. These
+    /// subjects are marked dirty like any other and `emit_patches` defers
+    /// them: the mark survives the seed, and the diff against the seeded base
+    /// is what crosses. `finish_read` clears the entry whatever the outcome.
+    reading: HashSet<Subject>,
     /// When the dirty set is re-read. Set by the first mark of a burst, so a
     /// stream that never goes quiet still patches at a bounded rate.
     patches_due: Option<Instant>,
@@ -118,39 +118,32 @@ const PATCH_COALESCE: Duration = Duration::from_millis(150);
 impl Watching {
     /// Note that this subject's record may have moved.
     ///
-    /// **A subject with a base is marked; one without keeps its mark until a
-    /// base exists.** A patch is a diff against a base, and the subscribe's
-    /// own off-loop read encodes the record before the answer seeds it - so
-    /// an update landing inside that window has nothing to diff against yet.
-    /// It is remembered, and `write_snapshot` re-marks the subject when it
-    /// seeds, which is what carries the update to a patch the client can
-    /// apply.
+    /// **A subject with a base is marked, and a subject with a read in flight
+    /// is marked too** - `emit_patches` holds its patch until the read's
+    /// answer has seeded the base. A subject with neither is dropped: there
+    /// is no base to diff against and no answer coming that would make one.
     fn mark_dirty(&mut self, subject: Subject, at: Instant) {
-        if !self.streams.contains_key(&subject) {
-            self.unseeded.insert(subject);
+        if !self.reading.contains(&subject) && !self.streams.contains_key(&subject) {
             return;
         }
         self.dirty.insert(subject);
         self.patches_due.get_or_insert(at + PATCH_COALESCE);
     }
 
-    /// Seed the base a whole read hands the client, and carry any mark that
-    /// raced that read.
+    /// Seed the base a whole read hands the client.
     ///
     /// **The answer and its number are seeded together**, so a patch diffs
     /// from exactly what the client was handed; a re-subscribe of the same
-    /// subject crosses as the next number. A mark that landed while the read
-    /// was being encoded has no base to diff against and waits in
-    /// [`Self::unseeded`]; it is re-marked here, where there is one.
-    fn seed(&mut self, subject: &Subject, data: &serde_json::Value, at: Instant) -> StreamVersion {
+    /// subject crosses as the next number. A mark taken while the read was in
+    /// flight stays in [`Self::dirty`] and crosses as a patch against this
+    /// seed - the read's own answer cannot carry it, because it was encoded
+    /// before the update landed.
+    fn seed(&mut self, subject: &Subject, data: &serde_json::Value) -> StreamVersion {
         let version = StreamVersion(
             self.streams.get(subject).map_or(1, |held| held.version.0.saturating_add(1)),
         );
         let projection = patch_projection(subject, data);
         self.streams.insert(subject.clone(), StreamRecord { version, projection });
-        if self.unseeded.remove(subject) {
-            self.mark_dirty(subject.clone(), at);
-        }
         version
     }
 }
@@ -2253,7 +2246,7 @@ where
     // answer's version with the record it replaces. The base is the
     // projection a patch can carry, and a mark that raced this read is
     // re-marked here now that there is one to diff against.
-    let version = watching.seed(&subject, &data, Instant::now());
+    let version = watching.seed(&subject, &data);
     // **The label is taken before the subject moves into the frame**: the log
     // line names the subject, and the frame consumes it.
     let subject_name = subject_label(&subject);
@@ -2397,6 +2390,10 @@ where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
 {
     let Some(read) = reads.take() else { return Ok(()) };
+    // **The read is over whatever the outcome**, so the deferral ends with it:
+    // an answer seeds the base (and any mark crosses next), and a refusal has
+    // nothing left to wait for.
+    watching.reading.remove(&done.subject);
     match done.outcome {
         Ok((data, timings)) => {
             write_snapshot(
@@ -2887,6 +2884,11 @@ where
                     Subject::Session(slot) => Some(slot.clone()),
                     _ => None,
                 };
+                // **The subject is in flight from here**, so any update that
+                // lands before its answer is deferred behind the answer
+                // (`mark_patches` walks this set) rather than patched against
+                // the base the answer is about to replace.
+                watching.reading.insert(what.clone());
                 let state = Arc::clone(state);
                 let encode_subject = what.clone();
                 let task = spawn_read(
@@ -3851,7 +3853,7 @@ where
                 // subscription this connection released.
                 if !watching.subjects.iter().any(|held| held == &what) {
                     watching.streams.remove(&what);
-                    watching.unseeded.remove(&what);
+                    watching.reading.remove(&what);
                     if watching.dirty.remove(&what) && watching.dirty.is_empty() {
                         watching.patches_due = None;
                     }
@@ -3873,6 +3875,7 @@ where
             // answered so the client is not left waiting on it.
             if reads.one.as_ref().is_some_and(|read| read.subject == what) {
                 let _ = reads.one.take();
+                watching.reading.remove(&what);
                 if let Subject::Session(slot) = &what {
                     holds.give_back(slot);
                 }
@@ -4195,7 +4198,18 @@ fn forward_queued(
 /// cut deletes. Dictation has no record to patch - its take frames are its
 /// deltas - so it is never dirty.
 fn mark_patches(watching: &mut Watching, update: &SessionUpdate, at: Instant) {
-    for subject in watching.subjects.clone() {
+    // **A read in flight counts as watched here.** The first subscribe of a
+    // subject pushes it onto `subjects` only when its answer is written, so a
+    // subject being read for the first time is invisible to a mark that only
+    // walked that list - which is the window an update landing during the
+    // read has to be caught in.
+    let mut watching_now: Vec<Subject> = watching.subjects.clone();
+    for held in &watching.reading {
+        if !watching_now.contains(held) {
+            watching_now.push(held.clone());
+        }
+    }
+    for subject in watching_now {
         let dirty = match &subject {
             Subject::Dictate => false,
             Subject::Session(_) => {
@@ -4228,7 +4242,16 @@ where
 {
     watching.patches_due = None;
     let dirty: Vec<Subject> = watching.dirty.drain().collect();
+    let mut deferred = false;
     for subject in dirty {
+        // **A subject with a read in flight waits for its base.** Sending now
+        // would diff against the OLD base and the read's stale answer would
+        // revert it; the mark is kept and crosses once the seed has landed.
+        if watching.reading.contains(&subject) {
+            watching.dirty.insert(subject);
+            deferred = true;
+            continue;
+        }
         let Some(held) = watching.streams.remove(&subject) else { continue };
         let new = match encode_subject(state, &subject).await {
             Ok(new) => new,
@@ -4262,6 +4285,11 @@ where
             socket,
             ServerMessage::Patch { subject, version: (!seat).then_some(version), data: patch },
         )?;
+    }
+    if deferred {
+        // The read has not landed yet, so the deferred marks try again at the
+        // next coalesce - and their diff then runs against the seeded base.
+        watching.patches_due.get_or_insert(Instant::now() + PATCH_COALESCE);
     }
     Ok(())
 }
@@ -11399,34 +11427,44 @@ mod tests {
         assert!(watching.patches_due.is_some(), "the re-read is scheduled");
     }
 
-    /// **A mark that lands before its subject's base is kept for the seed.**
-    /// A subscribe's off-loop read encodes the record before its answer seeds
-    /// the base, and an update inside that window was dropped - which is how a
-    /// review notice landing during the review page's own read never
-    /// refreshed. The mark now waits, and seeding the base schedules exactly
-    /// one re-read.
+    /// **A mark taken while a read is in flight is kept, and a mark with
+    /// neither a base nor a read is dropped.** The off-loop answer replaces
+    /// the base, so a patch fired now would be reverted by it; the mark waits
+    /// in `dirty` while `reading` holds `emit_patches` back, and it crosses
+    /// once the seed has landed.
     #[test]
-    fn a_mark_before_the_base_is_carried_by_the_seed() {
+    fn a_mark_during_a_read_is_kept_for_the_seed() {
         let slot = lead();
         let subject = Subject::Session(slot.clone());
-        let mut watching = Watching::default();
         let at = Instant::now();
-        watching.mark_dirty(subject.clone(), at);
-        assert!(watching.unseeded.contains(&subject), "the mark was dropped with no base");
-        assert!(watching.dirty.is_empty(), "a subject with no base scheduled a read");
 
-        let version = watching.seed(&subject, &serde_json::json!({ "composer": null }), at);
+        // Nothing has read the subject and no read is running: there is no
+        // base to diff against and no answer coming, so the mark is dropped
+        // rather than re-read forever.
+        let mut idle = Watching::default();
+        idle.mark_dirty(subject.clone(), at);
+        assert!(idle.dirty.is_empty(), "a mark with no base and no read was kept");
+
+        // A read in flight: the mark is kept, and schedules the patch that
+        // will be deferred until the answer seeds the base.
+        let mut held = Watching::default();
+        held.reading.insert(subject.clone());
+        held.mark_dirty(subject.clone(), at);
+        assert!(held.dirty.contains(&subject), "a mark taken during a read was dropped");
+        assert!(held.patches_due.is_some(), "no patch was scheduled");
+
+        // The seed lands; the deferred mark is still there to be diffed
+        // against it, and the base carries its own number.
+        held.reading.remove(&subject);
+        let version = held.seed(&subject, &serde_json::json!({ "composer": null }));
         assert_eq!(version, StreamVersion(1), "the first seed starts at one");
-        assert!(watching.unseeded.is_empty(), "the seed kept the mark");
-        assert!(watching.dirty.contains(&subject), "the raced mark was not re-marked");
-        assert!(watching.patches_due.is_some(), "no re-read was scheduled");
+        assert!(held.dirty.contains(&subject), "the seed dropped the deferred mark");
 
-        // **A seed with no race schedules nothing.** The ordinary subscribe
+        // **A seed with no mark schedules nothing**: an ordinary subscribe
         // pays no second encode for a window it did not have.
         let mut quiet = Watching::default();
-        let subject = Subject::Session(slot);
-        quiet.seed(&subject, &serde_json::json!({}), at);
-        assert!(quiet.dirty.is_empty(), "an unraced subscribe was re-read");
-        assert!(quiet.patches_due.is_none(), "an unraced subscribe scheduled a patch");
+        quiet.seed(&Subject::Session(slot), &serde_json::json!({}));
+        assert!(quiet.dirty.is_empty(), "an unmarked subscribe was re-read");
+        assert!(quiet.patches_due.is_none(), "an unmarked subscribe scheduled a patch");
     }
 }
