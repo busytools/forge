@@ -37,6 +37,7 @@
     now,
     connection,
     notice = null,
+    noticeSpoken = null,
     engine = null,
     mode = 'static',
     onpin = null,
@@ -59,6 +60,12 @@
     /** The connection's own line - a protocol skew or a reconnect - drawn
      *  over the versions, where the build facts live. */
     notice?: string | null;
+    /**
+     * The same line with its moving age left out: the visible line keeps
+     * the age, and the live region announces only the stable sentence.
+     * `null` when the line has nothing that moves, and it draws plainly.
+     */
+    noticeSpoken?: string | null;
     /** The rail's presence, which the pin's own word follows. */
     mode?: RailMode;
     /** Flips the column and the peek: pinned open, or floating on hover.
@@ -209,7 +216,15 @@
        size with it. -->
   <div class="rfoot">
     {#if notice !== null}
-      <div class="notice" role="status">{notice}</div>
+      <div class="notice" role="status">
+        {#if noticeSpoken === null}
+          {notice}
+        {:else}
+          <!-- The age moves every minute, and it is aria-hidden so the live
+               region announces the state rather than the clock. -->
+          <span aria-hidden="true">{notice}</span><span class="a11y">{noticeSpoken}</span>
+        {/if}
+      </div>
     {/if}
     <div class="who">
       <span class="led {foot.account.tone}"></span>

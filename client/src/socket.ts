@@ -306,9 +306,10 @@ export interface Connection {
    *
    * **The page's own silence clock.** `status()` is the transport's account
    * of the link; this is what actually arrived. They agree while the
-   * transport is running, and a transport whose own loop has stopped
-   * reporting - a wedged shell task is the measured case - leaves the page
-   * only this. See `silence.ts`.
+   * transport is running; a transport whose own loop has stopped reporting
+   * leaves the page only this. The measured case is the 8 November server
+   * wedge, where the process stayed up and the page heard nothing; whether
+   * the shell's beat fired then is not settled. See `silence.ts`.
    */
   lastHeard(): number | null;
   /**

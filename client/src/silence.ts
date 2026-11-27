@@ -1,17 +1,20 @@
 /**
  * The page's own silence: a link that says it is open while nothing arrives.
  *
- * **The transports' probes answer a healthy link, and their own deadlines
- * answer a dead one.** A browser page asks after 15 s of quiet and reaps at
- * 65 s; the desktop shell judges its beat in bytes and reaps sooner. Both turn
- * a quiet link into a status the shell already draws as "reconnecting".
+ * **A healthy link is reported to the page on both transports.** A browser
+ * page asks its own probe after 15 s of quiet and the server answers a pong;
+ * the desktop shell judges its beat in bytes, and a beat that finds them
+ * reports `Alive`, because an idle link's bytes are the server's control
+ * pings and never reach the page as frames. Either word moves the stamp, so
+ * neither transport's honest quiet is ever drawn as silence.
  *
- * What neither can catch is a quiet link whose own machinery has stopped
- * reporting. On 2026-11-08 the server process stayed alive with its runtime
- * wedged: no FIN, no RST, no error, nothing for two hours, and the page kept
- * painting its last read as live. The page's clock is the backstop - it runs
- * where the wedged half does not - and it is the only evidence a reader gets
- * that the server has stopped answering.
+ * What the page's clock adds is a signal for a link whose own machinery has
+ * stopped reporting. The measured case is the 8 November server wedge: the
+ * process stayed alive while its runtime wedged - no FIN, no RST, no error,
+ * nothing for two hours - and the page kept painting its last read as live.
+ * Whether the shell's own beat fired then is not settled. The page's clock
+ * runs where the wedged half does not, so it is the evidence a reader gets
+ * that nothing has been heard for a bound.
  */
 
 import { LIVENESS_PROTOCOL, type ConnectionStatus } from './socket';

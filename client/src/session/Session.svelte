@@ -82,6 +82,7 @@
     conversation = null,
     composer = null,
     notice = null,
+    noticeSpoken = null,
   }: {
     slot: SessionSlot;
     connection: Connection;
@@ -106,6 +107,11 @@
      * a page that scrolls.
      */
     notice?: string | null;
+    /**
+     * The same line with its moving age left out, for the rail's live
+     * region. `null` when the line has nothing that moves.
+     */
+    noticeSpoken?: string | null;
   } = $props();
 
   // Raw: a read answers with a whole new record, so nothing here is mutated in
@@ -675,6 +681,7 @@
     {now}
     {connection}
     {notice}
+    {noticeSpoken}
     engine={record?.header.engine ?? null}
     mode={railMode}
     onpin={() => setRail(railMode === 'static' ? 'hover' : 'static')}

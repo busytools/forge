@@ -26,6 +26,21 @@ describe('a link that is open but has gone quiet', () => {
     expect(SILENCE_MS).toBeGreaterThan(LIVENESS_EVERY_MS + LIVENESS_DEAD_MS);
   });
 
+  /**
+   * **The desktop's cadence is the shell's own beat.** `socket.rs`'s
+   * byte-counted loop wakes every 15 s and reports `client://alive` when
+   * bytes moved; an idle link's bytes are the server's control pings, which
+   * never reach the page as frames. The bound must tolerate several missed
+   * beats, or a healthy idle desktop link would be called quiet.
+   */
+  it('sits several shell beats past the desktop cadence', () => {
+    // `client/src-tauri/src/socket.rs`'s LIVENESS_EVERY, spelled out here so
+    // this test states the cadence the page relies on rather than reading it
+    // back off the one constant it shares.
+    const SHELL_BEAT_MS = 15_000;
+    expect(SILENCE_MS).toBeGreaterThanOrEqual(SHELL_BEAT_MS * 4);
+  });
+
   it('leaves a link the status already calls gone to the reconnect line', () => {
     expect(silenceOf({ ...OPEN, status: 'connecting', now: 1_000 + SILENCE_MS })).toBeNull();
     expect(silenceOf({ ...OPEN, status: 'closed', now: 1_000 + SILENCE_MS })).toBeNull();

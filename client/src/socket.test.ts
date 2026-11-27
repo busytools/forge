@@ -2306,9 +2306,9 @@ describe('the liveness probe', () => {
 
   /**
    * **The page's own silence clock is stamped by the link, not by the
-   * status.** A shell whose socket task has wedged reports no status change
-   * at all, so the last frame's own stamp is the only evidence a page has
-   * that the link has gone quiet.
+   * status.** The measured case is the 8 November server wedge, whose
+   * process stayed up and reported nothing, so the last frame's own stamp is
+   * the only evidence a page has that the link has gone quiet.
    */
   it('records when a frame last arrived, and announces it', async () => {
     vi.useFakeTimers();

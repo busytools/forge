@@ -6,7 +6,7 @@ import { get } from 'svelte/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AddressInfo, RawData, WebSocket } from 'ws';
 
-import { DEFAULT_ADDRESS } from '../connect/attempt';
+import { DEFAULT_ADDRESS, displayAddress } from '../connect/attempt';
 import { rememberedAddress, rememberAddress, serverParameter } from '../connect/remembered';
 import { homeWire } from '../dev/fixture.data';
 import { goTo } from '../routes';
@@ -1647,10 +1647,10 @@ describe('the switch gap marks (#2513)', () => {
 
 /**
  * **A link that is open but has stopped answering is drawn as quiet.** The
- * desktop's shell owns the socket, and a wedged shell task reports no status
- * change at all: on 2026-11-08 the page kept painting a two-hour-old board as
- * live and said nothing. The transports' own probes cover a healthy socket;
- * this line is the page's backstop for one whose transport stopped reporting.
+ * measured case is the 8 November server wedge: the process stayed up and the
+ * page kept painting a two-hour-old board as live, with no status saying
+ * anything. The transports' own probes cover a healthy socket; this line is
+ * the page's backstop for one whose transport stopped reporting.
  */
 describe('a link that is open but has gone quiet', () => {
   /**
@@ -1693,6 +1693,18 @@ describe('a link that is open but has gone quiet', () => {
     await ticked('No word from', true);
     expect(drawn(), 'a quiet link was drawn as live').toContain('showing the last read');
 
+    // **The age is drawn, and the announcement is not.** The live region
+    // announces what changes; a clock that moves under it every minute is
+    // noise, so the age is aria-hidden and the stable sentence is the
+    // spoken one.
+    const strip = document.querySelector('.stale');
+    expect(strip?.querySelector('[aria-hidden="true"]')?.textContent, 'the age is drawn').toContain(
+      'for 1m',
+    );
+    expect(strip?.querySelector('.a11y')?.textContent, 'the spoken line is stable').toBe(
+      `No word from ${displayAddress(forge.address)} - showing the last read`,
+    );
+
     // **A frame clears the line through the connection's own announcement,
     // not the next tick.** The page's clock is frozen here, so a tick can
     // never carry a new `now` - a page that polled `lastHeard()` on the
@@ -1700,5 +1712,36 @@ describe('a link that is open but has gone quiet', () => {
     // from the stamp landing as state.
     forge.home(homeWire);
     await ticked('No word from', false);
+  });
+
+  /**
+   * **A return is not silence.** A parked page's clock stops with it, and a
+   * line measured across the whole hide would flash on wake before the
+   * shell's next word lands. The window restarts when the page is visible
+   * again; a genuinely wedged link is still caught a bound later.
+   */
+  it('restarts the clock when the page comes back to view', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/', forge.address);
+    await until(() => forge.homeReads() >= 1, 'the launch to take');
+
+    quietPast();
+    await ticked('No word from', true);
+
+    const hidden = { value: true };
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden.value });
+    try {
+      document.dispatchEvent(new Event('visibilitychange'));
+      flushSync();
+      expect(drawn(), 'a hidden page dropped its line').toContain('No word from');
+
+      hidden.value = false;
+      document.dispatchEvent(new Event('visibilitychange'));
+      flushSync();
+      expect(drawn(), 'a return did not restart the clock').not.toContain('No word from');
+    } finally {
+      Reflect.deleteProperty(document, 'hidden');
+    }
   });
 });
