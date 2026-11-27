@@ -60,9 +60,15 @@ function boardStore(connection: Connection): Readable<BoardRead> {
   let seenSnapshot: unknown = null;
   let seenVersion: number | null = null;
   let seenState: string | null = null;
+  let seenHeld = 0;
   let stopStore: (() => void) | null = null;
   let stopMessages: (() => void) | null = null;
   let stopStatus: (() => void) | null = null;
+  /** The instant the drawn record was received; the clock's own base. */
+  let readAt = 0;
+  /** The record those values were last taken from. */
+  let drawnSnapshot: unknown = null;
+  let drawnVersion: number | null = null;
 
   /**
    * Draw the store's record.
@@ -78,16 +84,32 @@ function boardStore(connection: Connection): Readable<BoardRead> {
       // Nothing to apply into: a frame that landed before the refusal must
       // not paint the refused subject back (#3074 review).
       drawn = null;
-      view.set({ wire: null, refused: state.why, readAt: Date.now(), resyncing: false });
+      view.set({
+        wire: null,
+        refused: state.why,
+        readAt,
+        resyncing: false,
+        heldPatches: held.unexpected(),
+      });
       return;
     }
     const data = held.snapshot();
+    const version = held.version();
+    // **The clock is the record's, not the store state's.** A version gap
+    // moves the state without a new record, and stamping the receive time
+    // there would undercount a running row's worked time by the gap.
+    if (data !== drawnSnapshot || version !== drawnVersion) {
+      drawnSnapshot = data;
+      drawnVersion = version;
+      readAt = Date.now();
+    }
     drawn = data === null ? null : boardFrom(data as unknown as BoardWire);
     view.set({
       wire: drawn,
       refused: null,
-      readAt: Date.now(),
+      readAt,
       resyncing: state.kind === 'resyncing',
+      heldPatches: held.unexpected(),
     });
   }
 
@@ -98,10 +120,21 @@ function boardStore(connection: Connection): Readable<BoardRead> {
       const snapshot = held.snapshot();
       const version = held.version();
       const state = held.state().kind;
-      if (snapshot === seenSnapshot && version === seenVersion && state === seenState) return;
+      // **A held patch redraws too**: the list is how the page says a frame
+      // it could not place was kept rather than dropped (rule 25).
+      const heldPatches = held.unexpected().length;
+      if (
+        snapshot === seenSnapshot &&
+        version === seenVersion &&
+        state === seenState &&
+        heldPatches === seenHeld
+      ) {
+        return;
+      }
       seenSnapshot = snapshot;
       seenVersion = version;
       seenState = state;
+      seenHeld = heldPatches;
       read();
     });
     stopMessages = connection.onMessage((message) => {

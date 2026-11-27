@@ -42,6 +42,12 @@ function isBag(value: unknown): value is Bag {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** A project's patch identity: the org and name pair, never the whole view. */
+function projectIdentity(project: unknown): unknown {
+  if (!isBag(project)) return undefined;
+  return { org: project['org'], name: project['name'] };
+}
+
 /**
  * Every field the patch carries, written over the record.
  *
@@ -152,7 +158,11 @@ function homePatch(snapshot: unknown, patch: unknown): unknown {
         const projects = applyEntries(
           next['projects'],
           value,
-          (row) => row['project'],
+          // **The identity is org and name**, the pair the server keys a
+          // project entry by. The project view also carries sessions, paths
+          // and accounts, and any of those moving must not make the entry
+          // read as a different project.
+          (row) => projectIdentity(row['project']),
           RECORD_ENTRY,
           asRecord,
         );

@@ -5,6 +5,7 @@ import type { ServerMessage, Subject } from '../protocol';
 import { PROTOCOL_VERSION } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import { Stores } from '../stores';
+import type { BoardRead } from '../wire/board';
 import type { Task } from '../wire/home';
 import type { SessionSlot } from '../wire/types';
 import { watchBoard } from './live';
@@ -233,6 +234,35 @@ describe('the board over a connection', () => {
     forge.arrive(NEWS);
     expect(afterFirst, 'the moved set did not redraw').toBeGreaterThan(before);
     expect(draws, 'the repeated set redrew again').toBe(afterFirst);
+    stop();
+  });
+
+  /**
+   * **A held patch is drawn, and a gap does not move the clock.** The gap
+   * changes the store's state without a new record, so the instant the
+   * drawn record landed must stay the one its worked time is measured from.
+   */
+  it('draws a held patch and keeps the clock on the record', () => {
+    const forge = fakeConnection();
+    const seen: BoardRead[] = [];
+    const stop = watchBoard(forge.connection).subscribe((next) => seen.push(next));
+    const store = forge.stores.get(BOARD);
+    store?.set(boardWire(), 1);
+    const landed = seen.at(-1)?.readAt ?? 0;
+    expect(landed, 'the record landed with no instant').toBeGreaterThan(0);
+
+    store?.gap('a skipped version');
+    expect(seen.at(-1)?.resyncing, 'the gap is not drawn').toBe(true);
+    expect(seen.at(-1)?.readAt, 'the gap reset the record clock').toBe(landed);
+
+    store?.unplaced({ projects: 'unreadable' });
+    expect(seen.at(-1)?.heldPatches, 'the held patch was not drawn').toHaveLength(1);
+    expect(seen.at(-1)?.readAt, 'a held patch reset the record clock').toBe(landed);
+
+    store?.applied(2, boardWire());
+    expect(seen.at(-1)?.readAt ?? 0, 'a new record did not move the clock').toBeGreaterThanOrEqual(
+      landed,
+    );
     stop();
   });
 

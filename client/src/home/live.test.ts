@@ -556,6 +556,23 @@ describe('the home over a connection', () => {
     stop();
   });
 
+  /**
+   * **A patch the page could not place is drawn, not dropped.** Rule 25: the
+   * socket holds it in the store and the page says so with a count.
+   */
+  it('draws a held patch the page could not place', async () => {
+    const forge = fakeConnection();
+    const seen: HomeRead[] = [];
+    const stop = watchHome(forge.connection).subscribe((read) => seen.push(read));
+    answer(forge, idleHome());
+
+    forge.stores.get(HOME)?.unplaced({ a_field: 'unreadable' });
+    await settle();
+    expect(seen.at(-1)?.heldPatches, 'the held patch was not drawn').toHaveLength(1);
+    expect(forge.refreshed, 'a held patch asked for a read').toEqual([]);
+    stop();
+  });
+
   /** **A fold never repaints a failed read as healthy** (rule 22). */
   it('does not repaint a failed read with a fold', async () => {
     const forge = fakeConnection();

@@ -26,6 +26,8 @@ export interface ExtensionsPage {
   read: ExtensionsRead | null;
   /** The server's own words for turning the subscription down, or `null`. */
   refused: string | null;
+  /** Patches the socket could not place, held for the page to say so. */
+  heldPatches?: unknown[];
 }
 
 const NOTHING: ExtensionsPage = { read: null, refused: null };
@@ -47,16 +49,21 @@ export function watchExtensions(connection: ExtensionsConnection): Readable<Exte
   let seenSnapshot: unknown = null;
   let seenVersion: number | null = null;
   let seenState: string | null = null;
+  let seenHeld = 0;
 
   function read(): void {
     if (held === null) return;
     const state = held.state();
     if (state.kind === 'refused') {
-      view.set({ read: null, refused: state.why });
+      view.set({ read: null, refused: state.why, heldPatches: held.unexpected() });
       return;
     }
     const data = held.snapshot();
-    view.set({ read: data === null ? null : extensionsFrom(data), refused: null });
+    view.set({
+      read: data === null ? null : extensionsFrom(data),
+      refused: null,
+      heldPatches: held.unexpected(),
+    });
   }
 
   function watch(): void {
@@ -66,10 +73,19 @@ export function watchExtensions(connection: ExtensionsConnection): Readable<Exte
       const snapshot = held.snapshot();
       const version = held.version();
       const state = held.state().kind;
-      if (snapshot === seenSnapshot && version === seenVersion && state === seenState) return;
+      const heldPatches = held.unexpected().length;
+      if (
+        snapshot === seenSnapshot &&
+        version === seenVersion &&
+        state === seenState &&
+        heldPatches === seenHeld
+      ) {
+        return;
+      }
       seenSnapshot = snapshot;
       seenVersion = version;
       seenState = state;
+      seenHeld = heldPatches;
       read();
     });
     // A drop leaves the record in place; the reconnect's answer re-seeds the

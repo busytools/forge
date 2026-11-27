@@ -457,6 +457,16 @@
 {:else if read.wire === null}
   <main class="wrap models-page"><p class="pending">Reading the models...</p></main>
 {:else}
+  {#if (read.heldPatches ?? []).length > 0}
+    <!-- Rule 25: a frame this client cannot read is kept and said. -->
+    <main class="wrap models-page">
+      <p class="pending">
+        {read.heldPatches?.length} server update{(read.heldPatches?.length ?? 0) === 1 ? '' : 's'} for
+        the models could not be read and
+        {(read.heldPatches?.length ?? 0) === 1 ? 'was' : 'were'} kept
+      </p>
+    </main>
+  {/if}
   <ModelsBody
     wire={read.wire}
     oncheck={check}

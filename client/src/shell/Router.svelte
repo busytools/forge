@@ -219,6 +219,15 @@
            says the figures may be a beat behind while one whole read lands. -->
       <p class="pending">Catching up with the server...</p>
     {/if}
+    {#if (home.heldPatches ?? []).length > 0}
+      <!-- Rule 25: a frame this client cannot read is kept and said, never
+           dropped in silence. -->
+      <p class="pending">
+        {home.heldPatches?.length} server update{(home.heldPatches?.length ?? 0) === 1 ? '' : 's'} for
+        the home could not be read and
+        {(home.heldPatches?.length ?? 0) === 1 ? 'was' : 'were'} kept
+      </p>
+    {/if}
     <Home wire={home.wire} {address} mark={settings.mark} {connection} />
   {:else if home.refused}
     <!-- The server turned the subscription down, in its own words. Handing

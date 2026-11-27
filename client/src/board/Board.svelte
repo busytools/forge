@@ -556,6 +556,9 @@
         {#if board.wire === null}
           {board.refused === null ? 'reading the board...' : 'no board'}
         {:else}
+          {#if (board.heldPatches ?? []).length > 0}
+            {board.heldPatches?.length} held &middot;
+          {/if}
           {#if board.resyncing}catching up &middot;
           {/if}
           {#if view.read.onYou > 0}<b>{view.read.onYou} waiting on you</b> &middot;

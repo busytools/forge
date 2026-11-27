@@ -70,6 +70,13 @@ export interface HomeRead {
    */
   catchingUp?: boolean;
   /**
+   * Patches the socket could not place, held for the page to say so.
+   *
+   * Rule 25: a frame this client cannot read is drawn as itself rather than
+   * dropped, and the page's own line is where it is drawn.
+   */
+  heldPatches?: unknown[];
+  /**
    * Why the snapshot could not be read, in this client's words, or `null`.
    *
    * **A malformed read is its own state, not an empty home**: the store is
@@ -158,6 +165,7 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
   let seenSnapshot: unknown = null;
   let seenVersion: number | null = null;
   let seenState: string | null = null;
+  let seenHeld = 0;
   /** The last home draw, so a frame's own facts can be applied into it. */
   let drawn: HomeWire | null = null;
   let stopStore: (() => void) | null = null;
@@ -205,7 +213,12 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     refused: string | null;
     failed: string | null;
   }): void {
-    view.set({ ...next, report, catchingUp: held?.state().kind === 'resyncing' });
+    view.set({
+      ...next,
+      report,
+      catchingUp: held?.state().kind === 'resyncing',
+      heldPatches: held?.unexpected() ?? [],
+    });
   }
 
   /**
@@ -379,10 +392,21 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       const snapshot = held.snapshot();
       const version = held.version();
       const state = held.state().kind;
-      if (snapshot === seenSnapshot && version === seenVersion && state === seenState) return;
+      // **A held patch redraws too**: the list is how the page says a frame
+      // it could not place was kept rather than dropped (rule 25).
+      const heldPatches = held.unexpected().length;
+      if (
+        snapshot === seenSnapshot &&
+        version === seenVersion &&
+        state === seenState &&
+        heldPatches === seenHeld
+      ) {
+        return;
+      }
       seenSnapshot = snapshot;
       seenVersion = version;
       seenState = state;
+      seenHeld = heldPatches;
       read();
     });
     stopMessages = connection.onMessage((message) => {

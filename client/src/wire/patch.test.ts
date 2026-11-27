@@ -57,6 +57,42 @@ function aBoard(): BoardWire {
 }
 
 describe('applying a patch', () => {
+  /**
+   * **A home project is addressed by org and name**, so a session opening
+   * inside its view replaces that project rather than reading as one
+   * removed and another added.
+   */
+  it('keys a home project by its org and name, not the whole view', () => {
+    const home = aHome();
+    const full = {
+      ...home,
+      projects: [
+        {
+          ...home.projects[0],
+          project: {
+            ...(home.projects[0]?.project as object),
+            path: '/p',
+            sessions: [],
+          },
+        },
+      ],
+    } as unknown as HomeWire;
+    const patched = applyPatchFor(HOME, full, {
+      projects: [
+        {
+          op: 'set',
+          id: { org: 'TestOrg', name: 'proj' },
+          record: {
+            ...(full.projects[0] as object),
+            project: { ...(full.projects[0]?.project as object), sessions: [{ label: 'w1' }] },
+          },
+        },
+      ],
+    }) as HomeWire;
+    expect(patched.projects).toHaveLength(1);
+    expect((patched.projects[0]?.project as { sessions?: unknown[] }).sessions).toHaveLength(1);
+  });
+
   /** **The home's lists replace by id and removals take an id out.** */
   it('sets, replaces and removes home entries', () => {
     const home = aHome();

@@ -61,6 +61,13 @@ export interface BoardRead {
    * what says the figures may be a beat behind.
    */
   resyncing?: boolean;
+  /**
+   * Patches the socket could not place, held for the page to say so.
+   *
+   * Rule 25: a frame this client cannot read is drawn as itself rather than
+   * dropped, and the page's own line is where it is drawn.
+   */
+  heldPatches?: unknown[];
 }
 
 /**

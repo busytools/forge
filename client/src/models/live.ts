@@ -26,6 +26,8 @@ export interface ModelsRead {
   wire: DictateModelsWire | null;
   /** The server's own words for turning the subscription down, or `null`. */
   refused: string | null;
+  /** Patches the socket could not place, held for the page to say so. */
+  heldPatches?: unknown[];
 }
 
 const NOTHING: ModelsRead = { wire: null, refused: null };
@@ -52,12 +54,13 @@ export function watchModels(connection: ModelsConnection): Readable<ModelsRead> 
   let seenSnapshot: unknown = null;
   let seenVersion: number | null = null;
   let seenState: string | null = null;
+  let seenHeld = 0;
 
   function read(): void {
     if (held === null) return;
     const state = held.state();
     if (state.kind === 'refused') {
-      view.set({ wire: null, refused: state.why });
+      view.set({ wire: null, refused: state.why, heldPatches: held.unexpected() });
       return;
     }
     const data = held.snapshot();
@@ -66,6 +69,7 @@ export function watchModels(connection: ModelsConnection): Readable<ModelsRead> 
     view.set({
       wire: data === null ? null : modelsFrom(data as unknown as DictateModelsWire),
       refused: null,
+      heldPatches: held.unexpected(),
     });
   }
 
@@ -76,10 +80,19 @@ export function watchModels(connection: ModelsConnection): Readable<ModelsRead> 
       const snapshot = held.snapshot();
       const version = held.version();
       const state = held.state().kind;
-      if (snapshot === seenSnapshot && version === seenVersion && state === seenState) return;
+      const heldPatches = held.unexpected().length;
+      if (
+        snapshot === seenSnapshot &&
+        version === seenVersion &&
+        state === seenState &&
+        heldPatches === seenHeld
+      ) {
+        return;
+      }
       seenSnapshot = snapshot;
       seenVersion = version;
       seenState = state;
+      seenHeld = heldPatches;
       read();
     });
     // A drop leaves the record in place; the reconnect's answer re-seeds the
