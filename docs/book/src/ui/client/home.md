@@ -196,10 +196,15 @@ happening to it, and nothing about it is the reader's to act on.
   a forge with no projects. Nothing periodic retries it: the next update
   that asks for a read, entering the page again, or a reconnect, reads
   again.
-- **A connection that dropped**: the page keeps what it last read and says so
-  above it, and the notice stays until a fresh read lands rather than clearing
-  the moment the socket reopens - the window between those two is the one
-  place a reader cannot tell stale rows from current ones.
+- **A connection that dropped, or one that stopped answering**: the page
+  keeps what it last read and says so above it, and the notice stays until a
+  fresh read lands rather than clearing the moment the socket reopens - the
+  window between those two is the one place a reader cannot tell stale rows
+  from current ones. A link whose status still says `open` while nothing at
+  all has arrived past its own probe window is drawn as quiet, naming how
+  long: the transports' deadlines cover a dead socket, and the page's own
+  clock is the backstop for a server that stopped answering while the socket
+  stayed up.
 - **A forge on another protocol**: the shell draws one line above the page
   naming the command that updates the stale half and this client's build -
   and the answering build where the greeting carried it - and the page

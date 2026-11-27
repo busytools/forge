@@ -204,6 +204,7 @@ function fakeConnection() {
     skew: () => null,
     serverProtocol: () => PROTOCOL_VERSION,
     status: () => 'open',
+    lastHeard: () => null,
     probe: () => {},
     close: () => {},
   };

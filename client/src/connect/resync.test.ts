@@ -88,6 +88,7 @@ function fakeConnection() {
     skew: () => null,
     serverProtocol: () => PROTOCOL_VERSION,
     status: () => status,
+    lastHeard: () => null,
     probe: () => {
       calls.push('probe');
     },

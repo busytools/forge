@@ -2304,6 +2304,24 @@ describe('the liveness probe', () => {
     connection.close();
   });
 
+  /**
+   * **The page's own silence clock is stamped by the link, not by the
+   * status.** A shell whose socket task has wedged reports no status change
+   * at all, so the last frame's own stamp is the only evidence a page has
+   * that the link has gone quiet.
+   */
+  it('records when a frame last arrived, and stamps the open', async () => {
+    vi.useFakeTimers();
+    const { connection, socket } = live();
+    const openAt = Date.now();
+    expect(connection.lastHeard(), 'the open stamps the link').toBe(openAt);
+
+    await vi.advanceTimersByTimeAsync(42_000);
+    socket.deliver({ kind: 'pong' });
+    expect(connection.lastHeard(), 'a frame moves the stamp').toBe(openAt + 42_000);
+    connection.close();
+  });
+
   /** **A dial that never completes is abandoned and retried.** A peer that
    *  accepts TCP and stalls the handshake must not hold the retry loop. */
   it('abandons a dial that never completes and retries', async () => {

@@ -3,6 +3,7 @@
   import { get } from 'svelte/store';
 
   import { observeAttention, pageWatched } from '../attention';
+  import { span } from '../components/age';
   import Sprite from '../components/Sprite.svelte';
   import { DEFAULT_ADDRESS, displayAddress, type Attempt } from '../connect/attempt';
   import { boot } from '../connect/boot';
@@ -32,6 +33,7 @@
   import { currentRoute, goTo, hrefFor, parseRoute, shownSeat, type Route } from '../routes';
   import { forgetClosed, removedLanding, watchReleases, watchRemovals } from '../session/close';
   import { releaseSeat } from '../session/live';
+  import { silenceOf } from '../silence';
   import type { Connection, ConnectionStatus } from '../socket';
   import { applySettings } from '../theme';
   import { watchUpdate } from '../update/state';
@@ -84,6 +86,15 @@
   let stopShares: (() => void) | null = null;
   let connectionStatus = $state<ConnectionStatus>('connecting');
   /**
+   * The shell's own clock, for the silence line.
+   *
+   * One second is the grain of the word it draws (`span` spells minutes and
+   * hours) and nothing else here reads it, so a tick costs a `Date.now()` and
+   * a derived that is usually `null`.
+   */
+  let nowAt = $state(Date.now());
+  let ticker: ReturnType<typeof setInterval> | null = null;
+  /**
    * What the live connection's greeting said this client's protocol does not
    * agree with, or `null`. Set from the connection rather than from the
    * attempt that took it, because a page left open across a forge upgrade
@@ -107,6 +118,9 @@
   let settled = $state(false);
 
   onMount(() => {
+    ticker = setInterval(() => {
+      nowAt = Date.now();
+    }, 1_000);
     // Nothing to open on, so the door, at the URL that names it. **A named
     // server keeps its URL**: the parameter is what a reload re-prefills
     // from, and moving the URL to `/connect` would drop it.
@@ -154,6 +168,7 @@
   let destroyed = false;
   onDestroy(() => {
     destroyed = true;
+    if (ticker !== null) clearInterval(ticker);
     uninstallBrowser();
     stopTerminal?.();
     stopShares?.();
@@ -437,21 +452,48 @@
   });
 
   /**
+   * How long the link has been open with nothing arriving, or `null`.
+   *
+   * **A healthy link is never quiet for this long**, because its transport
+   * asks a probe every 15 s of quiet and the server answers it; a pong moves
+   * the stamp like any other frame. A number here means the transport has
+   * stopped reporting at all - a wedged shell task is the measured case, and
+   * it is what drew a two-hour-old board as live - so the page's own clock is
+   * the only thing left that can say so.
+   */
+  const quietMs = $derived(
+    connection === null
+      ? null
+      : silenceOf({
+          status: connectionStatus,
+          protocol: connection.serverProtocol(),
+          heardAt: connection.lastHeard(),
+          now: nowAt,
+        }),
+  );
+
+  /**
    * The page has a read behind it and is no longer current.
    *
    * Both halves are needed: without the read the notice would sit above
    * "Reading the fleet..." claiming a last read that does not exist, and
-   * without the staleness it would show while everything is fine.
+   * without the staleness it would show while everything is fine. A link
+   * nothing has arrived on is not current however open its status still says
+   * it is.
    */
   const stale = $derived(
-    connection !== null && home.wire !== null && !(connectionStatus === 'open' && settled),
+    connection !== null &&
+      home.wire !== null &&
+      !(connectionStatus === 'open' && settled && quietMs === null),
   );
 
-  /** What it says, which depends on whether anything is still trying. */
+  /** What it says: quiet, closed, or still trying. */
   const staleLine = $derived(
-    connectionStatus === 'closed'
-      ? `The connection to ${displayAddress(address)} was closed - showing the last read`
-      : `Reconnecting to ${displayAddress(address)} - showing the last read`,
+    quietMs !== null
+      ? `No word from ${displayAddress(address)} for ${span(quietMs / 1_000)} - showing the last read`
+      : connectionStatus === 'closed'
+        ? `The connection to ${displayAddress(address)} was closed - showing the last read`
+        : `Reconnecting to ${displayAddress(address)} - showing the last read`,
   );
 
   /**

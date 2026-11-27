@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { ago } from './age';
+import { ago, span } from './age';
 
 describe('the shared relative age', () => {
   const now = 1_800_000_000;
@@ -21,5 +21,13 @@ describe('the shared relative age', () => {
     expect(ago(now - 3 * 86_400, now), 'the board still counts hours').toBe('72h');
     expect(ago(now - 3 * 86_400, now, 2 * 86_400), 'the review reads days').toBe('3d');
     expect(ago(now - 26 * 3_600, now, 2 * 86_400), 'a day-old stamp stays hours').toBe('26h');
+  });
+
+  /** A span a caller already holds - a quiet link's - reads in the same words. */
+  it('reads a span directly', () => {
+    expect(span(30)).toBe('30s');
+    expect(span(61)).toBe('1m');
+    expect(span(26 * 3_600)).toBe('26h');
+    expect(span(3 * 86_400, 2 * 86_400)).toBe('3d');
   });
 });

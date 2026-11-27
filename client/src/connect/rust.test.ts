@@ -1044,6 +1044,26 @@ describe("the connection's own facts", () => {
   });
 
   /**
+   * **The desktop's silence clock is stamped where its frames land.** The
+   * shell owns the socket and a wedged shell reports no status at all, so the
+   * page's only evidence that the link has gone quiet is when it last heard a
+   * frame through this seam.
+   */
+  it('records when a frame last arrived, and stamps the open', async () => {
+    const before = Date.now();
+    const connection = await opened();
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+    const openAt = connection.lastHeard();
+    expect(openAt, 'the open stamps the link').not.toBeNull();
+    expect(openAt as number, 'stamped at the open, not before it').toBeGreaterThanOrEqual(before);
+    expect(openAt as number).toBeLessThanOrEqual(Date.now());
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    fire('client://inbound', { kind: 'pong' });
+    expect(connection.lastHeard(), 'a frame moves the stamp').toBeGreaterThan(openAt as number);
+  });
+
+  /**
    * **The shell's own facts reach the perf log as their marks (#2513).** A
    * forwarded snapshot's raw length and parse, and a subscribe's write wait,
    * are measured in the Rust half; a one-sided rename here would silence the

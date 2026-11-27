@@ -196,6 +196,15 @@ class RustConnection implements Connection {
   private beat: ReturnType<typeof setInterval> | null = null;
   private state: ConnectionStatus = 'connecting';
   /**
+   * When a frame last arrived, for the page's silence line.
+   *
+   * **Stamped here because the shell owns the socket.** The shell's own
+   * status is all a page normally knows, and a shell task whose loop has
+   * stopped reporting sends no status at all; what arrived through
+   * `client://inbound` is the only evidence left.
+   */
+  private heardAt: number | null = null;
+  /**
    * The shell's own id for this connection, from `client_connect`.
    *
    * **`close` names it**, because this page dials the next address before it
@@ -286,7 +295,12 @@ class RustConnection implements Connection {
     // and a connection that subscribed after asking could miss it.
     this.stops.push(await listen('client://connection', () => void this.stateMoved()));
     this.stops.push(
-      await listen('client://inbound', (event) => this.heard(event.payload as ServerMessage)),
+      await listen('client://inbound', (event) => {
+        // The page's own silence clock: this is the seam every frame crosses,
+        // so it is where "last heard" is stamped.
+        this.heardAt = Date.now();
+        this.heard(event.payload as ServerMessage);
+      }),
     );
     // **The shell half's own facts (#2513).** A snapshot's raw length and the
     // shell's parse travel beside the frame; a subscribe's write time is
@@ -445,7 +459,12 @@ class RustConnection implements Connection {
     // lost first answer would otherwise leave them loading forever. A watch
     // taken with no socket is the shell's to carry (`Bridge::connect` asks for
     // it), so nothing is re-asked from this side.
-    if (next === 'open') this.bounds.rearmLoading();
+    if (next === 'open') {
+      this.bounds.rearmLoading();
+      // Before the listeners, as the web's `onopen` does: a surface that
+      // draws on `open` reads the stamp.
+      this.heardAt = Date.now();
+    }
     // **Listeners first, then `Showing`.** The page's own re-attach runs on
     // this status and issues its `relist`; the spec's order is re-subscribe,
     // then `Showing`, and the web's `onopen` keeps the same one.
@@ -894,6 +913,10 @@ class RustConnection implements Connection {
 
   status(): ConnectionStatus {
     return this.state;
+  }
+
+  lastHeard(): number | null {
+    return this.heardAt;
   }
 
   close(): void {

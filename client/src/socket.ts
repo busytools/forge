@@ -301,6 +301,17 @@ export interface Connection {
   serverProtocol(): number | null;
   status(): ConnectionStatus;
   /**
+   * When a frame last arrived from the server, stamped at each open, or
+   * `null` before the connection has ever opened.
+   *
+   * **The page's own silence clock.** `status()` is the transport's account
+   * of the link; this is what actually arrived. They agree while the
+   * transport is running, and a transport whose own loop has stopped
+   * reporting - a wedged shell task is the measured case - leaves the page
+   * only this. See `silence.ts`.
+   */
+  lastHeard(): number | null;
+  /**
    * Probe the link now rather than waiting out its quiet.
    *
    * A page returning from the background sends this first: the socket may
@@ -444,7 +455,7 @@ export const LIVENESS_DEAD_MS = 65_000;
  * knows the server's number from the greeting, so it asks nothing of one that
  * cannot answer.
  */
-const LIVENESS_PROTOCOL = 20;
+export const LIVENESS_PROTOCOL = 20;
 
 /**
  * How long a dial may hang before it is abandoned and retried.
@@ -772,6 +783,14 @@ export function connect(
    */
   let gate: StreamGate | null = null;
   let status: ConnectionStatus = 'connecting';
+  /**
+   * When a frame last arrived, for the page's silence line.
+   *
+   * Stamped at each open as well as on every frame: the open is the earliest
+   * evidence there is, and a link that then carries nothing is measured from
+   * the moment it could first have spoken rather than from a pre-drop frame.
+   */
+  let heardAt: number | null = null;
   let settings: ClientSettings | null = null;
   let protocolSkew: Skew | null = null;
   /** The greeting's own number, kept whether or not it skews. */
@@ -1161,6 +1180,8 @@ export function connect(
 
     next.onopen = () => {
       if (next !== socket) return;
+      // Before the status moves: a listener that draws on `open` reads this.
+      heardAt = Date.now();
       subscribed.clear();
       move('open');
       retryDelay = RETRY_MS;
@@ -1372,6 +1393,7 @@ export function connect(
 
     next.onmessage = (event) => {
       if (next !== socket) return;
+      heardAt = Date.now();
       // **Any inbound frame answers the probe**, whatever it carried: the
       // pong exists to guarantee one arrives, and a frame already flowing
       // proves the same.
@@ -1836,6 +1858,9 @@ export function connect(
     },
     status() {
       return status;
+    },
+    lastHeard() {
+      return heardAt;
     },
     probe: probeNow,
     close() {

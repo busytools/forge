@@ -77,6 +77,7 @@ function recording(): { connection: Connection; sent: Record<string, unknown>[] 
     skew: () => null,
     serverProtocol: () => PROTOCOL_VERSION,
     status: () => 'open',
+    lastHeard: () => null,
     probe: () => {},
     close: () => {},
   };

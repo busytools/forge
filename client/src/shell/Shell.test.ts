@@ -15,6 +15,7 @@ import { noteSeatClick } from '../perf';
 import { PROTOCOL_VERSION, subjectKey, type Subject } from '../protocol';
 import { closeSeat, closingSeat } from '../session/close';
 import { pendingShare } from '../share/pending';
+import { SILENCE_MS } from '../silence';
 import { MAX_RETRY_MS, RETRY_MS, type Connection } from '../socket';
 import { fontStack } from '../theme';
 import { watchUpdate } from '../update/state';
@@ -461,6 +462,9 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  // Before the forges close: one case moves the page's clock, and a close
+  // that ran on a frozen clock would hang on its own handshake.
+  vi.useRealTimers();
   for (const forge of forges.splice(0)) await forge.close();
   if (app !== null) await unmount(app);
   app = null;
@@ -1638,5 +1642,64 @@ describe('the switch gap marks (#2513)', () => {
     expect(mockSeatClick).toHaveBeenCalledTimes(1);
     expect(mockSeatClick).toHaveBeenCalledWith({ org, project, label });
     expect(markedAt, 'the mark is taken before the route moves').toBe('/');
+  });
+});
+
+/**
+ * **A link that is open but has stopped answering is drawn as quiet.** The
+ * desktop's shell owns the socket, and a wedged shell task reports no status
+ * change at all: on 2026-11-08 the page kept painting a two-hour-old board as
+ * live and said nothing. The transports' own probes cover a healthy socket;
+ * this line is the page's backstop for one whose transport stopped reporting.
+ */
+describe('a link that is open but has gone quiet', () => {
+  /**
+   * Move the page's clock, not the machine's. The line is drawn on the
+   * shell's own one-second tick, and a real wait of the silence bound would
+   * be a test nobody runs. Only `Date` is faked: the tick, the socket and
+   * the waits below stay real.
+   */
+  function quietPast(): void {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + SILENCE_MS + 5_000);
+  }
+
+  /**
+   * Wait for the tick's own line.
+   *
+   * `until` reads `Date.now()` for its deadline, and the clock here is
+   * deliberately moved past it, so this poll keeps its deadline on the real
+   * monotonic clock instead.
+   */
+  async function ticked(what: string, shown: boolean): Promise<void> {
+    const deadline = performance.now() + WAIT_MS;
+    for (;;) {
+      flushSync();
+      if (drawn().includes(what) === shown) return;
+      if (performance.now() > deadline) {
+        throw new Error(`timed out waiting for ${shown ? '' : 'no '}${what}: ${drawn()}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  }
+
+  it('says the link has gone quiet, and stops saying it when a frame lands', async () => {
+    const forge = await stubForge({ mark: null, theme: null, font: null });
+    forges.push(forge);
+    await openAt('/', forge.address);
+    await until(() => forge.homeReads() >= 1, 'the launch to take');
+
+    quietPast();
+    await ticked('No word from', true);
+    expect(drawn(), 'a quiet link was drawn as live').toContain('showing the last read');
+
+    // A frame that lands moves the stamp. It crosses a real socket, so the
+    // wait is this file's own absence window; the clock then moves so the
+    // next tick has a new value to measure against - a frozen one would leave
+    // the line's cached measurement where it was, however fresh the stamp.
+    forge.home(homeWire);
+    await quiet(QUIET_MS * 3);
+    vi.setSystemTime(Date.now() + 1_000);
+    await ticked('No word from', false);
   });
 });
