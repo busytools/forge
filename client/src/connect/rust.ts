@@ -203,9 +203,10 @@ class RustConnection implements Connection {
    * **Stamped here because the shell owns the socket.** The shell's own
    * status is all a page normally knows, and a shell task whose loop has
    * stopped reporting sends no status at all; what arrived through the shell
-   * is the only evidence left. **Three events carry it**: the JSON frames on
-   * `client://inbound`, and the browser's and terminal's binary frames, which
-   * the shell forwards on events of their own.
+   * is the only evidence left. **Four events carry it**: the JSON frames on
+   * `client://inbound`, the browser's and terminal's binary frames, which the
+   * shell forwards on events of their own, and the shell's own liveness beat
+   * on `client://alive`.
    */
   private heardAt: number | null = null;
 

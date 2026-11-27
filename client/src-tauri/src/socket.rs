@@ -3754,7 +3754,9 @@ pub(crate) mod tests {
     /// **The beat reports progress as `Alive`, which the page's silence line
     /// counts.** An idle desktop link carries no application frames at all -
     /// the server's WebSocket control pings are bytes tungstenite drops - so
-    /// without this the page would call a perfectly healthy link quiet.
+    /// without this the page would call a perfectly healthy link quiet. The
+    /// stub's text frame stands in for any inbound bytes here; a real idle
+    /// link's are the server's control pings.
     #[tokio::test(start_paused = true)]
     async fn the_liveness_beat_reports_progress_as_alive() {
         let stub = stub().await;
@@ -3781,11 +3783,14 @@ pub(crate) mod tests {
     /// own loop stops reporting.
     #[tokio::test(start_paused = true)]
     async fn a_beat_with_no_progress_reports_no_alive() {
-        let stub = stub().await;
+        let mut stub = stub().await;
         let (_socket, mut rx) = connected_paused(&stub).await;
 
         tokio::time::advance(LIVENESS_EVERY).await;
-        settle(200).await;
+        // **The beat ran**: its probe is the evidence, so an `Alive` this
+        // test does not find cannot be a beat that never happened.
+        let probe = stub.heard_until_paused(|frame| frame["kind"] == "ping").await;
+        assert_eq!(probe["kind"], "ping", "the quiet earned its probe");
 
         while let Ok(event) = rx.try_recv() {
             assert!(
