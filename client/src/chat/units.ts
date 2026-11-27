@@ -2779,14 +2779,18 @@ export function fold(
    */
   const drawSilent = (batch: HookBatchLeaf): void => {
     flushWork();
-    const held = chipUnit?.rows[0];
+    // **The chip is the LAST row of its unit.** The first batch joins the run
+    // that closed at the stop, so the work above it keeps its own rows and the
+    // chip sits under them; matching the first row instead missed every such
+    // chip and drew a second one for each later stop.
+    const held = chipUnit?.rows[chipUnit.rows.length - 1];
     if (chipUnit !== null && held !== undefined && held.tag === 'hookfoot') {
       const foot: Extract<WorkRow, { tag: 'hookfoot' }> = {
         ...held,
         batches: [...held.batches, batch],
         actions: held.actions + batch.actions,
       };
-      const replaced = { ...chipUnit, rows: [foot] };
+      const replaced = { ...chipUnit, rows: [...chipUnit.rows.slice(0, -1), foot] };
       const at = units.indexOf(chipUnit);
       // The unit is the one this fold pushed, and nothing is inserted before
       // it: units append, and a result's splice lands after the last unit

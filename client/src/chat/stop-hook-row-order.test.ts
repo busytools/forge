@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { fold, type Unit } from './units';
+import { fold, type Unit, type WorkRow } from './units';
 
 /**
  * Where a stop-hook row lands, against the frames that followed it.
@@ -57,11 +57,22 @@ const silentStop = (): unknown => ({
 
 /**
  * Every row a fold draws, in order: a work unit contributes its rows, and
- * every other unit is a row of its own (the reader's message and the hook
- * chip are both units rather than work rows).
+ * every other unit is a row of its own. The hook chip is a work row, inside
+ * the run that closes at the stop that drew it; the reader's message is a
+ * unit of its own.
  */
 const drawn = (units: Unit[]): string[] =>
   units.flatMap((unit) => (unit.kind === 'leaves' ? unit.rows.map((row) => row.tag) : [unit.kind]));
+
+/** Every hook chip a fold drew, which is the turn's one at most. */
+const feetOf = (units: Unit[]): Extract<WorkRow, { tag: 'hookfoot' }>[] =>
+  units.flatMap((unit) =>
+    unit.kind === 'leaves'
+      ? unit.rows.filter(
+          (row): row is Extract<WorkRow, { tag: 'hookfoot' }> => row.tag === 'hookfoot',
+        )
+      : [],
+  );
 
 /** Where the stop hook's own row sits, which is the only row it may draw. */
 const hookAt = (rows: string[]): number =>
@@ -89,5 +100,28 @@ describe('a stop-hook row and the frames after it', () => {
     expect(later, `the later call below the hook row, in ${JSON.stringify(rows)}`).toBeGreaterThan(
       hook,
     );
+  });
+
+  it('keeps one chip across stops separated by work', () => {
+    const units = fold([call('one'), silentStop(), call('two'), silentStop(), call('three')]);
+    const feet = feetOf(units);
+    expect(feet.length, `one chip, in ${JSON.stringify(drawn(units))}`).toBe(1);
+    expect(feet[0]?.batches.length, 'both stops counted in it').toBe(2);
+    expect(feet[0]?.actions, 'and every hook of both').toBe(6);
+    expect(drawn(units), 'the chip stays where the first stop fired').toEqual([
+      'call',
+      'hookfoot',
+      'call',
+      'call',
+    ]);
+  });
+
+  it('keeps one chip across consecutive stops after a call', () => {
+    const units = fold([call('one'), silentStop(), silentStop()]);
+    const feet = feetOf(units);
+    expect(feet.length, `one chip, in ${JSON.stringify(drawn(units))}`).toBe(1);
+    expect(feet[0]?.batches.length).toBe(2);
+    expect(feet[0]?.actions).toBe(6);
+    expect(drawn(units), 'the work above the chip is kept').toEqual(['call', 'hookfoot']);
   });
 });
