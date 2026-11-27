@@ -2,58 +2,57 @@
  * The reader's own words, from the moment enter is pressed to the moment the
  * core has them.
  *
- * **Both surfaces that send are one mechanism.** A prompt and a prompt's answer
- * are both a command that leaves the browser and returns no answer of its own,
- * so the wait has to be drawn somewhere or the box clears for no reason and a
- * slow dispatch reads as a key that did nothing. The mark rides the row the
- * words are going to occupy, which is where the reader is already looking.
+ * **One entry per message, keyed by the prompt's own id**, because the pile
+ * draws every one of them: a second press while the first still waits is a
+ * second card, and two sends of the same text are told apart by id, never by
+ * their words.
+ *
+ * The pending row is the ONLY home the words have until the core answers: the
+ * queue draws it as `sending`, the core's `prompt_queued` hands it over to the
+ * core's own row, and its `sent` frame moves it into the chat. A refusal keeps
+ * it where it is with the reason and a retry, which is the whole of this
+ * client's refusal channel for a send.
  *
  * Held per seat, keyed the way the composer's box is: a reader moving between
  * seats must not meet another seat's pending send, and a send that fails must
  * still be there when they come back.
- *
- * The view this client replaced has the same shape: it drew the reader's
- * words at submit rather than waiting for the core's own copy of them, and it
- * held that per session.
  */
 
 import { SvelteMap } from 'svelte/reactivity';
 
 import { queuedWords } from './units';
 
-/**
- * One send, from the enter that started it to the core's own copy of the words.
- *
- * **Three states, because the question the row answers changes halfway.** At
- * first it is "has the core got this", which the turn going in flight answers.
- * After that it is "where are my words", and that one is not answered until the
- * core's own copy of them is in the conversation - which arrives on the next
- * page read rather than as a frame, since a prompt forge injects is not echoed
- * back on stream-json. A row that went with the first answer would take the
- * reader's words off the screen for the length of the turn.
- */
-export type Echo =
+/** One send, from the enter that started it to the core's own word about it. */
+export interface PendingSend {
+  seat: string;
+  uuid: string;
+  source: string;
+  words: string;
   /**
-   * On its way, and what the seat was doing when it was posted.
-   *
-   * `running` records whether a turn was already in flight at that moment: a
-   * turn that was already there says the core had accepted something else, so
-   * the next turn going in flight is not this send being taken. A send wrongly
-   * read as taken cannot be refused any more - `refuse` rewrites only what is
-   * still on its way - so the refusal would be lost in silence.
-   *
-   * **`id` is the prompt's own**, minted where the send left, on every state:
-   * words alone cannot tell two sends of the same text apart, and the pile's
-   * cancel is settled per prompt - so the arm that clears a pending mark on a
-   * cancel compares this, not the words.
+   * `sending` until the core answers, then gone; `not_sent` when it never
+   * went, carrying the reason and the retry the sender is owed.
    */
-  | { state: 'sending'; words: string; running: boolean; id: string; dispatch: number }
-  | { state: 'taken'; words: string; id: string; dispatch: number }
-  | { state: 'failed'; words: string; why: string; id: string; dispatch: number };
+  state: 'sending' | 'not_sent';
+  /** Why it is not sent: the core's words where it refused, ours where a link died. */
+  reason: string;
+  /**
+   * When the transport accepted the frame, in milliseconds, or `null` while
+   * it has not. The 30 s `no word yet` is measured from here: acceptance is
+   * the last moment anything at this end can vouch for the send.
+   */
+  acceptedAt: number | null;
+  /** Whether the seat already had a turn in flight when the words were posted. */
+  running: boolean;
+  dispatch: number;
+}
 
-/** A send the core's copy of has arrived leaves nothing behind, which is a delete rather than a fourth state. */
+/** The id a send and its seat make, one entry per message. */
+function heldKey(seat: string, uuid: string): string {
+  return `${seat}\u0000${uuid}`;
+}
+
 class Echoes {
-  #held = new SvelteMap<string, Echo>();
+  #held = new SvelteMap<string, PendingSend>();
   /**
    * The number this client's next press carries.
    *
@@ -63,24 +62,47 @@ class Echoes {
    */
   #next = 0;
 
-  /** What this seat is waiting on, or `undefined` when it is waiting on nothing. */
-  of(key: string): Echo | undefined {
-    return this.#held.get(key);
+  /** Every pending row a seat draws, oldest first. */
+  of(seat: string): PendingSend[] {
+    const out: PendingSend[] = [];
+    for (const held of this.#held.values()) if (held.seat === seat) out.push(held);
+    return out;
+  }
+
+  /** Whether this id is a send this client made for the seat. */
+  isPending(seat: string, uuid: string): boolean {
+    return this.#held.has(heldKey(seat, uuid));
   }
 
   /**
    * Words on their way.
    *
-   * A second send takes the first one's place: one row carries what the reader
-   * is waiting on, and the first send's own row arrives from the wire as soon
-   * as the core has it.
-   *
-   * `running` is whether the seat already had a turn in flight when the send
-   * left, which is what tells a send that started a turn from one that landed
-   * in a turn already running.
+   * A refused row the last press left is retired here: the reader pressing
+   * again has answered it, and the line where the card was would otherwise
+   * stand beside a fresh send.
    */
-  post(key: string, words: string, running: boolean, id: string, dispatch: number): void {
-    this.#held.set(key, { state: 'sending', words, running, id, dispatch });
+  post(
+    seat: string,
+    uuid: string,
+    words: string,
+    running: boolean,
+    dispatch: number,
+    source = 'you',
+  ): void {
+    for (const [key, held] of this.#held) {
+      if (held.seat === seat && held.state === 'not_sent') this.#held.delete(key);
+    }
+    this.#held.set(heldKey(seat, uuid), {
+      seat,
+      uuid,
+      source,
+      words,
+      state: 'sending',
+      reason: '',
+      acceptedAt: null,
+      running,
+      dispatch,
+    });
   }
 
   /** A number for one press, minted before its command goes. */
@@ -90,61 +112,80 @@ class Echoes {
   }
 
   /**
+   * The transport took the frame, which starts the 30 s clock.
+   *
+   * **Acceptance is not the core's word.** It says the frame crossed this
+   * end's link; a core that never answers is what `no word yet` names.
+   */
+  accept(seat: string, uuid: string, at: number): void {
+    const held = this.#held.get(heldKey(seat, uuid));
+    if (held === undefined || held.acceptedAt !== null) return;
+    this.#held.set(heldKey(seat, uuid), { ...held, acceptedAt: at });
+  }
+
+  /**
    * The core refused the press that named this dispatch, in its own words.
    *
    * Returns whether this client holds a send for that dispatch: the frame is
    * that send's whatever state it is in, and a refusal must not be read
-   * against another seat's send (`refuse` only rewrites one still on its way).
+   * against another seat's send.
    */
   refuseDispatch(dispatch: number, why: string): boolean {
-    for (const [key, echo] of this.#held) {
-      if (echo.dispatch !== dispatch) continue;
-      this.refuse(key, why);
+    for (const held of this.#held.values()) {
+      if (held.dispatch !== dispatch) continue;
+      this.refuse(held.seat, held.uuid, why);
       return true;
     }
     return false;
   }
 
   /**
-   * The core has them: it started the turn they asked for.
+   * The send did not go, in the words the reader needs.
    *
-   * The mark goes and the words stay. This is the whole of "it is sent" - the
-   * row is the reader's own message from here until the conversation carries
-   * its own copy of it.
-   *
-   * Only a send that STARTED the turn is taken here. One posted into a turn
-   * already running is settled by the conversation carrying its words, or by a
-   * refusal - never by a turn it did not begin, which would take it past the
-   * point where a refusal can still reach it.
+   * Only one still on its way is refused here: a refusal that arrives after
+   * the core took the words belongs to another command, and drawing it would
+   * put a stranger's failure in the reader's column.
    */
-  take(key: string): void {
+  refuse(seat: string, uuid: string, why: string): void {
+    const key = heldKey(seat, uuid);
     const held = this.#held.get(key);
-    if (held === undefined || held.state !== 'sending' || held.running) return;
-    this.#held.set(key, {
-      state: 'taken',
-      words: held.words,
-      id: held.id,
-      dispatch: held.dispatch,
-    });
+    if (held === undefined || held.state !== 'sending') return;
+    this.#held.set(key, { ...held, state: 'not_sent', reason: why });
+  }
+
+  /** Every send still on its way in `seat`, refused in the given words. */
+  refuseAll(seat: string, why: string): void {
+    for (const held of [...this.#held.values()]) {
+      if (held.seat === seat) this.refuse(held.seat, held.uuid, why);
+    }
   }
 
   /**
-   * The core refused it, in its own words.
+   * The core has them: its `sent` frame moved the row into the chat.
    *
-   * Only a send still on its way is refused here: a refusal that arrives after
-   * the words landed belongs to another page's command, and drawing it would
-   * put a stranger's failure in the reader's column.
+   * The pending row goes; the chat row that the same moment draws is the
+   * send's next and only home.
    */
-  refuse(key: string, why: string): void {
-    const held = this.#held.get(key);
-    if (held === undefined || held.state !== 'sending') return;
-    this.#held.set(key, {
-      state: 'failed',
-      words: held.words,
-      why,
-      id: held.id,
-      dispatch: held.dispatch,
-    });
+  take(seat: string, uuid: string): void {
+    this.#held.delete(heldKey(seat, uuid));
+  }
+
+  /**
+   * A turn the seat started, so nothing still says `sending`.
+   *
+   * The backstop for a CLI that reports no lifecycle frames: no `sent` is
+   * coming, and the row the dispatch drew is the words' home from here.
+   *
+   * **Only a send that was posted idle is taken.** A send made into a turn
+   * already running did not start it, so the turn in flight is not its
+   * answer - taking it there would drop the row a refusal is still owed to.
+   */
+  takeAll(seat: string): void {
+    for (const [key, held] of this.#held) {
+      if (held.seat === seat && held.state === 'sending' && !held.running) {
+        this.#held.delete(key);
+      }
+    }
   }
 
   /**
@@ -156,22 +197,29 @@ class Echoes {
    */
   outstanding(): string[] {
     const out: string[] = [];
-    for (const [key, echo] of this.#held) if (echo.state === 'sending') out.push(key);
+    for (const held of this.#held.values()) {
+      if (held.state === 'sending' && !out.includes(held.seat)) out.push(held.seat);
+    }
     return out;
   }
 
   /** The core has the words, or the reader has given up on them. */
-  clear(key: string): void {
-    this.#held.delete(key);
+  clear(seat: string, uuid: string): void {
+    this.#held.delete(heldKey(seat, uuid));
+  }
+
+  /** Every pending row a seat holds, refused or not: a seat released, or a test. */
+  clearSeat(seat: string): void {
+    for (const [key, held] of this.#held) if (held.seat === seat) this.#held.delete(key);
   }
 
   /**
    * The prompt ids this client minted for `key`, whether or not they still
-   * carry an echo.
+   * carry a pending row.
    *
    * **A send can leave from a surface that draws no row of its own** - an
    * answer to a takeover, a palette command, a review or document nudge - and
-   * those post no echo: the id is the only thing that says the words are this
+   * those post no row: the id is the only thing that says the words are this
    * client's, and a parked reader's own send must carry them to the foot
    * instead of counting in the badge. Bounded, because a long session mints
    * one per send and only the newest can still be in flight.

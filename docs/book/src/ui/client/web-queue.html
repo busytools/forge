@@ -76,6 +76,11 @@
   .qcard .m .src.you{color:var(--text)} .qcard .m .src.cron{color:var(--warn)}
   .qcard .m .src.gotify{color:var(--teal)} .qcard .m .src.slack{color:var(--ok)}
   .qcard .m .src.peer{color:var(--blue)} .qcard .m .src.forge{color:var(--violet)}
+  .qcard .m .src.board{color:var(--muted)}
+  /* The card's state, over a reserved width so a swap never walks the chips. */
+  .qcard .m .st { color: var(--warn); min-width: 11ch; }
+  .ended .retry { margin-left: auto; color: var(--accent); text-decoration: underline;
+    background: none; border: 0; font: inherit; cursor: pointer; }
   .qcard .m .nx { color: var(--accent); }
   .qcard .m .pos { margin-left: auto; }
   .qcard.back .w, .qcard.back .m { visibility: hidden; }
@@ -121,7 +126,8 @@
   <p class="sub">The queued-prompt pile, in the variants it can be in. Every tile is the same foot: the queue pile above the surface, whose first lane is the strip and whose second is the box or the prompt's own lane - the lanes are drawn as <span class="mono">web-session.html</span> and <span class="mono">web-composer.html</span> draw them today, and the pile is new here. Every tile draws the real states; the timings under
   <span class="mono">The wire</span> are the measured ones.</p>
   <div class="legend">
-    <span>sources: <span style="color:var(--text)">you</span> &#183; <span style="color:var(--warn)">cron</span> &#183; <span style="color:var(--teal)">gotify</span> &#183; <span style="color:var(--ok)">slack</span> &#183; <span style="color:var(--blue)">peer</span> &#183; <span style="color:var(--violet)">forge</span></span>
+    <span>sources: <span style="color:var(--text)">you</span> &#183; <span style="color:var(--warn)">cron</span> &#183; <span style="color:var(--teal)">gotify</span> &#183; <span style="color:var(--ok)">slack</span> &#183; <span style="color:var(--blue)">peer</span> &#183; <span style="color:var(--muted)">board</span> &#183; <span style="color:var(--violet)">forge</span></span>
+    <span>states: <span style="color:var(--warn)">sending</span> &#183; queued &#183; <span style="color:var(--warn)">no word yet</span></span>
     <span>one 16px arc per queued prompt; no cap</span>
     <span>words only on the face; arcs are clean</span>
   </div>
@@ -143,13 +149,15 @@
 
   <h2>What the wire does (measured)</h2>
   <div class="tile">
-    <div class="steps"><span class="mono">send</span> &nbsp; forge writes the prompt with <span class="mono">uuid 4f9c&#8230;</span> - the card enters the pile</div>
-    <div class="steps"><span class="mono">queued</span> &nbsp; <span class="mono">{"type":"command_lifecycle","state":"queued","command_uuid":"4f9c&#8230;"}</span> - card stays; 1-5 ms after the send</div>
-    <div class="steps"><span class="mono">started</span> <span class="mono">{"type":"command_lifecycle","state":"started","command_uuid":"4f9c&#8230;"}</span> - that card drains into the chat, as the row it becomes, carrying its wait (<span class="mono">queued 0:0n &#183; sent</span>); 2-3 ms after the CLI removes it from its queue, which is the turn boundary or an absorption into the running turn. While it waited, the card was the only drawing of the words - the chat row is drawn at this frame, inside the interrupted turn when it was absorbed</div>
-    <div class="steps"><span class="mono">completed</span> <span class="mono">{"state":"completed","command_uuid":"4f9c&#8230;"}</span> - the turn that carried it ended</div>
+    <div class="steps"><span class="mono">send</span> &nbsp; forge writes the prompt with <span class="mono">uuid 4f9c&#8230;</span> - the card enters the pile, saying <span class="mono">sending</span> until the core answers</div>
+    <div class="steps"><span class="mono">queued</span> &nbsp; <span class="mono">{"type":"command_lifecycle","state":"queued","command_uuid":"4f9c&#8230;"}</span> - the core's own row takes the card over by id; 1-5 ms after the send</div>
+    <div class="steps"><span class="mono">sent</span> <span class="mono">{"state":"sent","source":"cli"}</span> - the card moves into the chat as the row it becomes, landing from where the card was, carrying its wait (<span class="mono">queued 0:0n &#183; sent</span>); 2-3 ms after the CLI removes it from its queue, which is the turn boundary or an absorption into the running turn. While it waited, the card was the only drawing of the words</div>
+    <div class="steps"><span class="mono">completed</span> - the turn that carried the prompt ended; a turn outcome stays turn-level, it is not the message's state</div>
+    <div class="steps"><span class="mono">not_sent</span> <span class="mono">{"not_sent":{"reason":"the CLI refused it before it ran"}}</span> - the row leaves and its ending line carries the reason and the words, with a retry for a person's send or a cron fire</div>
+    <div class="steps"><span class="mono">no word yet</span> - an accepted card that hears nothing for thirty seconds says so; nothing is auto-failed by the clock, and the next read settles it</div>
     <div class="steps"><span class="mono">delete</span> &nbsp; <span class="mono">{"subtype":"cancel_async_message","message_uuid":"4f9c&#8230;"}</span> - the CLI drops it; answers <span class="mono">{"cancelled":true}</span>. Too late answers false, and the card has usually drained by then</div>
-    <div class="steps"><span class="mono">parked question</span> - every prompt arriving is <span class="mono">queued</span> and stays; the answer lands, and all of them go <span class="mono">started</span> in the same instant, delivered in the one request that carries the answer. A row that left by <span class="mono">discarded</span> or <span class="mono">refused</span> leaves its words on the ending line, truncated like a card</div>
-    <div class="tnote">All of this carries only when forge stamps a uuid on each prompt; without it the CLI emits no lifecycle frames at all (measured: 0 frames with no uuid, 6-9 with).</div>
+    <div class="steps"><span class="mono">parked question</span> - every prompt arriving is <span class="mono">queued</span> and stays; the answer lands, and all of them go <span class="mono">sent</span> in the same instant, delivered in the one request that carries the answer. A refused row leaves its words on the ending line, truncated like a card</div>
+    <div class="tnote">All of this carries only when forge stamps a uuid on each prompt; without it the CLI emits no lifecycle frames at all (measured: 0 frames with no uuid, 6-9 with). <b>A state the core drew itself</b> - because no CLI frame was coming - carries the note a row's detail shows, so a fallback never reads as the CLI's own word.</div>
   </div>
 
 </div>
@@ -201,6 +209,7 @@ function foot(tile, spec) {
       c.style.zIndex = String(hidden ? 50 : 60 - d);
       c.innerHTML = `<div class="w">${it.text}</div>
         <div class="m"><span class="src ${it.src}">${it.src}</span>
+        ${it.state ? `<span class="st">${it.state}</span>` : ''}
         <span class="pos">${cur >= 0 && i === cur ? `#${i + 1} / ${n}` : (i === 0 ? '<span class="nx">next</span>' : '')}</span></div>`;
       if (spec.cascade && i < (spec.cascade ?? 0)) {
         c.style.transform = `translate(-30px,-${44 + i * 6}px) scale(.95)`;
@@ -241,6 +250,12 @@ const tiles = {
       note: 'no cap: forty arcs run taller than the column, and the chat above shrinks by all of it. To settle: keep, or compress past some depth' },
     { cap: 'A very long prompt', items: [{src:'you', text:'fix the flaky retry test before the gate, then re-run the whole suite, then open the PR against main and watch CI to green'}],
       note: 'the words truncate at the card width; the full text is in the chat once delivered' },
+    { cap: 'A press the core has not answered - <b>sending</b>',
+      items: [{src:'you', text:'then open the PR against main', state:'sending'}],
+      note: 'the words live here from Enter and nowhere else: the chat draws them only at sent' },
+    { cap: 'Accepted, no word for thirty seconds - <b>no word yet</b>',
+      items: [{src:'you', text:'then open the PR against main', state:'no word yet'}],
+      note: 'uncertainty, not failure: nothing is auto-failed by the clock, and the next authoritative read settles it' },
   ],
   g2: [
     { cap: 'At rest - box focused, newest in the face', items: many(12), cur: -1 },
@@ -253,9 +268,13 @@ const tiles = {
   g3: [
     { cap: 'Cancel - the walked row, before the key', items: many(12), cur: 5 },
     { cap: 'Cancel - after; the row leaves on the core\'s own frame', items: many(11), cur: 5 },
-    { cap: 'Delivery - the front lifts out', items: many(12), cur: -1,
-      note: 'the oldest (next) leaves the top of the pile and lands in the chat as a turn' },
-    { cap: 'Delivery - gone; the pile shifts up', items: many(11), cur: -1 },
+    { cap: 'Delivery - the front leaves', items: many(12), cur: -1,
+      note: 'the oldest (next) leaves the top of the pile and lands in the chat as the row it becomes, from the card\'s own position - one item moving' },
+    { cap: 'Delivery - gone; the pile shifts up', items: many(11), cur: -1,
+      note: 'the chat keeps its scroll position; only the pile above the box changes height' },
+    { cap: 'Not sent - a refused send, retry offered', items: [],
+      ended: '<span>not sent &#183; the connection is down: then open the PR against main</span><button class="retry" type="button">retry</button>',
+      note: 'a person\'s send or a cron fire may be retried; a peer\'s and the board\'s words are not this view\'s to send again' },
   ],
   g4: [
     { cap: 'A question is parked; the pile keeps growing', items: many(6), cur: -1, dock: true,
@@ -268,7 +287,7 @@ const tiles = {
     { cap: 'A background seat with a queue (not settled)', items: [],
       note: 'the rail could carry a count for a seat that is not open - shown as a chip: <span class="mono">forge &#183; 3 queued</span>. Decide later' },
     { cap: 'Cancel a prompt the CLI already took', items: [],
-      note: 'the row leaves on `started`, so a cancel landing after it answers <span class="mono">cancelled: false</span> and draws nothing - the card is gone before a hand could press. The one dim line the pile does draw, where the card was, is for a row that left by `discarded` or `refused`, which delivered nothing' },
+      note: 'the row leaves on `sent`, so a cancel landing after it answers <span class="mono">cancelled: false</span> and draws nothing - the card is gone before a hand could press. The one dim line the pile does draw, where the card was, is for a row that was <span class="mono">not_sent</span>, which delivered nothing' },
   ],
 };
 for (const [id, specs] of Object.entries(tiles)) {

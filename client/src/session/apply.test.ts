@@ -1642,35 +1642,45 @@ describe('applyUpdate', () => {
       expect(still.queue, 'a second queued frame is not a delivery').toHaveLength(1);
 
       const delivered = applyUpdate(held, {
-        prompt_lifecycle: { key: SLOT, uuid: 'u7', state: 'started' },
+        prompt_lifecycle: { key: SLOT, uuid: 'u7', state: 'sent', source: 'cli' },
       });
-      expect(delivered.queue, 'started is the CLI taking the prompt').toEqual([]);
+      expect(delivered.queue, 'sent is the CLI taking the prompt').toEqual([]);
     });
 
-    it('says so when a row left by discard or refusal, and not when it was taken', () => {
+    it('says so when a row was not sent, and not when it was taken', () => {
       const held = applyUpdate(empty(), { prompt_queued: queued });
 
       const delivered = applyUpdate(held, {
-        prompt_lifecycle: { key: SLOT, uuid: 'u7', state: 'started' },
+        prompt_lifecycle: { key: SLOT, uuid: 'u7', state: 'sent', source: 'cli' },
       });
       expect(delivered.queue_ended, 'being taken is the row doing its job').toBeNull();
 
       const discarded = applyUpdate(held, {
-        prompt_lifecycle: { key: SLOT, uuid: 'u7', state: 'discarded' },
+        prompt_lifecycle: {
+          key: SLOT,
+          uuid: 'u7',
+          state: { not_sent: { reason: 'the session ended before this prompt ran' } },
+          source: { forge: { note: 'the occupant went with the prompt still waiting' } },
+        },
       });
       expect(discarded.queue, 'the row leaves either way').toEqual([]);
-      expect(discarded.queue_ended).toEqual({ text: 'nightly sweep', state: 'discarded' });
-
-      const refused = applyUpdate(held, {
-        prompt_lifecycle: { key: SLOT, uuid: 'u7', state: 'refused' },
+      expect(discarded.queue_ended).toEqual({
+        text: 'nightly sweep',
+        state: 'not_sent',
+        reason: 'the session ended before this prompt ran',
+        source: 'cron',
       });
-      expect(refused.queue_ended).toEqual({ text: 'nightly sweep', state: 'refused' });
     });
 
     it('clears the last ending when the next prompt is queued', () => {
       const held = applyUpdate(empty(), { prompt_queued: queued });
       const ended = applyUpdate(held, {
-        prompt_lifecycle: { key: SLOT, uuid: 'u7', state: 'discarded' },
+        prompt_lifecycle: {
+          key: SLOT,
+          uuid: 'u7',
+          state: { not_sent: { reason: 'the CLI refused it before it ran' } },
+          source: 'cli',
+        },
       });
 
       const next = applyUpdate(ended, {
@@ -1703,6 +1713,12 @@ describe('applyUpdate', () => {
         prompt_cancel_resolved: { key: SLOT, uuid: 'u7', cancelled: true },
       });
       expect(dropped.queue).toEqual([]);
+      expect(dropped.queue_ended, 'a cancelled row leaves its words and reason behind').toEqual({
+        text: 'nightly sweep',
+        state: 'not_sent',
+        reason: 'the CLI cancelled it before it ran',
+        source: 'cron',
+      });
     });
 
     it("clears a dead CLI's rows, where no per-row frame ever will", () => {
@@ -1730,7 +1746,9 @@ describe('applyUpdate', () => {
       expect(next.queue, 'the rows go with the process, on the death event').toEqual([]);
       expect(next.queue_ended, 'one dim line where the cards were').toEqual({
         text: 'nightly sweep',
-        state: 'discarded',
+        state: 'not_sent',
+        reason: 'the session ended before this prompt ran',
+        source: 'cron',
       });
 
       const bare = empty();

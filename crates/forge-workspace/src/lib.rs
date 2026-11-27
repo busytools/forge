@@ -123,8 +123,8 @@ pub use handoff::{
     ShippedSkill, SkillInstall, install_skill, shipped_skills, skill_dir, skill_path,
 };
 pub use protocol::{
-    Command, DictateOutcome, DispatchError, FileDecl, NoticeSeverity, PromptSource, SessionUpdate,
-    TurnErrorClass,
+    Command, DictateOutcome, DispatchError, FileDecl, LifecycleSource, NoticeSeverity,
+    PromptSource, PromptState, QueueEnding, SessionUpdate, TurnErrorClass,
 };
 pub use target::{ProjectKey, SessionSlot, SessionTarget};
 pub use tts::{TtsSettings, TtsSnapshot, TtsView};

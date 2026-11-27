@@ -334,6 +334,15 @@ pub struct DomainSession {
     /// which are the only writer of a prompt's state. Belongs to the
     /// occupant, so it is dropped with the background registry.
     pub prompt_queue: Vec<crate::protocol::QueuedPrompt>,
+    /// The last prompt that left the queue without being sent, as a seat read
+    /// answers it.
+    ///
+    /// **The live frame is spoken once.** A page attaching after it - a reload,
+    /// a seat switch, a reconnect - draws the pile from the read, so the
+    /// ending has to be held here or a cancelled prompt vanishes without a
+    /// word and reads as delivered. Cleared when a new prompt is queued, so it
+    /// never stands beside a queue that has moved on.
+    pub queue_ending: Option<crate::protocol::QueueEnding>,
     /// The prompts this occupant's forge has drawn in the conversation, in
     /// the order they started, newest last and bounded.
     ///
@@ -685,24 +694,41 @@ impl DomainSession {
         // its run starts now - a resumed seat's file holds rows from before
         // this moment that the re-key must leave alone.
         self.delivered_prompts.clear();
+        // The ending was a line about the old occupant's commands; the
+        // successor's read must not draw it beside its own empty queue.
+        self.queue_ending = None;
         self.occupant_since_ms = now_ms();
         std::mem::take(&mut self.prompt_queue)
     }
 
     /// Record a prompt as waiting, at the dispatch site.
-    pub(crate) fn record_queued_prompt(
+    pub fn record_queued_prompt(
         &mut self,
         uuid: &str,
         source: crate::protocol::PromptSource,
         text: &str,
         attachments: Vec<forge_primitives::ImageAttachment>,
     ) {
+        // A new row is the next thing to look at, so the last ending goes with
+        // it rather than standing beside a queue that has moved on.
+        self.queue_ending = None;
         self.prompt_queue.push(crate::protocol::QueuedPrompt {
             uuid: uuid.to_owned(),
             source,
             text: text.to_owned(),
             attachments,
         });
+    }
+
+    /// Record the last prompt that left without being sent, for a page that
+    /// attaches after the live frame.
+    pub fn record_queue_ending(
+        &mut self,
+        text: String,
+        reason: String,
+        source: crate::protocol::PromptSource,
+    ) {
+        self.queue_ending = Some(crate::protocol::QueueEnding { text, reason, source });
     }
 
     /// The entry a lifecycle frame names, while it is still waiting.
@@ -820,6 +846,7 @@ impl DomainSession {
             conn,
             pending_interactions: PendingInteractions::default(),
             prompt_queue: Vec::new(),
+            queue_ending: None,
             delivered_prompts: std::collections::VecDeque::new(),
             occupant_since_ms: now_ms(),
             lifecycle_frames: None,

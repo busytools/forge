@@ -10,6 +10,12 @@
 import { slotOf, type SessionUpdate } from '../protocol';
 import { reportFrom, type ServiceReport } from './fleet';
 import {
+  lifecycleOriginFrom,
+  promptStateFrom,
+  type LifecycleOrigin,
+  type PromptState,
+} from './lifecycle';
+import {
   modelStateFrom,
   narrow,
   type DictateFailure,
@@ -1101,7 +1107,7 @@ export function biometricFrame(update: SessionUpdate): unknown[] | null {
 }
 
 /**
- * One prompt's place in its seat's queue, when the frame is one.
+ * One prompt's place in its life, when the frame is one.
  *
  * **The `uuid` is the prompt's identity**, and a fold that counts prompts
  * needs it: one queued behind a running turn is a second prompt, and a
@@ -1110,15 +1116,20 @@ export function biometricFrame(update: SessionUpdate): unknown[] | null {
  */
 export function promptLifecycleFrame(
   update: SessionUpdate,
-): { slot: SessionSlot; uuid: string; state: string } | null {
+): { slot: SessionSlot; uuid: string; state: PromptState; origin: LifecycleOrigin } | null {
   if (typeof update === 'string') return null;
-  const payload = (update as { prompt_lifecycle?: { uuid?: unknown; state?: unknown } })
-    .prompt_lifecycle;
+  const payload = (
+    update as { prompt_lifecycle?: { uuid?: unknown; state?: unknown; source?: unknown } }
+  ).prompt_lifecycle;
   if (payload === undefined || typeof payload.uuid !== 'string') return null;
-  if (typeof payload.state !== 'string') return null;
   const slot = slotOf(update);
   if (slot === null) return null;
-  return { slot, uuid: payload.uuid, state: payload.state };
+  return {
+    slot,
+    uuid: payload.uuid,
+    state: promptStateFrom(payload.state),
+    origin: lifecycleOriginFrom(payload.source),
+  };
 }
 
 /** The CLI's background registry, as the fact a row draws, when the frame is one. */
