@@ -1282,12 +1282,14 @@ impl Tool for Wait {
                 },
                 "kind": {
                     "type": "string",
-                    "enum": ["decision", "dependency", "resource"],
-                    "description": "What it waits on; the kind decides where the unblock lands.",
+                    "enum": ["user", "dependency", "resource"],
+                    "description": "What it waits on: `user` is the person (an ask), \
+                                    `dependency` another task, `resource` an account, CI or a \
+                                    machine.",
                 },
                 "detail": {
                     "type": "string",
-                    "description": "The words: what exactly is being waited for. For a decision: \
+                    "description": "The words: what exactly is being waited for. For a user wait: \
                                     why it needs the user specifically, what is already decided, \
                                     what is open, what their answer changes, and the links to \
                                     read - a bare question with no why is its own failure, and \

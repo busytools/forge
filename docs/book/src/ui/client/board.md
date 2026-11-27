@@ -52,35 +52,67 @@ are refreshed at most five minutes after the page is watched again.
 
 Exceptions first, aggregated by outcome: a reader of a fleet does not want
 one card per agent, they want what needs them, what looks wrong, who is
-doing what, and what is next. Four regions, in that order, each drawn
-under a heading with its count.
+doing what, and what is next. Above the four regions sits **since your last
+look**, the digest strip; the four follow in order, each drawn under a
+heading with its count.
+
+### Since your last look
+
+The digest strip summarizes what changed while the reader was away: one
+line of counts - merged, moved, landed, expired - which opens onto the
+rotating sample of agent actions nobody escalated. The sample is drawn from
+the sessions record, not from the board's own asks: a few unasked tool
+calls with their own words, so it names commands and paths, and it says
+what it drew (`sampled 3 of 41 agent actions`). The rotation moves every
+five minutes, so a reader who comes back sees a different few.
+
+**The last look is the server's stamp**, recorded when the reader leaves
+the window rather than when it opens - a stamp on open would erase the
+delta before it drew. Nothing in the strip is urgent; the urgent things
+stay in the regions below it.
 
 ### Needs you
 
-The rows waiting on the reader, as cards - a look ahead of a decision,
-then the oldest wait first, because a look is a finished row nobody can
-close until it is given.
+The rows waiting on the reader, as cards - a look first, then the oldest
+wait, because a look is a finished row nobody can close until it is given.
 
-**A card is an ask, not a dossier**: it reads as a decision at a glance,
-and the detail sits behind its own small controls. Every card is one quiet
-meta line - the kind, the row's subject and owner, and how long the wait
-has run, counted from the wait's own start and never from the row's last
-edit - then the question, then what the reader does about it.
+**A card is an ask, not a dossier**: it reads as an ask at a glance, and
+the detail sits behind its own small controls. Every card is one quiet meta
+line - the kind, the row's subject and owner, how long the wait has run
+(counted from the wait's own start, never from the row's last edit), and
+its lifecycle chips - then the question, then what the reader does about
+it.
 
-A **decision card** names the question the lead asked and draws the options
-it enumerated as compact buttons the reader answers with one press. The
-note is optional and collapsed behind `add a note`; a wait minted before
-decisions carried questions instead offers `answer in your words`, which
-opens the same box. A `discuss` link goes to the owner's session - where the
-conversation happens, and what it reaches is written back to the row.
+There are five kinds, and the ask's kind decides the value the answer
+carries:
 
-A **look card** is the same shape with the look's own ask - `Approve
-<artifact> or say what to change` - the artifact as a small door, and the
-strip's controls: `approve`, `send back`, and the send-back words behind
-`add a note`. Two of the core's refusals are drawn rather than offered: a
-root whose children are still open cannot close on a look and draws the
-count in place of `approve`, and a look with no verified evidence behind
-its completion draws that hold; `send back` stays either way.
+| Kind | The ask | The bar |
+|---|---|---|
+| a look | `Approve <artifact> or say what to change` | `approve` (filled), `send back` (outlined), the send-back words behind `add a note` |
+| decision | the question, with the options the lead enumerated | the options as filled pills, answered with one press; the note optional |
+| clarification | a question whose answer is the reader's own words | `answer in your words` opens the box, `answer` sends it as text |
+| exception | something the run could not settle | `retry`, `rescope`, `drop`, `diagnose` as filled presses, one disposition |
+| teaching | a recurring trouble and the class it belongs to | `write the lesson` opens the box, `settle the class` sends the words as the answer and the lesson |
+
+A **teaching's** answer writes a project policy note for its class: the
+project's leads read it from their next spawn (a resumed lead sees it after
+its next spawn or its own `tasks__policy` read), and the drive stops
+raising that class. A **look card** also draws two of the core's refusals
+rather than offering the press: a root whose children are still open cannot
+close on a look and draws the count in place of `approve`, and a look with
+no verified evidence behind its completion draws that hold; `send back`
+stays either way.
+
+**Every card carries its lifecycle in words, and the words are the
+person's.** A deadline chip names the default that runs if the ask is
+ignored and when - `escalate at 14:02`, `expire at 14:02`, `reask at
+14:02`; never approve. An ask the reader has seen says `seen` in the meta
+line and in the footer, and one they deferred says `snoozed`; both keep
+their card, because hiding it would be the board deciding for the person.
+The footer's last two doors are `snooze 1h` and `until it moves`, and a
+`mark seen` that turns into the word `seen` once pressed. Acknowledging and
+snoozing are the reader's own acts: no agent has a verb for either, so the
+press that writes them is always the person's.
 
 Where a card carries evidence, it is one summary line: the gate's own word
 (`evidence verified`, `evidence unchecked`, `evidence refused`) and the
@@ -88,12 +120,14 @@ bounded excerpt, which `more` expands and `less` folds back. A claim with no
 excerpt still states its word.
 
 **One action bar per card, and the hierarchy is by shape.** The primary
-actions - `approve` on a look, the option pills on a decision - are the only
-filled controls; `send back` is outlined at the same height and radius; the
-note is a ghost button, a button rather than an underline. The row's own
-doors, `discuss` and `open the row`, are not actions: they sit in a footer
-line in the meta type, equally weighted and unmarked by an underline, split
-from the bar by a hairline.
+actions - `approve` on a look, the option pills on a decision, a
+disposition on an exception, `answer` and `settle the class` on the kinds
+whose value is words - are the only filled controls; `send back` is
+outlined at the same height and radius; the note is a ghost button, a
+button rather than an underline. The row's own doors are not actions: they
+sit in a footer line in the meta type, equally weighted and unmarked by an
+underline, split from the bar by a hairline - `discuss`, `open the row`,
+`mark seen`, `snooze 1h` and `until it moves`, split by dots.
 
 ### Exceptions
 
@@ -276,12 +310,16 @@ back when it goes.
 **Every control is one command on the socket, carrying this project on it.**
 `task_move` moves a row between lanes and lands it at the drop's place,
 `task_rank` re-orders it, `task_assign` changes its owner, `task_verdict`
-approves or sends back a verify row, `task_answer` answers a question
-(carrying `choice` when the row offered options, and the note in `words`),
-`task_create` files a row, `task_reopen` strikes a lead's attestation,
-`task_reserve` reserves or releases the pick, `task_restore` brings a closed
-row back, and `task_detail` asks for one row whole. A refused edit says so
-on the service line rather than silently reverting.
+approves or sends back a verify row, and `task_answer` answers an ask with
+the value its kind needs - `choice` for a decision, `text` for a
+clarification or a teaching, `disposition` for an exception - with the
+note in `words` and a teaching's policy note in `lesson`. `task_ack` marks
+an ask seen, `task_snooze` defers it (`until` a span such as `1h`, or
+`activity`), and `board_seen` stamps the last look as the reader leaves
+the window. `task_create` files a row, `task_reopen` strikes a lead's
+attestation, `task_reserve` reserves or releases the pick, `task_restore`
+brings a closed row back, and `task_detail` asks for one row whole. A
+refused edit says so on the service line rather than silently reverting.
 
 ## The states the page can be in
 
@@ -291,9 +329,22 @@ on the service line rather than silently reverting.
   down says so in its own words instead of reading forever.
 - **Unknown**: a project the snapshot does not carry draws its name and one
   line saying this forge does not hold it, with no regions and no create line.
-- **Empty**: a project with no live rows says so under the window; the full
-  board draws its three empty lanes and the create line.
+- **Empty**: a project with no live rows draws the window's all-clear as a
+  claim with its evidence - when the board was checked, how many agents
+  ran, what was sampled and the delta since the last look - and its four
+  regions say what they hold none of; the full board draws its three empty
+  lanes and the create line. A payload from a server older than the
+  attention fields says `nothing is waiting on you` plainly rather than
+  inventing evidence.
 - **The archive reading, refused, or empty**: the toggle says which.
+
+## Motion
+
+A card arrives, moves and leaves as a move rather than a pop: a new ask
+flies in, a card re-ordered or answered slides to its new place, and a
+resolved card fades out. A reader whose system asks for reduced motion gets
+the position change with no animation. The same motion runs on the desktop
+app, the web client and Android, which draw this one page.
 
 ## The two widths
 

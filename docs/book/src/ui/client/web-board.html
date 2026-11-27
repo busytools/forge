@@ -213,10 +213,24 @@
     letter-spacing: .05em; color: var(--dim); }
   .w-n { background: var(--s3); color: var(--text); border-radius: 999px; padding: 1px 8px; }
   .w-quiet { color: var(--dim); font-size: 14px; }
+  .w-claim { margin: 0; color: var(--muted); font-family: var(--mono); font-size: 12.5px;
+    line-height: 1.6; }
+  .w-digest { border: 1px solid var(--line); border-radius: var(--r); background: var(--s2); }
+  .w-digest-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px;
+    width: 100%; padding: 9px 12px; background: none; border: none; cursor: pointer;
+    text-align: left; font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .w-digest-title { color: var(--text); }
+  .w-digest-line { color: var(--dim); }
+  .w-sample { padding: 0 12px 8px; }
   .w-needs { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 10px; }
   .w-need { background: var(--sel); border-radius: var(--r); padding: 12px 14px 10px; position: relative; }
   .w-need::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px;
     background: var(--accent); border-radius: var(--r) 0 0 var(--r); opacity: .8; }
+  .w-need.seen::before { background: var(--dim); opacity: .6; }
+  .w-need.snoozed { background: var(--s2); }
+  .w-need.snoozed::before { background: var(--dim); opacity: .45; }
+  .w-chip { color: var(--dim); background: var(--s3); border-radius: 999px;
+    padding: 0 8px; font-size: 12.5px; }
   .w-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
     margin-bottom: 4px; font-family: var(--mono); font-size: 12.5px; }
   .w-kind { display: inline-flex; align-items: center; gap: 4px;
@@ -248,6 +262,7 @@
     font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
   .w-foot-link { background: none; border: none; padding: 0; color: inherit;
     font: inherit; cursor: pointer; text-decoration: none; }
+  .w-foot-link.w-seen { color: var(--dim); cursor: default; }
   .w-dot { color: var(--line); }
   .w-list { list-style: none; }
   .w-exc, .w-live { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline;
@@ -360,7 +375,7 @@
     <button class="b-done">done</button>
   </div>
   <p class="b-counts">
-    <b>3 waiting on you</b>
+    <b>4 waiting on you</b>
     <span class="b-read-counts">32 rows &middot; 2 running</span>
   </p>
 
@@ -373,13 +388,21 @@
   <!-- The window: needs, exceptions, live, next. The front door on every
        address this page is opened at. -->
   <section class="w-window" aria-label="the board window">
+    <section class="w-digest" aria-label="since your last look">
+      <button class="w-digest-head" aria-expanded="false">
+        <span class="w-digest-title">since your last look</span>
+        <span class="w-digest-line">2 merged &middot; 3 moved &middot; 1 landed &middot; sampled 3 of 41 agent actions</span>
+      </button>
+    </section>
+
     <section aria-labelledby="d-needs">
-      <h2 class="w-h" id="d-needs">needs you <span class="w-n">3</span></h2>
+      <h2 class="w-h" id="d-needs">needs you <span class="w-n">4</span></h2>
       <div class="w-needs">
-        <article class="w-need">
+        <article class="w-need seen">
           <div class="w-meta">
             <span class="w-kind">a look</span>
             <span class="w-ctx">the retrofit's board window &middot; lead</span>
+            <span class="w-chip">seen</span>
             <span class="w-age">waiting 1h</span>
           </div>
           <h3 class="w-q">Approve PR #3086 or say what to change</h3>
@@ -398,12 +421,20 @@
             <a class="w-foot-link" href="./web-session.html">discuss</a>
             <span class="w-dot" aria-hidden="true">&middot;</span>
             <button class="w-foot-link">open the row</button>
+            <span class="w-dot" aria-hidden="true">&middot;</span>
+            <span class="w-foot-link w-seen">seen</span>
+            <span class="w-dot" aria-hidden="true">&middot;</span>
+            <button class="w-foot-link">snooze 1h</button>
+            <span class="w-dot" aria-hidden="true">&middot;</span>
+            <button class="w-foot-link">until it moves</button>
           </div>
         </article>
-        <article class="w-need">
+        <article class="w-need snoozed">
           <div class="w-meta">
             <span class="w-kind">decision</span>
             <span class="w-ctx">retrofit the task board &middot; lead</span>
+            <span class="w-chip">snoozed</span>
+            <span class="w-chip">escalate at 14:02</span>
             <span class="w-age">waiting 3h</span>
           </div>
           <h3 class="w-q">Ship the window with the full board one toggle away?</h3>
@@ -423,6 +454,12 @@
             <a class="w-foot-link" href="./web-session.html">discuss</a>
             <span class="w-dot" aria-hidden="true">&middot;</span>
             <button class="w-foot-link">open the row</button>
+            <span class="w-dot" aria-hidden="true">&middot;</span>
+            <button class="w-foot-link">mark seen</button>
+            <span class="w-dot" aria-hidden="true">&middot;</span>
+            <button class="w-foot-link">snooze 1h</button>
+            <span class="w-dot" aria-hidden="true">&middot;</span>
+            <button class="w-foot-link">until it moves</button>
           </div>
         </article>
         <article class="w-need">
@@ -441,6 +478,41 @@
             <a class="w-foot-link" href="./web-session.html">discuss</a>
             <span class="w-dot" aria-hidden="true">&middot;</span>
             <button class="w-foot-link">open the row</button>
+            <span class="w-dot" aria-hidden="true">&middot;</span>
+            <button class="w-foot-link">mark seen</button>
+            <span class="w-dot" aria-hidden="true">&middot;</span>
+            <button class="w-foot-link">snooze 1h</button>
+            <span class="w-dot" aria-hidden="true">&middot;</span>
+            <button class="w-foot-link">until it moves</button>
+          </div>
+        </article>
+        <article class="w-need">
+          <div class="w-meta">
+            <span class="w-kind">exception</span>
+            <span class="w-ctx">flaky transport test &middot; reviewer</span>
+            <span class="w-chip">expire at 18:00</span>
+            <span class="w-age">waiting 4h</span>
+          </div>
+          <h3 class="w-q">The transport test failed twice on a cold target; how should the run go on?</h3>
+          <div class="w-actions">
+            <div class="w-options" role="group" aria-label="dispose of it">
+              <button class="w-primary">retry</button>
+              <button class="w-primary">rescope</button>
+              <button class="w-primary">drop</button>
+              <button class="w-primary">diagnose</button>
+            </div>
+            <button class="w-ghost" aria-expanded="false">add a note</button>
+          </div>
+          <div class="w-foot">
+            <a class="w-foot-link" href="./web-session.html">discuss</a>
+            <span class="w-dot" aria-hidden="true">&middot;</span>
+            <button class="w-foot-link">open the row</button>
+            <span class="w-dot" aria-hidden="true">&middot;</span>
+            <button class="w-foot-link">mark seen</button>
+            <span class="w-dot" aria-hidden="true">&middot;</span>
+            <button class="w-foot-link">snooze 1h</button>
+            <span class="w-dot" aria-hidden="true">&middot;</span>
+            <button class="w-foot-link">until it moves</button>
           </div>
         </article>
       </div>
@@ -475,6 +547,31 @@
         <li><button class="w-link">watch the live board</button> <span class="w-why">standing &middot; every 1d</span></li>
         <li><button class="w-link">draw the chase's cadence check</button> <span class="w-why">1d</span></li>
       </ol>
+    </section>
+  </section>
+
+  <div class="face-cap">the window when nothing needs the reader: the all-clear is a claim with its evidence</div>
+
+  <section class="w-window" aria-label="the board window with nothing waiting">
+    <section class="w-digest" aria-label="since your last look">
+      <button class="w-digest-head" aria-expanded="true">
+        <span class="w-digest-title">since your last look</span>
+        <span class="w-digest-line">2 merged &middot; 3 moved &middot; 1 landed &middot; sampled 3 of 41 agent actions</span>
+      </button>
+      <ul class="w-list w-sample" aria-label="the sampled agent actions">
+        <li class="w-exc"><span class="w-strong">builder</span>
+          <span class="w-why">Bash</span>
+          <span class="w-why">cargo nextest run -p forge-workspace</span>
+          <span class="w-why">13:42</span></li>
+        <li class="w-exc"><span class="w-strong">reviewer</span>
+          <span class="w-why">Read</span>
+          <span class="w-why">crates/forge-server/src/transport/wire.rs</span>
+          <span class="w-why">13:40</span></li>
+      </ul>
+    </section>
+    <section aria-labelledby="d-needs-empty">
+      <h2 class="w-h" id="d-needs-empty">needs you</h2>
+      <p class="w-claim">nothing needs you - checked 13:48 &middot; 2 agents ran &middot; 2 merged &middot; 3 moved &middot; 1 landed &middot; sampled 3 of 41 agent actions</p>
     </section>
   </section>
 

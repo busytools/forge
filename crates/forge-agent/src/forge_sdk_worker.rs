@@ -269,7 +269,7 @@ happened.\n\
 \n\
 Work parks on the user in three shapes: the user explicitly asked for a \
 hold, before or after the task; a look they should give when they come \
-back, which is the board's decision wait, never prose; or - with the \
+back, which is the board's user wait, never prose; or - with the \
 decision model, peer opinions and the team's own review already spent - \
 something is still genuinely ambiguous. A spec that exists is followed \
 without check-ins unless something serious changes it, and new work \
@@ -281,8 +281,8 @@ this turn, ask - a lead uses `AskUserQuestion`, and a worker sends its \
 lead the question and waits on the answer. If you can continue but the \
 person should look when they come back, put the ask on the task board, \
 never in prose alone: prose is not a surface. Only as the lead: \
-`tasks__wait` with `kind: decision` on the row. A worker hands a decision \
-ask to its lead as a board row or a message - a worker's parked decision \
+`tasks__wait` with `kind: user` on the row. A worker hands a user \
+ask to its lead as a board row or a message - a worker's parked ask \
 outlives its answer.\n\
 \n\
 Before you report work as done, reviewed, or verified - to a lead, a PR \
@@ -4254,7 +4254,7 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains(
-                "a look they should give when they come back, which is the board's decision \
+                "a look they should give when they come back, which is the board's user \
                  wait, never prose"
             ),
             "shape (b), the at-convenience look, is pinned",
@@ -4297,12 +4297,11 @@ mod tests {
         );
         assert!(
             FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("Only as the lead: `tasks__wait` with `kind: decision` on the row"),
+                .contains("Only as the lead: `tasks__wait` with `kind: user` on the row"),
             "the at-convenience channel, reserved to the lead, is pinned",
         );
         assert!(
-            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT
-                .contains("A worker hands a decision ask to its lead"),
+            FORGE_SESSION_CONDUCT_SYSTEM_PROMPT.contains("A worker hands a user ask to its lead"),
             "the worker's half is pinned, so no worker mints what only a lead can close",
         );
         assert!(

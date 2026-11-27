@@ -10899,9 +10899,10 @@ mod lead_charter_tests {
     #[test]
     fn the_charter_keeps_the_user_decision_mint_with_the_lead() {
         for clause in [
-            "Only you mint a `verify: user` gate or a `kind: decision` wait",
+            "Only you mint a `verify: user` gate or a `kind: user` wait",
             "a worker hands the ask to you instead",
-            "A decision wait a worker parks outlives its answer and you cannot close it afterward",
+            "A user wait a worker parks outlives its answer and you cannot close it afterward",
+            "Acknowledge and snooze are the user's own acts on the board",
         ] {
             assert!(
                 DEFAULT_LEAD_CHARTER.contains(clause),
@@ -11155,7 +11156,7 @@ mod lead_charter_tests {
         );
         assert!(
             DEFAULT_LEAD_CHARTER
-                .contains("a look they should give when they return (the board's decision wait)"),
+                .contains("a look they should give when they return (the board's user wait)"),
             "the at-convenience look is pinned beside the hold",
         );
         assert!(
