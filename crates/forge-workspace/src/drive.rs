@@ -160,6 +160,14 @@ impl Claims {
     }
 }
 
+/// `at` truncated to whole seconds, the precision the acknowledgement store
+/// keeps, so a persisted stamp compares equal to the row it was taken from.
+fn whole_secs(at: SystemTime) -> SystemTime {
+    SystemTime::UNIX_EPOCH
+        + at.duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(Duration::ZERO, |since| Duration::from_secs(since.as_secs()))
+}
+
 impl Workspace {
     /// What the board owes `lead` right now. A wait on the user is not in
     /// this set: a decision or a look is the user's to give, and a project
@@ -230,10 +238,13 @@ impl Workspace {
                              it with the reason.",
                             task.subject,
                         );
+                        // **Only a delivered default is spent.** A lead with
+                        // no session leaves the row due, so the next pass
+                        // tries again rather than dropping the escalation.
                         if deliver.to_seat(&lead, &text) == Delivery::Delivered {
                             delivered += 1;
+                            self.mark_ask_default_ran(&view.name, &task.id, now);
                         }
-                        self.mark_ask_default_ran(&view.name, &task.id, now);
                     }
                     DefaultIfIgnored::Reask => {
                         let text = format!(
@@ -243,13 +254,13 @@ impl Workspace {
                         );
                         if deliver.to_seat(&lead, &text) == Delivery::Delivered {
                             delivered += 1;
+                            let period = wait
+                                .since
+                                .and_then(|since| due.at.duration_since(since).ok())
+                                .map_or(REASK_PERIOD_SECS, |period| period.as_secs())
+                                .max(60);
+                            self.rearm_ask(&view.name, &task.id, now + Duration::from_secs(period));
                         }
-                        let period = wait
-                            .since
-                            .and_then(|since| due.at.duration_since(since).ok())
-                            .map_or(REASK_PERIOD_SECS, |period| period.as_secs())
-                            .max(60);
-                        self.rearm_ask(&view.name, &task.id, now + Duration::from_secs(period));
                     }
                 }
                 continue;
@@ -271,7 +282,11 @@ impl Workspace {
             }
             // The acknowledged-but-forgotten state, named once per
             // acknowledgement, with the named one persisted beside the row.
-            if let Some(acknowledged) = wait.acknowledged_at
+            // **Whole seconds on both sides**: the store keeps the stamp to
+            // the second, so the row's sub-second part is truncated before
+            // the compare and the stamp - otherwise they never match and the
+            // nudge fires on every pass.
+            if let Some(acknowledged) = wait.acknowledged_at.map(whole_secs)
                 && age_secs(acknowledged, now) >= FORGOTTEN_ACK_SECS
                 && self.ack_named(&view.name, &task.id) != Some(acknowledged)
             {
@@ -281,10 +296,12 @@ impl Workspace {
                     task.subject,
                     fmt_secs(age_secs(acknowledged, now)),
                 );
+                // A lead with no session leaves the row unnamed, so the next
+                // pass says it rather than losing it.
                 if deliver.to_seat(&lead, &text) == Delivery::Delivered {
                     delivered += 1;
+                    self.mark_ack_named(&view.name, &task.id, acknowledged);
                 }
-                self.mark_ack_named(&view.name, &task.id, acknowledged);
             }
         }
         delivered
@@ -1086,5 +1103,104 @@ mod tests {
         assert!(seen[0].1.contains("acknowledged"), "{}", seen[0].1);
         drop(seen);
         assert_eq!(pass(&ws, &deliver, 4 * 3_600 + 60), 0, "and not every pass");
+    }
+
+    /// **A sub-second acknowledgement is still named once.** The store keeps
+    /// the stamp to whole seconds, so the row's `acknowledged_at` is
+    /// truncated before it is compared - otherwise the stored and live
+    /// values never match and the nudge repeats every pass.
+    #[test]
+    fn a_sub_second_acknowledgement_is_named_once() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _rx = live_lead(&ws);
+        ws.seed_test_task(ask(
+            "t-1",
+            forge_primitives::tasks::AskKind::Decision,
+            None,
+            Some(epoch(0) + Duration::from_millis(500)),
+            None,
+        ));
+        let deliver = Recording::default();
+
+        assert_eq!(pass(&ws, &deliver, 4 * 3_600 + 1), 1, "the lead hears once");
+        assert_eq!(pass(&ws, &deliver, 4 * 3_600 + 60), 0, "and not every pass");
+    }
+
+    /// A deliver that finds no session behind the lead, watching what it was
+    /// asked to send.
+    #[derive(Default)]
+    struct Offline {
+        attempts: Mutex<Vec<(SessionSlot, String)>>,
+    }
+
+    impl Deliver for Offline {
+        fn to_seat(&self, slot: &SessionSlot, text: &str) -> Delivery {
+            self.attempts.lock().push((slot.clone(), text.to_owned()));
+            Delivery::NoSession("no session behind the lead".to_owned())
+        }
+    }
+
+    /// **A default that reached no session is not spent**: the lead hears
+    /// the escalation on the next pass, when it has one, rather than the
+    /// deadline being marked run against an empty room.
+    #[test]
+    fn an_escalation_with_no_live_session_is_not_spent() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        ws.seed_test_task(ask(
+            "t-1",
+            forge_primitives::tasks::AskKind::Decision,
+            Some(deadline(500, DefaultIfIgnored::Escalate)),
+            None,
+            None,
+        ));
+        let offline = Offline::default();
+        assert_eq!(pass(&ws, &offline, 1_000), 0, "nothing was delivered");
+        let due = ws.tasks_for_project(PROJECT)[0]
+            .waiting_on
+            .as_ref()
+            .and_then(|wait| wait.due)
+            .expect("a deadline");
+        assert!(due.ran_at.is_none(), "the escalation is still owed");
+
+        let _rx = live_lead(&ws);
+        let deliver = Recording::default();
+        assert_eq!(pass(&ws, &deliver, 1_060), 1, "the next pass says it");
+    }
+
+    /// A reask default is re-armed only once its message reached the lead: an
+    /// offline pass leaves the deadline due, so the reask is not moved a
+    /// period into the future against nobody.
+    #[test]
+    fn a_reask_with_no_live_session_is_not_rearmed() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        ws.seed_test_task(ask(
+            "t-1",
+            forge_primitives::tasks::AskKind::Clarification,
+            Some(deadline(500, DefaultIfIgnored::Reask)),
+            None,
+            None,
+        ));
+        let offline = Offline::default();
+        assert_eq!(pass(&ws, &offline, 1_000), 0, "nothing was delivered");
+        let due = ws.tasks_for_project(PROJECT)[0]
+            .waiting_on
+            .as_ref()
+            .and_then(|wait| wait.due)
+            .expect("a deadline");
+        assert_eq!(due.at, epoch(500), "the deadline is where it was");
+        assert!(due.ran_at.is_none(), "and still owed");
+
+        let _rx = live_lead(&ws);
+        let deliver = Recording::default();
+        assert_eq!(pass(&ws, &deliver, 1_060), 1, "the next pass says it");
+        let due = ws.tasks_for_project(PROJECT)[0]
+            .waiting_on
+            .as_ref()
+            .and_then(|wait| wait.due)
+            .expect("a deadline");
+        assert!(due.at > epoch(1_060), "and re-armed ahead of now");
     }
 }

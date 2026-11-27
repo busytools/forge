@@ -7833,13 +7833,18 @@ impl Workspace {
                             // What the person said rides the notice, whether
                             // it came as the value or as the note: the owner
                             // should not have to go looking for it.
-                            let said = match (&choice, &text, words.is_empty()) {
-                                (Some(choice), _, _) => format!("\"{choice}\""),
-                                (None, Some(text), _) if !text.trim().is_empty() => {
+                            let said = match (&choice, &text, &disposition, words.is_empty()) {
+                                (Some(choice), _, _, _) => format!("\"{choice}\""),
+                                (None, Some(text), _, _) if !text.trim().is_empty() => {
                                     format!("\"{text}\"")
                                 }
-                                (None, _, false) => format!("\"{words}\""),
-                                (None, _, true) => "with no words".to_owned(),
+                                (None, _, Some(disposition), _)
+                                    if !disposition.trim().is_empty() =>
+                                {
+                                    format!("\"{disposition}\"")
+                                }
+                                (None, _, _, false) => format!("\"{words}\""),
+                                (None, _, _, true) => "with no words".to_owned(),
                             };
                             self.tell_row_owner(
                                 &task,
@@ -13076,6 +13081,24 @@ mod tests {
         .expect("accepted");
         let (_, text) = told_one(&mut rx);
         assert!(text.contains("no words"), "an empty answer is said plainly: {text}");
+
+        // A disposition answer names the disposition in the notice, not a
+        // blank: the choice is the answer, and the owner reads it there.
+        let mut disposed = sample("t-7", TaskStatus::Waiting);
+        disposed.waiting_on = Some(question());
+        ws.push_task(disposed);
+        ws.dispatch(Command::TaskAnswer {
+            project: "proj".to_owned(),
+            id: "t-7".to_owned(),
+            choice: None,
+            text: None,
+            disposition: Some("retry".to_owned()),
+            lesson: None,
+            words: String::new(),
+        })
+        .expect("accepted");
+        let (_, text) = told_one(&mut rx);
+        assert!(text.contains("retry"), "the disposition rides the notice: {text}");
 
         // A send-back carries the words too.
         let mut sent = sample("t-3", TaskStatus::Waiting);

@@ -495,6 +495,13 @@ pub struct Held {
     /// What this copy weighs, kept beside the conversation so the total
     /// budget reads it without locking the seat.
     bytes: std::sync::atomic::AtomicUsize,
+    /// How many frames have landed in this copy, read without locking it.
+    ///
+    /// **A content version rather than a weight**: a same-length frame, or a
+    /// trim and an append that net to the same bytes, leaves the weight
+    /// unchanged while the content moves, so a cache keyed on weight serves
+    /// stale rows. This moves on every append.
+    content_version: std::sync::atomic::AtomicU64,
     /// When this seat was last touched, for the total budget's LRU.
     ///
     /// **A monotonic counter rather than a clock**, so two seats touched in
@@ -509,6 +516,7 @@ impl Held {
             conversation: Mutex::new(conversation),
             folded: Condvar::new(),
             bytes: std::sync::atomic::AtomicUsize::new(bytes),
+            content_version: std::sync::atomic::AtomicU64::new(0),
             last_touch: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -516,6 +524,17 @@ impl Held {
     /// What this copy weighs, without locking the seat.
     pub fn bytes(&self) -> usize {
         self.bytes.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// How many frames have landed in this copy, without locking the seat.
+    pub fn content_version(&self) -> u64 {
+        self.content_version.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Say a frame landed: the content-version half of the board sample's
+    /// cache key.
+    fn bump_content(&self) {
+        self.content_version.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// When this seat was last touched, without locking the seat.
@@ -1154,7 +1173,11 @@ impl Conversations {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         for (slot, held) in &holders {
             slot.label().hash(&mut hasher);
-            held.bytes().hash(&mut hasher);
+            // The copy's identity as well as its content version: a reseed
+            // replaces the copy, so a fresh one at the same version is still
+            // a different conversation.
+            std::ptr::from_ref(Arc::as_ref(held)).hash(&mut hasher);
+            held.content_version().hash(&mut hasher);
         }
         let version = hasher.finish();
         if let Some(cache) =
@@ -1375,6 +1398,7 @@ impl Conversations {
                         conversation.set_watermark(seq);
                     }
                     delta = held.reweigh(&conversation);
+                    held.bump_content();
                 }
             }
             // The delivery-failure notice is a row a CONNECTION forges per
@@ -2671,6 +2695,58 @@ mod tests {
 
     fn a_chat_for(slot: &SessionSlot, text: &str) -> SessionUpdate {
         SessionUpdate::ChatAppended { key: slot.clone(), msg: a_frame(text), source: None }
+    }
+
+    /// A frame carrying one tool call, so the board's sample has an action
+    /// to name.
+    fn a_tool_frame(command: &str) -> Message {
+        serde_json::from_value(serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "id": "m",
+                "type": "message",
+                "role": "assistant",
+                "model": "a-model",
+                "content": [{
+                    "type": "tool_use",
+                    "id": "call",
+                    "name": "Bash",
+                    "input": { "command": command },
+                }],
+                "stop_reason": "tool_use",
+            },
+            "session_id": "s",
+            "timestamp": "2026-01-01T00:00:00Z",
+        }))
+        .expect("a well-formed assistant turn")
+    }
+
+    /// **The sample's cache moves on a same-weight frame.** A version, not a
+    /// byte weight, is the key: a frame that replaces the content without
+    /// changing the copy's weight would otherwise serve the old action.
+    #[test]
+    fn the_attention_sample_moves_when_a_same_weight_frame_lands() {
+        let seat = SessionSlot::worker("TestOrg", "proj", "w-1");
+        let conversations = Conversations::new();
+        conversations.apply(&a_connect_for(&seat, vec![a_tool_frame("aa")]), None);
+        let first = conversations.attention_actions("proj", SystemTime::UNIX_EPOCH);
+        assert!(
+            first.iter().any(|action| action.detail == "aa"),
+            "the first action is sampled: {first:?}",
+        );
+        conversations.apply(
+            &SessionUpdate::ChatAppended {
+                key: seat.clone(),
+                msg: a_tool_frame("bb"),
+                source: None,
+            },
+            None,
+        );
+        let second = conversations.attention_actions("proj", SystemTime::UNIX_EPOCH);
+        assert!(
+            second.iter().any(|action| action.detail == "bb"),
+            "the same-weight frame's action is sampled, not the stale one: {second:?}",
+        );
     }
 
     /// One seat's copy weighs this much, measured rather than assumed.
