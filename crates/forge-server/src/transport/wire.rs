@@ -5016,7 +5016,8 @@ mod tests {
                 // The board's attention block carries the read's own clock:
                 // a fixture pinning it would fail on the next run.
                 if fields.contains_key("checked_at") {
-                    fields.insert("checked_at".to_owned(), Value::String("<checked-at>".to_owned()));
+                    fields
+                        .insert("checked_at".to_owned(), Value::String("<checked-at>".to_owned()));
                 }
                 fields.values_mut().for_each(|field| normalise(field, forms));
             }
@@ -5145,7 +5146,10 @@ mod tests {
         let encoded = encode_subject(&state, &Subject::Board).await.expect("encode");
         let attention = &encoded["projects"][0]["attention"];
         assert_eq!(attention["agents"], 1, "one seat acted: {attention}");
-        assert_eq!(attention["sample"]["total"], 2, "two unasked actions, the board's own left out");
+        assert_eq!(
+            attention["sample"]["total"], 2,
+            "two unasked actions, the board's own left out"
+        );
         assert_eq!(attention["sample"]["sampled"], 2, "all of them, under the sample size");
         let rows = attention["sample"]["rows"].as_array().expect("rows");
         assert!(rows.iter().any(|row| row["tool"] == "Bash" && row["detail"] == "just check"));

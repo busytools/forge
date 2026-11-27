@@ -1128,10 +1128,10 @@ mod tests {
             on: None,
             verification,
             parked: false,
-                    due: None,
-                    acknowledged_at: None,
-                    snoozed: None,
-                    expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: None,
         });
         row.updated_at = epoch(updated);
@@ -1152,10 +1152,10 @@ mod tests {
             on: None,
             verification: false,
             parked: true,
-                    due: None,
-                    acknowledged_at: None,
-                    snoozed: None,
-                    expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: None,
         });
         row.updated_at = epoch(0);
@@ -1188,10 +1188,10 @@ mod tests {
             on: None,
             verification: false,
             parked: true,
-                    due: None,
-                    acknowledged_at: None,
-                    snoozed: None,
-                    expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: Some(SystemTime::now()),
         });
         row.updated_at = epoch(0);
@@ -1484,10 +1484,10 @@ mod tests {
             on: Some(TaskId::from("t-blocker")),
             verification: false,
             parked: false,
-                    due: None,
-                    acknowledged_at: None,
-                    snoozed: None,
-                    expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: Some(epoch(0)),
         });
         waiter.updated_at = epoch(0);
@@ -1523,10 +1523,10 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
-                    due: None,
-                    acknowledged_at: None,
-                    snoozed: None,
-                    expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: None,
         });
         row.updated_at = epoch(0);

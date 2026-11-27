@@ -2490,10 +2490,10 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
-                due: None,
-                acknowledged_at: None,
-                snoozed: None,
-                expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: None,
         });
         let mut reserved = task("the reserved row", None, None);

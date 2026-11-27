@@ -192,7 +192,12 @@ impl Workspace {
     /// acknowledgement standing unanswered is named to the lead once. A
     /// class a policy note settles is not escalated: the note is the answer.
     /// Returns how many messages reached a session.
-    fn run_ask_lifecycle(&self, deliver: &dyn Deliver, view: &crate::views::ProjectView, now: SystemTime) -> usize {
+    fn run_ask_lifecycle(
+        &self,
+        deliver: &dyn Deliver,
+        view: &crate::views::ProjectView,
+        now: SystemTime,
+    ) -> usize {
         let lead = SessionSlot::lead(&view.org, &view.name);
         let prefix = format!("{}\u{0}", view.name);
         self.forgotten_acks.lock().retain(|key, _| key.starts_with(&prefix));
@@ -273,11 +278,7 @@ impl Workspace {
                         .and_then(|since| due.at.duration_since(since).ok())
                         .map_or(REASK_PERIOD_SECS, |period| period.as_secs())
                         .max(60);
-                    self.rearm_ask(
-                        &view.name,
-                        &task.id,
-                        now + Duration::from_secs(period),
-                    );
+                    self.rearm_ask(&view.name, &task.id, now + Duration::from_secs(period));
                 }
             }
         }
@@ -667,10 +668,10 @@ mod tests {
             on: Some(TaskId::from("t-blocker")),
             verification: false,
             parked: false,
-                due: None,
-                acknowledged_at: None,
-                snoozed: None,
-                expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: None,
         });
         ws.seed_test_task(waiter);
@@ -711,10 +712,10 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
-                due: None,
-                acknowledged_at: None,
-                snoozed: None,
-                expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: None,
         });
         ws.seed_test_task(decision);
@@ -726,10 +727,10 @@ mod tests {
             on: None,
             verification: true,
             parked: false,
-                due: None,
-                acknowledged_at: None,
-                snoozed: None,
-                expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: None,
         });
         ws.seed_test_task(look);

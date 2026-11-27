@@ -599,9 +599,8 @@ mod tests {
             "the ack and snooze rule is not in the always-on block: {TASK_BOARD_INSTRUCTIONS}",
         );
         assert!(
-            TASK_BOARD_INSTRUCTIONS.contains(
-                "a user ask's `ask` is decision, clarification, exception or teaching"
-            ),
+            TASK_BOARD_INSTRUCTIONS
+                .contains("a user ask's `ask` is decision, clarification, exception or teaching"),
             "the four ask kinds are not named: {TASK_BOARD_INSTRUCTIONS}",
         );
     }

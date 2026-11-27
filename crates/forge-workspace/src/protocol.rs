@@ -674,13 +674,22 @@ pub enum Command {
     /// The person marked the ask seen without answering it. **The person's
     /// own act, and only theirs**: no agent tool acknowledges on their
     /// behalf.
-    TaskAck { project: String, id: String },
+    TaskAck {
+        project: String,
+        id: String,
+    },
     /// The person deferred the ask until a duration from now ("2h"), or
     /// "activity" - until the row next moves.
-    TaskSnooze { project: String, id: String, until: String },
+    TaskSnooze {
+        project: String,
+        id: String,
+        until: String,
+    },
     /// The person opened the project's board window (or answered an ask):
     /// the since-last-look stamp the digest strip reads.
-    BoardSeen { project: String },
+    BoardSeen {
+        project: String,
+    },
     /// The user moves a row in its queue.
     TaskRank {
         project: String,
@@ -1404,11 +1413,9 @@ impl std::fmt::Debug for Command {
                 .field("project", project)
                 .field("id", id)
                 .finish_non_exhaustive(),
-            Self::TaskAck { project, id } => f
-                .debug_struct("TaskAck")
-                .field("project", project)
-                .field("id", id)
-                .finish(),
+            Self::TaskAck { project, id } => {
+                f.debug_struct("TaskAck").field("project", project).field("id", id).finish()
+            }
             Self::TaskSnooze { project, id, until } => f
                 .debug_struct("TaskSnooze")
                 .field("project", project)

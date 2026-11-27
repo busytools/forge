@@ -7772,15 +7772,7 @@ impl Workspace {
                         }
                     }
                 }
-                Command::TaskAnswer {
-                    project,
-                    id,
-                    choice,
-                    text,
-                    disposition,
-                    lesson,
-                    words,
-                } => {
+                Command::TaskAnswer { project, id, choice, text, disposition, lesson, words } => {
                     let id = TaskId::from(id.as_str());
                     // The value the ask's kind needed; a row written before
                     // the record takes the words as its answer.
@@ -7791,10 +7783,10 @@ impl Workspace {
                         (_, Some(text), _) => {
                             Some(forge_primitives::tasks::AnswerValue::Text(text.clone()))
                         }
-                        (_, _, Some(disposition)) => forge_primitives::tasks::Disposition::parse(
-                            disposition,
-                        )
-                        .map(forge_primitives::tasks::AnswerValue::Disposition),
+                        (_, _, Some(disposition)) => {
+                            forge_primitives::tasks::Disposition::parse(disposition)
+                                .map(forge_primitives::tasks::AnswerValue::Disposition)
+                        }
                         _ => None,
                     };
                     let answered = match value {
@@ -7885,8 +7877,10 @@ impl Workspace {
                         ),
                         Some(until) => match self.snooze_task(&project, &id, until) {
                             Ok(Some(_)) => {}
-                            Ok(None) => self
-                                .board_edit_refused("a snooze", "the row it named is no longer there"),
+                            Ok(None) => self.board_edit_refused(
+                                "a snooze",
+                                "the row it named is no longer there",
+                            ),
                             Err(refused) => {
                                 tracing::debug!(
                                     target: "forge_workspace",

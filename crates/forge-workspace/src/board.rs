@@ -746,10 +746,10 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
-                due: None,
-                acknowledged_at: None,
-                snoozed: None,
-                expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: Some(epoch(0)),
         });
         ws.seed_test_task(waiting);
@@ -928,10 +928,10 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
-                due: None,
-                acknowledged_at: None,
-                snoozed: None,
-                expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: None,
         });
         ws.seed_test_task(held);
@@ -1063,10 +1063,10 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
-                due: None,
-                acknowledged_at: None,
-                snoozed: None,
-                expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: Some(epoch(1_700_000_000)),
         });
         ws.seed_test_task(decision);
@@ -1077,10 +1077,10 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
-                due: None,
-                acknowledged_at: None,
-                snoozed: None,
-                expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: None,
         });
         ws.seed_test_task(resource);
@@ -1113,10 +1113,10 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
-                due: None,
-                acknowledged_at: None,
-                snoozed: None,
-                expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: Some(epoch(1_700_000_000)),
         });
         ws.seed_test_task(decision);
@@ -1146,10 +1146,10 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
-                due: None,
-                acknowledged_at: None,
-                snoozed: None,
-                expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: None,
         });
         ws.seed_test_task(decision);
@@ -1176,10 +1176,10 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
-                due: None,
-                acknowledged_at: None,
-                snoozed: None,
-                expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: None,
         });
         ws.seed_test_task(blank);
@@ -1192,10 +1192,10 @@ mod tests {
             on: None,
             verification: true,
             parked: false,
-                due: None,
-                acknowledged_at: None,
-                snoozed: None,
-                expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: None,
         });
         ws.seed_test_task(look);
@@ -1207,10 +1207,10 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
-                due: None,
-                acknowledged_at: None,
-                snoozed: None,
-                expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: None,
         });
         ws.seed_test_task(bare);
@@ -1225,10 +1225,10 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
-                due: None,
-                acknowledged_at: None,
-                snoozed: None,
-                expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: None,
         });
         ws.seed_test_task(nameless);

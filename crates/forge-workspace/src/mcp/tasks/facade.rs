@@ -695,8 +695,7 @@ impl TasksFacade for ProdTasksFacade {
             }
             (Some(_), None) => {
                 return Err(TasksError::Refused(
-                    "a deadline names its default-if-ignored: escalate, expire or reask"
-                        .to_owned(),
+                    "a deadline names its default-if-ignored: escalate, expire or reask".to_owned(),
                 ));
             }
             (None, Some(_)) => {
@@ -922,15 +921,7 @@ impl TasksFacade for ProdTasksFacade {
                 Some(version),
             )
         } else {
-            ws.wait_task_at_version(
-                &cx.project_name,
-                id,
-                caller,
-                kind,
-                detail,
-                on,
-                Some(version),
-            )
+            ws.wait_task_at_version(&cx.project_name, id, caller, kind, detail, on, Some(version))
         };
         match waited {
             Ok(task) => Ok(task),
@@ -980,8 +971,7 @@ impl TasksFacade for ProdTasksFacade {
             }
             _ => {
                 return Err(TasksError::Refused(
-                    "an answer states exactly one of `choice`, `text` or `disposition`"
-                        .to_owned(),
+                    "an answer states exactly one of `choice`, `text` or `disposition`".to_owned(),
                 ));
             }
         };
@@ -1037,13 +1027,11 @@ impl TasksFacade for ProdTasksFacade {
         }
         // The lead's own write records its source as any row carrying the
         // class, or the lead's seat when none does.
-        ws.settle_policy(&cx.project_name, class, text, &TaskId::from("lead"))
-            .ok_or_else(|| {
-                TasksError::Refused(
-                    "the policy note could not be written; this run's store is unavailable"
-                        .to_owned(),
-                )
-            })
+        ws.settle_policy(&cx.project_name, class, text, &TaskId::from("lead")).ok_or_else(|| {
+            TasksError::Refused(
+                "the policy note could not be written; this run's store is unavailable".to_owned(),
+            )
+        })
     }
 
     fn attest_task(
@@ -1827,10 +1815,10 @@ mod prod_facade_tests {
             on: None,
             verification: false,
             parked: false,
-                    due: None,
-                    acknowledged_at: None,
-                    snoozed: None,
-                    expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: None,
         });
         ws.seed_test_task(waiting);

@@ -217,8 +217,7 @@ fn answer_shape_need(kind: AskKind) -> String {
             "a decision takes `choice`: one of the options the row asks about".to_owned()
         }
         AskKind::Clarification => {
-            "a clarification takes `text`: the fact the ask needs, in the person's words"
-                .to_owned()
+            "a clarification takes `text`: the fact the ask needs, in the person's words".to_owned()
         }
         AskKind::Exception => format!(
             "an exception takes `disposition`: one of {}",
@@ -1150,10 +1149,10 @@ impl Workspace {
                 on: None,
                 verification: true,
                 parked: false,
-                    due: None,
-                    acknowledged_at: None,
-                    snoozed: None,
-                    expired_at: None,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
                 since: Some(at),
             });
             task.status = TaskStatus::Waiting;
@@ -1172,10 +1171,8 @@ impl Workspace {
     ) -> Result<Option<Task>, MoveError> {
         let at = SystemTime::now();
         self.move_task(project_name, id, By::User, false, None, |task| {
-            let on_user = task
-                .waiting_on
-                .as_ref()
-                .is_some_and(|wait| wait.kind == Some(WaitingKind::User));
+            let on_user =
+                task.waiting_on.as_ref().is_some_and(|wait| wait.kind == Some(WaitingKind::User));
             if task.status != TaskStatus::Waiting || !on_user {
                 return Err(MoveError::NotWaitingQuestion);
             }
@@ -1237,9 +1234,9 @@ impl Workspace {
         reason: &str,
     ) -> Option<Task> {
         let outcome = self.with_tasks_mut(|tasks| {
-            let index = tasks.iter().position(|task| {
-                task.project_name == project_name && task.id == *id
-            })?;
+            let index = tasks
+                .iter()
+                .position(|task| task.project_name == project_name && task.id == *id)?;
             let prior = tasks[index].status;
             let task = &mut tasks[index];
             if let Some(wait) = task.waiting_on.as_mut() {
@@ -1253,24 +1250,13 @@ impl Workspace {
             Some((task.clone(), prior))
         })?;
         let (task, prior) = outcome;
-        self.record_transition(
-            project_name,
-            &task.id,
-            Some(prior),
-            task.status,
-            By::System,
-        );
+        self.record_transition(project_name, &task.id, Some(prior), task.status, By::System);
         self.announce_tasks_changed(project_name);
         Some(task)
     }
 
     /// Re-arm an ask's deadline one period out (the `reask` default).
-    pub(crate) fn rearm_ask(
-        &self,
-        project_name: &str,
-        id: &TaskId,
-        next_at: SystemTime,
-    ) -> bool {
+    pub(crate) fn rearm_ask(&self, project_name: &str, id: &TaskId, next_at: SystemTime) -> bool {
         self.with_tasks_mut(|tasks| {
             let Some(task) =
                 tasks.iter_mut().find(|task| task.project_name == project_name && task.id == *id)
@@ -1522,17 +1508,11 @@ impl Workspace {
         let after = |at: SystemTime| at > since;
         crate::board::BoardDelta {
             moved: history.iter().filter(|step| after(step.at)).count(),
-            landed: history
-                .iter()
-                .filter(|step| after(step.at) && step.to.is_terminal())
-                .count(),
+            landed: history.iter().filter(|step| after(step.at) && step.to.is_terminal()).count(),
             expired: tasks
                 .iter()
                 .filter(|task| {
-                    task.waiting_on
-                        .as_ref()
-                        .and_then(|wait| wait.expired_at)
-                        .is_some_and(after)
+                    task.waiting_on.as_ref().and_then(|wait| wait.expired_at).is_some_and(after)
                 })
                 .count(),
             merged: tasks
@@ -1540,10 +1520,7 @@ impl Workspace {
                 .flat_map(|task| task.links.iter())
                 .filter(|link| link.kind == LinkKind::Pr && link.state.as_deref() == Some("merged"))
                 .filter(|link| {
-                    link.last_check
-                        .as_ref()
-                        .and_then(|check| check.changed_at)
-                        .is_some_and(after)
+                    link.last_check.as_ref().and_then(|check| check.changed_at).is_some_and(after)
                 })
                 .count(),
         }
@@ -1555,7 +1532,11 @@ impl Workspace {
     }
 
     /// The note `project` holds for `class`, when it has settled one.
-    fn policy_note(&self, project_name: &str, class: &str) -> Option<crate::store::policy::PolicyNote> {
+    fn policy_note(
+        &self,
+        project_name: &str,
+        class: &str,
+    ) -> Option<crate::store::policy::PolicyNote> {
         let guard = self.db.lock();
         let db = guard.as_ref()?;
         match crate::store::policy::get_for_class(db, project_name, class) {
@@ -1980,10 +1961,10 @@ impl Workspace {
                 on: None,
                 verification: false,
                 parked: false,
-                    due: None,
-                    acknowledged_at: None,
-                    snoozed: None,
-                    expired_at: None,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
                 since: Some(at),
             });
             tasks[index].status = TaskStatus::Waiting;
@@ -3082,10 +3063,10 @@ mod tests {
                 on: None,
                 verification: false,
                 parked: false,
-                    due: None,
-                    acknowledged_at: None,
-                    snoozed: None,
-                    expired_at: None,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
                 since: None,
             }),
             ..sample_task("t-1", "proj")
@@ -3177,10 +3158,10 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
-                    due: None,
-                    acknowledged_at: None,
-                    snoozed: None,
-                    expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: None,
         });
         ws.push_task(waiting);
@@ -3647,7 +3628,11 @@ mod tests {
             "an activity snooze holds until the row moves",
         );
         assert!(
-            !snooze_active(wait, snoozed.updated_at + std::time::Duration::from_secs(1), SystemTime::now()),
+            !snooze_active(
+                wait,
+                snoozed.updated_at + std::time::Duration::from_secs(1),
+                SystemTime::now()
+            ),
             "a touch ends it",
         );
 
@@ -4350,10 +4335,10 @@ mod tests {
                 on: None,
                 verification: false,
                 parked: false,
-                    due: None,
-                    acknowledged_at: None,
-                    snoozed: None,
-                    expired_at: None,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
                 since: None,
             }),
             ..sample_task("t-1", "proj")
@@ -4392,10 +4377,10 @@ mod tests {
                 on: None,
                 verification: true,
                 parked: false,
-                    due: None,
-                    acknowledged_at: None,
-                    snoozed: None,
-                    expired_at: None,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
                 since: None,
             }),
             ..sample_task("t-1", "proj")
@@ -4460,10 +4445,10 @@ mod tests {
             on,
             verification: false,
             parked: false,
-                    due: None,
-                    acknowledged_at: None,
-                    snoozed: None,
-                    expired_at: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
             since: None,
         };
         assert_eq!(wait_words(None), "a wait", "no stored wait");
@@ -4726,10 +4711,10 @@ mod tests {
                 on: None,
                 verification: true,
                 parked: false,
-                    due: None,
-                    acknowledged_at: None,
-                    snoozed: None,
-                    expired_at: None,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
                 since: None,
             }),
             ..sample_task_with_parent("t-1", Some("epic"), "proj")
@@ -4987,10 +4972,10 @@ mod tests {
                 on: Some(TaskId::from("blocker")),
                 verification: false,
                 parked: false,
-                    due: None,
-                    acknowledged_at: None,
-                    snoozed: None,
-                    expired_at: None,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
                 since: None,
             }),
             ..sample_task_with_parent("t-1", Some("epic"), "proj")

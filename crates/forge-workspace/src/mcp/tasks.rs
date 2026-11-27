@@ -1588,11 +1588,10 @@ impl Tool for Answer {
         };
         // One door, one value: the ask's kind decides which, and the shape
         // is refused here where the caller can see all three fields.
-        let stated =
-            [args.choice.is_some(), args.text.is_some(), args.disposition.is_some()]
-                .iter()
-                .filter(|stated| **stated)
-                .count();
+        let stated = [args.choice.is_some(), args.text.is_some(), args.disposition.is_some()]
+            .iter()
+            .filter(|stated| **stated)
+            .count();
         if stated != 1 {
             return tool_error(
                 "an answer states exactly one of `choice`, `text` or `disposition`".to_owned(),
@@ -1677,18 +1676,15 @@ impl Tool for Policy {
         };
         match (args.class.as_deref(), args.text.as_deref()) {
             (None, None) => {
-                let notes: Vec<serde_json::Value> = self
-                    .facade
-                    .policy_notes(&self.slot)
-                    .iter()
-                    .map(note_json)
-                    .collect();
+                let notes: Vec<serde_json::Value> =
+                    self.facade.policy_notes(&self.slot).iter().map(note_json).collect();
                 match serde_json::to_string_pretty(&serde_json::json!({ "notes": notes })) {
                     Ok(json) => ToolOutput::text(json),
                     Err(err) => tool_error(format!("response serialization failed: {err}")),
                 }
             }
-            (Some(class), Some(text)) => match self.facade.add_policy_note(&self.slot, class, text) {
+            (Some(class), Some(text)) => match self.facade.add_policy_note(&self.slot, class, text)
+            {
                 Ok(note) => match serde_json::to_string_pretty(&note_json(&note)) {
                     Ok(json) => ToolOutput::text(json),
                     Err(err) => tool_error(format!("response serialization failed: {err}")),

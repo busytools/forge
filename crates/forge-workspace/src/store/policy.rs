@@ -75,11 +75,7 @@ pub fn list_for_project(db: &Db, project: &str) -> anyhow::Result<Vec<PolicyNote
 }
 
 /// The note `project` holds for `class`, when it has settled one.
-pub fn get_for_class(
-    db: &Db,
-    project: &str,
-    class: &str,
-) -> anyhow::Result<Option<PolicyNote>> {
+pub fn get_for_class(db: &Db, project: &str, class: &str) -> anyhow::Result<Option<PolicyNote>> {
     let txn = db.database().begin_read()?;
     let table = match txn.open_table(POLICY) {
         Ok(t) => t,
@@ -125,6 +121,9 @@ mod tests {
         assert_eq!(notes.len(), 2, "one note per class");
         let flake = get_for_class(&db, "proj", "ci-flake").expect("get").expect("present");
         assert_eq!(flake.text, "retry once, then report", "the later lesson replaced the first");
-        assert!(get_for_class(&db, "other", "ci-flake").expect("get").is_none(), "scoped by project");
+        assert!(
+            get_for_class(&db, "other", "ci-flake").expect("get").is_none(),
+            "scoped by project"
+        );
     }
 }

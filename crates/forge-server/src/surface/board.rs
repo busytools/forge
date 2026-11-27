@@ -44,10 +44,7 @@ impl ViewSurface {
     /// The window's attention facts for `project`: when its board was last
     /// looked at (server-side, so every client agrees), and what changed
     /// since.
-    pub fn board_attention(
-        &self,
-        project: &str,
-    ) -> (Option<SystemTime>, BoardDelta) {
+    pub fn board_attention(&self, project: &str) -> (Option<SystemTime>, BoardDelta) {
         let last = self.workspace.last_board_seen(project);
         let delta = self.workspace.board_delta(project, last);
         (last, delta)
