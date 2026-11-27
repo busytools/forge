@@ -406,6 +406,34 @@ mod tests {
         );
     }
 
+    /// The wait the old board stored as `decision` is today's wait on the
+    /// user: an upgrade must load the row as the wait it was, never skip it
+    /// and hide a parked row from the board.
+    #[test]
+    fn a_legacy_decision_wait_reads_as_a_wait_on_the_user() {
+        let dir = tempdir().expect("tempdir");
+        let db = open_db(dir.path());
+        write_raw(
+            &db,
+            "forge\u{0}t-4",
+            r#"{
+                "id": "t-4", "project_name": "forge", "subject": "old park",
+                "active_form": null, "detail": null, "status": "waiting",
+                "owner": null, "parent": null,
+                "waiting_on": {"kind": "decision", "detail": "ship it?", "on": null, "verification": false},
+                "created_at": {"secs_since_epoch": 0, "nanos_since_epoch": 0},
+                "updated_at": {"secs_since_epoch": 0, "nanos_since_epoch": 0}
+            }"#,
+        );
+        let read = list(&db).expect("list");
+        assert_eq!(read.len(), 1, "the decision row loads rather than vanishing: {read:?}");
+        assert_eq!(
+            read[0].waiting_on.as_ref().and_then(|wait| wait.kind),
+            Some(forge_primitives::tasks::WaitingKind::User),
+            "the old `decision` spelling is the wait on the user",
+        );
+    }
+
     /// A fresh row round-trips through the record shape unchanged.
     #[test]
     fn a_current_row_round_trips_through_the_store() {

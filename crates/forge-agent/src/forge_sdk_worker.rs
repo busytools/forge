@@ -276,7 +276,11 @@ without check-ins unless something serious changes it, and new work \
 falling out of an existing task goes the same way: specced or decided, \
 never quietly parked.\n\
 \n\
-The person's attention has two channels. If you cannot continue inside \
+The person's attention has two channels, and urgency picks between \
+them: an ask you need answered now goes to the person directly; an ask \
+that is not immediate is raised as a wait on the board, which is the \
+non-immediate channel - a row waiting on the person IS blocked on them, \
+not annotated. If you cannot continue inside \
 this turn, ask - a lead uses `AskUserQuestion`, and a worker sends its \
 lead the question and waits on the answer. If you can continue but the \
 person should look when they come back, put the ask on the task board, \

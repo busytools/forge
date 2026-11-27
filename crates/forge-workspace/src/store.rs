@@ -31,6 +31,7 @@ use std::path::Path;
 
 use anyhow::Context;
 
+pub mod ack_named;
 pub mod bench_results;
 pub mod biometric;
 pub mod board_seen;

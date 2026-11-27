@@ -463,35 +463,36 @@ pub fn build_forge_server(
 pub(crate) const TASK_BOARD_INSTRUCTIONS: &str = "\
 forge's task board is the shared surface for work in flight. It is for running \
 work: a landed row with no children and no epic above it is deleted in the same \
-pass, never left completed; a landed child of an epic - open or already terminal \
-- is completed and left terminal so the epic can read `to close` (a verify=user \
-child parks in waiting on the user first). Read it \
+pass, never left completed; a landed \
+child of an epic - open or already terminal - is completed and left terminal so \
+the epic can read `to close` (a verify=user child parks in waiting on the user \
+first). Read it \
 with tasks__list; tasks__get reads one row whole. Claim an unassigned row \
-before working, naming its version; one row in progress per worker. \
+before working; one row in progress per worker. \
 Keep your row true: tasks__update on every \
-state change - the update is also your alive signal, and every write names its \
-version - and attach the PR \
-the moment it exists. If you cannot proceed, tasks__wait: `kind` is \
+state change - the update is your alive signal, and every write names its \
+version - and attach the PR at once. If you cannot proceed, tasks__wait: `kind` is \
 user (a question for the user, minted only by the lead - a hold they \
 asked for, something ambiguous after the decision model, peers and your \
 own review, or a look they should give when they return), dependency \
 (another task - put its id \
-in `on`) or resource (an account, a CI run, a machine); a user ask's `ask` \
-is decision, clarification, exception or teaching, each with the value its \
-kind needs. Acknowledge and snooze are the person's acts: no tool writes \
-either. Then move to your \
-next held row. A lead who can continue but wants \
-the person's look raises the same wait - prose is not a surface. File what \
+in `on`) or resource (an account, CI or a machine); a user ask's `ask` \
+is decision, clarification, exception or teaching. Acknowledge and snooze \
+are the person's acts: no tool writes \
+either. Then move on. A lead who can continue but wants \
+the person's look raises the same wait - prose is not a surface. **Urgency \
+picks the channel**: an ask needed now goes to the person directly; anything \
+else is a wait here - a row waiting on the person is blocked on them. File what \
 you find mid-flight at \
 once with tasks__create, under your epic, except a \
 defect in a cut under review, which the lead fixes in line rather than \
-filing; nothing else is deferred. A row with verify=user cannot complete until the user approves \
-it, and that gate is minted on the row - never inherited from an epic, \
-whose own gate governs only its own completion; a look the user already \
-gave in chat is completed by the lead with tasks__approve and the approval \
+filing; nothing else is deferred. A verify=user row cannot complete until the user approves \
+it, and that gate is minted on the row - never inherited from an epic, whose \
+own gate governs only its own completion; a look the user gave in chat is \
+completed by the lead with tasks__approve and the approval \
 quoted (never a decision, which is the user's to answer); completing the \
 ROOT row of an epic closes it and archives the tree. \
-The chase asks an over-estimate owner once - answer with an update, not silence.";
+The chase asks an over-estimate owner once; answer with an update.";
 
 #[cfg(test)]
 mod tests {

@@ -36,9 +36,11 @@
 //! what that costs is bounded by the cap below rather than by the transcript.
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::time::SystemTime;
 
-use forge_primitives::{Message, SessionSlot};
+use forge_primitives::{ContentBlock, Message, SessionSlot};
 // The window this copy is kept in. The fan-out's ring is sized from the same
 // caps, because a ring exists to fill a copy that is behind; the ceilings' why,
 // and what the drop costs, are stated there.
@@ -468,6 +470,25 @@ fn live_of_seed(messages: &[Message]) -> bool {
 /// So the mutex is paired with a condvar: a reader waits out a fold in
 /// progress rather than looking at it. The wait is on the reader's own
 /// blocking task, and it is bounded by one render.
+/// One agent action the board's audit sample may draw: a tool call inside
+/// the window, named with the words it did the thing with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttentionAction {
+    pub at: SystemTime,
+    pub seat: String,
+    pub tool: String,
+    pub detail: String,
+}
+
+/// One project's cached action list: the version it was computed at, the
+/// window it was computed for, and the actions, newest first.
+#[derive(Clone, Default)]
+struct AttentionCache {
+    version: u64,
+    since: u64,
+    actions: Vec<AttentionAction>,
+}
+
 pub struct Held {
     conversation: Mutex<Conversation>,
     folded: Condvar,
@@ -671,6 +692,14 @@ impl Drop for Folding<'_> {
 #[derive(Default)]
 pub struct Conversations {
     held: Mutex<HashMap<SessionSlot, Arc<Held>>>,
+    /// The board's audit-sample actions, per project, cached by the held
+    /// copies' own version.
+    ///
+    /// **A board read must not walk every seat's transcript.** The walk is
+    /// O(held messages) and a board read is frequent; every append moves the
+    /// held copy's weight, so the labels and weights together are a version,
+    /// and an unchanged version answers from here without locking a seat.
+    attention_cache: Mutex<HashMap<String, AttentionCache>>,
     /// How many bytes of conversation the held copies may total, or `0` for
     /// no total budget.
     ///
@@ -1106,6 +1135,68 @@ impl Conversations {
         self.held.lock().unwrap_or_else(PoisonError::into_inner).keys().cloned().collect()
     }
 
+    /// The agent actions `project` performed since `since`, newest first,
+    /// for the board's audit sample.
+    ///
+    /// **Cached by the held copies' version**: the labels and weights of the
+    /// project's held seats stand in for their content, because a copy only
+    /// grows when a frame is folded into it. A board read with nothing new
+    /// answers without locking a single seat's conversation.
+    pub fn attention_actions(&self, project: &str, since: SystemTime) -> Vec<AttentionAction> {
+        let since_secs = since.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |it| it.as_secs());
+        let holders: Vec<(SessionSlot, Arc<Held>)> = {
+            let held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
+            held.iter()
+                .filter(|(slot, _)| slot.project() == project)
+                .map(|(slot, held)| (slot.clone(), Arc::clone(held)))
+                .collect()
+        };
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for (slot, held) in &holders {
+            slot.label().hash(&mut hasher);
+            held.bytes().hash(&mut hasher);
+        }
+        let version = hasher.finish();
+        if let Some(cache) =
+            self.attention_cache.lock().unwrap_or_else(PoisonError::into_inner).get(project)
+            && cache.version == version
+            && cache.since == since_secs
+        {
+            return cache.actions.clone();
+        }
+        let mut actions = Vec::new();
+        for (slot, held) in &holders {
+            let conversation = held.lock();
+            for message in conversation.messages() {
+                let Message::Assistant { message, timestamp, .. } = message else { continue };
+                let Some(at) = timestamp.as_deref().and_then(parse_rfc3339) else { continue };
+                if at <= since {
+                    continue;
+                }
+                for block in &message.content {
+                    if let ContentBlock::ToolUse { name, input, .. } = block
+                        && !is_board_tool(name)
+                    {
+                        actions.push(AttentionAction {
+                            at,
+                            seat: slot.label().to_owned(),
+                            tool: name.clone(),
+                            detail: tool_detail(input),
+                        });
+                    }
+                }
+            }
+        }
+        actions.sort_by_key(|action| std::cmp::Reverse(action.at));
+        // The roster bounds this map: one entry per project the board is
+        // read for, replaced in place on every change.
+        self.attention_cache.lock().unwrap_or_else(PoisonError::into_inner).insert(
+            project.to_owned(),
+            AttentionCache { version, since: since_secs, actions: actions.clone() },
+        );
+        actions
+    }
+
     pub fn get(&self, slot: &SessionSlot) -> Option<Arc<Held>> {
         let held =
             self.held.lock().unwrap_or_else(PoisonError::into_inner).get(slot).map(Arc::clone);
@@ -1375,6 +1466,42 @@ impl Conversations {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
+
+/// The board's READS are the lead polling the board, not actions nobody
+/// escalated, so the sample leaves them out; a board WRITE - an approve, an
+/// answer, a cancel - is a judgement call and samples like any other.
+fn is_board_tool(name: &str) -> bool {
+    let board = name.starts_with("mcp__forge__tasks__") || name.starts_with("tasks__");
+    board && matches!(name.rsplit("__").next(), Some("list" | "get" | "policy"))
+}
+
+/// One tool call's own words: its description, command, path or prompt,
+/// cut to a line a reader can scan.
+fn tool_detail(input: &serde_json::Value) -> String {
+    for key in ["description", "command", "file_path", "path", "prompt", "subject"] {
+        if let Some(text) = input.get(key).and_then(serde_json::Value::as_str) {
+            let line: String = text.lines().next().unwrap_or_default().trim().to_owned();
+            if !line.is_empty() {
+                return truncate(&line, 120);
+            }
+        }
+    }
+    String::new()
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let cut: String = text.chars().take(max).collect();
+    format!("{cut}...")
+}
+
+fn parse_rfc3339(stated: &str) -> Option<SystemTime> {
+    time::OffsetDateTime::parse(stated, &time::format_description::well_known::Rfc3339)
+        .ok()
+        .map(SystemTime::from)
 }
 
 #[cfg(test)]

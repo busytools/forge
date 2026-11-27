@@ -433,7 +433,10 @@ own look before merge; a fix merges after the review loop as usual. A \
 plan, spec or design the user must review reaches them through \
 `documents__hand_off` with `reviewable: true`, never as a path in \
 chat. Workers build; subagents review, unless the user wants a \
-reviewer kept on as a long-lived worker.";
+reviewer kept on as a long-lived worker. An ask the user must answer is \
+raised as a wait on the task board - the board is the non-immediate \
+channel, and a row waiting on the user is blocked on them - while an ask \
+you need answered now goes to the user directly.";
 
 /// Forge-supplied resume kick for a worker whose row carries no
 /// `resume_kick` of its own. On a resuming re-spawn forge delivers this
@@ -866,9 +869,6 @@ pub struct Workspace {
     /// `pub(crate)` so the impl block in [`crate::drive`] can
     /// reach it.
     pub(crate) drive_clocks: Mutex<HashMap<SessionSlot, crate::drive::DriveClock>>,
-    /// The acknowledgement stamp each forgotten ask was last named at, so
-    /// the drive says it once per acknowledgement rather than every pass.
-    pub(crate) forgotten_acks: Mutex<HashMap<String, std::time::SystemTime>>,
     /// One claim per composed worker-worktree path, held while a spawn's
     /// ensure/insert or a despawn's removal is in flight. The live
     /// registry is per project; this is the repository-wide one, so two
@@ -2626,7 +2626,6 @@ impl Workspace {
             session_teardowns: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
             drive_clocks: Mutex::new(HashMap::new()),
-            forgotten_acks: Mutex::new(HashMap::new()),
             worktree_claims: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             despawn_cleanups: Mutex::new(HashSet::new()),
             spawn_failures: Mutex::new(HashMap::new()),
@@ -7778,44 +7777,69 @@ impl Workspace {
                 }
                 Command::TaskAnswer { project, id, choice, text, disposition, lesson, words } => {
                     let id = TaskId::from(id.as_str());
-                    // The value the ask's kind needed; a row written before
-                    // the record takes the words as its answer.
+                    // **One door, one value for the kind**, the same rule the
+                    // MCP door enforces: the board's answer carries exactly
+                    // one of `choice`, `text` or `disposition`, and a
+                    // disposition outside the four is refused by name rather
+                    // than falling through and resuming a wait with no value
+                    // recorded.
                     let value = match (&choice, &text, &disposition) {
-                        (Some(choice), _, _) => {
-                            Some(forge_primitives::tasks::AnswerValue::Choice(choice.clone()))
+                        (Some(choice), None, None) => {
+                            Ok(forge_primitives::tasks::AnswerValue::Choice(choice.clone()))
                         }
-                        (_, Some(text), _) => {
-                            Some(forge_primitives::tasks::AnswerValue::Text(text.clone()))
+                        (None, Some(text), None) => {
+                            Ok(forge_primitives::tasks::AnswerValue::Text(text.clone()))
                         }
-                        (_, _, Some(disposition)) => {
-                            forge_primitives::tasks::Disposition::parse(disposition)
-                                .map(forge_primitives::tasks::AnswerValue::Disposition)
+                        (None, None, Some(disposition)) => {
+                            match forge_primitives::tasks::Disposition::parse(disposition) {
+                                Some(disposition) => Ok(
+                                    forge_primitives::tasks::AnswerValue::Disposition(disposition),
+                                ),
+                                None => Err(format!(
+                                    "a disposition is one of {}; \"{disposition}\" is not",
+                                    forge_primitives::tasks::Disposition::ALL
+                                        .map(forge_primitives::tasks::Disposition::as_str)
+                                        .join(", "),
+                                )),
+                            }
                         }
-                        _ => None,
+                        _ => {
+                            Err("an answer states exactly one of `choice`, `text` or `disposition`"
+                                .to_owned())
+                        }
                     };
-                    let answered = match value {
-                        // The user's own door carries no version: there is no
-                        // second reader to refuse, and the board they acted
-                        // on is the one they saw.
-                        Some(value) => self.answer_decision(
-                            &project,
-                            &id,
-                            forge_primitives::tasks::By::User,
-                            value,
-                            Some(words.as_str()),
-                            lesson.as_deref(),
-                        ),
-                        None => self.answer_task(&project, &id, &words),
-                    };
+                    let answered: Result<Option<forge_primitives::tasks::Task>, String> =
+                        match value {
+                            // The user's own door carries no version: there is no
+                            // second reader to refuse, and the board they acted
+                            // on is the one they saw.
+                            Ok(value) => self
+                                .answer_decision(
+                                    &project,
+                                    &id,
+                                    forge_primitives::tasks::By::User,
+                                    value,
+                                    Some(words.as_str()),
+                                    lesson.as_deref(),
+                                )
+                                .map_err(|refused| refused.to_string()),
+                            Err(refused) => Err(refused),
+                        };
                     match answered {
                         Ok(Some(task)) => {
                             // The choice and the words ride the notice: the
                             // owner should read what the user said where it
                             // is told to resume, not go looking for it.
-                            let said = match (&choice, words.is_empty()) {
-                                (Some(choice), _) => format!("\"{choice}\""),
-                                (None, false) => format!("\"{words}\""),
-                                (None, true) => "with no words".to_owned(),
+                            // What the person said rides the notice, whether
+                            // it came as the value or as the note: the owner
+                            // should not have to go looking for it.
+                            let said = match (&choice, &text, words.is_empty()) {
+                                (Some(choice), _, _) => format!("\"{choice}\""),
+                                (None, Some(text), _) if !text.trim().is_empty() => {
+                                    format!("\"{text}\"")
+                                }
+                                (None, _, false) => format!("\"{words}\""),
+                                (None, _, true) => "with no words".to_owned(),
                             };
                             self.tell_row_owner(
                                 &task,
@@ -7845,7 +7869,7 @@ impl Workspace {
                                 refusal = %refused,
                                 "a user answer was refused",
                             );
-                            self.board_edit_refused("an answer", &refused.to_string());
+                            self.board_edit_refused("an answer", &refused);
                         }
                     }
                 }
@@ -13024,10 +13048,10 @@ mod tests {
             project: "proj".to_owned(),
             id: "t-1".to_owned(),
             choice: None,
-            text: None,
+            text: Some("get going".to_owned()),
             disposition: None,
             lesson: None,
-            words: "get going".to_owned(),
+            words: String::new(),
         })
         .expect("app-level commands are accepted");
         let (key, text) = told_one(&mut rx);
@@ -13044,7 +13068,7 @@ mod tests {
             project: "proj".to_owned(),
             id: "t-2".to_owned(),
             choice: None,
-            text: None,
+            text: Some(String::new()),
             disposition: None,
             lesson: None,
             words: String::new(),

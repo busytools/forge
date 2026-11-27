@@ -1140,9 +1140,13 @@
       ],
       "/data/projects[]/attention/delta": [
         "expired",
+        "expired_items",
         "landed",
+        "landed_items",
         "merged",
-        "moved"
+        "merged_items",
+        "moved",
+        "moved_items"
       ],
       "/data/projects[]/attention/sample": [
         "rows",

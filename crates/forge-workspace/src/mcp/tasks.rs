@@ -1253,7 +1253,9 @@ impl Tool for Wait {
          default. Acknowledge and snooze are the person's own acts on the board, never tools. \
          A user wait is the at-convenience channel: a lead who can continue but wants the \
          person's answer puts the ask on a board row rather than in prose, because prose is not \
-         a surface. Route a decision to the person when they asked for a hold, when something \
+         a surface. **Urgency picks the channel**: an ask needed now goes to the person \
+         directly, and an ask that is not immediate is raised here - a row waiting on the \
+         person is blocked on them, not annotated. Route a decision to the person when they asked for a hold, when something \
          is still genuinely ambiguous after the decision model, peer opinions and the team's \
          own review, or when the person should look at the work when they come back. Raise a \
          clarification for a fact only they have, an exception for a disposition on a fault, \

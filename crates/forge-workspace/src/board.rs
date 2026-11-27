@@ -102,7 +102,7 @@ pub struct BoardRow {
 
 /// What changed on a project's board since the person last looked, one
 /// count per line of the window's digest strip.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct BoardDelta {
     /// Rows that changed state.
@@ -113,6 +113,33 @@ pub struct BoardDelta {
     pub expired: usize,
     /// Linked pull requests the connector saw merged.
     pub merged: usize,
+    /// What `moved` counts, so the line opens onto its rows.
+    #[serde(default)]
+    pub moved_items: Vec<DeltaItem>,
+    /// What `landed` counts.
+    #[serde(default)]
+    pub landed_items: Vec<DeltaItem>,
+    /// What `expired` counts: the asks whose deadline ended them, with
+    /// their records, so an expiry is drawn as itself rather than as a
+    /// canceled row only.
+    #[serde(default)]
+    pub expired_items: Vec<DeltaItem>,
+    /// What `merged` counts.
+    #[serde(default)]
+    pub merged_items: Vec<DeltaItem>,
+}
+
+/// One row behind a digest count, so the line that counts it opens onto
+/// what it counts.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DeltaItem {
+    /// The row the item names, when one still exists.
+    pub id: Option<String>,
+    pub subject: String,
+    /// What happened to it, in the board's own words.
+    pub word: String,
+    pub at: SystemTime,
 }
 
 /// One named miss on a project's fleet row.

@@ -2639,31 +2639,10 @@ fn attention(state: &TransportState, project: &str, now: SystemTime) -> Value {
     let surface = &state.surface;
     let (last_look, delta) = surface.board_attention(project);
     let since = last_look.unwrap_or_else(|| now - Duration::from_secs(SAMPLE_WINDOW_SECS));
-    let mut actions: Vec<(SystemTime, String, String, String)> = Vec::new();
-    let mut seats: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for slot in state.conversations.held_slots() {
-        if slot.project() != project {
-            continue;
-        }
-        let Some(held) = state.conversations.get(&slot) else { continue };
-        let conversation = held.lock();
-        for message in conversation.messages() {
-            let Message::Assistant { message, timestamp, .. } = message else { continue };
-            let Some(at) = timestamp.as_deref().and_then(parse_rfc3339) else { continue };
-            if at <= since {
-                continue;
-            }
-            for block in &message.content {
-                if let ContentBlock::ToolUse { name, input, .. } = block
-                    && !is_board_tool(name)
-                {
-                    actions.push((at, slot.label().to_owned(), name.clone(), tool_detail(input)));
-                    seats.insert(slot.label().to_owned());
-                }
-            }
-        }
-    }
-    actions.sort_by_key(|(at, ..)| std::cmp::Reverse(*at));
+    // The held copies' walk is the expensive part, and it is the
+    // conversation set's to answer: it caches by the copies' version, so a
+    // board read with nothing new touches no seat.
+    let actions = state.conversations.attention_actions(project, since);
     let total = actions.len();
     let sampled = total.min(SAMPLE_SIZE);
     // **Rotating, not a fixed head**: a sample pinned to the newest three
@@ -2679,56 +2658,27 @@ fn attention(state: &TransportState, project: &str, now: SystemTime) -> Value {
     };
     let rows: Vec<Value> = (0..sampled)
         .map(|index| {
-            let (at, seat, tool, detail) = &actions[(offset + index) % total];
+            let action = &actions[(offset + index) % total];
             serde_json::json!({
-                "seat": seat,
-                "tool": tool,
-                "detail": detail,
-                "at": rfc3339(*at),
+                "seat": action.seat,
+                "tool": action.tool,
+                "detail": action.detail,
+                "at": rfc3339(action.at),
             })
         })
         .collect();
+    let agents = actions
+        .iter()
+        .map(|action| action.seat.as_str())
+        .collect::<std::collections::HashSet<_>>()
+        .len();
     serde_json::json!({
         "last_look": last_look.map(rfc3339),
         "checked_at": rfc3339(now),
-        "agents": seats.len(),
+        "agents": agents,
         "delta": delta,
         "sample": { "rows": rows, "sampled": sampled, "total": total },
     })
-}
-
-/// The board's own tools are the asks themselves, not actions nobody
-/// escalated, so the sample leaves them out.
-fn is_board_tool(name: &str) -> bool {
-    name.starts_with("mcp__forge__tasks__") || name.starts_with("tasks__")
-}
-
-/// One tool call's own words: its description, command, path or prompt,
-/// cut to a line a reader can scan.
-fn tool_detail(input: &Value) -> String {
-    for key in ["description", "command", "file_path", "path", "prompt", "subject"] {
-        if let Some(text) = input.get(key).and_then(Value::as_str) {
-            let line: String = text.lines().next().unwrap_or_default().trim().to_owned();
-            if !line.is_empty() {
-                return truncate(&line, 120);
-            }
-        }
-    }
-    String::new()
-}
-
-fn truncate(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_owned();
-    }
-    let cut: String = text.chars().take(max).collect();
-    format!("{cut}...")
-}
-
-fn parse_rfc3339(stated: &str) -> Option<SystemTime> {
-    time::OffsetDateTime::parse(stated, &time::format_description::well_known::Rfc3339)
-        .ok()
-        .map(SystemTime::from)
 }
 
 fn rfc3339(at: SystemTime) -> String {
@@ -2746,9 +2696,20 @@ fn rfc3339(at: SystemTime) -> String {
 /// dropped reads it back from there.
 fn window_row(row: &forge_workspace::board::BoardRow) -> Value {
     let mut value = serde_json::to_value(row).unwrap_or(Value::Null);
+    // **The acknowledged-but-forgotten state is a fact on the row**, derived
+    // from the acknowledgement the row already keeps and the one threshold
+    // the drive names at; a client reads it rather than keeping a timer.
+    let forgotten = row.task.waiting_on.as_ref().and_then(|wait| wait.acknowledged_at).is_some_and(
+        |acknowledged| {
+            SystemTime::now()
+                .duration_since(acknowledged)
+                .map_or(false, |age| age.as_secs() >= forge_workspace::drive::FORGOTTEN_ACK_SECS)
+        },
+    );
     if let Some(object) = value.as_object_mut() {
         object.remove("history");
         object.remove("history_total");
+        object.insert("forgotten".to_owned(), Value::Bool(forgotten));
         if let Some(task) = object.get_mut("task").and_then(Value::as_object_mut) {
             task.remove("detail");
         }
@@ -5139,6 +5100,7 @@ mod tests {
                 vec![
                     message("Bash", serde_json::json!({ "command": "just check" })),
                     message("Write", serde_json::json!({ "file_path": "src/lib.rs" })),
+                    message("mcp__forge__tasks__list", serde_json::json!({})),
                     message("mcp__forge__tasks__update", serde_json::json!({ "id": "t-1" })),
                 ],
                 0,
@@ -5150,10 +5112,10 @@ mod tests {
         let attention = &encoded["projects"][0]["attention"];
         assert_eq!(attention["agents"], 1, "one seat acted: {attention}");
         assert_eq!(
-            attention["sample"]["total"], 2,
-            "two unasked actions, the board's own left out"
+            attention["sample"]["total"], 3,
+            "the board's read is left out; its write is a judgement call and samples"
         );
-        assert_eq!(attention["sample"]["sampled"], 2, "all of them, under the sample size");
+        assert_eq!(attention["sample"]["sampled"], 3, "all of them, under the sample size");
         let rows = attention["sample"]["rows"].as_array().expect("rows");
         assert!(rows.iter().any(|row| row["tool"] == "Bash" && row["detail"] == "just check"));
         assert!(
@@ -5161,8 +5123,12 @@ mod tests {
             "a path names the action: {attention}",
         );
         assert!(
-            rows.iter().all(|row| row["tool"] != "mcp__forge__tasks__update"),
-            "the board's own tools are the asks, not unasked actions: {attention}",
+            rows.iter().all(|row| row["tool"] != "mcp__forge__tasks__list"),
+            "the board's reads are the lead polling itself: {attention}",
+        );
+        assert!(
+            rows.iter().any(|row| row["tool"] == "mcp__forge__tasks__update"),
+            "the board's writes are judgement calls and sample: {attention}",
         );
     }
 

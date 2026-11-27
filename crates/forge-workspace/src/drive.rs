@@ -44,8 +44,9 @@ pub const DRIVE_MIN_GAP_SECS: u64 = 30 * 60;
 const DRIVE_NAMES: usize = 3;
 
 /// How long an acknowledgement may stand unanswered before the lead is
-/// told the person marked it seen and forgot it.
-const FORGOTTEN_ACK_SECS: u64 = 4 * 3_600;
+/// told the person marked it seen and forgot it, and before the board
+/// draws the card as forgotten.
+pub const FORGOTTEN_ACK_SECS: u64 = 4 * 3_600;
 
 /// The period a `reask` default re-arms when the ask's own wait does not
 /// carry one.
@@ -186,11 +187,11 @@ impl Workspace {
         claims
     }
 
-    /// **The item lifecycle, on the same pass**: every ask on the person
-    /// runs its own deadline default when it passes - escalate, expire or
-    /// reask, never approve - a snoozed ask stays quiet, and an
-    /// acknowledgement standing unanswered is named to the lead once. A
-    /// class a policy note settles is not escalated: the note is the answer.
+    /// **The item lifecycle, on the same pass, in this order**: the deadline
+    /// first - it is the item's own contract, so a snoozed or
+    /// policy-settled ask still runs its default; then snooze quieting; then
+    /// the policy note, because a settled class is already answered; then
+    /// the acknowledged-but-forgotten state, named to the lead once.
     /// Returns how many messages reached a session.
     fn run_ask_lifecycle(
         &self,
@@ -199,8 +200,6 @@ impl Workspace {
         now: SystemTime,
     ) -> usize {
         let lead = SessionSlot::lead(&view.org, &view.name);
-        let prefix = format!("{}\u{0}", view.name);
-        self.forgotten_acks.lock().retain(|key, _| key.starts_with(&prefix));
         let mut delivered = 0;
         for task in self.tasks_for_project(&view.name) {
             if task.status != TaskStatus::Waiting {
@@ -210,11 +209,58 @@ impl Workspace {
             if wait.kind != Some(WaitingKind::User) || wait.parked {
                 continue;
             }
+            // **The deadline runs before every quieting rule**: a deferral
+            // or a policy note is about attention, not about time, and an
+            // ask that passed its deadline still runs its named default -
+            // escalate, expire or reask, never approve.
+            if let Some(due) = wait.due.as_ref()
+                && due.ran_at.is_none()
+                && due.at <= now
+            {
+                match due.default {
+                    DefaultIfIgnored::Expire => {
+                        let reason = "expired: no answer within its deadline, and the default was \
+                                      expire - the ask and its record stay on the row";
+                        self.expire_ask(&view.name, &task.id, now, reason);
+                    }
+                    DefaultIfIgnored::Escalate => {
+                        let text = format!(
+                            "task board: \"{}\" went unanswered past its deadline; the default is \
+                             escalate, so it stays waiting for the user. Raise it again or withdraw \
+                             it with the reason.",
+                            task.subject,
+                        );
+                        if deliver.to_seat(&lead, &text) == Delivery::Delivered {
+                            delivered += 1;
+                        }
+                        self.mark_ask_default_ran(&view.name, &task.id, now);
+                    }
+                    DefaultIfIgnored::Reask => {
+                        let text = format!(
+                            "task board: \"{}\" went unanswered past its deadline; the default is \
+                             reask, so ask the user again.",
+                            task.subject,
+                        );
+                        if deliver.to_seat(&lead, &text) == Delivery::Delivered {
+                            delivered += 1;
+                        }
+                        let period = wait
+                            .since
+                            .and_then(|since| due.at.duration_since(since).ok())
+                            .map_or(REASK_PERIOD_SECS, |period| period.as_secs())
+                            .max(60);
+                        self.rearm_ask(&view.name, &task.id, now + Duration::from_secs(period));
+                    }
+                }
+                continue;
+            }
+            // A snoozed ask stays quiet: no forgotten nudge while it is
+            // deferred.
             if crate::tasks::snooze_active(wait, task.updated_at, now) {
                 continue;
             }
             // A settled class is already answered: the note is the answer,
-            // so the default never runs and no escalation is made.
+            // so no escalation is made.
             let settled = task
                 .request
                 .as_ref()
@@ -223,66 +269,67 @@ impl Workspace {
             if settled {
                 continue;
             }
+            // The acknowledged-but-forgotten state, named once per
+            // acknowledgement, with the named one persisted beside the row.
             if let Some(acknowledged) = wait.acknowledged_at
                 && age_secs(acknowledged, now) >= FORGOTTEN_ACK_SECS
+                && self.ack_named(&view.name, &task.id) != Some(acknowledged)
             {
-                let key = format!("{}{}", prefix, task.id.as_str());
-                let mut named = self.forgotten_acks.lock();
-                if named.get(&key) != Some(&acknowledged) {
-                    named.insert(key, acknowledged);
-                    drop(named);
-                    let text = format!(
-                        "task board: \"{}\" was acknowledged {} ago and is still unanswered; \
-                         answer it, withdraw it with a reason, or leave it and say why.",
-                        task.subject,
-                        fmt_secs(age_secs(acknowledged, now)),
-                    );
-                    if deliver.to_seat(&lead, &text) == Delivery::Delivered {
-                        delivered += 1;
-                    }
+                let text = format!(
+                    "task board: \"{}\" was acknowledged {} ago and is still unanswered; \
+                     answer it, withdraw it with a reason, or leave it and say why.",
+                    task.subject,
+                    fmt_secs(age_secs(acknowledged, now)),
+                );
+                if deliver.to_seat(&lead, &text) == Delivery::Delivered {
+                    delivered += 1;
                 }
-            }
-            let Some(due) = wait.due.as_ref() else { continue };
-            if due.ran_at.is_some() || due.at > now {
-                continue;
-            }
-            match due.default {
-                DefaultIfIgnored::Expire => {
-                    let reason = "expired: no answer within its deadline, and the default was \
-                                  expire - the ask and its record stay on the row";
-                    self.expire_ask(&view.name, &task.id, now, reason);
-                }
-                DefaultIfIgnored::Escalate => {
-                    let text = format!(
-                        "task board: \"{}\" went unanswered past its deadline; the default is \
-                         escalate, so it stays waiting for the user. Raise it again or withdraw \
-                         it with the reason.",
-                        task.subject,
-                    );
-                    if deliver.to_seat(&lead, &text) == Delivery::Delivered {
-                        delivered += 1;
-                    }
-                    self.mark_ask_default_ran(&view.name, &task.id, now);
-                }
-                DefaultIfIgnored::Reask => {
-                    let text = format!(
-                        "task board: \"{}\" went unanswered past its deadline; the default is \
-                         reask, so ask the user again.",
-                        task.subject,
-                    );
-                    if deliver.to_seat(&lead, &text) == Delivery::Delivered {
-                        delivered += 1;
-                    }
-                    let period = wait
-                        .since
-                        .and_then(|since| due.at.duration_since(since).ok())
-                        .map_or(REASK_PERIOD_SECS, |period| period.as_secs())
-                        .max(60);
-                    self.rearm_ask(&view.name, &task.id, now + Duration::from_secs(period));
-                }
+                self.mark_ack_named(&view.name, &task.id, acknowledged);
             }
         }
         delivered
+    }
+
+    /// The acknowledgement the drive has already named for this row, from
+    /// the store: a restart must not lose it and re-name the forgetting.
+    fn ack_named(&self, project: &str, id: &forge_primitives::tasks::TaskId) -> Option<SystemTime> {
+        let guard = self.db.lock();
+        let db = guard.as_ref()?;
+        match crate::store::ack_named::named(db, project, id.as_str()) {
+            Ok(named) => named,
+            Err(error) => {
+                tracing::warn!(
+                    target: "forge_workspace::drive",
+                    event_name = "ack_named_read_failed",
+                    project = %project,
+                    id = %id.as_str(),
+                    %error,
+                    "reading the named forgotten acknowledgement failed",
+                );
+                None
+            }
+        }
+    }
+
+    /// Record that the drive has named this row's acknowledgement.
+    fn mark_ack_named(
+        &self,
+        project: &str,
+        id: &forge_primitives::tasks::TaskId,
+        acknowledged: SystemTime,
+    ) {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else { return };
+        if let Err(error) = crate::store::ack_named::mark(db, project, id.as_str(), acknowledged) {
+            tracing::warn!(
+                target: "forge_workspace::drive",
+                event_name = "ack_named_write_failed",
+                project = %project,
+                id = %id.as_str(),
+                %error,
+                "recording the named forgotten acknowledgement failed",
+            );
+        }
     }
 
     /// One pass over every project: nudge each lead that has stopped with
@@ -985,17 +1032,18 @@ mod tests {
         assert_eq!(due.ran_at, None, "and armed again");
     }
 
-    /// A snoozed ask is quiet: its deadline does not run while the person's
-    /// deferral holds.
+    /// **A snoozed ask stays quiet, and its deadline still runs**: a
+    /// deferral is about attention, not about time, so the named default
+    /// lands on schedule rather than waiting for the person's snooze.
     #[test]
-    fn a_snoozed_ask_is_quiet() {
+    fn a_snoozed_ask_stays_quiet_and_its_deadline_still_runs() {
         let dir = tempdir().expect("tempdir");
         let ws = fixture(dir.path());
         ws.seed_test_task(ask(
             "t-1",
             forge_primitives::tasks::AskKind::Decision,
             Some(deadline(500, DefaultIfIgnored::Expire)),
-            None,
+            Some(epoch(100)),
             Some(forge_primitives::tasks::Snooze {
                 until: forge_primitives::tasks::SnoozeUntil::At(epoch(9_999)),
                 since: epoch(0),
@@ -1003,11 +1051,16 @@ mod tests {
         ));
         let deliver = Recording::default();
 
-        pass(&ws, &deliver, 1_000);
+        assert_eq!(
+            pass(&ws, &deliver, 1_000),
+            0,
+            "a deferral is quiet, and an expiry speaks to no one",
+        );
+        assert!(deliver.seen.lock().is_empty(), "no forgotten nudge while the deferral holds");
         assert_eq!(
             ws.tasks_for_project(PROJECT)[0].status,
-            TaskStatus::Waiting,
-            "the deadline waits for the deferral to end",
+            TaskStatus::Canceled,
+            "the deadline ran ahead of the deferral",
         );
     }
 

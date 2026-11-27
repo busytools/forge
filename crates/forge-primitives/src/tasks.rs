@@ -57,6 +57,10 @@ impl TaskStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitingKind {
+    /// The row was stored as `decision` before the kind split into the five
+    /// ask kinds; an old row must load as the wait it was, not be skipped by
+    /// the store's decode.
+    #[serde(alias = "decision")]
     User,
     Dependency,
     Resource,
@@ -177,12 +181,17 @@ pub enum AnswerValue {
 }
 
 /// An answer as it landed: the value the kind needed, when, and the note
-/// the person left with it.
+/// the person left with it. A teaching's lesson is kept here too, so the
+/// row carries the note its class was settled by even when the store's
+/// policy write is the thing that failed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Answer {
     pub value: AnswerValue,
     #[serde(default)]
     pub note: Option<String>,
+    /// The lesson a teaching's answer settles its class with.
+    #[serde(default)]
+    pub lesson: Option<String>,
     pub at: SystemTime,
 }
 
@@ -202,6 +211,8 @@ impl<'de> Deserialize<'de> for Answer {
             choice: Option<String>,
             #[serde(default)]
             note: Option<String>,
+            #[serde(default)]
+            lesson: Option<String>,
             at: SystemTime,
         }
         let raw = Raw::deserialize(deserializer)?;
@@ -212,7 +223,7 @@ impl<'de> Deserialize<'de> for Answer {
                 return Err(serde::de::Error::missing_field("value"));
             }
         };
-        Ok(Self { value, note: raw.note, at: raw.at })
+        Ok(Self { value, note: raw.note, lesson: raw.lesson, at: raw.at })
     }
 }
 
@@ -678,6 +689,7 @@ mod tests {
                 answer: Some(Answer {
                     value: AnswerValue::Choice("merge".to_owned()),
                     note: Some("after the bench".to_owned()),
+                    lesson: None,
                     at: std::time::SystemTime::UNIX_EPOCH,
                 }),
             }),
@@ -758,6 +770,7 @@ mod tests {
             answer: Some(Answer {
                 value: AnswerValue::Choice("flag it".to_owned()),
                 note: Some("until the bench is green".to_owned()),
+                lesson: None,
                 at: std::time::SystemTime::UNIX_EPOCH,
             }),
         };

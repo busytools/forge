@@ -563,7 +563,7 @@ impl TasksFacade for ProdTasksFacade {
                     on: None,
                     verification: true,
                     parked: false,
-                    due: None,
+                    due: Some(crate::tasks::default_user_deadline(now)),
                     acknowledged_at: None,
                     snoozed: None,
                     expired_at: None,

@@ -9,12 +9,12 @@
 //! and every status change lands in the history.
 
 use std::collections::HashSet;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use forge_primitives::tasks::Verify;
 use forge_primitives::tasks::{
-    Answer, AnswerValue, AskKind, Attestation, By, Deadline, Disposition, LinkKind, Request,
-    ReservedBy, Task, TaskId, TaskStatus, TaskTransition, Waiting, WaitingKind,
+    Answer, AnswerValue, AskKind, Attestation, By, Deadline, DefaultIfIgnored, Disposition,
+    LinkKind, Request, ReservedBy, Task, TaskId, TaskStatus, TaskTransition, Waiting, WaitingKind,
 };
 
 use crate::SessionSlot;
@@ -131,6 +131,14 @@ pub(crate) enum MoveError {
     /// The ask's class is already settled by a project policy note. The
     /// class and the note's text ride it.
     PolicySettled { class: String, text: String },
+    /// A wait was stated on the user with nothing to answer and no look to
+    /// give: neither an ask nor a verification park, it would draw as a
+    /// card with no door. Every park on the user is one or the other.
+    BareUserWait,
+    /// A teaching's policy note could not be stored, so the answer was not
+    /// recorded: a success that leaves the lesson on nothing is not one.
+    /// The class rides it.
+    PolicyWriteFailed(String),
 }
 
 /// How long a terminal tree stays in the live set before the retention
@@ -144,6 +152,22 @@ pub(crate) const RETENTION_SECS: u64 = 24 * 3_600;
 /// the stale ones, and a completion that rests on an older or failed check
 /// is refused - a cached verdict is evidence only while it is current.
 pub(crate) const CONNECTOR_REFRESH_SECS: u64 = 300;
+
+/// The deadline a wait on the person carries when its asker names none:
+/// **every item carries one**, and its named default is escalate - never
+/// approve, because consent by inattention is not consent.
+pub(crate) const USER_WAIT_DEADLINE_SECS: u64 = 24 * 3_600;
+
+/// The deadline every wait on the person is minted with when the asker
+/// names none. The default escalates to the lead, which raises the ask
+/// again or withdraws it with a reason.
+pub(crate) fn default_user_deadline(at: SystemTime) -> Deadline {
+    Deadline {
+        at: at + Duration::from_secs(USER_WAIT_DEADLINE_SECS),
+        default: DefaultIfIgnored::Escalate,
+        ran_at: None,
+    }
+}
 
 /// Whether a row is parked on the user's own look - the verification wait
 /// the gate lands a user-bound completion on. The completion guard reads
@@ -414,6 +438,17 @@ impl std::fmt::Display for MoveError {
                 f,
                 "\"{class}\" is settled by project policy (\"{text}\"), so this ask is not \
                  raised again; cite the note instead"
+            ),
+            Self::BareUserWait => write!(
+                f,
+                "a wait on the user states what they answer: pass `ask` with the kind and the \
+                 question, or park a finished row on their look. A bare user wait has no door"
+            ),
+            Self::PolicyWriteFailed(class) => write!(
+                f,
+                "the project's policy note for class \"{class}\" could not be stored, so the \
+                 answer was not recorded and the row still waits. Retry once the store is \
+                 writable"
             ),
         }
     }
@@ -744,7 +779,9 @@ impl Workspace {
                     on: None,
                     verification: true,
                     parked: false,
-                    due: None,
+                    // A look carries a deadline too, and its default
+                    // escalates: a look is never approved by a timer.
+                    due: Some(default_user_deadline(at)),
                     acknowledged_at: None,
                     snoozed: None,
                     expired_at: None,
@@ -1149,7 +1186,7 @@ impl Workspace {
                 on: None,
                 verification: true,
                 parked: false,
-                due: None,
+                due: Some(default_user_deadline(at)),
                 acknowledged_at: None,
                 snoozed: None,
                 expired_at: None,
@@ -1341,27 +1378,6 @@ impl Workspace {
         })
     }
 
-    /// The user answers a row waiting on a question: the row resumes in
-    /// progress with the words in its detail.
-    pub(crate) fn answer_task(
-        &self,
-        project_name: &str,
-        id: &TaskId,
-        words: &str,
-    ) -> Result<Option<Task>, MoveError> {
-        self.move_task(project_name, id, By::User, false, None, |task| {
-            if task.status != TaskStatus::Waiting
-                || task.waiting_on.as_ref().is_some_and(|wait| wait.verification)
-            {
-                return Err(MoveError::NotWaitingQuestion);
-            }
-            task.waiting_on = None;
-            task.status = TaskStatus::InProgress;
-            append_words(task, words);
-            Ok(())
-        })
-    }
-
     /// Answer a row waiting on an ask: the value the kind needed, when, and
     /// the note the person left. The record is the row's own and nothing
     /// else is written to it; the row resumes in progress. A teaching's
@@ -1415,9 +1431,28 @@ impl Workspace {
                     }
                     // **The value must be the shape the kind needs**: an
                     // option list cannot answer a clarification, and a
-                    // teaching without its lesson writes no policy.
+                    // teaching without its lesson writes no policy. A
+                    // teaching whose `text` arrived but whose `lesson` did
+                    // not hears the lesson named, not the text it already
+                    // gave.
                     if !request.answer_fits(&value, lesson) {
-                        return Err(MoveError::AnswerShape(answer_shape_need(request.kind)));
+                        let need = if request.kind == AskKind::Teaching && lesson.is_none() {
+                            "a teaching takes `lesson` as well as `text`: the lesson is the \
+                             policy note its class is settled by"
+                                .to_owned()
+                        } else {
+                            answer_shape_need(request.kind)
+                        };
+                        return Err(MoveError::AnswerShape(need));
+                    }
+                    // **A teaching's policy note lands before the row
+                    // resumes**, so an answer that reports success has its
+                    // note stored rather than only logged.
+                    if request.kind == AskKind::Teaching
+                        && let (Some(class), Some(lesson)) = (request.class.as_deref(), lesson)
+                        && self.settle_policy(project_name, class, lesson, &task.id).is_none()
+                    {
+                        return Err(MoveError::PolicyWriteFailed(class.to_owned()));
                     }
                     // The record is the answer and nothing more: the value
                     // the kind returned, when, and the note. A second
@@ -1429,6 +1464,7 @@ impl Workspace {
                             .map(str::trim)
                             .filter(|note| !note.is_empty())
                             .map(str::to_owned),
+                        lesson: lesson.map(str::to_owned),
                         at,
                     });
                 }
@@ -1440,15 +1476,6 @@ impl Workspace {
             task.status = TaskStatus::InProgress;
             Ok(())
         })?;
-        // The policy write follows the answer: the row carries the record,
-        // and the class is settled for every lead and the drive.
-        if let Some(task) = &moved
-            && let Some(request) = &task.request
-            && request.kind == AskKind::Teaching
-            && let (Some(class), Some(lesson)) = (request.class.as_deref(), lesson)
-        {
-            self.settle_policy(project_name, class, lesson, &task.id);
-        }
         Ok(moved)
     }
 
@@ -1495,6 +1522,7 @@ impl Workspace {
         project_name: &str,
         since: Option<SystemTime>,
     ) -> crate::board::BoardDelta {
+        use crate::board::DeltaItem;
         let since = since.unwrap_or(SystemTime::UNIX_EPOCH);
         let tasks = self.tasks_for_project(project_name);
         let history = {
@@ -1504,23 +1532,94 @@ impl Workspace {
             })
         };
         let after = |at: SystemTime| at > since;
+        let find = |id: &TaskId| tasks.iter().find(|task| task.id == *id);
+        // **One item per row**, newest first: the line that counts a move
+        // opens onto the rows it counts, not onto every transition.
+        let mut moved: Vec<DeltaItem> = Vec::new();
+        let mut landed: Vec<DeltaItem> = Vec::new();
+        let mut moved_seen: HashSet<TaskId> = HashSet::new();
+        let mut landed_seen: HashSet<TaskId> = HashSet::new();
+        for step in history.iter().rev().filter(|step| after(step.at)) {
+            let Some(task) = find(&step.task_id) else { continue };
+            if step.to.is_terminal() {
+                if landed_seen.insert(step.task_id.clone()) {
+                    landed.push(DeltaItem {
+                        id: Some(step.task_id.as_str().to_owned()),
+                        subject: task.subject.clone(),
+                        word: status_word(step.to).to_owned(),
+                        at: step.at,
+                    });
+                }
+                continue;
+            }
+            if !moved_seen.insert(step.task_id.clone()) {
+                continue;
+            }
+            // A resumed ask carries its answer: a resolved one draws as
+            // answered, with the value it returned.
+            let answered = task
+                .request
+                .as_ref()
+                .and_then(|request| request.answer.as_ref())
+                .filter(|answer| after(answer.at));
+            let word = match answered {
+                Some(answer) => format!("answered: {}", value_words(&answer.value)),
+                None => format!("moved to {}", status_word(step.to)),
+            };
+            moved.push(DeltaItem {
+                id: Some(step.task_id.as_str().to_owned()),
+                subject: task.subject.clone(),
+                word,
+                at: step.at,
+            });
+        }
+        // The asks whose deadline ended them keep their record and draw as
+        // expired, never as a canceled row only.
+        let expired: Vec<DeltaItem> = tasks
+            .iter()
+            .filter_map(|task| {
+                let at = task
+                    .waiting_on
+                    .as_ref()
+                    .and_then(|wait| wait.expired_at)
+                    .filter(|at| after(*at))?;
+                Some(DeltaItem {
+                    id: Some(task.id.as_str().to_owned()),
+                    subject: task.subject.clone(),
+                    word: "expired: no answer by its deadline, and its record stays".to_owned(),
+                    at,
+                })
+            })
+            .collect();
+        let merged: Vec<DeltaItem> = tasks
+            .iter()
+            .flat_map(|task| task.links.iter().map(move |link| (task, link)))
+            .filter(|(_, link)| {
+                link.kind == LinkKind::Pr && link.state.as_deref() == Some("merged")
+            })
+            .filter_map(|(task, link)| {
+                let at = link
+                    .last_check
+                    .as_ref()
+                    .and_then(|check| check.changed_at)
+                    .filter(|at| after(*at))?;
+                Some(DeltaItem {
+                    id: Some(task.id.as_str().to_owned()),
+                    subject: task.subject.clone(),
+                    word: format!("{} merged", link.label.as_deref().unwrap_or(&link.target)),
+                    at,
+                })
+            })
+            .collect();
         crate::board::BoardDelta {
-            moved: history.iter().filter(|step| after(step.at)).count(),
-            landed: history.iter().filter(|step| after(step.at) && step.to.is_terminal()).count(),
-            expired: tasks
-                .iter()
-                .filter(|task| {
-                    task.waiting_on.as_ref().and_then(|wait| wait.expired_at).is_some_and(after)
-                })
-                .count(),
-            merged: tasks
-                .iter()
-                .flat_map(|task| task.links.iter())
-                .filter(|link| link.kind == LinkKind::Pr && link.state.as_deref() == Some("merged"))
-                .filter(|link| {
-                    link.last_check.as_ref().and_then(|check| check.changed_at).is_some_and(after)
-                })
-                .count(),
+            moved: moved.len(),
+            landed: landed.len(),
+            expired: expired.len(),
+            merged: merged.len(),
+            moved_items: moved,
+            landed_items: landed,
+            expired_items: expired,
+            merged_items: merged,
         }
     }
 
@@ -1888,6 +1987,12 @@ impl Workspace {
                 }
                 None => None,
             };
+            // **Every park on the user is an ask or a look.** A bare `user`
+            // wait has nothing to answer and no approve door; looks are
+            // minted by their own park paths, never through this door.
+            if kind == WaitingKind::User && request.is_none() {
+                return Err(MoveError::BareUserWait);
+            }
             let prior = tasks[index].status;
             // **A repeated identical wait is the same wait**: keep its start,
             // so its age and a notification's identity do not move under a
@@ -1907,7 +2012,9 @@ impl Workspace {
                 on,
                 verification: false,
                 parked: false,
-                due,
+                // Every item carries a deadline: one the asker named, else
+                // the escalate default.
+                due: due.or_else(|| (kind == WaitingKind::User).then(|| default_user_deadline(at))),
                 acknowledged_at: None,
                 snoozed: None,
                 expired_at: None,
@@ -3242,16 +3349,162 @@ mod tests {
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
         ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
         ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
-        ws.wait_task("proj", &TaskId::from("t-1"), &worker, WaitingKind::User, None, None)
-            .expect("wait");
+        ws.wait_request_task_at_version(
+            "proj",
+            &TaskId::from("t-1"),
+            &worker,
+            None,
+            Request {
+                kind: AskKind::Clarification,
+                question: "which store should the window draw from?".to_owned(),
+                options: Vec::new(),
+                class: None,
+                answer: None,
+            },
+            None,
+            None,
+        )
+        .expect("ask");
 
         let answered = ws
-            .answer_task("proj", &TaskId::from("t-1"), "keep the window raise")
+            .answer_decision(
+                "proj",
+                &TaskId::from("t-1"),
+                By::User,
+                AnswerValue::Text("keep the window raise".to_owned()),
+                None,
+                None,
+            )
             .expect("no refusal")
             .expect("the row is there");
         assert_eq!(answered.status, TaskStatus::InProgress, "the answer resumes the row");
         assert_eq!(answered.waiting_on, None);
+        let record = answered
+            .request
+            .as_ref()
+            .and_then(|request| request.answer.as_ref())
+            .expect("the answer is the record");
+        assert_eq!(record.value, AnswerValue::Text("keep the window raise".to_owned()));
+    }
+
+    /// A row written before the record existed carries no request: the
+    /// value still answers it, landing in the detail as it always did.
+    #[test]
+    fn a_pre_record_question_wait_takes_the_value_into_its_detail() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-answer-legacy");
+        ws.push_task(Task {
+            status: TaskStatus::Waiting,
+            waiting_on: Some(Waiting {
+                kind: Some(WaitingKind::User),
+                detail: Some("keep the window raise".to_owned()),
+                on: None,
+                verification: false,
+                parked: false,
+                since: Some(SystemTime::now()),
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
+            }),
+            ..sample_task("t-1", "proj")
+        });
+
+        let answered = ws
+            .answer_decision(
+                "proj",
+                &TaskId::from("t-1"),
+                By::User,
+                AnswerValue::Text("keep the window raise".to_owned()),
+                None,
+                None,
+            )
+            .expect("no refusal")
+            .expect("the row is there");
+        assert_eq!(answered.status, TaskStatus::InProgress, "the answer resumes the row");
         assert_eq!(answered.detail.as_deref(), Some("keep the window raise"));
+    }
+
+    /// The digest's counts carry the rows behind them: an answered ask is
+    /// one moved item naming its answer, and an expired ask keeps its
+    /// record on the expired line rather than reading as a bare cancel.
+    #[test]
+    fn the_board_delta_carries_the_items_its_counts_count() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-delta-items");
+        install_db(&ws, dir.path());
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        let since = SystemTime::now();
+        let raise = |id: &str, kind: AskKind| {
+            ws.push_task(Task { owner: Some(worker.clone()), ..sample_task(id, "proj") });
+            ws.wait_request_task_at_version(
+                "proj",
+                &TaskId::from(id),
+                &worker,
+                None,
+                Request {
+                    kind,
+                    question: "what now?".to_owned(),
+                    options: Vec::new(),
+                    class: None,
+                    answer: None,
+                },
+                None,
+                None,
+            )
+            .expect("the ask lands");
+        };
+
+        raise("answered", AskKind::Clarification);
+        ws.answer_decision(
+            "proj",
+            &TaskId::from("answered"),
+            By::User,
+            AnswerValue::Text("the scratch store".to_owned()),
+            None,
+            None,
+        )
+        .expect("the answer lands")
+        .expect("the row is there");
+        raise("expired", AskKind::Decision);
+        ws.expire_ask("proj", &TaskId::from("expired"), SystemTime::now(), "expired: no answer");
+
+        let delta = ws.board_delta("proj", Some(since));
+        let moved = delta
+            .moved_items
+            .iter()
+            .find(|item| item.subject == "subject answered")
+            .expect("the answered row is a moved item");
+        assert!(
+            moved.word.contains("answered") && moved.word.contains("the scratch store"),
+            "the moved item names the answer: {moved:?}",
+        );
+        assert_eq!(delta.expired, 1, "one ask expired: {delta:?}");
+        assert_eq!(delta.expired_items[0].subject, "subject expired");
+        assert!(
+            delta.expired_items[0].word.contains("expired"),
+            "the expired item keeps its own word: {:?}",
+            delta.expired_items[0],
+        );
+        assert!(delta.landed_items.iter().any(|item| item.subject == "subject expired"));
+    }
+
+    /// **Every park on the user is an ask or a look**: a bare `user` wait
+    /// has no door to draw, so the wait door refuses it by name.
+    #[test]
+    fn a_bare_wait_on_the_user_is_refused() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-bare-user-wait");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
+        ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
+        assert_eq!(
+            ws.wait_task("proj", &TaskId::from("t-1"), &worker, WaitingKind::User, None, None),
+            Err(MoveError::BareUserWait),
+        );
     }
 
     /// A decision wait records the question and the options the lead
@@ -3536,16 +3789,26 @@ mod tests {
                 answer: None,
             },
         );
-        ws.answer_decision(
-            "proj",
-            &TaskId::from("teach"),
-            By::User,
-            AnswerValue::Text(lesson.to_owned()),
-            None,
+        let taught = ws
+            .answer_decision(
+                "proj",
+                &TaskId::from("teach"),
+                By::User,
+                AnswerValue::Text(lesson.to_owned()),
+                None,
+                Some(lesson),
+            )
+            .expect("the teaching lands")
+            .expect("the row is there");
+        assert_eq!(
+            taught
+                .request
+                .as_ref()
+                .and_then(|request| request.answer.as_ref())
+                .and_then(|answer| answer.lesson.as_deref()),
             Some(lesson),
-        )
-        .expect("the teaching lands")
-        .expect("the row is there");
+            "the lesson is persisted on the row, not only in the policy note",
+        );
         let notes = ws.policy_notes_for_project("proj");
         assert_eq!(notes.len(), 1, "the lesson is a project policy note: {notes:?}");
         assert_eq!(notes[0].class, "ci-flake");
@@ -3656,7 +3919,14 @@ mod tests {
             "a pending row is not waiting on a look",
         );
         assert_eq!(
-            ws.answer_task("proj", &TaskId::from("t-1"), "words"),
+            ws.answer_decision(
+                "proj",
+                &TaskId::from("t-1"),
+                By::User,
+                AnswerValue::Text("words".to_owned()),
+                None,
+                None,
+            ),
             Err(MoveError::NotWaitingQuestion),
         );
     }
@@ -4145,12 +4415,19 @@ mod tests {
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
         ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
         ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
-        ws.wait_task(
+        ws.wait_request_task_at_version(
             "proj",
             &TaskId::from("t-1"),
             &worker,
-            WaitingKind::User,
             Some("the user's look".to_owned()),
+            Request {
+                kind: AskKind::Clarification,
+                question: "the user's look".to_owned(),
+                options: Vec::new(),
+                class: None,
+                answer: None,
+            },
+            None,
             None,
         )
         .expect("the owner may wait its own row");
@@ -4405,24 +4682,33 @@ mod tests {
         let seat = SessionSlot::worker("TestOrg", "proj", "w-1");
         ws.push_task(Task { owner: Some(seat.clone()), ..sample_task("t-1", "proj") });
 
+        let ask = || Request {
+            kind: AskKind::Clarification,
+            question: "sign this off".to_owned(),
+            options: Vec::new(),
+            class: None,
+            answer: None,
+        };
         let first = ws
-            .wait_task(
+            .wait_request_task_at_version(
                 "proj",
                 &TaskId::from("t-1"),
                 &seat,
-                WaitingKind::User,
                 Some("sign this off".to_owned()),
+                ask(),
+                None,
                 None,
             )
             .expect("the owner may wait its own row");
         let started = first.waiting_on.as_ref().and_then(|wait| wait.since).expect("stamped");
         let again = ws
-            .wait_task(
+            .wait_request_task_at_version(
                 "proj",
                 &TaskId::from("t-1"),
                 &seat,
-                WaitingKind::User,
                 Some("sign this off".to_owned()),
+                ask(),
+                None,
                 None,
             )
             .expect("a repeated wait is allowed");
@@ -4542,12 +4828,19 @@ mod tests {
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
         ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
         ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
-        ws.wait_task(
+        ws.wait_request_task_at_version(
             "proj",
             &TaskId::from("t-1"),
             &worker,
-            WaitingKind::User,
             Some("which shape".to_owned()),
+            Request {
+                kind: AskKind::Clarification,
+                question: "which shape?".to_owned(),
+                options: Vec::new(),
+                class: None,
+                answer: None,
+            },
+            None,
             None,
         )
         .expect("the owner may wait its own row");
@@ -4848,12 +5141,19 @@ mod tests {
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
         ws.push_task(sample_task_with_parent("t-1", Some("epic"), "proj"));
         ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
-        ws.wait_task(
+        ws.wait_request_task_at_version(
             "proj",
             &TaskId::from("t-1"),
             &worker,
-            WaitingKind::User,
             Some("which shape".to_owned()),
+            Request {
+                kind: AskKind::Clarification,
+                question: "which shape?".to_owned(),
+                options: Vec::new(),
+                class: None,
+                answer: None,
+            },
+            None,
             None,
         )
         .expect("the owner may wait its own row");
@@ -4882,12 +5182,19 @@ mod tests {
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
         ws.push_task(sample_task_with_parent("asked", Some("branch"), "proj"));
         ws.claim_task("proj", &worker, &TaskId::from("asked")).expect("claim");
-        ws.wait_task(
+        ws.wait_request_task_at_version(
             "proj",
             &TaskId::from("asked"),
             &worker,
-            WaitingKind::User,
             Some("which shape".to_owned()),
+            Request {
+                kind: AskKind::Clarification,
+                question: "which shape?".to_owned(),
+                options: Vec::new(),
+                class: None,
+                answer: None,
+            },
+            None,
             None,
         )
         .expect("the owner may wait its own row");
