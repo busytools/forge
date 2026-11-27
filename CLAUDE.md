@@ -1201,7 +1201,11 @@ come last, because they are the only irreversible steps.
 
 The client bundle is the app alone
 (`--bundles app`), so no disk image is mounted and no Finder window
-opens, and a client running from the installed bundle is quit first, and
+opens. A Developer ID build is notarised and stapled before the swap, and
+the updater tarball is packed from the stapled bundle; the credential comes
+from `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID` or
+`~/.tauri/forge-notary.properties`, never the repo. A client running from
+the installed bundle is quit first, and
 refused rather than replaced if the quit does not take: replacing a live
 bundle underneath itself is the one way this fails quietly. The
 bundle also carries the update tarball the desktop updater installs from,

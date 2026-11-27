@@ -51,6 +51,7 @@ script-tests:
     python3 scripts/test_browser_host_focus.py
     python3 scripts/test_check_client_entitlements.py
     python3 scripts/test_check_updater_signature.py
+    python3 scripts/test_notarize_client.py
 
 # Rewrite files to match rustfmt. The shell is a workspace root of its own,
 # so it takes its own invocation.
@@ -642,6 +643,7 @@ client-release version: sync-main client-release-deps
         APPLE_SIGNING_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
             | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1 || true)
     fi
+    notarise=0
     if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
         # **Exported only when non-empty.** Tauri reads a set-but-empty
         # variable as a real identity and runs `codesign -s ""`, which fails;
@@ -664,8 +666,19 @@ client-release version: sync-main client-release-deps
             echo "        FORGE_PROVISION_PROFILE (client/README.md, the keychain profile)" >&2
             exit 1
         fi
+
+        # **The credential is checked before the build**, so a missing one
+        # stops the release before it spends the build; the same script makes
+        # the real submission after the re-sign. It reads APPLE_ID,
+        # APPLE_PASSWORD and APPLE_TEAM_ID from the environment or
+        # ~/.tauri/forge-notary.properties, and takes the team id from the
+        # profile when the file names none.
+        ./scripts/notarize_client.sh --check "$profile"
+        notarise=1
     else
-        unset APPLE_SIGNING_IDENTITY
+        # A stray credential in the environment must not turn Tauri's own
+        # notarisation on over an unsigned build.
+        unset APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
         # Tauri 2.12 skips signing when no identity is set, so the build is
         # unsigned, not ad-hoc signed. The entitlement check fails on an
         # unsigned bundle (fail-closed, the way #3029 shipped it), so a release
@@ -674,7 +687,15 @@ client-release version: sync-main client-release-deps
         echo "[WARN] no Developer ID identity on this machine: the client stays unsigned" >&2
     fi
 
-    npm --prefix client run tauri -- build --bundles app --ci -- --locked
+    build_args=(--bundles app --ci)
+    if [ "$notarise" = 1 ]; then
+        # **Tauri's own notarisation submits the pre-re-sign bundle**, whose
+        # ticket names a signature the embed and re-sign below replace.
+        # `--skip-stapling` also stops the build waiting on that submission;
+        # the final signature is submitted after the re-sign.
+        build_args+=(--skip-stapling)
+    fi
+    npm --prefix client run tauri -- build "${build_args[@]}" -- --locked
 
     if [ ! -e "$built" ]; then
         echo "[ERROR] the build produced no app bundle at $built" >&2
@@ -697,22 +718,22 @@ client-release version: sync-main client-release-deps
         # must stop the release here rather than at the first launch.
         codesign --verify --deep --strict "$built"
 
-        # **Nothing in this recipe notarises.** Tauri 2.12 notarises and
-        # staples inside `bundle_project` when APPLE_ID, APPLE_PASSWORD and
-        # APPLE_TEAM_ID are set - the APPLE_* variables turn it on,
-        # `--skip-stapling` only omits the staple - and the embed and re-sign
-        # above invalidate that staple. A notarised build therefore builds
-        # with `--skip-stapling` and notarises the final signature after this
-        # recipe, or accepts that the shipped app's staple is stale. It does
-        # not fire today: no APPLE_* variables are set on this machine.
+        # **The final signature is what gets notarised.** Tauri notarised
+        # inside `bundle_project` when the credential was in the environment,
+        # but the profile embed and re-sign above produced a different
+        # signature, so that ticket names an app this recipe no longer has.
+        # Submit this signature, staple the accepted ticket to the bundle and
+        # let Gatekeeper read it back before anything is packed from it.
+        ./scripts/notarize_client.sh "$built"
 
-        # **The updater tarball must carry the re-signed app.** Tauri creates
-        # the tarball during the build, before the profile is embedded and the
-        # app is signed again, so the build's pair carries an app without the
-        # profile and with the pre-re-sign signature. Regenerate the tarball
-        # from the re-signed bundle and sign it with the updater key, replacing
-        # the build's pair. A desktop auto-update installs this tarball, so a
-        # stale one would land a gate-dormant app while a fresh install works.
+        # **The updater tarball must carry the re-signed, stapled app.**
+        # Tauri creates the tarball during the build, before the profile is
+        # embedded, the app signed again and the ticket stapled, so the
+        # build's pair carries an app without the profile and with the
+        # pre-re-sign signature. Regenerate the tarball from the re-signed
+        # bundle and sign it with the updater key, replacing the build's
+        # pair. A desktop auto-update installs this tarball, so a stale one
+        # would land a gate-dormant app while a fresh install works.
         #
         # The signer reads the key by path: in CLI 2.12
         # `TAURI_SIGNING_PRIVATE_KEY` is the literal base64 key, not a path, so

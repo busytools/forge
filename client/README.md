@@ -354,18 +354,11 @@ the Android keystore do. After the build it embeds the profile at
 `client/src-tauri/entitlements.plist` and a secure timestamp, and reads the
 signature back.
 
-Nothing in this recipe notarises. Tauri 2.12 notarises and staples inside
-the build when `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID` are set;
-`--skip-stapling` only leaves the staple off, it does not turn notarisation
-on. The embed and re-sign above would invalidate a staple, so a notarised
-build needs the final signature notarised and stapled after this recipe, or
-the shipped app carries a stale staple.
-
 A release publishes five assets: `forge.app.tar.gz` and its `.sig`, the arm64
 APK, the web archive, and `latest.json` - the manifest all three halves read.
 The tarball is regenerated from the re-signed bundle after the profile is
-embedded, so the desktop updater installs the app that carries the profile
-and the keychain pair, not the build's pre-embed one.
+embedded and the ticket stapled, so the desktop updater installs the app that
+carries the profile and the keychain pair, not the build's pre-embed one.
 `scripts/update_manifest.py` writes the manifest with the `.sig`'s content
 (only its trailing newline trimmed, because the plugin base64-decodes the
 value whole), the web archive's sha256, and the release URLs; the `android`
@@ -383,6 +376,44 @@ which is why the app declares no install-packages permission. The Android
 side is `app/src/main/java/dev/vedhavyas/forge/UpdatePlugin.kt`, project
 source that `tauri android init` would regenerate away - re-apply it the way
 the section below describes.
+
+### Notarisation
+
+A Developer ID build is notarised before it ships. Tauri's own notarisation
+pass runs inside the build, before `client-release` embeds the profile and
+signs again, so its ticket names a signature the recipe replaces. The build
+therefore runs with `--skip-stapling`, and `scripts/notarize_client.sh`
+notarises the final bundle after the re-sign: it zips the app, submits it with
+`notarytool submit --wait`, staples the accepted ticket, and reads the result
+back with `stapler validate` and `spctl`. The updater tarball is packed after
+the staple, so an auto-update installs an app that carries it. The script
+fails rather than skips at every step: a rejected submission prints its id and
+Apple's log, and a failed staple or a Gatekeeper rejection stops the release
+before the swap.
+
+The credential lives outside the repo, beside the updater key and the profile:
+
+```sh
+~/.tauri/forge-notary.properties
+```
+
+It holds the App Store Connect Apple ID, an app-specific password minted at
+appleid.apple.com (Sign-In and Security -> App-Specific Passwords, not the
+account password), and the team id, one per line:
+
+```
+APPLE_ID=you@example.com
+APPLE_PASSWORD=xxxx-xxxx-xxxx-xxxx
+APPLE_TEAM_ID=KALKD5L7NF
+```
+
+Environment variables of the same names win over the file, and
+`FORGE_NOTARY_PROPERTIES` names a different file. The team id may be left out:
+the pre-build check reads it from the provisioning profile's
+`TeamIdentifier`, and the notarising run reads it from the signature the app
+was signed with. `client-release` refuses to build a Developer ID client when
+the credential is missing, the way it refuses without the profile or the
+updater key.
 
 ## The web image
 
