@@ -1713,6 +1713,12 @@ describe('applyUpdate', () => {
         prompt_cancel_resolved: { key: SLOT, uuid: 'u7', cancelled: true },
       });
       expect(dropped.queue).toEqual([]);
+      expect(dropped.queue_ended, 'a cancelled row leaves its words and reason behind').toEqual({
+        text: 'nightly sweep',
+        state: 'not_sent',
+        reason: 'the CLI cancelled it before it ran',
+        source: 'cron',
+      });
     });
 
     it("clears a dead CLI's rows, where no per-row frame ever will", () => {

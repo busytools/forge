@@ -299,13 +299,30 @@ export const HANDLERS: Record<string, Apply> = {
 
   /**
    * A cancel the CLI confirmed; `cancelled: false` means it had already taken
-   * the prompt, and its own `started` frame is what settles the row then.
+   * the prompt, and its own `sent` frame is what settles the row then.
+   *
+   * **The confirmed cancel leaves the ending itself.** The lifecycle's
+   * `not_sent` can arrive after this frame, by which time the row is gone and
+   * the lifecycle no longer has the words and the sender to name; recording
+   * the ending here is what keeps a cancelled prompt from vanishing without a
+   * word, which reads as delivered.
    */
   prompt_cancel_resolved: (held, payload) => {
     const uuid = text(payload['uuid']);
     if (uuid === null || payload['cancelled'] !== true) return held;
+    const leaving = held.queue.find((row) => row.uuid === uuid);
+    if (leaving === undefined) return held;
     const queue = held.queue.filter((row) => row.uuid !== uuid);
-    return queue.length === held.queue.length ? held : { ...held, queue };
+    return {
+      ...held,
+      queue,
+      queue_ended: {
+        text: leaving.text,
+        state: 'not_sent',
+        reason: 'the CLI cancelled it before it ran',
+        source: leaving.source,
+      },
+    };
   },
 
   question_request: (held, payload) => parked(held, 'question', payload['request']),

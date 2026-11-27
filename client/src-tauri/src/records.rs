@@ -434,15 +434,32 @@ fn seat_update(record: &mut Value, name: &str, payload: &Value) -> bool {
                 return false;
             }
             let queue = queue_of(record);
+            let Some(leaving) =
+                queue.iter().find(|row| row.get("uuid").and_then(Value::as_str) == Some(uuid))
+            else {
+                return false;
+            };
             let remaining: Vec<Value> = queue
                 .iter()
                 .filter(|row| row.get("uuid").and_then(Value::as_str) != Some(uuid))
                 .cloned()
                 .collect();
-            if remaining.len() == queue.len() {
-                return false;
-            }
             set_queue(record, remaining);
+            // The confirmed cancel leaves the ending itself, the same shape
+            // the page folds: the lifecycle's `not_sent` may arrive after the
+            // row is gone and no longer knows the words.
+            let state = record.entry("state".to_owned()).or_insert_with(|| json!({}));
+            if let Some(state) = state.as_object_mut() {
+                state.insert(
+                    "queue_ended".to_owned(),
+                    json!({
+                        "text": leaving.get("text").cloned().unwrap_or(Value::Null),
+                        "state": "not_sent",
+                        "reason": "the CLI cancelled it before it ran",
+                        "source": leaving.get("source").cloned().unwrap_or(Value::Null),
+                    }),
+                );
+            }
             true
         }
         "pending_interaction_resolved" => {
