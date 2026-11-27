@@ -66,10 +66,28 @@ export interface WorkState {
 export type TaskStatus =
   'pending' | 'in_progress' | 'waiting' | 'completed' | 'failed' | 'canceled';
 
+/** The default that runs when an ask is ignored past its deadline. */
+export type DefaultIfIgnored = 'escalate' | 'expire' | 'reask';
+
+/** A wait's deadline and the named default it runs. */
+export interface DeadlineWire {
+  at: WireTime;
+  default: DefaultIfIgnored;
+  ran_at?: WireTime | null;
+}
+
+/** How long the person's own deferral lasts. */
+export type SnoozeUntilWire = { at: WireTime } | 'activity';
+
+export interface SnoozeWire {
+  until: SnoozeUntilWire;
+  since: WireTime;
+}
+
 /** Why a row cannot proceed, when it is waiting. */
 export interface WaitingWire {
   /** `null` only for a row migrated from the old `blocked` spelling. */
-  kind: 'decision' | 'dependency' | 'resource' | null;
+  kind: 'user' | 'dependency' | 'resource' | null;
   detail: string | null;
   /** The task it waits on, for a dependency. */
   on: string | null;
@@ -79,6 +97,14 @@ export interface WaitingWire {
   parked?: boolean;
   /** When the wait began; absent on a row stored before the field existed. */
   since?: WireTime | null;
+  /** The deadline that runs its named default if the ask is ignored. */
+  due?: DeadlineWire | null;
+  /** When the person marked it seen without answering it. */
+  acknowledged_at?: WireTime | null;
+  /** The person's own deferral, until a time or the row's next move. */
+  snoozed?: SnoozeWire | null;
+  /** When the deadline default expired the ask. */
+  expired_at?: WireTime | null;
 }
 
 /** What a link points at. Generic to any VCS. */
@@ -105,17 +131,34 @@ export interface TaskLinkWire {
   added_at: WireTime;
 }
 
-/** The options a decision row asks the user to choose between. */
-export interface DecisionAnswerWire {
-  choice: string;
+/** What an ask on the person needs back. */
+export type AskKind = 'decision' | 'clarification' | 'exception' | 'teaching';
+
+/** An exception's disposal, enumerated so the door is the same everywhere. */
+export type Disposition = 'retry' | 'rescope' | 'drop' | 'diagnose';
+
+/** The value an ask returned: which one is the kind's business. */
+export interface AnswerValueWire {
+  choice?: string;
+  text?: string;
+  disposition?: Disposition;
+}
+
+export interface AnswerWire {
+  value: AnswerValueWire;
   note: string | null;
   at: WireTime;
 }
 
-export interface DecisionWire {
+/** The ask on the person: its kind, question, options or class, and the
+ *  answer once given. A look carries none (it is the verification wait). */
+export interface RequestWire {
+  /** Absent reads as a decision, the kind every pre-revision ask was. */
+  kind?: AskKind;
   question: string;
   options: string[];
-  answer: DecisionAnswerWire | null;
+  class?: string | null;
+  answer: AnswerWire | null;
 }
 
 /**
@@ -149,8 +192,8 @@ export interface Task {
   owner: SessionSlot | null;
   parent: string | null;
   waiting_on: WaitingWire | null;
-  /** The question and options a decision wait asks, and the answer given. */
-  decision?: DecisionWire | null;
+  /** The ask on the person, and the answer given. A look carries none. */
+  request?: RequestWire | null;
   estimate: { words: string; secs: number } | null;
   /** A standing row's check interval. */
   cadence?: { words: string; secs: number } | null;
@@ -799,7 +842,7 @@ export function rowFrom(entry: unknown): BoardRow {
       reserved: task['reserved'] === 'user' ? 'user' : null,
       estimate: estimateFrom(task['estimate']),
       cadence: estimateFrom(task['cadence']),
-      decision: decisionFrom(task['decision']),
+      request: requestFrom(task['request']),
       evidence: evidenceFrom(task['evidence']),
       version: typeof task['version'] === 'number' ? task['version'] : 0,
       links: linksFrom(task),
@@ -866,7 +909,7 @@ export function applyFleetCounts(
     // other verification park is a plain wait (#3074 review).
     const onUser =
       waiting !== null &&
-      (waiting.verification ? task['verify'] === 'user' : waiting.kind === 'decision');
+      (waiting.verification ? task['verify'] === 'user' : waiting.kind === 'user');
     if (onUser && status === 'waiting') waitingOnUser += 1;
     if (
       status === 'pending' &&
@@ -924,28 +967,62 @@ function linkCheckFrom(raw: unknown): LinkCheckWire | null {
 }
 
 /**
- * A decision record, where the row carries one. An option list with a
- * member this client cannot read drops that member rather than the record:
- * the question and the answer are what it draws, and a lost option is a
- * choice it does not offer.
+ * An ask record, where the row carries one. An option list with a member
+ * this client cannot read drops that member rather than the record: the
+ * question and the answer are what it draws, and a lost option is a choice
+ * it does not offer.
  */
-function decisionFrom(raw: unknown): DecisionWire | null {
+function requestFrom(raw: unknown): RequestWire | null {
   if (raw === null || raw === undefined || typeof raw !== 'object') return null;
   const held = raw as Record<string, unknown>;
   if (typeof held['question'] !== 'string') return null;
   const options = Array.isArray(held['options'])
     ? held['options'].filter((option): option is string => typeof option === 'string')
     : [];
-  const answer = held['answer'];
+  const kind =
+    held['kind'] === 'clarification' || held['kind'] === 'exception' || held['kind'] === 'teaching'
+      ? held['kind']
+      : 'decision';
   return {
+    kind,
     question: held['question'],
     options,
-    answer:
-      typeof answer === 'object' &&
-      answer !== null &&
-      typeof (answer as DecisionAnswerWire).choice === 'string'
-        ? (answer as DecisionAnswerWire)
-        : null,
+    class: typeof held['class'] === 'string' ? held['class'] : null,
+    answer: answerFrom(held['answer']),
+  };
+}
+
+/** One answer's value, as the ask's kind returned it. */
+function answerFrom(raw: unknown): AnswerWire | null {
+  if (raw === null || raw === undefined || typeof raw !== 'object') return null;
+  const held = raw as Record<string, unknown>;
+  // A pre-revision record kept the choice at the top; it reads as the
+  // value it always was.
+  if (typeof held['value'] !== 'object' || held['value'] === null) {
+    if (typeof held['choice'] !== 'string') return null;
+    return {
+      value: { choice: held['choice'] },
+      note: typeof held['note'] === 'string' ? held['note'] : null,
+      at: held['at'] as WireTime,
+    };
+  }
+  const value = held['value'];
+  const parts = value as Record<string, unknown>;
+  const kindValue: AnswerValueWire = {};
+  if (typeof parts['choice'] === 'string') kindValue.choice = parts['choice'];
+  if (typeof parts['text'] === 'string') kindValue.text = parts['text'];
+  if (
+    parts['disposition'] === 'retry' ||
+    parts['disposition'] === 'rescope' ||
+    parts['disposition'] === 'drop' ||
+    parts['disposition'] === 'diagnose'
+  ) {
+    kindValue.disposition = parts['disposition'];
+  }
+  return {
+    value: kindValue,
+    note: typeof held['note'] === 'string' ? held['note'] : null,
+    at: held['at'] as WireTime,
   };
 }
 

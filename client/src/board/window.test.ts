@@ -26,7 +26,7 @@ function task(id: string, status: Task['status'], over: Partial<Task> = {}): Tas
     owner: null,
     parent: null,
     waiting_on: null,
-    decision: null,
+    request: null,
     estimate: null,
     cadence: null,
     rank: null,
@@ -75,22 +75,28 @@ function wires(rows: BoardRow[], agents: unknown[] = [], fleet: unknown[] = []) 
 
 const NOW = 10_000;
 
-function viewOf(rows: BoardRow[], agents: unknown[] = [], fleet: unknown[] = []): WindowView {
+function viewOf(
+  rows: BoardRow[],
+  agents: unknown[] = [],
+  fleet: unknown[] = [],
+  now = NOW,
+): WindowView {
   const held = wires(rows, agents, fleet);
-  return windowView(held.home, held.board, ORG, PROJECT, NOW);
+  return windowView(held.home, held.board, ORG, PROJECT, now);
 }
 
 describe('the window', () => {
   it('carries a decision ask with its options, its evidence and its seat', () => {
     const ask = task('t1', 'waiting', {
       waiting_on: {
-        kind: 'decision',
+        kind: 'user',
         detail: null,
         on: null,
         verification: false,
         since: { secs_since_epoch: NOW - 120, nanos_since_epoch: 0 },
       },
-      decision: {
+      request: {
+        kind: 'decision',
         question: 'Ship it behind a flag?',
         options: ['flag it', 'ship it'],
         answer: null,
@@ -121,7 +127,7 @@ describe('the window', () => {
     const look = task('t1', 'waiting', {
       verify: 'user',
       waiting_on: {
-        kind: 'decision',
+        kind: 'user',
         detail: null,
         on: null,
         verification: true,
@@ -130,23 +136,23 @@ describe('the window', () => {
     });
     const older = task('t2', 'waiting', {
       waiting_on: {
-        kind: 'decision',
+        kind: 'user',
         detail: null,
         on: null,
         verification: false,
         since: { secs_since_epoch: NOW - 500, nanos_since_epoch: 0 },
       },
-      decision: { question: 'which shape?', options: [], answer: null },
+      request: { question: 'which shape?', options: [], answer: null },
     });
     const newer = task('t3', 'waiting', {
       waiting_on: {
-        kind: 'decision',
+        kind: 'user',
         detail: null,
         on: null,
         verification: false,
         since: { secs_since_epoch: NOW - 60, nanos_since_epoch: 0 },
       },
-      decision: { question: 'now or later?', options: [], answer: null },
+      request: { question: 'now or later?', options: [], answer: null },
     });
     const asked = viewOf([row(look), row(older), row(newer)]);
     expect(asked.needs.map((card) => card.id)).toEqual(['t1', 't2', 't3']);
@@ -157,7 +163,7 @@ describe('the window', () => {
   it('never draws a wait on the user as an exception', () => {
     const ask = task('t1', 'waiting', {
       waiting_on: {
-        kind: 'decision',
+        kind: 'user',
         detail: null,
         on: null,
         verification: false,
@@ -315,6 +321,125 @@ describe('the window', () => {
     expect(asked.next[0]?.measure).toBe('1w');
     expect(asked.next[1]?.measure).toBe('1d');
     expect(asked.counts.ready).toBe(2);
+  });
+
+  it('carries each ask kind, and only a decision carries options', () => {
+    const asked = (kind: 'clarification' | 'exception' | 'teaching') =>
+      row(
+        task(`t-${kind}`, 'waiting', {
+          waiting_on: {
+            kind: 'user',
+            detail: null,
+            on: null,
+            verification: false,
+            since: { secs_since_epoch: NOW - 60, nanos_since_epoch: 0 },
+          },
+          request: { kind, question: 'what next?', options: ['stale'], answer: null },
+        }),
+      );
+    const view = viewOf([asked('clarification'), asked('exception'), asked('teaching')]);
+    expect(view.needs.map((card) => card.kind)).toEqual(['clarification', 'exception', 'teaching']);
+    // A decision's options are its value shape; the other kinds carry none.
+    for (const card of view.needs) expect(card.options, card.kind).toEqual([]);
+  });
+
+  it('reads a snooze until a time against the clock, and until-moves against the row', () => {
+    const at = row(
+      task('t1', 'waiting', {
+        updated_at: { secs_since_epoch: 500, nanos_since_epoch: 0 },
+        waiting_on: {
+          kind: 'user',
+          detail: null,
+          on: null,
+          verification: false,
+          since: { secs_since_epoch: 100, nanos_since_epoch: 0 },
+          snoozed: {
+            until: { at: { secs_since_epoch: NOW + 600, nanos_since_epoch: 0 } },
+            since: { secs_since_epoch: 500, nanos_since_epoch: 0 },
+          },
+        },
+      }),
+    );
+    expect(viewOf([at]).needs[0]?.snoozed, 'a timed snooze still holds').toBe(true);
+    expect(viewOf([at], [], [], NOW + 601).needs[0]?.snoozed, 'the time passed').toBe(false);
+
+    const moved = row(
+      task('t2', 'waiting', {
+        updated_at: { secs_since_epoch: 700, nanos_since_epoch: 0 },
+        waiting_on: {
+          kind: 'user',
+          detail: null,
+          on: null,
+          verification: false,
+          since: { secs_since_epoch: 100, nanos_since_epoch: 0 },
+          snoozed: { until: 'activity', since: { secs_since_epoch: 500, nanos_since_epoch: 0 } },
+        },
+      }),
+    );
+    expect(viewOf([moved]).needs[0]?.snoozed, 'the row moved under the snooze').toBe(false);
+  });
+
+  it('reads the deadline and the name of the default that runs on it', () => {
+    const due = row(
+      task('t1', 'waiting', {
+        waiting_on: {
+          kind: 'user',
+          detail: null,
+          on: null,
+          verification: false,
+          since: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+          acknowledged_at: { secs_since_epoch: 10, nanos_since_epoch: 0 },
+          due: {
+            at: { secs_since_epoch: NOW + 3_600, nanos_since_epoch: 0 },
+            default: 'escalate',
+            ran_at: null,
+          },
+        },
+      }),
+    );
+    const card = viewOf([due]).needs[0];
+    expect(card?.acknowledged, 'an addressed ask says so').toBe(true);
+    expect(card?.dueAt).toBe(NOW + 3_600);
+    expect(card?.dueDefault).toBe('escalate');
+  });
+
+  it('reads the attention facts, the delta and the sample off the board read', () => {
+    const held = wires([]);
+    const project = held.board.projects[0];
+    if (project === undefined) throw new Error('the fixture holds no project');
+    held.board = {
+      projects: [
+        {
+          ...project,
+          attention: {
+            last_look: { secs_since_epoch: NOW - 3_600, nanos_since_epoch: 0 },
+            checked_at: { secs_since_epoch: NOW, nanos_since_epoch: 0 },
+            agents: 2,
+            delta: { moved: 3, landed: 1, expired: 0, merged: 2 },
+            sample: {
+              rows: [
+                {
+                  seat: 'w-1',
+                  tool: 'Bash',
+                  detail: 'cargo nextest run',
+                  at: { secs_since_epoch: NOW - 60, nanos_since_epoch: 0 },
+                },
+              ],
+              sampled: 1,
+              total: 7,
+            },
+          },
+        },
+      ],
+    };
+    const view = windowView(held.home, held.board, ORG, PROJECT, NOW);
+    expect(view.attention?.lastLook).toBe(NOW - 3_600);
+    expect(view.attention?.merged).toBe(2);
+    expect(view.attention?.sample.rows[0]?.detail).toBe('cargo nextest run');
+    expect(view.attention?.sample.sampled).toBe(1);
+    expect(view.attention?.sample.total).toBe(7);
+    // A payload older than the field says so rather than guessing.
+    expect(viewOf([]).attention).toBeNull();
   });
 
   it('keeps unknown a project the snapshot does not carry, and empty a quiet one', () => {

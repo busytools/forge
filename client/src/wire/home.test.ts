@@ -53,7 +53,7 @@ describe('the fleet row a task frame carries', () => {
         status: 'waiting',
         owner: null,
         waiting_on: {
-          kind: 'decision',
+          kind: 'user',
           detail: null,
           on: null,
           verification: false,
@@ -90,13 +90,13 @@ describe('the fleet row a task frame carries', () => {
       {
         id: 't1',
         status: 'waiting',
-        waiting_on: { kind: 'decision', verification: true, detail: null, on: null },
+        waiting_on: { kind: 'user', verification: true, detail: null, on: null },
         verify: 'user',
       },
       {
         id: 't2',
         status: 'waiting',
-        waiting_on: { kind: 'decision', verification: true, detail: null, on: null },
+        waiting_on: { kind: 'user', verification: true, detail: null, on: null },
         verify: null,
       },
     ]);

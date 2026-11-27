@@ -794,6 +794,24 @@ button.b-epic-pill { cursor: pointer; }
 }
 .w-n { background: var(--s3); color: var(--text); border-radius: 999px; padding: 1px 8px; }
 .w-quiet { margin: 0; color: var(--dim); font-size: var(--fs-data); }
+/* **The all-clear is a claim with its evidence**, never a blank: when it was
+   checked, who acted, what was sampled, what moved. */
+.w-claim {
+  margin: 0; color: var(--muted); font-family: var(--mono); font-size: var(--fs-label);
+  line-height: 1.6;
+}
+/* The since-last-look strip: counts on one line, the sampled actions behind
+   an expand. It summarizes, so it sits above the parts and stays quiet. */
+.w-digest { border: 1px solid var(--line); border-radius: var(--r); background: var(--s2); }
+.w-digest-head {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; width: 100%;
+  padding: 9px 12px; background: none; border: none; cursor: pointer; text-align: left;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+}
+.w-digest-title { color: var(--text); }
+.w-digest-head:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.w-digest-line { color: var(--dim); }
+.w-sample { padding: 0 12px 8px; }
 .w-needs { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 10px; }
 /* The warm surface the strip used, now per card: an ask on the reader is
    the one thing on this page that is theirs to answer. **A card is an ask,
@@ -806,6 +824,16 @@ button.b-epic-pill { cursor: pointer; }
 .w-need::before {
   content: ""; position: absolute; inset: 0 auto 0 0; width: 2px;
   background: var(--accent); border-radius: var(--r) 0 0 var(--r); opacity: .8;
+}
+/* An acknowledged ask is no longer new; a snoozed one is out of the way
+   until its time or its row moves. Both keep their card - hiding it is the
+   board deciding for the person - and both say so in words, not colour. */
+.w-need.seen::before { background: var(--dim); opacity: .6; }
+.w-need.snoozed { background: var(--s2); }
+.w-need.snoozed::before { background: var(--dim); opacity: .45; }
+.w-chip {
+  color: var(--dim); background: var(--s3); border-radius: 999px;
+  padding: 0 8px; font-size: var(--fs-label);
 }
 .w-meta {
   display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
@@ -870,6 +898,8 @@ button.b-epic-pill { cursor: pointer; }
   cursor: pointer; text-decoration: none;
 }
 .w-foot-link:hover { color: var(--blue); }
+/* A state word, not a door: `seen` is where `mark seen` was. */
+.w-foot-link.w-seen, .w-foot-link.w-seen:hover { color: var(--dim); cursor: default; }
 .w-dot { color: var(--line); }
 .w-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .w-exc, .w-live {
@@ -889,7 +919,7 @@ button.b-epic-pill { cursor: pointer; }
 .w-restore { margin-left: auto; }
 @media (pointer: coarse) {
   .w-tab, .w-primary, .w-secondary, .w-ghost, .w-more, .w-foot-link, .w-door, .w-note,
-  .w-link {
+  .w-link, .w-digest-head {
     min-height: 44px;
   }
 }

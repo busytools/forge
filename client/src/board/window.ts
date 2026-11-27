@@ -17,15 +17,20 @@ import { artifactOf, waitOnUser } from './view';
 import type { BoardWire } from '../wire/board';
 import type { BoardRow, HomeWire, MissRow, Task } from '../wire/home';
 
-/** One card under NEEDS YOU: a decision, or a look. */
+/** The ask kinds a card can be: a look, or one of the four requests. */
+export type NeedKind = 'look' | 'decision' | 'clarification' | 'exception' | 'teaching';
+
+/** One card under NEEDS YOU: a look, or an ask with its kind. */
 export interface NeedCard {
   id: string;
-  kind: 'decision' | 'look';
+  kind: NeedKind;
   subject: string;
-  /** The ask itself: the decision's question, or the look's own sentence. */
+  /** The ask itself: the request's question, or the look's own sentence. */
   question: string;
-  /** The choices the lead enumerated, empty for a look. */
+  /** A decision's choices; empty for every other kind. */
   options: string[];
+  /** A teaching's class: the recurring trouble the lesson settles. */
+  class: string | null;
   /** The bounded excerpt behind the ask, when the row carries one. */
   evidence: string | null;
   /** What the gate said about that evidence; `null` for a row with none. */
@@ -43,6 +48,35 @@ export interface NeedCard {
   approveBlocked: string | null;
   /** The owner's seat, for the discuss door, when it is a live seat. */
   seat: { org: string; project: string; label: string } | null;
+  /** The person marked it seen and has not answered. */
+  acknowledged: boolean;
+  /** The person's deferral still holds. */
+  snoozed: boolean;
+  /** The deadline that runs its named default, in epoch seconds. */
+  dueAt: number | null;
+  /** The named default that runs when the deadline passes. */
+  dueDefault: 'escalate' | 'expire' | 'reask' | null;
+}
+
+/** One sampled agent action, as the audit list draws it. */
+export interface SampleRow {
+  seat: string;
+  tool: string;
+  /** The action's own words: its command, path or prompt. */
+  detail: string;
+  at: number;
+}
+
+/** The window's attention facts: last look, the delta, and the sample. */
+export interface AttentionView {
+  lastLook: number | null;
+  checkedAt: number | null;
+  agents: number;
+  moved: number;
+  landed: number;
+  expired: number;
+  merged: number;
+  sample: { rows: SampleRow[]; sampled: number; total: number };
 }
 
 /** One row under EXCEPTIONS: a fact that contradicts the state, not a badge. */
@@ -89,6 +123,9 @@ export interface WindowView {
   exceptions: ExceptionCard[];
   live: LiveLine[];
   next: NextRow[];
+  /** When it was checked, what changed, and what was sampled; `null` for a
+   *  payload older than the field. */
+  attention: AttentionView | null;
   counts: {
     /** Rows the server marks in progress. */
     inProgress: number;
@@ -129,20 +166,31 @@ function waitAt(task: Task): number {
   return task.waiting_on?.since?.secs_since_epoch ?? task.updated_at.secs_since_epoch;
 }
 
+/** Whether the person's own deferral still holds for `task`. */
+export function snoozedNow(task: Task, nowSecs: number): boolean {
+  const snooze = task.waiting_on?.snoozed ?? null;
+  if (snooze === null) return false;
+  if (snooze.until === 'activity') {
+    // The stamp and the row's touch are one write; a later touch ends it.
+    return task.updated_at.secs_since_epoch <= snooze.since.secs_since_epoch;
+  }
+  return nowSecs < snooze.until.at.secs_since_epoch;
+}
+
 function needCardOf(row: BoardRow, nowSecs: number): NeedCard | null {
   const task = row.task;
   if (task.status !== 'waiting' || !waitOnUser(task)) return null;
   const wait = task.waiting_on;
   const verification = wait?.verification === true;
   const at = waitAt(task);
-  const decision = task.decision ?? null;
+  const request = task.request ?? null;
   const artifact = artifactOf(task);
   // The ask says what to do, and a look names the thing to look at: the
   // artifact's own label when the row carries one, else the row.
   const looked = artifact === null ? task.subject : artifact.label;
   const question = verification
     ? `Approve ${looked} or say what to change`
-    : (decision?.question ?? wait?.detail?.trim() ?? `A decision is waiting on ${task.subject}`);
+    : (request?.question ?? wait?.detail?.trim() ?? `A decision is waiting on ${task.subject}`);
   // Two holds the core would refuse the press for, drawn instead of a door:
   // a root closes its whole tree on completion and cannot while any child
   // is open, and a completion or approve rests on evidence the gate has
@@ -158,12 +206,14 @@ function needCardOf(row: BoardRow, nowSecs: number): NeedCard | null {
       : evidenceState !== 'verified'
         ? 'This row has no verified evidence behind its completion; move it with an evidence claim first.'
         : null;
+  const kind: NeedKind = verification ? 'look' : (request?.kind ?? 'decision');
   return {
     id: task.id,
-    kind: verification ? 'look' : 'decision',
+    kind,
     subject: task.subject,
     question,
-    options: verification ? [] : (decision?.options ?? []),
+    options: kind === 'decision' ? (request?.options ?? []) : [],
+    class: request?.class ?? null,
     evidence: task.evidence?.excerpt ?? null,
     evidenceState,
     artifact,
@@ -173,6 +223,10 @@ function needCardOf(row: BoardRow, nowSecs: number): NeedCard | null {
     age: fmtSecs(row.wait_secs ?? Math.max(0, nowSecs - at)),
     approveBlocked,
     seat: task.owner === null ? null : { ...task.owner },
+    acknowledged: wait?.acknowledged_at !== null && wait?.acknowledged_at !== undefined,
+    snoozed: snoozedNow(task, nowSecs),
+    dueAt: wait?.due?.at.secs_since_epoch ?? null,
+    dueDefault: wait?.due?.default ?? null,
   };
 }
 
@@ -252,10 +306,34 @@ export function windowView(
     exceptions: [],
     live: [],
     next: [],
+    attention: null,
     counts: { inProgress: 0, ready: 0, onYou: 0, stopped: 0 },
   };
   if (held === undefined) return base;
   const rows = held.rows;
+  const wireAttention = held.attention ?? null;
+  const attention: AttentionView | null =
+    wireAttention === null
+      ? null
+      : {
+          lastLook: wireAttention.last_look?.secs_since_epoch ?? null,
+          checkedAt: wireAttention.checked_at?.secs_since_epoch ?? null,
+          agents: wireAttention.agents,
+          moved: wireAttention.delta.moved,
+          landed: wireAttention.delta.landed,
+          expired: wireAttention.delta.expired,
+          merged: wireAttention.delta.merged,
+          sample: {
+            rows: wireAttention.sample.rows.map((row) => ({
+              seat: row.seat,
+              tool: row.tool,
+              detail: row.detail,
+              at: row.at.secs_since_epoch,
+            })),
+            sampled: wireAttention.sample.sampled,
+            total: wireAttention.sample.total,
+          },
+        };
 
   // NEEDS YOU: the asks on the reader, ranked oldest first, looks ahead of
   // decisions because a look is a finished row nobody can close until the
@@ -355,6 +433,7 @@ export function windowView(
     exceptions,
     live,
     next,
+    attention,
     counts: {
       inProgress: rows.filter((row) => row.task.status === 'in_progress').length,
       ready: next.length,

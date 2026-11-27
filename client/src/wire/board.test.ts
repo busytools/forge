@@ -132,7 +132,7 @@ describe('the task fields the board marks', () => {
         at: { secs_since_epoch: 1, nanos_since_epoch: 0 },
       },
       reserved: 'user',
-      waiting_on: { kind: 'decision', detail: null, on: null, verification: false, parked: true },
+      waiting_on: { kind: 'user', detail: null, on: null, verification: false, parked: true },
     });
     const attested = task['attested'] as { evidence?: string } | null;
     expect(attested?.evidence, 'the quoted approval reached the row').toBe('Looks right - merge');
@@ -149,7 +149,7 @@ describe('the task fields the board marks', () => {
       project_name: 'proj',
       subject: 'an older row',
       status: 'waiting',
-      waiting_on: { kind: 'decision', detail: null, on: null, verification: false },
+      waiting_on: { kind: 'user', detail: null, on: null, verification: false },
     });
     expect(task['attested']).toBeNull();
     expect(task['reserved']).toBeNull();

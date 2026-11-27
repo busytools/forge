@@ -715,7 +715,7 @@ describe('the tasks card', () => {
       );
       return card?.chips;
     };
-    expect(chips({ id: 't-1', kind: 'decision' }), "a decision is the reader's to make").toEqual([
+    expect(chips({ id: 't-1', kind: 'user' }), "a decision is the reader's to make").toEqual([
       { text: 'waiting on you', tone: 'warn' },
     ]);
     expect(chips({ id: 't-1', kind: 'resource' })).toEqual([
@@ -772,7 +772,7 @@ describe('the tasks card', () => {
       );
       return card?.chips?.[0]?.text ?? '';
     };
-    expect(chatWord({ id: 't-1', kind: 'decision' }), "the board's decision word").toBe(onYou);
+    expect(chatWord({ id: 't-1', kind: 'user' }), "the board's decision word").toBe(onYou);
     expect(
       chatWord({ id: 't-1', kind: 'dependency', on: 't-9' }),
       "the board's dependency word, with a blocker",

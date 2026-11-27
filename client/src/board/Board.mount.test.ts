@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { boardWire, homeWire } from '../dev/fixture.data';
 import { violationsOf } from '../testing/axe';
-import type { BoardWire } from '../wire/board';
+import type { AttentionWire, BoardWire } from '../wire/board';
 import type { BoardRow, HomeWire, Marks, Task, TaskLinkWire, TaskStatus } from '../wire/home';
 import Board from './Board.svelte';
 import Frames from './testing/Frames.svelte';
@@ -53,7 +53,7 @@ function task(id: string, subject: string, status: TaskStatus, over: Partial<Tas
     owner: null,
     parent: null,
     waiting_on: null,
-    decision: null,
+    request: null,
     estimate: null,
     cadence: null,
     rank: null,
@@ -158,7 +158,7 @@ describe("the board's controls", () => {
       row(
         task(id, `subject ${id}`, 'waiting', {
           verify: verification ? 'user' : null,
-          waiting_on: { kind: 'decision', detail: 'the words', on: null, verification },
+          waiting_on: { kind: 'user', detail: 'the words', on: null, verification },
         }),
       );
     summon(wireWith([waiting('v1', true), waiting('q1', false)]));
@@ -667,7 +667,7 @@ describe("the board's controls", () => {
         row(
           task('epic', 'the epic', 'waiting', {
             verify: 'user',
-            waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+            waiting_on: { kind: 'user', detail: null, on: null, verification: true },
           }),
           { rollup: [2, 4] },
         ),
@@ -699,7 +699,7 @@ describe("the board's controls", () => {
           task('kid', 'a child', 'waiting', {
             parent: 'root',
             verify: 'user',
-            waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+            waiting_on: { kind: 'user', detail: null, on: null, verification: true },
           }),
           { rollup: [0, 1] },
         ),
@@ -738,7 +738,7 @@ describe("the board's controls", () => {
             detail: 'Which mock should ship?',
             verify: 'user',
             waiting_on: {
-              kind: 'decision',
+              kind: 'user',
               detail: null,
               on: null,
               verification: true,
@@ -791,7 +791,7 @@ describe("the board's controls", () => {
                 added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
               },
             ],
-            waiting_on: { kind: 'decision', detail: null, on: null, verification: false },
+            waiting_on: { kind: 'user', detail: null, on: null, verification: false },
           }),
         ),
       ]),
@@ -811,7 +811,7 @@ describe("the board's controls", () => {
         row(
           task('t1', 'a row', 'waiting', {
             verify: 'user',
-            waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+            waiting_on: { kind: 'user', detail: null, on: null, verification: true },
           }),
         ),
       ]),
@@ -1049,7 +1049,7 @@ describe("the row's own page", () => {
             detail: 'Which mock should ship?',
             verify: 'user',
             waiting_on: {
-              kind: 'decision',
+              kind: 'user',
               detail: null,
               on: null,
               verification: true,
@@ -1111,7 +1111,7 @@ describe("the row's own page", () => {
                 added_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
               },
             ],
-            waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+            waiting_on: { kind: 'user', detail: null, on: null, verification: true },
           }),
         ),
       ]),
@@ -1320,7 +1320,7 @@ describe("the row's own page", () => {
       wireWith([
         row(
           task('w1', 'needs you', 'waiting', {
-            waiting_on: { kind: 'decision', detail: 'the words', on: null, verification: false },
+            waiting_on: { kind: 'user', detail: 'the words', on: null, verification: false },
           }),
         ),
       ]),
@@ -1386,7 +1386,7 @@ describe("the row's own page", () => {
     row(
       task('e1', 'the epic', 'waiting', {
         verify: 'user',
-        waiting_on: { kind: 'decision', detail: 'the words', on: null, verification: true },
+        waiting_on: { kind: 'user', detail: 'the words', on: null, verification: true },
       }),
     ),
     row(task('c1', 'a child', open, { parent: 'e1' })),
@@ -1425,7 +1425,7 @@ describe("the row's own page", () => {
   it('faces axe with the row page open', async () => {
     const held = row(
       task('a1', 'axe it', 'waiting', {
-        waiting_on: { kind: 'decision', detail: 'pick one', on: null, verification: false },
+        waiting_on: { kind: 'user', detail: 'pick one', on: null, verification: false },
       }),
     );
     summon(wireWith([withHistory(held)]));
@@ -1658,13 +1658,13 @@ describe("the window's controls", () => {
     return row(
       task('q1', 'ship the window?', 'waiting', {
         owner: lead,
-        decision: {
+        request: {
           question: 'Ship it or iterate?',
           options: ['ship it', 'iterate'],
           answer: null,
         },
         waiting_on: {
-          kind: 'decision',
+          kind: 'user',
           detail: null,
           on: null,
           verification: false,
@@ -1693,7 +1693,7 @@ describe("the window's controls", () => {
           },
         ],
         waiting_on: {
-          kind: 'decision',
+          kind: 'user',
           detail: null,
           on: null,
           verification: true,
@@ -1718,8 +1718,10 @@ describe("the window's controls", () => {
     if (ship === null) throw new Error('the option is not drawn');
     ship.click();
     flushSync();
+    // No note was written, so none is sent: `words` rides only when it says
+    // something.
     expect(acts.at(-1)).toEqual({
-      task_answer: { project: 'proj', id: 'q1', choice: 'ship it', words: '' },
+      task_answer: { project: 'proj', id: 'q1', choice: 'ship it' },
     });
 
     // The server's frame after the answer: the row resumed in progress, so
@@ -1804,5 +1806,232 @@ describe("the window's controls", () => {
     windowOver([lookRow(verified, { rollup: [1, 3] })]);
     expect(byText('approve'), 'a root with open children cannot close').toBeNull();
     expect(document.querySelector('.w-hold')?.textContent).toContain('2 child rows are still open');
+  });
+});
+
+describe("the window's ask kinds and its attention", () => {
+  const lead = { org: 'TestOrg', project: 'proj', label: 'lead' };
+  const since = { secs_since_epoch: 0, nanos_since_epoch: 0 };
+
+  function windowOver(
+    rows: BoardRow[],
+    attention: AttentionWire | null = null,
+  ): { set: (next: { home: HomeWire; board: BoardWire }) => void } {
+    const held = wireWith(rows);
+    const first = held.board.projects[0];
+    if (first === undefined) throw new Error('the fixture holds no project');
+    const frame = mount(Frames, {
+      target: document.body,
+      props: {
+        initial: { home: held.home, board: { projects: [{ ...first, attention }] } },
+        mode: 'window' as const,
+        onact: (command: Record<string, Record<string, unknown>>) => acts.push(command),
+      },
+    }) as unknown as { set: (next: { home: HomeWire; board: BoardWire }) => void };
+    flushSync();
+    return frame;
+  }
+
+  function requestRow(
+    id: string,
+    kind: 'decision' | 'clarification' | 'exception' | 'teaching',
+    over: Partial<Task> = {},
+  ): BoardRow {
+    return row(
+      task(id, `the ${kind}`, 'waiting', {
+        owner: lead,
+        request: {
+          kind,
+          question: 'what should I do?',
+          options: kind === 'decision' ? ['one', 'two'] : [],
+          class: kind === 'teaching' ? 'flaky-tests' : null,
+          answer: null,
+        },
+        waiting_on: {
+          kind: 'user',
+          detail: null,
+          on: null,
+          verification: false,
+          since,
+        },
+        ...over,
+      }),
+    );
+  }
+
+  function type(selector: string, text: string): void {
+    const input = document.querySelector<HTMLInputElement>(selector);
+    if (input === null) throw new Error(`${selector} is not drawn`);
+    input.value = text;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+  }
+
+  it('answers a clarification in the reader own words', () => {
+    windowOver([requestRow('a1', 'clarification')]);
+    expect(byText('answer in your words'), 'the words door is not drawn').not.toBeNull();
+    byText('answer in your words')?.click();
+    flushSync();
+    type('[aria-label="your answer"]', 'the sqlite store');
+    byText('answer')?.click();
+    flushSync();
+    expect(acts.at(-1)).toEqual({
+      task_answer: { project: 'proj', id: 'a1', text: 'the sqlite store' },
+    });
+  });
+
+  it('disposes of an exception with one of the four named disposals', () => {
+    windowOver([requestRow('a1', 'exception')]);
+    for (const word of ['retry', 'rescope', 'drop', 'diagnose']) {
+      expect(byText(word), `${word} is not offered`).not.toBeNull();
+    }
+    byText('rescope')?.click();
+    flushSync();
+    expect(acts.at(-1)).toEqual({
+      task_answer: { project: 'proj', id: 'a1', disposition: 'rescope' },
+    });
+  });
+
+  it('settles a teaching with the lesson, which is also the answer', () => {
+    windowOver([requestRow('a1', 'teaching')]);
+    byText('write the lesson')?.click();
+    flushSync();
+    type('[aria-label="the lesson that settles the class"]', 'run the suite before pushing');
+    byText('settle the class')?.click();
+    flushSync();
+    expect(acts.at(-1)).toEqual({
+      task_answer: {
+        project: 'proj',
+        id: 'a1',
+        text: 'run the suite before pushing',
+        lesson: 'run the suite before pushing',
+      },
+    });
+  });
+
+  it("marks an ask seen and snoozes it, as the reader's own acts", () => {
+    windowOver([requestRow('a1', 'decision')]);
+    byText('mark seen')?.click();
+    flushSync();
+    expect(acts.at(-1)).toEqual({ task_ack: { project: 'proj', id: 'a1' } });
+    byText('snooze 1h')?.click();
+    flushSync();
+    expect(acts.at(-1)).toEqual({ task_snooze: { project: 'proj', id: 'a1', until: '1h' } });
+    byText('until it moves')?.click();
+    flushSync();
+    expect(acts.at(-1)).toEqual({
+      task_snooze: { project: 'proj', id: 'a1', until: 'activity' },
+    });
+  });
+
+  it('draws an acknowledged ask as seen, not as a press to make again', () => {
+    windowOver([
+      requestRow('a1', 'decision', {
+        waiting_on: {
+          kind: 'user',
+          detail: null,
+          on: null,
+          verification: false,
+          since,
+          acknowledged_at: since,
+        },
+      }),
+    ]);
+    expect(byText('mark seen'), 'the press is still offered').toBeNull();
+    const card = document.querySelector('.w-need');
+    expect(card?.classList.contains('seen'), 'the card does not say it was seen').toBe(true);
+    expect(card?.textContent).toContain('seen');
+  });
+
+  it('snoozed cards stay drawn, and say so', () => {
+    windowOver([
+      requestRow('a1', 'decision', {
+        updated_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+        waiting_on: {
+          kind: 'user',
+          detail: null,
+          on: null,
+          verification: false,
+          since,
+          snoozed: {
+            until: {
+              at: {
+                secs_since_epoch: Math.floor(Date.now() / 1_000) + 3_600,
+                nanos_since_epoch: 0,
+              },
+            },
+            since,
+          },
+        },
+      }),
+    ]);
+    const card = document.querySelector('.w-need');
+    expect(card?.classList.contains('snoozed'), 'the card does not say it is snoozed').toBe(true);
+    expect(card?.textContent).toContain('snoozed');
+  });
+
+  it('draws the since-last-look strip, the counts, and the sample behind it', () => {
+    const attention: AttentionWire = {
+      last_look: { secs_since_epoch: 1_000, nanos_since_epoch: 0 },
+      checked_at: { secs_since_epoch: 2_000, nanos_since_epoch: 0 },
+      agents: 2,
+      delta: { moved: 3, landed: 1, expired: 0, merged: 2 },
+      sample: {
+        rows: [
+          {
+            seat: 'w-1',
+            tool: 'Bash',
+            detail: 'cargo nextest run',
+            at: { secs_since_epoch: 1_500, nanos_since_epoch: 0 },
+          },
+        ],
+        sampled: 1,
+        total: 7,
+      },
+    };
+    windowOver([], attention);
+    const head = document.querySelector<HTMLElement>('.w-digest-head');
+    if (head === null) throw new Error('the strip is not drawn');
+    expect(head.textContent).toContain('2 merged');
+    expect(head.textContent).toContain('3 moved');
+    expect(head.textContent).toContain('sampled 1 of 7 agent actions');
+    expect(document.querySelector('.w-sample'), 'the sample drew unasked').toBeNull();
+    head.click();
+    flushSync();
+    expect(
+      document.querySelector('.w-sample')?.textContent,
+      'the sampled action is not named',
+    ).toContain('cargo nextest run');
+  });
+
+  it('states the all-clear as a claim with its evidence', () => {
+    windowOver([], {
+      last_look: { secs_since_epoch: 1_000, nanos_since_epoch: 0 },
+      checked_at: { secs_since_epoch: 2_000, nanos_since_epoch: 0 },
+      agents: 2,
+      delta: { moved: 3, landed: 1, expired: 0, merged: 2 },
+      sample: { rows: [], sampled: 0, total: 7 },
+    });
+    const claim = document.querySelector('.w-claim');
+    if (claim === null) throw new Error('the all-clear is drawn as a blank');
+    expect(claim.textContent).toContain('nothing needs you');
+    expect(claim.textContent).toContain('2 agents ran');
+    expect(claim.textContent).toContain('sampled 0 of 7 agent actions');
+  });
+
+  it('stamps the last look when the reader leaves the window', async () => {
+    const held = wireWith([]);
+    const frame = mount(Frames, {
+      target: document.body,
+      props: {
+        initial: held,
+        mode: 'window' as const,
+        onact: (command: Record<string, Record<string, unknown>>) => acts.push(command),
+      },
+    });
+    flushSync();
+    expect(acts, 'the stamp fired while the reader was still looking').toEqual([]);
+    await unmount(frame);
+    expect(acts.at(-1)).toEqual({ board_seen: { project: 'proj' } });
   });
 });

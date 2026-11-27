@@ -207,7 +207,7 @@ export function fmtSecs(secs: number): string {
 export function waitOnUser(task: Task): boolean {
   const wait = task.waiting_on;
   if (wait === null) return false;
-  return wait.verification ? task.verify === 'user' : wait.kind === 'decision';
+  return wait.verification ? task.verify === 'user' : wait.kind === 'user';
 }
 
 /** The chips a row's marks and its wait imply, in reading order. */
@@ -261,7 +261,19 @@ export function waitSentence(task: Task): string {
   if (waitOnUser(task) && wait.verification) {
     return 'This row is finished and waits on your approval.';
   }
-  if (waitOnUser(task) && wait.kind === 'decision') return 'A decision is waiting on you.';
+  if (waitOnUser(task)) {
+    switch (task.request?.kind) {
+      case 'clarification':
+        return 'A question is waiting on your answer.';
+      case 'exception':
+        return 'A fault is waiting on your disposition.';
+      case 'teaching':
+        return 'A recurring trouble is waiting on your lesson.';
+      case 'decision':
+      case undefined:
+        return 'A decision is waiting on you.';
+    }
+  }
   if (wait.kind === 'dependency') return `Waiting on ${wait.on ?? 'another row'}.`;
   if (wait.kind === 'resource') return 'Waiting on a resource.';
   return 'Waiting.';

@@ -161,7 +161,7 @@ describe('axe over the rendered pages', () => {
                 owner: null,
                 parent: null,
                 waiting_on: {
-                  kind: 'decision' as const,
+                  kind: 'user' as const,
                   detail: 'the mockup',
                   on: null,
                   verification: true,

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { hrefForSlot } from '../routes';
   import { isBoardRefusal, type ServiceReport } from '../wire/fleet';
   import type { BoardRead } from '../wire/board';
@@ -274,6 +274,21 @@
   const windowed = $derived(
     windowView(wire, board.wire ?? { projects: [] }, org, project, nowSecs),
   );
+
+  /**
+   * **The last look is stamped when the person leaves the window**, never
+   * when it opens: the delta they read is the one since their PREVIOUS look,
+   * and a stamp on open would erase it before it drew. The stamp is the
+   * server's, recorded from this page's own `board_seen`.
+   */
+  $effect(() => {
+    if (mode !== 'window') return;
+    const seen = project;
+    const drew = untrack(() => board.wire !== null);
+    return () => {
+      if (drew) act({ board_seen: { project: seen } });
+    };
+  });
 
   /** A row is live while it is running and wrote within the last two minutes. */
   function live(row: { status: string; updatedAt: number }): boolean {
@@ -724,12 +739,6 @@
       </p>
     {:else}
       <Window view={windowed} onact={act} onopen={openDrawer} />
-      {#if windowed.state === 'empty'}
-        <p class="b-empty">
-          nothing owned, nothing waiting - cut a row on the full board, or tell the lead what is
-          next
-        </p>
-      {/if}
     {/if}
   {:else}
     {#if view.waiting.length > 0}

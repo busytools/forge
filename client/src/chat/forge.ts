@@ -2082,7 +2082,7 @@ function taskWhen(record: TaskRecord): string | null {
 function waitChip(input: unknown, record: TaskRecord): ForgeChip {
   const held = obj(input);
   const kind = str(held, 'kind');
-  if (kind === 'decision') return { text: 'waiting on you', tone: 'warn' };
+  if (kind === 'user') return { text: 'waiting on you', tone: 'warn' };
   if (kind === 'dependency') {
     return { text: `on ${str(held, 'on') ?? 'another row'}`, tone: 'warn' };
   }

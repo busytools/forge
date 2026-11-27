@@ -21,6 +21,35 @@ export interface ProjectBoardIdentity {
   name: string;
 }
 
+/** One sampled agent action: the seat, the tool and the action's own words. */
+export interface SampleRowWire {
+  seat: string;
+  tool: string;
+  detail: string;
+  at: { secs_since_epoch: number; nanos_since_epoch: number };
+}
+
+/** What changed on the board since the person last looked. */
+export interface BoardDeltaWire {
+  moved: number;
+  landed: number;
+  expired: number;
+  merged: number;
+}
+
+/**
+ * The window's attention facts: when the board was last looked at and what
+ * changed since, how many seats acted in that window, and a rotating sample
+ * of the agent actions nobody escalated.
+ */
+export interface AttentionWire {
+  last_look: { secs_since_epoch: number; nanos_since_epoch: number } | null;
+  checked_at: { secs_since_epoch: number; nanos_since_epoch: number } | null;
+  agents: number;
+  delta: BoardDeltaWire;
+  sample: { rows: SampleRowWire[]; sampled: number; total: number };
+}
+
 /** One project's board detail. */
 export interface ProjectBoardWire {
   project: ProjectBoardIdentity;
@@ -34,6 +63,9 @@ export interface ProjectBoardWire {
    */
   detail?: BoardRow[];
   crons: CronEntry[];
+  /** The window's attention facts; a payload older than the field reads as
+   *  unknown rather than as an empty board. */
+  attention?: AttentionWire | null;
   /**
    * This project's connector subscriptions, one list per connector.
    *
@@ -65,6 +97,7 @@ export function boardFrom(data: BoardWire): BoardWire {
       rows: (row.rows ?? []).map(rowFrom),
       detail: (row.detail ?? []).map(rowFrom),
       crons: row.crons ?? [],
+      attention: row.attention ?? null,
     })),
   };
 }

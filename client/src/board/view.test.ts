@@ -17,7 +17,7 @@ function task(id: string, subject: string, status: TaskStatus, over: Partial<Tas
     owner: null,
     parent: null,
     waiting_on: null,
-    decision: null,
+    request: null,
     estimate: null,
     cadence: null,
     rank: null,
@@ -85,7 +85,7 @@ describe("one project's board", () => {
       ),
       row(
         task('ask', 'a question', 'waiting', {
-          waiting_on: { kind: 'decision', detail: null, on: null, verification: false },
+          waiting_on: { kind: 'user', detail: null, on: null, verification: false },
         }),
       ),
     ]);
@@ -157,7 +157,7 @@ describe("one project's board", () => {
       row(
         task('verify', 'a look', 'waiting', {
           verify: 'user',
-          waiting_on: { kind: 'decision', detail: 'the mock', on: null, verification: true },
+          waiting_on: { kind: 'user', detail: 'the mock', on: null, verification: true },
         }),
         // An epic with two of its four children still open: the strip has to
         // carry that, because the core refuses the approve over it.
@@ -165,7 +165,7 @@ describe("one project's board", () => {
       ),
       row(
         task('ask', 'a question', 'waiting', {
-          waiting_on: { kind: 'decision', detail: 'which shape', on: null, verification: false },
+          waiting_on: { kind: 'user', detail: 'which shape', on: null, verification: false },
         }),
       ),
       row(
@@ -207,12 +207,12 @@ describe("one project's board", () => {
       row(
         task('own', 'a minted look', 'waiting', {
           verify: 'user',
-          waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+          waiting_on: { kind: 'user', detail: null, on: null, verification: true },
         }),
       ),
       row(
         task('inherited', 'an inherited park', 'waiting', {
-          waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+          waiting_on: { kind: 'user', detail: null, on: null, verification: true },
         }),
       ),
     ]);
@@ -261,7 +261,7 @@ describe("one project's board", () => {
       row(
         task('epic2', 'the epic', 'waiting', {
           verify: 'user',
-          waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+          waiting_on: { kind: 'user', detail: null, on: null, verification: true },
         }),
         { rollup: [1, 3] },
       ),
@@ -281,7 +281,7 @@ describe("one project's board", () => {
         task('kid', 'a child', 'waiting', {
           parent: 'root3',
           verify: 'user',
-          waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+          waiting_on: { kind: 'user', detail: null, on: null, verification: true },
         }),
         { rollup: [0, 1] },
       ),

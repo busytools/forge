@@ -42,7 +42,7 @@ function boardWith(status: TaskStatus): BoardRead {
               owner: null,
               parent: null,
               waiting_on: null,
-              decision: null,
+              request: null,
               estimate: null,
               cadence: null,
               rank: null,

@@ -84,7 +84,7 @@ function boardWithWaiting(): BoardWire {
     status: 'waiting',
     owner: null,
     parent: null,
-    waiting_on: { kind: 'decision', detail: null, on: null, verification: true },
+    waiting_on: { kind: 'user', detail: null, on: null, verification: true },
     estimate: null,
     rank: null,
     verify: 'user',
