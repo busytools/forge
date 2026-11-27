@@ -27,6 +27,16 @@ function aCredential(prf: Uint8Array | null, rawId = new Uint8Array([1, 2, 3, 4]
   };
 }
 
+/**
+ * Whether this browser holds a purpose's record.
+ *
+ * The gate no longer answers this: the page decides enrolment from its own
+ * device record, so the store the gate writes is read here directly.
+ */
+function holds(purpose: string): boolean {
+  return localStorage.getItem(`forge.biometric.web.${purpose}`) !== null;
+}
+
 /** A create that reports PRF enabled but returns no output. */
 function anEnabledCredential(): unknown {
   return {
@@ -89,8 +99,8 @@ beforeEach(() => {
 describe('the web gate', () => {
   it('seals the purpose key under the passkey PRF and opens it on a fresh assertion', async () => {
     await gate.store('vault', 'the-purpose-key');
-    expect(gate.enrolled('vault'), "the record is this purpose's own").toBe(true);
-    expect(gate.enrolled('sso')).toBe(false);
+    expect(holds('vault'), "the record is this purpose's own").toBe(true);
+    expect(holds('sso')).toBe(false);
     const create = created[0]?.['publicKey'] as Record<string, unknown> | undefined;
     expect(create?.['authenticatorSelection']).toMatchObject({
       authenticatorAttachment: 'platform',
@@ -121,7 +131,7 @@ describe('the web gate', () => {
     expect(vault, 'the first purpose keeps its own salt').toEqual(pinned('vault'));
     expect(sso, 'a second consumer gets its own').toEqual(pinned('sso'));
     expect(vault).not.toEqual(sso);
-    expect(gate.enrolled('vault') && gate.enrolled('sso')).toBe(true);
+    expect(holds('vault') && holds('sso')).toBe(true);
   });
 
   it('refuses when the assertion carries a different PRF', async () => {
@@ -153,7 +163,7 @@ describe('the web gate', () => {
 
     await expect(gate.store('vault', 'the-purpose-key')).rejects.toThrow('PRF');
 
-    expect(gate.enrolled('vault')).toBe(false);
+    expect(holds('vault')).toBe(false);
   });
 
   it('answers no enrolment before one is stored', async () => {
@@ -280,7 +290,7 @@ describe('the web gate', () => {
 
     gate.remove('vault');
 
-    expect(gate.enrolled('vault')).toBe(false);
+    expect(holds('vault')).toBe(false);
     expect(await gate.release('vault')).toEqual({ outcome: 'not_enrolled' });
   });
 
@@ -357,7 +367,7 @@ describe('the web gate', () => {
     await expect(gate.store('vault', 'the-purpose-key')).rejects.toThrow('PRF');
 
     expect(asserted).toHaveLength(0);
-    expect(gate.enrolled('vault')).toBe(false);
+    expect(holds('vault')).toBe(false);
   });
 
   /// A record the asserted PRF cannot open is dropped, so the next unlock
@@ -379,6 +389,6 @@ describe('the web gate', () => {
     const released = await gate.release('vault');
 
     expect(released.outcome).toBe('refused');
-    expect(gate.enrolled('vault'), 'the dead record goes').toBe(false);
+    expect(holds('vault'), 'the dead record goes').toBe(false);
   });
 });

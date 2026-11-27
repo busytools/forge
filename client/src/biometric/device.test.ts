@@ -3,17 +3,24 @@
  * This client's own gate state, as the settings card reads it: unavailable
  * with the platform's reason, enrolled with the gesture it answers, or ready
  * to enrol.
+ *
+ * **"Enrolled" is the record this client minted**, not a keychain read: on
+ * macOS asking the keychain is itself a gesture, and a skipped read of a
+ * protected item answers not-found, so the keychain cannot answer this
+ * without either a prompt or a lie.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const gate = vi.hoisted(() => ({ availability: vi.fn(), enrolled: vi.fn() }));
-vi.mock('./index', () => ({ availability: gate.availability, enrolled: gate.enrolled }));
+const gate = vi.hoisted(() => ({ availability: vi.fn() }));
+vi.mock('./index', () => ({ availability: gate.availability }));
+const record = vi.hoisted(() => ({ enrolmentIdIfMinted: vi.fn() }));
+vi.mock('./vault-enrolment', () => ({ enrolmentIdIfMinted: record.enrolmentIdIfMinted }));
 
 import { readDeviceGate } from './device';
 
 beforeEach(() => {
   gate.availability.mockReset();
-  gate.enrolled.mockReset();
+  record.enrolmentIdIfMinted.mockReset();
 });
 
 describe("this client's gate state", () => {
@@ -28,20 +35,23 @@ describe("this client's gate state", () => {
       outcome: 'unavailable',
       reason: 'this browser has no PRF; use the password',
     });
-    expect(gate.enrolled, 'an unavailable gate is not asked for a record').not.toHaveBeenCalled();
+    expect(
+      record.enrolmentIdIfMinted,
+      'an unavailable gate is not asked for a record',
+    ).not.toHaveBeenCalled();
   });
 
   it('reports an enrolled gate with the gesture it answers', async () => {
     gate.availability.mockResolvedValue({ available: true, biometric: true });
-    gate.enrolled.mockResolvedValue(true);
+    record.enrolmentIdIfMinted.mockReturnValue('device-1');
 
     expect(await readDeviceGate()).toEqual({ outcome: 'enrolled', biometric: true });
-    expect(gate.enrolled).toHaveBeenCalledWith('vault');
+    expect(record.enrolmentIdIfMinted).toHaveBeenCalled();
   });
 
-  it('reports a ready gate when this client holds nothing', async () => {
+  it('reports a ready gate when this client minted no record', async () => {
     gate.availability.mockResolvedValue({ available: true, biometric: false });
-    gate.enrolled.mockResolvedValue(false);
+    record.enrolmentIdIfMinted.mockReturnValue(null);
 
     expect(await readDeviceGate()).toEqual({ outcome: 'ready', biometric: false });
   });

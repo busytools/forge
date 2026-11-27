@@ -57,14 +57,10 @@ pub enum Release {
 ///
 /// Crate-private rather than public: the page reaches the gate through the
 /// commands below, and the trait exists so every platform answers the same
-/// five questions.
+/// four questions.
 pub(crate) trait Gate: Send + Sync {
     /// Whether this platform can release at all, and with what gesture.
     fn availability(&self) -> impl std::future::Future<Output = Availability> + Send;
-    /// Whether a blob is stored for `purpose`. Asked without releasing: a
-    /// checkout of an item's attributes or record, never a decrypt, so no
-    /// gesture is required to answer it.
-    fn enrolled(&self, purpose: &str) -> impl std::future::Future<Output = bool> + Send;
     /// Store `blob` under `purpose`, replacing any blob already there. The
     /// blob is wrapped by the consumer; this half never reads inside it.
     fn store(
@@ -119,10 +115,6 @@ impl Gate for Unsupported {
         })
     }
 
-    fn enrolled(&self, _purpose: &str) -> impl std::future::Future<Output = bool> + Send {
-        std::future::ready(false)
-    }
-
     fn store(
         &self,
         _purpose: &str,
@@ -157,12 +149,6 @@ fn decode(blob: &str) -> Result<Vec<u8>, String> {
 #[tauri::command]
 pub async fn biometric_availability() -> Availability {
     platform().availability().await
-}
-
-/// Whether this device holds a blob for `purpose`.
-#[tauri::command]
-pub async fn biometric_enrolled(purpose: String) -> bool {
-    platform().enrolled(&purpose).await
 }
 
 /// Register one purpose's wrapped blob. **Async**, because the store may ask

@@ -115,6 +115,24 @@ export function forgetVaultMaterial(): void {
 }
 
 /**
+ * Forget the id this client minted.
+ *
+ * **The gate is the authority on whether this device holds an item**, and the
+ * card draws its gesture from this id: one that names an item the gate no
+ * longer has would keep offering a gesture that silently falls to the
+ * password.
+ */
+function forgetEnrolmentId(): void {
+  try {
+    globalThis.localStorage.removeItem(DEVICE_STORAGE);
+    globalThis.localStorage.removeItem(LEGACY_DEVICE_STORAGE);
+  } catch {
+    // Storage that refuses the delete leaves the id; the next release's
+    // not_enrolled tries again, so there is nothing else this can do.
+  }
+}
+
+/**
  * Drop the gate's record without letting a failed drop outlive the answer.
  *
  * **Every failed enrol ends here**, so "nothing was stored" is true whether
@@ -204,9 +222,21 @@ export async function releaseVaultMaterial(connection: VaultConnection): Promise
     // a later rotation must not rewrite a row the person deleted.
     await dropRecord();
     forgetVaultMaterial();
+    forgetEnrolmentId();
     return { outcome: 'not_enrolled' };
   }
   const released = await release(VAULT_PURPOSE);
+  if (released.outcome === 'not_enrolled') {
+    // **The gate is the authority on this device.** The core may still hold a
+    // row, but nothing can release without the gate's item, and the id names
+    // that item: kept, every new ask card would draw a gesture that silently
+    // falls to the password, and the settings card would keep claiming this
+    // client is enrolled. The row stays in the core's list to be revoked.
+    await dropRecord();
+    forgetVaultMaterial();
+    forgetEnrolmentId();
+    return released;
+  }
   if (released.outcome !== 'released') return released;
   const material = await openVaultMaterial(sealed, released.blob);
   if (material === null) {

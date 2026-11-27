@@ -180,10 +180,6 @@ class BiometricRecordsTest {
     assertTrue("the cancelled prompt surfaces as a failure", cancelled.isFailure)
     assertTrue("the replacement key was minted before the prompt", keyMinted)
     assertFalse("the record must be cleared before the mint", record)
-    assertFalse(
-      "enrolled must be false after the abort",
-      BiometricRecords.isEnrolled(hasRecord = record, hasUsableKey = true),
-    )
   }
 
   @Test

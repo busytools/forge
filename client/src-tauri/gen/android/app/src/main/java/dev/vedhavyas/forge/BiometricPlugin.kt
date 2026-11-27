@@ -67,61 +67,6 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
     }
   }
 
-  @Command
-  fun enrolled(invoke: Invoke) {
-    val args = invoke.parseArgs(PurposeArgs::class.java)
-    background(invoke) {
-      val hasRecord = preferences().contains(args.purpose)
-      val hasKey = try {
-        // **A per-use key still comes back from `getKey` after a biometric
-        // change** and refuses only when a cipher uses it, so its usability
-        // is asked here rather than taken from `getKey` answering at all.
-        // The probe needs no gesture: the auth check lands at `doFinal`.
-        keyFor(args.purpose, create = false)?.let { usable(it) } ?: false
-      } catch (unrecoverable: UnrecoverableKeyException) {
-        false
-      } catch (transient: Exception) {
-        // **Only a genuine invalidation may mean not-enrolled.** A provider,
-        // auth or key-store error on a healthy key would otherwise draw "not
-        // enrolled" and revoke a working enrolment on every read. Report
-        // conservatively enrolled; release still falls back to the password
-        // if the key truly cannot be used. **A permanently broken keystore is
-        // the trade this makes:** the card stays enrolled and the revoke door
-        // is the only recovery, where the pre-PR path showed not-enrolled and
-        // offered the enrol press. Deliberate: a transient provider failure
-        // must not revoke a healthy enrolment on every read.
-        true
-      }
-      invoke.resolve(
-        JSObject().put("enrolled", BiometricRecords.isEnrolled(hasRecord, hasKey))
-      )
-    }
-  }
-
-  /**
-   * Whether `key` can still release. `Cipher.init` is where a per-use key
-   * reports that the OS invalidated it after a biometric change, and it
-   * reports it without a prompt.
-   */
-  private fun usable(key: SecretKey): Boolean =
-    try {
-      Cipher.getInstance(TRANSFORMATION).init(
-        Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, ByteArray(GCM_IV_BYTES))
-      )
-      true
-    } catch (invalidated: KeyPermanentlyInvalidatedException) {
-      false
-    } catch (transient: Exception) {
-      // **Only a genuine invalidation may mean not-enrolled.** A provider,
-      // auth or key-store error on a healthy key is not proof the key is
-      // dead; the auth check lands at `doFinal`, and release falls back to
-      // the password if the key truly cannot be used. Report conservatively
-      // enrolled rather than revoke a working enrolment on a read error. A
-      // permanently broken keystore stays enrolled here too, so the revoke
-      // door is its only recovery; the same deliberate trade as `enrolled`.
-      true
-    }
-
   /**
    * Register one purpose's blob, replacing any blob already there.
    *
@@ -137,7 +82,8 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
    * `KeyPermanentlyInvalidatedException` at `cipher.init` - land in one
    * recovery that clears the record before minting the replacement. The
    * prompt can be cancelled after either route, and a record left behind
-   * would answer `enrolled` true beside a key that never sealed it.
+   * would leave the client drawn as enrolled beside a key that never sealed
+   * it.
    */
   @Command
   fun store(invoke: Invoke) {
@@ -335,8 +281,8 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
     val store = keystore()
     // **`getKey` can report an invalidation as `UnrecoverableKeyException`,
     // and it propagates**: a caller that replaces the key must clear the
-    // record it sealed first, which is `storeKey`'s recovery. A release and
-    // the `enrolled` probe catch it themselves.
+    // record it sealed first, which is `storeKey`'s recovery. A release
+    // catches it itself.
     val existing = store.getKey(alias, null) as? SecretKey
     existing?.let { return it }
     if (!create) return null
@@ -369,7 +315,8 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
    * per-use key that comes back from `getKey` reports it at `cipher.init` as
    * `KeyPermanentlyInvalidatedException`. The record is cleared before any
    * replacement is minted, so a prompt cancelled after either route leaves
-   * `enrolled` false rather than a record sealed under a dead key.
+   * the client reading as not enrolled rather than a record sealed under a
+   * dead key.
    */
   private fun storeKey(purpose: String): SecretKey =
     BiometricRecords.keyForStore(
@@ -457,14 +404,6 @@ internal object BiometricRecords {
   }
 
   /**
-   * Whether a purpose is enrolled: a record exists and its key can still
-   * release. **A record without a usable key is the stranded state a
-   * re-enrol must never leave behind**, so both halves are asked.
-   */
-  fun isEnrolled(hasRecord: Boolean, hasUsableKey: Boolean): Boolean =
-    hasRecord && hasUsableKey
-
-  /**
    * The key a store encrypts under, decided from a read, a usability probe,
    * a mint and a recovery. **Both invalidation routes land in `recover`**:
    * `read` throwing `UnrecoverableKeyException` is the route where `getKey`
@@ -498,8 +437,9 @@ internal object BiometricRecords {
    * The order an invalidated-key re-enrol takes: drop the record the dead key
    * sealed, then mint its replacement. **The record goes first** because the
    * mint is followed by a prompt the person can cancel, and a record left
-   * behind answers `enrolled` true beside a key that never sealed it. A clear
-   * that fails aborts, so nothing is minted over a record still in place.
+   * behind leaves the client drawn as enrolled beside a key that never
+   * sealed it. A clear that fails aborts, so nothing is minted over a record
+   * still in place.
    */
   fun <K> recoverInvalidatedKey(removeRecord: () -> Boolean, mint: () -> K): K {
     if (!removeRecord()) {
