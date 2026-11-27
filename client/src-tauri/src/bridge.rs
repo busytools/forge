@@ -1639,6 +1639,17 @@ impl Bridge {
                     }
                 }
             }
+            "patch" => {
+                // **The shell's seat record folds the patch too**, or the copy
+                // it hands a parked page is the one from before it: the
+                // catch-up snapshot (built from that record) would revert the
+                // very fields the patch carried, and no later patch re-sends
+                // them. The page still sees the frame as itself.
+                let Some(subject) = message.get("subject") else { return };
+                let data = message.get("data").cloned().unwrap_or(Value::Null);
+                self.lock().records.patch(subject, &data);
+                self.forward(message, Some((bytes, parse_ms)));
+            }
             "update" => {
                 let Some(update) = message.get("update") else { return };
                 let refresh = self.lock().records.apply(update);
@@ -3075,6 +3086,57 @@ mod tests {
         // seat is not a second catch-up.
         bridge.showing(Some(other["session"].clone()));
         assert!(replayed(&mut rx).is_empty(), "a second showing hands nothing over");
+    }
+
+    /// **A parked seat's patch is folded into the record the catch-up hands
+    /// over.** The reconcile drains the parked patch frames to the page, so a
+    /// record built without folding them hands back the fields from before
+    /// the patch - how the review canvas came to show pre-park rounds, with
+    /// no later patch to re-send them.
+    #[tokio::test]
+    async fn a_parked_seats_patch_is_folded_into_the_catch_up_record() {
+        let (bridge, mut rx) = bridge();
+        let server = stub().await;
+        bridge.connect(server.url.clone());
+        bridge.subscribe(seat(), true, false);
+        sent(
+            &bridge,
+            snapshot(json!({
+                "conversation": { "turns": [] },
+                "reviews": { "threads": { "state": "read", "value": [] } },
+            })),
+        );
+        bridge.showing(Some(slot()));
+        drain(&mut rx);
+
+        // The page goes away; the seat's reviews move and the move crosses as
+        // a patch, parked like every other frame.
+        park(&bridge);
+        sent(
+            &bridge,
+            json!({
+                "kind": "patch",
+                "subject": seat(),
+                "data": {
+                    "reviews": {
+                        "threads": {
+                            "state": "read",
+                            "value": [{ "id": "t-during" }],
+                        },
+                    },
+                },
+            }),
+        );
+        bridge.heartbeat();
+        let ClientEvent::Inbound(caught) = event(&mut rx, is_inbound_kind("snapshot")).await else {
+            unreachable!("filtered to inbound");
+        };
+        assert_eq!(caught["subject"], seat(), "the drawn seat is handed its record");
+        assert_eq!(
+            caught["data"]["reviews"]["threads"]["value"][0]["id"],
+            json!("t-during"),
+            "the parked patch was not folded into the catch-up record",
+        );
     }
 
     /// **A refresh re-declares what was HELD, not a capability of its own.**
