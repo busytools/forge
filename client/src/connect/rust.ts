@@ -42,6 +42,8 @@ import {
   type Subject,
 } from '../protocol';
 import { playPacket } from '../browser/audio';
+import { observeForeground } from '../foreground';
+import { cannotPaint } from '../paint';
 import { noteSnapshot, noteSubscribeWritten, seatLabel } from '../perf';
 import { READ_BOUND_MS, ReadBounds } from '../read-bound';
 import { refused } from '../refusals';
@@ -62,10 +64,11 @@ import type { SettingsEditWire } from '../wire/settings';
 import type { ClientSettings, SessionSlot } from '../wire/types';
 
 /**
- * How often the page heartbeats, and how long the Rust half keeps frames
- * flowing without one. This is the smaller of the two by a factor of three:
- * a slowed page (a backgrounded tab's timers run at about a tick a minute)
- * reads as away, and the reconcile that answers it is complete either way.
+ * How often the page sends its pulse. The Rust half treats one older than its
+ * own 15 s window as a spell, and the beat also says whether the page is
+ * drawing: a hidden window's timers slow to about a tick a minute, and the
+ * beat says so instead of hiding it, so the shell parks the page rather than
+ * reconciling a spell nobody can draw.
  */
 const HEARTBEAT_MS = 5_000;
 
@@ -197,6 +200,19 @@ class RustConnection implements Connection {
   private readonly frames = new Set<(frame: BrowserFrame) => void>();
   private stops: UnlistenFn[] = [];
   private beat: ReturnType<typeof setInterval> | null = null;
+  /**
+   * The shell said the app is foreground again, and no hide has been reported
+   * since.
+   *
+   * **The phone's own reading of visibility is not to be trusted on return**:
+   * a locked Android window reports no focus and may report no visibility
+   * change, so the document may still read hidden after a resume. The shell's
+   * `client://foreground` is that resume, and the intervals keep saying
+   * visible until a visibility change says hidden again - a hidden signal the
+   * phone never sends leaves the pre-fix behaviour, never a page parked for
+   * good.
+   */
+  private resumed = false;
   private state: ConnectionStatus = 'connecting';
   /**
    * When a frame last arrived, for the page's silence line.
@@ -416,14 +432,57 @@ class RustConnection implements Connection {
       this.end();
       return;
     }
-    this.beat = setInterval(() => {
-      void invoke('client_heartbeat').catch((why: unknown) => {
-        // The shell is gone or restarting; the next tick tries again, and the
-        // connection's own events say where it is.
-        report('the heartbeat could not reach the shell', why);
-      });
-    }, HEARTBEAT_MS);
+    this.beat = setInterval(() => this.beatOnce(), HEARTBEAT_MS);
+    // **The phone's resume is what a visible beat is read from.** A locked
+    // Android window reports no focus and may report no visibility change
+    // either (`../foreground.ts`), so the shell's own resume is the evidence
+    // that the page is back; the interval keeps saying visible until a
+    // visibility change says hidden. The beat that answers a spell is
+    // `pulse`, sent by the return re-read once its asks are out.
+    const stopResume = observeForeground('the page pulse', () => {
+      this.resumed = true;
+    });
+    if (stopResume !== null) this.stops.push(stopResume);
+    const hid = (): void => {
+      if (cannotPaint()) this.resumed = false;
+    };
+    document.addEventListener('visibilitychange', hid);
+    this.stops.push(() => document.removeEventListener('visibilitychange', hid));
     await this.stateMoved();
+  }
+
+  /**
+   * One heartbeat: the page's pulse, carrying whether it is drawing.
+   *
+   * **A hidden page says so.** The shell answers a spell by handing the drawn
+   * seat its whole record, and a hidden window's throttled timer makes every
+   * beat look like one - 23 MB re-sent and re-parsed while nobody draws it
+   * (2026-11-27, 21:21, from system-monitor). The shell leaves a hidden page
+   * parked and reconciles the beat that carries the return.
+   */
+  private beatOnce(): void {
+    this.sendBeat({ visible: !cannotPaint() || this.resumed });
+  }
+
+  /**
+   * The page's return, named as one: the beat the shell answers a spell with.
+   *
+   * **Sent by the return re-read after its asks** (`../connect/resync.ts`),
+   * so the shell leaves the home, the board and the shown seat to those reads
+   * and re-reads only what nothing else will. It says visible whatever the
+   * document reads: a return is evidence the page is drawing, and on Android
+   * the document may still report hidden after a resume.
+   */
+  pulse(): void {
+    this.sendBeat({ visible: true, returned: true });
+  }
+
+  private sendBeat(payload: { visible: boolean; returned?: boolean }): void {
+    void invoke('client_heartbeat', payload).catch((why: unknown) => {
+      // The shell is gone or restarting; the next tick tries again, and the
+      // connection's own events say where it is.
+      report('the heartbeat could not reach the shell', why);
+    });
   }
 
   private async stateMoved(): Promise<void> {

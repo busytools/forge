@@ -37,6 +37,20 @@ const NOTHING: BoardRead = { wire: null, refused: null };
 
 const STORES = new WeakMap<Connection, Readable<BoardRead>>();
 
+/**
+ * The board's own reread for a connection, where a page is watching it.
+ *
+ * **A return's ask goes through the page's guards**, not around them: a read
+ * asked while one is in flight would queue a second whole encode behind the
+ * first.
+ */
+const REREADS = new WeakMap<Connection, () => void>();
+
+/** Ask the board for one read through the page's own guards, if it is held. */
+export function rereadBoard(connection: Connection): void {
+  REREADS.get(connection)?.();
+}
+
 /** Watch the board, sharing one store with every other reader of it. */
 export function watchBoard(connection: Connection): Readable<BoardRead> {
   const held = STORES.get(connection);
@@ -48,6 +62,8 @@ export function watchBoard(connection: Connection): Readable<BoardRead> {
 
 function boardStore(connection: Connection): Readable<BoardRead> {
   let held: Store | null = null;
+  /** Whether a return's read is in flight, so a second one waits for it. */
+  let reading = false;
   /** The tasks each project last announced, so an unchanged set is no redraw. */
   const lastTasks = new Map<string, string>();
   /** The last board draw, so a frame's own facts can be applied into it. */
@@ -141,6 +157,15 @@ function boardStore(connection: Connection): Readable<BoardRead> {
 
   function watch(): void {
     held = connection.subscribe('board');
+    // **A return's read goes through these guards.** One at a time: a second
+    // ask while the first is in flight would queue a whole encode behind one
+    // already on its way, and the answer lands through the store subscription
+    // below, which is what clears the guard.
+    REREADS.set(connection, () => {
+      if (reading || held?.state().kind === 'refused') return;
+      reading = true;
+      if (!connection.refresh('board')) reading = false;
+    });
     stopStore = held.value.subscribe(() => {
       if (held === null) return;
       const snapshot = held.snapshot();
@@ -157,6 +182,8 @@ function boardStore(connection: Connection): Readable<BoardRead> {
       ) {
         return;
       }
+      // A record that moved is the answer a return's ask was waiting on.
+      if (version !== seenVersion) reading = false;
       seenSnapshot = snapshot;
       seenVersion = version;
       seenState = state;
@@ -229,6 +256,7 @@ function boardStore(connection: Connection): Readable<BoardRead> {
     stopStatus = null;
     stopStore = null;
     connection.unsubscribe('board');
+    REREADS.delete(connection);
     held = null;
     drawn = null;
   }

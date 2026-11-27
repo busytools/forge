@@ -3,9 +3,11 @@
  *
  * **Android reports neither focus nor reliably a visibility change on
  * return**, so the shell emits `client://foreground` and that is the only
- * resume signal the phone gives. The frame probe's loop and the return probe
- * hang on it - a return reads nothing of its own - so the arm lives here once
- * rather than as a copy per reader.
+ * resume signal the phone gives. Three readers hang on it - the frame probe's
+ * loop, the return's own reads, and the page's pulse (which stays visible
+ * until a visibility change says hidden) - so the arm lives here once rather
+ * than as a copy per reader.
+
  */
 
 import { canHost } from './browser/host';
@@ -16,7 +18,7 @@ import { canHost } from './browser/host';
  *
  * **`arm` names the reader in the failure warning**, because a phone's log is
  * the only place a failed install is ever seen and a bare "shell listener"
- * would not say which of the three stopped.
+ * would not say which reader stopped.
  *
  * **The Tauri API is imported lazily**, so the web build never loads it. A
  * disconnect that lands before the import resolves registers nothing; one

@@ -145,6 +145,20 @@ function malformedOf(data: unknown): string | null {
 }
 
 /**
+ * The home's own reread for a connection, where a page is watching it.
+ *
+ * **A return's ask goes through the page's guards**, not around them: a read
+ * asked while one is in flight would queue a second whole encode behind the
+ * first.
+ */
+const REREADS = new WeakMap<Connection, () => void>();
+
+/** Ask the home for one read through the page's own guards, if it is held. */
+export function rereadHome(connection: Connection): void {
+  REREADS.get(connection)?.();
+}
+
+/**
  * Watch the home.
  *
  * The subscription, the message listener and the status listener are all let
@@ -154,6 +168,8 @@ function malformedOf(data: unknown): string | null {
  */
 export function watchHome(connection: Connection): Readable<HomeRead> {
   let held: Store | null = null;
+  /** Whether a return's read is in flight, so a second one waits for it. */
+  let reading = false;
   /** The core's last service report, read off the update that carried it. */
   let report: ServiceReport | null = null;
   /**
@@ -383,6 +399,15 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     // hand-off may raise, and what makes an unshown seat wear its glyph is the
     // ask itself, read in the client's own `stateOf`.
     held = connection.subscribe('home', { answering: true });
+    // **A return's read goes through these guards.** One at a time: a second
+    // ask while the first is in flight would queue a whole encode behind one
+    // already on its way, and the answer lands through the store subscription
+    // below, which is what clears the guard.
+    REREADS.set(connection, () => {
+      if (reading || held?.state().kind === 'refused') return;
+      reading = true;
+      if (!connection.refresh('home')) reading = false;
+    });
     // **The record is redrawn from the store, not asked for.** Every whole
     // read and every patch lands in the store by the socket's own apply path,
     // so this redraws when the record - or the store's own state, a refusal
@@ -404,6 +429,8 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       ) {
         return;
       }
+      // A record that moved is the answer a return's ask was waiting on.
+      if (version !== seenVersion) reading = false;
       seenSnapshot = snapshot;
       seenVersion = version;
       seenState = state;
@@ -504,6 +531,7 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
     // The subscription goes with the last subscriber too, or a connection
     // nothing draws from stays counted against a seat it is not showing.
     connection.unsubscribe('home');
+    REREADS.delete(connection);
     held = null;
     livePrompts.clear();
   }
