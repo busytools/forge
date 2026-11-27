@@ -449,6 +449,10 @@ describe('the queue pile', () => {
       host.querySelector('.ended')?.textContent,
       'the envelope head is plumbing; the body is what the reader lost',
     ).toContain('not sent · the target went before this message landed: the lost body');
+    expect(
+      host.querySelector('.ended .retry'),
+      "a peer's refusal is not this view's to send again",
+    ).toBeNull();
   });
 
   it('says a refused ending and the words it carried', () => {
