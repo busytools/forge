@@ -215,6 +215,14 @@ stamps the change as the user's.
   a row filed there would name a project `forge.toml` has no entry for.
 - **A set of seats**: the seat chips draw only when the project holds one; a
   project with nothing running draws none.
+- **Catching up**: a version gap keeps the record on screen and draws a
+  `catching up` phrase in the header while one whole read lands, so the
+  figures are never silently stale.
+- **Held updates**: a frame this client cannot place is counted as `N held`
+  in the header, never dropped (rule 25).
+- **A record this client could not read**: the page says so in the fleet's
+  place rather than drawing an empty board, which would read as a project
+  with no rows.
 
 ## The two widths
 

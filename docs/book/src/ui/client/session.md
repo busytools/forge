@@ -568,6 +568,12 @@ where it has moved on) beside the whole thread, its turns in order.
 
 ## The states the page can be in
 
+The seat's column carries two stream states above its conversation: a
+`Catching up with the server...` line while a version gap is answered with one
+whole read (the record stays drawn under it), and an `N server updates for
+the seat could not be read and were kept` line for frames this client cannot
+place, held and said rather than dropped (rule 25).
+
 - **A seat with a conversation**, which is the ordinary case.
 - **Waking**: a seat nothing has started. Opening a lead's page starts it,
   and a worker's seat with nothing behind it draws `not running` and the

@@ -335,9 +335,12 @@ serialization is the digits, and the deserializer accepts a number too,
 which is what blobs written before this held. A thread read back is echoed
 verbatim on a reply, so a round-trip cannot round the hash off.
 
-Every write lands as a pushed patch: the drawn round, the drawn thread and
-the header are always the store's own answer - its first read and the patches
-applied to it - rather than the page's guess at what the write did.
+A worker's answer lands as a pushed patch, and the drawn round, the drawn
+thread and the header are always the store's own answer - its first read and
+the patches applied to it - rather than the page's guess at what the write
+did. **This page's own writes still re-read**: a review command writes the
+store and nothing announces it on the wire, so the page asks for the record
+once its write returns.
 
 **Every box on the page dictates, the way the composer's box does.** The
 comment box, the reply box in either half and the round's summary field each

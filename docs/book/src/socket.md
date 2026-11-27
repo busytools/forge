@@ -1277,9 +1277,9 @@ facts a row is drawn from.
 
 **`board`** is every project's board: the rows, schedules and connector sets
 the board page and the session rail draw. It is a subject of its own because a
-home read happens on every update that covers the fleet, and these three
-fields were most of a ~708 KB home read for a page that draws none of them
-(#2517).
+home read used to happen on every update that covered the fleet, and these
+three fields were most of a ~708 KB home read for a page that draws none of
+them (#2517).
 
 | Field      | What it is                                                                                                                                                                                                                                                               |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
