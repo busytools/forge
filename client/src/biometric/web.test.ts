@@ -181,8 +181,9 @@ describe('the web gate', () => {
 
     const attempt = gate.store('vault', 'the-purpose-key');
 
-    await expect(attempt).rejects.toThrow('passkey manager');
+    await expect(attempt).rejects.toThrow('a passkey was saved');
     await expect(attempt).rejects.toThrow('cannot unlock');
+    await expect(attempt).rejects.toThrow('passkey manager');
     await expect(attempt).rejects.toThrow('password');
     expect(holds('vault'), 'nothing is recorded').toBe(false);
     expect(minted('vault'), 'the next enrol knows a passkey exists').toBe(true);
@@ -373,6 +374,7 @@ describe('the web gate', () => {
     expect(asserted, 'one discoverable assertion').toHaveLength(1);
     const get = asserted[0]?.['publicKey'] as Record<string, unknown> | undefined;
     expect(get?.['allowCredentials'], 'the passkey is discovered, not named').toBeUndefined();
+    expect(saltOf(asserted[0]), 'the discovery salt is the purpose').toEqual(pinned('vault'));
     const held = JSON.parse(
       globalThis.localStorage.getItem('forge.biometric.web.vault') ?? '{}',
     ) as Record<string, unknown>;
@@ -409,6 +411,7 @@ describe('the web gate', () => {
     await expect(attempt).rejects.toThrow('password');
     expect(created, 'no third credential').toHaveLength(1);
     expect(holds('vault')).toBe(false);
+    expect(minted('vault'), 'the passkey is still there to find').toBe(true);
   });
 
   /// **A dismissed discoverable prompt stores nothing.** Falling through to
@@ -433,6 +436,7 @@ describe('the web gate', () => {
     await expect(attempt).rejects.toThrow('password');
     expect(created, 'a cancel creates nothing').toHaveLength(1);
     expect(holds('vault')).toBe(false);
+    expect(minted('vault'), 'the passkey the marker records is still there').toBe(true);
   });
 
   /// **A held passkey that cannot unlock is reported, not replaced.** The
@@ -459,6 +463,30 @@ describe('the web gate', () => {
     await expect(attempt).rejects.toThrow('already holds a passkey');
     expect(created, 'no second credential').toHaveLength(1);
     expect(holds('vault'), 'the dead record goes').toBe(false);
+  });
+
+  /// **A cancelled gesture on a held record is the gate's refusal**, not the
+  /// browser's own error, and it mints nothing.
+  it('names a dismissed held-record gesture without creating', async () => {
+    await gate.store('vault', 'first-key');
+    Object.defineProperty(globalThis.navigator, 'credentials', {
+      configurable: true,
+      value: {
+        create: (options: Record<string, unknown>) => {
+          created.push(options);
+          return Promise.resolve(aCredential(PRF));
+        },
+        get: () => Promise.reject(new Error('NotAllowedError: the operation is not allowed')),
+      },
+    });
+
+    const attempt = gate.store('vault', 'second-key');
+
+    await expect(attempt).rejects.toThrow('did not answer');
+    await expect(attempt).rejects.not.toThrow('NotAllowedError');
+    expect(created, 'a cancel creates nothing').toHaveLength(1);
+    expect(holds('vault'), 'a cancel keeps the record').toBe(true);
+    expect(minted('vault')).toBe(true);
   });
 
   /// **Some authenticators report PRF enabled and withhold the output at

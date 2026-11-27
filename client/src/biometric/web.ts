@@ -28,18 +28,19 @@ const MINTED_PREFIX = 'forge.biometric.web.minted.';
 /**
  * What a passkey that cannot unlock is told as, in the card's own line.
  *
- * **The browser does not name the manager.** Attestation is `none` and no
- * API reports which passkey provider answered, so the honest name is the
- * person's own manager. The password is the other way in, and always stays.
+ * **The browser does not name what answered.** Attestation is `none` and no
+ * API reports which passkey provider answered, and a platform authenticator
+ * with no PRF lands here as well as a manager. The words name both places a
+ * passkey can be removed and keep the password as the other way in.
  */
 const NO_UNLOCK_CREATED =
-  'a passkey was saved by your passkey manager, but it cannot unlock; remove it in your passkey manager, or use the password';
+  "a passkey was saved that cannot unlock; remove it in your passkey manager or the browser's saved-passkeys settings, or use the password";
 const NO_UNLOCK_HELD =
-  'this device already holds a passkey that cannot unlock; remove it in your passkey manager, or use the password';
+  "this device already holds a passkey that cannot unlock; remove it in your passkey manager or the browser's saved-passkeys settings, or use the password";
 
-/** What a dismissed discoverable prompt is told as. It stores nothing. */
+/** What a dismissed prompt is told as. It stores nothing and keeps the marker. */
 const PICKER_DISMISSED =
-  'the passkey prompt did not answer, so nothing was stored; press enrol again to create a new passkey, or use the password';
+  'the passkey prompt did not answer, so nothing was stored; press enrol again to retry, or use the password';
 
 /** What one purpose's local record holds. */
 interface WebRecord {
@@ -154,7 +155,15 @@ export async function store(purpose: string, key: string): Promise<void> {
   if (existing !== null) {
     const credential = fromBase64(existing.credential);
     if (credential !== null) {
-      const prf = await assertPasskey(purpose, credential);
+      // **A dismissed gesture is not a dead record.** The prompt's own words
+      // are not for a reader, and the held passkey is still there, so the
+      // refusal is the gate's own and the press can be repeated.
+      let prf: Uint8Array<ArrayBuffer> | null;
+      try {
+        prf = await assertPasskey(purpose, credential);
+      } catch {
+        throw new Error(PICKER_DISMISSED);
+      }
       if (prf === null) {
         // **A held passkey that cannot unlock is reported, not replaced.**
         // The record is dead and goes, but a second credential would leave
@@ -314,10 +323,9 @@ async function discoverPasskey(purpose: string): Promise<PublicKeyCredential | n
     return (await globalThis.navigator.credentials.get(options)) as PublicKeyCredential | null;
   } catch {
     // **A dismissed picker is not an absent passkey, and it is not a create.**
-    // This press stores nothing and names the password. The marker goes so a
-    // passkey the person removed in their manager does not leave an empty
-    // picker on every later press; the press after that creates normally.
-    clearMinted(purpose);
+    // No credential was made this time, so the marker stays: the passkey it
+    // records is still in the manager, and dropping the marker here would let
+    // the next press mint a second one beside it.
     throw new Error(PICKER_DISMISSED);
   }
 }
@@ -392,15 +400,6 @@ function mintedHere(purpose: string): boolean {
     return globalThis.localStorage.getItem(mintedName(purpose)) !== null;
   } catch {
     return false;
-  }
-}
-
-function clearMinted(purpose: string): void {
-  try {
-    globalThis.localStorage.removeItem(mintedName(purpose));
-  } catch {
-    // Storage that refuses the delete leaves the flag; the next press scans
-    // again, which is the behaviour without this recovery.
   }
 }
 
