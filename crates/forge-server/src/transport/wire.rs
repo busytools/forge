@@ -2703,7 +2703,7 @@ fn window_row(row: &forge_workspace::board::BoardRow) -> Value {
         |acknowledged| {
             SystemTime::now()
                 .duration_since(acknowledged)
-                .map_or(false, |age| age.as_secs() >= forge_workspace::drive::FORGOTTEN_ACK_SECS)
+                .is_ok_and(|age| age.as_secs() >= forge_workspace::drive::FORGOTTEN_ACK_SECS)
         },
     );
     if let Some(object) = value.as_object_mut() {
