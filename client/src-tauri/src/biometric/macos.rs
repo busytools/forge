@@ -92,13 +92,6 @@ impl Gate for KeychainGate {
         }
     }
 
-    async fn enrolled(&self, purpose: &str) -> bool {
-        let purpose = purpose.to_owned();
-        // A Keychain query is a synchronous call into securityd; off the
-        // async workers, so a slow one cannot stall the page's other work.
-        tokio::task::spawn_blocking(move || Self::enrolled_now(&purpose)).await.unwrap_or(false)
-    }
-
     async fn store(&self, purpose: &str, blob: &[u8]) -> Result<(), String> {
         let purpose = purpose.to_owned();
         let blob = blob.to_vec();
@@ -161,21 +154,6 @@ impl KeychainGate {
         Availability { available: true, biometric: biometric_available(), reason: None }
     }
 
-    fn enrolled_now(purpose: &str) -> bool {
-        let query = base_query(purpose);
-        let mut out: CFTypeRef = ptr::null();
-        // SAFETY: `query` is a live dictionary of the framework's own key
-        // types for the duration of the call, and `out` is a valid place for
-        // the framework to write the item's attributes.
-        let status = unsafe { SecItemCopyMatching(dictionary_ref(&query), &raw mut out) };
-        if !out.is_null() {
-            // SAFETY: a successful query returns a create-rule reference,
-            // which wrapping and dropping releases exactly once.
-            drop(unsafe { CFType::wrap_under_create_rule(out) });
-        }
-        status == errSecSuccess
-    }
-
     fn store_now(purpose: &str, blob: &[u8]) -> Result<(), String> {
         // **Delete before add.** The policy is fixed when the item is created,
         // so replacing a blob is a new item; a duplicate would keep the old
@@ -219,9 +197,8 @@ impl KeychainGate {
         }
     }
 
-    /// The release query, with `skip` making the read refuse rather than
-    /// prompt. The skipping form is the test's: it proves the item's policy
-    /// wants a gesture on a machine where the test cannot answer one.
+    /// The release read: the gesture prompt, unless `skip` makes it refuse
+    /// instead.
     fn read(purpose: &str, skip: bool) -> Release {
         // **Data only**: asking for the attributes as well would make the
         // framework answer a dictionary, which the success arm below wraps as
@@ -331,12 +308,13 @@ mod tests {
 
     /// A live item on this machine, under a purpose no real consumer uses.
     ///
-    /// **What this test cannot do is read the blob**: that needs a person to
-    /// answer the system's gesture, and an automated run has none. What it
-    /// pins instead is the property that makes the gesture necessary - a
-    /// data read that asks not to authenticate finds nothing, so the item's
-    /// policy is in force - and that the item is otherwise a normal entry the
-    /// gate can find, replace and drop.
+    /// **Presence itself is only observable through the gesture the item's
+    /// policy demands**, and an automated run has none: a skipped read of the
+    /// protected item hides it and answers not-enrolled (measured against a
+    /// Developer ID-signed probe on 2026-11-27). What this test can pin is the
+    /// policy itself and that every write lands - storing, replacing and
+    /// removing all succeed, and a replacement would answer a duplicate item
+    /// if the delete-then-add had not run.
     ///
     /// **A runner outside the graphical login skips with the platform's
     /// reason** rather than failing: a process launched from the system
@@ -351,11 +329,10 @@ mod tests {
         }
         let gate = KeychainGate;
         let purpose = format!("test-{}", std::process::id());
-        let blob = b"wrapped secret for the gate test";
 
-        gate.store(&purpose, blob).await.expect("the item is stored");
-
-        assert!(gate.enrolled(&purpose).await, "the item is found by its attributes");
+        gate.store(&purpose, b"wrapped secret for the gate test")
+            .await
+            .expect("the item is stored");
         assert_eq!(
             KeychainGate::read(&purpose, true),
             Release::NotEnrolled,
@@ -364,15 +341,18 @@ mod tests {
 
         // A second store replaces the bytes rather than duplicating the item.
         gate.store(&purpose, b"second").await.expect("the item is replaced");
-        assert!(gate.enrolled(&purpose).await, "the replacement is still one item");
 
         gate.remove(&purpose).await.expect("the item is removed");
-        assert!(!gate.enrolled(&purpose).await, "nothing is left behind");
+        gate.remove(&purpose)
+            .await
+            .expect("removing a purpose with nothing stored is not a failure");
     }
 
     /// A second consumer is a second purpose on the same gate: no new item
-    /// class, no code path, and dropping one leaves the other's item alone.
-    /// This is the brief's acceptance criterion on the client half.
+    /// class and no new code path, and each purpose owns its own account.
+    ///
+    /// As above, presence is not observable without the gesture, so this does
+    /// not claim it; the account the store writes is what pins the isolation.
     #[tokio::test]
     async fn a_second_consumer_is_only_a_purpose() {
         if let Some(reason) = keychain_unreachable() {
@@ -385,15 +365,13 @@ mod tests {
 
         gate.store(&first, b"first consumer's shape").await.expect("the first is stored");
         gate.store(&second, b"second").await.expect("the second is stored");
-        assert!(
-            gate.enrolled(&first).await && gate.enrolled(&second).await,
-            "both purposes are enrolled"
+        assert_eq!(
+            account(&second).to_string(),
+            format!("purpose-{second}"),
+            "each purpose owns its account",
         );
 
         gate.remove(&first).await.expect("the first is removed");
-        assert!(!gate.enrolled(&first).await, "the first is gone");
-        assert!(gate.enrolled(&second).await, "the second consumer's item is untouched");
-
         gate.remove(&second).await.expect("the second is removed");
     }
 

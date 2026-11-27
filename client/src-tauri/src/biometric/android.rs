@@ -7,7 +7,6 @@
 
 use std::sync::OnceLock;
 
-use serde::Deserialize;
 use tauri::Wry;
 use tauri::plugin::{Builder, PluginHandle, TauriPlugin};
 
@@ -31,11 +30,6 @@ pub fn init() -> TauriPlugin<Wry> {
 /// The gate this build ships on the phone.
 #[derive(Clone, Copy)]
 pub struct AndroidGate;
-
-#[derive(Deserialize)]
-struct EnrolledAnswer {
-    enrolled: bool,
-}
 
 #[derive(serde::Serialize)]
 struct PurposeArgs<'a> {
@@ -67,19 +61,6 @@ impl Gate for AndroidGate {
             Err(error) => {
                 Availability { available: false, biometric: false, reason: Some(error.to_string()) }
             }
-        }
-    }
-
-    async fn enrolled(&self, purpose: &str) -> bool {
-        let Ok(handle) = self.bridge() else { return false };
-        match handle
-            .run_mobile_plugin_async::<EnrolledAnswer>("enrolled", PurposeArgs { purpose })
-            .await
-        {
-            Ok(answer) => answer.enrolled,
-            // A bridge that cannot answer is a device this gate cannot be
-            // offered on; the caller draws the password.
-            Err(_) => false,
         }
     }
 

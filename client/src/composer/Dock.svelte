@@ -1,8 +1,11 @@
 <script lang="ts">
   import Prose from '../chat/Prose.svelte';
-  import { availability, enrolled, reasonOf, type Availability } from '../biometric';
-  import { VAULT_PURPOSE } from '../biometric/vault';
-  import { releaseVaultMaterial, type VaultRelease } from '../biometric/vault-enrolment';
+  import { availability, reasonOf, type Availability } from '../biometric';
+  import {
+    enrolmentIdIfMinted,
+    releaseVaultMaterial,
+    type VaultRelease,
+  } from '../biometric/vault-enrolment';
   import Icon from '../components/Icon.svelte';
   import { closeSurface, openSurface, surface } from '../browser/surface.svelte';
   import {
@@ -967,6 +970,14 @@
   // card becoming a lock card: the record is replaced on every frame, and a
   // re-ask would reset the card under a running gesture. A new card starts
   // from the password until the gate has answered.
+  //
+  // **The platform is asked only what it can answer without a gesture, and
+  // "enrolled" comes from this client's own record.** On macOS a keychain
+  // read that decides whether an item exists is itself a Touch ID prompt (a
+  // skipped read hides the item instead), so asking would spend the gesture
+  // that belongs to the unlock. The record is the id an enrol minted, which
+  // is also what the release names; a device whose id is gone cannot release
+  // anyway, and its press answers `not_enrolled` and falls to the password.
   $effect(() => {
     void ownKey;
     if (!vaultNeedsUnlock) return;
@@ -979,7 +990,8 @@
     twoFactor = '';
     let live = true;
     void (async () => {
-      const [held, isEnrolled] = await Promise.all([availability(), enrolled(VAULT_PURPOSE)]);
+      const held = await availability();
+      const isEnrolled = enrolmentIdIfMinted() !== null;
       if (!live) return;
       gate = held;
       vaultEnrolled = isEnrolled;

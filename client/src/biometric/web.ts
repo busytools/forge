@@ -114,11 +114,6 @@ async function prfSupport(platform: typeof globalThis.PublicKeyCredential): Prom
   }
 }
 
-/** Whether this browser holds a passkey record for `purpose`. */
-export function enrolled(purpose: string): boolean {
-  return readRecord(purpose) !== null;
-}
-
 /**
  * Seal `key` under a passkey's PRF output, reusing this purpose's passkey when
  * this browser still holds one.

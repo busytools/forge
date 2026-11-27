@@ -316,7 +316,33 @@ describe('releasing the material', () => {
     expect(answer).toEqual({ outcome: 'not_enrolled' });
     expect(gateRelease, 'no gesture for a row that is gone').not.toHaveBeenCalled();
     expect(gateRemove, 'the gate record goes with the row').toHaveBeenCalledWith('vault');
+    expect(enrolmentIdIfMinted(), 'and the id that named it goes too').toBeNull();
     expect(connection.calls.map(commandName)).toEqual(['biometric_release']);
+  });
+
+  /// **The gate is the authority on this device.** A gate that holds no item
+  /// answers not_enrolled even while the core still lists the row; the id
+  /// goes with the gate's item, or every later card would draw a gesture that
+  /// silently falls to the password and the settings card would keep saying
+  /// this client is enrolled.
+  it('drops the record and the id when the gate holds no item, row or not', async () => {
+    enrolmentId();
+    gateRelease.mockResolvedValue({ outcome: 'not_enrolled' });
+    const connection = aConnection(() => ({ blob: 'c2VhbGVk' }));
+
+    const answer = await releaseVaultMaterial(connection);
+
+    expect(answer).toEqual({ outcome: 'not_enrolled' });
+    expect(gateRemove, 'the gate record goes').toHaveBeenCalledWith('vault');
+    expect(enrolmentIdIfMinted(), 'and so does the id that named it').toBeNull();
+
+    // The next press has nothing to name: no row is read and no gesture is
+    // raised, so the card draws the password.
+    connection.calls.length = 0;
+    gateRelease.mockClear();
+    expect(await releaseVaultMaterial(connection)).toEqual({ outcome: 'not_enrolled' });
+    expect(connection.calls, 'nothing is asked of the core').toHaveLength(0);
+    expect(gateRelease, 'and no gesture is raised').not.toHaveBeenCalled();
   });
 
   /// A refused gesture is the platform's answer after the row said there is
