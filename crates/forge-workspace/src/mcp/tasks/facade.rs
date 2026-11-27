@@ -704,6 +704,12 @@ impl TasksFacade for ProdTasksFacade {
         options: Vec<String>,
         version: u64,
     ) -> Result<Task, TasksError> {
+        // **The decision rides every bulk row it is on**, so its record is
+        // bounded where it enters: a question one sentence, its options a
+        // few short phrases, the note a paragraph.
+        const MAX_QUESTION: usize = 280;
+        const MAX_OPTION: usize = 120;
+        const MAX_OPTIONS: usize = 8;
         let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
         // **A question for the user is the lead's to raise.** The
@@ -718,12 +724,6 @@ impl TasksFacade for ProdTasksFacade {
                     .to_owned(),
             ));
         }
-        // **The decision rides every bulk row it is on**, so its record is
-        // bounded where it enters: a question one sentence, its options a
-        // few short phrases, the note a paragraph.
-        const MAX_QUESTION: usize = 280;
-        const MAX_OPTION: usize = 120;
-        const MAX_OPTIONS: usize = 8;
         if let Some(question) = question.as_deref() {
             let question = question.trim();
             if question.is_empty() {
@@ -1305,7 +1305,7 @@ mod prod_facade_tests {
                 },
             )
             .expect("the stub evidence checks out");
-        assert_eq!(task.status, TaskStatus::Waiting, "the look park is where the completion lands",);
+        assert_eq!(task.status, TaskStatus::Waiting, "the look park is where the completion lands");
         assert!(
             task.waiting_on.as_ref().is_some_and(|wait| wait.verification),
             "and it waits on the look: {:?}",
