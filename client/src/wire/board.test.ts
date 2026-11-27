@@ -212,13 +212,31 @@ describe("the drawer's row", () => {
     expect(applied?.projects[0]?.rows, 'the row was replaced, not duplicated').toHaveLength(1);
   });
 
-  it('keeps a closed row out of the lanes, and a null answer changes nothing', () => {
+  it('keeps a closed row out of the lanes, in the drawer set, and a null answer changes nothing', () => {
     const closed = applyDetail(
       wire(),
       { org: 'TestOrg', name: 'proj' },
       row({ id: 't-9', subject: 'an ended row', status: 'completed' }),
     );
-    expect(closed?.projects[0]?.rows, "a closed row stays the drawer's").toHaveLength(1);
+    expect(closed?.projects[0]?.rows, 'a closed row stays out of the lanes').toHaveLength(1);
+    // The shelf's subject asks for the closed row whole; the page's drawer
+    // draws it from this set, since the bulk read never carries it.
+    expect(closed?.projects[0]?.detail?.map((entry) => entry.task.id)).toEqual(['t-9']);
     expect(applyDetail(wire(), { org: 'TestOrg', name: 'proj' }, null)).toBeNull();
+  });
+
+  it('updates a drawer row in place rather than growing the set', () => {
+    const first = applyDetail(
+      wire(),
+      { org: 'TestOrg', name: 'proj' },
+      row({ id: 't-9', subject: 'an ended row', status: 'completed', detail: 'first' }),
+    );
+    const next = applyDetail(
+      first,
+      { org: 'TestOrg', name: 'proj' },
+      row({ id: 't-9', subject: 'an ended row', status: 'completed', detail: 'second' }),
+    );
+    expect(next?.projects[0]?.detail, 'one entry per row').toHaveLength(1);
+    expect(next?.projects[0]?.detail?.[0]?.task.detail).toBe('second');
   });
 });

@@ -119,22 +119,21 @@ const byText = (text: string): HTMLElement | null => {
 };
 
 /**
- * The archived shelf's own surface: the full board, then the `archived`
- * toggle, whose one read answers `rows`. Finished work left the bulk board,
- * so this is where a terminal row is drawn - and where its detail door
- * lives.
+ * The archived shelf's own surface: the board page over the frame harness,
+ * then the `archived` toggle, whose one read answers `rows`. Finished work
+ * left the bulk board, so this is where a terminal row is drawn - and where
+ * its subject's door opens the row page.
  */
-async function summonArchive(rows: Task[]): Promise<void> {
+async function summonArchive(rows: Task[]): Promise<{
+  set: (next: { home: HomeWire; board: BoardWire }) => void;
+}> {
   const first = boardWire.projects[0];
   if (first === undefined) throw new Error('the fixture holds no project');
-  app = mount(Board, {
+  const frame = mount(Frames, {
     target: document.body,
     props: {
-      wire: homeWire,
-      board: { wire: { ...boardWire, projects: [{ ...first, rows: [] }] }, refused: null },
-      org: 'TestOrg',
-      project: 'proj',
-      initialMode: 'board' as const,
+      initial: { home: homeWire, board: { ...boardWire, projects: [{ ...first, rows: [] }] } },
+      mode: 'archived' as const,
       onact: (command: Record<string, Record<string, unknown>>) => acts.push(command),
       onarchived: () =>
         Promise.resolve({
@@ -142,13 +141,15 @@ async function summonArchive(rows: Task[]): Promise<void> {
           refused: null,
         }),
     },
-  });
+  }) as unknown as { set: (next: { home: HomeWire; board: BoardWire }) => void };
   flushSync();
   byText('archived')?.click();
   await vi.waitFor(() => {
     if (document.querySelector('.w-exc') === null) throw new Error('the archive has not landed');
   });
   flushSync();
+  app = frame;
+  return frame;
 }
 
 describe("the board's controls", () => {
@@ -1150,12 +1151,13 @@ describe("the row's own page", () => {
     expect(acts.filter((command) => 'task_detail' in command)).toHaveLength(1);
   });
 
-  it('marks an attested row on the archived shelf and opens it whole', async () => {
+  it('marks an attested row on the archived shelf and opens its page for the reopen', async () => {
     const attested = {
       evidence: 'Looks right - merge',
       at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
     };
-    await summonArchive([task('a1', 'an attested look', 'completed', { attested })]);
+    const ended = task('a1', 'an attested look', 'completed', { attested });
+    const frame = await summonArchive([ended]);
     expect(document.body.textContent, 'the shelf lost the mark').toContain('lead attested');
 
     const door = [...document.querySelectorAll<HTMLElement>('.w-exc button')].find(
@@ -1164,10 +1166,23 @@ describe("the row's own page", () => {
     if (door === undefined) throw new Error('the archived row has no door');
     door.click();
     flushSync();
-    // The row leaves the bulk board when it ends, so its quote and its
-    // reopen door come from the detail read the shelf's door asks for - the
-    // server answers from the archive.
+    // The row left the bulk board when it ended, so the page's own read asks
+    // for it whole and the drawer draws from that answer.
     expect(acts.at(-1)).toEqual({ task_detail: { project: 'proj', id: 'a1' } });
+    const first = boardWire.projects[0];
+    if (first === undefined) throw new Error('the fixture holds no project');
+    frame.set({
+      home: homeWire,
+      board: { ...boardWire, projects: [{ ...first, rows: [], detail: [row(ended)] }] },
+    });
+    flushSync();
+    const drawer = document.querySelector('.dr');
+    expect(drawer?.textContent, 'the row page did not draw the closed row').toContain(
+      'Looks right - merge',
+    );
+    byText('reopen')?.click();
+    flushSync();
+    expect(acts.at(-1)).toEqual({ task_reopen: { project: 'proj', id: 'a1' } });
   });
 
   /** The user reserves a pick from the row page, and the board says so. */

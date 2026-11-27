@@ -26,6 +26,13 @@ export interface ProjectBoardWire {
   project: ProjectBoardIdentity;
   /** The project's live rows, with the board's own facts on each. */
   rows: BoardRow[];
+  /**
+   * Rows read whole on demand for the drawer, kept apart from the lanes.
+   * **A closed row's detail answer lands here**: the bulk read and the lanes
+   * carry live work only, but the archived shelf's subject opens that row's
+   * page, and the page draws from this copy.
+   */
+  detail?: BoardRow[];
   crons: CronEntry[];
   /**
    * This project's connector subscriptions, one list per connector.
@@ -56,6 +63,7 @@ export function boardFrom(data: BoardWire): BoardWire {
     projects: data.projects.map((row) => ({
       ...row,
       rows: (row.rows ?? []).map(rowFrom),
+      detail: (row.detail ?? []).map(rowFrom),
       crons: row.crons ?? [],
     })),
   };
@@ -255,9 +263,10 @@ export function taskDetailFrame(
 
 /**
  * Apply one full row into the drawn board, replacing the row the bulk read
- * carried for its id. A row the drawn board does not hold is appended only
- * when it is live: a closed row read on demand belongs to the drawer, not to
- * the lanes.
+ * carried for its id. A live row the drawn board does not hold is appended to
+ * the lanes; **a closed row lands in the project's `detail` set**, where the
+ * drawer that asked reads it - the lanes draw live work only, and the
+ * archived shelf's door is a closed row's way into its own page.
  */
 export function applyDetail(
   wire: BoardWire | null,
@@ -278,11 +287,16 @@ export function applyDetail(
     full.task.status === 'failed' ||
     full.task.status === 'canceled';
   const rows = held.rows.map((entry) => (entry.task.id === full.task.id ? full : entry));
-  // A closed row read on demand belongs to the drawer that asked, not to the
-  // lanes: the bulk board draws only work in play.
   if (!known && !ended) rows.push(full);
+  const detail = [...(held.detail ?? [])];
+  const heldDetail = detail.findIndex((entry) => entry.task.id === full.task.id);
+  if (heldDetail !== -1) {
+    detail[heldDetail] = full;
+  } else if (!known) {
+    detail.push(full);
+  }
   const projects = [...wire.projects];
-  projects[at] = { ...held, rows };
+  projects[at] = { ...held, rows, detail };
   return { projects };
 }
 

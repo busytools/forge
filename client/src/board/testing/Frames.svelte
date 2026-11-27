@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { BoardRead, BoardWire } from '../../wire/board';
   import type { HomeWire } from '../../wire/home';
+  import type { ArchivedRead } from '../archive';
   import Board from '../Board.svelte';
 
   /**
@@ -12,10 +13,12 @@
   let {
     initial,
     onact = null,
+    onarchived = null,
     mode = 'board',
   }: {
     initial: { home: HomeWire; board: BoardWire };
     onact?: ((command: Record<string, Record<string, unknown>>) => void) | null;
+    onarchived?: (() => Promise<ArchivedRead>) | null;
     /** Which of the board's three views the frame opens on. */
     mode?: 'window' | 'board' | 'archived';
   } = $props();
@@ -33,4 +36,4 @@
 
 <!-- The page over a wire the test drives: the mode picks which view's
      interactions the frame exercises. -->
-<Board {wire} {board} org="TestOrg" project="proj" {onact} initialMode={mode} />
+<Board {wire} {board} org="TestOrg" project="proj" {onact} {onarchived} initialMode={mode} />

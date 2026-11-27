@@ -135,16 +135,28 @@
       .filter((agent) => agent.slot.org === org && agent.slot.project === project)
       .map((agent) => ({ label: agent.label, href: hrefForSlot(agent.slot) })),
   );
-  /** This project's rows, off the board's own read. */
-  function boardRowsOf(read: BoardRead): BoardRow[] {
+  /** The project's drawn lanes' rows, off the board's own read. */
+  function laneRowsOf(read: BoardRead): BoardRow[] {
     return (
       read.wire?.projects.find(
         (entry) => entry.project.org === org && entry.project.name === project,
       )?.rows ?? []
     );
   }
-  /** The epics a new row can nest under. */
-  const epics = $derived(boardRowsOf(board).filter((entry) => entry.task.parent === null));
+  /**
+   * Every row this page holds whole: the lanes' own, plus the rows a drawer
+   * asked for read whole. The second set is how an archived shelf row's page
+   * opens - that row is not in the lanes' read at all.
+   */
+  function boardRowsOf(read: BoardRead): BoardRow[] {
+    const held = read.wire?.projects.find(
+      (entry) => entry.project.org === org && entry.project.name === project,
+    );
+    return [...(held?.rows ?? []), ...(held?.detail ?? [])];
+  }
+  /** The epics a new row can nest under: the lanes' rows only, never a
+   *  drawer's closed one. */
+  const epics = $derived(laneRowsOf(board).filter((entry) => entry.task.parent === null));
   /** The worker's own words on a row it sent back, before it is dispatched. */
   const sendBackWords: Record<string, string> = $state({});
   const answers: Record<string, string> = $state({});
