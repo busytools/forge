@@ -10,6 +10,7 @@ import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
 import app.tauri.annotation.Command
+import app.tauri.annotation.InvokeArg
 import app.tauri.annotation.TauriPlugin
 import app.tauri.plugin.Invoke
 import app.tauri.plugin.JSObject
@@ -70,6 +71,7 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun enrolled(invoke: Invoke) {
     val args = invoke.parseArgs(PurposeArgs::class.java)
+    BiometricRecords.missingPurpose(args.purpose)?.let { invoke.reject(it); return }
     background(invoke) {
       val hasRecord = preferences().contains(args.purpose)
       val hasKey = try {
@@ -142,6 +144,8 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun store(invoke: Invoke) {
     val args = invoke.parseArgs(StoreArgs::class.java)
+    BiometricRecords.missingPurpose(args.purpose)?.let { invoke.reject(it); return }
+    BiometricRecords.missingBlob(args.blob)?.let { invoke.reject(it); return }
     background(invoke) {
       val key = storeKey(args.purpose)
       val cipher = Cipher.getInstance(TRANSFORMATION)
@@ -216,6 +220,7 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun release(invoke: Invoke) {
     val args = invoke.parseArgs(PurposeArgs::class.java)
+    BiometricRecords.missingPurpose(args.purpose)?.let { invoke.reject(it); return }
     val record = preferences().getString(args.purpose, null)
     if (record == null) {
       invoke.resolve(notEnrolled())
@@ -305,6 +310,7 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
   @Command
   fun remove(invoke: Invoke) {
     val args = invoke.parseArgs(PurposeArgs::class.java)
+    BiometricRecords.missingPurpose(args.purpose)?.let { invoke.reject(it); return }
     background(invoke) {
       preferences().edit().remove(args.purpose).commit()
       deleteKey(args.purpose)
@@ -420,10 +426,19 @@ class BiometricPlugin(private val activity: Activity) : Plugin(activity) {
   }
 }
 
+/**
+ * A `@Command` argument class, bound by Jackson through reflection in
+ * `Invoke.parseArgs`. **`@InvokeArg` is what keeps it whole**: Tauri's own
+ * consumer rules keep annotated classes, so the no-arg constructor and the
+ * fields survive R8 in the release build. The package-scoped rule in
+ * `proguard-rules.pro` backs that up for a class that forgets the marker.
+ */
+@InvokeArg
 class PurposeArgs {
   lateinit var purpose: String
 }
 
+@InvokeArg
 class StoreArgs {
   lateinit var purpose: String
   lateinit var blob: String
@@ -439,6 +454,19 @@ internal object BiometricRecords {
   private const val RECORD_SEPARATOR = ":"
 
   fun alias(purpose: String): String = ALIAS_PREFIX + purpose
+
+  /**
+   * The refusal a command gives for a blank purpose, or null when it carries
+   * one. **A blank purpose must refuse**: it would otherwise write the empty
+   * alias `forge.biometric.` and resolve success beside a record the caller
+   * never asked for.
+   */
+  fun missingPurpose(purpose: String): String? =
+    if (purpose.isBlank()) "the biometric request has no purpose" else null
+
+  /** The same refusal for a blank blob, which `store` would otherwise seal. */
+  fun missingBlob(blob: String): String? =
+    if (blob.isBlank()) "the biometric request has no blob" else null
 
   /** The stored record: base64(iv):base64(ciphertext). */
   fun encode(iv: ByteArray, ciphertext: ByteArray): String =
