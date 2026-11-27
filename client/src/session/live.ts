@@ -36,13 +36,13 @@ import { outputs } from '../chat/outputs.svelte';
 import { git, vcsLine } from '../chat/git.svelte';
 import { cannotPaint } from '../paint';
 import { slotOf, subjectKey, type SessionUpdate, type Subject } from '../protocol';
-import type { Connection, ConnectionStatus } from '../socket';
+import { report, type Connection, type ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import type { SessionSlot } from '../wire/types';
 import { applyTake, applyUpdate, isTakeUpdate, REPLACES, variantOf } from './apply';
 import { markReturn } from './returns';
 import { cover as coverRanges, filled as fillRanges, type Range } from './stream';
-import { sessionFrom, type SessionRecord } from './wire';
+import { patchRecord, sessionFrom, type SessionRecord } from './wire';
 
 /** What the session page has to draw from, and why it has nothing when it does not. */
 export interface SessionRead {
@@ -1258,16 +1258,12 @@ function createSeat(
       return;
     }
 
-    // **A machine turn ending is the record's to state**, and only when one
-    // was held. The core's abort says only "not a handoff": a CLI compaction
-    // running under the handoff is still running, and only the record folds
-    // both sources. **Gated on what the page holds**, because a session death
-    // sends the same `null` to every seat - and a record encode per death is
-    // the 6.5 MB read a page with nothing to correct would pay for nothing.
-    const held = seat.wire?.composer.machine ?? null;
-    if (name === 'machine_turn' && payload['machine'] === null && held !== null) {
-      reread();
-    }
+    // **A machine turn's ending and a review's write are the record's to
+    // state, and the server patches both.** The core's abort says only "not a
+    // handoff": a CLI compaction running under the handoff is still running,
+    // and only the record folds both sources - so the frame is not the answer
+    // and the patch is. The `patch` arm below carries either of them in; no
+    // read is asked for here.
 
     // A fired cron's schedule reaches no field of this record: the row's
     // prose carries the prompt, and the pairing lives on the frame alone.
@@ -1275,17 +1271,6 @@ function createSeat(
     // the record has nothing to say about.
     if (name === 'cron_prompt_appended') {
       cronNames.remember(payload['uuid'], payload['description']);
-    }
-
-    // A review was touched - filed, answered, resolved. The reviews ride a
-    // read rather than a record field, so the notice is the one cue to take
-    // that read again; without it the strip's rows and its panel keep saying
-    // `open` at threads the reader just settled.
-    if (name === 'review_activity_notice') {
-      // **The record, not the base.** A write's notice is one of ten a minute
-      // when a round is being sealed; each review read would fetch the same
-      // repo again for a base the page read seconds ago.
-      reread({ review: false });
     }
 
     const seq = typeof frame.seq === 'number' ? frame.seq : null;
@@ -1414,6 +1399,24 @@ function createSeat(
           seat.owed.length = 0;
           reread();
         }
+        return;
+      }
+      if (message.kind === 'patch') {
+        // **A seat's patch is a whole-field delta of what the frames cannot
+        // carry** - the resolved machine state, the review rows. What moved
+        // replaces that field, narrowed exactly as a read narrows it; the
+        // frames keep every field the patch does not name.
+        if (subjectKey(message.subject) !== key) return;
+        if (seat.wire === null) return;
+        const patched = patchRecord(seat.wire, message.data);
+        if (patched === null) {
+          report('a seat patch carried no field this client draws', message.data);
+          return;
+        }
+        seat.wire = patched;
+        // A delta is painted like a frame, not flushed like an answer: this
+        // is not a new read of the seat.
+        soon();
         return;
       }
       if (message.kind === 'snapshot') {

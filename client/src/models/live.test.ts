@@ -53,16 +53,24 @@ describe('the models page over a connection', () => {
    * client that answered it with a refresh would ask the server to rebuild
    * what the update already holds.
    */
-  it('takes the snapshot a landed check carries, without asking for a read', () => {
+  /**
+   * **A landed check moves the page through its patch**, with no second
+   * encode asked for: the server re-read its own record and sent what moved.
+   */
+  it('draws the check a landed patch carries, without asking for a read', () => {
     const forge = fakeConnection();
     const view = watchModels(forge.connection);
     view.subscribe(() => {});
+    forge.arrive({ kind: 'snapshot', subject: MODELS, version: 1, data: SNAPSHOT });
 
-    const landed = {
-      ...SNAPSHOT,
-      check: { state: 'fresh', at: '2026-10-06T06:12:00Z', release: 'v0.3.1', skipped: 0 },
-    };
-    forge.arrive({ kind: 'update', update: { dictate_models_changed: { models: landed } } });
+    forge.arrive({
+      kind: 'patch',
+      subject: MODELS,
+      version: 2,
+      data: {
+        check: { state: 'fresh', at: '2026-10-06T06:12:00Z', release: 'v0.3.1', skipped: 0 },
+      },
+    });
 
     expect(get(view).wire?.check).toEqual({
       state: 'fresh',
@@ -70,64 +78,32 @@ describe('the models page over a connection', () => {
       release: 'v0.3.1',
       skipped: 0,
     });
-    expect(forge.refreshed, 'a check landed with the read in hand, so nothing was re-read').toEqual(
-      [],
-    );
+    expect(forge.refreshed, 'a landed check asked for a whole read').toEqual([]);
   });
 
   /**
-   * **The load's own signal has no payload, so it is answered with a read.**
-   * A page open through a first download would otherwise keep drawing
-   * `pending` chips after the models finished loading.
+   * **The load's own signal carries no payload**, and the record moved when
+   * the models loaded - so the page draws that move from the patch and asks
+   * nothing.
    */
-  it('re-reads when the models finish loading', () => {
+  it('draws a load from the patch, asking nothing', () => {
     const forge = fakeConnection();
     const view = watchModels(forge.connection);
     view.subscribe(() => {});
-
-    forge.arrive({ kind: 'update', update: 'dictate_availability' });
-
-    expect(forge.refreshed).toEqual([MODELS]);
-  });
-
-  /**
-   * A read is the whole subject, so one already in flight is not queued
-   * behind: the answer it is waiting for is the fresher one.
-   */
-  it('asks for one read at a time, however many availability flips land', () => {
-    const forge = fakeConnection();
-    const view = watchModels(forge.connection);
-    view.subscribe(() => {});
-
-    forge.arrive({ kind: 'update', update: 'dictate_availability' });
-    forge.arrive({ kind: 'update', update: 'dictate_availability' });
-    expect(forge.refreshed).toEqual([MODELS]);
-
-    // The answer frees the pacing, so the next flip is asked for.
-    forge.arrive({ kind: 'snapshot', subject: MODELS, data: SNAPSHOT });
-    forge.arrive({ kind: 'update', update: 'dictate_availability' });
-    expect(forge.refreshed).toEqual([MODELS, MODELS]);
-  });
-
-  /**
-   * **A landing IS a read, so it frees the pacing.** A check that lands while
-   * an availability read is out carries the whole snapshot that read was
-   * asked for; if the landing left `reading` set, the pacing would latch -
-   * that read's answer aside, no later flip could ever ask again, and the
-   * page would stop following loads silently.
-   */
-  it('frees the read pacing when a check lands', () => {
-    const forge = fakeConnection();
-    const view = watchModels(forge.connection);
-    view.subscribe(() => {});
-
-    forge.arrive({ kind: 'update', update: 'dictate_availability' });
-    expect(forge.refreshed).toEqual([MODELS]);
-
-    forge.arrive({ kind: 'update', update: { dictate_models_changed: { models: SNAPSHOT } } });
-    forge.arrive({ kind: 'update', update: 'dictate_availability' });
-
-    expect(forge.refreshed, 'a landing left the pacing latched').toEqual([MODELS, MODELS]);
+    forge.arrive({
+      kind: 'snapshot',
+      subject: MODELS,
+      version: 1,
+      data: { ...SNAPSHOT, in_use: [{ role: 'transcribing', state: 'pending' }] },
+    });
+    forge.arrive({
+      kind: 'patch',
+      subject: MODELS,
+      version: 2,
+      data: { in_use: [{ role: 'transcribing', state: 'ready' }] },
+    });
+    expect(get(view).wire?.in_use?.[0]?.state).toBe('ready');
+    expect(forge.refreshed).toEqual([]);
   });
 
   /** A refusal is the server's own words, and the page draws them. */

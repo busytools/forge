@@ -632,48 +632,56 @@ function time(value: unknown): WireTime | null {
  * that says `running` for a state it cannot name draws without claiming the
  * work is over.
  */
+function stateFrom(value: unknown): SessionRecord['state'] {
+  const state = record(value);
+  return {
+    scan_cwd: text(state['scan_cwd']) ?? '',
+    voice_listeners: number(state['voice_listeners']) ?? 0,
+  };
+}
+
+function headerFrom(value: unknown): SessionRecord['header'] {
+  const header = record(value);
+  const raw = record(header['model']);
+  return {
+    session_id: text(header['session_id']),
+    seq: number(header['seq']) ?? 1,
+    model:
+      typeof raw['resolved_id'] === 'string'
+        ? {
+            resolved_id: raw['resolved_id'],
+            display_name_long: text(raw['display_name_long']) ?? raw['resolved_id'],
+          }
+        : null,
+    effort: narrow(header['effort'], EFFORTS, FALLBACK_EFFORT),
+    permission_mode:
+      header['permission_mode'] === null || header['permission_mode'] === undefined
+        ? null
+        : narrow(header['permission_mode'], MODES, FALLBACK_MODE),
+    context: {
+      percent: number(record(header['context'])['percent']),
+      max_tokens: number(record(header['context'])['max_tokens']),
+    },
+    available_models: list(header['available_models']),
+    engine: text(header['engine']),
+    turn_in_flight: header['turn_in_flight'] === true,
+  };
+}
+
 export function sessionFrom(data: unknown): SessionRecord {
   const held = record(data);
-  const header = record(held['header']);
-  const raw = record(header['model']);
-  const state = record(held['state']);
 
   return {
     // The record's own address, read as the triple it is: every command this
     // page dispatches and every update it routes carries one, and the server
     // is the only thing that decides what a valid one looks like.
     slot: held['slot'] as SessionSlot,
-    state: {
-      scan_cwd: text(state['scan_cwd']) ?? '',
-      voice_listeners: number(state['voice_listeners']) ?? 0,
-    },
-    queue: queuedFrom(state['queue']),
+    state: stateFrom(held['state']),
+    queue: queuedFrom(record(held['state'])['queue']),
     // A read carries what is waiting, never what left: an ending is this
     // view's own observation, so a seat read starts with none.
     queue_ended: null,
-    header: {
-      session_id: text(header['session_id']),
-      seq: number(header['seq']) ?? 1,
-      model:
-        typeof raw['resolved_id'] === 'string'
-          ? {
-              resolved_id: raw['resolved_id'],
-              display_name_long: text(raw['display_name_long']) ?? raw['resolved_id'],
-            }
-          : null,
-      effort: narrow(header['effort'], EFFORTS, FALLBACK_EFFORT),
-      permission_mode:
-        header['permission_mode'] === null || header['permission_mode'] === undefined
-          ? null
-          : narrow(header['permission_mode'], MODES, FALLBACK_MODE),
-      context: {
-        percent: number(record(header['context'])['percent']),
-        max_tokens: number(record(header['context'])['max_tokens']),
-      },
-      available_models: list(header['available_models']),
-      engine: text(header['engine']),
-      turn_in_flight: header['turn_in_flight'] === true,
-    },
+    header: headerFrom(held['header']),
     mcp: mcpFrom(held['mcp']),
     // A failed refresh is a moment this view watched, not a fact a read
     // carries: a seat read starts with none.
@@ -698,6 +706,60 @@ export function sessionFrom(data: unknown): SessionRecord {
     tree_reviews: reviewsFrom(held['tree_reviews']),
     diff: diffFrom(held['diff']),
   };
+}
+
+/**
+ * A seat's patch written over the record a page holds.
+ *
+ * **A seat patch replaces whole fields**, so each field rides through the
+ * same narrowing a whole read uses - a raw `composer` or `reviews` must not
+ * reach a page unfiltered just because it arrived in a delta. `null` means
+ * the patch carried nothing this client draws; the caller reports it rather
+ * than dropping it (rule 25).
+ *
+ * `slot` is the seat's address and never moves, and `pending_ask` is the
+ * derived front the server sends beside `pending_asks`, so `asksFrom` reads
+ * both from the one field group.
+ */
+export function patchRecord(held: SessionRecord, patch: unknown): SessionRecord | null {
+  const raw = record(patch);
+  const next: SessionRecord = { ...held };
+  let touched = false;
+  const take = (field: string): boolean => {
+    if (!(field in raw)) return false;
+    touched = true;
+    return true;
+  };
+  if (take('state')) {
+    next.state = stateFrom(raw['state']);
+    next.queue = queuedFrom(record(raw['state'])['queue']);
+  }
+  if (take('header')) next.header = headerFrom(raw['header']);
+  if (take('composer')) next.composer = composerFrom(raw['composer']);
+  if (take('mcp')) next.mcp = mcpFrom(raw['mcp']);
+  if (take('processes')) next.processes = processesFrom(raw['processes']);
+  if (take('monitors')) next.monitors = list(raw['monitors']).map(monitorFrom);
+  if (take('terminal')) next.terminal = terminalSummaryFrom(raw['terminal']);
+  if (take('background_tasks')) {
+    next.background_tasks = list(raw['background_tasks']).flatMap(backgroundTaskFrom);
+  }
+  if (take('pending_asks')) next.pending_asks = asksFrom(raw['pending_asks'], raw['pending_ask']);
+  if (take('conversation')) next.conversation = conversationFrom(record(raw['conversation']));
+  if (take('slash_commands')) next.slash_commands = list(raw['slash_commands']);
+  if (take('subagents')) next.subagents = list(raw['subagents']);
+  if (take('subagent_instances')) {
+    next.subagent_instances = list(raw['subagent_instances']).map(subagentCardFrom);
+  }
+  if (take('file_index')) next.file_index = raw['file_index'] ?? null;
+  if (take('resume_sessions')) next.resume_sessions = raw['resume_sessions'] ?? null;
+  if (take('reviews')) next.reviews = reviewsFrom(raw['reviews']);
+  if (take('tree_reviews')) next.tree_reviews = reviewsFrom(raw['tree_reviews']);
+  if (take('work')) next.work = workFrom(raw['work']);
+  if (take('git')) next.git = gitFrom(raw['git']);
+  if (take('pr')) next.pr = prFrom(raw['pr']);
+  if (take('closes')) next.closes = issuesFrom(raw['closes']);
+  if (take('diff')) next.diff = diffFrom(raw['diff']);
+  return touched ? next : null;
 }
 
 /**

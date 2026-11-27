@@ -30,6 +30,7 @@ import {
 import { noteSnapshot, noteSubscribe, type PerfRecord } from './perf';
 import { Stores, type Store } from './stores';
 import { coversHome } from './wire/fleet';
+import { applyPatchFor } from './wire/patch';
 import { terminalInputFrame, terminalOutputFrame, type TerminalOutputFrame } from './wire/terminal';
 import { settingsFrom } from './wire/types';
 import { takeSettings } from './settings/frame';
@@ -1024,6 +1025,72 @@ export function connect(
     }
   }
 
+  /**
+   * Subjects waiting on the one whole read a version gap earns.
+   *
+   * **One read per gap, never a loop.** A second gap while that read is in
+   * flight is the same fault and rides the same ask; only a snapshot clears
+   * the entry, so the next real gap asks again.
+   */
+  const resyncing = new Set<string>();
+
+  /**
+   * One patch, placed against the version its store holds.
+   *
+   * **A patch applies only as the next number.** Anything else - no read yet,
+   * a skipped number, a record patch with no number at all - is a gap: the
+   * store keeps the record it has, holds the patch as unexpected so a page
+   * draws it as itself (rule 25), and one whole read is asked for.
+   */
+  function applyPatch(subject: Subject, version: unknown, data: unknown): void {
+    const store = stores.get(subject);
+    const key = subjectKey(subject);
+    if (store === undefined) {
+      // **A patch for a subject this connection never read is a bug on one
+      // side or the other.** There is no store to draw it in, so it is
+      // reported with its payload rather than vanishing.
+      report(`a patch arrived for ${key}, which this connection never read`, data);
+      return;
+    }
+    const arrived = typeof version === 'number' ? version : null;
+    const seat = typeof subject !== 'string';
+    const held = store.version();
+    if (arrived === null && !seat) {
+      // A record subject's patch has no place without its number.
+      resync(subject, store, 'an unversioned patch');
+      store.unplaced(data);
+      return;
+    }
+    if (arrived !== null && (held === null || arrived !== held + 1)) {
+      resync(
+        subject,
+        store,
+        held === null ? `version ${arrived} before any read` : `version ${arrived} over ${held}`,
+      );
+      store.unplaced(data);
+      return;
+    }
+    const applied = applyPatchFor(subject, store.snapshot(), data);
+    if (applied === null) {
+      resync(subject, store, 'a patch this client could not read');
+      store.unplaced(data);
+      return;
+    }
+    store.applied(arrived, applied);
+  }
+
+  /** One whole read for a subject whose stream skipped, bounded to one at a time. */
+  function resync(subject: Subject, store: Store, why: string): void {
+    store.gap(why);
+    const key = subjectKey(subject);
+    if (resyncing.has(key)) return;
+    resyncing.add(key);
+    report(`the ${key} stream skipped a version; asking for one whole read`, { why });
+    // A socket that is down asks nothing: the reconnect re-subscribes every
+    // held subject, and that answer is the read this gap wanted.
+    if (!refresh(subject)) resyncing.delete(key);
+  }
+
   function handle(message: ServerMessage): void {
     switch (message.kind) {
       // **The liveness answer, drawn by nothing.** The transport cleared its
@@ -1050,7 +1117,14 @@ export function connect(
         return;
       case 'snapshot':
         answered(message.subject);
-        stores.get(message.subject)?.set(message.data);
+        // A whole read ends any resync the subject was waiting on: it IS the
+        // read that gap asked for, and it carries the version the store now
+        // stands at.
+        resyncing.delete(subjectKey(message.subject));
+        stores.get(message.subject)?.set(message.data, message.version);
+        return;
+      case 'patch':
+        applyPatch(message.subject, message.version, message.data);
         return;
       case 'update':
         route(message.update);
@@ -1403,6 +1477,10 @@ export function connect(
       // server had already answered.
       failPending('the socket dropped before answering');
       awaiting.length = 0;
+      // A drop ends every resync with it: the reconnect asks for the whole
+      // read the gap wanted, so a waiting entry would only suppress the next
+      // gap's ask.
+      resyncing.clear();
       // **The drop took every server-side subscription with it.** The seat
       // subjects are the client's own to re-open - `session/live.ts`
       // re-attaches the shown one - so they leave this list here; the home
@@ -1468,6 +1546,7 @@ export function connect(
     const last = stores.close(what);
     const key = subjectKey(what);
     if (last) held.delete(key);
+    resyncing.delete(key);
     // **One entry per call, and only while this connection holds one.** A
     // dropped socket took the server's entries with it, so a seat released
     // after a resume - before its click re-attached it - has nothing to give

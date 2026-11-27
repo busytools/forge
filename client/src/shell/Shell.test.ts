@@ -10,7 +10,6 @@ import { DEFAULT_ADDRESS } from '../connect/attempt';
 import { rememberedAddress, rememberAddress, serverParameter } from '../connect/remembered';
 import { homeWire } from '../dev/fixture.data';
 import { goTo } from '../routes';
-import { rereadHome } from '../home/live';
 import { noteSeatClick } from '../perf';
 import { PROTOCOL_VERSION, subjectKey, type Subject } from '../protocol';
 import { closeSeat, closingSeat } from '../session/close';
@@ -47,16 +46,6 @@ vi.mock('../perf', async (importOriginal) => {
 const mockSeatClick = vi.mocked(noteSeatClick);
 
 /**
- * The home's entry re-read, wrapped so a test can count it: the module's own
- * exports stay real, because the shell's subscription is what reads the home
- * in the first place.
- */
-vi.mock('../home/live', async (importOriginal) => {
-  const real = await importOriginal<typeof import('../home/live')>();
-  return { ...real, rereadHome: vi.fn() };
-});
-
-/**
  * The launch's share, wrapped so a test can name the share the launch came
  * from without the shell's Android half behind it.
  *
@@ -74,8 +63,6 @@ vi.mock('../share/pending', async (importOriginal) => {
   realLaunchShare.current = real.launchShare;
   return { ...real, launchShare: launchShareMock };
 });
-
-const mockRereadHome = vi.mocked(rereadHome);
 
 /**
  * The shell's commands, answered by the test.
@@ -453,7 +440,6 @@ beforeEach(() => {
   listenHold.current = null;
   readyHold.current = null;
   mockWatchUpdate.mockClear();
-  mockRereadHome.mockReset();
   invokeMock.mockReset();
   invokeMock.mockResolvedValue(null);
   launchShareMock.mockReset();
@@ -1491,66 +1477,35 @@ describe('entering the home (#2955)', () => {
   }
 
   /**
-   * **A deep link is a boot entry too.** The launch keeps the route it was
-   * addressed at and takes the connection beside it, so a session route is
-   * the first thing the connection is seen with; the home entered later is
-   * an ordinary entry and must ask.
+   * **Entering the home asks for nothing.** The subscription stayed open
+   * while the reader was on a seat, so the home's patches were applied as
+   * they landed; a route entry that re-read would pay a whole encode for a
+   * record it already holds.
    */
-  it('re-reads entering the home after a deep-link boot on a session', async () => {
+  it('does not re-read on an entry, from a deep link or a seat return', async () => {
     const forge = await stubForge({ mark: null, theme: null, font: null });
     forges.push(forge);
     await openAt(LEAD_PATH, forge.address);
     await until(() => forge.homeReads() >= 1, 'the launch to take');
     expect(location.pathname, 'the launch moved off the route it was addressed at').toBe(LEAD_PATH);
+    expect(forge.homeReads(), 'a deep-link boot read the home twice').toBe(1);
 
     await moveTo('/', 'forge');
-    expect(
-      mockRereadHome,
-      'the entry after a deep-link boot asked for no read',
-    ).toHaveBeenCalledTimes(1);
     await quiet();
-    expect(mockRereadHome, 'the entry after a deep-link boot asked twice').toHaveBeenCalledTimes(1);
-  });
-
-  it('does not re-read at boot, where the subscription is the one read', async () => {
-    const forge = await stubForge({ mark: null, theme: null, font: null });
-    forges.push(forge);
-    await openAt('/', forge.address);
-    await until(() => forge.homeReads() >= 1, 'the launch to take');
-    // The entry effect runs on the flush, so a second ask would have landed.
-    await quiet();
-
-    expect(
-      mockRereadHome,
-      'the boot entry asked over the subscription read it already has',
-    ).not.toHaveBeenCalled();
-    expect(forge.homeReads(), 'the boot read the home twice').toBe(1);
-  });
-
-  it('re-reads once on the way back from a session, through the page guard', async () => {
-    const forge = await stubForge({ mark: null, theme: null, font: null });
-    forges.push(forge);
-    await openAt('/', forge.address);
-    await until(() => forge.homeReads() >= 1, 'the launch to take');
+    expect(forge.homeReads(), 'the entry asked for a home read').toBe(1);
 
     await moveTo(LEAD_PATH, LEAD.project);
-    expect(mockRereadHome, 'leaving the home is not an entry').not.toHaveBeenCalled();
-
     await moveTo('/', 'forge');
-    expect(mockRereadHome, 'the return asked for no read at all').toHaveBeenCalledTimes(1);
-    // **The ask goes through the page, not around it.** `refresh` re-asks the
-    // subscription itself, so a refresh sent beside the guard lands on the
-    // stub as a second read - a turn later, which is what the window is for.
     await quiet();
-    expect(forge.homeReads(), 'the shell refreshed the home around the guard').toBe(1);
-    expect(mockRereadHome, 'a second ask followed the return').toHaveBeenCalledTimes(1);
+    expect(forge.homeReads(), 'the seat return asked for a home read').toBe(1);
   });
 
   /**
-   * **A reconnect is not a route entry.** The fresh socket re-reads what the
-   * connection held itself, so the entry after it asks once and only once.
+   * **A reconnect is the one re-read, and it is the subscription's.** The
+   * fresh socket asks for every subject the connection held; no route entry
+   * adds to it.
    */
-  it('asks once on a return after a reconnect', async () => {
+  it('re-reads once on a reconnect, and no entry adds to it', async () => {
     const forge = await stubForge({ mark: null, theme: null, font: null });
     forges.push(forge);
     await openAt('/', forge.address);
@@ -1559,54 +1514,9 @@ describe('entering the home (#2955)', () => {
 
     forge.drop();
     await until(() => forge.homeReads() >= 2, 'the reconnect to re-ask the home');
-    expect(mockRereadHome, 'a reconnect is not a route entry').not.toHaveBeenCalled();
-
     await moveTo('/', 'forge');
-    expect(mockRereadHome, 'the return after a reconnect asked for no read').toHaveBeenCalledTimes(
-      1,
-    );
     await quiet();
-    expect(mockRereadHome, 'the return after a reconnect asked twice').toHaveBeenCalledTimes(1);
-  });
-
-  /**
-   * **An entry while the link is down asks nothing.** The reconnect replays
-   * what the connection held, so that read is the one covering the entry; a
-   * read asked now would set the page's in-flight flag for a refresh that
-   * returns false and leave it set until the next status event.
-   */
-  it('does not ask on an entry while the link is down', async () => {
-    const forge = await stubForge({ mark: null, theme: null, font: null });
-    forges.push(forge);
-    await openAt('/', forge.address);
-    await until(() => forge.homeReads() >= 1, 'the launch to take');
-    await moveTo(LEAD_PATH, LEAD.project);
-
-    await forge.close();
-    // The forge is gone, so nothing would answer a second close either.
-    forges.length = 0;
-    await until(() => drawn().includes('Reconnecting'), 'the drop to be drawn');
-    await moveTo('/', 'forge');
-    expect(mockRereadHome, 'an entry on a closed link asked for a read').not.toHaveBeenCalled();
-  });
-
-  it('leaves the in-flight guard to the page, so both entries ask', async () => {
-    const forge = await stubForge({ mark: null, theme: null, font: null });
-    forges.push(forge);
-    await openAt('/', forge.address);
-    await until(() => forge.homeReads() >= 1, 'the launch to take');
-
-    await moveTo(LEAD_PATH, LEAD.project);
-    await moveTo('/', 'forge');
-    await moveTo(LEAD_PATH, LEAD.project);
-    await moveTo('/', 'forge');
-
-    // The guard against a second whole encode is the page's, inside the call:
-    // the shell adds none of its own, so both entries reach `rereadHome`.
-    expect(
-      mockRereadHome,
-      'the shell dropped an entry it should have asked for',
-    ).toHaveBeenCalledTimes(2);
+    expect(forge.homeReads(), 'the return after a reconnect asked again').toBe(2);
   });
 });
 

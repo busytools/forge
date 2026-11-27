@@ -1,20 +1,18 @@
 /**
- * The models page over a live connection: the snapshot the subject is
- * answered with, the check that lands as an update, and the load's signal.
+ * The models page over a live connection: the record its subscribe answer
+ * carries, and every patch the socket applies into it after that.
  *
- * **Two live paths, because the server sends two different things.** A check
- * landing arrives as `DictateModelsChanged` carrying the whole read, so the
- * page takes it as it stands and asks for nothing; a model finishing its load
- * arrives as `DictateAvailability`, which is a bare signal with no payload, so
- * that one is answered with a read. A page that answered both with a read
- * would ask the server to rebuild what one of them already holds; one that
- * answered both from the update would keep drawing `pending` chips after the
- * models loaded.
+ * **One path, because the server sends one.** A catalogue check landed and a
+ * model finished loading both move the server's own record, and the patch
+ * that answers either carries what moved - so the page draws the store and
+ * never asks for a catalogue encode. A check's frame already carried the
+ * whole read; a load's signal carried nothing, which is why it used to cost a
+ * read. Neither does now.
  */
 
 import { writable, type Readable, type Writable } from 'svelte/store';
 
-import { report, type Connection, type ConnectionStatus } from '../socket';
+import type { Connection, ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import { modelsFrom, type DictateModelsWire } from '../wire/models';
 import type { Subject } from '../protocol';
@@ -33,30 +31,27 @@ export interface ModelsRead {
 const NOTHING: ModelsRead = { wire: null, refused: null };
 
 /**
- * What watching the models needs of a socket: the subject, its pushes, the
- * read a bare signal is answered with, and the unsubscribe that goes with
- * the subscribe. The composer's panel watches from its own seat, which is
- * why the contract is stated here rather than taking the whole connection.
+ * What watching the models needs of a socket: the subject, the unsubscribe
+ * that goes with it, and the status it draws a drop from. The composer's
+ * panel watches from its own seat, which is why the contract is stated here
+ * rather than taking the whole connection.
  */
-type ModelsConnection = Pick<
-  Connection,
-  'subscribe' | 'unsubscribe' | 'onMessage' | 'onStatus' | 'refresh'
->;
+type ModelsConnection = Pick<Connection, 'subscribe' | 'unsubscribe' | 'onStatus'>;
 
 /**
  * Watch the models page.
  *
- * The subscription, the message listener and the status listener are all let
- * go with the last subscriber, so a page the reader has left stops asking a
- * forge to encode a catalogue nobody draws.
+ * The subscription and the status listener are let go with the last
+ * subscriber, so a page the reader has left is not left subscribed.
  */
 export function watchModels(connection: ModelsConnection): Readable<ModelsRead> {
   let held: Store | null = null;
-  // A read is a full encode on the server, so one already in flight is the
-  // fresher answer and a second is not queued behind it.
-  let reading = false;
-  let stopMessages: (() => void) | null = null;
+  let stopStore: (() => void) | null = null;
   let stopStatus: (() => void) | null = null;
+  /** What the last draw was made from; the store notifies for frames too. */
+  let seenSnapshot: unknown = null;
+  let seenVersion: number | null = null;
+  let seenState: string | null = null;
 
   function read(): void {
     if (held === null) return;
@@ -76,56 +71,28 @@ export function watchModels(connection: ModelsConnection): Readable<ModelsRead> 
 
   function watch(): void {
     held = connection.subscribe(MODELS);
-    reading = false;
-    stopMessages = connection.onMessage((message) => {
-      if (message.kind === 'snapshot' || message.kind === 'error') {
-        if (message.kind === 'error' || message.subject === MODELS) {
-          reading = false;
-          read();
-        }
-        return;
-      }
-      if (message.kind !== 'update') return;
-      // The connection carries every subject this client watches - the shell
-      // holds the home on it too - so the two variants this page acts on are
-      // the filter, not the stream.
-      const variant =
-        typeof message.update === 'string' ? message.update : Object.keys(message.update)[0];
-      if (variant === 'dictate_models_changed' && typeof message.update !== 'string') {
-        // The landing carries the whole read: taking it is the page's copy of
-        // the check, with no second encode asked for.
-        const payload = message.update[variant] as { models?: DictateModelsWire } | undefined;
-        if (payload?.models === undefined) {
-          // A landing with nothing in it is a page that stops following the
-          // catalogue, which is worth a line rather than a silence.
-          report('a catalogue check landed carrying no models', message.update);
-          return;
-        }
-        // The landing is the read an availability flip may have asked for, so
-        // it frees the pacing: leaving it set would latch the one-read gate
-        // and no later flip would ever be answered.
-        reading = false;
-        view.set({ wire: modelsFrom(payload.models), refused: null });
-        return;
-      }
-      if (variant !== 'dictate_availability') return;
-      // A signal with no payload: the read is the only way to see what moved.
-      if (reading) return;
-      reading = true;
-      connection.refresh(MODELS);
+    stopStore = held.value.subscribe(() => {
+      if (held === null) return;
+      const snapshot = held.snapshot();
+      const version = held.version();
+      const state = held.state().kind;
+      if (snapshot === seenSnapshot && version === seenVersion && state === seenState) return;
+      seenSnapshot = snapshot;
+      seenVersion = version;
+      seenState = state;
+      read();
     });
-    // A drop takes any read in flight with it, and the reconnect answers with
-    // a snapshot of its own - so the pacing must not stay stuck waiting for an
-    // answer that died.
+    // A drop leaves the record in place; the reconnect's answer re-seeds the
+    // store and the subscription above redraws it.
     stopStatus = connection.onStatus((next: ConnectionStatus) => {
-      if (next !== 'open') reading = false;
+      if (next !== 'open') seenSnapshot = null;
     });
   }
 
   function unwatch(): void {
-    stopMessages?.();
+    stopStore?.();
     stopStatus?.();
-    stopMessages = null;
+    stopStore = null;
     stopStatus = null;
     connection.unsubscribe(MODELS);
     held = null;

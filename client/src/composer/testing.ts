@@ -13,6 +13,7 @@
 import type { ServerMessage, SessionUpdate } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import { Stores } from '../stores';
+import { applyPatchFor } from '../wire/patch';
 import { DEFAULT_SETTINGS, type ClientSettings, type SessionSlot } from '../wire/types';
 import type { ComposerProps, ComposerRecord, SeatRead } from './view';
 
@@ -355,6 +356,18 @@ export function wire(settings: ClientSettings = DEFAULT_SETTINGS): Wire {
       refresh: () => true,
     },
     say(message) {
+      // **A record lands in its store the way the socket lands it**, and then
+      // every listener hears the frame.
+      if (message.kind === 'snapshot') {
+        stores.get(message.subject)?.set(message.data, message.version);
+      }
+      if (message.kind === 'patch') {
+        const store = stores.get(message.subject);
+        const next = applyPatchFor(message.subject, store?.snapshot(), message.data);
+        if (store !== undefined && next !== null) {
+          store.applied(typeof message.version === 'number' ? message.version : null, next);
+        }
+      }
       for (const fn of listeners) fn(message);
     },
     hold(slot, ...updates) {

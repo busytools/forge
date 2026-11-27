@@ -9,6 +9,7 @@
   import { ago } from '../components/age';
   import Picker from './Picker.svelte';
   import TaskDrawer from './TaskDrawer.svelte';
+  import { agedBoard } from './clock';
   import { applyMoves, boardView, landed } from './view';
   import type { BoardCardView, LaneView, PendingMove } from './view';
 
@@ -43,9 +44,27 @@
     notice?: ServiceReport | null;
   } = $props();
 
+  /**
+   * A live clock, so time-derived figures move between the server's pushes -
+   * a board that only changes when someone else moves reads as dead.
+   */
+  let nowSecs = $state(Math.floor(Date.now() / 1_000));
+  $effect(() => {
+    const id = setInterval(() => (nowSecs = Math.floor(Date.now() / 1_000)), 5_000);
+    return () => clearInterval(id);
+  });
   // An empty board before the read lands: the lanes draw nothing, and the
   // markup says which state it is in rather than calling the project unknown.
-  const view = $derived(boardView(wire, board.wire ?? { projects: [] }, org, project));
+  // The rows advance from the instant the server encoded them to the page's
+  // own clock, so worked time and the time marks move without a read.
+  const view = $derived(
+    boardView(
+      wire,
+      agedBoard(board.wire ?? { projects: [] }, nowSecs * 1000, board.readAt ?? nowSecs * 1000),
+      org,
+      project,
+    ),
+  );
   /**
    * The reader's own drags, applied at once and reconciled against the
    * wire: a card that waits seconds for the server's snapshot reads as a
@@ -218,16 +237,6 @@
   function fill(row: { ratio: number }): string {
     return `${Math.round(row.ratio * 100)}%`;
   }
-
-  /**
-   * A live clock, so "wrote 12s ago" ticks between the server's pushes -
-   * a board that only changes when someone else moves reads as dead.
-   */
-  let nowSecs = $state(Math.floor(Date.now() / 1_000));
-  $effect(() => {
-    const id = setInterval(() => (nowSecs = Math.floor(Date.now() / 1_000)), 5_000);
-    return () => clearInterval(id);
-  });
 
   /** A row is live while it is running and wrote within the last two minutes. */
   function live(row: { status: string; updatedAt: number }): boolean {

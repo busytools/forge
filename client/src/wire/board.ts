@@ -45,6 +45,15 @@ export interface BoardWire {
 export interface BoardRead {
   wire: BoardWire | null;
   refused: string | null;
+  /**
+   * When the drawn record was received, ms since the epoch: the instant the
+   * server's worked time and ages were computed.
+   *
+   * **The page's clock moves the record's time-derived figures from here**
+   * (`board/clock.ts`); absent on a fixture, where the record is drawn as of
+   * now and nothing has elapsed.
+   */
+  readAt?: number;
 }
 
 /**
@@ -53,7 +62,10 @@ export interface BoardRead {
  */
 export function boardFrom(data: BoardWire): BoardWire {
   return {
-    projects: data.projects.map((row) => ({
+    // **A record missing its list is drawn empty rather than crashing the
+    // page reading it.** A malformed answer is a state to draw; a throw
+    // inside a store notification would take the page down with it.
+    projects: (Array.isArray(data.projects) ? data.projects : []).map((row) => ({
       ...row,
       rows: (row.rows ?? []).map(rowFrom),
       crons: row.crons ?? [],

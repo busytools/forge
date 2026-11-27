@@ -11231,11 +11231,17 @@ describe('the dictation panel', () => {
     expect(document.querySelector('.pop'), 'the panel closed on the page update').not.toBeNull();
     expect(models(), 'the page update tore the read down and asked again').toBe(1);
 
-    // The read the panel kept is still LIVE: a landing on the subject redraws
-    // its rows rather than leaving a subscription nobody hears.
-    harness.say({ kind: 'update', update: { dictate_models_changed: { models: modelsWire } } });
+    // The read the panel kept is still LIVE: the record the subject is
+    // answered with redraws its rows rather than leaving a subscription
+    // nobody hears.
+    harness.say({
+      kind: 'snapshot',
+      subject: 'dictate_models',
+      version: 1,
+      data: modelsWire,
+    });
     flushSync();
-    expect(document.body.textContent, 'the models landing never reached the panel').toContain(
+    expect(document.body.textContent, 'the models record never reached the panel').toContain(
       'cohere-transcribe-03-2026-Q4_K_M.gguf',
     );
   });

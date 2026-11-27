@@ -44,6 +44,12 @@ export type StoreState =
   | { kind: 'loading' }
   /** Answered with a snapshot. */
   | { kind: 'ready' }
+  /**
+   * A patch skipped a version: the store holds its last read while one whole
+   * read is asked for. The page draws the record it has and says it is
+   * catching up; it never clears the store, so a gap never blanks a page.
+   */
+  | { kind: 'resyncing'; why: string }
   /** Refused, with the server's own reason. */
   | { kind: 'refused'; why: string };
 
@@ -60,6 +66,21 @@ export interface StoreValue {
    * this to zero.
    */
   dropped: number;
+  /**
+   * The version the snapshot is at, `null` before a whole read answers.
+   *
+   * The base a patch is placed against: only the next number applies, and any
+   * other is a gap.
+   */
+  version: number | null;
+  /**
+   * Patches this client could not place: one with no read behind it, one
+   * whose shape it cannot read, or the patch that opened a gap while that gap
+   * was being read. **Held rather than dropped** (rule 25): a page draws them
+   * as themselves, so a client and a server out of step is visible instead of
+   * silent.
+   */
+  unexpected: unknown[];
 }
 
 export interface Store {
@@ -71,8 +92,30 @@ export interface Store {
   updates(): SessionUpdate[];
   state(): StoreState;
   dropped(): number;
-  /** Replaces the snapshot and drops the updates it supersedes. */
-  set(snapshot: unknown): void;
+  /** The version the snapshot is at, `null` before a whole read answers. */
+  version(): number | null;
+  /** Patches this client could not place, for a page to draw as themselves. */
+  unexpected(): unknown[];
+  /**
+   * Replaces the snapshot and drops the updates it supersedes. `version` is
+   * the number the record is at; absent from a server too old to carry one.
+   */
+  set(snapshot: unknown, version?: number): void;
+  /**
+   * The record a patch produced, written over the snapshot in place.
+   *
+   * The update tail is kept: a seat's frames and its record patch are one
+   * page's material, and a patch does not supersede a frame the page has not
+   * folded yet.
+   */
+  applied(version: number | null, snapshot: unknown): void;
+  /**
+   * A patch could not be placed: hold it for a page to draw (rule 25), and
+   * mark the store as catching up while one whole read is asked for.
+   */
+  gap(why: string): void;
+  /** One patch this client cannot place, held for the page to draw. */
+  unplaced(data: unknown): void;
   /**
    * One update, held for a page to fold.
    *
@@ -184,7 +227,14 @@ function compactedTail(updates: SessionUpdate[]): SessionUpdate[] {
 }
 
 function createStore(subject: Subject, state: StoreState = { kind: 'loading' }): Store {
-  const inner = writable<StoreValue>({ snapshot: null, updates: [], state, dropped: 0 });
+  const inner = writable<StoreValue>({
+    snapshot: null,
+    updates: [],
+    state,
+    dropped: 0,
+    version: null,
+    unexpected: [],
+  });
   // Audio is drained by the voice reader and never retained: a parsed
   // sentence is far larger than a state frame, and a listening session would
   // otherwise hold every one it has played.
@@ -202,9 +252,36 @@ function createStore(subject: Subject, state: StoreState = { kind: 'loading' }):
     updates: () => get(inner).updates,
     state: () => get(inner).state,
     dropped: () => get(inner).dropped,
+    version: () => get(inner).version,
+    unexpected: () => get(inner).unexpected,
     compacted: () => compacted,
     generation: () => reshapes,
-    set: (snapshot) => inner.set({ snapshot, updates: [], state: { kind: 'ready' }, dropped: 0 }),
+    set: (snapshot, version) =>
+      inner.set({
+        snapshot,
+        updates: [],
+        state: { kind: 'ready' },
+        dropped: 0,
+        version: typeof version === 'number' ? version : null,
+        unexpected: [],
+      }),
+    applied: (version, snapshot) =>
+      inner.update((held) => ({
+        ...held,
+        snapshot,
+        state: { kind: 'ready' },
+        // A record subject's patch carries its next number; a seat's does
+        // not, and its version stays whatever the whole read said.
+        version: version ?? held.version,
+      })),
+    gap: (why) => inner.update((held) => ({ ...held, state: { kind: 'resyncing', why } })),
+    unplaced: (data) =>
+      inner.update((held) => ({
+        ...held,
+        // Bounded: an out-of-step pair must not grow this list for the life
+        // of the connection.
+        unexpected: [...held.unexpected, data].slice(-10),
+      })),
     compact: () => {
       if (!isSeat(subject) || compacted) return;
       compacted = true;
@@ -231,7 +308,16 @@ function createStore(subject: Subject, state: StoreState = { kind: 'loading' }):
       if (replacing && keptVariant(update) !== null) reshapes += 1;
       inner.update((held) => {
         if (isSeat(subject) && replaces(update)) {
-          return { snapshot: null, updates: [], state: { kind: 'loading' }, dropped: 0 };
+          // A new occupant's stream starts over: the number the next read
+          // carries is the new epoch's, so the old base goes with the record.
+          return {
+            snapshot: null,
+            updates: [],
+            state: { kind: 'loading' },
+            dropped: 0,
+            version: null,
+            unexpected: [],
+          };
         }
         const updates = replacing ? settledTail(held.updates, update) : [...held.updates, update];
         const over = updates.length - MAX_UPDATES;
@@ -240,6 +326,8 @@ function createStore(subject: Subject, state: StoreState = { kind: 'loading' }):
           updates: over > 0 ? updates.slice(over) : updates,
           state: held.state,
           dropped: held.dropped + Math.max(0, over),
+          version: held.version,
+          unexpected: held.unexpected,
         };
       });
     },

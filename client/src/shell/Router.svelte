@@ -111,16 +111,15 @@
     connection.showing(shownSeat(route));
   });
 
-  // **A return from the background re-reads what the hide made stale.** The
-  // visibility signal is every build's; the shell adds the mobile resume,
-  // which Android needs because its window never reports focus. The watcher
-  // reads the route when it fires, so a seat the page left is not re-read.
-  // On the shell the bridge's stale-beat reconcile names the same return, and
-  // it skips what this just asked for (`Bridge::reconcile`).
+  // **A return from the background probes the socket once.** Nothing is
+  // re-read: every held subscription stayed open and its patches were applied
+  // as they landed, and a socket that actually dropped re-subscribes on
+  // reconnect. The visibility signal is every build's; the shell adds the
+  // mobile resume, which Android needs because its window never reports focus.
   $effect(() => {
     const open = connection;
     if (open === null) return;
-    return watchReturn(open, () => shownSeat(route));
+    return watchReturn(open);
   });
 
   /**

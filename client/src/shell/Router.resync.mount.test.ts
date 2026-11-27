@@ -30,7 +30,7 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-describe('the return re-read, mounted', () => {
+describe('the return probe, mounted', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
@@ -41,7 +41,7 @@ describe('the return re-read, mounted', () => {
     Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
   });
 
-  it('probes, refreshes what the page holds, and re-reads the shown seat', async () => {
+  it('probes once and asks no subject for a read', async () => {
     const stores = new Stores();
     /** The subjects the page has actually subscribed: a store alone is not one. */
     const wants = new Set<string>();
@@ -126,11 +126,9 @@ describe('the return re-read, mounted', () => {
     document.dispatchEvent(new Event('visibilitychange'));
     flushSync();
 
-    expect(calls, 'one probe first, then the board and the shown seat').toEqual([
-      'probe',
-      'refresh:board',
-      'refresh:seat',
-    ]);
+    // **A return probes and reads nothing**: the subscriptions stayed open
+    // while the page was hidden, and a socket that dropped re-subscribes.
+    expect(calls, 'a return asked for a subject read').toEqual(['probe']);
   });
 });
 
