@@ -42,6 +42,7 @@ import {
   type Subject,
 } from '../protocol';
 import { playPacket } from '../browser/audio';
+import { cannotPaint } from '../paint';
 import { noteSnapshot, noteSubscribeWritten, seatLabel } from '../perf';
 import { READ_BOUND_MS, ReadBounds } from '../read-bound';
 import { refused } from '../refusals';
@@ -343,14 +344,35 @@ class RustConnection implements Connection {
       this.end();
       return;
     }
-    this.beat = setInterval(() => {
-      void invoke('client_heartbeat').catch((why: unknown) => {
-        // The shell is gone or restarting; the next tick tries again, and the
-        // connection's own events say where it is.
-        report('the heartbeat could not reach the shell', why);
-      });
-    }, HEARTBEAT_MS);
+    this.beat = setInterval(() => this.beatOnce(), HEARTBEAT_MS);
+    // **The return is a beat of its own, sent at once.** A hidden window's
+    // timers throttle to about one a minute, and the shell parks a page whose
+    // pulse is stale - so waiting for the next tick would leave the return
+    // unanswered for up to that minute. The visibility change is the moment
+    // the shell's catch-up is owed.
+    const back = (): void => {
+      if (!cannotPaint()) this.beatOnce();
+    };
+    document.addEventListener('visibilitychange', back);
+    this.stops.push(() => document.removeEventListener('visibilitychange', back));
     await this.stateMoved();
+  }
+
+  /**
+   * One heartbeat: the page's pulse, carrying whether it is drawing.
+   *
+   * **A hidden page says so.** The shell answers a spell by handing the drawn
+   * seat its whole record, and a hidden window's throttled timer makes every
+   * beat look like one - 23 MB re-sent and re-parsed while nobody draws it
+   * (2026-11-27, 21:21, from system-monitor). The shell leaves a hidden page
+   * parked and reconciles the beat that carries the return.
+   */
+  private beatOnce(): void {
+    void invoke('client_heartbeat', { visible: !cannotPaint() }).catch((why: unknown) => {
+      // The shell is gone or restarting; the next tick tries again, and the
+      // connection's own events say where it is.
+      report('the heartbeat could not reach the shell', why);
+    });
   }
 
   private async stateMoved(): Promise<void> {

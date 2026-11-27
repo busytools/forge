@@ -1137,7 +1137,7 @@ describe("the connection's own facts", () => {
     vi.useFakeTimers();
     const connection = await opened();
     await vi.advanceTimersByTimeAsync(5_000);
-    expect(invoke).toHaveBeenCalledWith('client_heartbeat');
+    expect(invoke).toHaveBeenCalledWith('client_heartbeat', { visible: true });
     connection.close();
     const heard = invoke.mock.calls.filter(([name]) => name === 'client_heartbeat').length;
     await vi.advanceTimersByTimeAsync(15_000);
@@ -1145,5 +1145,45 @@ describe("the connection's own facts", () => {
       invoke.mock.calls.filter(([name]) => name === 'client_heartbeat').length,
       'a closed connection stops beating',
     ).toBe(heard);
+  });
+
+  /**
+   * **A hidden page says so.** The shell reconciles a spell by handing the
+   * drawn seat its whole record, and a hidden window's throttled timer makes
+   * every beat look like a spell: 23 MB re-parsed on a page nobody draws,
+   * once a minute. The beat carries the page's own visibility so the shell
+   * can leave a hidden page parked until it comes back.
+   */
+  it('a hidden page beats as hidden', async () => {
+    vi.useFakeTimers();
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    try {
+      const connection = await opened();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(invoke).toHaveBeenCalledWith('client_heartbeat', { visible: false });
+      connection.close();
+    } finally {
+      delete (document as { hidden?: unknown }).hidden;
+    }
+  });
+
+  it('the return beats at once, so the spell is answered when it ends', async () => {
+    vi.useFakeTimers();
+    let hidden = true;
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
+    try {
+      const connection = await opened();
+      await vi.advanceTimersByTimeAsync(5_000);
+      invoke.mockClear();
+      hidden = false;
+      document.dispatchEvent(new Event('visibilitychange'));
+      expect(invoke, 'the return is a beat, not a wait for the next timer').toHaveBeenCalledWith(
+        'client_heartbeat',
+        { visible: true },
+      );
+      connection.close();
+    } finally {
+      delete (document as { hidden?: unknown }).hidden;
+    }
   });
 });

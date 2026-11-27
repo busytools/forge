@@ -558,9 +558,14 @@ mod commands {
         bridge.terminal_input(id, bytes);
     }
 
+    /// The page's pulse, and whether it is drawing.
+    ///
+    /// **`visible` is the page's own reading**, and it is `Option` because a
+    /// page older than the flag sends none: absent means visible, which is
+    /// the behaviour every build had before it.
     #[tauri::command]
-    pub fn client_heartbeat(bridge: tauri::State<'_, Arc<Bridge>>) {
-        bridge.heartbeat();
+    pub fn client_heartbeat(bridge: tauri::State<'_, Arc<Bridge>>, visible: Option<bool>) {
+        bridge.heartbeat(visible);
     }
 
     /// End one connection for good; no retry follows.
