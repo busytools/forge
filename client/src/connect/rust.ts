@@ -339,6 +339,11 @@ class RustConnection implements Connection {
     // must not be called quiet. Two listeners on one event is how Tauri's
     // event API is meant to be used.
     this.stops.push(await listen('client://terminal-frame', () => this.markHeard(Date.now())));
+    // **The shell's own liveness beat.** An idle link carries no frames at
+    // all - the server's WebSocket control pings are bytes the shell reads
+    // and drops - so this is the only word the page gets, and without it a
+    // perfectly healthy link would be drawn as quiet.
+    this.stops.push(await listen('client://alive', () => this.markHeard(Date.now())));
     // **The shell half's own facts (#2513).** A snapshot's raw length and the
     // shell's parse travel beside the frame; a subscribe's write time is
     // reported when the frame is on the wire, not when the page asked.

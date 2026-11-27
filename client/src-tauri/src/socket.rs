@@ -294,6 +294,16 @@ pub enum SocketEvent {
     /// A frame that could not be read as JSON. Reading goes on: a frame we
     /// cannot parse is not a reason to lose the ones after it.
     Malformed(String),
+    /// **The liveness beat saw the link carry bytes since its last look.**
+    ///
+    /// An idle desktop link is kept alive by the server's WebSocket control
+    /// pings, which are bytes on the wire that tungstenite hands over as a
+    /// control frame and this half drops. The page's silence line counts
+    /// what *it* hears, and no application frame crosses while the link is
+    /// idle - so without this the page would call a perfectly healthy link
+    /// quiet. It says the shell's own loop is reporting, which is the fact
+    /// that line is about.
+    Alive,
 }
 
 #[cfg(test)]
@@ -305,6 +315,7 @@ impl SocketEvent {
             Self::Written { .. } => "written",
             Self::Refused { .. } => "refused",
             Self::Malformed(_) => "malformed",
+            Self::Alive => "alive",
         }
     }
 }
@@ -1821,8 +1832,14 @@ async fn run(
                         bytes_at = now_seen;
                         heard_at = tokio::time::Instant::now();
                         probe = None;
-                        // Progress is the answer; the next moment owed is the
-                        // quiet's, not this deadline's.
+                        // **Progress is the answer, and the page hears it
+                        // too.** An idle link's only bytes are the server's
+                        // control pings, which the page never sees; this is
+                        // what keeps its silence line from calling a healthy
+                        // link quiet.
+                        say(&events, SocketEvent::Alive);
+                        // The next moment owed is the quiet's, not this
+                        // deadline's.
                         continue;
                     }
                     if let Some(sent) = probe {
@@ -3731,6 +3748,50 @@ pub(crate) mod tests {
             }
             // The deadline then passes with the answer already read.
             tokio::time::advance(LIVENESS_DEAD).await;
+        }
+    }
+
+    /// **The beat reports progress as `Alive`, which the page's silence line
+    /// counts.** An idle desktop link carries no application frames at all -
+    /// the server's WebSocket control pings are bytes tungstenite drops - so
+    /// without this the page would call a perfectly healthy link quiet.
+    #[tokio::test(start_paused = true)]
+    async fn the_liveness_beat_reports_progress_as_alive() {
+        let stub = stub().await;
+        let (_socket, mut rx) = connected_paused(&stub).await;
+
+        // Bytes cross inside the quiet spell, and the beat that finds them
+        // says alive rather than reaching for a probe.
+        stub.say.send(json!({ "kind": "pong" })).expect("the stub broadcasts");
+        settle(200).await;
+        tokio::time::advance(LIVENESS_EVERY).await;
+        settle(200).await;
+
+        loop {
+            match next_event_paused(&mut rx, "the progress is reported as alive").await {
+                SocketEvent::Alive => break,
+                SocketEvent::Status(Status::Connecting) => panic!("a live link was called dead"),
+                _ => {}
+            }
+        }
+    }
+
+    /// **A beat that finds nothing says nothing.** Without bytes there is no
+    /// `Alive`, which is what lets the page's line go quiet when the shell's
+    /// own loop stops reporting.
+    #[tokio::test(start_paused = true)]
+    async fn a_beat_with_no_progress_reports_no_alive() {
+        let stub = stub().await;
+        let (_socket, mut rx) = connected_paused(&stub).await;
+
+        tokio::time::advance(LIVENESS_EVERY).await;
+        settle(200).await;
+
+        while let Ok(event) = rx.try_recv() {
+            assert!(
+                !matches!(event, SocketEvent::Alive),
+                "a beat with no bytes at all called the page alive",
+            );
         }
     }
 
