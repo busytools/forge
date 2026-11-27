@@ -7853,6 +7853,9 @@ impl Workspace {
                         }
                     }
                 }
+                Command::BoardSeen { project } => {
+                    self.record_board_seen(&project, std::time::SystemTime::now());
+                }
                 Command::TaskAck { project, id } => {
                     let id = TaskId::from(id.as_str());
                     match self.acknowledge_task(&project, &id) {

@@ -1100,6 +1100,17 @@ impl Conversations {
     /// **A seat with no copy is touched too**, in the map the budget reads for
     /// ring-only seats: a read of an evicted seat is a use, and without the
     /// mark the next eviction would take the seat it just served.
+    /// Every seat whose conversation this server holds a copy of. The
+    /// board's audit sample walks these; nothing else enumerates them.
+    pub fn held_slots(&self) -> Vec<SessionSlot> {
+        self.held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .keys()
+            .cloned()
+            .collect()
+    }
+
     pub fn get(&self, slot: &SessionSlot) -> Option<Arc<Held>> {
         let held =
             self.held.lock().unwrap_or_else(PoisonError::into_inner).get(slot).map(Arc::clone);

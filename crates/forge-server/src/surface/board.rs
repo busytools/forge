@@ -7,7 +7,7 @@
 
 use std::time::SystemTime;
 
-use forge_workspace::board::{BoardRow, FleetRow};
+use forge_workspace::board::{BoardDelta, BoardRow, FleetRow};
 
 use crate::surface::ViewSurface;
 
@@ -39,6 +39,18 @@ impl ViewSurface {
             .collect();
         rows.extend(self.workspace.archived_tasks_for_project(project));
         rows
+    }
+
+    /// The window's attention facts for `project`: when its board was last
+    /// looked at (server-side, so every client agrees), and what changed
+    /// since.
+    pub fn board_attention(
+        &self,
+        project: &str,
+    ) -> (Option<SystemTime>, BoardDelta) {
+        let last = self.workspace.last_board_seen(project);
+        let delta = self.workspace.board_delta(project, last);
+        (last, delta)
     }
 
     /// One row per project, for the fleet page.

@@ -1468,6 +1468,87 @@ impl Workspace {
         Ok(moved)
     }
 
+    /// Stamp `project`'s board as looked at - the window's opening, or the
+    /// person answering an ask. Server-side so every client agrees.
+    pub(crate) fn record_board_seen(&self, project_name: &str, at: SystemTime) {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else { return };
+        if let Err(error) = crate::store::board_seen::record(db, project_name, at) {
+            tracing::error!(
+                target: "forge_workspace::tasks",
+                event_name = "board_seen_write_failed",
+                project = %project_name,
+                %error,
+                "recording the board's last-look stamp failed",
+            );
+        }
+    }
+
+    /// When `project`'s board was last looked at.
+    pub fn last_board_seen(&self, project_name: &str) -> Option<SystemTime> {
+        let guard = self.db.lock();
+        let db = guard.as_ref()?;
+        match crate::store::board_seen::last_seen(db, project_name) {
+            Ok(seen) => seen,
+            Err(error) => {
+                tracing::error!(
+                    target: "forge_workspace::tasks",
+                    event_name = "board_seen_read_failed",
+                    project = %project_name,
+                    %error,
+                    "reading the board's last-look stamp failed; the digest reads as unread",
+                );
+                None
+            }
+        }
+    }
+
+    /// What changed on `project`'s board since `since`: rows that moved,
+    /// rows that ended, asks that expired, and linked pull requests merged.
+    /// The window's digest strip is one line each of these counts.
+    pub fn board_delta(
+        &self,
+        project_name: &str,
+        since: Option<SystemTime>,
+    ) -> crate::board::BoardDelta {
+        let since = since.unwrap_or(SystemTime::UNIX_EPOCH);
+        let tasks = self.tasks_for_project(project_name);
+        let history = {
+            let guard = self.db.lock();
+            guard.as_ref().map_or_else(Vec::new, |db| {
+                crate::store::task_history::list_for_project(db, project_name).unwrap_or_default()
+            })
+        };
+        let after = |at: SystemTime| at > since;
+        crate::board::BoardDelta {
+            moved: history.iter().filter(|step| after(step.at)).count(),
+            landed: history
+                .iter()
+                .filter(|step| after(step.at) && step.to.is_terminal())
+                .count(),
+            expired: tasks
+                .iter()
+                .filter(|task| {
+                    task.waiting_on
+                        .as_ref()
+                        .and_then(|wait| wait.expired_at)
+                        .is_some_and(after)
+                })
+                .count(),
+            merged: tasks
+                .iter()
+                .flat_map(|task| task.links.iter())
+                .filter(|link| link.kind == LinkKind::Pr && link.state.as_deref() == Some("merged"))
+                .filter(|link| {
+                    link.last_check
+                        .as_ref()
+                        .and_then(|check| check.changed_at)
+                        .is_some_and(after)
+                })
+                .count(),
+        }
+    }
+
     /// Whether a policy note settles `class` for `project`.
     pub(crate) fn policy_settles(&self, project_name: &str, class: &str) -> bool {
         self.policy_note(project_name, class).is_some()

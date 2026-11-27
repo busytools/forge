@@ -100,6 +100,21 @@ pub struct BoardRow {
     pub history_total: usize,
 }
 
+/// What changed on a project's board since the person last looked, one
+/// count per line of the window's digest strip.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct BoardDelta {
+    /// Rows that changed state.
+    pub moved: usize,
+    /// Rows that ended.
+    pub landed: usize,
+    /// Asks whose deadline default ended them.
+    pub expired: usize,
+    /// Linked pull requests the connector saw merged.
+    pub merged: usize,
+}
+
 /// One named miss on a project's fleet row.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]

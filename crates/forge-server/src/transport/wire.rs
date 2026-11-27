@@ -14,6 +14,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use forge_primitives::git_diff::LayerState;
@@ -289,6 +290,10 @@ pub struct ProjectBoardWire {
     /// [`ConnectorsWire`] - which carries the liveness facts, which belong to
     /// the server and the workspace rather than to a project.
     pub connectors: ProjectConnectorsWire,
+    /// The window's attention facts: `last_look`, `checked_at`, `agents`,
+    /// the `delta` the digest strip counts, and the rotating `sample` of
+    /// unasked agent actions with its `sampled`/`total` pair.
+    pub attention: Value,
 }
 
 /// One seat's row: the surface's own [`AgentRow`], plus the read that is per
@@ -2387,7 +2392,7 @@ pub(crate) async fn encode_subject_timed(
     let mut timings = OpenTimings::default();
     match subject {
         Subject::Home => Ok((serde_json::to_value(home(state, surface).await)?, timings)),
-        Subject::Board => Ok((serde_json::to_value(board(surface))?, timings)),
+        Subject::Board => Ok((serde_json::to_value(board(state))?, timings)),
         Subject::Archived => Ok((serde_json::to_value(archived(surface))?, timings)),
         Subject::Session(slot) => {
             let at = std::time::Instant::now();
@@ -2595,8 +2600,10 @@ async fn home(state: &TransportState, surface: &ViewSurface) -> HomeWire {
 /// No filesystem read and no seat hold: the rows, schedules and connector
 /// sets are the workspace's own state, which is what makes a board read
 /// cheap next to the home read it left (#2517).
-fn board(surface: &ViewSurface) -> BoardWire {
+fn board(state: &TransportState) -> BoardWire {
+    let surface = &state.surface;
     let roster = surface.roster();
+    let now = SystemTime::now();
     let mut projects = Vec::with_capacity(roster.projects.len());
     for project in &roster.projects {
         let subscribed = surface.connectors(Some(&project.name));
@@ -2608,9 +2615,123 @@ fn board(surface: &ViewSurface) -> BoardWire {
                 gotify: subscribed.gotify.subscriptions,
                 slack: subscribed.slack.subscriptions,
             },
+            attention: attention(state, &project.name, now),
         });
     }
     BoardWire { projects }
+}
+
+/// How many of the window's unasked agent actions the audit sample draws.
+const SAMPLE_SIZE: usize = 3;
+
+/// The window a board never looked at samples over.
+const SAMPLE_WINDOW_SECS: u64 = 24 * 3_600;
+
+/// **The window's attention facts.** When the board was last looked at and
+/// what changed since (the digest strip), how many seats acted inside that
+/// window, and a rotating sample of a few agent actions the leads did not
+/// escalate - tool calls and judgement-bearing acts, named with their
+/// commands and paths, because that is what supervision reads.
+fn attention(state: &TransportState, project: &str, now: SystemTime) -> Value {
+    let surface = &state.surface;
+    let (last_look, delta) = surface.board_attention(project);
+    let since = last_look.unwrap_or_else(|| now - Duration::from_secs(SAMPLE_WINDOW_SECS));
+    let mut actions: Vec<(SystemTime, String, String, String)> = Vec::new();
+    let mut seats: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for slot in state.conversations.held_slots() {
+        if slot.project() != project {
+            continue;
+        }
+        let Some(held) = state.conversations.get(&slot) else { continue };
+        let conversation = held.lock();
+        for message in conversation.messages() {
+            let Message::Assistant { message, timestamp, .. } = message else { continue };
+            let Some(at) = timestamp.as_deref().and_then(parse_rfc3339) else { continue };
+            if at <= since {
+                continue;
+            }
+            for block in &message.content {
+                if let ContentBlock::ToolUse { name, input, .. } = block
+                    && !is_board_tool(name)
+                {
+                    actions.push((at, slot.label().to_owned(), name.clone(), tool_detail(input)));
+                    seats.insert(slot.label().to_owned());
+                }
+            }
+        }
+    }
+    actions.sort_by_key(|(at, ..)| std::cmp::Reverse(*at));
+    let total = actions.len();
+    let sampled = total.min(SAMPLE_SIZE);
+    // **Rotating, not a fixed head**: a sample pinned to the newest three
+    // would show the same calls every look. The offset walks with the
+    // clock so the window's list changes underneath a reader who keeps
+    // coming back.
+    let offset = if total == 0 {
+        0
+    } else {
+        (now.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |since| since.as_secs()) as usize
+            / 300)
+            % total
+    };
+    let rows: Vec<Value> = (0..sampled)
+        .map(|index| {
+            let (at, seat, tool, detail) = &actions[(offset + index) % total];
+            serde_json::json!({
+                "seat": seat,
+                "tool": tool,
+                "detail": detail,
+                "at": rfc3339(*at),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "last_look": last_look.map(rfc3339),
+        "checked_at": rfc3339(now),
+        "agents": seats.len(),
+        "delta": delta,
+        "sample": { "rows": rows, "sampled": sampled, "total": total },
+    })
+}
+
+/// The board's own tools are the asks themselves, not actions nobody
+/// escalated, so the sample leaves them out.
+fn is_board_tool(name: &str) -> bool {
+    name.starts_with("mcp__forge__tasks__") || name.starts_with("tasks__")
+}
+
+/// One tool call's own words: its description, command, path or prompt,
+/// cut to a line a reader can scan.
+fn tool_detail(input: &Value) -> String {
+    for key in ["description", "command", "file_path", "path", "prompt", "subject"] {
+        if let Some(text) = input.get(key).and_then(Value::as_str) {
+            let line: String = text.lines().next().unwrap_or_default().trim().to_owned();
+            if !line.is_empty() {
+                return truncate(&line, 120);
+            }
+        }
+    }
+    String::new()
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let cut: String = text.chars().take(max).collect();
+    format!("{cut}...")
+}
+
+fn parse_rfc3339(stated: &str) -> Option<SystemTime> {
+    time::OffsetDateTime::parse(stated, &time::format_description::well_known::Rfc3339)
+        .ok()
+        .map(SystemTime::from)
+}
+
+fn rfc3339(at: SystemTime) -> String {
+    time::OffsetDateTime::from(at)
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| "unknown".to_owned())
 }
 
 /// One row as the board's bulk read carries it.
@@ -4891,7 +5012,14 @@ mod tests {
                 }
             }
             Value::Array(items) => items.iter_mut().for_each(|item| normalise(item, forms)),
-            Value::Object(fields) => fields.values_mut().for_each(|field| normalise(field, forms)),
+            Value::Object(fields) => {
+                // The board's attention block carries the read's own clock:
+                // a fixture pinning it would fail on the next run.
+                if fields.contains_key("checked_at") {
+                    fields.insert("checked_at".to_owned(), Value::String("<checked-at>".to_owned()));
+                }
+                fields.values_mut().for_each(|field| normalise(field, forms));
+            }
             _ => {}
         }
     }
@@ -4965,6 +5093,69 @@ mod tests {
             item["at"],
             serde_json::json!({ "secs_since_epoch": 5, "nanos_since_epoch": 0 }),
             "the moment the wait began",
+        );
+    }
+
+    /// **The audit sample names the agent actions nobody escalated**, with
+    /// the seat, the tool and its own words, counts the seats that acted,
+    /// and leaves the board's own tools out - they are the asks
+    /// themselves.
+    #[tokio::test]
+    async fn the_board_sample_names_unasked_agent_actions() {
+        use forge_primitives::Message;
+
+        let dir = fixture_dir();
+        let state = fixture_state(dir.path()).await;
+        let at = rfc3339(SystemTime::now());
+        let message = |tool: &str, input: Value| {
+            serde_json::from_value::<Message>(serde_json::json!({
+                "type": "assistant",
+                "message": {
+                    "id": "m",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "a-model",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": format!("call-{tool}"),
+                        "name": tool,
+                        "input": input,
+                    }],
+                    "stop_reason": "tool_use",
+                },
+                "session_id": "s",
+                "timestamp": at,
+            }))
+            .expect("a well-formed assistant turn")
+        };
+        let seat = SessionSlot::worker("TestOrg", "proj", "w-1");
+        state.conversations.insert(
+            &seat,
+            crate::transport::conversation::Conversation::new(
+                vec![
+                    message("Bash", serde_json::json!({ "command": "just check" })),
+                    message("Write", serde_json::json!({ "file_path": "src/lib.rs" })),
+                    message("mcp__forge__tasks__update", serde_json::json!({ "id": "t-1" })),
+                ],
+                0,
+                0,
+            ),
+        );
+
+        let encoded = encode_subject(&state, &Subject::Board).await.expect("encode");
+        let attention = &encoded["projects"][0]["attention"];
+        assert_eq!(attention["agents"], 1, "one seat acted: {attention}");
+        assert_eq!(attention["sample"]["total"], 2, "two unasked actions, the board's own left out");
+        assert_eq!(attention["sample"]["sampled"], 2, "all of them, under the sample size");
+        let rows = attention["sample"]["rows"].as_array().expect("rows");
+        assert!(rows.iter().any(|row| row["tool"] == "Bash" && row["detail"] == "just check"));
+        assert!(
+            rows.iter().any(|row| row["tool"] == "Write" && row["detail"] == "src/lib.rs"),
+            "a path names the action: {attention}",
+        );
+        assert!(
+            rows.iter().all(|row| row["tool"] != "mcp__forge__tasks__update"),
+            "the board's own tools are the asks, not unasked actions: {attention}",
         );
     }
 

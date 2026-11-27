@@ -678,6 +678,9 @@ pub enum Command {
     /// The person deferred the ask until a duration from now ("2h"), or
     /// "activity" - until the row next moves.
     TaskSnooze { project: String, id: String, until: String },
+    /// The person opened the project's board window (or answered an ask):
+    /// the since-last-look stamp the digest strip reads.
+    BoardSeen { project: String },
     /// The user moves a row in its queue.
     TaskRank {
         project: String,
@@ -1115,6 +1118,7 @@ impl Command {
             | Self::TaskAnswer { .. }
             | Self::TaskAck { .. }
             | Self::TaskSnooze { .. }
+            | Self::BoardSeen { .. }
             | Self::TaskRank { .. }
             | Self::TaskAssign { .. }
             | Self::TaskCreate { .. }
@@ -1411,6 +1415,9 @@ impl std::fmt::Debug for Command {
                 .field("id", id)
                 .field("until", until)
                 .finish(),
+            Self::BoardSeen { project } => {
+                f.debug_struct("BoardSeen").field("project", project).finish()
+            }
             Self::TaskRank { project, id, to } => f
                 .debug_struct("TaskRank")
                 .field("project", project)

@@ -2945,7 +2945,8 @@ pub(crate) fn execute_command_via_handle(
         Command::Handoff { .. }
         | Command::RespondVaultAsk { .. }
         | Command::TaskAck { .. }
-        | Command::TaskSnooze { .. } => Ok(()),
+        | Command::TaskSnooze { .. }
+        | Command::BoardSeen { .. } => Ok(()),
         Command::Prompt { key: _, text, attachments } => {
             let Some(sid) = session_id else {
                 return Err(warn_no_session(key, "Prompt"));
