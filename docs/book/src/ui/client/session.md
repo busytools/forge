@@ -324,15 +324,18 @@ on the failure line just under it.
 
 **A message draws where the CLI starts it, not where it arrived.** Every
 prompt - a person's send, a peer message, a cron fire, a Gotify push, a
-Slack delivery, a review nudge, forge's own continuation - is written to
-the CLI's queue under an id and draws its row at that prompt's `started`
-frame (see [the queue](./queue.md)). A machinery prompt's dispatch row is
-retracted by `prompt_queued` and drawn at `started`; a CLI that reports no
-lifecycle frames has no `started`, and there each row draws at dispatch, or
-on the init frame when it was already waiting.
-A message arriving mid-turn is the pile's card while it waits; its row
-then lands inside the running turn if the CLI absorbs it there, and
-otherwise as the next turn's first row, under the settled turn's ending.
+Slack delivery, a review nudge, the task board's chase, forge's own
+continuation - is written to the CLI's queue under an id and draws its row
+when the core reports it `sent` (see [the queue](./queue.md)). The board's
+chase is queue-first like any delivery on that normal path; a route that
+never reached the CLI draws its row at dispatch. Forge's own machinery - a worker
+kick, an auto-continue - keeps the arrival row it forges, because nothing
+else carries its words. A CLI that reports no lifecycle frames has no
+`sent`, and there each row draws at dispatch, or on the init frame when it
+was already waiting. A message arriving mid-turn is the pile's card while
+it waits; its row then lands inside the running turn if the CLI absorbs it
+there, and otherwise as the next turn's first row, under the settled
+turn's ending.
 That is the CLI's order, which is the order the chat draws.
 
 **A handoff opens a new chat.** When forge replaces a session with a fresh

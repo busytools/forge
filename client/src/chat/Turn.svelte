@@ -4,6 +4,7 @@
   import CompactionPoint from './CompactionPoint.svelte';
   import { inFlight, type Turn as HeldTurn } from './conversation';
   import Leaves from './Leaves.svelte';
+  import { arrival, land, lastDrawn, rise } from './motion';
   import Notice from './Notice.svelte';
   import { bytes } from './numbers';
   import Prose from './Prose.svelte';
@@ -128,6 +129,36 @@
     return block.mine ? block.unit.key : `work-${block.nth}`;
   }
 
+  /**
+   * The prompt id a row is named by, off its unit key.
+   *
+   * A unit's key is the message id and the block it arrived in
+   * (`${'<id>'}#${'<part>'}`), and the id alone is what the pile's card was
+   * named by.
+   */
+  function promptId(key: string): string {
+    return key.split('#')[0] ?? key;
+  }
+
+  /**
+   * The row's one motion.
+   *
+   * **A card that left the pile hands its rect over**, so the row lands from
+   * where it was - one item moving, not two changing. A row that arrived with
+   * no card to move from rises into place, and a row that mounted because the
+   * reader scrolled to it does neither.
+   */
+  function reach(node: HTMLElement, uuid: string): void {
+    const flight = lastDrawn(uuid);
+    if (flight !== null) {
+      // The landing supersedes the arrival: one row, one motion.
+      void arrival(uuid);
+      land(node, flight);
+      return;
+    }
+    if (arrival(uuid)) rise(node);
+  }
+
   const layout = $derived.by(() => {
     const out: Block[] = [];
     for (const unit of units) {
@@ -152,7 +183,11 @@
 {#each layout as block (blockKey(block))}
   {#if block.mine}
     <!-- No label: the orange rule is the attribution. -->
-    <div class="mine" data-k={`${turn.key}:${blockKey(block)}`}>
+    <div
+      class="mine"
+      data-k={`${turn.key}:${blockKey(block)}`}
+      use:reach={promptId(block.unit.key)}
+    >
       <Prose text={block.unit.text} preserveLines />
       {#each block.unit.files as file, index (`att-${index}`)}
         <div class="attrow">

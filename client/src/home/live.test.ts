@@ -124,9 +124,25 @@ function idleHome() {
   return { ...homeWire, agents: [{ ...IDLE_AGENT }] };
 }
 
-/** One prompt-lifecycle frame for the fixture's seat. */
+/**
+ * One prompt-lifecycle frame for the fixture's seat, spelled the way these
+ * cases reason about it: a word this build knows maps into the wire's one
+ * vocabulary, and anything else crosses as itself so an unknown shape keeps
+ * the read.
+ */
 function life(state: string, uuid = 'p1'): ServerMessage {
-  return { kind: 'update', update: { prompt_lifecycle: { key: LEAD, uuid, state } } };
+  const wire: unknown =
+    state === 'queued'
+      ? 'queued'
+      : state === 'started' || state === 'completed'
+        ? 'sent'
+        : state === 'cancelled' || state === 'discarded' || state === 'refused'
+          ? { not_sent: { reason: `the CLI ${state} it before it ran` } }
+          : state;
+  return {
+    kind: 'update',
+    update: { prompt_lifecycle: { key: LEAD, uuid, state: wire, source: 'cli' } },
+  };
 }
 
 /** One CLI background-registry frame for the fixture's seat. */
@@ -604,25 +620,23 @@ describe('the home over a connection', () => {
       'Running',
     );
 
-    forge.arrive(life('started'));
-    await settle();
-    expect(forge.refreshed, "a prompt's start asked for a whole read").toEqual([]);
-    expect(seen.at(-1)?.wire?.agents[0]?.lifecycle).toBe('Running');
-    // The old read refreshed the row's "last moved" at the turn's start; the
-    // fold states the same moment, so a later-attached page draws a fresh age.
-    expect(
-      seen.at(-1)?.wire?.agents[0]?.last_activity,
-      'the turn start left the last-moved stamp stale',
-    ).not.toBeNull();
-
-    // The last prompt ending is the one terminal a fold cannot take: the
+    // **`sent` is the terminal now**: the prompt left the queue when the CLI
+    // took it, and the turn it started is the frames' to state. The last
+    // prompt leaving is the one terminal a fold cannot take on its own - the
     // drawn Running may count a prompt this page never saw, so Idle is the
     // read's to state and the row keeps Running until it lands.
-    forge.arrive(life('completed'));
+    forge.arrive(life('started'));
     await settle();
-    expect(forge.refreshed, "a prompt's end stopped asking for the read Idle needs").toEqual([
+    expect(forge.refreshed, 'the last prompt leaving asked for the read Idle needs').toEqual([
       HOME,
     ]);
+    expect(seen.at(-1)?.wire?.agents[0]?.lifecycle).toBe('Running');
+
+    // A terminal for a prompt this page no longer counts keeps the read too:
+    // the state is still the read's to settle.
+    forge.arrive(life('completed'));
+    await settle();
+    expect(forge.refreshed, 'the repeat is answered by the read already owed').toEqual([HOME]);
     expect(
       seen.at(-1)?.wire?.agents[0]?.lifecycle,
       'the fold moved the row to Idle on its own',
@@ -668,10 +682,10 @@ describe('the home over a connection', () => {
 
     forge.arrive(life('started', 'p2'));
     await settle();
-    expect(forge.refreshed, 'the second prompt starting asked for a read').toEqual([]);
+    expect(forge.refreshed, 'the second prompt leaving emptied the set').toEqual([HOME]);
     forge.arrive(life('completed', 'p2'));
     await settle();
-    expect(forge.refreshed, 'the empty set folded Idle instead of reading').toEqual([HOME]);
+    expect(forge.refreshed, 'a terminal for an uncounted prompt keeps the read').toEqual([HOME]);
     expect(seen.at(-1)?.wire?.agents[0]?.lifecycle).toBe('Running');
 
     // A reconnect forgets every set: a terminal for a prompt the page never

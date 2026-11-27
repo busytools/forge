@@ -29,10 +29,17 @@ const listeners = new Set<(line: Refusal) => void>();
  * What the reader is told when a command never left the browser.
  *
  * One line for both surfaces that say it: the seat's column draws it as a
- * notice, and the composer draws it above the field a send was typed into -
- * the same failure, said where each was read.
+ * notice, and a message that never went carries it as its own reason.
  */
 export const NOT_SENT = 'Not sent - the connection is down.';
+
+/**
+ * The reason a message row carries when the link died under it.
+ *
+ * The row draws it beside the words the retry hands back, so the sentence is
+ * the short fact rather than the notice's full line.
+ */
+export const CONNECTION_DOWN = 'the connection is down';
 
 /** Draw the next refusal in the given seat's column; returns the off switch. */
 export function onRefusal(fn: (line: Refusal) => void): () => void {

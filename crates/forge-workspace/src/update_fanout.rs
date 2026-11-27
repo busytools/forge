@@ -1280,6 +1280,7 @@ mod tests {
         assert!(
             fanout.send(SessionUpdate::Notice {
                 key: seat.clone(),
+                id: "n1".to_owned(),
                 severity: NoticeSeverity::Info,
                 text: "x".repeat(10_000),
             }),

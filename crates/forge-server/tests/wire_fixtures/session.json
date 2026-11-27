@@ -12,6 +12,7 @@
     },
     "scan_cwd": "<fixture>/proj",
     "queue": [],
+    "queue_ended": null,
     "voice_listeners": 0
   },
   "composer": {
