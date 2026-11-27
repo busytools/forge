@@ -78,8 +78,10 @@ describe("the band's open", () => {
     expect(rule('.live-row'), 'the live row lost the line under itself').toContain(
       'border-bottom: 1px solid var(--line)',
     );
+    // The span wears the shared `.sr` rule now; it is the one that keeps the
+    // status line out of the flow, where it grows the band at the open.
     expect(
-      rule('.comp .sr'),
+      rule('.sr'),
       'the status line is back in the flow, where it grows the band at the open',
     ).toContain('position: absolute');
   });

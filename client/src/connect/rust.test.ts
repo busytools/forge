@@ -46,6 +46,7 @@ vi.mock('../perf', async (importOriginal) => {
 import { noteSnapshot, noteSubscribeWritten } from '../perf';
 import { subjectKey, type Command, type ServerMessage } from '../protocol';
 import { onRefusal, type Refusal } from '../refusals';
+import { SILENCE_MS, silenceOf } from '../silence';
 import { ANSWERS_THROUGH_A_REPLY, type BrowserFrame, type Connection } from '../socket';
 import { DEFAULT_SETTINGS, type SessionSlot } from '../wire/types';
 import { connectRust } from './rust';
@@ -75,10 +76,11 @@ async function opened(state: State = OPEN): Promise<Connection> {
     return Promise.resolve(undefined);
   });
   const connection = connectRust('ws://127.0.0.1:7777/socket');
-  // Six: the connection, the server's frames, the refusals, the browser's own
-  // frames for the page's canvas, and #2513's frame facts and subscribe
-  // writes.
-  await vi.waitFor(() => expect(handlers.size).toBe(7));
+  // Nine: the connection, the server's frames, the terminal's bytes (the
+  // connection's half of a binary frame), the shell's own liveness beat, the
+  // refusals, the browser's own frames for the page's canvas, and #2513's
+  // frame facts and subscribe writes.
+  await vi.waitFor(() => expect(handlers.size).toBe(9));
   await vi.waitFor(() =>
     expect(invoke).toHaveBeenCalledWith('client_connect', { url: 'ws://127.0.0.1:7777/socket' }),
   );
@@ -1044,6 +1046,108 @@ describe("the connection's own facts", () => {
   });
 
   /**
+   * **The desktop's silence clock is stamped where its frames land.** The
+   * measured case is the 8 November server wedge: the process stayed up and
+   * the page heard nothing, with no status saying so. The page's only
+   * evidence is when it last heard a frame through this seam. **Every seam
+   * counts**: the JSON frames, and the browser's and terminal's binary
+   * frames, which arrive on events of their own - a session drawing a busy
+   * terminal must not be called quiet.
+   */
+  it('records when a frame last arrived, on every seam, and stamps the open', async () => {
+    const before = Date.now();
+    const connection = await opened();
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+    const openAt = connection.lastHeard();
+    expect(openAt, 'the open stamps the link').not.toBeNull();
+    expect(openAt as number, 'stamped at the open, not before it').toBeGreaterThanOrEqual(before);
+    expect(openAt as number).toBeLessThanOrEqual(Date.now());
+
+    const stamps: number[] = [];
+    const stop = connection.onHeard((at) => stamps.push(at));
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    fire('client://inbound', { kind: 'pong' });
+    const afterJson = connection.lastHeard();
+    expect(afterJson, 'a JSON frame moves the stamp').toBeGreaterThan(openAt as number);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    fire('client://browser-frame', {
+      profile: 5,
+      tab: 2,
+      seq: 7,
+      width: 2560,
+      height: 1440,
+      format: 1,
+      key: true,
+      page_width: 1280,
+      page_height: 720,
+      bytes: btoa(''),
+    });
+    const afterBrowser = connection.lastHeard();
+    expect(afterBrowser, 'a browser frame moves the stamp').toBeGreaterThan(afterJson as number);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    fire('client://terminal-frame', { id: 1, seq: 0, bytes: btoa('') });
+    const afterTerminal = connection.lastHeard();
+    expect(afterTerminal, 'a terminal frame moves the stamp').toBeGreaterThan(
+      afterBrowser as number,
+    );
+
+    expect(stamps, 'each frame is announced once').toEqual([
+      afterJson,
+      afterBrowser,
+      afterTerminal,
+    ]);
+    stop();
+    fire('client://inbound', { kind: 'pong' });
+    expect(stamps, 'a stopped watcher is not told').toHaveLength(3);
+  });
+
+  /**
+   * **An idle link is kept alive by the shell's own beat.** An idle desktop
+   * link carries no frames at all - the server's control pings are bytes the
+   * shell reads and drops - so `client://alive` is the only word the page
+   * gets. With it, the beat's 15 s cadence never lets the page's clock reach
+   * the silence bound; with the beat stopped, the last stamp is all there is
+   * and the line comes.
+   */
+  it("an idle link is kept alive by the shell's beat", async () => {
+    const connection = await opened();
+    await vi.waitFor(() => expect(connection.status()).toBe('open'));
+    const before = connection.lastHeard();
+    const heard: number[] = [];
+    const stop = connection.onHeard((at) => heard.push(at));
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    fire('client://alive', undefined);
+    const stamped = connection.lastHeard();
+    expect(stamped, 'the beat stamps the link').toBeGreaterThan(before as number);
+    expect(heard, 'and the page is told').toEqual([stamped]);
+    stop();
+
+    const at = stamped as number;
+    expect(
+      silenceOf({
+        status: 'open',
+        protocol: connection.serverProtocol(),
+        heardAt: at,
+        now: at + 15_000,
+      }),
+      'a beat 15 s ago is a current link',
+    ).toBeNull();
+    expect(
+      silenceOf({
+        status: 'open',
+        protocol: connection.serverProtocol(),
+        heardAt: at,
+        now: at + SILENCE_MS,
+      }),
+      'a beat that stopped for the bound is silence',
+    ).toBe(SILENCE_MS);
+  });
+
+  /**
    * **The shell's own facts reach the perf log as their marks (#2513).** A
    * forwarded snapshot's raw length and parse, and a subscribe's write wait,
    * are measured in the Rust half; a one-sided rename here would silence the
@@ -1125,7 +1229,7 @@ describe("the connection's own facts", () => {
       return Promise.resolve(undefined);
     });
     const connection = connectRust('ws://127.0.0.1:7777/socket');
-    await vi.waitFor(() => expect(handlers.size).toBe(7));
+    await vi.waitFor(() => expect(handlers.size).toBe(9));
     const moves: string[] = [];
     connection.onStatus((next) => moves.push(next));
     status = 'open';

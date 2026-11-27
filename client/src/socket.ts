@@ -301,6 +301,30 @@ export interface Connection {
   serverProtocol(): number | null;
   status(): ConnectionStatus;
   /**
+   * When a frame last arrived from the server, stamped at each open, or
+   * `null` before the connection has ever opened.
+   *
+   * **The page's own silence clock.** `status()` is the transport's account
+   * of the link; this is what actually arrived. They agree while the
+   * transport is running; a transport whose own loop has stopped reporting
+   * leaves the page only this. The measured case is the 8 November server
+   * wedge, where the process stayed up and the page heard nothing; whether
+   * the shell's beat fired then is not settled. See `silence.ts`.
+   */
+  lastHeard(): number | null;
+  /**
+   * Watch the link's inbound clock as it moves, and answer a function that
+   * stops watching.
+   *
+   * **A frame can arrive without any state the page tracks changing** - a
+   * pong carries nothing, and the shell forwards the browser's and
+   * terminal's binary frames on events of their own - so a surface that read
+   * `lastHeard()` on a timer would lag a frame by up to a tick, and in a
+   * throttled background tab by much more. This is the edge that moves: one
+   * call per frame, with the stamp the connection recorded.
+   */
+  onHeard(fn: (at: number) => void): () => void;
+  /**
    * Probe the link now rather than waiting out its quiet.
    *
    * A page returning from the background sends this first: the socket may
@@ -444,7 +468,7 @@ export const LIVENESS_DEAD_MS = 65_000;
  * knows the server's number from the greeting, so it asks nothing of one that
  * cannot answer.
  */
-const LIVENESS_PROTOCOL = 20;
+export const LIVENESS_PROTOCOL = 20;
 
 /**
  * How long a dial may hang before it is abandoned and retried.
@@ -741,6 +765,8 @@ export function connect(
    */
   const held = new Map<string, { subject: Subject; answering: boolean; review: boolean }>();
   const listeners = new Set<(message: ServerMessage) => void>();
+  /** The page's watchers of the link's inbound clock (`onHeard`). */
+  const heardListeners = new Set<(at: number) => void>();
   const statuses = new Set<(status: ConnectionStatus) => void>();
   /** The page's viewers of the relayed frames: the phone's canvas. */
   const frameListeners = new Set<(frame: BrowserFrame) => void>();
@@ -772,6 +798,29 @@ export function connect(
    */
   let gate: StreamGate | null = null;
   let status: ConnectionStatus = 'connecting';
+  /**
+   * When a frame last arrived, for the page's silence line.
+   *
+   * Stamped at each open as well as on every frame: the open is the earliest
+   * evidence there is, and a link that then carries nothing is measured from
+   * the moment it could first have spoken rather than from a pre-drop frame.
+   */
+  let heardAt: number | null = null;
+
+  /**
+   * Stamp the link and tell its watchers, which is what makes the stamp
+   * observable to a page rather than a value it has to poll.
+   */
+  function markHeard(at: number): void {
+    heardAt = at;
+    for (const fn of heardListeners) {
+      try {
+        fn(at);
+      } catch (why) {
+        report('a heard listener threw', why);
+      }
+    }
+  }
   let settings: ClientSettings | null = null;
   let protocolSkew: Skew | null = null;
   /** The greeting's own number, kept whether or not it skews. */
@@ -1161,6 +1210,8 @@ export function connect(
 
     next.onopen = () => {
       if (next !== socket) return;
+      // Before the status moves: a listener that draws on `open` reads this.
+      markHeard(Date.now());
       subscribed.clear();
       move('open');
       retryDelay = RETRY_MS;
@@ -1372,6 +1423,7 @@ export function connect(
 
     next.onmessage = (event) => {
       if (next !== socket) return;
+      markHeard(Date.now());
       // **Any inbound frame answers the probe**, whatever it carried: the
       // pong exists to guarantee one arrives, and a frame already flowing
       // proves the same.
@@ -1836,6 +1888,13 @@ export function connect(
     },
     status() {
       return status;
+    },
+    lastHeard() {
+      return heardAt;
+    },
+    onHeard(fn) {
+      heardListeners.add(fn);
+      return () => heardListeners.delete(fn);
     },
     probe: probeNow,
     close() {

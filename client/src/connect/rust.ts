@@ -190,11 +190,40 @@ class RustConnection implements Connection {
   private readonly stores = new Stores();
   private readonly listeners = new Set<(message: ServerMessage) => void>();
   private readonly statuses = new Set<(status: ConnectionStatus) => void>();
+  /** The page's watchers of the link's inbound clock (`onHeard`). */
+  private readonly heardListeners = new Set<(at: number) => void>();
   /** The page's viewers of the relayed frames: the phone's canvas. */
   private readonly frames = new Set<(frame: BrowserFrame) => void>();
   private stops: UnlistenFn[] = [];
   private beat: ReturnType<typeof setInterval> | null = null;
   private state: ConnectionStatus = 'connecting';
+  /**
+   * When a frame last arrived, for the page's silence line.
+   *
+   * **Stamped here because the shell owns the socket.** The shell's own
+   * status is all a page normally knows, and a shell task whose loop has
+   * stopped reporting sends no status at all; what arrived through the shell
+   * is the only evidence left. **Four events carry it**: the JSON frames on
+   * `client://inbound`, the browser's and terminal's binary frames, which the
+   * shell forwards on events of their own, and the shell's own liveness beat
+   * on `client://alive`.
+   */
+  private heardAt: number | null = null;
+
+  /**
+   * Stamp the link and tell its watchers, which is what makes the stamp
+   * observable to a page rather than a value it has to poll.
+   */
+  private markHeard(at: number): void {
+    this.heardAt = at;
+    for (const fn of this.heardListeners) {
+      try {
+        fn(at);
+      } catch (why) {
+        report('a heard listener threw', why);
+      }
+    }
+  }
   /**
    * The shell's own id for this connection, from `client_connect`.
    *
@@ -297,8 +326,25 @@ class RustConnection implements Connection {
     // and a connection that subscribed after asking could miss it.
     this.stops.push(await listen('client://connection', () => void this.stateMoved()));
     this.stops.push(
-      await listen('client://inbound', (event) => this.heard(event.payload as ServerMessage)),
+      await listen('client://inbound', (event) => {
+        // The page's own silence clock: this is the seam every JSON frame
+        // crosses, so it is where "last heard" is stamped.
+        this.markHeard(Date.now());
+        this.heard(event.payload as ServerMessage);
+      }),
     );
+    // **The terminal's bytes are inbound too**, and they never reach
+    // `client://inbound`: the shell emits them on their own event, which the
+    // terminal surface listens to directly. A stamp-only listener is the
+    // connection's half of that evidence; a session drawing a busy terminal
+    // must not be called quiet. Two listeners on one event is how Tauri's
+    // event API is meant to be used.
+    this.stops.push(await listen('client://terminal-frame', () => this.markHeard(Date.now())));
+    // **The shell's own liveness beat.** An idle link carries no frames at
+    // all - the server's WebSocket control pings are bytes the shell reads
+    // and drops - so this is the only word the page gets, and without it a
+    // perfectly healthy link would be drawn as quiet.
+    this.stops.push(await listen('client://alive', () => this.markHeard(Date.now())));
     // **The shell half's own facts (#2513).** A snapshot's raw length and the
     // shell's parse travel beside the frame; a subscribe's write time is
     // reported when the frame is on the wire, not when the page asked.
@@ -322,6 +368,9 @@ class RustConnection implements Connection {
     // (the desktop's overlay draws its own and this listener never fires).
     this.stops.push(
       await listen<ShellFrame>('client://browser-frame', (event) => {
+        // A browser frame is inbound even when this page draws none of it:
+        // the stamp is the link's, before the payload is narrowed.
+        this.markHeard(Date.now());
         const frame = frameOf(event.payload);
         if (frame === null) return;
         for (const fn of this.frames) fn(frame);
@@ -462,7 +511,12 @@ class RustConnection implements Connection {
     // lost first answer would otherwise leave them loading forever. A watch
     // taken with no socket is the shell's to carry (`Bridge::connect` asks for
     // it), so nothing is re-asked from this side.
-    if (next === 'open') this.bounds.rearmLoading();
+    if (next === 'open') {
+      this.bounds.rearmLoading();
+      // Before the listeners, as the web's `onopen` does: a surface that
+      // draws on `open` reads the stamp.
+      this.markHeard(Date.now());
+    }
     // **Listeners first, then `Showing`.** The page's own re-attach runs on
     // this status and issues its `relist`; the spec's order is re-subscribe,
     // then `Showing`, and the web's `onopen` keeps the same one.
@@ -940,6 +994,15 @@ class RustConnection implements Connection {
 
   status(): ConnectionStatus {
     return this.state;
+  }
+
+  lastHeard(): number | null {
+    return this.heardAt;
+  }
+
+  onHeard(fn: (at: number) => void): () => void {
+    this.heardListeners.add(fn);
+    return () => this.heardListeners.delete(fn);
   }
 
   close(): void {
