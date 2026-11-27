@@ -115,7 +115,7 @@ impl Subject {
             // The board snapshot carries every project's rows, crons and
             // connector sets, so the variants that move them - plus the seat
             // events a row's `stale` mark is read from - belong here. A row's
-            // time-derived marks are the page's own beat, not a frame.
+            // time-derived marks are the page's own clock, not a frame.
             Self::Board => {
                 board_detail(update)
                     || matches!(update, SessionUpdate::TasksChanged { .. })
@@ -136,7 +136,7 @@ impl Subject {
             Self::Usage => false,
             // The check's own landing, and the load's signal: a page open
             // during a first 3 GB download hears models finished loading
-            // through `DictateAvailability` and reads again, so its state
+            // through `DictateAvailability` and is patched, so its state
             // chips are not stuck on `pending` until the next check. The
             // feed belongs to no seat, so nothing else reaches here.
             Self::DictateModels => matches!(

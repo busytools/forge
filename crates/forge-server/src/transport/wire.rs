@@ -259,9 +259,10 @@ pub struct ProjectIdentity {
 pub struct ProjectBoardWire {
     pub project: ProjectIdentity,
     /// The project's live rows, with what the board derives on each:
-    /// worked time, ages, and the marks. Computed once, in the workspace's
-    /// board module, and passed through - the client never re-derives a
-    /// mark differently.
+    /// worked time, ages, and the marks. Computed in the workspace's board
+    /// module as of the read's own instant, and the client advances the
+    /// time-derived figures from each row's timestamps and that instant
+    /// (`client/src/board/clock.ts`) - a watched board ticks with no read.
     pub rows: Vec<forge_workspace::board::BoardRow>,
     /// The schedules this project holds.
     ///
@@ -3216,11 +3217,12 @@ async fn session(
 
 /// The number a subject's stream is at.
 ///
-/// **One counter per subject, not per connection.** The subscribe answer
-/// states the version its record is at; every patch states the next one and
-/// the server sends them in order. A client holds the version of its own
-/// copy: `held + 1` applies, and any other number is a gap - the one way a
-/// subject can go stale - answered with one whole read per subject, never a
+/// **One counter per subject per connection.** Each connection keeps the
+/// base its own client holds, so the number is that pair's: the subscribe
+/// answer states the version its record is at, every patch states the next
+/// one, and the server sends them in order. A client holds the version of its
+/// own copy: `held + 1` applies, and any other number is a gap - the one way
+/// a subject can go stale - answered with one whole read per subject, never a
 /// loop. A reconnect or a return from sleep asks for the whole read too,
 /// because the patches minted while it was away are gone.
 ///
@@ -3467,7 +3469,9 @@ pub(crate) fn patch_for_record(subject: &Subject, old: &Value, new: &Value) -> O
     match subject {
         Subject::Home => home_patch(old, new),
         Subject::Board => board_patch(old, new),
-        Subject::Session(_) => session_patch(old, new),
+        Subject::Session(_) | Subject::DictateModels | Subject::Extensions => {
+            whole_fields(old, new)
+        }
         // **Two subjects have no patch, for their own reasons.**
         //
         // A take is not a record: its frames are the deltas, and a subscribe
@@ -3478,7 +3482,6 @@ pub(crate) fn patch_for_record(subject: &Subject, old: &Value, new: &Value) -> O
         // subscription is one scan on the ask and its version never moves. A
         // patch type for it would be dead code, which is why there is none.
         Subject::Dictate | Subject::Usage => None,
-        Subject::DictateModels | Subject::Extensions => whole_fields(old, new),
     }
 }
 
@@ -3494,20 +3497,32 @@ pub(crate) fn patch_for_record(subject: &Subject, old: &Value, new: &Value) -> O
 const SEAT_PATCH_FIELDS: &[&str] =
     &["composer", "reviews", "tree_reviews", "resume_sessions", "diff"];
 
-fn session_patch(old: &Value, new: &Value) -> Option<Value> {
-    let (Some(old), Some(new)) = (old.as_object(), new.as_object()) else {
-        return None;
-    };
-    let mut patch = serde_json::Map::new();
-    for field in SEAT_PATCH_FIELDS {
-        let (Some(value), held) = (new.get(*field), old.get(*field)) else {
-            continue;
-        };
-        if held != Some(value) {
-            patch.insert((*field).to_owned(), value.clone());
+/// What a patch for this subject can carry, as the base keeps it.
+///
+/// **A connection's patch base is the projection, not the whole record.** A
+/// seat's patch can carry only [`SEAT_PATCH_FIELDS`], so holding its whole
+/// record per connection buys nothing but megabytes - the conversation and the
+/// file index are never patched, and a large seat is tens of megabytes held
+/// once per connection that reads it. The other subjects' whole-field patches
+/// can carry any field, so their projection is the record itself; the two
+/// subjects with no patch at all project to null and their base costs nothing.
+pub(crate) fn patch_projection(subject: &Subject, record: &Value) -> Value {
+    match subject {
+        Subject::Session(_) => {
+            let Some(fields) = record.as_object() else {
+                return Value::Null;
+            };
+            let mut projected = serde_json::Map::new();
+            for field in SEAT_PATCH_FIELDS {
+                if let Some(value) = fields.get(*field) {
+                    projected.insert((*field).to_owned(), value.clone());
+                }
+            }
+            Value::Object(projected)
         }
+        Subject::Dictate | Subject::Usage => Value::Null,
+        _ => record.clone(),
     }
-    (!patch.is_empty()).then_some(Value::Object(patch))
 }
 
 /// Every field whose value moved, as itself.
@@ -4163,13 +4178,25 @@ mod patches {
 
     /// A seat patch replaces whole fields - the seat's list fields have no
     /// ids to address, and its stream is versioned by its own frame numbers.
+    ///
+    /// **Both sides are projected first**, exactly as `write_snapshot` and
+    /// `emit_patches` do: the base is what a patch can carry, so a field
+    /// outside the projection is not the diff's to see.
     #[test]
     fn a_seat_patch_carries_the_whole_moved_field() {
+        fn seat_patch(old: &Value, new: &Value) -> Option<Value> {
+            let subject = Subject::Session(fixture_seat());
+            patch_for_record(
+                &subject,
+                &patch_projection(&subject, old),
+                &patch_projection(&subject, new),
+            )
+        }
+
         let old = a_session();
         let mut new = old.clone();
         new["composer"]["machine"] = serde_json::json!({ "kind": "compacting" });
-        let patch =
-            patch_for_record(&Subject::Session(fixture_seat()), &old, &new).expect("a patch");
+        let patch = seat_patch(&old, &new).expect("a patch");
         assert_eq!(
             patch,
             serde_json::json!({ "composer": new["composer"] }),
@@ -4181,11 +4208,7 @@ mod patches {
         // the megabytes the frames already drew.
         let mut new = old.clone();
         new["conversation"] = serde_json::json!({ "turns": [{ "messages": [] }] });
-        assert_eq!(
-            patch_for_record(&Subject::Session(fixture_seat()), &old, &new),
-            None,
-            "a conversation-only change is not a patch",
-        );
+        assert_eq!(seat_patch(&old, &new), None, "a conversation-only change is not a patch");
 
         let mut new = old.clone();
         new["reviews"] = serde_json::json!({
@@ -4193,10 +4216,31 @@ mod patches {
             "reviews": { "outcome": "read", "value": [] },
         });
         assert_eq!(
-            patch_for_record(&Subject::Session(fixture_seat()), &old, &new),
+            seat_patch(&old, &new),
             Some(serde_json::json!({ "reviews": new["reviews"] })),
             "a review row crossed as its own field",
         );
+    }
+
+    /// **The base a patch is diffed against is the projection, not the
+    /// record.** A seat's base holds the fields its patch can name and none of
+    /// the megabytes no patch can carry; the subjects with no patch hold
+    /// nothing.
+    #[test]
+    fn a_seat_base_is_the_projection_a_patch_can_carry() {
+        let projected = patch_projection(&Subject::Session(fixture_seat()), &a_session());
+        let fields = projected.as_object().expect("a seat's projection is an object");
+        for field in fields.keys() {
+            assert!(
+                SEAT_PATCH_FIELDS.contains(&field.as_str()),
+                "the projection carries {field}, which no patch can name",
+            );
+        }
+        for present in ["composer", "resume_sessions"] {
+            assert!(fields.contains_key(present), "the projection dropped {present}");
+        }
+        assert_eq!(patch_projection(&Subject::Usage, &usage()), Value::Null);
+        assert_eq!(patch_projection(&Subject::Dictate, &Value::Null), Value::Null);
     }
 
     /// **A home project's identity is its org and name.** A session opening
