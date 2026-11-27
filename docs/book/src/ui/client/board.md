@@ -26,6 +26,12 @@ view is its own subject, `archived`, read once each time the toggle opens.
 The seat chips and the fleet's `waiting on you` count come from the home
 snapshot beside it; the row and running counts are the board's own.
 
+The header has its own rhythm: the breadcrumb (`back` and the project's
+name) shares one line and one baseline with the seat chips and `done`, the
+counts (`N waiting on you`, `N rows`, `N running`) are a quiet line of their
+own under it, and the window/full board/archived tabs sit below with clear
+space between.
+
 The page hears the updates that move what it draws: a task write, a
 schedule set, a connector set, a drawer's row, and the seat events a row's
 liveness is read from. **A task write is applied from its frame, with no
@@ -78,8 +84,16 @@ its completion draws that hold; `send back` stays either way.
 
 Where a card carries evidence, it is one summary line: the gate's own word
 (`evidence verified`, `evidence unchecked`, `evidence refused`) and the
-bounded excerpt, which `more` expands and `less` folds back. `discuss` and
-`open the row` sit together as quiet links under the controls.
+bounded excerpt, which `more` expands and `less` folds back. A claim with no
+excerpt still states its word.
+
+**One action bar per card, and the hierarchy is by shape.** The primary
+actions - `approve` on a look, the option pills on a decision - are the only
+filled controls; `send back` is outlined at the same height and radius; the
+note is a ghost button, a button rather than an underline. The row's own
+doors, `discuss` and `open the row`, are not actions: they sit in a footer
+line in the meta type, equally weighted and unmarked by an underline, split
+from the bar by a hairline.
 
 ### Exceptions
 
@@ -122,7 +136,7 @@ The lanes face, under the `full board` toggle.
 
 | Region | Shows | Read from |
 |---|---|---|
-| Top bar | `back`, the project's name with its own read (`N waiting on you`, `N rows`, `N running`), the project's seat chips, `done` | the route and the snapshot |
+| Top bar | `back` and the project's name on the breadcrumb line with the seat chips and `done`, and the counts (`N waiting on you`, `N rows`, `N running`) as their own quiet line under it | the route and the snapshot |
 | The switch | `window`, `full board`, `archived` | the page's own state |
 | Waiting on you | the rows whose wait is a decision, each card leading with the wait's ask, with the row's links and a look's artifact beside it; the verify gate (`approve`, a words box, `send back`), or an answer box; a root whose children are not all done draws the count and the send-back instead of `approve` | `waiting_on`, the wait's own start for the age, the row's links, and the row's `rollup` |
 | Lanes | every LIVE card, in its state's lane, with the Backlog folded to its ten | the board's `projects[].rows` |

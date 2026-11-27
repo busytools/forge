@@ -43,14 +43,15 @@
   /* The takeover's slim bar: back and done return the reader where they
      were, the project's name carries its own read, and the seats sit at the
      end - a card dropped on one is assigned to it. */
-  .b-top { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
+  .b-top { display: flex; align-items: center; gap: 8px; padding: 6px 0 0; }
+  .b-crumb { display: flex; align-items: baseline; gap: 12px; }
+  .b-counts { display: flex; align-items: baseline; gap: 10px; margin: 10px 0 0;
+    font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .b-counts b { font-weight: 500; color: var(--hot); }
   .b-back, .b-done { font-family: var(--mono); font-size: 12.5px; color: var(--muted);
     background: transparent; border: 0; border-radius: 999px; padding: 7px 12px; cursor: pointer; }
   .b-back:hover, .b-done:hover { background: var(--s2); color: var(--text); }
-  .b-id { margin-left: 8px; display: flex; align-items: baseline; gap: 12px; }
   .b-nm { font-size: 19px; font-weight: 500; letter-spacing: -.01em; color: var(--text); }
-  .b-read { font-size: 12.5px; color: var(--dim); }
-  .b-read b { font-weight: 500; color: var(--hot); }
   .b-spacer { flex: 1; }
   .b-seat { font-family: var(--mono); font-size: 12.5px; color: var(--blue);
     text-decoration: none; background: var(--s2); border-radius: 999px; padding: 4px 11px; }
@@ -201,7 +202,7 @@
   /* the window: the page's front door - what needs the reader, what looks
      wrong, who is doing what, and what is next. The full board and the
      archive are one toggle away, drawn below as their own faces. */
-  .w-switch { display: flex; gap: 6px; margin: 0 0 20px; flex-wrap: wrap; }
+  .w-switch { display: flex; gap: 6px; margin: 22px 0 20px; flex-wrap: wrap; }
   .w-tab { font-family: var(--mono); font-size: 12.5px; color: var(--dim);
     background: var(--s2); border: 1px solid transparent; border-radius: 999px;
     padding: 7px 14px; cursor: pointer; }
@@ -232,17 +233,22 @@
   .w-more { background: none; border: none; padding: 2px 0; color: var(--dim);
     font-family: var(--mono); font-size: 12.5px; cursor: pointer;
     text-decoration: underline; text-underline-offset: 2px; }
-  .w-options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-  .w-option { font-family: var(--mono); font-size: 12.5px; color: var(--text);
-    background: var(--s2); border: 1px solid var(--line); border-radius: 999px;
-    padding: 5px 12px; min-height: 30px; cursor: pointer; text-align: left; }
-  .w-do { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
-  .w-do .b-btn { min-height: 30px; padding: 4px 12px; }
-  .w-note { flex: 1 1 180px; }
+  .w-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+  .w-options { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+  .w-primary, .w-secondary, .w-ghost { min-height: 32px; padding: 0 14px;
+    border-radius: 999px; font-family: var(--mono); font-size: 12.5px; cursor: pointer; }
+  .w-primary { background: var(--ok); color: var(--bg); border: 1px solid var(--ok); font-weight: 500; }
+  .w-secondary { background: transparent; color: var(--bad);
+    border: 1px solid rgba(224,104,62,.45); }
+  .w-ghost { background: transparent; color: var(--dim); border: 1px dashed var(--line); }
+  .w-note { flex: 1 1 180px; min-height: 32px; }
   .w-hold { margin: 0; color: var(--warn); font-size: 12.5px; flex-basis: 100%; }
-  .w-links { display: flex; gap: 14px; margin-top: 8px; }
-  .w-quiet-link { background: none; border: none; padding: 0; color: var(--dim);
-    font-family: var(--mono); font-size: 12.5px; cursor: pointer; text-decoration: none; }
+  .w-foot { display: flex; gap: 8px; align-items: center; margin-top: 10px;
+    padding-top: 8px; border-top: 1px solid var(--line);
+    font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .w-foot-link { background: none; border: none; padding: 0; color: inherit;
+    font: inherit; cursor: pointer; text-decoration: none; }
+  .w-dot { color: var(--line); }
   .w-list { list-style: none; }
   .w-exc, .w-live { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline;
     font-size: 14px; padding: 8px 0; border-bottom: 1px solid var(--line); }
@@ -343,17 +349,20 @@
 <div class="wrap board-page">
 
   <div class="b-top">
-    <button class="b-back">&larr; back</button>
-    <span class="b-id">
+    <div class="b-crumb">
+      <button class="b-back">&larr; back</button>
       <span class="b-nm">task-board</span>
-      <span class="b-read"><b>3 waiting on you</b> &middot; 32 rows &middot; 2 running</span>
-    </span>
+    </div>
     <span class="b-spacer"></span>
     <a class="b-seat" href="./web-session.html">task-board</a>
     <a class="b-seat" href="./web-session.html">fleet</a>
     <a class="b-seat drop" href="./web-session.html">forge</a>
     <button class="b-done">done</button>
   </div>
+  <p class="b-counts">
+    <b>3 waiting on you</b>
+    <span class="b-read-counts">32 rows &middot; 2 running</span>
+  </p>
 
   <div class="w-switch" role="tablist" aria-label="which board">
     <button class="w-tab" role="tab" aria-selected="true">window</button>
@@ -380,14 +389,15 @@
             <span class="w-ev-text">212 client tests pass; the window draws needs, exceptions, live, next</span>
             <button class="w-more" aria-expanded="false">more</button>
           </div>
-          <div class="w-do">
-            <button class="b-btn b-ok">approve</button>
-            <button class="b-btn b-no">send back</button>
-            <button class="w-more" aria-expanded="false">add a note</button>
+          <div class="w-actions">
+            <button class="w-primary">approve</button>
+            <button class="w-secondary">send back</button>
+            <button class="w-ghost" aria-expanded="false">add a note</button>
           </div>
-          <div class="w-links">
-            <a class="w-quiet-link" href="./web-session.html">discuss</a>
-            <button class="w-quiet-link">open the row</button>
+          <div class="w-foot">
+            <a class="w-foot-link" href="./web-session.html">discuss</a>
+            <span class="w-dot" aria-hidden="true">&middot;</span>
+            <button class="w-foot-link">open the row</button>
           </div>
         </article>
         <article class="w-need">
@@ -402,14 +412,17 @@
             <span class="w-ev-text">the window drew 2 needs, 1 exception, 1 live line and 1 next row</span>
             <button class="w-more" aria-expanded="false">more</button>
           </div>
-          <div class="w-options" role="group" aria-label="answer with one of">
-            <button class="w-option">ship it</button>
-            <button class="w-option">iterate on the look first</button>
+          <div class="w-actions">
+            <div class="w-options" role="group" aria-label="answer with one of">
+              <button class="w-primary">ship it</button>
+              <button class="w-primary">iterate on the look first</button>
+            </div>
+            <button class="w-ghost" aria-expanded="false">add a note</button>
           </div>
-          <div class="w-do"><button class="w-more" aria-expanded="false">add a note</button></div>
-          <div class="w-links">
-            <a class="w-quiet-link" href="./web-session.html">discuss</a>
-            <button class="w-quiet-link">open the row</button>
+          <div class="w-foot">
+            <a class="w-foot-link" href="./web-session.html">discuss</a>
+            <span class="w-dot" aria-hidden="true">&middot;</span>
+            <button class="w-foot-link">open the row</button>
           </div>
         </article>
         <article class="w-need">
@@ -419,14 +432,15 @@
             <span class="w-age">waiting 20m</span>
           </div>
           <h3 class="w-q">Approve the chase's cadence check or say what to change</h3>
-          <div class="w-do">
+          <div class="w-actions">
             <p class="w-hold">This row closes its epic: 2 child rows are still open. Close them first.</p>
-            <button class="b-btn b-no">send back</button>
-            <button class="w-more" aria-expanded="false">add a note</button>
+            <button class="w-secondary">send back</button>
+            <button class="w-ghost" aria-expanded="false">add a note</button>
           </div>
-          <div class="w-links">
-            <a class="w-quiet-link" href="./web-session.html">discuss</a>
-            <button class="w-quiet-link">open the row</button>
+          <div class="w-foot">
+            <a class="w-foot-link" href="./web-session.html">discuss</a>
+            <span class="w-dot" aria-hidden="true">&middot;</span>
+            <button class="w-foot-link">open the row</button>
           </div>
         </article>
       </div>
