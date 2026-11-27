@@ -11183,6 +11183,54 @@ mod tests {
         let _ = driven.await;
     }
 
+    /// **A usage probe settlement moves the account figures, and that
+    /// crosses as a patch** - not a re-read and not a queued whole record.
+    #[tokio::test]
+    async fn a_usage_probe_settlement_patches_the_account_figures() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.workspace().seed_test_ready_account("Acct");
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+        let Driven { to_server, written, driven, .. } = connection(&state);
+        subscribed_home(&to_server, &written).await;
+
+        fleet.workspace().seed_test_usage(
+            "Acct",
+            forge_primitives::usage::UsageSnapshot {
+                source: forge_primitives::usage::UsageSourceKind::Oauth,
+                fetched_at: std::time::SystemTime::now(),
+                five_hour: None,
+                seven_day: None,
+                seven_day_opus: None,
+                seven_day_sonnet: None,
+                extra_usage: None,
+                spend: None,
+                balance: Some(12.5),
+            },
+        );
+        fleet.emit(SessionUpdate::AccountsChanged {
+            accounts: fleet.workspace().account_pool_view(),
+        });
+
+        until(
+            || {
+                patches_of(&written, &Subject::Home)
+                    .iter()
+                    .any(|(_, patch)| patch["accounts"].is_object())
+            },
+            "the accounts patch",
+        )
+        .await;
+        let patches = patches_of(&written, &Subject::Home);
+        let usage = patches[0].1["accounts"]["usage"].as_array().expect("the usage rows");
+        assert_eq!(usage[0]["display_name"], "Acct");
+        assert_eq!(usage[0]["snapshot"]["balance"], 12.5, "the settled figure did not cross",);
+        assert_eq!(home_snapshots(&written), 1, "a whole home record followed the probe");
+
+        drop(to_server);
+        let _ = driven.await;
+    }
+
     /// **An unchanged subject sends nothing, ever.** No beat, no re-send, no
     /// number advancing: half an hour of a watched, untouched subject is its
     /// first read and nothing else.
