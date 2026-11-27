@@ -1665,7 +1665,7 @@ describe('a link that is open but has gone quiet', () => {
   }
 
   /**
-   * Wait for the tick's own line.
+   * Wait for the line to be drawn, or withdrawn.
    *
    * `until` reads `Date.now()` for its deadline, and the clock here is
    * deliberately moved past it, so this poll keeps its deadline on the real
