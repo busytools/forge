@@ -214,6 +214,11 @@
   <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
 {:else if route.name === 'home'}
   {#if home.wire}
+    {#if home.catchingUp}
+      <!-- The stream skipped a version: the record is still drawn, and this
+           says the figures may be a beat behind while one whole read lands. -->
+      <p class="pending">Catching up with the server...</p>
+    {/if}
     <Home wire={home.wire} {address} mark={settings.mark} {connection} />
   {:else if home.refused}
     <!-- The server turned the subscription down, in its own words. Handing

@@ -54,6 +54,13 @@ export interface BoardRead {
    * now and nothing has elapsed.
    */
   readAt?: number;
+  /**
+   * The stream skipped a version, so one whole read is on its way.
+   *
+   * The record above is still drawn - a gap never blanks a page - and this is
+   * what says the figures may be a beat behind.
+   */
+  resyncing?: boolean;
 }
 
 /**

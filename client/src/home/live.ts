@@ -57,21 +57,18 @@ import type { SessionSlot } from '../wire/types';
 /**
  * How long an update waits before it is answered with a read.
  *
- * A burst becomes one read rather than one each: a turn settling emits
- * several at once, and a read answers with the fleet as it stands rather
- * than as it was at the first of them.
- *
- * Exported because `home/live.test.ts` drives this beat on fake timers: the
- * tests wait on the beat, so a longer one must lengthen the drive rather than
- * leave the tests asserting before it fires.
- */
-export const COALESCE_MS = 50;
-
 /** What the home has to draw from, and why it has nothing when it does not. */
 export interface HomeRead {
   wire: HomeWire | null;
   /** The server's own words for turning the subscription down, or `null`. */
   refused: string | null;
+  /**
+   * The stream skipped a version, so one whole read is on its way.
+   *
+   * The record above is still drawn - a gap never blanks a page - and this is
+   * what says the figures may be a beat behind.
+   */
+  catchingUp?: boolean;
   /**
    * Why the snapshot could not be read, in this client's words, or `null`.
    *
@@ -194,7 +191,21 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
   function publishFold(next: HomeWire): void {
     if (next === drawn) return;
     drawn = next;
-    view.set({ wire: drawn, refused: null, failed: null, report });
+    publish({ wire: drawn, refused: null, failed: null });
+  }
+
+  /**
+   * Publish a draw, carrying whether the subject is catching up on a gap.
+   *
+   * **Every draw goes through here**, so the catching-up line can never be
+   * cleared by a fold while the read it names is still owed.
+   */
+  function publish(next: {
+    wire: HomeWire | null;
+    refused: string | null;
+    failed: string | null;
+  }): void {
+    view.set({ ...next, report, catchingUp: held?.state().kind === 'resyncing' });
   }
 
   /**
@@ -288,7 +299,7 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       // Nothing to apply into: a frame must not paint the refused subject
       // back (#3074 review).
       drawn = null;
-      view.set({ wire: null, refused: state.why, failed: null, report });
+      publish({ wire: null, refused: state.why, failed: null });
       return;
     }
     const data = held.snapshot();
@@ -301,14 +312,14 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       const failed = state.kind === 'ready' ? 'the snapshot was empty' : null;
       drawn = null;
       livePrompts.clear();
-      view.set({ wire: null, refused: null, failed, report });
+      publish({ wire: null, refused: null, failed });
       return;
     }
     const malformed = malformedOf(data);
     if (malformed !== null) {
       drawn = null;
       livePrompts.clear();
-      view.set({ wire: null, refused: null, failed: malformed, report });
+      publish({ wire: null, refused: null, failed: malformed });
       return;
     }
     // The snapshot is JSON the server wrote from its own type, and `homeFrom`
@@ -330,15 +341,14 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
       for (const agent of wire.agents) {
         if (agent.lifecycle === 'Idle') livePrompts.delete(subjectKey({ session: agent.slot }));
       }
-      view.set({ wire, refused: null, failed: null, report });
+      publish({ wire, refused: null, failed: null });
     } catch (why) {
       drawn = null;
       livePrompts.clear();
-      view.set({
+      publish({
         wire: null,
         refused: null,
         failed: `the snapshot could not be read: ${why instanceof Error ? why.message : String(why)}`,
-        report,
       });
     }
   }
@@ -441,7 +451,7 @@ export function watchHome(connection: Connection): Readable<HomeRead> {
             : applyFleetCounts(drawn, tasks.project, frame.tasks);
         if (applied !== null) {
           drawn = applied;
-          view.set({ wire: drawn, refused: null, failed: null, report });
+          publish({ wire: drawn, refused: null, failed: null });
         }
       }
       // **A frame this page cannot fold is not lost**: it marked the home

@@ -78,12 +78,17 @@ function boardStore(connection: Connection): Readable<BoardRead> {
       // Nothing to apply into: a frame that landed before the refusal must
       // not paint the refused subject back (#3074 review).
       drawn = null;
-      view.set({ wire: null, refused: state.why, readAt: Date.now() });
+      view.set({ wire: null, refused: state.why, readAt: Date.now(), resyncing: false });
       return;
     }
     const data = held.snapshot();
     drawn = data === null ? null : boardFrom(data as unknown as BoardWire);
-    view.set({ wire: drawn, refused: null, readAt: Date.now() });
+    view.set({
+      wire: drawn,
+      refused: null,
+      readAt: Date.now(),
+      resyncing: state.kind === 'resyncing',
+    });
   }
 
   function watch(): void {
@@ -118,7 +123,12 @@ function boardStore(connection: Connection): Readable<BoardRead> {
         const applied = frame === null ? null : applyTasks(drawn, frame.project, frame.tasks);
         if (applied !== null) {
           drawn = applied;
-          view.set({ wire: drawn, refused: null, readAt: Date.now() });
+          view.set({
+            wire: drawn,
+            refused: null,
+            readAt: Date.now(),
+            resyncing: held?.state().kind === 'resyncing',
+          });
         }
         return;
       }
@@ -127,7 +137,12 @@ function boardStore(connection: Connection): Readable<BoardRead> {
         const applied = applyCrons(drawn, crons.project, crons.crons);
         if (applied !== null) {
           drawn = applied;
-          view.set({ wire: drawn, refused: null, readAt: Date.now() });
+          view.set({
+            wire: drawn,
+            refused: null,
+            readAt: Date.now(),
+            resyncing: held?.state().kind === 'resyncing',
+          });
         }
         return;
       }
@@ -141,7 +156,12 @@ function boardStore(connection: Connection): Readable<BoardRead> {
             : applyConnectors(drawn, connectors.project, connectors.gotify, connectors.slack);
         if (applied !== null) {
           drawn = applied;
-          view.set({ wire: drawn, refused: null, readAt: Date.now() });
+          view.set({
+            wire: drawn,
+            refused: null,
+            readAt: Date.now(),
+            resyncing: held?.state().kind === 'resyncing',
+          });
         }
       }
       // **A frame this page cannot fold is not lost**: it marked the board
