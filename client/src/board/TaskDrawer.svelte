@@ -131,6 +131,24 @@
   let answer = $state('');
   let sendBack = $state('');
 
+  /** An exception's four disposals, enumerated as the core's are. */
+  const DISPOSITIONS = ['retry', 'rescope', 'drop', 'diagnose'] as const;
+
+  /**
+   * The answer a kind needs, worded as the card bar's own door: a decision's
+   * choice, a clarification's text, an exception's disposition - and a
+   * teaching's text, which is also the lesson its policy note is written
+   * from. **The drawer never sends words alone**: a words-only answer has no
+   * value for the ask's kind, which the core refuses.
+   */
+  function answerAsk(value: { choice?: string; text?: string; disposition?: string }): void {
+    const command: Record<string, unknown> = { project: task.project_name, id: task.id, ...value };
+    if (task.request?.kind === 'teaching') command['lesson'] = value.text ?? '';
+    const note = answer.trim();
+    if (value.text === undefined && note !== '') command['words'] = note;
+    onact({ task_answer: command });
+  }
+
   /** The drawer takes the keyboard as it mounts and on Escape gives it back. */
   let root = $state<HTMLElement | null>(null);
   $effect(() => {
@@ -371,29 +389,55 @@
             </div>
           {:else}
             <div class="answer">
-              <input
-                data-editor="board"
-                type="text"
-                placeholder="your answer"
-                bind:value={answer}
-                onkeydown={(event: KeyboardEvent) => {
-                  // Enter answers, as the button does (Ved, 2026-10-15).
-                  if (event.key !== 'Enter' || event.shiftKey) return;
-                  event.preventDefault();
-                  if (answer.trim() === '') return;
-                  onact({
-                    task_answer: { project: task.project_name, id: task.id, words: answer },
-                  });
-                }}
-              />
-              <button
-                type="button"
-                class="dr-btn go"
-                onclick={() =>
-                  onact({
-                    task_answer: { project: task.project_name, id: task.id, words: answer },
-                  })}>answer</button
-              >
+              {#if task.request?.kind === 'decision' && task.request.options.length > 0}
+                {#each task.request.options as option (option)}
+                  <button
+                    type="button"
+                    class="dr-btn go"
+                    onclick={() => answerAsk({ choice: option })}>{option}</button
+                  >
+                {/each}
+                <input
+                  data-editor="board"
+                  type="text"
+                  placeholder="a note (optional)"
+                  aria-label="the note sent with the choice"
+                  bind:value={answer}
+                />
+              {:else if task.request?.kind === 'exception'}
+                {#each DISPOSITIONS as disposition (disposition)}
+                  <button type="button" class="dr-btn go" onclick={() => answerAsk({ disposition })}
+                    >{disposition}</button
+                  >
+                {/each}
+                <input
+                  data-editor="board"
+                  type="text"
+                  placeholder="a note (optional)"
+                  aria-label="the note sent with the disposition"
+                  bind:value={answer}
+                />
+              {:else}
+                <input
+                  data-editor="board"
+                  type="text"
+                  placeholder={task.request?.kind === 'teaching' ? 'the lesson' : 'your answer'}
+                  aria-label={task.request?.kind === 'teaching'
+                    ? 'the lesson that settles the class'
+                    : 'your answer'}
+                  bind:value={answer}
+                  onkeydown={(event: KeyboardEvent) => {
+                    // Enter answers, as the button does (Ved, 2026-10-15).
+                    if (event.key !== 'Enter' || event.shiftKey) return;
+                    event.preventDefault();
+                    if (answer.trim() === '') return;
+                    answerAsk({ text: answer });
+                  }}
+                />
+                <button type="button" class="dr-btn go" onclick={() => answerAsk({ text: answer })}
+                  >{task.request?.kind === 'teaching' ? 'settle the class' : 'answer'}</button
+                >
+              {/if}
             </div>
           {/if}
         {/if}

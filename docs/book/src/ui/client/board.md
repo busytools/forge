@@ -58,13 +58,17 @@ heading with its count.
 
 ### Since your last look
 
-The digest strip summarizes what changed while the reader was away: one
-line of counts - merged, moved, landed, expired - which opens onto the
-rotating sample of agent actions nobody escalated. The sample is drawn from
-the sessions record, not from the board's own asks: a few unasked tool
-calls with their own words, so it names commands and paths, and it says
-what it drew (`sampled 3 of 41 agent actions`). The rotation moves every
-five minutes, so a reader who comes back sees a different few.
+The digest strip summarizes what changed while the reader was away: **one
+line per count** - merged, moved, landed, expired - and the rotating sample
+of agent actions nobody escalated, each line opening onto the rows it
+counts. A moved item names what happened to the row (`answered: ship it`),
+a landed one names how it ended, and an expired ask keeps its record on the
+expired line, drawn as expired rather than as a bare cancel. The sample is
+drawn from the sessions record: a few unasked tool calls with their own
+words, so it names commands and paths, and it says what it drew (`sampled 3
+of 41 agent actions`). Board reads are left out of it; a board write - an
+approve, an answer - samples like any other judgement call. The rotation
+moves every five minutes, so a reader who comes back sees a different few.
 
 **The last look is the server's stamp**, recorded when the reader leaves
 the window rather than when it opens - a stamp on open would erase the
@@ -73,8 +77,12 @@ stay in the regions below it.
 
 ### Needs you
 
-The rows waiting on the reader, as cards - a look first, then the oldest
-wait, because a look is a finished row nobody can close until it is given.
+The rows waiting on the reader, as cards - looks first, because a look is a
+finished row nobody can close until it is given, then every ask by its
+wait's own age whichever kind it is. **A row waiting on the reader is
+blocked on them**, not annotated: the wait is the row's blocker, and the
+board is the non-immediate channel for it - an ask needed now goes to the
+person directly, and an ask that is not immediate is raised here.
 
 **A card is an ask, not a dossier**: it reads as an ask at a glance, and
 the detail sits behind its own small controls. Every card is one quiet meta
@@ -106,13 +114,17 @@ stays either way.
 **Every card carries its lifecycle in words, and the words are the
 person's.** A deadline chip names the default that runs if the ask is
 ignored and when - `escalate at 14:02`, `expire at 14:02`, `reask at
-14:02`; never approve. An ask the reader has seen says `seen` in the meta
-line and in the footer, and one they deferred says `snoozed`; both keep
-their card, because hiding it would be the board deciding for the person.
-The footer's last two doors are `snooze 1h` and `until it moves`, and a
-`mark seen` that turns into the word `seen` once pressed. Acknowledging and
-snoozing are the reader's own acts: no agent has a verb for either, so the
-press that writes them is always the person's.
+14:02`; never approve, and every ask and look carries one. An ask the
+reader has seen says `seen` in the meta line, and one that stood unanswered
+past the drive's reminder says `seen, forgotten`; one they deferred says
+`snoozed`; all keep their card, because hiding it would be the board
+deciding for the person. The footer is one row of small quiet controls:
+`discuss` and `open the row` stay the quietest, `mark seen` is the ghost of
+the pair and turns into a pressed `seen` pill with a tick once pressed, and
+`snooze` is one control whose small menu offers `1h` and `until it moves` -
+once chosen it reads the deferral it wrote. Acknowledging and snoozing are
+the reader's own acts: no agent has a verb for either, so the press that
+writes them is always the person's.
 
 Where a card carries evidence, it is one summary line: the gate's own word
 (`evidence verified`, `evidence unchecked`, `evidence refused`) and the
@@ -125,9 +137,10 @@ disposition on an exception, `answer` and `settle the class` on the kinds
 whose value is words - are the only filled controls; `send back` is
 outlined at the same height and radius; the note is a ghost button, a
 button rather than an underline. The row's own doors are not actions: they
-sit in a footer line in the meta type, equally weighted and unmarked by an
-underline, split from the bar by a hairline - `discuss`, `open the row`,
-`mark seen`, `snooze 1h` and `until it moves`, split by dots.
+sit in a hairline-separated footer as content-sized pills at the card's own
+radius, one 8px gap, folding onto a second row on a narrow card rather than
+splitting a label - `discuss`, `open the row`, `mark seen` (or the pressed
+`seen`), and the `snooze` menu.
 
 ### Exceptions
 

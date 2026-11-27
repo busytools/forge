@@ -215,13 +215,21 @@
   .w-quiet { color: var(--dim); font-size: 14px; }
   .w-claim { margin: 0; color: var(--muted); font-family: var(--mono); font-size: 12.5px;
     line-height: 1.6; }
-  .w-digest { border: 1px solid var(--line); border-radius: var(--r); background: var(--s2); }
-  .w-digest-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px;
-    width: 100%; padding: 9px 12px; background: none; border: none; cursor: pointer;
-    text-align: left; font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
-  .w-digest-title { color: var(--text); }
-  .w-digest-line { color: var(--dim); }
-  .w-sample { padding: 0 12px 8px; }
+  .w-digest { border: 1px solid var(--line); border-radius: var(--r); background: var(--s2);
+    padding: 9px 12px; }
+  .w-digest-title { margin: 0 0 4px; font-family: var(--mono); font-size: 12.5px;
+    color: var(--text); }
+  .w-digest-lines { list-style: none; margin: 0; padding: 0; display: flex;
+    flex-direction: column; gap: 2px; }
+  .w-digest-row { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .w-digest-line { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start;
+    min-height: 24px; padding: 0 8px; margin-left: -8px; border: 1px solid transparent;
+    border-radius: 999px; background: none; cursor: pointer;
+    font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
+  .w-digest-static { cursor: default; }
+  .w-digest-label { color: var(--muted); }
+  .w-digest-caret { color: var(--dim); }
+  .w-sample { padding: 4px 0 4px 8px; }
   .w-needs { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 10px; }
   .w-need { background: var(--sel); border-radius: var(--r); padding: 12px 14px 10px; position: relative; }
   .w-need::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px;
@@ -257,13 +265,21 @@
   .w-ghost { background: transparent; color: var(--dim); border: 1px dashed var(--line); }
   .w-note { flex: 1 1 180px; min-height: 32px; }
   .w-hold { margin: 0; color: var(--warn); font-size: 12.5px; flex-basis: 100%; }
-  .w-foot { display: flex; gap: 8px; align-items: center; margin-top: 10px;
+  .w-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px;
     padding-top: 8px; border-top: 1px solid var(--line);
     font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
-  .w-foot-link { background: none; border: none; padding: 0; color: inherit;
-    font: inherit; cursor: pointer; text-decoration: none; }
-  .w-foot-link.w-seen { color: var(--dim); cursor: default; }
-  .w-dot { color: var(--line); }
+  .w-foot-link { display: inline-flex; align-items: center; gap: 4px;
+    min-height: 24px; padding: 0 10px; border-radius: 999px;
+    border: 1px solid transparent; background: transparent; color: var(--dim);
+    font: inherit; white-space: nowrap; cursor: pointer; text-decoration: none; }
+  .w-foot-link.w-foot-ghost { border: 1px dashed var(--line); }
+  .w-foot-link.w-seen { color: var(--muted); background: var(--s3); cursor: default; }
+  .w-foot-pill { display: inline-flex; align-items: center; gap: 5px; min-height: 24px;
+    padding: 0 10px; border-radius: 999px; border: 1px solid var(--line);
+    background: transparent; color: var(--dim); font-family: var(--mono);
+    font-size: 12.5px; white-space: nowrap; cursor: pointer; }
+  .w-foot-pill.w-foot-on { background: var(--s3); color: var(--text); }
+  .w-chip.warn { color: var(--warn); }
   .w-list { list-style: none; }
   .w-exc, .w-live { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline;
     font-size: 14px; padding: 8px 0; border-bottom: 1px solid var(--line); }
@@ -375,7 +391,7 @@
     <button class="b-done">done</button>
   </div>
   <p class="b-counts">
-    <b>4 waiting on you</b>
+    <b>6 waiting on you</b>
     <span class="b-read-counts">32 rows &middot; 2 running</span>
   </p>
 
@@ -389,14 +405,34 @@
        address this page is opened at. -->
   <section class="w-window" aria-label="the board window">
     <section class="w-digest" aria-label="since your last look">
-      <button class="w-digest-head" aria-expanded="false">
-        <span class="w-digest-title">since your last look</span>
-        <span class="w-digest-line">2 merged &middot; 3 moved &middot; 1 landed &middot; sampled 3 of 41 agent actions</span>
-      </button>
+      <p class="w-digest-title">since your last look</p>
+      <ul class="w-digest-lines">
+        <li class="w-digest-row"><span class="w-digest-line w-digest-static"><span class="w-digest-label">merged</span><span class="w-n">2</span></span></li>
+        <li class="w-digest-row">
+          <button class="w-digest-line" aria-expanded="true" aria-label="moved: 3">
+            <span class="w-digest-label">moved</span><span class="w-n">3</span><span class="w-digest-caret">-</span>
+          </button>
+          <ul class="w-list w-sample" aria-label="the moved items">
+            <li class="w-exc"><a class="w-link" href="./web-session.html">the retrofit's board window</a><span class="w-why">answered: ship it</span><span class="w-why">14:02</span></li>
+            <li class="w-exc"><span class="w-strong">the chase's cadence check</span><span class="w-why">moved to in progress</span><span class="w-why">13:41</span></li>
+          </ul>
+        </li>
+        <li class="w-digest-row"><span class="w-digest-line w-digest-static"><span class="w-digest-label">landed</span><span class="w-n">1</span></span></li>
+        <li class="w-digest-row">
+          <button class="w-digest-line" aria-expanded="false" aria-label="expired: 1">
+            <span class="w-digest-label">expired</span><span class="w-n">1</span><span class="w-digest-caret">+</span>
+          </button>
+        </li>
+        <li class="w-digest-row">
+          <button class="w-digest-line" aria-expanded="false" aria-label="sampled: 3 of 41 agent actions">
+            <span class="w-digest-label">sampled</span><span class="w-n">3 of 41 agent actions</span><span class="w-digest-caret">+</span>
+          </button>
+        </li>
+      </ul>
     </section>
 
     <section aria-labelledby="d-needs">
-      <h2 class="w-h" id="d-needs">needs you <span class="w-n">4</span></h2>
+      <h2 class="w-h" id="d-needs">needs you <span class="w-n">6</span></h2>
       <div class="w-needs">
         <article class="w-need seen">
           <div class="w-meta">
@@ -419,14 +455,9 @@
           </div>
           <div class="w-foot">
             <a class="w-foot-link" href="./web-session.html">discuss</a>
-            <span class="w-dot" aria-hidden="true">&middot;</span>
             <button class="w-foot-link">open the row</button>
-            <span class="w-dot" aria-hidden="true">&middot;</span>
-            <span class="w-foot-link w-seen">seen</span>
-            <span class="w-dot" aria-hidden="true">&middot;</span>
-            <button class="w-foot-link">snooze 1h</button>
-            <span class="w-dot" aria-hidden="true">&middot;</span>
-            <button class="w-foot-link">until it moves</button>
+            <span class="w-foot-link w-seen">&#10003; seen</span>
+            <button class="w-foot-pill">snooze <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg></button>
           </div>
         </article>
         <article class="w-need snoozed">
@@ -452,14 +483,9 @@
           </div>
           <div class="w-foot">
             <a class="w-foot-link" href="./web-session.html">discuss</a>
-            <span class="w-dot" aria-hidden="true">&middot;</span>
             <button class="w-foot-link">open the row</button>
-            <span class="w-dot" aria-hidden="true">&middot;</span>
-            <button class="w-foot-link">mark seen</button>
-            <span class="w-dot" aria-hidden="true">&middot;</span>
-            <button class="w-foot-link">snooze 1h</button>
-            <span class="w-dot" aria-hidden="true">&middot;</span>
-            <button class="w-foot-link">until it moves</button>
+            <button class="w-foot-link w-foot-ghost">mark seen</button>
+            <button class="w-foot-pill w-foot-on">snoozed <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg></button>
           </div>
         </article>
         <article class="w-need">
@@ -476,14 +502,9 @@
           </div>
           <div class="w-foot">
             <a class="w-foot-link" href="./web-session.html">discuss</a>
-            <span class="w-dot" aria-hidden="true">&middot;</span>
             <button class="w-foot-link">open the row</button>
-            <span class="w-dot" aria-hidden="true">&middot;</span>
-            <button class="w-foot-link">mark seen</button>
-            <span class="w-dot" aria-hidden="true">&middot;</span>
-            <button class="w-foot-link">snooze 1h</button>
-            <span class="w-dot" aria-hidden="true">&middot;</span>
-            <button class="w-foot-link">until it moves</button>
+            <button class="w-foot-link w-foot-ghost">mark seen</button>
+            <button class="w-foot-pill">snooze <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg></button>
           </div>
         </article>
         <article class="w-need">
@@ -505,14 +526,46 @@
           </div>
           <div class="w-foot">
             <a class="w-foot-link" href="./web-session.html">discuss</a>
-            <span class="w-dot" aria-hidden="true">&middot;</span>
             <button class="w-foot-link">open the row</button>
-            <span class="w-dot" aria-hidden="true">&middot;</span>
-            <button class="w-foot-link">mark seen</button>
-            <span class="w-dot" aria-hidden="true">&middot;</span>
-            <button class="w-foot-link">snooze 1h</button>
-            <span class="w-dot" aria-hidden="true">&middot;</span>
-            <button class="w-foot-link">until it moves</button>
+            <button class="w-foot-link w-foot-ghost">mark seen</button>
+            <button class="w-foot-pill">snooze <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg></button>
+          </div>
+        </article>
+        <article class="w-need">
+          <div class="w-meta">
+            <span class="w-kind">clarification</span>
+            <span class="w-ctx">seed the look's data &middot; lead</span>
+            <span class="w-chip warn">seen, forgotten</span>
+            <span class="w-age">waiting 2h</span>
+          </div>
+          <h3 class="w-q">Which store should the window draw from?</h3>
+          <div class="w-actions">
+            <button class="w-ghost" aria-expanded="false">answer in your words</button>
+          </div>
+          <div class="w-foot">
+            <a class="w-foot-link" href="./web-session.html">discuss</a>
+            <button class="w-foot-link">open the row</button>
+            <span class="w-foot-link w-seen">&#10003; seen</span>
+            <button class="w-foot-pill">snooze <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg></button>
+          </div>
+        </article>
+        <article class="w-need">
+          <div class="w-meta">
+            <span class="w-kind">teaching</span>
+            <span class="w-ctx">push before the full suite &middot; lead</span>
+            <span class="w-chip" title="the class a teaching settles">pre-push-suite</span>
+            <span class="w-chip">reask at 16:02</span>
+            <span class="w-age">waiting 1h</span>
+          </div>
+          <h3 class="w-q">Why does a push keep landing before the suite has run?</h3>
+          <div class="w-actions">
+            <button class="w-ghost" aria-expanded="false">write the lesson</button>
+          </div>
+          <div class="w-foot">
+            <a class="w-foot-link" href="./web-session.html">discuss</a>
+            <button class="w-foot-link">open the row</button>
+            <button class="w-foot-link w-foot-ghost">mark seen</button>
+            <button class="w-foot-pill">snooze <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="12" height="12" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg></button>
           </div>
         </article>
       </div>

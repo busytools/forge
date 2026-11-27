@@ -802,16 +802,29 @@ button.b-epic-pill { cursor: pointer; }
 }
 /* The since-last-look strip: counts on one line, the sampled actions behind
    an expand. It summarizes, so it sits above the parts and stays quiet. */
-.w-digest { border: 1px solid var(--line); border-radius: var(--r); background: var(--s2); }
-.w-digest-head {
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; width: 100%;
-  padding: 9px 12px; background: none; border: none; cursor: pointer; text-align: left;
-  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+.w-digest {
+  border: 1px solid var(--line); border-radius: var(--r); background: var(--s2);
+  padding: 9px 12px;
 }
-.w-digest-title { color: var(--text); }
-.w-digest-head:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-.w-digest-line { color: var(--dim); }
-.w-sample { padding: 0 12px 8px; }
+.w-digest-title {
+  margin: 0 0 4px; font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
+}
+.w-digest-lines { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.w-digest-row { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* One line per count: a quiet pill-shaped press, aligned as a column of
+   rows rather than a paragraph. A line with no items behind it is text. */
+.w-digest-line {
+  display: inline-flex; align-items: center; gap: 8px; align-self: flex-start;
+  min-height: 24px; padding: 0 8px; margin-left: -8px; border: 1px solid transparent;
+  border-radius: 999px; background: none;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim); cursor: pointer;
+}
+.w-digest-line:hover { color: var(--text); background: var(--s3); }
+.w-digest-line:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.w-digest-static, .w-digest-static:hover { color: var(--dim); background: none; cursor: default; }
+.w-digest-label { color: var(--muted); }
+.w-digest-caret { color: var(--dim); }
+.w-sample { padding: 4px 0 4px 8px; }
 .w-needs { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 10px; }
 /* The warm surface the strip used, now per card: an ask on the reader is
    the one thing on this page that is theirs to answer. **A card is an ask,
@@ -835,6 +848,7 @@ button.b-epic-pill { cursor: pointer; }
   color: var(--dim); background: var(--s3); border-radius: 999px;
   padding: 0 8px; font-size: var(--fs-label);
 }
+.w-chip.warn { color: var(--warn); }
 .w-meta {
   display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
   margin-bottom: 4px; font-family: var(--mono); font-size: var(--fs-label);
@@ -883,24 +897,44 @@ button.b-epic-pill { cursor: pointer; }
 .w-ghost { background: transparent; color: var(--dim); border: 1px dashed var(--line); }
 .w-ghost:hover { color: var(--text); border-color: var(--dim); }
 .w-primary:focus-visible, .w-secondary:focus-visible, .w-ghost:focus-visible,
-.w-more:focus-visible, .w-foot-link:focus-visible {
+.w-more:focus-visible, .w-foot-link:focus-visible, .b-pick.w-foot-pill:focus-visible {
   outline: 2px solid var(--blue); outline-offset: 2px;
 }
 .w-note { flex: 1 1 180px; min-height: 32px; }
 .w-hold { margin: 0; color: var(--warn); font-size: var(--fs-label); flex-basis: 100%; }
+/* One row of the person's own acts: shaped, content-sized pills at the
+   card's radius, one 8px gap, folding onto a second row on a narrow card
+   rather than squeezing a label into two lines. **The state a press wrote
+   is drawn pressed**, in words: `seen` where `mark seen` was, and the
+   deferral the person chose on the snooze control. */
 .w-foot {
-  display: flex; gap: 8px; align-items: center; margin-top: 10px; padding-top: 8px;
-  border-top: 1px solid var(--line);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line);
   font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
 }
 .w-foot-link {
-  background: none; border: none; padding: 0; color: inherit; font: inherit;
+  display: inline-flex; align-items: center; gap: 4px;
+  min-height: 24px; padding: 0 10px; border-radius: 999px;
+  border: 1px solid transparent; background: transparent;
+  color: var(--dim); font: inherit; white-space: nowrap;
   cursor: pointer; text-decoration: none;
 }
-.w-foot-link:hover { color: var(--blue); }
+.w-foot-link:hover { color: var(--text); background: var(--s3); }
+/* The pair the person acts through draws as the action bar's ghost. */
+.w-foot-link.w-foot-ghost { border: 1px dashed var(--line); }
+.w-foot-link.w-foot-ghost:hover { border-color: var(--dim); }
 /* A state word, not a door: `seen` is where `mark seen` was. */
-.w-foot-link.w-seen, .w-foot-link.w-seen:hover { color: var(--dim); cursor: default; }
-.w-dot { color: var(--line); }
+.w-foot-link.w-seen {
+  color: var(--muted); background: var(--s3); border-color: transparent; cursor: default;
+}
+.w-foot-link.w-seen:hover { color: var(--muted); background: var(--s3); }
+.w-foot-link.w-seen .ic { width: 11px; height: 11px; }
+/* The snooze trigger, in the footer's shape rather than the lane picker's. */
+.b-pick.w-foot-pill {
+  min-height: 24px; padding: 0 10px; border-radius: 999px;
+  border: 1px solid var(--line); white-space: nowrap;
+}
+.b-pick.w-foot-pill.w-foot-on { background: var(--s3); color: var(--text); }
 .w-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .w-exc, .w-live {
   display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline;
@@ -919,9 +953,12 @@ button.b-epic-pill { cursor: pointer; }
 .w-restore { margin-left: auto; }
 @media (pointer: coarse) {
   .w-tab, .w-primary, .w-secondary, .w-ghost, .w-more, .w-foot-link, .w-door, .w-note,
-  .w-link, .w-digest-head {
+  .w-link, .w-digest-line {
     min-height: 44px;
   }
+  /* The footer trigger carries the footer's own min-height, so it needs its
+     own coarse rule at the same specificity. */
+  .b-pick.w-foot-pill { min-height: 44px; }
 }
 @media (max-width: 560px) {
   .w-needs { grid-template-columns: 1fr; }

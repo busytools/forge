@@ -1340,7 +1340,7 @@ describe("the row's own page", () => {
     button?.click();
     flushSync();
     expect(acts.at(-1)).toEqual({
-      task_answer: { project: 'proj', id: 'w1', words: 'keep the window raise' },
+      task_answer: { project: 'proj', id: 'w1', text: 'keep the window raise' },
     });
   });
 
@@ -1918,14 +1918,56 @@ describe("the window's ask kinds and its attention", () => {
     byText('mark seen')?.click();
     flushSync();
     expect(acts.at(-1)).toEqual({ task_ack: { project: 'proj', id: 'a1' } });
-    byText('snooze 1h')?.click();
+    // Snooze is ONE control with a small menu: the trigger, then the
+    // deferral it opens onto.
+    document.querySelector<HTMLButtonElement>('[aria-label="snooze this ask"]')?.click();
+    flushSync();
+    byText('1h')?.click();
     flushSync();
     expect(acts.at(-1)).toEqual({ task_snooze: { project: 'proj', id: 'a1', until: '1h' } });
+    document.querySelector<HTMLButtonElement>('[aria-label="snooze this ask"]')?.click();
+    flushSync();
     byText('until it moves')?.click();
     flushSync();
     expect(acts.at(-1)).toEqual({
       task_snooze: { project: 'proj', id: 'a1', until: 'activity' },
     });
+  });
+
+  it('draws every kind of ask accessibly, the footer controls included', async () => {
+    const look = row(
+      task('look', 'a look', 'waiting', {
+        owner: lead,
+        verify: 'user',
+        waiting_on: {
+          kind: 'user',
+          detail: null,
+          on: null,
+          verification: true,
+          since,
+          acknowledged_at: since,
+        },
+      }),
+    );
+    for (const card of [
+      look,
+      requestRow('a1', 'decision'),
+      requestRow('a2', 'clarification'),
+      requestRow('a3', 'exception'),
+      requestRow('a4', 'teaching'),
+    ]) {
+      const frame = mount(Frames, {
+        target: document.body,
+        props: {
+          initial: wireWith([card]),
+          mode: 'window' as const,
+          onact: (command: Record<string, Record<string, unknown>>) => acts.push(command),
+        },
+      });
+      flushSync();
+      expect(await violationsOf(document.body.innerHTML), `axe on ${card.task.id}`).toEqual([]);
+      await unmount(frame);
+    }
   });
 
   it('draws an acknowledged ask as seen, not as a press to make again', () => {
@@ -1994,13 +2036,22 @@ describe("the window's ask kinds and its attention", () => {
       },
     };
     windowOver([], attention);
-    const head = document.querySelector<HTMLElement>('.w-digest-head');
-    if (head === null) throw new Error('the strip is not drawn');
-    expect(head.textContent).toContain('2 merged');
-    expect(head.textContent).toContain('3 moved');
-    expect(head.textContent).toContain('sampled 1 of 7 agent actions');
+    // One line per count: a payload without items draws each count as a
+    // line of its own rather than one joined sentence.
+    const lines = [...document.querySelectorAll<HTMLElement>('.w-digest-line')];
+    const drawn = lines.map((line) => line.textContent?.replace(/\s+/g, ' ').trim()).join(' | ');
+    expect(drawn, 'the counts are one joined line, not their own lines').toContain('merged');
+    expect(drawn).toContain('2');
+    expect(drawn).toContain('moved');
+    expect(drawn).toContain('3');
+    expect(drawn).toContain('sampled');
+    expect(drawn).toContain('1 of 7 agent actions');
     expect(document.querySelector('.w-sample'), 'the sample drew unasked').toBeNull();
-    head.click();
+    const sampled = document.querySelector<HTMLButtonElement>(
+      '[aria-label="sampled: 1 of 7 agent actions"]',
+    );
+    if (sampled === null) throw new Error('the sampled line does not open');
+    sampled.click();
     flushSync();
     expect(
       document.querySelector('.w-sample')?.textContent,

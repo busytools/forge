@@ -14,7 +14,7 @@
  */
 
 import { artifactOf, waitOnUser } from './view';
-import type { BoardWire } from '../wire/board';
+import type { BoardWire, DeltaItemWire } from '../wire/board';
 import type { BoardRow, HomeWire, MissRow, Task } from '../wire/home';
 
 /** The ask kinds a card can be: a look, or one of the four requests. */
@@ -50,6 +50,8 @@ export interface NeedCard {
   seat: { org: string; project: string; label: string } | null;
   /** The person marked it seen and has not answered. */
   acknowledged: boolean;
+  /** The acknowledgement stood unanswered too long: seen and forgotten. */
+  forgotten: boolean;
   /** The person's deferral still holds. */
   snoozed: boolean;
   /** The deadline that runs its named default, in epoch seconds. */
@@ -67,6 +69,15 @@ export interface SampleRow {
   at: number;
 }
 
+/** One row behind a digest count, so the line opens onto what it counts. */
+export interface DeltaItemView {
+  id: string | null;
+  subject: string;
+  /** What happened to it, in the board's own words. */
+  word: string;
+  at: number;
+}
+
 /** The window's attention facts: last look, the delta, and the sample. */
 export interface AttentionView {
   lastLook: number | null;
@@ -76,6 +87,13 @@ export interface AttentionView {
   landed: number;
   expired: number;
   merged: number;
+  /** What each count holds; absent items on a payload older than the field. */
+  items: {
+    moved: DeltaItemView[];
+    landed: DeltaItemView[];
+    expired: DeltaItemView[];
+    merged: DeltaItemView[];
+  };
   sample: { rows: SampleRow[]; sampled: number; total: number };
 }
 
@@ -152,6 +170,16 @@ export function clockOf(secs: number): string {
   return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
 }
 
+/** A delta's items as the window reads them; an older payload carries none. */
+function deltaItems(items: DeltaItemWire[] | undefined): DeltaItemView[] {
+  return (items ?? []).map((item) => ({
+    id: item.id,
+    subject: item.subject,
+    word: item.word,
+    at: item.at.secs_since_epoch,
+  }));
+}
+
 /** The evidence's own state, in the server's three words. */
 function evidenceStateOf(task: Task): NeedCard['evidenceState'] {
   const evidence = task.evidence;
@@ -224,6 +252,7 @@ function needCardOf(row: BoardRow, nowSecs: number): NeedCard | null {
     approveBlocked,
     seat: task.owner === null ? null : { ...task.owner },
     acknowledged: wait?.acknowledged_at !== null && wait?.acknowledged_at !== undefined,
+    forgotten: row.forgotten === true,
     snoozed: snoozedNow(task, nowSecs),
     dueAt: wait?.due?.at.secs_since_epoch ?? null,
     dueDefault: wait?.due?.default ?? null,
@@ -323,6 +352,12 @@ export function windowView(
           landed: wireAttention.delta.landed,
           expired: wireAttention.delta.expired,
           merged: wireAttention.delta.merged,
+          items: {
+            moved: deltaItems(wireAttention.delta.moved_items),
+            landed: deltaItems(wireAttention.delta.landed_items),
+            expired: deltaItems(wireAttention.delta.expired_items),
+            merged: deltaItems(wireAttention.delta.merged_items),
+          },
           sample: {
             rows: wireAttention.sample.rows.map((row) => ({
               seat: row.seat,
@@ -335,13 +370,17 @@ export function windowView(
           },
         };
 
-  // NEEDS YOU: the asks on the reader, ranked oldest first, looks ahead of
-  // decisions because a look is a finished row nobody can close until the
-  // reader looks. The rank is the wait's own age, and nothing else.
+  // NEEDS YOU: looks first - a finished row nobody can close until the
+  // reader looks - then every ask by its wait's own age, whichever kinds
+  // they are. The rank is age, never the kind's name.
   const needs = rows
     .map((row) => needCardOf(row, nowSecs))
     .filter((card): card is NeedCard => card !== null)
-    .sort((a, b) => (a.kind === b.kind ? a.at - b.at : a.kind === 'look' ? -1 : 1));
+    .sort((a, b) => {
+      const lookA = a.kind === 'look' ? 0 : 1;
+      const lookB = b.kind === 'look' ? 0 : 1;
+      return lookA !== lookB ? lookA - lookB : a.at - b.at;
+    });
 
   // EXCEPTIONS: what contradicts the state - and never a row already drawn
   // as an ask, which would report the same fact twice. A stopped worker is

@@ -13,11 +13,14 @@
     value,
     options,
     onpick,
+    class: triggerClass = '',
   }: {
     label: string;
     value: string;
     options: { value: string; label: string }[];
     onpick: (value: string) => void;
+    /** Extra classes for the trigger, where a host draws it in its own shape. */
+    class?: string;
   } = $props();
 
   let open = $state(false);
@@ -79,7 +82,7 @@
 <div class="b-drop" bind:this={root}>
   <button
     type="button"
-    class="b-pick"
+    class="b-pick {triggerClass}"
     aria-label={label}
     aria-haspopup="listbox"
     aria-expanded={open}

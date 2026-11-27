@@ -310,6 +310,13 @@ export interface BoardRow {
   history: BoardTransition[];
   /** How many transitions the row has in all, never fewer than the list above. */
   history_total: number;
+  /**
+   * The acknowledgement stood unanswered past the drive's own threshold:
+   * the person marked it seen and forgot it. Derived server-side from the
+   * row's persisted acknowledgement; absent on an older payload, which
+   * reads as not forgotten.
+   */
+  forgotten?: boolean;
 }
 
 /**
@@ -860,6 +867,7 @@ export function rowFrom(entry: unknown): BoardRow {
     // not a claim that the seat is gone.
     owner_live: raw['owner_live'] !== false,
     wait_secs: typeof raw['wait_secs'] === 'number' ? raw['wait_secs'] : null,
+    forgotten: raw['forgotten'] === true,
     marks: (raw['marks'] as Marks | undefined) ?? NO_MARKS,
     rollup: (raw['rollup'] as [number, number] | null | undefined) ?? null,
     parent_subject: (raw['parent_subject'] as string | null | undefined) ?? null,

@@ -29,12 +29,26 @@ export interface SampleRowWire {
   at: { secs_since_epoch: number; nanos_since_epoch: number };
 }
 
+/** One row behind a digest count, so its line opens onto what it counts. */
+export interface DeltaItemWire {
+  id: string | null;
+  subject: string;
+  /** What happened to it, in the board's own words. */
+  word: string;
+  at: { secs_since_epoch: number; nanos_since_epoch: number };
+}
+
 /** What changed on the board since the person last looked. */
 export interface BoardDeltaWire {
   moved: number;
   landed: number;
   expired: number;
   merged: number;
+  /** A payload older than these fields counts without items. */
+  moved_items?: DeltaItemWire[];
+  landed_items?: DeltaItemWire[];
+  expired_items?: DeltaItemWire[];
+  merged_items?: DeltaItemWire[];
 }
 
 /**

@@ -4,6 +4,8 @@
   import { hrefForSlot } from '../routes';
   import type { SessionSlot } from '../wire/types';
   import Icon from '../components/Icon.svelte';
+  import Picker from './Picker.svelte';
+  import { digestLines, sampleClaim } from './digest';
   import type { NeedCard, WindowView } from './window';
   import { clockOf } from './window';
 
@@ -35,14 +37,22 @@
   const noteOpen: Record<string, boolean> = $state({});
   /** Whether a card's evidence is expanded: one summary line until asked. */
   const evidenceOpen: Record<string, boolean> = $state({});
-  /** Whether the "since your last look" strip is open on its sample. */
-  let digestOpen = $state(false);
+  /** Which digest line is open on its items, by the line's own key. */
+  const digestOpen: Record<string, boolean> = $state({});
+  /** The deferral the person chose, per row, so the control names it. */
+  const snoozeChoice: Record<string, string> = $state({});
 
   /** How much of the evidence a collapsed card shows before it is expanded. */
   const SUMMARY_CHARS = 90;
 
   /** An exception's disposals, enumerated as the core's are. */
   const DISPOSITIONS = ['retry', 'rescope', 'drop', 'diagnose'] as const;
+
+  /** The two deferrals the snooze control offers, one menu, one press each. */
+  const SNOOZE_OPTIONS = [
+    { value: '1h', label: '1h' },
+    { value: 'activity', label: 'until it moves' },
+  ];
 
   /** The move's own duration: a reader who asked for less gets none. */
   function motion(): number {
@@ -75,7 +85,14 @@
 
   /** The person deferred an ask until a time, or until the row moves. */
   function snooze(card: NeedCard, until: string): void {
+    snoozeChoice[card.id] = until;
     act({ task_snooze: { project: view.project, id: card.id, until } });
+  }
+
+  /** What the snooze control reads: the state it wrote, else the press. */
+  function snoozeShown(card: NeedCard): string {
+    if (!card.snoozed) return 'snooze';
+    return snoozeChoice[card.id] ?? 'snoozed';
   }
 
   /**
@@ -88,21 +105,7 @@
     if (attention === null) return 'nothing is waiting on you';
     const at = clockOf(attention.checkedAt ?? Math.floor(Date.now() / 1_000));
     const agents = `${attention.agents} ${attention.agents === 1 ? 'agent' : 'agents'} ran`;
-    return `nothing needs you - checked ${at} · ${agents} · ${digestLine(view)}`;
-  }
-
-  /** What the since-last-look strip says, one count per line. */
-  function digestLine(view: WindowView): string {
-    const attention = view.attention;
-    if (attention === null) return 'nothing to compare yet';
-    const parts = [
-      attention.merged > 0 ? `${attention.merged} merged` : null,
-      attention.moved > 0 ? `${attention.moved} moved` : null,
-      attention.landed > 0 ? `${attention.landed} landed` : null,
-      attention.expired > 0 ? `${attention.expired} expired` : null,
-      `sampled ${attention.sample.sampled} of ${attention.sample.total} agent actions`,
-    ].filter((part): part is string => part !== null);
-    return parts.join(' · ');
+    return `nothing needs you - checked ${at} · ${agents} · ${sampleClaim(attention)}`;
   }
 
   function summaryOf(text: string): string {
@@ -133,27 +136,55 @@
 <section class="w-window" aria-label="the board window">
   {#if view.attention !== null}
     <section class="w-digest" aria-label="since your last look">
-      <button
-        type="button"
-        class="w-digest-head"
-        aria-expanded={digestOpen}
-        onclick={() => (digestOpen = !digestOpen)}
-      >
-        <span class="w-digest-title">since your last look</span>
-        <span class="w-digest-line">{digestLine(view)}</span>
-      </button>
-      {#if digestOpen && view.attention.sample.rows.length > 0}
-        <ul class="w-list w-sample" aria-label="the sampled agent actions">
-          {#each view.attention.sample.rows as sample, index (`${sample.seat}:${sample.tool}:${index}`)}
-            <li class="w-exc">
-              <span class="w-strong">{sample.seat}</span>
-              <span class="w-why">{sample.tool}</span>
-              {#if sample.detail !== ''}<span class="w-why">{sample.detail}</span>{/if}
-              <span class="w-why">{clockOf(sample.at)}</span>
-            </li>
-          {/each}
-        </ul>
-      {/if}
+      <p class="w-digest-title">since your last look</p>
+      <!-- **One line per count, each opening onto the rows it counts.** A
+           line with nothing behind it is still drawn - a fact about the
+           window, not an absence - and an expired ask keeps its record
+           here, drawn as expired. -->
+      <ul class="w-digest-lines">
+        {#each digestLines(view.attention) as line (line.key)}
+          {@const open = digestOpen[line.key] === true}
+          <li class="w-digest-row">
+            {#if line.items.length > 0}
+              <button
+                type="button"
+                class="w-digest-line"
+                aria-expanded={open}
+                aria-label="{line.label}: {line.countLabel}"
+                onclick={() => (digestOpen[line.key] = !open)}
+              >
+                <span class="w-digest-label">{line.label}</span>
+                <span class="w-n">{line.countLabel}</span>
+                <span class="w-digest-caret" aria-hidden="true">{open ? '-' : '+'}</span>
+              </button>
+            {:else}
+              <span class="w-digest-line w-digest-static">
+                <span class="w-digest-label">{line.label}</span>
+                <span class="w-n">{line.countLabel}</span>
+              </span>
+            {/if}
+            {#if open}
+              <ul class="w-list w-sample" aria-label="the {line.label} items">
+                {#each line.items as item, index (item.id ?? `${line.key}:${index}`)}
+                  <li class="w-exc">
+                    {#if item.id !== null}
+                      <button
+                        type="button"
+                        class="w-link"
+                        onclick={() => onopen?.(item.id as string)}>{item.subject}</button
+                      >
+                    {:else}
+                      <span class="w-strong">{item.subject}</span>
+                    {/if}
+                    <span class="w-why">{item.word}</span>
+                    <span class="w-why">{clockOf(item.at)}</span>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </li>
+        {/each}
+      </ul>
     </section>
   {/if}
   <section class="w-part" aria-labelledby="w-needs-h">
@@ -195,7 +226,15 @@
               {#if card.class !== null}<span class="w-chip" title="the class a teaching settles"
                   >{card.class}</span
                 >{/if}
-              {#if card.acknowledged}<span class="w-chip">seen</span>{/if}
+              {#if card.acknowledged}
+                <span
+                  class="w-chip"
+                  class:warn={card.forgotten}
+                  title={card.forgotten
+                    ? "acknowledged and still unanswered past the drive's reminder"
+                    : null}>{card.forgotten ? 'seen, forgotten' : 'seen'}</span
+                >
+              {/if}
               {#if card.snoozed}<span class="w-chip">snoozed</span>{/if}
               {#if card.dueAt !== null}
                 <span class="w-chip" title="the default that runs if it is ignored"
@@ -347,30 +386,34 @@
                 >
               {/if}
             </div>
+            <!-- The person's own acts, one row of small quiet controls: each
+                 is a shaped pill at the card's radius, content-sized, and the
+                 row folds when the card is narrow rather than squeezing a
+                 label into two lines. `mark seen` is the ghost of the pair,
+                 and both it and snooze draw the state they wrote. -->
             <div class="w-foot">
               {#if card.seat !== null}
                 <a class="w-foot-link" href={discussHref(card.seat)}>discuss</a>
-                <span class="w-dot" aria-hidden="true">&middot;</span>
               {/if}
               <button type="button" class="w-foot-link" onclick={() => onopen?.(card.id)}
                 >open the row</button
               >
-              <span class="w-dot" aria-hidden="true">&middot;</span>
               {#if card.acknowledged}
-                <span class="w-foot-link w-seen">seen</span>
+                <span class="w-foot-link w-seen"><Icon name="check" /> seen</span>
               {:else}
-                <button type="button" class="w-foot-link" onclick={() => acknowledge(card)}
-                  >mark seen</button
+                <button
+                  type="button"
+                  class="w-foot-link w-foot-ghost"
+                  onclick={() => acknowledge(card)}>mark seen</button
                 >
               {/if}
-              <span class="w-dot" aria-hidden="true">&middot;</span>
-              <button type="button" class="w-foot-link" onclick={() => snooze(card, '1h')}
-                >snooze 1h</button
-              >
-              <span class="w-dot" aria-hidden="true">&middot;</span>
-              <button type="button" class="w-foot-link" onclick={() => snooze(card, 'activity')}
-                >until it moves</button
-              >
+              <Picker
+                label="snooze this ask"
+                value={snoozeShown(card)}
+                options={SNOOZE_OPTIONS}
+                onpick={(until: string) => snooze(card, until)}
+                class={card.snoozed ? 'w-foot-pill w-foot-on' : 'w-foot-pill'}
+              />
             </div>
           </article>
         {/each}
