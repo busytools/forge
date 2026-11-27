@@ -11224,7 +11224,7 @@ mod tests {
         let patches = patches_of(&written, &Subject::Home);
         let usage = patches[0].1["accounts"]["usage"].as_array().expect("the usage rows");
         assert_eq!(usage[0]["display_name"], "Acct");
-        assert_eq!(usage[0]["snapshot"]["balance"], 12.5, "the settled figure did not cross",);
+        assert_eq!(usage[0]["snapshot"]["balance"], 12.5, "the settled figure did not cross");
         assert_eq!(home_snapshots(&written), 1, "a whole home record followed the probe");
 
         drop(to_server);
