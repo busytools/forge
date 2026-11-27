@@ -21,14 +21,22 @@ use forge_primitives::plugins::{PluginUpdateRun, PluginsInventorySnapshot};
 use forge_primitives::review::{ReviewAnchor, ReviewSet, ReviewSide, ReviewThread};
 use forge_primitives::runtime::{AvailableAgent, AvailableCommand, MonitorRecord};
 use forge_primitives::slack::SlackSubscription;
+use forge_primitives::tasks::TaskId;
+use forge_primitives::token_usage::WindowUsage;
 use forge_primitives::{ContentBlock, GotifySubscription, Message, SessionSlot, UserEnvelope};
+use forge_workspace::bench::{
+    BenchResult, BenchState, ReadAloudState, SpeakingBenchResult, SpeakingBenchState,
+};
+use forge_workspace::board::{BoardRow, FleetRow};
+use forge_workspace::catalogue::{CatalogueCheck, CatalogueRow, InUseModel, ModelUpdate};
 use forge_workspace::env::git_diff::content::{DiffContent, FileContent, scan as scan_content};
 use forge_workspace::env::git_diff::file::{merge_base, read_file_lines};
 use forge_workspace::env::git_diff::resolver::{
     AnchorPlacement, OutdatedReason, place_anchor_in_content, place_anchor_in_lines_with,
 };
 use forge_workspace::env::processes::ProcessSnapshot;
-use forge_workspace::{McpServers, ProjectView};
+use forge_workspace::install::{ActivateState, InstallState, InstalledModel};
+use forge_workspace::{McpServers, ProjectView, TtsView};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -234,13 +242,14 @@ pub struct BoardWire {
     pub projects: Vec<ProjectBoardWire>,
 }
 
-/// One project's identity, which is all a board row needs to place it.
+/// One project's identity: the key a patch entry places a project by, and all
+/// a board row needs to place it.
 ///
 /// The rest of [`ProjectView`] - its sessions, its accounts, its paths - is
 /// the home's: the board neither hears nor draws it (#2517).
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct ProjectBoardIdentity {
+pub struct ProjectIdentity {
     pub org: String,
     pub name: String,
 }
@@ -249,7 +258,7 @@ pub struct ProjectBoardIdentity {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ProjectBoardWire {
-    pub project: ProjectBoardIdentity,
+    pub project: ProjectIdentity,
     /// The project's live rows, with what the board derives on each:
     /// worked time, ages, and the marks. Computed once, in the workspace's
     /// board module, and passed through - the client never re-derives a
@@ -2579,7 +2588,7 @@ fn board(surface: &ViewSurface) -> BoardWire {
     for project in &roster.projects {
         let subscribed = surface.connectors(Some(&project.name));
         projects.push(ProjectBoardWire {
-            project: ProjectBoardIdentity { org: project.org.clone(), name: project.name.clone() },
+            project: ProjectIdentity { org: project.org.clone(), name: project.name.clone() },
             rows: surface.board_rows(&project.name),
             crons: roster.crons_for_project(&project.name),
             connectors: ProjectConnectorsWire {
@@ -3194,6 +3203,581 @@ async fn session(
     // the record's own assembly.
     timings.tail_ms = slice_ms(at) - timings.resume_ms;
     Ok(wire)
+}
+
+/// The number a subject's stream is at.
+///
+/// **One counter per subject, not per connection.** The subscribe answer
+/// states the version its record is at; every patch states the next one and
+/// the server sends them in order. A client holds the version of its own
+/// copy: `held + 1` applies, and any other number is a gap - the one way a
+/// subject can go stale - answered with one whole read per subject, never a
+/// loop. A reconnect or a return from sleep asks for the whole read too,
+/// because the patches minted while it was away are gone.
+///
+/// **The rule for every patch below: an absent field means unchanged.** A
+/// field present with a value replaces it, and a record field that is itself
+/// optional crosses as a present `null` when it is cleared - which is why
+/// those patch fields are `Option<Option<T>>` and a missing key still means
+/// keep. An unchanged patch therefore serialises as `{}` and is not sent at
+/// all.
+///
+/// **A patch is written, never read.** The patch types derive `Serialize`
+/// only: the server emits them and a client applies JSON. `Deserialize`
+/// would also collapse a present `null` into a missing key - serde decodes
+/// `Option<Option<T>>` from both as the outer `None` - which is exactly the
+/// distinction "absent means unchanged" needs.
+///
+/// **Dictation has no patch type.** [`Subject::Dictate`]'s subscribe answer
+/// carries no record - a take belongs to the connection and its frames are
+/// the deltas - so there is nothing for a whole read to replace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct StreamVersion(pub u64);
+
+/// One list entry in a patch: a record set under its id, or that id removed.
+///
+/// **The id is the entry's address, not its position.** A set replaces the
+/// record holding that id where it stands, a removal takes it out, and the
+/// order entries arrive in does not move anything else in the list.
+#[derive(Serialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum PatchEntry<Id, Record> {
+    Set { id: Id, record: Record },
+    Removed { id: Id },
+}
+
+/// One home change: only the fields that moved.
+///
+/// Home's three lists travel by id ([`PatchEntry`]): a project by its org and
+/// name, a seat by its slot, a fleet row by its project name. `unseen` and
+/// the whole fields are replaced when they change.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct HomePatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projects: Option<Vec<PatchEntry<ProjectIdentity, ProjectWire>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agents: Option<Vec<PatchEntry<SessionSlot, AgentWire>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fleet: Option<Vec<PatchEntry<String, FleetRow>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unseen: Option<Vec<SessionSlot>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accounts: Option<forge_workspace::AccountPoolView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connectors: Option<ConnectorsWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dictate: Option<DictateWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice: Option<VoiceWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cli_version: Option<Option<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forge_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forge_version_short: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub boot_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_status: Option<Option<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fatal_error: Option<Option<Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub biometric: Option<ReadWire<Vec<forge_primitives::biometric::BiometricEnrolment>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vault: Option<Option<VaultWire>>,
+}
+
+/// One board change: only the projects whose detail moved.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct BoardPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projects: Option<Vec<BoardProjectEntry>>,
+}
+
+/// One project's board entry: its detail set, or the project removed.
+#[derive(Serialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum BoardProjectEntry {
+    /// A project's board, with only the lists that moved. A project the
+    /// client has never read arrives with every field set.
+    Set {
+        identity: ProjectIdentity,
+        board: ProjectBoardPatch,
+    },
+    Removed {
+        identity: ProjectIdentity,
+    },
+}
+
+/// One project's board change: only the lists that moved.
+///
+/// Rows travel by task id ([`PatchEntry`]): a row added or replaced is a
+/// `set`, a deleted row is `removed`. `crons` and `connectors` are replaced
+/// whole when they change.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct ProjectBoardPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<Vec<PatchEntry<TaskId, BoardRow>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crons: Option<Vec<forge_primitives::CronEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connectors: Option<ProjectConnectorsWire>,
+}
+
+/// One seat change: only the fields that moved.
+///
+/// **The conversation is frames, not this.** A seat's messages already arrive
+/// as `Update` frames numbered on the seat's counter; the subscribe answer
+/// carries the first window and a gap is answered by the seat's own repair
+/// reads. `conversation` is carried here so the patch is total over the
+/// record, and a live patch leaves it absent. `pending_ask` is derived from
+/// `pending_asks` when the record is built, so a patch that moves one moves
+/// the other.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct SessionPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slot: Option<SessionSlot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<SessionStateWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub composer: Option<ComposerWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<SessionHeaderWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<Option<McpServers>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub processes: Option<Option<ProcessSnapshot>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub background_tasks: Option<Vec<forge_workspace::BackgroundTask>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monitors: Option<Vec<MonitorRecord>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<Option<forge_primitives::terminal::TerminalSummary>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_ask: Option<Option<PendingAskWire>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_asks: Option<Vec<PendingAskWire>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<ConversationWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slash_commands: Option<Vec<AvailableCommand>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subagents: Option<Vec<AvailableAgent>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subagent_instances: Option<Vec<forge_primitives::runtime::SubagentCard>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_index: Option<Arc<FileIndex>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_sessions: Option<Vec<ResumableSessionWire>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reviews: Option<ReviewsWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tree_reviews: Option<ReviewsWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work: Option<WorkState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git: Option<forge_primitives::git_diff::GitWorkView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr: Option<Option<forge_primitives::git::GitPrInfo>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closes: Option<Vec<forge_primitives::git::GitIssueRef>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff: Option<DiffContent>,
+}
+
+/// One usage change: only the windows that moved.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct UsagePatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub today: Option<WindowUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub week: Option<WindowUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub month: Option<WindowUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifetime: Option<WindowUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pricing_available: Option<bool>,
+}
+
+/// One models-page change: only the fields that moved.
+///
+/// A bench tick, an install and a catalogue check each move one field, so a
+/// running bench carries the bench state and nothing of the feed.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct DictateModelsPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub models_dir: Option<Option<std::path::PathBuf>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaking: Option<TtsView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub in_use: Option<Vec<InUseModel>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check: Option<CatalogueCheck>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updates: Option<Vec<ModelUpdate>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<Vec<CatalogueRow>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install: Option<InstallState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activate: Option<ActivateState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installed: Option<Vec<InstalledModel>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bench: Option<BenchState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub results: Option<Vec<BenchResult>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaking_bench: Option<SpeakingBenchState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaking_results: Option<Vec<SpeakingBenchResult>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_aloud: Option<ReadAloudState>,
+}
+
+/// One extensions-page change: only the fields that moved.
+///
+/// The inventory and the update run are the same objects the live frames
+/// carry, so a patch that moves either carries what the frame carried.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct ExtensionsPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<Option<PluginsInventorySnapshot>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_run: Option<Option<PluginUpdateRun>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lsp: Option<Vec<LspCheckWire>>,
+}
+
+/// The patch types' proof: what a record carries, its patch can carry, and a
+/// field added to either side cannot compile until the other catches up.
+///
+/// **The fixture is the conversion, not the assertion.** Each `whole_*`
+/// function destructures its record without `..` and fills every field of the
+/// patch, so a field added to the record - or to the patch - is a compile
+/// error here rather than a silent gap on the wire. The conversion is never
+/// called: compiling it is what the test asserts.
+#[cfg(test)]
+mod patches {
+    use super::*;
+    use forge_primitives::token_usage::UsageReport;
+    use forge_workspace::catalogue::DictateModelsSnapshot;
+
+    fn whole_home(record: HomeWire) -> HomePatch {
+        let HomeWire {
+            projects,
+            agents,
+            fleet,
+            unseen,
+            accounts,
+            connectors,
+            dictate,
+            voice,
+            cli_version,
+            forge_version,
+            forge_version_short,
+            boot_id,
+            service_status,
+            fatal_error,
+            biometric,
+            vault,
+        } = record;
+        HomePatch {
+            projects: Some(
+                projects
+                    .into_iter()
+                    .map(|row| PatchEntry::Set {
+                        id: ProjectIdentity {
+                            org: row.project.org.clone(),
+                            name: row.project.name.clone(),
+                        },
+                        record: row,
+                    })
+                    .collect(),
+            ),
+            agents: Some(
+                agents
+                    .into_iter()
+                    .map(|row| PatchEntry::Set { id: row.slot.clone(), record: row })
+                    .collect(),
+            ),
+            fleet: Some(
+                fleet
+                    .into_iter()
+                    .map(|row| PatchEntry::Set { id: row.project.clone(), record: row })
+                    .collect(),
+            ),
+            unseen: Some(unseen),
+            accounts: Some(accounts),
+            connectors: Some(connectors),
+            dictate: Some(dictate),
+            voice: Some(voice),
+            cli_version: Some(cli_version),
+            forge_version: Some(forge_version),
+            forge_version_short: Some(forge_version_short),
+            boot_id: Some(boot_id),
+            service_status: Some(service_status),
+            fatal_error: Some(fatal_error),
+            biometric: Some(biometric),
+            vault: Some(vault),
+        }
+    }
+
+    fn whole_board(record: BoardWire) -> BoardPatch {
+        let BoardWire { projects } = record;
+        BoardPatch {
+            projects: Some(
+                projects
+                    .into_iter()
+                    .map(|project| {
+                        let ProjectBoardWire { project: identity, rows, crons, connectors } =
+                            project;
+                        BoardProjectEntry::Set {
+                            identity,
+                            board: ProjectBoardPatch {
+                                rows: Some(
+                                    rows.into_iter()
+                                        .map(|row| PatchEntry::Set {
+                                            id: row.task.id.clone(),
+                                            record: row,
+                                        })
+                                        .collect(),
+                                ),
+                                crons: Some(crons),
+                                connectors: Some(connectors),
+                            },
+                        }
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    fn whole_session(record: SessionWire) -> SessionPatch {
+        let SessionWire {
+            slot,
+            state,
+            composer,
+            header,
+            mcp,
+            processes,
+            background_tasks,
+            monitors,
+            terminal,
+            pending_ask,
+            pending_asks,
+            conversation,
+            slash_commands,
+            subagents,
+            subagent_instances,
+            file_index,
+            resume_sessions,
+            reviews,
+            tree_reviews,
+            work,
+            git,
+            pr,
+            closes,
+            diff,
+        } = record;
+        SessionPatch {
+            slot: Some(slot),
+            state: Some(state),
+            composer: Some(composer),
+            header: Some(header),
+            mcp: Some(mcp),
+            processes: Some(processes),
+            background_tasks: Some(background_tasks),
+            monitors: Some(monitors),
+            terminal: Some(terminal),
+            pending_ask: Some(pending_ask),
+            pending_asks: Some(pending_asks),
+            conversation: Some(conversation),
+            slash_commands: Some(slash_commands),
+            subagents: Some(subagents),
+            subagent_instances: Some(subagent_instances),
+            file_index: Some(file_index),
+            resume_sessions: Some(resume_sessions),
+            reviews: Some(reviews),
+            tree_reviews: Some(tree_reviews),
+            work: Some(work),
+            git: Some(git),
+            pr: Some(pr),
+            closes: Some(closes),
+            diff: Some(diff),
+        }
+    }
+
+    fn whole_usage(record: UsageReport) -> UsagePatch {
+        let UsageReport { today, week, month, lifetime, pricing_available } = record;
+        UsagePatch {
+            today: Some(today),
+            week: Some(week),
+            month: Some(month),
+            lifetime: Some(lifetime),
+            pricing_available: Some(pricing_available),
+        }
+    }
+
+    fn whole_dictate_models(record: DictateModelsSnapshot) -> DictateModelsPatch {
+        let DictateModelsSnapshot {
+            enabled,
+            models_dir,
+            speaking,
+            in_use,
+            check,
+            updates,
+            rows,
+            install,
+            activate,
+            installed,
+            bench,
+            results,
+            speaking_bench,
+            speaking_results,
+            read_aloud,
+        } = record;
+        DictateModelsPatch {
+            enabled: Some(enabled),
+            models_dir: Some(models_dir),
+            speaking: Some(speaking),
+            in_use: Some(in_use),
+            check: Some(check),
+            updates: Some(updates),
+            rows: Some(rows),
+            install: Some(install),
+            activate: Some(activate),
+            installed: Some(installed),
+            bench: Some(bench),
+            results: Some(results),
+            speaking_bench: Some(speaking_bench),
+            speaking_results: Some(speaking_results),
+            read_aloud: Some(read_aloud),
+        }
+    }
+
+    fn whole_extensions(record: ExtensionsWire) -> ExtensionsPatch {
+        let ExtensionsWire { snapshot, update_run, lsp } = record;
+        ExtensionsPatch { snapshot: Some(snapshot), update_run: Some(update_run), lsp: Some(lsp) }
+    }
+
+    #[test]
+    fn the_home_patch_carries_every_home_field() {
+        let _: fn(HomeWire) -> HomePatch = whole_home;
+    }
+
+    #[test]
+    fn the_board_patch_carries_every_board_field() {
+        let _: fn(BoardWire) -> BoardPatch = whole_board;
+    }
+
+    #[test]
+    fn the_session_patch_carries_every_session_field() {
+        let _: fn(SessionWire) -> SessionPatch = whole_session;
+    }
+
+    #[test]
+    fn the_usage_patch_carries_every_usage_field() {
+        let _: fn(UsageReport) -> UsagePatch = whole_usage;
+    }
+
+    #[test]
+    fn the_dictate_models_patch_carries_every_field() {
+        let _: fn(DictateModelsSnapshot) -> DictateModelsPatch = whole_dictate_models;
+    }
+
+    #[test]
+    fn the_extensions_patch_carries_every_extensions_field() {
+        let _: fn(ExtensionsWire) -> ExtensionsPatch = whole_extensions;
+    }
+
+    /// Every subject states whether its deltas are a patch or its own frames:
+    /// a variant added to the wire fails to compile here until that is decided.
+    #[test]
+    fn every_subject_has_a_patch_decision() {
+        fn carries(subject: &Subject) -> &'static str {
+            match subject {
+                Subject::Home => "home patch",
+                Subject::Board => "board patch",
+                Subject::Session(_) => "session patch",
+                Subject::Usage => "usage patch",
+                Subject::DictateModels => "dictate models patch",
+                Subject::Extensions => "extensions patch",
+                Subject::Dictate => "no record: its own frames are the deltas",
+            }
+        }
+        let _: fn(&Subject) -> &'static str = carries;
+    }
+
+    /// The rule, at the wire: a patch with nothing changed is an empty object,
+    /// so an unchanged subject sends nothing at all.
+    #[test]
+    fn an_unchanged_patch_carries_no_keys() {
+        let patches = [
+            ("home", serde_json::to_value(HomePatch::default()).expect("home")),
+            ("board", serde_json::to_value(BoardPatch::default()).expect("board")),
+            ("session", serde_json::to_value(SessionPatch::default()).expect("session")),
+            ("usage", serde_json::to_value(UsagePatch::default()).expect("usage")),
+            (
+                "dictate models",
+                serde_json::to_value(DictateModelsPatch::default()).expect("dictate models"),
+            ),
+            ("extensions", serde_json::to_value(ExtensionsPatch::default()).expect("extensions")),
+        ];
+        for (subject, patch) in patches {
+            assert_eq!(
+                patch,
+                serde_json::json!({}),
+                "an unchanged {subject} patch must carry no keys",
+            );
+        }
+    }
+
+    /// A record field that is itself optional needs three states on the wire:
+    /// absent (keep), present with a value (replace), present `null` (clear).
+    #[test]
+    fn a_cleared_optional_field_crosses_as_null_not_absent() {
+        let cleared = HomePatch { cli_version: Some(None), ..HomePatch::default() };
+        assert_eq!(
+            serde_json::to_value(cleared).expect("json"),
+            serde_json::json!({ "cli_version": null }),
+            "clearing a value is a present null, not an absent key",
+        );
+
+        let set = HomePatch { forge_version: Some("build".to_owned()), ..HomePatch::default() };
+        assert_eq!(
+            serde_json::to_value(set).expect("json"),
+            serde_json::json!({ "forge_version": "build" }),
+            "a changed plain field crosses alone",
+        );
+    }
+
+    /// One list vocabulary for every subject: a set replaces by id, a removal
+    /// takes the id out.
+    #[test]
+    fn a_list_entry_is_a_set_or_a_removal_by_id() {
+        let set: PatchEntry<String, u32> = PatchEntry::Set { id: "row".to_owned(), record: 7 };
+        assert_eq!(
+            serde_json::to_value(set).expect("json"),
+            serde_json::json!({ "op": "set", "id": "row", "record": 7 }),
+        );
+        let removed: PatchEntry<String, u32> = PatchEntry::Removed { id: "row".to_owned() };
+        assert_eq!(
+            serde_json::to_value(removed).expect("json"),
+            serde_json::json!({ "op": "removed", "id": "row" }),
+        );
+    }
 }
 
 #[cfg(test)]
