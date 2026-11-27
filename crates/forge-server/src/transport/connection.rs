@@ -3806,6 +3806,18 @@ where
             // closes, and that is what detaches it.
             if let Some(at) = watching.subjects.iter().position(|held| held == &what) {
                 watching.subjects.remove(at);
+                // **The patch base goes with the last hold.** A subject this
+                // connection still watches somewhere keeps its record and any
+                // pending mark; one it no longer watches a single copy of has
+                // no store to patch, so its base goes - or a seat resumed
+                // mid-coalesce could be re-encoded and sent a patch for a
+                // subscription this connection released.
+                if !watching.subjects.iter().any(|held| held == &what) {
+                    watching.streams.remove(&what);
+                    if watching.dirty.remove(&what) && watching.dirty.is_empty() {
+                        watching.patches_due = None;
+                    }
+                }
                 if let Subject::Session(slot) = &what {
                     // Only a hold THIS connection took is given back here,
                     // for the same reason the clean-up gives back only those:
@@ -11178,6 +11190,42 @@ mod tests {
             fleet_rows.iter().any(|entry| entry["op"] == "set" && entry["id"] == "proj-two"),
             "the added project's fleet row did not cross: {fleet_rows:?}",
         );
+
+        drop(to_server);
+        let _ = driven.await;
+    }
+
+    /// **A subject released before its patch is due sends nothing.** The base
+    /// and the pending mark go with the last subscription, or a connection
+    /// that let a seat go could still be handed a patch for it.
+    #[tokio::test]
+    async fn an_unsubscribed_subject_is_not_patched() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+        let Driven { to_server, written, driven, .. } = connection(&state);
+        subscribed_home(&to_server, &written).await;
+
+        fleet.add_task("TestOrg", "proj", "a row", "w1", None).expect("the task is seeded");
+        fleet.emit(SessionUpdate::TasksChanged { key: lead(), tasks: Vec::new() });
+        // The mark is set by the frame above; the release lands before the
+        // coalescing window closes.
+        to_server
+            .send(Message::Text(
+                serde_json::to_string(&ClientMessage::Unsubscribe { what: Subject::Home })
+                    .expect("the unsubscribe encodes")
+                    .into(),
+            ))
+            .expect("the message goes");
+        // Past the coalescing window, and nothing may have been written.
+        tokio::time::sleep(PATCH_COALESCE + Duration::from_millis(150)).await;
+
+        assert!(
+            patches_of(&written, &Subject::Home).is_empty(),
+            "a released subject was patched: {:?}",
+            patches_of(&written, &Subject::Home),
+        );
+        assert_eq!(home_snapshots(&written), 1, "the release sent a record too");
 
         drop(to_server);
         let _ = driven.await;
