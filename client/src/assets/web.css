@@ -793,7 +793,10 @@ button.b-epic-pill { cursor: pointer; }
    the one thing on this page that is theirs to answer. **A card is an ask,
    not a dossier**: a quiet meta line, the question, compact doors, and the
    detail behind an expand. */
-.w-need { background: var(--sel); border-radius: var(--r); padding: 12px 14px 10px; position: relative; }
+/* `min-width: 0` so the card can shrink inside its track: an `auto-fill`
+   grid's tracks take their items' min-content, and the one-line evidence
+   would otherwise hold the whole page wider than a phone. */
+.w-need { background: var(--sel); border-radius: var(--r); padding: 12px 14px 10px; position: relative; min-width: 0; }
 .w-need::before {
   content: ""; position: absolute; inset: 0 auto 0 0; width: 2px;
   background: var(--accent); border-radius: var(--r) 0 0 var(--r); opacity: .8;
@@ -815,7 +818,7 @@ button.b-epic-pill { cursor: pointer; }
 /* The evidence is one summary line until the reader asks for the rest; the
    state word rides it, so a card states its verdict without a second row. */
 .w-ev {
-  display: flex; align-items: baseline; gap: 8px; margin: 2px 0 0;
+  display: flex; align-items: baseline; gap: 8px; margin: 2px 0 0; min-width: 0;
   font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
 }
 .w-ev-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
