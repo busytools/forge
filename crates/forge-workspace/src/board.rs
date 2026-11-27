@@ -451,7 +451,7 @@ mod tests {
             owner: None,
             parent: None,
             waiting_on: None,
-            decision: None,
+            request: None,
             estimate: None,
             cadence: None,
             rank: None,
@@ -726,11 +726,15 @@ mod tests {
         let mut waiting = task("t-1", TaskStatus::Waiting);
         waiting.updated_at = epoch(WINDOW + 1);
         waiting.waiting_on = Some(Waiting {
-            kind: Some(WaitingKind::Decision),
+            kind: Some(WaitingKind::User),
             detail: Some("which shape".to_owned()),
             on: None,
             verification: false,
             parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
             since: Some(epoch(0)),
         });
         ws.seed_test_task(waiting);
@@ -756,6 +760,10 @@ mod tests {
             verification: false,
             parked,
             since: Some(epoch(0)),
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
         };
         live_worker(&ws, "w-1");
         let mut parked = task("t-parked", TaskStatus::Waiting);
@@ -905,6 +913,10 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
             since: None,
         });
         ws.seed_test_task(held);
@@ -993,11 +1005,15 @@ mod tests {
             let mut row = task(id, TaskStatus::Waiting);
             row.verify = verify;
             row.waiting_on = Some(Waiting {
-                kind: Some(WaitingKind::Decision),
+                kind: Some(WaitingKind::User),
                 detail: None,
                 on: None,
                 verification: true,
                 parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
                 since: None,
             });
             row
@@ -1027,11 +1043,15 @@ mod tests {
         decision.updated_at = epoch(1_700_000_500);
         decision.owner = Some(SessionSlot::worker("TestOrg", PROJECT, "w-1"));
         decision.waiting_on = Some(Waiting {
-            kind: Some(WaitingKind::Decision),
+            kind: Some(WaitingKind::User),
             detail: Some("sign this off".to_owned()),
             on: None,
             verification: false,
             parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
             since: Some(epoch(1_700_000_000)),
         });
         ws.seed_test_task(decision);
@@ -1042,6 +1062,10 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
             since: None,
         });
         ws.seed_test_task(resource);
@@ -1069,11 +1093,15 @@ mod tests {
         let mut decision = task("t-decision", TaskStatus::Waiting);
         decision.updated_at = epoch(1_700_000_500);
         decision.waiting_on = Some(Waiting {
-            kind: Some(WaitingKind::Decision),
+            kind: Some(WaitingKind::User),
             detail: Some("sign this off".to_owned()),
             on: None,
             verification: false,
             parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
             since: Some(epoch(1_700_000_000)),
         });
         ws.seed_test_task(decision);
@@ -1098,11 +1126,15 @@ mod tests {
         decision.created_at = epoch(1_700_000_000);
         decision.updated_at = epoch(1_700_000_500);
         decision.waiting_on = Some(Waiting {
-            kind: Some(WaitingKind::Decision),
+            kind: Some(WaitingKind::User),
             detail: Some("sign this off".to_owned()),
             on: None,
             verification: false,
             parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
             since: None,
         });
         ws.seed_test_task(decision);
@@ -1124,11 +1156,15 @@ mod tests {
         let mut blank = task("t-blank", TaskStatus::Waiting);
         blank.detail = Some("the plan is in the row".to_owned());
         blank.waiting_on = Some(Waiting {
-            kind: Some(WaitingKind::Decision),
+            kind: Some(WaitingKind::User),
             detail: Some("   ".to_owned()),
             on: None,
             verification: false,
             parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
             since: None,
         });
         ws.seed_test_task(blank);
@@ -1136,22 +1172,30 @@ mod tests {
         let mut look = task("t-look", TaskStatus::Waiting);
         look.verify = Some(Verify::User);
         look.waiting_on = Some(Waiting {
-            kind: Some(WaitingKind::Decision),
+            kind: Some(WaitingKind::User),
             detail: None,
             on: None,
             verification: true,
             parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
             since: None,
         });
         ws.seed_test_task(look);
 
         let mut bare = task("t-bare", TaskStatus::Waiting);
         bare.waiting_on = Some(Waiting {
-            kind: Some(WaitingKind::Decision),
+            kind: Some(WaitingKind::User),
             detail: None,
             on: None,
             verification: false,
             parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
             since: None,
         });
         ws.seed_test_task(bare);
@@ -1161,11 +1205,15 @@ mod tests {
         let mut nameless = task("t-nameless", TaskStatus::Waiting);
         nameless.subject = "   ".to_owned();
         nameless.waiting_on = Some(Waiting {
-            kind: Some(WaitingKind::Decision),
+            kind: Some(WaitingKind::User),
             detail: None,
             on: None,
             verification: false,
             parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
             since: None,
         });
         ws.seed_test_task(nameless);

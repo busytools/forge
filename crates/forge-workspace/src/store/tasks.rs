@@ -50,8 +50,8 @@ struct TaskRecord {
     kind: forge_primitives::tasks::TaskKind,
     #[serde(default)]
     cadence: Option<Estimate>,
-    #[serde(default)]
-    decision: Option<forge_primitives::tasks::Decision>,
+    #[serde(default, alias = "decision")]
+    request: Option<forge_primitives::tasks::Request>,
     #[serde(default)]
     version: u64,
     #[serde(default)]
@@ -117,7 +117,7 @@ impl TaskRecord {
             kind: self.kind,
             owner: self.owner,
             parent: self.parent,
-            decision: self.decision,
+            request: self.request,
             waiting_on: if blocked {
                 // The migration's unstated wait: the board draws it as a
                 // miss, which is what an old blocked row was.
@@ -128,6 +128,10 @@ impl TaskRecord {
                     verification: false,
                     parked: false,
                     since: None,
+                    due: None,
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
                 })
             } else {
                 self.waiting_on
@@ -244,7 +248,7 @@ mod tests {
             owner: None,
             parent: None,
             waiting_on: None,
-            decision: None,
+            request: None,
             estimate: None,
             cadence: None,
             rank: None,
@@ -393,6 +397,10 @@ mod tests {
                 verification: false,
                 parked: false,
                 since: None,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
             }),
             "no kind, no words - the miss the board shows",
         );

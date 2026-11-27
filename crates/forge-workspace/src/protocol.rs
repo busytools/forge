@@ -652,16 +652,32 @@ pub enum Command {
         words: Option<String>,
     },
     /// The user answers a row waiting on a question: `choice` is the
-    /// option they picked, when the row asked with options, and `words`
-    /// the note they left. The answer is stored as the row's decision
-    /// record, the row resumes in progress, and its owner hears once.
+    /// value the ask's kind needed - a decision's `choice`, a
+    /// clarification's `text`, an exception's `disposition`, a teaching's
+    /// `text` plus its `lesson` - and `words` the note they left. The
+    /// answer is stored as the row's request record, the row resumes in
+    /// progress, and its owner hears once.
     TaskAnswer {
         project: String,
         id: String,
         #[serde(default)]
         choice: Option<String>,
+        #[serde(default)]
+        text: Option<String>,
+        #[serde(default)]
+        disposition: Option<String>,
+        #[serde(default)]
+        lesson: Option<String>,
+        #[serde(default)]
         words: String,
     },
+    /// The person marked the ask seen without answering it. **The person's
+    /// own act, and only theirs**: no agent tool acknowledges on their
+    /// behalf.
+    TaskAck { project: String, id: String },
+    /// The person deferred the ask until a duration from now ("2h"), or
+    /// "activity" - until the row next moves.
+    TaskSnooze { project: String, id: String, until: String },
     /// The user moves a row in its queue.
     TaskRank {
         project: String,
@@ -1097,6 +1113,8 @@ impl Command {
             | Self::SubmitReview { .. }
             | Self::TaskVerdict { .. }
             | Self::TaskAnswer { .. }
+            | Self::TaskAck { .. }
+            | Self::TaskSnooze { .. }
             | Self::TaskRank { .. }
             | Self::TaskAssign { .. }
             | Self::TaskCreate { .. }
@@ -1382,6 +1400,17 @@ impl std::fmt::Debug for Command {
                 .field("project", project)
                 .field("id", id)
                 .finish_non_exhaustive(),
+            Self::TaskAck { project, id } => f
+                .debug_struct("TaskAck")
+                .field("project", project)
+                .field("id", id)
+                .finish(),
+            Self::TaskSnooze { project, id, until } => f
+                .debug_struct("TaskSnooze")
+                .field("project", project)
+                .field("id", id)
+                .field("until", until)
+                .finish(),
             Self::TaskRank { project, id, to } => f
                 .debug_struct("TaskRank")
                 .field("project", project)
@@ -3801,6 +3830,9 @@ mod workers_command_tests {
                 project: "p".to_owned(),
                 id: "t".to_owned(),
                 choice: None,
+                text: None,
+                disposition: None,
+                lesson: None,
                 words: "w".to_owned(),
             },
             Command::TaskRank { project: "p".to_owned(), id: "t".to_owned(), to: RankMove::Top },

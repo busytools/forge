@@ -2942,7 +2942,10 @@ pub(crate) fn execute_command_via_handle(
     match cmd {
         // A handoff runs the task's own state machine, before it reaches here;
         // a vault answer is workspace state, handled before the agent path.
-        Command::Handoff { .. } | Command::RespondVaultAsk { .. } => Ok(()),
+        Command::Handoff { .. }
+        | Command::RespondVaultAsk { .. }
+        | Command::TaskAck { .. }
+        | Command::TaskSnooze { .. } => Ok(()),
         Command::Prompt { key: _, text, attachments } => {
             let Some(sid) = session_id else {
                 return Err(warn_no_session(key, "Prompt"));
@@ -4448,7 +4451,7 @@ mod tests {
                 owner: None,
                 parent: None,
                 waiting_on: None,
-                decision: None,
+                request: None,
                 estimate: None,
                 cadence: None,
                 rank: None,

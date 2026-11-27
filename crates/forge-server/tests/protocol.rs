@@ -38,7 +38,7 @@ async fn a_server() -> (String, Fleet) {
         owner: None,
         parent: None,
         waiting_on: None,
-        decision: None,
+        request: None,
         estimate: Some(forge_primitives::tasks::Estimate { words: "1d".to_owned(), secs: 86_400 }),
         cadence: None,
         rank: None,

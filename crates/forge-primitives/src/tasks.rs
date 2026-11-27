@@ -51,12 +51,13 @@ impl TaskStatus {
     }
 }
 
-/// What a waiting row waits on. A decision routes to the user; a
+/// What a waiting row waits on. `user` routes to the person - a look, a
+/// decision, a clarification, an exception's disposition or a lesson; a
 /// dependency and a resource route to the lead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitingKind {
-    Decision,
+    User,
     Dependency,
     Resource,
 }
@@ -98,6 +99,231 @@ pub struct Waiting {
     /// before the field existed, which reads back as its creation.
     #[serde(default)]
     pub since: Option<SystemTime>,
+    /// The default that runs if the item is ignored. **There is no approve
+    /// default**: consent by inattention is not consent.
+    #[serde(default)]
+    pub due: Option<Deadline>,
+    /// When the reader marked the item seen without answering it. Distinct
+    /// from the answer, and forgotten if it stands unresolved too long.
+    #[serde(default)]
+    pub acknowledged_at: Option<SystemTime>,
+    /// The reader's own deferral, until a time or the next activity.
+    #[serde(default)]
+    pub snoozed: Option<Snooze>,
+    /// When the item's deadline default ran and expired it. The wait is
+    /// kept on the row, and the row itself is canceled with the reason.
+    #[serde(default)]
+    pub expired_at: Option<SystemTime>,
+}
+
+/// What an ask on the person needs back. A look is not a request: it is a
+/// verification wait, answered by approve or send back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AskKind {
+    /// A choice among enumerated options.
+    #[default]
+    Decision,
+    /// A fact only the person has: a free-text answer that returns as a
+    /// value.
+    Clarification,
+    /// A disposition on a fault: retry, rescope, drop or diagnose.
+    Exception,
+    /// A lesson that becomes project policy, so the class stops recurring.
+    Teaching,
+}
+
+/// An exception's disposal, enumerated so the door is the same everywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Disposition {
+    Retry,
+    Rescope,
+    Drop,
+    Diagnose,
+}
+
+impl Disposition {
+    pub const ALL: [Self; 4] = [Self::Retry, Self::Rescope, Self::Drop, Self::Diagnose];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Retry => "retry",
+            Self::Rescope => "rescope",
+            Self::Drop => "drop",
+            Self::Diagnose => "diagnose",
+        }
+    }
+
+    pub fn parse(stated: &str) -> Option<Self> {
+        match stated.trim().to_ascii_lowercase().as_str() {
+            "retry" => Some(Self::Retry),
+            "rescope" => Some(Self::Rescope),
+            "drop" => Some(Self::Drop),
+            "diagnose" => Some(Self::Diagnose),
+            _ => None,
+        }
+    }
+}
+
+/// The value an ask returned: a decision's choice, a clarification's text,
+/// or an exception's disposition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnswerValue {
+    Choice(String),
+    Text(String),
+    Disposition(Disposition),
+}
+
+/// An answer as it landed: the value the kind needed, when, and the note
+/// the person left with it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Answer {
+    pub value: AnswerValue,
+    #[serde(default)]
+    pub note: Option<String>,
+    pub at: SystemTime,
+}
+
+impl<'de> Deserialize<'de> for Answer {
+    /// Reads the current shape and the pre-revision one - `{choice, note,
+    /// at}` with no `value` - as a decision's choice, so a stored row
+    /// written before this cut keeps its record.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw {
+            #[serde(default)]
+            value: Option<AnswerValue>,
+            #[serde(default)]
+            choice: Option<String>,
+            #[serde(default)]
+            note: Option<String>,
+            at: SystemTime,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        let value = match (raw.value, raw.choice) {
+            (Some(value), _) => value,
+            (None, Some(choice)) => AnswerValue::Choice(choice),
+            (None, None) => {
+                return Err(serde::de::Error::missing_field("value"));
+            }
+        };
+        Ok(Self { value, note: raw.note, at: raw.at })
+    }
+}
+
+impl Answer {
+    /// The value as one line, for the tool output and the board.
+    pub fn value_words(&self) -> String {
+        match &self.value {
+            AnswerValue::Choice(choice) => choice.clone(),
+            AnswerValue::Text(text) => text.clone(),
+            AnswerValue::Disposition(disposition) => disposition.as_str().to_owned(),
+        }
+    }
+}
+
+/// The default that runs when an item is ignored past its deadline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DefaultIfIgnored {
+    /// Tell the project's lead the item went unanswered, and keep waiting.
+    Escalate,
+    /// End the row canceled with the reason, keeping the record.
+    Expire,
+    /// Re-notify the lead that the person is owed the ask again, and
+    /// re-arm the deadline one period out.
+    Reask,
+}
+
+impl DefaultIfIgnored {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Escalate => "escalate",
+            Self::Expire => "expire",
+            Self::Reask => "reask",
+        }
+    }
+
+    pub fn parse(stated: &str) -> Option<Self> {
+        match stated.trim().to_ascii_lowercase().as_str() {
+            "escalate" => Some(Self::Escalate),
+            "expire" => Some(Self::Expire),
+            "reask" => Some(Self::Reask),
+            _ => None,
+        }
+    }
+}
+
+/// An item's deadline and the default that runs when it passes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Deadline {
+    pub at: SystemTime,
+    pub default: DefaultIfIgnored,
+    /// When the default last ran; absent until it does.
+    #[serde(default)]
+    pub ran_at: Option<SystemTime>,
+}
+
+/// How long the reader's own deferral lasts: until a time, or until the
+/// row sees new activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnoozeUntil {
+    At(SystemTime),
+    Activity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snooze {
+    pub until: SnoozeUntil,
+    pub since: SystemTime,
+}
+
+/// A question a row is waiting on the person for: the ask, how the answer
+/// must be shaped, and the answer once one is given. The board records
+/// answers, not conversations - the thread lives in the chat, and nothing
+/// but the answer is ever written here. A look carries no request: it is
+/// the verification wait, answered by approve or send back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Request {
+    #[serde(default)]
+    pub kind: AskKind,
+    pub question: String,
+    /// A decision's enumerated options; empty for every other kind.
+    #[serde(default)]
+    pub options: Vec<String>,
+    /// A teaching's class: the recurring trouble the lesson settles. The
+    /// policy note it writes is keyed on it, and an ask of a settled class
+    /// is refused rather than raised again.
+    #[serde(default)]
+    pub class: Option<String>,
+    #[serde(default)]
+    pub answer: Option<Answer>,
+}
+
+impl Request {
+    /// Whether this ask's answer door is the shape its kind needs.
+    pub fn answer_fits(&self, value: &AnswerValue, lesson: Option<&str>) -> bool {
+        match (&self.kind, value) {
+            (AskKind::Decision, AnswerValue::Choice(choice)) => {
+                !choice.trim().is_empty()
+                    && (self.options.is_empty() || self.options.iter().any(|o| o == choice))
+            }
+            (AskKind::Clarification, AnswerValue::Text(text)) => !text.trim().is_empty(),
+            (AskKind::Exception, AnswerValue::Disposition(_)) => true,
+            (AskKind::Teaching, AnswerValue::Text(text)) => {
+                !text.trim().is_empty()
+                    && lesson.is_some_and(|lesson| !lesson.trim().is_empty())
+                    && self.class.as_deref().is_some_and(|class| !class.trim().is_empty())
+            }
+            _ => false,
+        }
+    }
 }
 
 /// Whether a row is finite work with a finish line, or standing work
@@ -111,29 +337,6 @@ pub enum TaskKind {
     #[default]
     Finite,
     Standing,
-}
-
-/// The answer a decision reached: what was chosen, when, and the note
-/// the user left with it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DecisionAnswer {
-    pub choice: String,
-    #[serde(default)]
-    pub note: Option<String>,
-    pub at: SystemTime,
-}
-
-/// A question a row is waiting on the user for: the ask, the options the
-/// lead enumerated, and the answer once one is given. The board records
-/// decisions, not conversations - the thread lives in the chat, and
-/// nothing but the answer is ever written here.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Decision {
-    pub question: String,
-    #[serde(default)]
-    pub options: Vec<String>,
-    #[serde(default)]
-    pub answer: Option<DecisionAnswer>,
 }
 
 /// A duration estimate: the words a reader sees ("2h", "1d") and the
@@ -308,10 +511,13 @@ pub struct Task {
     /// Why this row cannot proceed, when `status` is waiting.
     #[serde(default)]
     pub waiting_on: Option<Waiting>,
-    /// The question a decision wait asks the user, its options and its
-    /// answer. Absent on a row that is not a decision.
-    #[serde(default)]
-    pub decision: Option<Decision>,
+    /// The ask on the person: its kind, question, options or class, and
+    /// the answer once given. Absent on a row that is not asking one (a
+    /// look carries none: it is the verification wait).
+    /// `decision` is the pre-revision name; a stored row keeps its record
+    /// by reading through the alias.
+    #[serde(default, alias = "decision")]
+    pub request: Option<Request>,
     /// A finite row's finish line, and the chase's re-plan trigger.
     pub estimate: Option<Estimate>,
     /// A standing row's check interval, in the same grammar as an
@@ -464,11 +670,13 @@ mod tests {
             kind: TaskKind::Finite,
             owner: Some(SessionSlot::worker("Busytools", "forge", "agents-merge")),
             parent: None,
-            decision: Some(Decision {
+            request: Some(Request {
+                kind: AskKind::Decision,
                 question: "Merge the families?".to_owned(),
                 options: vec!["merge".to_owned(), "wait".to_owned()],
-                answer: Some(DecisionAnswer {
-                    choice: "merge".to_owned(),
+                class: None,
+                answer: Some(Answer {
+                    value: AnswerValue::Choice("merge".to_owned()),
                     note: Some("after the bench".to_owned()),
                     at: std::time::SystemTime::UNIX_EPOCH,
                 }),
@@ -536,28 +744,102 @@ mod tests {
         );
     }
 
-    /// The board records decisions, not conversations: the question, the
-    /// options the lead enumerated, and the answer once given - what was
-    /// chosen, when, and the note. Nothing else is written to it.
+    /// The board records answers, not conversations: the ask, the options
+    /// the lead enumerated, and the value the person returned - the choice
+    /// for a decision, the text for a clarification, the disposition for an
+    /// exception. Nothing else is written to it.
     #[test]
-    fn a_decision_record_keeps_its_question_options_and_answer() {
-        let decision = Decision {
+    fn a_request_record_keeps_its_ask_and_kinded_answer() {
+        let request = Request {
+            kind: AskKind::Decision,
             question: "Ship the parser rewrite behind a flag?".to_owned(),
             options: vec!["flag it".to_owned(), "ship it outright".to_owned()],
-            answer: Some(DecisionAnswer {
-                choice: "flag it".to_owned(),
+            class: None,
+            answer: Some(Answer {
+                value: AnswerValue::Choice("flag it".to_owned()),
                 note: Some("until the bench is green".to_owned()),
                 at: std::time::SystemTime::UNIX_EPOCH,
             }),
         };
-        let json = serde_json::to_vec(&decision).expect("serialize");
-        let back: Decision = serde_json::from_slice(&json).expect("deserialize");
-        assert_eq!(back, decision, "the record keeps the ask, the options and the answer");
-        let unanswered = Decision { answer: None, ..decision };
-        let back: Decision =
+        let json = serde_json::to_vec(&request).expect("serialize");
+        let back: Request = serde_json::from_slice(&json).expect("deserialize");
+        assert_eq!(back, request, "the record keeps the ask, the options and the answer");
+        let unanswered = Request { answer: None, ..request.clone() };
+        let back: Request =
             serde_json::from_slice(&serde_json::to_vec(&unanswered).expect("serialize"))
                 .expect("deserialize");
-        assert_eq!(back.answer, None, "a row waiting on the question carries no answer yet");
+        assert_eq!(back.answer, None, "a row waiting on the answer carries none yet");
+
+        // A clarification takes text and refuses a choice; an exception
+        // takes an enumerated disposition; a teaching takes a lesson and a
+        // class.
+        let clarification = Request {
+            kind: AskKind::Clarification,
+            question: "Which account is the staging one?".to_owned(),
+            options: Vec::new(),
+            class: None,
+            answer: None,
+        };
+        assert!(clarification.answer_fits(&AnswerValue::Text("Granite".to_owned()), None));
+        assert!(
+            !clarification.answer_fits(&AnswerValue::Choice("Granite".to_owned()), None),
+            "an option list cannot answer a clarification",
+        );
+        let exception = Request {
+            kind: AskKind::Exception,
+            question: "The flake is back: what now?".to_owned(),
+            options: Vec::new(),
+            class: None,
+            answer: None,
+        };
+        assert!(exception.answer_fits(&AnswerValue::Disposition(Disposition::Retry), None));
+        assert!(!exception.answer_fits(&AnswerValue::Text("retry".to_owned()), None));
+        let teaching = Request {
+            kind: AskKind::Teaching,
+            question: "Which rule settles flaky CI retries?".to_owned(),
+            options: Vec::new(),
+            class: Some("ci-flake".to_owned()),
+            answer: None,
+        };
+        assert!(teaching.answer_fits(
+            &AnswerValue::Text("Report the run; never retry a flake twice.".to_owned()),
+            Some("Report the run; never retry a flake twice."),
+        ));
+        assert!(
+            !teaching.answer_fits(&AnswerValue::Text("a lesson".to_owned()), None),
+            "a teaching without a lesson writes no policy",
+        );
+    }
+
+    /// A row stored before this revision carries `decision` with
+    /// `answer: {choice, ...}`; it reads back as a decision-kind request
+    /// with the choice intact, so no stored record is lost.
+    #[test]
+    fn a_pre_revision_decision_reads_as_a_request_choice() {
+        let older = serde_json::json!({
+            "id": "t-1",
+            "project_name": "forge",
+            "subject": "the row",
+            "status": "waiting",
+            "kind": "finite",
+            "decision": {
+                "question": "Ship it?",
+                "options": ["ship it", "wait"],
+                "answer": {
+                    "choice": "ship it",
+                    "note": "go",
+                    "at": { "secs_since_epoch": 5, "nanos_since_epoch": 0 }
+                }
+            },
+            "links": [],
+            "version": 0,
+            "created_at": { "secs_since_epoch": 0, "nanos_since_epoch": 0 },
+            "updated_at": { "secs_since_epoch": 0, "nanos_since_epoch": 0 }
+        });
+        let task: Task = serde_json::from_value(older).expect("a pre-revision row reads");
+        let request = task.request.expect("the record survives the rename");
+        assert_eq!(request.kind, AskKind::Decision);
+        assert_eq!(request.answer.expect("the answer survives").value_words(), "ship it");
     }
 
     /// The stored rows outlive the struct that wrote them: a row written

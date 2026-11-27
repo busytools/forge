@@ -13,8 +13,8 @@ use std::time::SystemTime;
 
 use forge_primitives::tasks::Verify;
 use forge_primitives::tasks::{
-    Attestation, By, LinkKind, ReservedBy, Task, TaskId, TaskStatus, TaskTransition, Waiting,
-    WaitingKind,
+    Answer, AnswerValue, AskKind, Attestation, By, Deadline, Disposition, LinkKind, Request,
+    ReservedBy, Task, TaskId, TaskStatus, TaskTransition, Waiting, WaitingKind,
 };
 
 use crate::SessionSlot;
@@ -124,6 +124,13 @@ pub(crate) enum MoveError {
     VersionMismatch { expected: u64, current: u64 },
     /// A decision answer named a choice the row's options do not carry.
     NotAnOption(String),
+    /// The answer's shape does not fit the ask's kind: a clarification
+    /// takes text, an exception a disposition, a teaching its lesson. The
+    /// kind's need rides it.
+    AnswerShape(String),
+    /// The ask's class is already settled by a project policy note. The
+    /// class and the note's text ride it.
+    PolicySettled { class: String, text: String },
 }
 
 /// How long a terminal tree stays in the live set before the retention
@@ -174,7 +181,7 @@ pub(crate) fn parked_on_user(task: &Task) -> bool {
     if wait.verification {
         return task.verify == Some(Verify::User);
     }
-    wait.kind == Some(WaitingKind::Decision)
+    wait.kind == Some(WaitingKind::User)
 }
 
 /// The words a refusal names a wait by: its kind, and the row it waits on
@@ -182,7 +189,7 @@ pub(crate) fn parked_on_user(task: &Task) -> bool {
 fn wait_words(wait: Option<&Waiting>) -> String {
     let Some(wait) = wait else { return "a wait".to_owned() };
     let what = match wait.kind {
-        Some(WaitingKind::Decision) => "a decision",
+        Some(WaitingKind::User) => "a question for the user",
         Some(WaitingKind::Dependency) => "a dependency",
         Some(WaitingKind::Resource) => "a resource",
         None => "a wait",
@@ -190,6 +197,47 @@ fn wait_words(wait: Option<&Waiting>) -> String {
     match &wait.on {
         Some(id) => format!("{what} on {}", id.as_str()),
         None => what.to_owned(),
+    }
+}
+
+/// Whether the person's deferral still holds: until its time passes, or -
+/// for an activity snooze - until the row moves.
+pub(crate) fn snooze_active(wait: &Waiting, updated_at: SystemTime, now: SystemTime) -> bool {
+    let Some(snooze) = wait.snoozed.as_ref() else { return false };
+    match snooze.until {
+        forge_primitives::tasks::SnoozeUntil::At(until) => now < until,
+        forge_primitives::tasks::SnoozeUntil::Activity => updated_at <= snooze.since,
+    }
+}
+
+/// What an ask of `kind` needs back, as a refusal states it.
+fn answer_shape_need(kind: AskKind) -> String {
+    match kind {
+        AskKind::Decision => {
+            "a decision takes `choice`: one of the options the row asks about".to_owned()
+        }
+        AskKind::Clarification => {
+            "a clarification takes `text`: the fact the ask needs, in the person's words"
+                .to_owned()
+        }
+        AskKind::Exception => format!(
+            "an exception takes `disposition`: one of {}",
+            Disposition::ALL.map(Disposition::as_str).join(", "),
+        ),
+        AskKind::Teaching => {
+            "a teaching takes `text`: the lesson, which becomes the project's policy note for \
+             its class"
+                .to_owned()
+        }
+    }
+}
+
+/// An answer value as one line, for a legacy row's detail fallback.
+fn value_words(value: &AnswerValue) -> String {
+    match value {
+        AnswerValue::Choice(choice) => choice.clone(),
+        AnswerValue::Text(text) => text.clone(),
+        AnswerValue::Disposition(disposition) => disposition.as_str().to_owned(),
     }
 }
 
@@ -361,6 +409,12 @@ impl std::fmt::Display for MoveError {
                 f,
                 "\"{choice}\" is not one of the options this row asks about; answer with one of \
                  them, or state the choice the user gave"
+            ),
+            Self::AnswerShape(need) => write!(f, "{need}"),
+            Self::PolicySettled { class, text } => write!(
+                f,
+                "\"{class}\" is settled by project policy (\"{text}\"), so this ask is not \
+                 raised again; cite the note instead"
             ),
         }
     }
@@ -686,11 +740,15 @@ impl Workspace {
                     )));
                 }
                 next.waiting_on = Some(Waiting {
-                    kind: Some(WaitingKind::Decision),
+                    kind: Some(WaitingKind::User),
                     detail: None,
                     on: None,
                     verification: true,
                     parked: false,
+                    due: None,
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
                     since: Some(at),
                 });
                 next.status = TaskStatus::Waiting;
@@ -1087,16 +1145,170 @@ impl Workspace {
             task.attested = None;
             task.verify = Some(Verify::User);
             task.waiting_on = Some(Waiting {
-                kind: Some(WaitingKind::Decision),
+                kind: Some(WaitingKind::User),
                 detail: None,
                 on: None,
                 verification: true,
                 parked: false,
+                    due: None,
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
                 since: Some(at),
             });
             task.status = TaskStatus::Waiting;
             append_words(task, "Reopened by the user: the look is owed again.");
             Ok(())
+        })
+    }
+
+    /// The person marked the ask seen without answering it: the acknowledged
+    /// state is theirs, distinct from an answer, and the drive re-raises it
+    /// if it stands unresolved too long.
+    pub(crate) fn acknowledge_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+    ) -> Result<Option<Task>, MoveError> {
+        let at = SystemTime::now();
+        self.move_task(project_name, id, By::User, false, None, |task| {
+            let on_user = task
+                .waiting_on
+                .as_ref()
+                .is_some_and(|wait| wait.kind == Some(WaitingKind::User));
+            if task.status != TaskStatus::Waiting || !on_user {
+                return Err(MoveError::NotWaitingQuestion);
+            }
+            if let Some(wait) = task.waiting_on.as_mut() {
+                wait.acknowledged_at = Some(at);
+            }
+            Ok(())
+        })
+    }
+
+    /// The person deferred the ask: until a time they named, or until the
+    /// row sees new activity. A snoozed ask is quiet on the board's chase
+    /// and the drive's escalation, and it keeps its record either way.
+    pub(crate) fn snooze_task(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        until: forge_primitives::tasks::SnoozeUntil,
+    ) -> Result<Option<Task>, MoveError> {
+        let at = SystemTime::now();
+        // One clock value for the stamp and the row's touch: the snooze's
+        // own write must not read as the activity that ends it.
+        let outcome = self.with_tasks_mut(|tasks| {
+            let index = match find_task_index(tasks, project_name, id) {
+                Ok(index) => index,
+                Err(IdError::NotFound) => return Ok(None),
+                Err(error) => return Err(error.into()),
+            };
+            let on_user = tasks[index]
+                .waiting_on
+                .as_ref()
+                .is_some_and(|wait| wait.kind == Some(WaitingKind::User));
+            if tasks[index].status != TaskStatus::Waiting || !on_user {
+                return Err(MoveError::NotWaitingQuestion);
+            }
+            if let Some(wait) = tasks[index].waiting_on.as_mut() {
+                wait.snoozed = Some(forge_primitives::tasks::Snooze { until, since: at });
+            }
+            tasks[index].version = tasks[index].version.saturating_add(1);
+            tasks[index].updated_at = at;
+            self.persist_task(&tasks[index]);
+            Ok(Some(tasks[index].clone()))
+        })?;
+        if outcome.is_some() {
+            self.announce_tasks_changed(project_name);
+        }
+        Ok(outcome)
+    }
+
+    /// Run an ask's expiry default: the row ends canceled with the reason,
+    /// and the ask's own record - the wait with `expired_at` and the
+    /// request - stays on the row, because the archive keeps the only copy
+    /// of what was asked.
+    pub(crate) fn expire_ask(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        now: SystemTime,
+        reason: &str,
+    ) -> Option<Task> {
+        let outcome = self.with_tasks_mut(|tasks| {
+            let index = tasks.iter().position(|task| {
+                task.project_name == project_name && task.id == *id
+            })?;
+            let prior = tasks[index].status;
+            let task = &mut tasks[index];
+            if let Some(wait) = task.waiting_on.as_mut() {
+                wait.expired_at = Some(now);
+            }
+            append_words(task, reason);
+            task.status = TaskStatus::Canceled;
+            task.version = task.version.saturating_add(1);
+            task.updated_at = now;
+            self.persist_task(task);
+            Some((task.clone(), prior))
+        })?;
+        let (task, prior) = outcome;
+        self.record_transition(
+            project_name,
+            &task.id,
+            Some(prior),
+            task.status,
+            By::System,
+        );
+        self.announce_tasks_changed(project_name);
+        Some(task)
+    }
+
+    /// Re-arm an ask's deadline one period out (the `reask` default).
+    pub(crate) fn rearm_ask(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        next_at: SystemTime,
+    ) -> bool {
+        self.with_tasks_mut(|tasks| {
+            let Some(task) =
+                tasks.iter_mut().find(|task| task.project_name == project_name && task.id == *id)
+            else {
+                return false;
+            };
+            let Some(due) = task.waiting_on.as_mut().and_then(|wait| wait.due.as_mut()) else {
+                return false;
+            };
+            due.at = next_at;
+            due.ran_at = None;
+            task.version = task.version.saturating_add(1);
+            self.persist_task(task);
+            true
+        })
+    }
+
+    /// Record that an ask's deadline default ran (the `escalate` default,
+    /// which keeps the ask waiting).
+    pub(crate) fn mark_ask_default_ran(
+        &self,
+        project_name: &str,
+        id: &TaskId,
+        now: SystemTime,
+    ) -> bool {
+        self.with_tasks_mut(|tasks| {
+            let Some(task) =
+                tasks.iter_mut().find(|task| task.project_name == project_name && task.id == *id)
+            else {
+                return false;
+            };
+            let Some(due) = task.waiting_on.as_mut().and_then(|wait| wait.due.as_mut()) else {
+                return false;
+            };
+            due.ran_at = Some(now);
+            task.version = task.version.saturating_add(1);
+            self.persist_task(task);
+            true
         })
     }
 
@@ -1164,20 +1376,20 @@ impl Workspace {
         })
     }
 
-    /// Answer a row waiting on a decision: the choice the user picked,
-    /// when they picked one, and the note they left with it. The record is
-    /// the row's own and nothing else is written to it; the row resumes in
-    /// progress. A row carrying no decision record - one that waited
-    /// before the record existed - takes the words as before.
+    /// Answer a row waiting on an ask: the value the kind needed, when, and
+    /// the note the person left. The record is the row's own and nothing
+    /// else is written to it; the row resumes in progress. A teaching's
+    /// answer also writes the project policy note its class is settled by.
     pub(crate) fn answer_decision(
         &self,
         project_name: &str,
         id: &TaskId,
         by: By,
-        choice: &str,
+        value: AnswerValue,
         note: Option<&str>,
+        lesson: Option<&str>,
     ) -> Result<Option<Task>, MoveError> {
-        self.answer_decision_at_version(project_name, id, by, choice, note, None)
+        self.answer_decision_at_version(project_name, id, by, value, note, lesson, None)
     }
 
     /// `Workspace::answer_decision` with the version the caller read.
@@ -1186,39 +1398,49 @@ impl Workspace {
         project_name: &str,
         id: &TaskId,
         by: By,
-        choice: &str,
+        value: AnswerValue,
         note: Option<&str>,
+        lesson: Option<&str>,
         expected: Option<u64>,
     ) -> Result<Option<Task>, MoveError> {
-        let choice = choice.trim();
         let at = SystemTime::now();
-        self.move_task(project_name, id, by, false, expected, |task| {
-            // An answer is the decision's own door: a resource or
-            // dependency wait is resumed by an update, not by recording a
-            // choice nobody asked for.
-            let on_decision = task
+        let lesson = lesson.map(str::trim).filter(|lesson| !lesson.is_empty());
+        let value_for_move = value.clone();
+        let moved = self.move_task(project_name, id, by, false, expected, |task| {
+            // An answer is the ask's own door: a resource or dependency
+            // wait is resumed by an update, not by recording a value
+            // nobody asked for.
+            let on_user = task
                 .waiting_on
                 .as_ref()
-                .is_some_and(|wait| !wait.verification && wait.kind == Some(WaitingKind::Decision));
-            if task.status != TaskStatus::Waiting || !on_decision {
+                .is_some_and(|wait| !wait.verification && wait.kind == Some(WaitingKind::User));
+            if task.status != TaskStatus::Waiting || !on_user {
                 return Err(MoveError::NotWaitingQuestion);
             }
-            match task.decision.as_mut() {
-                Some(decision) => {
-                    if choice.is_empty() {
-                        return Err(MoveError::NotAnOption(String::new()));
-                    }
-                    if !decision.options.is_empty()
-                        && !decision.options.iter().any(|option| option == choice)
+            match task.request.as_mut() {
+                Some(request) => {
+                    // A decision's choice is named against its own options
+                    // first, so the refusal quotes the value the person gave
+                    // rather than only the kind's shape.
+                    if let (AskKind::Decision, AnswerValue::Choice(choice)) =
+                        (request.kind, &value_for_move)
+                        && !request.options.is_empty()
+                        && !request.options.iter().any(|option| option == choice)
                     {
-                        return Err(MoveError::NotAnOption(choice.to_owned()));
+                        return Err(MoveError::NotAnOption(choice.clone()));
                     }
-                    // The record is the answer and nothing more: what was
-                    // chosen, when, and the note. A second answer to the
-                    // same question is refused by the wait check above,
-                    // because answering resumes the row.
-                    decision.answer = Some(forge_primitives::tasks::DecisionAnswer {
-                        choice: choice.to_owned(),
+                    // **The value must be the shape the kind needs**: an
+                    // option list cannot answer a clarification, and a
+                    // teaching without its lesson writes no policy.
+                    if !request.answer_fits(&value_for_move, lesson) {
+                        return Err(MoveError::AnswerShape(answer_shape_need(request.kind)));
+                    }
+                    // The record is the answer and nothing more: the value
+                    // the kind returned, when, and the note. A second
+                    // answer to the same ask is refused by the wait check
+                    // above, because answering resumes the row.
+                    request.answer = Some(Answer {
+                        value: value_for_move,
                         note: note
                             .map(str::trim)
                             .filter(|note| !note.is_empty())
@@ -1228,12 +1450,105 @@ impl Workspace {
                 }
                 // A row written before the record: the words are the
                 // answer, and they land in the detail as they always did.
-                None => append_words(task, choice),
+                None => append_words(task, &value_words(&value_for_move)),
             }
             task.waiting_on = None;
             task.status = TaskStatus::InProgress;
             Ok(())
-        })
+        })?;
+        // The policy write follows the answer: the row carries the record,
+        // and the class is settled for every lead and the drive.
+        if let Some(task) = &moved
+            && let Some(request) = &task.request
+            && request.kind == AskKind::Teaching
+            && let (Some(class), Some(lesson)) = (request.class.as_deref(), lesson)
+        {
+            self.settle_policy(project_name, class, lesson, &task.id);
+        }
+        Ok(moved)
+    }
+
+    /// Whether a policy note settles `class` for `project`.
+    pub(crate) fn policy_settles(&self, project_name: &str, class: &str) -> bool {
+        self.policy_note(project_name, class).is_some()
+    }
+
+    /// The note `project` holds for `class`, when it has settled one.
+    fn policy_note(&self, project_name: &str, class: &str) -> Option<crate::store::policy::PolicyNote> {
+        let guard = self.db.lock();
+        let db = guard.as_ref()?;
+        match crate::store::policy::get_for_class(db, project_name, class) {
+            Ok(note) => note,
+            Err(error) => {
+                tracing::error!(
+                    target: "forge_workspace::tasks",
+                    event_name = "policy_read_failed",
+                    project = %project_name,
+                    class = %class,
+                    %error,
+                    "reading a project's policy note failed; the class reads as unsettled",
+                );
+                None
+            }
+        }
+    }
+
+    /// Write the policy note that settles `class` - a teaching's answer, or
+    /// the lead's own `tasks__policy` write - and return it. A missing
+    /// store is "not written": the caller logs, the row keeps the lesson.
+    pub(crate) fn settle_policy(
+        &self,
+        project_name: &str,
+        class: &str,
+        text: &str,
+        source_task: &TaskId,
+    ) -> Option<crate::store::policy::PolicyNote> {
+        let guard = self.db.lock();
+        let db = guard.as_ref()?;
+        let note = crate::store::policy::PolicyNote {
+            id: uuid::Uuid::new_v4().to_string(),
+            project_name: project_name.to_owned(),
+            class: class.to_owned(),
+            text: text.to_owned(),
+            source_task: source_task.as_str().to_owned(),
+            at: SystemTime::now(),
+        };
+        match crate::store::policy::append(db, &note) {
+            Ok(()) => Some(note),
+            Err(error) => {
+                tracing::error!(
+                    target: "forge_workspace::tasks",
+                    event_name = "policy_write_failed",
+                    project = %project_name,
+                    class = %class,
+                    %error,
+                    "writing the policy note failed; the lesson is only on the row",
+                );
+                None
+            }
+        }
+    }
+
+    /// `project`'s settled policy notes, by class.
+    pub(crate) fn policy_notes_for_project(
+        &self,
+        project_name: &str,
+    ) -> Vec<crate::store::policy::PolicyNote> {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else { return Vec::new() };
+        match crate::store::policy::list_for_project(db, project_name) {
+            Ok(notes) => notes,
+            Err(error) => {
+                tracing::error!(
+                    target: "forge_workspace::tasks",
+                    event_name = "policy_read_failed",
+                    project = %project_name,
+                    %error,
+                    "reading a project's policy notes failed; the set reads as empty",
+                );
+                Vec::new()
+            }
+        }
     }
 
     /// Move a row in its queue: `Top` above everything, `Up` and `Down`
@@ -1407,7 +1722,7 @@ impl Workspace {
         detail: Option<String>,
         on: Option<&TaskId>,
     ) -> Result<Task, MoveError> {
-        self.wait_task_recording(project_name, id, slot, kind, detail, on, None, None)
+        self.wait_task_recording(project_name, id, slot, kind, detail, on, None, None, None)
     }
 
     /// `Workspace::wait_task` with the version the caller read.
@@ -1421,14 +1736,11 @@ impl Workspace {
         on: Option<&TaskId>,
         expected: Option<u64>,
     ) -> Result<Task, MoveError> {
-        self.wait_task_recording(project_name, id, slot, kind, detail, on, None, expected)
+        self.wait_task_recording(project_name, id, slot, kind, detail, on, None, None, expected)
     }
 
-    /// `Workspace::wait_task` for a decision: the row takes the question
-    /// the lead is asking and the options it enumerated, so the user's
-    /// card carries the ask rather than a thread.
-    /// The unversioned door the tests drive; every production caller names
-    /// the version it read.
+    /// `Workspace::wait_request_task_at_version` for a decision, without a
+    /// version: the unversioned door the tests drive.
     #[cfg(test)]
     pub(crate) fn wait_decision_task(
         &self,
@@ -1439,28 +1751,46 @@ impl Workspace {
         question: String,
         options: Vec<String>,
     ) -> Result<Task, MoveError> {
-        self.wait_decision_task_at_version(project_name, id, slot, detail, question, options, None)
+        self.wait_request_task_at_version(
+            project_name,
+            id,
+            slot,
+            detail,
+            Request { kind: AskKind::Decision, question, options, class: None, answer: None },
+            None,
+            None,
+        )
     }
 
-    /// `Workspace::wait_decision_task` with the version the caller read.
-    pub(crate) fn wait_decision_task_at_version(
+    /// The ask door for any kind on the person: the request record the
+    /// facade built, and the deadline that runs if it is ignored.
+    pub(crate) fn wait_request_task_at_version(
         &self,
         project_name: &str,
         id: &TaskId,
         slot: &SessionSlot,
         detail: Option<String>,
-        question: String,
-        options: Vec<String>,
+        request: Request,
+        due: Option<Deadline>,
         expected: Option<u64>,
     ) -> Result<Task, MoveError> {
+        // **A settled class is not asked again.** The policy note that
+        // settles it is quoted, so the asker reads the answer it already
+        // has rather than re-raising the class.
+        if let Some(class) = request.class.as_deref()
+            && let Some(note) = self.policy_note(project_name, class)
+        {
+            return Err(MoveError::PolicySettled { class: class.to_owned(), text: note.text });
+        }
         self.wait_task_recording(
             project_name,
             id,
             slot,
-            WaitingKind::Decision,
+            WaitingKind::User,
             detail,
             None,
-            Some(forge_primitives::tasks::Decision { question, options, answer: None }),
+            Some(request),
+            due,
             expected,
         )
     }
@@ -1473,7 +1803,8 @@ impl Workspace {
         kind: WaitingKind,
         detail: Option<String>,
         on: Option<&TaskId>,
-        decision: Option<forge_primitives::tasks::Decision>,
+        request: Option<Request>,
+        due: Option<Deadline>,
         expected: Option<u64>,
     ) -> Result<Task, MoveError> {
         let at = SystemTime::now();
@@ -1506,6 +1837,8 @@ impl Workspace {
                     && wait.detail.as_deref() == detail.as_deref()
                     && wait.on.as_ref() == on.as_ref()
                     && !wait.verification
+                    && request.as_ref().map(|r| (r.kind, r.question.as_str()))
+                        == tasks[index].request.as_ref().map(|r| (r.kind, r.question.as_str()))
             });
             let since = same.and_then(|wait| wait.since).unwrap_or(at);
             tasks[index].waiting_on = Some(Waiting {
@@ -1514,12 +1847,16 @@ impl Workspace {
                 on,
                 verification: false,
                 parked: false,
+                due,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
                 since: Some(since),
             });
-            if let Some(decision) = decision {
-                // A new question replaces the last one: the record is the
-                // ask in front of the user, not a history of asks.
-                tasks[index].decision = Some(decision);
+            if let Some(request) = request {
+                // A new ask replaces the last one: the record is the ask in
+                // front of the person, not a history of asks.
+                tasks[index].request = Some(request);
             }
             tasks[index].status = TaskStatus::Waiting;
             tasks[index].version = tasks[index].version.saturating_add(1);
@@ -1562,6 +1899,10 @@ impl Workspace {
                 on: None,
                 verification: false,
                 parked: false,
+                    due: None,
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
                 since: Some(at),
             });
             tasks[index].status = TaskStatus::Waiting;
@@ -1730,7 +2071,7 @@ impl Workspace {
             if let Some(task) = tasks.iter().find(|task| {
                 task.project_name == project_name
                     && doomed.contains(&task.id)
-                    && task.decision.as_ref().is_some_and(|decision| decision.answer.is_some())
+                    && task.request.as_ref().is_some_and(|request| request.answer.is_some())
             }) {
                 return Err(MoveError::DeletingDecision(task.subject.clone()));
             }
@@ -2159,7 +2500,7 @@ mod tests {
             owner: None,
             parent: None,
             waiting_on: None,
-            decision: None,
+            request: None,
             estimate: None,
             cadence: None,
             rank: None,
@@ -2655,11 +2996,15 @@ mod tests {
         ws.push_task(Task {
             status: TaskStatus::Waiting,
             waiting_on: Some(Waiting {
-                kind: Some(WaitingKind::Decision),
+                kind: Some(WaitingKind::User),
                 detail: Some("which shape".to_owned()),
                 on: None,
                 verification: false,
                 parked: false,
+                    due: None,
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
                 since: None,
             }),
             ..sample_task("t-1", "proj")
@@ -2751,6 +3096,10 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+                    due: None,
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
             since: None,
         });
         ws.push_task(waiting);
@@ -2833,7 +3182,7 @@ mod tests {
         let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
         ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
         ws.claim_task("proj", &worker, &TaskId::from("t-1")).expect("claim");
-        ws.wait_task("proj", &TaskId::from("t-1"), &worker, WaitingKind::Decision, None, None)
+        ws.wait_task("proj", &TaskId::from("t-1"), &worker, WaitingKind::User, None, None)
             .expect("wait");
 
         let answered = ws
@@ -2866,10 +3215,10 @@ mod tests {
                 vec!["flag it".to_owned(), "ship it outright".to_owned()],
             )
             .expect("the owner may wait its own row");
-        let decision = waited.decision.expect("the ask rides the row");
-        assert_eq!(decision.question, "Ship the parser behind a flag?");
-        assert_eq!(decision.options, ["flag it", "ship it outright"]);
-        assert_eq!(decision.answer, None, "a waiting row has no answer yet");
+        let request = waited.request.expect("the ask rides the row");
+        assert_eq!(request.question, "Ship the parser behind a flag?");
+        assert_eq!(request.options, ["flag it", "ship it outright"]);
+        assert_eq!(request.answer, None, "a waiting row has no answer yet");
         assert_eq!(waited.status, TaskStatus::Waiting);
 
         let answered = ws
@@ -2877,15 +3226,16 @@ mod tests {
                 "proj",
                 &TaskId::from("t-1"),
                 By::User,
-                "flag it",
+                AnswerValue::Choice("flag it".to_owned()),
                 Some("until the bench is green"),
+                None,
             )
             .expect("no refusal")
             .expect("the row is there");
         assert_eq!(answered.status, TaskStatus::InProgress, "the answer resumes the row");
         assert_eq!(answered.waiting_on, None, "and clears the wait");
-        let answer = answered.decision.expect("the record keeps the ask").answer.expect("answered");
-        assert_eq!(answer.choice, "flag it");
+        let answer = answered.request.expect("the record keeps the ask").answer.expect("answered");
+        assert_eq!(answer.value_words(), "flag it");
         assert_eq!(answer.note.as_deref(), Some("until the bench is green"));
     }
 
@@ -2909,7 +3259,14 @@ mod tests {
         .expect("the wait lands");
 
         assert_eq!(
-            ws.answer_decision("proj", &TaskId::from("t-1"), By::User, "huge", None),
+            ws.answer_decision(
+                "proj",
+                &TaskId::from("t-1"),
+                By::User,
+                AnswerValue::Choice("huge".to_owned()),
+                None,
+                None,
+            ),
             Err(MoveError::NotAnOption("huge".to_owned())),
             "a choice the row does not offer is refused",
         );
@@ -2940,7 +3297,14 @@ mod tests {
         .expect("the wait lands");
 
         assert_eq!(
-            ws.answer_decision("proj", &TaskId::from("t-1"), By::User, "ship it", None),
+            ws.answer_decision(
+                "proj",
+                &TaskId::from("t-1"),
+                By::User,
+                AnswerValue::Choice("ship it".to_owned()),
+                None,
+                None,
+            ),
             Err(MoveError::NotWaitingQuestion),
             "a resource wait takes no choice",
         );
@@ -2970,9 +3334,16 @@ mod tests {
             vec!["small".to_owned(), "large".to_owned()],
         )
         .expect("the wait lands");
-        ws.answer_decision("proj", &TaskId::from("t-1"), By::User, "small", Some("it fits"))
-            .expect("the answer lands")
-            .expect("the row is there");
+        ws.answer_decision(
+            "proj",
+            &TaskId::from("t-1"),
+            By::User,
+            AnswerValue::Choice("small".to_owned()),
+            Some("it fits"),
+            None,
+        )
+        .expect("the answer lands")
+        .expect("the row is there");
 
         let refused = ws
             .remove_task_tree("proj", &TaskId::from("t-1"))
@@ -2984,12 +3355,228 @@ mod tests {
         let rows = ws.tasks_for_project("proj");
         assert_eq!(rows.len(), 1, "the row and its record survive");
         assert_eq!(
-            rows[0].decision.as_ref().and_then(|decision| {
-                decision.answer.as_ref().map(|answer| answer.choice.as_str())
-            }),
+            rows[0]
+                .request
+                .as_ref()
+                .and_then(|request| request.answer.as_ref().map(Answer::value_words))
+                .as_deref(),
             Some("small"),
             "the answer is still readable",
         );
+    }
+
+    /// The ask kinds take one value each: text for a clarification and a
+    /// teaching, an enumerated disposition for an exception. A choice
+    /// cannot answer a clarification, and a teaching writes the policy note
+    /// its class is settled by - a second ask of that class is refused.
+    #[test]
+    fn each_ask_kind_takes_its_own_value_and_a_teaching_settles_its_class() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        install_db(&ws, dir.path());
+        ws.seed_test_project("proj", "/tmp/tp-ask-kinds");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        let raise = |id: &str, request: Request| {
+            ws.push_task(Task { owner: Some(worker.clone()), ..sample_task(id, "proj") });
+            ws.wait_request_task_at_version(
+                "proj",
+                &TaskId::from(id),
+                &worker,
+                None,
+                request,
+                None,
+                None,
+            )
+            .expect("the ask lands");
+        };
+
+        raise(
+            "clarify",
+            Request {
+                kind: AskKind::Clarification,
+                question: "Which account is the staging one?".to_owned(),
+                options: Vec::new(),
+                class: None,
+                answer: None,
+            },
+        );
+        assert!(
+            matches!(
+                ws.answer_decision(
+                    "proj",
+                    &TaskId::from("clarify"),
+                    By::User,
+                    AnswerValue::Choice("Granite".to_owned()),
+                    None,
+                    None,
+                ),
+                Err(MoveError::AnswerShape(_)),
+            ),
+            "an option list cannot answer a clarification",
+        );
+        let answered = ws
+            .answer_decision(
+                "proj",
+                &TaskId::from("clarify"),
+                By::User,
+                AnswerValue::Text("Granite".to_owned()),
+                None,
+                None,
+            )
+            .expect("the answer lands")
+            .expect("the row is there");
+        assert_eq!(
+            answered.request.expect("the record").answer.expect("answered").value_words(),
+            "Granite",
+        );
+
+        raise(
+            "fault",
+            Request {
+                kind: AskKind::Exception,
+                question: "The flake is back: what now?".to_owned(),
+                options: Vec::new(),
+                class: None,
+                answer: None,
+            },
+        );
+        assert!(
+            matches!(
+                ws.answer_decision(
+                    "proj",
+                    &TaskId::from("fault"),
+                    By::User,
+                    AnswerValue::Text("retry".to_owned()),
+                    None,
+                    None,
+                ),
+                Err(MoveError::AnswerShape(_)),
+            ),
+            "an exception takes an enumerated disposition, not words",
+        );
+        ws.answer_decision(
+            "proj",
+            &TaskId::from("fault"),
+            By::User,
+            AnswerValue::Disposition(Disposition::Retry),
+            Some("once, then report"),
+            None,
+        )
+        .expect("the disposition lands")
+        .expect("the row is there");
+
+        let lesson = "Report the run; never retry a flake twice.";
+        raise(
+            "teach",
+            Request {
+                kind: AskKind::Teaching,
+                question: "Which rule settles flaky CI retries?".to_owned(),
+                options: Vec::new(),
+                class: Some("ci-flake".to_owned()),
+                answer: None,
+            },
+        );
+        ws.answer_decision(
+            "proj",
+            &TaskId::from("teach"),
+            By::User,
+            AnswerValue::Text(lesson.to_owned()),
+            None,
+            Some(lesson),
+        )
+        .expect("the teaching lands")
+        .expect("the row is there");
+        let notes = ws.policy_notes_for_project("proj");
+        assert_eq!(notes.len(), 1, "the lesson is a project policy note: {notes:?}");
+        assert_eq!(notes[0].class, "ci-flake");
+        assert_eq!(notes[0].text, lesson);
+
+        // The class is settled: raising it again is refused, naming the note.
+        ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("teach-again", "proj") });
+        let refused = ws
+            .wait_request_task_at_version(
+                "proj",
+                &TaskId::from("teach-again"),
+                &worker,
+                None,
+                Request {
+                    kind: AskKind::Teaching,
+                    question: "Same trouble again?".to_owned(),
+                    options: Vec::new(),
+                    class: Some("ci-flake".to_owned()),
+                    answer: None,
+                },
+                None,
+                None,
+            )
+            .expect_err("a settled class is not raised again");
+        assert!(
+            matches!(&refused, MoveError::PolicySettled { class, text }
+                if class == "ci-flake" && text.contains("never retry")),
+            "the refusal quotes the note: {refused}",
+        );
+    }
+
+    /// The item states: acknowledge is not an answer, a snooze is quiet
+    /// until its time or the row's next move, and an expiry ends the row
+    /// canceled while the ask's record stays on it.
+    #[test]
+    fn an_ask_acknowledges_snoozes_and_expires_with_its_record_kept() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        install_db(&ws, dir.path());
+        ws.seed_test_project("proj", "/tmp/tp-ask-states");
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+        ws.push_task(Task { owner: Some(worker.clone()), ..sample_task("t-1", "proj") });
+        ws.wait_request_task_at_version(
+            "proj",
+            &TaskId::from("t-1"),
+            &worker,
+            None,
+            Request {
+                kind: AskKind::Clarification,
+                question: "Which account?".to_owned(),
+                options: Vec::new(),
+                class: None,
+                answer: None,
+            },
+            None,
+            None,
+        )
+        .expect("the ask lands");
+
+        let acknowledged =
+            ws.acknowledge_task("proj", &TaskId::from("t-1")).expect("the ack lands").expect("row");
+        assert_eq!(acknowledged.status, TaskStatus::Waiting, "acknowledged is not answered");
+        let wait = acknowledged.waiting_on.as_ref().expect("still waiting");
+        assert!(wait.acknowledged_at.is_some(), "the seen stamp is recorded");
+
+        let snoozed = ws
+            .snooze_task(
+                "proj",
+                &TaskId::from("t-1"),
+                forge_primitives::tasks::SnoozeUntil::Activity,
+            )
+            .expect("the snooze lands")
+            .expect("row");
+        let wait = snoozed.waiting_on.as_ref().expect("still waiting");
+        assert!(wait.snoozed.is_some(), "the deferral is recorded");
+        assert!(
+            snooze_active(wait, snoozed.updated_at, SystemTime::now()),
+            "an activity snooze holds until the row moves",
+        );
+        assert!(
+            !snooze_active(wait, snoozed.updated_at + std::time::Duration::from_secs(1), SystemTime::now()),
+            "a touch ends it",
+        );
+
+        let expired = ws
+            .expire_ask("proj", &TaskId::from("t-1"), SystemTime::now(), "expired: no answer")
+            .expect("the row is there");
+        assert_eq!(expired.status, TaskStatus::Canceled, "expiry ends the row canceled");
+        let wait = expired.waiting_on.as_ref().expect("the wait's record is kept");
+        assert!(wait.expired_at.is_some(), "and says when it expired");
+        assert!(expired.request.is_some(), "the ask itself is kept");
     }
 
     #[test]
@@ -3389,7 +3976,7 @@ mod tests {
         );
 
         let refused = ws
-            .wait_task("proj", &TaskId::from("7ed0"), &worker, WaitingKind::Decision, None, None)
+            .wait_task("proj", &TaskId::from("7ed0"), &worker, WaitingKind::User, None, None)
             .expect_err("two rows carry that prefix");
         assert!(
             refused.to_string().contains("7ed0bbbb-0000-4000-8000-000000000002"),
@@ -3498,7 +4085,7 @@ mod tests {
             "proj",
             &TaskId::from("t-1"),
             &worker,
-            WaitingKind::Decision,
+            WaitingKind::User,
             Some("the user's look".to_owned()),
             None,
         )
@@ -3682,6 +4269,10 @@ mod tests {
                 on: None,
                 verification: false,
                 parked: false,
+                    due: None,
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
                 since: None,
             }),
             ..sample_task("t-1", "proj")
@@ -3715,11 +4306,15 @@ mod tests {
             verify: Some(Verify::User),
             status: TaskStatus::Waiting,
             waiting_on: Some(Waiting {
-                kind: Some(WaitingKind::Decision),
+                kind: Some(WaitingKind::User),
                 detail: None,
                 on: None,
                 verification: true,
                 parked: false,
+                    due: None,
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
                 since: None,
             }),
             ..sample_task("t-1", "proj")
@@ -3751,7 +4346,7 @@ mod tests {
                 "proj",
                 &TaskId::from("t-1"),
                 &seat,
-                WaitingKind::Decision,
+                WaitingKind::User,
                 Some("sign this off".to_owned()),
                 None,
             )
@@ -3762,7 +4357,7 @@ mod tests {
                 "proj",
                 &TaskId::from("t-1"),
                 &seat,
-                WaitingKind::Decision,
+                WaitingKind::User,
                 Some("sign this off".to_owned()),
                 None,
             )
@@ -3784,14 +4379,18 @@ mod tests {
             on,
             verification: false,
             parked: false,
+                    due: None,
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
             since: None,
         };
         assert_eq!(wait_words(None), "a wait", "no stored wait");
         assert_eq!(wait_words(Some(&wait(None, None))), "a wait", "a legacy unstated wait");
         assert_eq!(
-            wait_words(Some(&wait(Some(WaitingKind::Decision), None))),
-            "a decision",
-            "the question wait a row can be parked on",
+            wait_words(Some(&wait(Some(WaitingKind::User), None))),
+            "a question for the user",
+            "the wait on the person a row can be parked on",
         );
         assert_eq!(wait_words(Some(&wait(Some(WaitingKind::Resource), None))), "a resource");
         assert_eq!(
@@ -3883,7 +4482,7 @@ mod tests {
             "proj",
             &TaskId::from("t-1"),
             &worker,
-            WaitingKind::Decision,
+            WaitingKind::User,
             Some("which shape".to_owned()),
             None,
         )
@@ -4041,11 +4640,15 @@ mod tests {
         ws.push_task(Task {
             status: TaskStatus::Waiting,
             waiting_on: Some(Waiting {
-                kind: Some(WaitingKind::Decision),
+                kind: Some(WaitingKind::User),
                 detail: None,
                 on: None,
                 verification: true,
                 parked: false,
+                    due: None,
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
                 since: None,
             }),
             ..sample_task_with_parent("t-1", Some("epic"), "proj")
@@ -4185,7 +4788,7 @@ mod tests {
             "proj",
             &TaskId::from("t-1"),
             &worker,
-            WaitingKind::Decision,
+            WaitingKind::User,
             Some("which shape".to_owned()),
             None,
         )
@@ -4219,7 +4822,7 @@ mod tests {
             "proj",
             &TaskId::from("asked"),
             &worker,
-            WaitingKind::Decision,
+            WaitingKind::User,
             Some("which shape".to_owned()),
             None,
         )
@@ -4303,6 +4906,10 @@ mod tests {
                 on: Some(TaskId::from("blocker")),
                 verification: false,
                 parked: false,
+                    due: None,
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
                 since: None,
             }),
             ..sample_task_with_parent("t-1", Some("epic"), "proj")
@@ -4475,7 +5082,7 @@ mod tests {
         let wait = moved.waiting_on.expect("the wait is the verify gate");
         assert_eq!(
             (wait.kind, wait.detail, wait.on, wait.verification, wait.parked),
-            (Some(WaitingKind::Decision), None, None, true, false),
+            (Some(WaitingKind::User), None, None, true, false),
             "the wait is the verify gate, which the board draws as approve / send back",
         );
         assert!(wait.since.is_some(), "the wait is stamped as it begins");

@@ -23,13 +23,13 @@
 //! start is fresh.
 
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
-use forge_primitives::tasks::TaskStatus;
+use forge_primitives::tasks::{DefaultIfIgnored, TaskStatus, WaitingKind};
 use tracing::Instrument;
 
 use crate::SessionSlot;
-use crate::chase::{Deliver, Delivery, PromptDeliver};
+use crate::chase::{Deliver, Delivery, PromptDeliver, fmt_secs};
 use crate::workspace::Workspace;
 
 /// How often the drive looks. A lead that stops is nudged within this.
@@ -42,6 +42,14 @@ pub const DRIVE_MIN_GAP_SECS: u64 = 30 * 60;
 /// rest. The message is read by a model deciding what to do next, so it
 /// stays one screen.
 const DRIVE_NAMES: usize = 3;
+
+/// How long an acknowledgement may stand unanswered before the lead is
+/// told the person marked it seen and forgot it.
+const FORGOTTEN_ACK_SECS: u64 = 4 * 3_600;
+
+/// The period a `reask` default re-arms when the ask's own wait does not
+/// carry one.
+const REASK_PERIOD_SECS: u64 = 30 * 60;
 
 /// One lead's drive clock, held in memory so a restart re-arms every lead.
 #[derive(Debug, Clone, Copy, Default)]
@@ -178,6 +186,104 @@ impl Workspace {
         claims
     }
 
+    /// **The item lifecycle, on the same pass**: every ask on the person
+    /// runs its own deadline default when it passes - escalate, expire or
+    /// reask, never approve - a snoozed ask stays quiet, and an
+    /// acknowledgement standing unanswered is named to the lead once. A
+    /// class a policy note settles is not escalated: the note is the answer.
+    /// Returns how many messages reached a session.
+    fn run_ask_lifecycle(&self, deliver: &dyn Deliver, view: &crate::views::ProjectView, now: SystemTime) -> usize {
+        let lead = SessionSlot::lead(&view.org, &view.name);
+        let prefix = format!("{}\u{0}", view.name);
+        self.forgotten_acks.lock().retain(|key, _| key.starts_with(&prefix));
+        let mut delivered = 0;
+        for task in self.tasks_for_project(&view.name) {
+            if task.status != TaskStatus::Waiting {
+                continue;
+            }
+            let Some(wait) = task.waiting_on.as_ref() else { continue };
+            if wait.kind != Some(WaitingKind::User) || wait.parked {
+                continue;
+            }
+            if crate::tasks::snooze_active(wait, task.updated_at, now) {
+                continue;
+            }
+            // A settled class is already answered: the note is the answer,
+            // so the default never runs and no escalation is made.
+            let settled = task
+                .request
+                .as_ref()
+                .and_then(|request| request.class.as_deref())
+                .is_some_and(|class| self.policy_settles(&view.name, class));
+            if settled {
+                continue;
+            }
+            if let Some(acknowledged) = wait.acknowledged_at
+                && age_secs(acknowledged, now) >= FORGOTTEN_ACK_SECS
+            {
+                let key = format!("{}{}", prefix, task.id.as_str());
+                let mut named = self.forgotten_acks.lock();
+                if named.get(&key) != Some(&acknowledged) {
+                    named.insert(key, acknowledged);
+                    drop(named);
+                    let text = format!(
+                        "task board: \"{}\" was acknowledged {} ago and is still unanswered; \
+                         answer it, withdraw it with a reason, or leave it and say why.",
+                        task.subject,
+                        fmt_secs(age_secs(acknowledged, now)),
+                    );
+                    if deliver.to_seat(&lead, &text) == Delivery::Delivered {
+                        delivered += 1;
+                    }
+                }
+            }
+            let Some(due) = wait.due.as_ref() else { continue };
+            if due.ran_at.is_some() || due.at > now {
+                continue;
+            }
+            match due.default {
+                DefaultIfIgnored::Expire => {
+                    let reason = "expired: no answer within its deadline, and the default was \
+                                  expire - the ask and its record stay on the row";
+                    self.expire_ask(&view.name, &task.id, now, reason);
+                }
+                DefaultIfIgnored::Escalate => {
+                    let text = format!(
+                        "task board: \"{}\" went unanswered past its deadline; the default is \
+                         escalate, so it stays waiting for the user. Raise it again or withdraw \
+                         it with the reason.",
+                        task.subject,
+                    );
+                    if deliver.to_seat(&lead, &text) == Delivery::Delivered {
+                        delivered += 1;
+                    }
+                    self.mark_ask_default_ran(&view.name, &task.id, now);
+                }
+                DefaultIfIgnored::Reask => {
+                    let text = format!(
+                        "task board: \"{}\" went unanswered past its deadline; the default is \
+                         reask, so ask the user again.",
+                        task.subject,
+                    );
+                    if deliver.to_seat(&lead, &text) == Delivery::Delivered {
+                        delivered += 1;
+                    }
+                    let period = wait
+                        .since
+                        .and_then(|since| due.at.duration_since(since).ok())
+                        .map_or(REASK_PERIOD_SECS, |period| period.as_secs())
+                        .max(60);
+                    self.rearm_ask(
+                        &view.name,
+                        &task.id,
+                        now + Duration::from_secs(period),
+                    );
+                }
+            }
+        }
+        delivered
+    }
+
     /// One pass over every project: nudge each lead that has stopped with
     /// a claim on it. Returns how many nudges reached a session.
     pub fn drive(&self, deliver: &dyn Deliver, now: SystemTime) -> usize {
@@ -189,6 +295,9 @@ impl Workspace {
         let mut delivered = 0;
         for view in views {
             let lead = SessionSlot::lead(&view.org, &view.name);
+            // The asks' own clocks run whatever the lead is doing: a
+            // deadline default is the item's contract, not the lead's.
+            delivered += self.run_ask_lifecycle(deliver, &view, now);
             // Never wake a sleeping session: its next start reads the
             // board. Dropping the clock means that start is not met by an
             // old gap.
@@ -372,7 +481,7 @@ mod tests {
             owner,
             parent: None,
             waiting_on: None,
-            decision: None,
+            request: None,
             estimate: None,
             cadence: None,
             rank: None,
@@ -558,6 +667,10 @@ mod tests {
             on: Some(TaskId::from("t-blocker")),
             verification: false,
             parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
             since: None,
         });
         ws.seed_test_task(waiter);
@@ -593,22 +706,30 @@ mod tests {
         let _rx = live_lead(&ws);
         let mut decision = task("t-1", TaskStatus::Waiting, Some(lead()));
         decision.waiting_on = Some(Waiting {
-            kind: Some(WaitingKind::Decision),
+            kind: Some(WaitingKind::User),
             detail: Some("which shape".to_owned()),
             on: None,
             verification: false,
             parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
             since: None,
         });
         ws.seed_test_task(decision);
         let mut look = task("t-2", TaskStatus::Waiting, Some(lead()));
         look.verify = Some(forge_primitives::tasks::Verify::User);
         look.waiting_on = Some(Waiting {
-            kind: Some(WaitingKind::Decision),
+            kind: Some(WaitingKind::User),
             detail: None,
             on: None,
             verification: true,
             parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
             since: None,
         });
         ws.seed_test_task(look);
@@ -749,5 +870,167 @@ mod tests {
             "the recovery is noted once: {:?}",
             recoveries(&landed),
         );
+    }
+
+    /// A waiting ask on the person, with the item fields the lifecycle
+    /// reads.
+    fn ask(
+        id: &str,
+        kind: forge_primitives::tasks::AskKind,
+        due: Option<forge_primitives::tasks::Deadline>,
+        acknowledged_at: Option<SystemTime>,
+        snoozed: Option<forge_primitives::tasks::Snooze>,
+    ) -> Task {
+        let mut task = task(id, TaskStatus::Waiting, Some(lead()));
+        task.request = Some(forge_primitives::tasks::Request {
+            kind,
+            question: format!("question {id}"),
+            options: Vec::new(),
+            class: None,
+            answer: None,
+        });
+        task.waiting_on = Some(Waiting {
+            kind: Some(WaitingKind::User),
+            detail: None,
+            on: None,
+            verification: false,
+            parked: false,
+            since: Some(epoch(0)),
+            due,
+            acknowledged_at,
+            snoozed,
+            expired_at: None,
+        });
+        task
+    }
+
+    fn deadline(at: u64, default: DefaultIfIgnored) -> forge_primitives::tasks::Deadline {
+        forge_primitives::tasks::Deadline { at: epoch(at), default, ran_at: None }
+    }
+
+    /// **The expire default ends the row and keeps its record** - the
+    /// person's silence is not approval, and the ask stays readable.
+    #[test]
+    fn an_expired_ask_ends_canceled_with_its_record() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        ws.seed_test_task(ask(
+            "t-1",
+            forge_primitives::tasks::AskKind::Clarification,
+            Some(deadline(500, DefaultIfIgnored::Expire)),
+            None,
+            None,
+        ));
+        let deliver = Recording::default();
+
+        assert_eq!(pass(&ws, &deliver, 1_000), 0, "expiry speaks to no one");
+        let rows = ws.tasks_for_project(PROJECT);
+        assert_eq!(rows[0].status, TaskStatus::Canceled, "the row ended canceled");
+        let wait = rows[0].waiting_on.as_ref().expect("the wait's record is kept");
+        assert!(wait.expired_at.is_some(), "and says when it expired");
+        assert!(rows[0].request.is_some(), "the ask itself is kept");
+    }
+
+    /// **The escalate default names the ask once**, leaves it waiting, and
+    /// does not repeat on the next pass.
+    #[test]
+    fn an_escalated_ask_is_named_once_and_stays_waiting() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _rx = live_lead(&ws);
+        ws.seed_test_task(ask(
+            "t-1",
+            forge_primitives::tasks::AskKind::Decision,
+            Some(deadline(500, DefaultIfIgnored::Escalate)),
+            None,
+            None,
+        ));
+        let deliver = Recording::default();
+
+        assert_eq!(pass(&ws, &deliver, 1_000), 1, "the lead hears once");
+        let seen = deliver.seen.lock();
+        assert_eq!(seen[0].0, lead());
+        assert!(seen[0].1.contains("went unanswered"), "{}", seen[0].1);
+        drop(seen);
+        assert_eq!(
+            ws.tasks_for_project(PROJECT)[0].status,
+            TaskStatus::Waiting,
+            "escalate keeps the ask waiting",
+        );
+        assert_eq!(pass(&ws, &deliver, 1_060), 0, "and never repeats");
+    }
+
+    /// **The reask default re-arms the deadline** one period out, so the
+    /// ask keeps its own clock rather than expiring by accident.
+    #[test]
+    fn a_reask_default_rearms_the_deadline() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _rx = live_lead(&ws);
+        ws.seed_test_task(ask(
+            "t-1",
+            forge_primitives::tasks::AskKind::Clarification,
+            Some(deadline(500, DefaultIfIgnored::Reask)),
+            None,
+            None,
+        ));
+        let deliver = Recording::default();
+
+        assert_eq!(pass(&ws, &deliver, 1_000), 1, "the lead is told to ask again");
+        let rows = ws.tasks_for_project(PROJECT);
+        assert_eq!(rows[0].status, TaskStatus::Waiting, "the ask stays");
+        let due = rows[0].waiting_on.as_ref().and_then(|wait| wait.due).expect("a deadline");
+        assert!(due.at > epoch(1_000), "re-armed ahead of now");
+        assert_eq!(due.ran_at, None, "and armed again");
+    }
+
+    /// A snoozed ask is quiet: its deadline does not run while the person's
+    /// deferral holds.
+    #[test]
+    fn a_snoozed_ask_is_quiet() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        ws.seed_test_task(ask(
+            "t-1",
+            forge_primitives::tasks::AskKind::Decision,
+            Some(deadline(500, DefaultIfIgnored::Expire)),
+            None,
+            Some(forge_primitives::tasks::Snooze {
+                until: forge_primitives::tasks::SnoozeUntil::At(epoch(9_999)),
+                since: epoch(0),
+            }),
+        ));
+        let deliver = Recording::default();
+
+        pass(&ws, &deliver, 1_000);
+        assert_eq!(
+            ws.tasks_for_project(PROJECT)[0].status,
+            TaskStatus::Waiting,
+            "the deadline waits for the deferral to end",
+        );
+    }
+
+    /// **An acknowledged ask standing unanswered is named once**: seen is
+    /// not answered, and a forgotten acknowledgement is the person's own
+    /// gap made visible to the lead.
+    #[test]
+    fn a_forgotten_acknowledgement_is_named_once() {
+        let dir = tempdir().expect("tempdir");
+        let ws = fixture(dir.path());
+        let _rx = live_lead(&ws);
+        ws.seed_test_task(ask(
+            "t-1",
+            forge_primitives::tasks::AskKind::Decision,
+            None,
+            Some(epoch(0)),
+            None,
+        ));
+        let deliver = Recording::default();
+
+        assert_eq!(pass(&ws, &deliver, 4 * 3_600 + 1), 1, "the lead hears once");
+        let seen = deliver.seen.lock();
+        assert!(seen[0].1.contains("acknowledged"), "{}", seen[0].1);
+        drop(seen);
+        assert_eq!(pass(&ws, &deliver, 4 * 3_600 + 60), 0, "and not every pass");
     }
 }

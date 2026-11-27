@@ -26,7 +26,7 @@ use forge_sdk::mcp::tool::{Tool, ToolInput, ToolOutput, ToolOutputBlock};
 use forge_primitives::tasks::{LinkKind, Task, TaskId, TaskStatus, WaitingKind};
 
 use crate::SessionSlot;
-use crate::mcp::tasks::facade::{TaskDraft, TaskPatch, TasksError, TasksFacade};
+use crate::mcp::tasks::facade::{AskDraft, TaskDraft, TaskPatch, TasksError, TasksFacade};
 
 pub(crate) mod facade;
 
@@ -54,7 +54,8 @@ pub(crate) fn add_tools(
     if lead {
         builder
             .tool(Approve { facade: facade.clone(), slot: slot.clone() })
-            .tool(Answer { facade, slot })
+            .tool(Answer { facade: facade.clone(), slot: slot.clone() })
+            .tool(Policy { facade, slot })
     } else {
         builder
     }
@@ -134,8 +135,8 @@ fn task_to_json(task: &Task) -> serde_json::Value {
             }),
         );
     }
-    if let Some(decision) = &task.decision {
-        map.insert("decision".to_owned(), decision_json(decision));
+    if let Some(request) = &task.request {
+        map.insert("request".to_owned(), request_json(request));
     }
     if let Some(evidence) = &task.evidence {
         map.insert(
@@ -218,17 +219,37 @@ fn link_json(link: &forge_primitives::tasks::TaskLink) -> serde_json::Value {
     serde_json::Value::Object(map)
 }
 
-/// The decision record as the tool output reads it: the ask, its options,
-/// and the answer once given.
-fn decision_json(decision: &forge_primitives::tasks::Decision) -> serde_json::Value {
+/// The ask record as the tool output reads it: its kind, the question, its
+/// options or class, and the value the answer returned.
+fn request_json(request: &forge_primitives::tasks::Request) -> serde_json::Value {
+    let ask_kind_str = |kind: forge_primitives::tasks::AskKind| match kind {
+        forge_primitives::tasks::AskKind::Decision => "decision",
+        forge_primitives::tasks::AskKind::Clarification => "clarification",
+        forge_primitives::tasks::AskKind::Exception => "exception",
+        forge_primitives::tasks::AskKind::Teaching => "teaching",
+    };
     let mut map = serde_json::Map::new();
-    map.insert("question".to_owned(), serde_json::json!(decision.question));
-    map.insert("options".to_owned(), serde_json::json!(decision.options));
-    if let Some(answer) = &decision.answer {
+    map.insert("kind".to_owned(), serde_json::json!(ask_kind_str(request.kind)));
+    map.insert("question".to_owned(), serde_json::json!(request.question));
+    map.insert("options".to_owned(), serde_json::json!(request.options));
+    if let Some(class) = &request.class {
+        map.insert("class".to_owned(), serde_json::json!(class));
+    }
+    if let Some(answer) = &request.answer {
         map.insert(
             "answer".to_owned(),
             serde_json::json!({
-                "choice": answer.choice,
+                "value": match &answer.value {
+                    forge_primitives::tasks::AnswerValue::Choice(choice) => {
+                        serde_json::json!({ "choice": choice })
+                    }
+                    forge_primitives::tasks::AnswerValue::Text(text) => {
+                        serde_json::json!({ "text": text })
+                    }
+                    forge_primitives::tasks::AnswerValue::Disposition(disposition) => {
+                        serde_json::json!({ "disposition": disposition.as_str() })
+                    }
+                },
                 "note": answer.note,
                 "at": fmt_rfc3339(answer.at),
             }),
@@ -595,6 +616,21 @@ impl Tool for Update {
                     },
                     "additionalProperties": false,
                 },
+                "due": {
+                    "type": "string",
+                    "description": "A deadline for the row's current wait (\"30m\", \"2h\", \
+                                    \"1d\"). It arrives with `default` or not at all; a look \
+                                    takes one as any waiting row does.",
+                },
+                "default": {
+                    "type": "string",
+                    "enum": ["escalate", "expire", "reask"],
+                    "description": "The NAMED default that runs when `due` passes: escalate \
+                                    tells the lead the ask went unanswered; expire ends the \
+                                    row canceled with the reason and keeps the record; reask \
+                                    re-notifies the lead and re-arms the deadline. There is \
+                                    no approve default.",
+                },
                 "estimate": { "type": "string", "description": "A duration estimate." },
             },
             "required": ["id", "version"],
@@ -659,7 +695,7 @@ struct ListArgs {
 
 fn waiting_kind_str(kind: WaitingKind) -> &'static str {
     match kind {
-        WaitingKind::Decision => "decision",
+        WaitingKind::User => "user",
         WaitingKind::Dependency => "dependency",
         WaitingKind::Resource => "resource",
     }
@@ -1173,12 +1209,26 @@ struct WaitArgs {
     detail: Option<String>,
     #[serde(default)]
     on: Option<String>,
-    /// A decision's question and the options the lead enumerated: the
-    /// card the user answers is built from these.
+    /// The ask's kind when it is on the person: decision, clarification,
+    /// exception or teaching. A look needs no `ask` (it is the gate's).
+    #[serde(default)]
+    ask: Option<forge_primitives::tasks::AskKind>,
+    /// The ask's question, one sentence: the card's headline.
     #[serde(default)]
     question: Option<String>,
+    /// A decision's enumerated options; empty for every other kind.
     #[serde(default)]
     options: Vec<String>,
+    /// A teaching's class: the recurring trouble the lesson settles.
+    #[serde(default)]
+    class: Option<String>,
+    /// How long until the deadline default runs ("30m", "2h", "1d").
+    #[serde(default)]
+    due: Option<String>,
+    /// The named default that runs when `due` passes: escalate, expire or
+    /// reask. Never approve, and never without `due`.
+    #[serde(default)]
+    default: Option<forge_primitives::tasks::DefaultIfIgnored>,
     version: u64,
 }
 
@@ -1189,32 +1239,37 @@ impl Tool for Wait {
     }
 
     fn description(&self) -> &'static str {
-        "Put one of YOUR rows into waiting and state what it waits on. `kind` is decision \
-         (which routes to the user), dependency (another task: put its id in `on`), or resource \
-         (an account, a CI run, a machine). A decision also states `question`, the ask in one \
-         sentence, and `options`, the alternatives the user picks between: the card they answer \
-         is built from both, and the chosen one is recorded on the row. A decision wait is the at-convenience channel to \
-         the user: a lead who can continue but wants the person's look puts the ask here on a \
-         board row rather than saying it in prose, because prose is not a surface and a wait \
-         left in prose is invisible once your turn ends. Do not use it to park work the \
-         decision model, your peers or the review can settle. A dependency wait is on the \
-         task it names, not on the user. A blocker parked on the user's look has not ended, so the chain keeps \
-         waiting until the user approves it. The waiting row is not itself waiting on the \
-         user: a row's `verify: user` gates its own completion, not its dependency \
-         wait, so the row stays movable and deletable. Route a decision to the user when the user \
-         asked for a hold, when something is still genuinely ambiguous after the decision model, \
-         peer opinions and the team's own review, or when the person should look at the work when \
-         they come back. Only the lead mints a \
-         user-decision wait: a worker that believes the call is the user's hands it to its \
-         lead, because a decision a worker parks outlives its answer and the lead cannot close \
-         it afterward. `detail` is the words. \
-         A wait on the user that has gone moot is withdrawn, not stranded: a lead cancels the \
-         row with the reason it goes away (`tasks__update`, `detail`), and the row records why. \
-         The row \
-         and the `on` blocker are each named by a full id or any unique prefix of one; an exact \
-         id wins over any longer id that starts with it, and a prefix matching more than one row \
-         is refused with the matching rows named. The row must be yours. Refused for a row you \
-         do not hold, or one that is not there. Returns the record in waiting."
+        "Put one of YOUR rows into waiting and state what it waits on. `kind` is user (the \
+         person), dependency (another task: put its id in `on`), or resource (an account, a CI \
+         run, a machine). An ask on the person also carries `ask`, its kind: decision (a choice \
+         among `options`, which are required), clarification (a fact only the person has, \
+         answered in their own words), exception (a disposition: retry, rescope, drop or \
+         diagnose), or teaching (a lesson that becomes project policy for the `class` it \
+         names). `question` is the ask in one sentence and becomes the card's headline; \
+         `detail` is the why. A teaching's class is what stops the trouble recurring: an ask \
+         whose class a policy note already settles is refused with the note quoted. A `due` \
+         duration with a `default` - escalate, expire or reask - gives the ask a deadline whose \
+         NAMED default runs when it passes; the two arrive together, and there is no approve \
+         default. Acknowledge and snooze are the person's own acts on the board, never tools. \
+         A user wait is the at-convenience channel: a lead who can continue but wants the \
+         person's answer puts the ask on a board row rather than in prose, because prose is not \
+         a surface. Route a decision to the person when they asked for a hold, when something \
+         is still genuinely ambiguous after the decision model, peer opinions and the team's \
+         own review, or when the person should look at the work when they come back. Raise a \
+         clarification for a fact only they have, an exception for a disposition on a fault, \
+         and a teaching when a class keeps recurring and a lesson settles it. Do not use any of \
+         them to park work the decision model, your peers or the review can settle. A dependency wait is on the task it names, not on the user. A blocker parked on \
+         the user's look has not ended, so the chain keeps waiting until the user approves it. \
+         The waiting row is not itself waiting on the user: a row's `verify: user` gates its own \
+         completion, not its dependency wait, so the row stays movable and deletable. Only the \
+         lead raises a user ask: a worker that believes the call is the person's hands it to its \
+         lead. A wait on the user that has gone moot is withdrawn, not stranded: a lead cancels \
+         the row with the reason it goes away (`tasks__update`, `detail`), and the row records \
+         why. The row and the `on` blocker are each named by a full id or any unique prefix of \
+         one; an exact id wins over any longer id that starts with it, and a prefix matching \
+         more than one row is refused with the matching rows named. The row must be yours. \
+         Refused for a row you do not hold, or one that is not there. Returns the record in \
+         waiting."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -1245,18 +1300,44 @@ impl Tool for Wait {
                     "description": "For a dependency: the task id it waits on, or any unique \
                                     prefix of one.",
                 },
+                "ask": {
+                    "type": "string",
+                    "enum": ["decision", "clarification", "exception", "teaching"],
+                    "description": "The ask's kind when it is on the person. A look needs no \
+                                    `ask`: it is the verify gate's.",
+                },
                 "question": {
                     "type": "string",
-                    "description": "For a decision: the question the user is being asked, in \
-                                    one sentence. It becomes the card's headline, so state the \
-                                    ask rather than the background.",
+                    "description": "The ask's question, in one sentence. It becomes the card's \
+                                    headline, so state the ask rather than the background.",
                 },
                 "options": {
                     "type": "array",
-                    "description": "For a decision: the choices the lead enumerated, each a \
-                                    short phrase. The user answers by picking one, so list the \
-                                    real alternatives rather than one option and a rest.",
+                    "description": "A decision's choices, each a short phrase, at least one. \
+                                    The person answers by picking one, so list the real \
+                                    alternatives rather than one option and a rest. A \
+                                    clarification or exception carries none.",
                     "items": { "type": "string" },
+                },
+                "class": {
+                    "type": "string",
+                    "description": "A teaching's class: the recurring trouble the lesson \
+                                    settles, a short slug. An ask of a class a policy note \
+                                    already settles is refused with the note quoted.",
+                },
+                "due": {
+                    "type": "string",
+                    "description": "How long until the deadline default runs (\"30m\", \"2h\", \
+                                    \"1d\"). It arrives with `default` or not at all.",
+                },
+                "default": {
+                    "type": "string",
+                    "enum": ["escalate", "expire", "reask"],
+                    "description": "The NAMED default that runs when `due` passes: escalate \
+                                    tells the lead the ask went unanswered; expire ends the \
+                                    row canceled with the reason and keeps the record; reask \
+                                    re-notifies the lead and re-arms the deadline. There is \
+                                    no approve default.",
                 },
                 "version": {
                     "type": "integer",
@@ -1279,14 +1360,26 @@ impl Tool for Wait {
             return tool_error("a dependency wait needs `on`, the task it waits on".to_owned());
         }
         let on = args.on.as_deref().map(TaskId::from);
+        // An ask on the person needs a kind; a decision without one is the
+        // historical shape and reads as a decision.
+        let ask = match (args.ask, args.question) {
+            (None, None) => None,
+            (kind, question) => Some(AskDraft {
+                kind: kind.unwrap_or_default(),
+                question: question.unwrap_or_default(),
+                options: args.options,
+                class: args.class,
+                due: args.due,
+                default: args.default,
+            }),
+        };
         match self.facade.wait_task(
             &self.slot,
             &TaskId::from(args.id.as_str()),
             args.kind,
             args.detail,
             on.as_ref(),
-            args.question,
-            args.options,
+            ask,
             args.version,
         ) {
             Ok(task) => match serde_json::to_string_pretty(&task_to_json(&task)) {
@@ -1396,8 +1489,18 @@ struct Answer {
 #[derive(serde::Deserialize)]
 struct AnswerArgs {
     id: String,
-    /// The option the user picked.
-    choice: String,
+    /// A decision's choice: one of the row's options.
+    #[serde(default)]
+    choice: Option<String>,
+    /// A clarification's or teaching's answer, in the person's words.
+    #[serde(default)]
+    text: Option<String>,
+    /// An exception's disposition: retry, rescope, drop or diagnose.
+    #[serde(default)]
+    disposition: Option<String>,
+    /// A teaching's lesson: the policy text its class is settled by.
+    #[serde(default)]
+    lesson: Option<String>,
     /// The note they left with it, when they left one.
     #[serde(default)]
     note: Option<String>,
@@ -1411,15 +1514,19 @@ impl Tool for Answer {
     }
 
     fn description(&self) -> &'static str {
-        "Lead-only. Record the user's answer to a row waiting on a DECISION: `choice` is the \
-         option they picked (one of the options the row asks about) and `note` the short note \
-         they left with it, when they left one. The answer is stored as the row's decision \
-         record - what was chosen, when, and the note - and the row resumes in progress. \
-         **Never answer with your own opinion**: a decision is the user's to make, and if they \
-         have not answered the row stays waiting for them. A look is not a decision - that door \
-         is tasks__approve. A task is named by its full id or any unique prefix of one. Refused \
-         when the row is not waiting on a decision, when the choice is not one of its options, \
-         or when the caller is not the lead."
+        "Lead-only. Record the person's answer to a row waiting on an ask, with the ONE value \
+         that ask's kind needs: `choice` for a decision (one of the row's options), `text` for \
+         a clarification (the fact, in their words) and for a teaching (the lesson, with \
+         `lesson` stating the policy text its class is settled by), or `disposition` for an \
+         exception (retry, rescope, drop or diagnose). `note` is the short note they left with \
+         it. The answer is stored as the row's request record and the row resumes in progress; \
+         a teaching also writes the project policy note, so the class stops recurring. \
+         **Never answer with your own opinion**: the ask is the person's to answer, and if \
+         they have not answered the row stays waiting for them. A look is not an ask - that \
+         door is tasks__approve. A task is named by its full id or any unique prefix of one. \
+         Refused when the row is not waiting on an ask for the person, when the value's shape \
+         does not fit the kind, when the choice is not one of its options, or when the caller \
+         is not the lead."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -1428,16 +1535,31 @@ impl Tool for Answer {
             "properties": {
                 "id": {
                     "type": "string",
-                    "description": "The row waiting on the decision, or any unique prefix of \
-                                    its id.",
+                    "description": "The row waiting on the ask, or any unique prefix of its id.",
                 },
                 "choice": {
                     "type": "string",
-                    "description": "The option the user picked, as one of the row's options.",
+                    "description": "For a decision: the option the person picked, as one of \
+                                    the row's options.",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "For a clarification: the fact the ask needed, in the \
+                                    person's words. For a teaching: the lesson.",
+                },
+                "disposition": {
+                    "type": "string",
+                    "enum": ["retry", "rescope", "drop", "diagnose"],
+                    "description": "For an exception: the disposal the person chose.",
+                },
+                "lesson": {
+                    "type": "string",
+                    "description": "For a teaching: the policy text the lesson settles its \
+                                    class by, written to the project's policy notes.",
                 },
                 "note": {
                     "type": "string",
-                    "description": "The short note the user left with the choice, if any.",
+                    "description": "The short note the person left with the answer, if any.",
                 },
                 "version": {
                     "type": "integer",
@@ -1446,7 +1568,7 @@ impl Tool for Answer {
                                     with the current version.",
                 },
             },
-            "required": ["id", "choice", "version"],
+            "required": ["id", "version"],
             "additionalProperties": false,
         })
     }
@@ -1454,7 +1576,7 @@ impl Tool for Answer {
     async fn call(&self, input: ToolInput) -> ToolOutput {
         if self.slot.label() != crate::LEAD_LABEL {
             return tool_error(
-                "only the project lead records the user's decision; this session is a worker"
+                "only the project lead records the person's answer; this session is a worker"
                     .to_owned(),
             );
         }
@@ -1462,19 +1584,26 @@ impl Tool for Answer {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        let choice = args.choice.trim();
-        if choice.is_empty() {
+        // One door, one value: the ask's kind decides which, and the shape
+        // is refused here where the caller can see all three fields.
+        let stated =
+            [args.choice.is_some(), args.text.is_some(), args.disposition.is_some()]
+                .iter()
+                .filter(|stated| **stated)
+                .count();
+        if stated != 1 {
             return tool_error(
-                "an answer needs `choice`: the option the user picked, as one of the row's \
-                 options"
-                    .to_owned(),
+                "an answer states exactly one of `choice`, `text` or `disposition`".to_owned(),
             );
         }
         match self.facade.answer_task(
             &self.slot,
             &TaskId::from(args.id.as_str()),
-            choice,
+            args.choice.as_deref(),
+            args.text.as_deref(),
+            args.disposition.as_deref(),
             args.note.as_deref(),
+            args.lesson.as_deref(),
             args.version,
         ) {
             Ok(task) => match serde_json::to_string_pretty(&task_to_json(&task)) {
@@ -1482,6 +1611,91 @@ impl Tool for Answer {
                 Err(err) => tool_error(format!("response serialization failed: {err}")),
             },
             Err(err) => tool_error(format_tasks_error(&err)),
+        }
+    }
+}
+
+struct Policy {
+    facade: Arc<dyn TasksFacade>,
+    slot: SessionSlot,
+}
+
+#[derive(serde::Deserialize)]
+struct PolicyArgs {
+    #[serde(default)]
+    class: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl Tool for Policy {
+    fn name(&self) -> &'static str {
+        "tasks__policy"
+    }
+
+    fn description(&self) -> &'static str {
+        "Lead-only. Read YOUR project's policy notes - the lessons earlier teaching answers \
+         settled, keyed by `class` - or write one yourself with `class` and `text`. A note is \
+         the class's standing rule: it is appended to a lead's prompt at spawn, and an ask of a \
+         class a note settles is refused with the note quoted, so the trouble stops recurring. \
+         **A resumed lead does not see a note added since its spawn until its next spawn or \
+         this read.** Call with neither argument to list; with both to write."
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "class": {
+                    "type": "string",
+                    "description": "The recurring class of ask the note settles, a short slug.",
+                },
+                "text": {
+                    "type": "string",
+                    "description": "The lesson itself: the policy the class is settled by.",
+                },
+            },
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(&self, input: ToolInput) -> ToolOutput {
+        let args: PolicyArgs = match serde_json::from_value(input.value) {
+            Ok(args) => args,
+            Err(err) => return tool_error(format!("invalid arguments: {err}")),
+        };
+        let note_json = |note: &crate::store::policy::PolicyNote| {
+            serde_json::json!({
+                "class": note.class,
+                "text": note.text,
+                "source_task": note.source_task,
+                "at": fmt_rfc3339(note.at),
+            })
+        };
+        match (args.class.as_deref(), args.text.as_deref()) {
+            (None, None) => {
+                let notes: Vec<serde_json::Value> = self
+                    .facade
+                    .policy_notes(&self.slot)
+                    .iter()
+                    .map(note_json)
+                    .collect();
+                match serde_json::to_string_pretty(&serde_json::json!({ "notes": notes })) {
+                    Ok(json) => ToolOutput::text(json),
+                    Err(err) => tool_error(format!("response serialization failed: {err}")),
+                }
+            }
+            (Some(class), Some(text)) => match self.facade.add_policy_note(&self.slot, class, text) {
+                Ok(note) => match serde_json::to_string_pretty(&note_json(&note)) {
+                    Ok(json) => ToolOutput::text(json),
+                    Err(err) => tool_error(format!("response serialization failed: {err}")),
+                },
+                Err(err) => tool_error(format_tasks_error(&err)),
+            },
+            _ => tool_error(
+                "a policy write states both `class` and `text`; a read states neither".to_owned(),
+            ),
         }
     }
 }
@@ -1809,7 +2023,7 @@ mod tests {
             owner: None,
             parent: None,
             waiting_on: None,
-            decision: None,
+            request: None,
             estimate: None,
             cadence: None,
             rank: None,
@@ -1988,10 +2202,13 @@ mod tests {
         let wait = Wait { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
         let desc = wait.description();
         for clause in [
-            "Route a decision to the user when the user asked for a hold",
+            "Route a decision to the person when they asked for a hold",
             "something is still genuinely ambiguous after the decision model, peer opinions and \
              the team's own review",
             "when the person should look at the work when they come back",
+            "a clarification for a fact only they have",
+            "an exception for a disposition on a fault",
+            "a teaching when a class keeps recurring and a lesson settles it",
         ] {
             assert!(desc.contains(clause), "the wait description owes {clause:?}: {desc}");
         }
@@ -2132,8 +2349,8 @@ mod tests {
         let facade = MockTasksFacade::new().into_arc();
         let wait = Wait { facade, slot: lead_slot() };
         for clause in [
-            "A decision wait is the at-convenience channel to the user",
-            "puts the ask here on a board row rather than saying it in prose",
+            "A user wait is the at-convenience channel",
+            "puts the ask on a board row rather than in prose",
             "prose is not a surface",
         ] {
             assert!(
@@ -2454,9 +2671,8 @@ mod tests {
     fn the_wait_description_keeps_the_user_decision_mint_with_the_lead() {
         let wait = Wait { facade: MockTasksFacade::new().into_arc(), slot: lead_slot() };
         for clause in [
-            "Only the lead mints a user-decision wait",
-            "a worker that believes the call is the user's hands it to its lead",
-            "a decision a worker parks outlives its answer and the lead cannot close it afterward",
+            "Only the lead raises a user ask",
+            "a worker that believes the call is the person's hands it to its lead",
         ] {
             assert!(
                 wait.description().contains(clause),
@@ -2540,11 +2756,15 @@ mod tests {
             owner: Some(SessionSlot::worker("TestOrg", "myproj", "w-1")),
             verify: Some(forge_primitives::tasks::Verify::User),
             waiting_on: Some(Waiting {
-                kind: Some(WaitingKind::Decision),
+                kind: Some(WaitingKind::User),
                 detail: Some("the words the user answers".to_owned()),
                 on: None,
                 verification: true,
                 parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
                 since: None,
             }),
             attested: Some(Attestation {
@@ -2586,6 +2806,10 @@ mod tests {
                 verification: false,
                 parked: true,
                 since: None,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
             }),
             attested: Some(Attestation {
                 evidence: "looks good".to_owned(),
@@ -2654,7 +2878,7 @@ mod tests {
         ] {
             assert_eq!(row[key], value, "the compact row carries {key}: {row}");
         }
-        assert_eq!(row["waiting"]["kind"], "decision", "the wait's state stays: {row}");
+        assert_eq!(row["waiting"]["kind"], "user", "the wait's state stays: {row}");
         assert_eq!(row["waiting"]["verification"], true, "including the look gate: {row}");
         for omitted in [
             "detail",
@@ -2905,8 +3129,83 @@ mod tests {
         assert!(!out.is_error, "answer succeeds: {out:?}");
         let calls = facade.answered.lock();
         assert_eq!(calls[0].1, TaskId::from("t-1"));
-        assert_eq!(calls[0].2, "flag it");
-        assert_eq!(calls[0].3.as_deref(), Some("until the bench is green"));
+        assert_eq!(calls[0].2.as_deref(), Some("flag it"), "the choice is the value the tool sent");
+        assert_eq!(calls[0].5.as_deref(), Some("until the bench is green"));
+    }
+
+    /// The answer door carries one value per kind: text for a
+    /// clarification and a teaching (with its lesson), a disposition for
+    /// an exception, and the tool refuses when two are sent at once.
+    #[tokio::test]
+    async fn answer_threads_the_value_the_ask_kind_needs() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let answer = Answer { facade: facade.clone(), slot: lead_slot() };
+        let out = answer
+            .call(input(serde_json::json!({
+                "id": "t-1",
+                "text": "Granite",
+                "version": 0,
+            })))
+            .await;
+        assert!(!out.is_error, "a clarification's text succeeds: {out:?}");
+        assert_eq!(facade.answered.lock()[0].3.as_deref(), Some("Granite"), "the text rides it");
+
+        let out = answer
+            .call(input(serde_json::json!({
+                "id": "t-2",
+                "disposition": "retry",
+                "version": 0,
+            })))
+            .await;
+        assert!(!out.is_error, "an exception's disposition succeeds: {out:?}");
+        assert_eq!(facade.answered.lock()[1].4.as_deref(), Some("retry"));
+
+        let out = answer
+            .call(input(serde_json::json!({
+                "id": "t-3",
+                "text": "report the flake",
+                "lesson": "never retry a flake twice",
+                "version": 0,
+            })))
+            .await;
+        assert!(!out.is_error, "a teaching's lesson succeeds: {out:?}");
+        assert_eq!(facade.answered.lock()[2].3.as_deref(), Some("report the flake"));
+        assert_eq!(facade.answered.lock()[2].5.as_deref(), Some("never retry a flake twice"));
+
+        let out = answer
+            .call(input(serde_json::json!({
+                "id": "t-4",
+                "choice": "this",
+                "text": "that",
+                "version": 0,
+            })))
+            .await;
+        assert!(out.is_error, "two values at once is refused");
+        assert!(text_of(&out).contains("exactly one"), "{:?}", text_of(&out));
+    }
+
+    /// The policy door lists the project's notes and writes one; a write
+    /// states both halves.
+    #[tokio::test]
+    async fn policy_lists_and_writes_with_both_halves() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let policy = Policy { facade: facade.clone(), slot: lead_slot() };
+        let out = policy.call(input(serde_json::json!({}))).await;
+        assert!(!out.is_error, "a bare call lists: {out:?}");
+        assert!(text_of(&out).contains("\"notes\""), "the answer is the set: {:?}", text_of(&out));
+
+        let out = policy
+            .call(input(serde_json::json!({
+                "class": "ci-flake",
+                "text": "never retry a flake twice",
+            })))
+            .await;
+        assert!(!out.is_error, "the lead writes a note: {out:?}");
+        assert!(text_of(&out).contains("ci-flake"));
+
+        let out = policy.call(input(serde_json::json!({ "class": "ci-flake" }))).await;
+        assert!(out.is_error, "half a write is refused");
+        assert!(text_of(&out).contains("both"), "{:?}", text_of(&out));
     }
 
     #[tokio::test]
@@ -3082,12 +3381,14 @@ mod tests {
         let list = List { facade: facade.clone(), slot: slot.clone() };
         let delete = Delete { facade: facade.clone(), slot: slot.clone() };
         let claim = Claim { facade: facade.clone(), slot: slot.clone() };
-        let wait = Wait { facade, slot };
+        let wait = Wait { facade: facade.clone(), slot: slot.clone() };
+        let policy = Policy { facade, slot };
         assert_eq!(create.name(), "tasks__create");
         assert_eq!(update.name(), "tasks__update");
         assert_eq!(list.name(), "tasks__list");
         assert_eq!(delete.name(), "tasks__delete");
         assert_eq!(claim.name(), "tasks__claim");
+        assert_eq!(policy.name(), "tasks__policy");
         assert_eq!(wait.name(), "tasks__wait");
     }
 

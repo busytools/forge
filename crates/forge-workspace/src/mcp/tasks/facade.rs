@@ -11,12 +11,13 @@ use std::sync::{Arc, Weak};
 use std::time::SystemTime;
 
 use forge_primitives::tasks::{
-    By, Estimate, Evidence, LinkKind, Task, TaskId, TaskKind, TaskLink, TaskStatus, Verify,
-    Waiting, WaitingKind,
+    AnswerValue, AskKind, By, Deadline, DefaultIfIgnored, Disposition, Estimate, Evidence,
+    LinkKind, Request, Task, TaskId, TaskKind, TaskLink, TaskStatus, Verify, Waiting, WaitingKind,
 };
 
 use crate::SessionSlot;
 use crate::mcp::caller_context::caller_context;
+use crate::store::policy::PolicyNote;
 use crate::tasks::{ClaimError, IdError, MoveError};
 use crate::workspace::Workspace;
 
@@ -138,6 +139,20 @@ pub(crate) struct TaskDraft {
     pub evidence: Option<EvidenceDraft>,
 }
 
+/// An ask on the person as `tasks__wait` states it: the kind, the question,
+/// and what the kind needs - a decision's options, a teaching's class, a
+/// deadline with its named default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AskDraft {
+    pub kind: AskKind,
+    pub question: String,
+    pub options: Vec<String>,
+    pub class: Option<String>,
+    /// Duration words ("2h", "1d"); `None` means no deadline.
+    pub due: Option<String>,
+    pub default: Option<DefaultIfIgnored>,
+}
+
 /// The tree a `tasks__delete` removed: the named task as it stood, and how
 /// many descendants went with it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,6 +197,13 @@ pub(crate) struct TaskPatch {
     /// clears any earlier verdict - the gate stamps the next check.
     #[serde(default)]
     pub evidence: Option<EvidenceDraft>,
+    /// A deadline for the row's current wait, in the estimate grammar; it
+    /// arrives with `default`.
+    #[serde(default)]
+    pub due: Option<String>,
+    /// The named default that runs when `due` passes.
+    #[serde(default)]
+    pub default: Option<DefaultIfIgnored>,
     /// The version the caller read. A stated version the row is not at
     /// refuses the write, so a lost update is visible.
     #[serde(default)]
@@ -379,9 +401,9 @@ pub(crate) trait TasksFacade: Send + Sync {
     /// `tasks__claim`.
     fn claim_task(&self, caller: &SessionSlot, id: &str, version: u64) -> Result<Task, TasksError>;
 
-    /// Put the caller's row `id` into waiting. Backs `tasks__wait`; a
-    /// decision also carries the question it asks and the options the lead
-    /// enumerated. `version` is the row as the caller read it.
+    /// Put the caller's row `id` into waiting. Backs `tasks__wait`; an ask
+    /// on the person arrives as a draft carrying the kind and what the
+    /// kind needs. `version` is the row as the caller read it.
     fn wait_task(
         &self,
         caller: &SessionSlot,
@@ -389,21 +411,37 @@ pub(crate) trait TasksFacade: Send + Sync {
         kind: WaitingKind,
         detail: Option<String>,
         on: Option<&TaskId>,
-        question: Option<String>,
-        options: Vec<String>,
+        ask: Option<AskDraft>,
         version: u64,
     ) -> Result<Task, TasksError>;
 
-    /// Record the user's answer to a row waiting on a decision: the choice
-    /// they picked and the note they left. Backs `tasks__answer`.
+    /// Record the person's answer to an ask: the value the kind needed -
+    /// a decision's `choice`, a clarification's `text`, an exception's
+    /// `disposition` - the note they left, and a teaching's `lesson`.
+    /// Backs `tasks__answer`.
     fn answer_task(
         &self,
         caller: &SessionSlot,
         id: &TaskId,
-        choice: &str,
+        choice: Option<&str>,
+        text: Option<&str>,
+        disposition: Option<&str>,
         note: Option<&str>,
+        lesson: Option<&str>,
         version: u64,
     ) -> Result<Task, TasksError>;
+
+    /// The caller's project's settled policy notes. Backs `tasks__policy`.
+    fn policy_notes(&self, caller: &SessionSlot) -> Vec<PolicyNote>;
+
+    /// Add a policy note directly - the lead's own write, beside the one a
+    /// teaching answer lands.
+    fn add_policy_note(
+        &self,
+        caller: &SessionSlot,
+        class: &str,
+        text: &str,
+    ) -> Result<PolicyNote, TasksError>;
 
     /// The lead completes a look wait with the approval the user gave,
     /// quoted. Backs `tasks__approve`; the core refuses a non-lead.
@@ -468,7 +506,7 @@ impl TasksFacade for ProdTasksFacade {
                 .map(|label| SessionSlot::new(&cx.project_org, &cx.project_name, label)),
             parent: resolve_parent(&ws, &cx.project_name, draft.parent.as_deref())?,
             waiting_on: None,
-            decision: None,
+            request: None,
             estimate,
             cadence,
             rank: draft.rank,
@@ -520,11 +558,15 @@ impl TasksFacade for ProdTasksFacade {
             // completion waits on the user lands waiting on that look.
             if task.verify == Some(Verify::User) {
                 task.waiting_on = Some(Waiting {
-                    kind: Some(WaitingKind::Decision),
+                    kind: Some(WaitingKind::User),
                     detail: None,
                     on: None,
                     verification: true,
                     parked: false,
+                    due: None,
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
                     since: Some(now),
                 });
                 task.status = TaskStatus::Waiting;
@@ -638,6 +680,31 @@ impl TasksFacade for ProdTasksFacade {
         if let Some(parent) = resolve_parent(&ws, &cx.project_name, patch.parent.as_deref())? {
             patch.parent = Some(parent.as_str().to_owned());
         }
+        // A deadline arrives whole: a duration with its named default.
+        let deadline = match (patch.due.as_deref(), patch.default) {
+            (None, None) => None,
+            (Some(words), Some(default)) => {
+                let Some(period) = Estimate::parse(words) else {
+                    return Err(TasksError::BadEstimate(words.to_owned()));
+                };
+                Some(Deadline {
+                    at: SystemTime::now() + std::time::Duration::from_secs(period.secs),
+                    default,
+                    ran_at: None,
+                })
+            }
+            (Some(_), None) => {
+                return Err(TasksError::Refused(
+                    "a deadline names its default-if-ignored: escalate, expire or reask"
+                        .to_owned(),
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(TasksError::Refused(
+                    "a default-if-ignored needs the `due` it runs at".to_owned(),
+                ));
+            }
+        };
         let at = SystemTime::now();
         let expected = patch.version;
         ws.update_task_at_version(
@@ -647,6 +714,11 @@ impl TasksFacade for ProdTasksFacade {
             expected,
             |task| {
                 patch.apply(task, &cx.project_org, &cx.project_name, estimate, at);
+                if let Some(deadline) = deadline
+                    && let Some(wait) = task.waiting_on.as_mut()
+                {
+                    wait.due = Some(deadline);
+                }
             },
         )
         .map_err(|refused| TasksError::Refused(refused.to_string()))?
@@ -700,35 +772,33 @@ impl TasksFacade for ProdTasksFacade {
         kind: WaitingKind,
         detail: Option<String>,
         on: Option<&TaskId>,
-        question: Option<String>,
-        options: Vec<String>,
+        ask: Option<AskDraft>,
         version: u64,
     ) -> Result<Task, TasksError> {
-        // **The decision rides every bulk row it is on**, so its record is
+        // **The request rides every bulk row it is on**, so its record is
         // bounded where it enters: a question one sentence, its options a
-        // few short phrases, the note a paragraph.
+        // few short phrases, its class a slug.
         const MAX_QUESTION: usize = 280;
         const MAX_OPTION: usize = 120;
         const MAX_OPTIONS: usize = 8;
+        const MAX_CLASS: usize = 64;
         let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
-        // **A question for the user is the lead's to raise.** The
+        // **An ask on the person is the lead's to raise.** The
         // instructions and the wait description both say so; a worker's
         // ask goes through its lead, which owns what the user is shown.
-        if (kind == WaitingKind::Decision || question.is_some())
-            && caller.label() != crate::LEAD_LABEL
-        {
+        if (kind == WaitingKind::User || ask.is_some()) && caller.label() != crate::LEAD_LABEL {
             return Err(TasksError::Refused(
-                "only the project lead raises a decision on the user; report the question to \
+                "only the project lead raises an ask on the user; report the question to \
                  your lead and let it put the row to them"
                     .to_owned(),
             ));
         }
-        if let Some(question) = question.as_deref() {
-            let question = question.trim();
+        let waited = if let Some(draft) = ask {
+            let question = draft.question.trim();
             if question.is_empty() {
                 return Err(TasksError::Refused(
-                    "a decision needs `question`: the ask in one sentence".to_owned(),
+                    "an ask needs `question`: the ask in one sentence".to_owned(),
                 ));
             }
             if question.chars().count() > MAX_QUESTION {
@@ -737,33 +807,122 @@ impl TasksFacade for ProdTasksFacade {
                     question.chars().count(),
                 )));
             }
-            if options.len() > MAX_OPTIONS {
-                return Err(TasksError::Refused(format!(
-                    "{} options is more than a card can carry; list at most {MAX_OPTIONS}",
-                    options.len(),
-                )));
+            match draft.kind {
+                AskKind::Decision => {
+                    if draft.options.is_empty() {
+                        return Err(TasksError::Refused(
+                            "a decision enumerates at least one option; a question with a \
+                             free-text answer is a clarification"
+                                .to_owned(),
+                        ));
+                    }
+                    if draft.options.len() > MAX_OPTIONS {
+                        return Err(TasksError::Refused(format!(
+                            "{} options is more than a card can carry; list at most {MAX_OPTIONS}",
+                            draft.options.len(),
+                        )));
+                    }
+                    if let Some(over) = draft
+                        .options
+                        .iter()
+                        .find(|o| o.trim().is_empty() || o.chars().count() > MAX_OPTION)
+                    {
+                        return Err(TasksError::Refused(format!(
+                            "every option is a short phrase of at most {MAX_OPTION} characters; \
+                             \"{over}\" is not"
+                        )));
+                    }
+                }
+                AskKind::Clarification | AskKind::Exception => {
+                    if !draft.options.is_empty() {
+                        return Err(TasksError::Refused(
+                            "only a decision carries options; a clarification is answered in \
+                             words and an exception by a disposition"
+                                .to_owned(),
+                        ));
+                    }
+                }
+                AskKind::Teaching => {
+                    if !draft.options.is_empty() {
+                        return Err(TasksError::Refused(
+                            "only a decision carries options; a teaching is answered with the \
+                             lesson"
+                                .to_owned(),
+                        ));
+                    }
+                }
             }
-            if let Some(over) = options
-                .iter()
-                .find(|option| option.trim().is_empty() || option.chars().count() > MAX_OPTION)
-            {
-                return Err(TasksError::Refused(format!(
-                    "every option is a short phrase of at most {MAX_OPTION} characters; \
-                     \"{over}\" is not"
-                )));
-            }
-        }
-        let waited = match question {
-            Some(question) => ws.wait_decision_task_at_version(
+            let class = match draft.kind {
+                AskKind::Teaching => {
+                    let Some(class) =
+                        draft.class.as_deref().map(str::trim).filter(|c| !c.is_empty())
+                    else {
+                        return Err(TasksError::Refused(
+                            "a teaching names its `class`: the recurring trouble the lesson \
+                             settles"
+                                .to_owned(),
+                        ));
+                    };
+                    if class.chars().count() > MAX_CLASS {
+                        return Err(TasksError::Refused(format!(
+                            "the class is {} characters; keep it to {MAX_CLASS}",
+                            class.chars().count(),
+                        )));
+                    }
+                    Some(class.to_owned())
+                }
+                _ => {
+                    if draft.class.is_some() {
+                        return Err(TasksError::Refused(
+                            "only a teaching carries a `class`".to_owned(),
+                        ));
+                    }
+                    None
+                }
+            };
+            // **A deadline names the default that runs when it passes**,
+            // and there is no approve default: the pair arrives together.
+            let due = match (draft.due.as_deref(), draft.default) {
+                (None, None) => None,
+                (Some(words), Some(default)) => {
+                    let Some(period) = Estimate::parse(words) else {
+                        return Err(TasksError::BadEstimate(words.to_owned()));
+                    };
+                    Some(Deadline {
+                        at: SystemTime::now() + std::time::Duration::from_secs(period.secs),
+                        default,
+                        ran_at: None,
+                    })
+                }
+                (Some(_), None) => {
+                    return Err(TasksError::Refused(
+                        "a deadline names its default-if-ignored: escalate, expire or reask"
+                            .to_owned(),
+                    ));
+                }
+                (None, Some(_)) => {
+                    return Err(TasksError::Refused(
+                        "a default-if-ignored needs the `due` it runs at".to_owned(),
+                    ));
+                }
+            };
+            ws.wait_request_task_at_version(
                 &cx.project_name,
                 id,
                 caller,
                 detail,
-                question,
-                options,
+                Request {
+                    kind: draft.kind,
+                    question: question.to_owned(),
+                    options: draft.options,
+                    class,
+                    answer: None,
+                },
+                due,
                 Some(version),
-            ),
-            None => ws.wait_task_at_version(
+            )
+        } else {
+            ws.wait_task_at_version(
                 &cx.project_name,
                 id,
                 caller,
@@ -771,7 +930,7 @@ impl TasksFacade for ProdTasksFacade {
                 detail,
                 on,
                 Some(version),
-            ),
+            )
         };
         match waited {
             Ok(task) => Ok(task),
@@ -795,27 +954,96 @@ impl TasksFacade for ProdTasksFacade {
         &self,
         caller: &SessionSlot,
         id: &TaskId,
-        choice: &str,
+        choice: Option<&str>,
+        text: Option<&str>,
+        disposition: Option<&str>,
         note: Option<&str>,
+        lesson: Option<&str>,
         version: u64,
     ) -> Result<Task, TasksError> {
         let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
         let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
-        // The answer is the user's own act, relayed through a session:
-        // recording it as that session's move would attribute the choice to
+        // **One door, one value for the kind**: a decision's choice, a
+        // clarification's text, an exception's disposition. A teaching's
+        // text doubles as the lesson the policy note is written from.
+        let value = match (choice, text, disposition) {
+            (Some(choice), None, None) => AnswerValue::Choice(choice.trim().to_owned()),
+            (None, Some(text), None) => AnswerValue::Text(text.trim().to_owned()),
+            (None, None, Some(disposition)) => {
+                let Some(disposition) = Disposition::parse(disposition) else {
+                    return Err(TasksError::Refused(format!(
+                        "a disposition is one of {}; \"{disposition}\" is not",
+                        Disposition::ALL.map(Disposition::as_str).join(", "),
+                    )));
+                };
+                AnswerValue::Disposition(disposition)
+            }
+            _ => {
+                return Err(TasksError::Refused(
+                    "an answer states exactly one of `choice`, `text` or `disposition`"
+                        .to_owned(),
+                ));
+            }
+        };
+        // The answer is the person's own act, relayed through a session:
+        // recording it as that session's move would attribute the value to
         // the worker that typed it.
         match ws.answer_decision_at_version(
             &cx.project_name,
             id,
             By::User,
-            choice,
+            value,
             note,
+            lesson,
             Some(version),
         ) {
             Ok(Some(task)) => Ok(task),
             Ok(None) => Err(missing_task_error(&ws, &cx.project_name, id)),
             Err(refused) => Err(TasksError::Refused(refused.to_string())),
         }
+    }
+
+    fn policy_notes(&self, caller: &SessionSlot) -> Vec<PolicyNote> {
+        let Some(ws) = self.workspace.upgrade() else { return Vec::new() };
+        let Some(cx) = caller_context(&ws, caller) else { return Vec::new() };
+        ws.policy_notes_for_project(&cx.project_name)
+    }
+
+    fn add_policy_note(
+        &self,
+        caller: &SessionSlot,
+        class: &str,
+        text: &str,
+    ) -> Result<PolicyNote, TasksError> {
+        let ws = self.workspace.upgrade().ok_or(TasksError::UnknownCallerProject)?;
+        let cx = caller_context(&ws, caller).ok_or(TasksError::UnknownCallerProject)?;
+        if caller.label() != crate::LEAD_LABEL {
+            return Err(TasksError::Refused(
+                "only the project lead writes a policy note; hand the lesson to your lead"
+                    .to_owned(),
+            ));
+        }
+        let class = class.trim();
+        let text = text.trim();
+        if class.is_empty() || class.chars().count() > 64 {
+            return Err(TasksError::Refused(
+                "a policy class is a short slug, 1 to 64 characters".to_owned(),
+            ));
+        }
+        if text.is_empty() || text.chars().count() > 1_000 {
+            return Err(TasksError::Refused(
+                "a policy note is the lesson itself, 1 to 1000 characters".to_owned(),
+            ));
+        }
+        // The lead's own write records its source as any row carrying the
+        // class, or the lead's seat when none does.
+        ws.settle_policy(&cx.project_name, class, text, &TaskId::from("lead"))
+            .ok_or_else(|| {
+                TasksError::Refused(
+                    "the policy note could not be written; this run's store is unavailable"
+                        .to_owned(),
+                )
+            })
     }
 
     fn attest_task(
@@ -854,7 +1082,7 @@ fn mock_task(caller: &SessionSlot) -> Task {
         owner: None,
         parent: None,
         waiting_on: None,
-        decision: None,
+        request: None,
         estimate: None,
         cadence: None,
         rank: None,
@@ -878,14 +1106,17 @@ type ListCall = (Option<String>, Option<String>, Option<TaskStatus>, Option<bool
 #[cfg(test)]
 type ClaimCall = (SessionSlot, String);
 
-/// One `tasks__answer` call: the caller, the row, the choice and the note.
+/// One `tasks__answer` call: the caller, the row, the value parts, and the
+/// note.
 #[cfg(test)]
-type AnswerCall = (SessionSlot, TaskId, String, Option<String>);
+type AnswerCall =
+    (SessionSlot, TaskId, Option<String>, Option<String>, Option<String>, Option<String>);
 
-/// One `tasks__wait` call: the caller, the row, the kind, the detail and the row waited on.
+/// One `tasks__wait` call: the caller, the row, the wait kind, the detail,
+/// the row waited on, and the ask draft when the wait is on the person.
 #[cfg(test)]
 type WaitCall =
-    (SessionSlot, TaskId, WaitingKind, Option<String>, Option<TaskId>, Option<String>, Vec<String>);
+    (SessionSlot, TaskId, WaitingKind, Option<String>, Option<TaskId>, Option<AskDraft>);
 
 /// Records calls + returns preloaded results so the tool tests can assert
 /// the tool correctly parses args, resolves the caller, and surfaces
@@ -941,7 +1172,7 @@ impl TasksFacade for MockTasksFacade {
             // read a prefix here as unresolved.
             parent: draft.parent.as_deref().map(TaskId::from),
             waiting_on: None,
-            decision: None,
+            request: None,
             estimate: draft.estimate.as_deref().and_then(Estimate::parse),
             cadence: draft.cadence.as_deref().and_then(Estimate::parse),
             rank: draft.rank,
@@ -976,19 +1207,10 @@ impl TasksFacade for MockTasksFacade {
         kind: WaitingKind,
         detail: Option<String>,
         on: Option<&TaskId>,
-        question: Option<String>,
-        options: Vec<String>,
+        ask: Option<AskDraft>,
         _version: u64,
     ) -> Result<Task, TasksError> {
-        self.waited.lock().push((
-            caller.clone(),
-            id.clone(),
-            kind,
-            detail,
-            on.cloned(),
-            question,
-            options,
-        ));
+        self.waited.lock().push((caller.clone(), id.clone(), kind, detail, on.cloned(), ask));
         self.wait_result.lock().clone().unwrap_or_else(|| Ok(mock_task(caller)))
     }
 
@@ -996,17 +1218,42 @@ impl TasksFacade for MockTasksFacade {
         &self,
         caller: &SessionSlot,
         id: &TaskId,
-        choice: &str,
+        choice: Option<&str>,
+        text: Option<&str>,
+        disposition: Option<&str>,
         note: Option<&str>,
+        lesson: Option<&str>,
         _version: u64,
     ) -> Result<Task, TasksError> {
         self.answered.lock().push((
             caller.clone(),
             id.clone(),
-            choice.to_owned(),
-            note.map(str::to_owned),
+            choice.map(str::to_owned),
+            text.map(str::to_owned),
+            disposition.map(str::to_owned),
+            lesson.or(note).map(str::to_owned),
         ));
         self.answer_result.lock().clone().unwrap_or_else(|| Ok(mock_task(caller)))
+    }
+
+    fn policy_notes(&self, _caller: &SessionSlot) -> Vec<PolicyNote> {
+        Vec::new()
+    }
+
+    fn add_policy_note(
+        &self,
+        caller: &SessionSlot,
+        class: &str,
+        text: &str,
+    ) -> Result<PolicyNote, TasksError> {
+        Ok(PolicyNote {
+            id: "mock-policy".to_owned(),
+            project_name: caller.project().to_owned(),
+            class: class.to_owned(),
+            text: text.to_owned(),
+            source_task: "mock".to_owned(),
+            at: SystemTime::UNIX_EPOCH,
+        })
     }
 
     fn attest_task(
@@ -1121,7 +1368,7 @@ mod prod_facade_tests {
             owner: None,
             parent: None,
             waiting_on: None,
-            decision: None,
+            request: None,
             estimate: None,
             cadence: None,
             rank: None,
@@ -1221,11 +1468,10 @@ mod prod_facade_tests {
             .wait_task(
                 &worker,
                 &row.id,
-                WaitingKind::Decision,
+                WaitingKind::User,
                 None,
                 None,
-                Some("Which way?".to_owned()),
-                vec!["this".to_owned(), "that".to_owned()],
+                Some(decision_ask("Which way?", &["this", "that"])),
                 row.version,
             )
             .expect_err("a worker does not raise a decision on the user");
@@ -1235,22 +1481,34 @@ mod prod_facade_tests {
         );
     }
 
-    /// The decision record rides every bulk row it is on, so it is bounded
+    /// A decision draft with its options, as the wait door states one.
+    fn decision_ask(question: &str, options: &[&str]) -> AskDraft {
+        AskDraft {
+            kind: AskKind::Decision,
+            question: question.to_owned(),
+            options: options.iter().map(|option| (*option).to_owned()).collect(),
+            class: None,
+            due: None,
+            default: None,
+        }
+    }
+
+    /// The request record rides every bulk row it is on, so it is bounded
     /// where it enters: a question one sentence, its options short phrases.
     #[test]
     fn a_decision_record_is_bounded_where_it_enters() {
         let (_ws, facade, lead, _worker) = fixture();
         let row = facade.create_task(&lead, draft("ask", None, None)).expect("create");
         let version = row.version;
+        let long_question = "x".repeat(281);
         let refused = facade
             .wait_task(
                 &lead,
                 &row.id,
-                WaitingKind::Decision,
+                WaitingKind::User,
                 None,
                 None,
-                Some("x".repeat(281)),
-                vec!["this".to_owned()],
+                Some(decision_ask(&long_question, &["this"])),
                 version,
             )
             .expect_err("an over-long question is refused");
@@ -1258,15 +1516,15 @@ mod prod_facade_tests {
             matches!(&refused, TasksError::Refused(said) if said.contains("280")),
             "the refusal names the bound: {refused:?}",
         );
+        let long_option = "o".repeat(121);
         let refused = facade
             .wait_task(
                 &lead,
                 &row.id,
-                WaitingKind::Decision,
+                WaitingKind::User,
                 None,
                 None,
-                Some("Which way?".to_owned()),
-                vec!["o".repeat(121)],
+                Some(decision_ask("Which way?", &[long_option.as_str()])),
                 version,
             )
             .expect_err("an over-long option is refused");
@@ -1278,15 +1536,31 @@ mod prod_facade_tests {
             .wait_task(
                 &lead,
                 &row.id,
-                WaitingKind::Decision,
+                WaitingKind::User,
                 None,
                 None,
-                Some("  ".to_owned()),
-                vec![],
+                Some(decision_ask("  ", &["this"])),
                 version,
             )
             .expect_err("a decision with no question is refused");
         assert!(matches!(&refused, TasksError::Refused(_)));
+        // A decision enumerates options: a free-text question is a
+        // clarification, and the door says so.
+        let refused = facade
+            .wait_task(
+                &lead,
+                &row.id,
+                WaitingKind::User,
+                None,
+                None,
+                Some(decision_ask("Which way?", &[])),
+                version,
+            )
+            .expect_err("a decision with no options is refused");
+        assert!(
+            matches!(&refused, TasksError::Refused(said) if said.contains("clarification")),
+            "the refusal points at the right kind: {refused:?}",
+        );
     }
 
     /// A row minted straight into `completed` with a user gate parks on
@@ -1475,7 +1749,6 @@ mod prod_facade_tests {
                 None,
                 None,
                 None,
-                Vec::new(),
                 0,
             ),
             Err(foreign()),
@@ -1489,7 +1762,6 @@ mod prod_facade_tests {
                 None,
                 Some(&TaskId::from("other-1")),
                 None,
-                Vec::new(),
                 0,
             ),
             Err(foreign()),
@@ -1513,7 +1785,6 @@ mod prod_facade_tests {
                 None,
                 None,
                 None,
-                Vec::new(),
                 0,
             ),
             Err(TasksError::NoSuchTask { id: "nope".to_owned() }),
@@ -1527,7 +1798,6 @@ mod prod_facade_tests {
                 None,
                 Some(&TaskId::from("nope")),
                 None,
-                Vec::new(),
                 0,
             ),
             Err(TasksError::NoSuchTask { id: "nope".to_owned() }),
@@ -1552,11 +1822,15 @@ mod prod_facade_tests {
         let mut waiting = seeded_task("waiting", "a deferral");
         waiting.status = TaskStatus::Waiting;
         waiting.waiting_on = Some(forge_primitives::tasks::Waiting {
-            kind: Some(forge_primitives::tasks::WaitingKind::Decision),
+            kind: Some(forge_primitives::tasks::WaitingKind::User),
             detail: None,
             on: None,
             verification: false,
             parked: false,
+                    due: None,
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
             since: None,
         });
         ws.seed_test_task(waiting);

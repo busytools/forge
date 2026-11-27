@@ -578,7 +578,7 @@ impl Fleet {
             owner: Some(SessionSlot::worker(org, project, owner)),
             parent: None,
             waiting_on: None,
-            decision: None,
+            request: None,
             estimate: None,
             cadence: None,
             rank: None,

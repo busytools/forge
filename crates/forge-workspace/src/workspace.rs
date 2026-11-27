@@ -866,6 +866,9 @@ pub struct Workspace {
     /// `pub(crate)` so the impl block in [`crate::drive`] can
     /// reach it.
     pub(crate) drive_clocks: Mutex<HashMap<SessionSlot, crate::drive::DriveClock>>,
+    /// The acknowledgement stamp each forgotten ask was last named at, so
+    /// the drive says it once per acknowledgement rather than every pass.
+    pub(crate) forgotten_acks: Mutex<HashMap<String, std::time::SystemTime>>,
     /// One claim per composed worker-worktree path, held while a spawn's
     /// ensure/insert or a despawn's removal is in flight. The live
     /// registry is per project; this is the repository-wide one, so two
@@ -2623,6 +2626,7 @@ impl Workspace {
             session_teardowns: Mutex::new(HashMap::new()),
             live_workers: Mutex::new(HashMap::new()),
             drive_clocks: Mutex::new(HashMap::new()),
+            forgotten_acks: Mutex::new(HashMap::new()),
             worktree_claims: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             despawn_cleanups: Mutex::new(HashSet::new()),
             spawn_failures: Mutex::new(HashMap::new()),
@@ -6395,6 +6399,20 @@ impl Workspace {
         self.dispatch_answered(cmd)
     }
 
+    /// A snooze's until as the board states it: `activity`, or a duration
+    /// from now. Anything else is `None`, so the refusal names the two
+    /// forms.
+    fn parse_snooze(&self, stated: &str) -> Option<forge_primitives::tasks::SnoozeUntil> {
+        let stated = stated.trim();
+        if stated.eq_ignore_ascii_case("activity") {
+            return Some(forge_primitives::tasks::SnoozeUntil::Activity);
+        }
+        let period = forge_primitives::tasks::Estimate::parse(stated)?;
+        Some(forge_primitives::tasks::SnoozeUntil::At(
+            std::time::SystemTime::now() + std::time::Duration::from_secs(period.secs),
+        ))
+    }
+
     /// Dispatch one command a view sent over the socket.
     ///
     /// The same dispatch as [`Self::dispatch`]: the frame a prompt draws is
@@ -7754,18 +7772,42 @@ impl Workspace {
                         }
                     }
                 }
-                Command::TaskAnswer { project, id, choice, words } => {
+                Command::TaskAnswer {
+                    project,
+                    id,
+                    choice,
+                    text,
+                    disposition,
+                    lesson,
+                    words,
+                } => {
                     let id = TaskId::from(id.as_str());
-                    let answered = match &choice {
+                    // The value the ask's kind needed; a row written before
+                    // the record takes the words as its answer.
+                    let value = match (&choice, &text, &disposition) {
+                        (Some(choice), _, _) => {
+                            Some(forge_primitives::tasks::AnswerValue::Choice(choice.clone()))
+                        }
+                        (_, Some(text), _) => {
+                            Some(forge_primitives::tasks::AnswerValue::Text(text.clone()))
+                        }
+                        (_, _, Some(disposition)) => forge_primitives::tasks::Disposition::parse(
+                            disposition,
+                        )
+                        .map(forge_primitives::tasks::AnswerValue::Disposition),
+                        _ => None,
+                    };
+                    let answered = match value {
                         // The user's own door carries no version: there is no
                         // second reader to refuse, and the board they acted
                         // on is the one they saw.
-                        Some(choice) => self.answer_decision(
+                        Some(value) => self.answer_decision(
                             &project,
                             &id,
                             forge_primitives::tasks::By::User,
-                            choice,
+                            value,
                             Some(words.as_str()),
+                            lesson.as_deref(),
                         ),
                         None => self.answer_task(&project, &id, &words),
                     };
@@ -7809,6 +7851,50 @@ impl Workspace {
                             );
                             self.board_edit_refused("an answer", &refused.to_string());
                         }
+                    }
+                }
+                Command::TaskAck { project, id } => {
+                    let id = TaskId::from(id.as_str());
+                    match self.acknowledge_task(&project, &id) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => self.board_edit_refused(
+                            "an acknowledgement",
+                            "the row it named is no longer there",
+                        ),
+                        Err(refused) => {
+                            tracing::debug!(
+                                target: "forge_workspace",
+                                project = %project,
+                                id = %id.as_str(),
+                                refusal = %refused,
+                                "an acknowledgement was refused",
+                            );
+                            self.board_edit_refused("an acknowledgement", &refused.to_string());
+                        }
+                    }
+                }
+                Command::TaskSnooze { project, id, until } => {
+                    let id = TaskId::from(id.as_str());
+                    match self.parse_snooze(&until) {
+                        None => self.board_edit_refused(
+                            "a snooze",
+                            "the until is a duration (\"2h\", \"1d\") or \"activity\"",
+                        ),
+                        Some(until) => match self.snooze_task(&project, &id, until) {
+                            Ok(Some(_)) => {}
+                            Ok(None) => self
+                                .board_edit_refused("a snooze", "the row it named is no longer there"),
+                            Err(refused) => {
+                                tracing::debug!(
+                                    target: "forge_workspace",
+                                    project = %project,
+                                    id = %id.as_str(),
+                                    refusal = %refused,
+                                    "a snooze was refused",
+                                );
+                                self.board_edit_refused("a snooze", &refused.to_string());
+                            }
+                        },
                     }
                 }
                 Command::TaskRank { project, id, to } => {
@@ -8095,7 +8181,7 @@ impl Workspace {
                         owner: None,
                         parent: parent.map(|id| TaskId::from(id.as_str())),
                         waiting_on: None,
-                        decision: None,
+                        request: None,
                         estimate: None,
                         cadence: None,
                         rank: None,
@@ -12475,7 +12561,7 @@ mod tests {
             owner: None,
             parent: None,
             waiting_on: None,
-            decision: None,
+            request: None,
             estimate: None,
             cadence: None,
             rank: None,
@@ -12541,7 +12627,7 @@ mod tests {
             owner: None,
             parent: None,
             waiting_on: None,
-            decision: None,
+            request: None,
             estimate: None,
             cadence: None,
             rank: None,
@@ -12572,7 +12658,7 @@ mod tests {
             owner: None,
             parent: Some(TaskId::from("epic")),
             waiting_on: None,
-            decision: None,
+            request: None,
             estimate: None,
             cadence: None,
             rank: None,
@@ -12643,7 +12729,7 @@ mod tests {
             // a root would close and archive, which is a different test.
             parent: Some(TaskId::from("epic")),
             waiting_on: None,
-            decision: None,
+            request: None,
             estimate: None,
             cadence: None,
             rank: None,
@@ -12788,7 +12874,7 @@ mod tests {
             owner: Some(owner.clone()),
             parent: None,
             waiting_on: None,
-            decision: None,
+            request: None,
             estimate: None,
             cadence: None,
             rank: None,
@@ -12895,7 +12981,7 @@ mod tests {
             owner: Some(owner.clone()),
             parent: None,
             waiting_on: None,
-            decision: None,
+            request: None,
             estimate: None,
             cadence: None,
             rank: None,
@@ -12916,12 +13002,16 @@ mod tests {
             updated_at: std::time::SystemTime::UNIX_EPOCH,
         };
         let question = || Waiting {
-            kind: Some(WaitingKind::Decision),
+            kind: Some(WaitingKind::User),
             detail: None,
             on: None,
             verification: false,
             parked: false,
             since: None,
+            due: None,
+            acknowledged_at: None,
+            snoozed: None,
+            expired_at: None,
         };
 
         // The wait, answered: the words ride the notice, and it goes to the
@@ -12933,6 +13023,9 @@ mod tests {
             project: "proj".to_owned(),
             id: "t-1".to_owned(),
             choice: None,
+            text: None,
+            disposition: None,
+            lesson: None,
             words: "get going".to_owned(),
         })
         .expect("app-level commands are accepted");
@@ -12950,6 +13043,9 @@ mod tests {
             project: "proj".to_owned(),
             id: "t-2".to_owned(),
             choice: None,
+            text: None,
+            disposition: None,
+            lesson: None,
             words: String::new(),
         })
         .expect("accepted");
@@ -13037,7 +13133,7 @@ mod tests {
             owner: None,
             parent: None,
             waiting_on: None,
-            decision: None,
+            request: None,
             estimate: None,
             cadence: None,
             rank: None,
@@ -13094,7 +13190,7 @@ mod tests {
             owner: Some(SessionSlot::new("TestOrg", "proj", "sleeper")),
             parent: None,
             waiting_on: None,
-            decision: None,
+            request: None,
             estimate: None,
             cadence: None,
             rank: None,
@@ -13149,7 +13245,7 @@ mod tests {
             owner: Some(owner.clone()),
             parent: None,
             waiting_on: None,
-            decision: None,
+            request: None,
             estimate: None,
             cadence: None,
             rank: None,
@@ -13253,7 +13349,7 @@ path = "{}"
             owner: Some(lead.clone()),
             parent: None,
             waiting_on: None,
-            decision: None,
+            request: None,
             estimate: None,
             cadence: None,
             rank: None,

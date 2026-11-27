@@ -160,7 +160,7 @@ fn released_at(history: &[TaskTransition], id: &TaskId) -> Option<SystemTime> {
         .max()
 }
 
-fn fmt_secs(secs: u64) -> String {
+pub(crate) fn fmt_secs(secs: u64) -> String {
     crate::board::fmt_secs(secs)
 }
 
@@ -784,7 +784,7 @@ mod tests {
             owner: None,
             parent: None,
             waiting_on: None,
-            decision: None,
+            request: None,
             estimate: None,
             cadence: None,
             rank: None,
@@ -1123,11 +1123,15 @@ mod tests {
             row.verify = Some(Verify::User);
         }
         row.waiting_on = Some(Waiting {
-            kind: Some(WaitingKind::Decision),
+            kind: Some(WaitingKind::User),
             detail: None,
             on: None,
             verification,
             parked: false,
+                    due: None,
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
             since: None,
         });
         row.updated_at = epoch(updated);
@@ -1143,11 +1147,15 @@ mod tests {
         let _lead_rx = live_lead(&ws);
         let mut row = task("t-1", TaskStatus::Waiting);
         row.waiting_on = Some(Waiting {
-            kind: Some(WaitingKind::Decision),
+            kind: Some(WaitingKind::User),
             detail: Some("backlog at Ved's word".to_owned()),
             on: None,
             verification: false,
             parked: true,
+                    due: None,
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
             since: None,
         });
         row.updated_at = epoch(0);
@@ -1180,6 +1188,10 @@ mod tests {
             on: None,
             verification: false,
             parked: true,
+                    due: None,
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
             since: Some(SystemTime::now()),
         });
         row.updated_at = epoch(0);
@@ -1472,6 +1484,10 @@ mod tests {
             on: Some(TaskId::from("t-blocker")),
             verification: false,
             parked: false,
+                    due: None,
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
             since: Some(epoch(0)),
         });
         waiter.updated_at = epoch(0);
@@ -1507,6 +1523,10 @@ mod tests {
             on: None,
             verification: false,
             parked: false,
+                    due: None,
+                    acknowledged_at: None,
+                    snoozed: None,
+                    expired_at: None,
             since: None,
         });
         row.updated_at = epoch(0);

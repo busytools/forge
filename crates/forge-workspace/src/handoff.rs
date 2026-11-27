@@ -644,9 +644,14 @@ fn board_door(task: &Task, seat: &SessionSlot) -> &'static str {
 /// What a waiting row of the successor's own waits on, so its line names the
 /// block rather than reading as work to continue.
 fn waiting_door(task: &Task) -> &'static str {
-    use forge_primitives::tasks::WaitingKind;
+    use forge_primitives::tasks::{AskKind, WaitingKind};
     match task.waiting_on.as_ref().and_then(|waiting| waiting.kind) {
-        Some(WaitingKind::Decision) => "yours - waiting on the user's decision",
+        Some(WaitingKind::User) => match task.request.as_ref().map(|request| request.kind) {
+            Some(AskKind::Clarification) => "yours - waiting on the user's answer",
+            Some(AskKind::Exception) => "yours - waiting on the user's disposition",
+            Some(AskKind::Teaching) => "yours - waiting on the user's lesson",
+            Some(AskKind::Decision) | None => "yours - waiting on the user's decision",
+        },
         Some(WaitingKind::Dependency) => "yours - waiting on its dependency",
         Some(WaitingKind::Resource) => "yours - waiting on a resource",
         None => "yours - waiting; the kind is unstated",
@@ -2003,7 +2008,7 @@ mod tests {
             owner,
             parent: None,
             waiting_on: None,
-            decision: None,
+            request: None,
             estimate: None,
             cadence: None,
             rank: None,
@@ -2480,11 +2485,15 @@ mod tests {
         let mut waiting = task("the blocked row", Some(mine.clone()), None);
         waiting.status = TaskStatus::Waiting;
         waiting.waiting_on = Some(forge_primitives::tasks::Waiting {
-            kind: Some(forge_primitives::tasks::WaitingKind::Decision),
+            kind: Some(forge_primitives::tasks::WaitingKind::User),
             detail: None,
             on: None,
             verification: false,
             parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
             since: None,
         });
         let mut reserved = task("the reserved row", None, None);
