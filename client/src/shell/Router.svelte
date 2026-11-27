@@ -254,6 +254,8 @@
       project={route.project}
       onact={boardAct}
       notice={home.report}
+      {connection}
+      dictation={dictate}
       onarchived={() =>
         connection === null
           ? Promise.resolve({ wire: null, refused: 'not connected' })

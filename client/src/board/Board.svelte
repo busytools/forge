@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tick, untrack } from 'svelte';
+  import { SvelteMap } from 'svelte/reactivity';
   import { hrefForSlot } from '../routes';
   import { isBoardRefusal, type ServiceReport } from '../wire/fleet';
   import type { BoardRead } from '../wire/board';
@@ -7,9 +8,28 @@
   import { TASK_STATUSES } from '../wire/home';
   import Icon from '../components/Icon.svelte';
   import { ago } from '../components/age';
+  import { boxKey } from '../composer/box.svelte';
+  import {
+    Dictation,
+    openCapture,
+    takeCounts,
+    takePhase,
+    takeSilenceLine,
+    type RowPhase,
+    type TakeLine,
+  } from '../composer/dictate.svelte';
+  import { axesFor, deviceFor } from '../composer/dictation';
+  import { Landing } from '../composer/landing';
+  import { composerFrom } from '../composer/wire';
+  import { watchSession, type SessionRead } from '../session/live';
+  import { DEFAULT_AXES } from '../session/wire';
+  import type { Connection } from '../socket';
+  import type { SessionSlot } from '../wire/types';
+  import BoardField from './BoardField.svelte';
   import Picker from './Picker.svelte';
   import TaskDrawer from './TaskDrawer.svelte';
   import Window from './Window.svelte';
+  import type { BoardFieldHandle, BoardVoice } from './voice';
   import { applyMoves, boardView, landed } from './view';
   import type { BoardCardView, LaneView, PendingMove } from './view';
   import { clockOf, windowView } from './window';
@@ -35,6 +55,8 @@
     notice = null,
     onarchived = null,
     initialMode = 'window',
+    connection = null,
+    dictation = false,
   }: {
     /** The home's read: the seats the owner picker offers and the fleet's
      *  own `onYou` count. The rows are the board's read (#2517). */
@@ -51,7 +73,137 @@
     /** Which face opens first. The app opens the window; a test that drives
      *  the lanes' own interactions opens them directly. */
     initialMode?: 'window' | 'board' | 'archived';
+    /** The live connection, for the page's one dictation take. `null` on a
+     *  page with no socket (a test), where the boxes draw without a mic. */
+    connection?: Connection | null;
+    /** Whether this install can dictate, as the home's read says. */
+    dictation?: boolean;
   } = $props();
+
+  /**
+   * **The board's take belongs to the project's lead**, the seat whose board
+   * this is: dictation is per seat and per page, and the board has no seat of
+   * its own. The lead's record is watched only for the take's notice, which
+   * is what a landing is read from.
+   */
+  const lead = $derived<SessionSlot>({ org, project, label: 'lead' });
+  let seatRead = $state<SessionRead>({ wire: null, refused: null, review: false });
+  $effect(() => {
+    // Only a page that can dictate needs the lead's record: its one job here
+    // is reading the take's notice for a landing.
+    const open = connection;
+    if (open === null || !dictation) return;
+    const stop = watchSession(open, lead, false).subscribe(($next) => {
+      seatRead = $next;
+    });
+    return () => stop();
+  });
+  const seatComposer = $derived(composerFrom(seatRead.wire?.composer));
+  /** What `forge.toml` set, which a take with no pick of its own records under. */
+  const dictateDefaults = $derived(
+    connection === null ? DEFAULT_AXES : (connection.settings()?.dictate ?? DEFAULT_AXES),
+  );
+
+  /** The take this page owns: one microphone, one take, however many boxes
+   *  wear a mic - the composer's own rule, on this page. */
+  // The page's connection and offering are fixed for its life; the take's
+  // own state is read through getters, so the initial read is the read.
+  // svelte-ignore state_referenced_locally
+  const dictate =
+    connection === null || !dictation
+      ? null
+      : new Dictation({
+          connection: () => connection,
+          seat: () => lead,
+          surface: 'board',
+          shown: () => seatComposer.take !== null,
+          options: () => axesFor(boxKey(lead), dictateDefaults),
+          device: () => deviceFor(boxKey(lead)),
+          capture: openCapture,
+          onStart: () => {
+            if (armedBox !== null) boardLanding.arm(boxKey(lead), seatComposer.notice);
+            takeLine = null;
+          },
+          onLine: (line) => {
+            // A failed take leaves its line in the box that pressed, and no
+            // landing is coming to consume the arm.
+            lineBox = armedBox;
+            takeLine = line;
+            boardLanding.drop();
+          },
+          onRefused: (line) => {
+            lineBox = armedBox;
+            takeLine = line;
+          },
+        });
+
+  /** The page's memory of the seat's takes, under the board's own surface. */
+  const boardLanding = new Landing('board');
+  /** The box whose mic began the running take, and the line a failed one left. */
+  let armedBox = $state<string | null>(null);
+  let lineBox = $state<string | null>(null);
+  let takeLine = $state<TakeLine | null>(null);
+  /** Every drawn box's landing target, by the box's own id. */
+  const boardBoxes = new SvelteMap<string, BoardFieldHandle>();
+
+  function registerBox(id: string, box: BoardFieldHandle): () => void {
+    boardBoxes.set(id, box);
+    return () => {
+      if (boardBoxes.get(id) === box) boardBoxes.delete(id);
+    };
+  }
+
+  /** The words a take landed, into the box that began it. */
+  $effect(() => {
+    if (dictate === null) return;
+    const words = boardLanding.place(
+      boxKey(lead),
+      seatComposer.notice,
+      seatComposer.take?.generation ?? null,
+    );
+    if (words === null) return;
+    if (armedBox !== null) boardBoxes.get(armedBox)?.set(words);
+    boardLanding.placed(seatComposer.notice);
+    armedBox = null;
+  });
+
+  /** What dictation means to this page, handed to every box it draws. */
+  const voice: BoardVoice | null =
+    dictate === null
+      ? null
+      : {
+          dictate,
+          get activeId() {
+            return armedBox;
+          },
+          get take() {
+            return seatComposer.take;
+          },
+          get phase(): RowPhase | null {
+            return takePhase(dictate, seatComposer.take, lead);
+          },
+          get wire() {
+            return takeCounts(dictate, lead);
+          },
+          get silent() {
+            return takeSilenceLine(dictate, lead)?.text ?? null;
+          },
+          get line() {
+            return takeLine?.text ?? null;
+          },
+          get lineId() {
+            return lineBox;
+          },
+          press: (id: string) => {
+            armedBox = id;
+          },
+          cancel: () => {
+            boardLanding.drop();
+            armedBox = null;
+            dictate.act('cancel');
+          },
+          register: registerBox,
+        };
 
   /**
    * Which face of the board is drawn: the WINDOW (the default - what needs
@@ -738,7 +890,7 @@
         from its row on the home.
       </p>
     {:else}
-      <Window view={windowed} onact={act} onopen={openDrawer} />
+      <Window view={windowed} onact={act} onopen={openDrawer} {voice} />
     {/if}
   {:else}
     {#if view.waiting.length > 0}
@@ -1008,12 +1160,13 @@
       </div>
 
       <div class="b-create">
-        <input
-          class="b-in"
-          data-editor="board"
-          type="text"
+        <BoardField
+          id="new-row"
+          value={subject}
+          oninput={(text: string) => (subject = text)}
+          {voice}
           placeholder="a new row"
-          bind:value={subject}
+          label="a new row"
         />
         <Picker
           label="the epic it belongs under"
@@ -1058,6 +1211,7 @@
       now={Date.now()}
       onact={act}
       onclose={closeDrawer}
+      {voice}
       tasks={cardOf(openedRow.task.id)?.children ?? []}
       onjump={(id: string) => {
         jumping = true;

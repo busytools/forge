@@ -4,8 +4,10 @@
   import { hrefForSlot } from '../routes';
   import type { SessionSlot } from '../wire/types';
   import Icon from '../components/Icon.svelte';
+  import BoardField from './BoardField.svelte';
   import Picker from './Picker.svelte';
   import { digestLines, sampleClaim } from './digest';
+  import type { BoardVoice } from './voice';
   import type { NeedCard, WindowView } from './window';
   import { clockOf } from './window';
 
@@ -23,10 +25,13 @@
     view,
     onact = null,
     onopen = null,
+    voice = null,
   }: {
     view: WindowView;
     onact?: ((command: Record<string, Record<string, unknown>>) => void) | null;
     onopen?: ((id: string) => void) | null;
+    /** The page's own take, for the card's word boxes; `null` without one. */
+    voice?: BoardVoice | null;
   } = $props();
 
   /** The note a decision card sends with its choice, per row. */
@@ -323,15 +328,15 @@
               {/if}
               {#if card.kind === 'clarification' || card.kind === 'teaching'}
                 {#if note}
-                  <input
-                    class="b-in w-note"
-                    data-editor="board"
-                    type="text"
+                  <BoardField
+                    id="{card.id}:note"
+                    value={notes[card.id] ?? ''}
+                    oninput={(text: string) => (notes[card.id] = text)}
+                    {voice}
                     placeholder={card.kind === 'teaching' ? 'the lesson' : 'your answer'}
-                    aria-label={card.kind === 'teaching'
+                    label={card.kind === 'teaching'
                       ? 'the lesson that settles the class'
                       : 'your answer'}
-                    bind:value={notes[card.id]}
                   />
                   <button
                     type="button"
@@ -352,13 +357,13 @@
                 {/if}
               {:else if card.kind === 'look'}
                 {#if note}
-                  <input
-                    class="b-in w-note"
-                    data-editor="board"
-                    type="text"
+                  <BoardField
+                    id="{card.id}:note"
+                    value={words[card.id] ?? ''}
+                    oninput={(text: string) => (words[card.id] = text)}
+                    {voice}
                     placeholder="what to change"
-                    aria-label="what to change (sent back with it)"
-                    bind:value={words[card.id]}
+                    label="what to change (sent back with it)"
                   />
                 {:else}
                   <button
@@ -368,14 +373,42 @@
                     onclick={() => (noteOpen[card.id] = true)}>add a note</button
                   >
                 {/if}
+              {:else if card.kind === 'decision' && card.options.length === 0}
+                <!-- **A decision with no enumerated options is still a
+                     choice**: the words the person types ARE the choice, sent
+                     as one, never as free text the core would refuse. -->
+                {#if note}
+                  <BoardField
+                    id="{card.id}:note"
+                    value={notes[card.id] ?? ''}
+                    oninput={(text: string) => (notes[card.id] = text)}
+                    {voice}
+                    placeholder="your choice"
+                    label="the choice you are naming"
+                  />
+                  <button
+                    type="button"
+                    class="w-primary"
+                    disabled={(notes[card.id] ?? '').trim() === ''}
+                    onclick={() => answer(card, { choice: (notes[card.id] ?? '').trim() })}
+                    >answer</button
+                  >
+                {:else}
+                  <button
+                    type="button"
+                    class="w-ghost"
+                    aria-expanded={note}
+                    onclick={() => (noteOpen[card.id] = true)}>answer in your own words</button
+                  >
+                {/if}
               {:else if note}
-                <input
-                  class="b-in w-note"
-                  data-editor="board"
-                  type="text"
+                <BoardField
+                  id="{card.id}:note"
+                  value={notes[card.id] ?? ''}
+                  oninput={(text: string) => (notes[card.id] = text)}
+                  {voice}
                   placeholder="note (optional)"
-                  aria-label="the note sent with the answer"
-                  bind:value={notes[card.id]}
+                  label="the note sent with the answer"
                 />
               {:else}
                 <button

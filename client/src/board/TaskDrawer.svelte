@@ -4,7 +4,9 @@
   import type { ServiceReport } from '../wire/fleet';
   import type { BoardRow, ByWire, TaskStatus } from '../wire/home';
   import { followable } from '../home/view';
+  import BoardField from './BoardField.svelte';
   import { artifactOf, fmtSecs, waitOnUser, waitSentence, type WaitingView } from './view';
+  import type { BoardVoice } from './voice';
 
   /**
    * One row's own page, over the board: what the row IS (its fields and
@@ -25,6 +27,7 @@
     onclose,
     tasks = [],
     onjump = null,
+    voice = null,
   }: {
     row: BoardRow;
     /**
@@ -43,6 +46,8 @@
     tasks?: { id: string; label: string }[];
     /** The board's jump, so picking one of those tasks lands on its card. */
     onjump?: ((id: string) => void) | null;
+    /** The page's own take, for this row's word boxes; `null` without one. */
+    voice?: BoardVoice | null;
   } = $props();
 
   const task = $derived(row.task);
@@ -142,7 +147,18 @@
    * value for the ask's kind, which the core refuses.
    */
   function answerAsk(value: { choice?: string; text?: string; disposition?: string }): void {
-    const command: Record<string, unknown> = { project: task.project_name, id: task.id, ...value };
+    // **A decision with no enumerated options takes the typed words as its
+    // CHOICE**: the core refuses free text for a decision, and the words are
+    // the only form the row's answer can take.
+    const shaped =
+      task.request?.kind === 'decision' && value.text !== undefined
+        ? { choice: value.text }
+        : value;
+    const command: Record<string, unknown> = {
+      project: task.project_name,
+      id: task.id,
+      ...shaped,
+    };
     if (task.request?.kind === 'teaching') command['lesson'] = value.text ?? '';
     const note = answer.trim();
     if (value.text === undefined && note !== '') command['words'] = note;
@@ -350,12 +366,13 @@
                     })}>approve</button
                 >
               {/if}
-              <input
-                data-editor="board"
-                type="text"
+              <BoardField
+                id="{task.id}:sendback"
+                value={sendBack}
+                oninput={(text: string) => (sendBack = text)}
+                {voice}
                 placeholder="what to change"
-                aria-label="what to change (sent back with it)"
-                bind:value={sendBack}
+                label="what to change (sent back with it)"
                 onkeydown={(event: KeyboardEvent) => {
                   // **Enter is the box's own action** (Ved, 2026-10-15): the
                   // same key that sends everywhere sends this back, and an
@@ -397,12 +414,13 @@
                     onclick={() => answerAsk({ choice: option })}>{option}</button
                   >
                 {/each}
-                <input
-                  data-editor="board"
-                  type="text"
+                <BoardField
+                  id="{task.id}:note"
+                  value={answer}
+                  oninput={(text: string) => (answer = text)}
+                  {voice}
                   placeholder="a note (optional)"
-                  aria-label="the note sent with the choice"
-                  bind:value={answer}
+                  label="the note sent with the choice"
                 />
               {:else if task.request?.kind === 'exception'}
                 {#each DISPOSITIONS as disposition (disposition)}
@@ -410,22 +428,24 @@
                     >{disposition}</button
                   >
                 {/each}
-                <input
-                  data-editor="board"
-                  type="text"
+                <BoardField
+                  id="{task.id}:note"
+                  value={answer}
+                  oninput={(text: string) => (answer = text)}
+                  {voice}
                   placeholder="a note (optional)"
-                  aria-label="the note sent with the disposition"
-                  bind:value={answer}
+                  label="the note sent with the disposition"
                 />
               {:else}
-                <input
-                  data-editor="board"
-                  type="text"
+                <BoardField
+                  id="{task.id}:answer"
+                  value={answer}
+                  oninput={(text: string) => (answer = text)}
+                  {voice}
                   placeholder={task.request?.kind === 'teaching' ? 'the lesson' : 'your answer'}
-                  aria-label={task.request?.kind === 'teaching'
+                  label={task.request?.kind === 'teaching'
                     ? 'the lesson that settles the class'
                     : 'your answer'}
-                  bind:value={answer}
                   onkeydown={(event: KeyboardEvent) => {
                     // Enter answers, as the button does (Ved, 2026-10-15).
                     if (event.key !== 'Enter' || event.shiftKey) return;

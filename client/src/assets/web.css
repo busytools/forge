@@ -901,6 +901,13 @@ button.b-epic-pill { cursor: pointer; }
   outline: 2px solid var(--blue); outline-offset: 2px;
 }
 .w-note { flex: 1 1 180px; min-height: 32px; }
+/* A board text box with its dictation beside it: the field, the composer's
+   mic, the take's own bar in the field's place while one runs, and the line
+   a failed take leaves. One control, the same one every surface wears. */
+.bf { display: flex; flex: 1 1 180px; align-items: center; gap: 6px; min-width: 0; }
+.bf .w-note { flex: 1; }
+.bf .mic { flex: none; }
+.bf-line { font-family: var(--mono); font-size: var(--fs-label); color: var(--warn); }
 .w-hold { margin: 0; color: var(--warn); font-size: var(--fs-label); flex-basis: 100%; }
 /* One row of the person's own acts: shaped, content-sized pills at the
    card's radius, one 8px gap, folding onto a second row on a narrow card

@@ -137,7 +137,7 @@ disposition on an exception, `answer` and `settle the class` on the kinds
 whose value is words - are the only filled controls; `send back` is
 outlined at the same height and radius; the note is a ghost button, a
 button rather than an underline. The row's own doors are not actions: they
-sit in a hairline-separated footer as content-sized pills at the card's own
+sit in a hairline-separated footer as content-sized pills at a full pill
 radius, one 8px gap, folding onto a second row on a narrow card rather than
 splitting a label - `discuss`, `open the row`, `mark seen` (or the pressed
 `seen`), and the `snooze` menu.
@@ -243,7 +243,7 @@ server's own derivation; the wait's kind and its age, `owner gone` and
 
 | Chip | Tone | Means |
 |---|---|---|
-| `waiting on you` | warn | a decision wait, or a look park on a row minted `verify: user` |
+| `waiting on you` | warn | an ask on the person, or a look park on a row minted `verify: user` |
 | `on <row>` | warn | waiting on another row's completion |
 | `waiting on a resource` | warn | waiting on something outside the board |
 | `waiting <3h>` | bad | the wait's own age has passed the window |
@@ -362,10 +362,10 @@ app, the web client and Android, which draw this one page.
 ## The two widths
 
 Checked at **1600** and at **430**, against the drawing beside it. The window's
-need cards are a grid of `minmax(330px, 1fr)` columns, so a wide window sets
-two asks side by side and a phone stacks them; the lanes are
-`minmax(260px, 1fr)` columns, so a phone stacks them too, and neither scrolls
-sideways. A phone's top bar keeps the count that asks something of the reader
+need cards are a grid of `minmax(330px, 1fr)` columns, so 1600 sets four
+373px asks side by side, a medium window sets two, and a phone stacks them;
+the lanes are `minmax(260px, 1fr)` columns, so a phone stacks them too, and
+neither scrolls sideways. A phone's top bar keeps the count that asks something of the reader
 and drops the row totals. Every control a finger reaches takes a 44px target
 under `@media (pointer: coarse)`, and the drag is a pointer gesture, so it is
 the same one under a finger.
