@@ -715,6 +715,41 @@ impl TasksFacade for ProdTasksFacade {
                     .to_owned(),
             ));
         }
+        // **The decision rides every bulk row it is on**, so its record is
+        // bounded where it enters: a question one sentence, its options a
+        // few short phrases, the note a paragraph.
+        const MAX_QUESTION: usize = 280;
+        const MAX_OPTION: usize = 120;
+        const MAX_OPTIONS: usize = 8;
+        if let Some(question) = question.as_deref() {
+            let question = question.trim();
+            if question.is_empty() {
+                return Err(TasksError::Refused(
+                    "a decision needs `question`: the ask in one sentence".to_owned(),
+                ));
+            }
+            if question.chars().count() > MAX_QUESTION {
+                return Err(TasksError::Refused(format!(
+                    "the question is {} characters; keep it to {MAX_QUESTION}",
+                    question.chars().count(),
+                )));
+            }
+            if options.len() > MAX_OPTIONS {
+                return Err(TasksError::Refused(format!(
+                    "{} options is more than a card can carry; list at most {MAX_OPTIONS}",
+                    options.len(),
+                )));
+            }
+            if let Some(over) = options
+                .iter()
+                .find(|option| option.trim().is_empty() || option.chars().count() > MAX_OPTION)
+            {
+                return Err(TasksError::Refused(format!(
+                    "every option is a short phrase of at most {MAX_OPTION} characters; \
+                     \"{over}\" is not"
+                )));
+            }
+        }
         let waited = match question {
             Some(question) => ws.wait_decision_task_at_version(
                 &cx.project_name,
@@ -1184,6 +1219,60 @@ mod prod_facade_tests {
             matches!(&refused, TasksError::Refused(said) if said.contains("only the project lead")),
             "the wait door says whose it is: {refused:?}",
         );
+    }
+
+    /// The decision record rides every bulk row it is on, so it is bounded
+    /// where it enters: a question one sentence, its options short phrases.
+    #[test]
+    fn a_decision_record_is_bounded_where_it_enters() {
+        let (_ws, facade, lead, _worker) = fixture();
+        let row = facade.create_task(&lead, draft("ask", None, None)).expect("create");
+        let version = row.version;
+        let refused = facade
+            .wait_task(
+                &lead,
+                &row.id,
+                WaitingKind::Decision,
+                None,
+                None,
+                Some("x".repeat(281)),
+                vec!["this".to_owned()],
+                version,
+            )
+            .expect_err("an over-long question is refused");
+        assert!(
+            matches!(&refused, TasksError::Refused(said) if said.contains("280")),
+            "the refusal names the bound: {refused:?}",
+        );
+        let refused = facade
+            .wait_task(
+                &lead,
+                &row.id,
+                WaitingKind::Decision,
+                None,
+                None,
+                Some("Which way?".to_owned()),
+                vec!["o".repeat(121)],
+                version,
+            )
+            .expect_err("an over-long option is refused");
+        assert!(
+            matches!(&refused, TasksError::Refused(said) if said.contains("120")),
+            "the refusal names the option bound: {refused:?}",
+        );
+        let refused = facade
+            .wait_task(
+                &lead,
+                &row.id,
+                WaitingKind::Decision,
+                None,
+                None,
+                Some("  ".to_owned()),
+                vec![],
+                version,
+            )
+            .expect_err("a decision with no question is refused");
+        assert!(matches!(&refused, TasksError::Refused(_)));
     }
 
     /// A row minted straight into `completed` with a user gate parks on

@@ -1710,6 +1710,23 @@ mod tests {
         assert_eq!(json["owner"], "lead");
     }
 
+    /// Every write names the version it read, so an update that names none
+    /// is refused before the facade sees it.
+    #[tokio::test]
+    async fn update_refuses_a_write_that_names_no_version() {
+        let facade = Arc::new(MockTasksFacade::default());
+        let out = Update { facade: facade.clone(), slot: lead_slot() }
+            .call(input(serde_json::json!({ "id": "t-1", "status": "pending" })))
+            .await;
+        assert!(out.is_error, "a write names the version it read");
+        assert!(
+            text_of(&out).contains("names the version"),
+            "the refusal states the rule: {:?}",
+            text_of(&out),
+        );
+        assert!(facade.updated.lock().is_empty(), "the facade is never reached");
+    }
+
     /// A delete echoes what went, in the adopted envelope: the record as
     /// it stood, plus the cascade's own count - the row has to say how
     /// much of the tree went with it. The record is compared to
@@ -2574,6 +2591,7 @@ mod tests {
         });
         row.worked_secs = 3_600;
         row.updated_secs_ago = 60;
+        row.task.archived_at = Some(SystemTime::UNIX_EPOCH);
         row.marks.in_review = true;
         row.marks.overdue = true;
         row.task.evidence = Some(forge_primitives::tasks::Evidence {
@@ -2860,6 +2878,11 @@ mod tests {
         assert_eq!(json["history"], serde_json::json!([]));
         assert_eq!(json["history_total"], 0);
         assert_eq!(json["marks"], serde_json::json!(["in_review", "overdue"]));
+        // `tasks__get` promises the links and the archive state: the
+        // evidence's door and the row's shelf are read from the same answer.
+        assert_eq!(json["links"][0]["target"], "https://example.invalid/pull/9");
+        assert_eq!(json["links"][0]["kind"], "pr");
+        assert_eq!(json["archived_at"], "1970-01-01T00:00:00Z");
     }
 
     /// The answer verb threads the user's choice and note to the core and
