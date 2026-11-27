@@ -27,6 +27,9 @@ import type { Connection } from '../socket';
  */
 export const RETURN_HIDE_MS = 2_000;
 
+// The window above decides which return is the one that probes: a probe a
+// return is owed, once, and never a read.
+
 /**
  * Probe the socket a return is owed, once.
  *
@@ -48,7 +51,8 @@ export function resync(connection: Connection): void {
 export function watchReturn(connection: Connection): () => void {
   let stopped = false;
   let hiddenAt = typeof document !== 'undefined' && document.hidden ? Date.now() : null;
-  let lastReadAt = 0;
+  /** When the last return spent its probe, so one return probes once. */
+  let lastProbeAt = 0;
   const stops: (() => void)[] = [];
 
   const freshen = (): void => {
@@ -57,8 +61,8 @@ export function watchReturn(connection: Connection): () => void {
     // **A shell resume spends the hide**: a bare visible signal after it is
     // the same return, however long the dedupe window has been.
     hiddenAt = null;
-    if (now - lastReadAt < RETURN_HIDE_MS) return;
-    lastReadAt = now;
+    if (now - lastProbeAt < RETURN_HIDE_MS) return;
+    lastProbeAt = now;
     resync(connection);
   };
 

@@ -886,6 +886,53 @@ describe('frames from the bridge', () => {
     ).toEqual([['client_refresh', { what: 'extensions' }]]);
   });
 
+  /**
+   * **A refused subject's gap ends with it.** Left behind, the resync entry
+   * says a whole read is still in flight for a subject that will never
+   * answer, and the next real gap's ask is swallowed for the connection's
+   * life.
+   */
+  it('clears the gap when the subject is refused, so a later gap asks again', async () => {
+    const connection = await opened();
+    const store = connection.subscribe('extensions');
+    fire('client://inbound', {
+      kind: 'snapshot',
+      subject: 'extensions',
+      version: 1,
+      data: { lsp: [], update_run: null },
+    });
+    // One gap: one whole read.
+    fire('client://inbound', {
+      kind: 'patch',
+      subject: 'extensions',
+      version: 3,
+      data: { lsp: [] },
+    });
+    // The read the gap asked for is refused.
+    fire('client://refused', { key: 'extensions', why: 'this forge holds no extensions' });
+    expect(store.state()).toMatchObject({ kind: 'refused' });
+
+    // A later gap on a fresh subscribe asks again, rather than riding an ask
+    // whose subject is gone.
+    invoke.mockClear();
+    fire('client://inbound', {
+      kind: 'snapshot',
+      subject: 'extensions',
+      version: 1,
+      data: { lsp: [], update_run: null },
+    });
+    fire('client://inbound', {
+      kind: 'patch',
+      subject: 'extensions',
+      version: 5,
+      data: { lsp: [] },
+    });
+    expect(
+      invoke.mock.calls.filter(([command]) => command === 'client_refresh'),
+      'the second gap did not ask for its own read',
+    ).toHaveLength(1);
+  });
+
   it('names a non-seat subject on the refusal frame, and no seat', async () => {
     const connection = await opened();
     const store = connection.subscribe('board');

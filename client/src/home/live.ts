@@ -15,10 +15,11 @@
  *
  * `accounts_changed` was the first of these, and it is a replace rather than
  * a fold: the frame carries the whole pool field, so the client draws what
- * the server states without asking for an encode - **when the move is usage
- * only.** The loading state, the settled flag, the listener and a probe
- * failure all feed the project rows' `would_bind` and chip, so a change in
- * any of those still asks for the snapshot that refreshes them.
+ * the server states without asking for an encode: the frame carries the whole
+ * pool field and the patch behind it carries what the server derived from it,
+ * so a change in any of the pool's facts lands the same way. The one field a
+ * frame cannot settle is the row's own lifecycle, and the patch the server
+ * derives for the same write is what states it.
  *
  * **`prompt_lifecycle` is the one fold that counts.** The frame carries one
  * prompt's state, not the row's lifecycle, so the row is drawn from a
@@ -55,9 +56,6 @@ import {
 import type { PromptState } from '../wire/lifecycle';
 import type { SessionSlot } from '../wire/types';
 
-/**
- * How long an update waits before it is answered with a read.
- *
 /** What the home has to draw from, and why it has nothing when it does not. */
 export interface HomeRead {
   wire: HomeWire | null;

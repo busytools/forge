@@ -28,6 +28,8 @@ export interface ModelsRead {
   refused: string | null;
   /** Patches the socket could not place, held for the page to say so. */
   heldPatches?: unknown[];
+  /** The stream skipped a version: the record stays drawn while one read lands. */
+  resyncing?: boolean;
 }
 
 const NOTHING: ModelsRead = { wire: null, refused: null };
@@ -60,7 +62,12 @@ export function watchModels(connection: ModelsConnection): Readable<ModelsRead> 
     if (held === null) return;
     const state = held.state();
     if (state.kind === 'refused') {
-      view.set({ wire: null, refused: state.why, heldPatches: held.unexpected() });
+      view.set({
+        wire: null,
+        refused: state.why,
+        heldPatches: held.unexpected(),
+        resyncing: false,
+      });
       return;
     }
     const data = held.snapshot();
@@ -70,6 +77,7 @@ export function watchModels(connection: ModelsConnection): Readable<ModelsRead> 
       wire: data === null ? null : modelsFrom(data as unknown as DictateModelsWire),
       refused: null,
       heldPatches: held.unexpected(),
+      resyncing: state.kind === 'resyncing',
     });
   }
 

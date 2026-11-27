@@ -14,4 +14,7 @@ import board from './fixtures/board.json';
 import home from './fixtures/home.json';
 
 export const homeWire: HomeWire = homeFrom(home as unknown as HomeWire);
-export const boardWire: BoardWire = boardFrom(board);
+// The fixture is the shape the server writes, so the narrowing answers one;
+// a null here would be the fixture going stale, which every page test using
+// it would fail on anyway.
+export const boardWire: BoardWire = boardFrom(board) ?? board;

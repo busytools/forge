@@ -103,10 +103,14 @@ function boardStore(connection: Connection): Readable<BoardRead> {
       drawnVersion = version;
       readAt = Date.now();
     }
-    drawn = data === null ? null : boardFrom(data as unknown as BoardWire);
+    const record = data === null ? null : boardFrom(data as unknown as BoardWire);
+    drawn = record;
     view.set({
       wire: drawn,
       refused: null,
+      // **A malformed record is a failure, not an empty board**: `null` from
+      // the narrowing is this client's own state, and the page draws it.
+      failed: data !== null && record === null ? 'the board record could not be read' : null,
       readAt,
       resyncing: state.kind === 'resyncing',
       heldPatches: held.unexpected(),
@@ -128,6 +132,7 @@ function boardStore(connection: Connection): Readable<BoardRead> {
     return {
       wire: drawn,
       refused: null,
+      failed: null,
       readAt,
       resyncing: held?.state().kind === 'resyncing',
       heldPatches: held?.unexpected() ?? [],

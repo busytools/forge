@@ -68,18 +68,31 @@ export interface BoardRead {
    * dropped, and the page's own line is where it is drawn.
    */
   heldPatches?: unknown[];
+  /**
+   * The read landed and this client could not draw it: its own state, not an
+   * empty board.
+   *
+   * **A malformed record is a failure, not an empty fleet.** Drawing `[]` for
+   * a record whose list is not a list says "this forge has no projects",
+   * which is a claim the server never made (rule 25: a gap is visible).
+   */
+  failed?: string | null;
 }
 
 /**
  * Narrow the snapshot where it enters, so every union downstream is already
  * one of the values the board draws.
+ *
+ * `null` when the record is not the shape this client reads: the caller
+ * draws the failure rather than an empty board, and a throw inside a store
+ * notification would take the page down with it.
  */
-export function boardFrom(data: BoardWire): BoardWire {
+export function boardFrom(data: BoardWire): BoardWire | null {
+  // **A record missing its list cannot be drawn as an empty one**: an absent
+  // list is a shape this build cannot read, and the page says so.
+  if (!Array.isArray(data.projects)) return null;
   return {
-    // **A record missing its list is drawn empty rather than crashing the
-    // page reading it.** A malformed answer is a state to draw; a throw
-    // inside a store notification would take the page down with it.
-    projects: (Array.isArray(data.projects) ? data.projects : []).map((row) => ({
+    projects: data.projects.map((row) => ({
       ...row,
       rows: (row.rows ?? []).map(rowFrom),
       crons: row.crons ?? [],

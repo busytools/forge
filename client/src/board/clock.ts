@@ -5,12 +5,16 @@
  * server no longer re-encodes the board on a timer to advance figures that
  * only the clock moves. The record still carries the server's own derivation
  * as of the instant it was encoded; this walks the drawn rows forward from
- * that instant to now, using the row's own timestamps and the same rules the
- * core applies (`crates/forge-workspace/src/board.rs`):
+ * that instant to now with the server's own figures plus the client's elapsed
+ * time, under the same rules the core applies
+ * (`crates/forge-workspace/src/board.rs`):
  *
  * - `worked_secs` grows by the elapsed time while the row is in progress - the
- *   server's figure already counts the open interval up to its encode;
- * - `updated_secs_ago` is now less the task's own `updated_at`;
+ *   server's figure already counts the open interval up to its encode - and a
+ *   row a frame introduced is anchored to that frame, not to the read before
+ *   it;
+ * - `updated_secs_ago` is the server's own age plus the elapsed time, so a
+ *   page whose clock is far from the server's still draws the right age;
  * - `overdue`, `no_movement` and `waiting_too_long` cross at the same
  *   thresholds the core uses.
  *

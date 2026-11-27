@@ -13,7 +13,7 @@
 import type { ServerMessage, SessionUpdate } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import { Stores } from '../stores';
-import { applyPatchFor } from '../wire/patch';
+import { SubjectStreams } from '../wire/apply';
 import { DEFAULT_SETTINGS, type ClientSettings, type SessionSlot } from '../wire/types';
 import type { ComposerProps, ComposerRecord, SeatRead } from './view';
 
@@ -315,6 +315,11 @@ export function wire(settings: ClientSettings = DEFAULT_SETTINGS): Wire {
   const frames: Uint8Array[] = [];
   const statuses = new Set<(status: ConnectionStatus) => void>();
   const stores = new Stores();
+  const streams = new SubjectStreams({
+    store: (subject) => stores.get(subject),
+    refresh: () => true,
+    report: () => {},
+  });
   const held: Wire = {
     sent,
     frames,
@@ -356,17 +361,15 @@ export function wire(settings: ClientSettings = DEFAULT_SETTINGS): Wire {
       refresh: () => true,
     },
     say(message) {
-      // **A record lands in its store the way the socket lands it**, and then
+      // **A record lands in its store through the transport's own rule**, so a
+      // test drives the page through the same version and gap logic a live
+      // one reads, rather than a placement the double invented, and then
       // every listener hears the frame.
       if (message.kind === 'snapshot') {
-        stores.get(message.subject)?.set(message.data, message.version);
+        streams.snapshot(message.subject, message.version, message.data);
       }
       if (message.kind === 'patch') {
-        const store = stores.get(message.subject);
-        const next = applyPatchFor(message.subject, store?.snapshot(), message.data);
-        if (store !== undefined && next !== null) {
-          store.applied(typeof message.version === 'number' ? message.version : null, next);
-        }
+        streams.patch(message.subject, message.version, message.data);
       }
       for (const fn of listeners) fn(message);
     },

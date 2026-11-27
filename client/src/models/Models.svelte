@@ -457,14 +457,21 @@
 {:else if read.wire === null}
   <main class="wrap models-page"><p class="pending">Reading the models...</p></main>
 {:else}
-  {#if (read.heldPatches ?? []).length > 0}
-    <!-- Rule 25: a frame this client cannot read is kept and said. -->
+  {#if read.resyncing || (read.heldPatches ?? []).length > 0}
     <main class="wrap models-page">
-      <p class="pending">
-        {read.heldPatches?.length} server update{(read.heldPatches?.length ?? 0) === 1 ? '' : 's'} for
-        the models could not be read and
-        {(read.heldPatches?.length ?? 0) === 1 ? 'was' : 'were'} kept
-      </p>
+      {#if read.resyncing}
+        <!-- The stream skipped a version: the record stays drawn and this
+             says it may be a beat behind while one whole read lands. -->
+        <p class="pending">Catching up with the server...</p>
+      {/if}
+      {#if (read.heldPatches ?? []).length > 0}
+        <!-- Rule 25: a frame this client cannot read is kept and said. -->
+        <p class="pending">
+          {read.heldPatches?.length} server update{(read.heldPatches?.length ?? 0) === 1 ? '' : 's'}
+          for the models could not be read and
+          {(read.heldPatches?.length ?? 0) === 1 ? 'was' : 'were'} kept
+        </p>
+      {/if}
     </main>
   {/if}
   <ModelsBody

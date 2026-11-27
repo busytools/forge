@@ -28,6 +28,8 @@ export interface ExtensionsPage {
   refused: string | null;
   /** Patches the socket could not place, held for the page to say so. */
   heldPatches?: unknown[];
+  /** The stream skipped a version: the record stays drawn while one read lands. */
+  resyncing?: boolean;
 }
 
 const NOTHING: ExtensionsPage = { read: null, refused: null };
@@ -55,7 +57,12 @@ export function watchExtensions(connection: ExtensionsConnection): Readable<Exte
     if (held === null) return;
     const state = held.state();
     if (state.kind === 'refused') {
-      view.set({ read: null, refused: state.why, heldPatches: held.unexpected() });
+      view.set({
+        read: null,
+        refused: state.why,
+        heldPatches: held.unexpected(),
+        resyncing: false,
+      });
       return;
     }
     const data = held.snapshot();
@@ -63,6 +70,7 @@ export function watchExtensions(connection: ExtensionsConnection): Readable<Exte
       read: data === null ? null : extensionsFrom(data),
       refused: null,
       heldPatches: held.unexpected(),
+      resyncing: state.kind === 'resyncing',
     });
   }
 

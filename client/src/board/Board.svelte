@@ -554,7 +554,7 @@
       <span class="b-nm">{project}</span>
       <span class="b-read">
         {#if board.wire === null}
-          {board.refused === null ? 'reading the board...' : 'no board'}
+          {board.failed ?? (board.refused === null ? 'reading the board...' : 'no board')}
         {:else}
           {#if (board.heldPatches ?? []).length > 0}
             {board.heldPatches?.length} held &middot;
@@ -687,9 +687,11 @@
   {/if}
 
   {#if board.wire === null}
-    <!-- The board's own read has not landed: a refusal says why, and the
-         silence is the read in flight. Neither is an unknown project. -->
-    <p class="b-empty">{board.refused ?? 'reading the board...'}</p>
+    <!-- The board's own read has not landed: a refusal says why, a record
+         this client could not read says so rather than drawing an empty
+         board, and the silence is the read in flight. None is an unknown
+         project. -->
+    <p class="b-empty">{board.failed ?? board.refused ?? 'reading the board...'}</p>
   {:else if !view.known}
     <!-- The page is a route and this one names a project the fleet does not
          carry: it has no rows to draw and no board to edit, and the create
