@@ -1089,10 +1089,12 @@ of prose on either side.
   subject's stream; a client applies it only as exactly one past the version
   its store holds, and treats any other number - or a patch for a subject it
   has never read - as a gap answered by one whole read. **A seat's patch
-  carries no `version`**: a seat's stream is numbered by its own frames
-  (`update.seq`), and its patch is a whole-field replacement applied as it
-  arrives. An unchanged subject sends nothing; no periodic patch, beat or
-  re-send exists.
+  carries no `version` and only the fields its frames do not**: the resolved
+  composer (`machine_turn`'s abort says only "not a handoff"), the review
+  rows, `/resume`'s list and the branch diff. A seat's stream is numbered by
+  its own frames (`update.seq`), and the fields those frames draw -
+  `conversation` above all - are never re-sent in a patch. An unchanged
+  subject sends nothing; no periodic patch, beat or re-send exists.
 - **`update {update, seq, span}`** - one `SessionUpdate`, for whichever
   subjects the client is subscribed to. The subject decides, and a home
   subscription has **two** arms rather than one: an update a home row draws

@@ -22,7 +22,6 @@ use forge_primitives::review::{ReviewAnchor, ReviewSet, ReviewSide, ReviewThread
 use forge_primitives::runtime::{AvailableAgent, AvailableCommand, MonitorRecord};
 use forge_primitives::slack::SlackSubscription;
 use forge_primitives::tasks::TaskId;
-use forge_primitives::token_usage::WindowUsage;
 use forge_primitives::{ContentBlock, GotifySubscription, Message, SessionSlot, UserEnvelope};
 use forge_workspace::bench::{
     BenchResult, BenchState, ReadAloudState, SpeakingBenchResult, SpeakingBenchState,
@@ -3390,22 +3389,6 @@ pub struct SessionPatch {
     pub diff: Option<DiffContent>,
 }
 
-/// One usage change: only the windows that moved.
-#[derive(Serialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub struct UsagePatch {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub today: Option<WindowUsage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub week: Option<WindowUsage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub month: Option<WindowUsage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lifetime: Option<WindowUsage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pricing_available: Option<bool>,
-}
-
 /// One models-page change: only the fields that moved.
 ///
 /// A bench tick, an install and a catalogue check each move one field, so a
@@ -3474,13 +3457,45 @@ pub(crate) fn patch_for_record(subject: &Subject, old: &Value, new: &Value) -> O
     match subject {
         Subject::Home => home_patch(old, new),
         Subject::Board => board_patch(old, new),
+        Subject::Session(_) => session_patch(old, new),
         // A take is not a record: its frames are the deltas, and a subscribe
         // is answered with nothing to keep.
         Subject::Dictate => None,
-        Subject::Session(_) | Subject::Usage | Subject::DictateModels | Subject::Extensions => {
-            whole_fields(old, new)
+        // **The token pool has no push.** Nothing in the stream announces a
+        // transcript being written, so nothing ever marks `Usage` dirty; its
+        // subscription is one scan on the ask and its version never moves.
+        // A patch type for it would be dead code, which is why there is none.
+        Subject::Usage => None,
+        Subject::DictateModels | Subject::Extensions => whole_fields(old, new),
+    }
+}
+
+/// The seat's delta: the fields its frames do not carry.
+///
+/// **A seat's frames deliver nearly everything as it moves** - the
+/// conversation, the asks, the processes, the index, the working tree - and
+/// the patch exists for what no frame announces: the resolved composer
+/// (`machine_turn`'s abort says only "not a handoff"), the review rows, the
+/// `/resume` list and the branch diff. Diffing the whole record would re-send
+/// whatever a run of frames moved since the base, and for `conversation`
+/// alone that is the entire window - the megabytes the frames already drew.
+const SEAT_PATCH_FIELDS: &[&str] =
+    &["composer", "reviews", "tree_reviews", "resume_sessions", "diff"];
+
+fn session_patch(old: &Value, new: &Value) -> Option<Value> {
+    let (Some(old), Some(new)) = (old.as_object(), new.as_object()) else {
+        return None;
+    };
+    let mut patch = serde_json::Map::new();
+    for field in SEAT_PATCH_FIELDS {
+        let (Some(value), held) = (new.get(*field), old.get(*field)) else {
+            continue;
+        };
+        if held != Some(value) {
+            patch.insert((*field).to_owned(), value.clone());
         }
     }
+    (!patch.is_empty()).then_some(Value::Object(patch))
 }
 
 /// Every field whose value moved, as itself.
@@ -3511,9 +3526,18 @@ fn home_patch(old: &Value, new: &Value) -> Option<Value> {
     let mut patch = serde_json::Map::new();
     for (key, value) in new {
         let changed = match key.as_str() {
-            "projects" => {
-                entry_field(old.get(key), value, |entry| entry.pointer("/project").cloned())
-            }
+            "projects" => entry_field(old.get(key), value, |entry| {
+                // **The identity is org and name, not the whole project
+                // view.** A session opening inside `ProjectView.sessions`
+                // moves the view, and keying on it would read one project as
+                // removed and another added - resending the row and moving
+                // it in the list for a change that belongs to the agents.
+                let project = entry.get("project")?;
+                Some(serde_json::json!({
+                    "org": project.get("org")?,
+                    "name": project.get("name")?,
+                }))
+            }),
             "agents" => entry_field(old.get(key), value, |entry| entry.get("slot").cloned()),
             "fleet" => entry_field(old.get(key), value, |entry| entry.get("project").cloned()),
             _ => whole_field(old.get(key), value),
@@ -3661,7 +3685,6 @@ fn id_key(id: &Value) -> String {
 #[cfg(test)]
 mod patches {
     use super::*;
-    use forge_primitives::token_usage::UsageReport;
     use forge_workspace::catalogue::DictateModelsSnapshot;
 
     fn whole_home(record: HomeWire) -> HomePatch {
@@ -3809,17 +3832,6 @@ mod patches {
         }
     }
 
-    fn whole_usage(record: UsageReport) -> UsagePatch {
-        let UsageReport { today, week, month, lifetime, pricing_available } = record;
-        UsagePatch {
-            today: Some(today),
-            week: Some(week),
-            month: Some(month),
-            lifetime: Some(lifetime),
-            pricing_available: Some(pricing_available),
-        }
-    }
-
     fn whole_dictate_models(record: DictateModelsSnapshot) -> DictateModelsPatch {
         let DictateModelsSnapshot {
             enabled,
@@ -3878,11 +3890,6 @@ mod patches {
     }
 
     #[test]
-    fn the_usage_patch_carries_every_usage_field() {
-        let _: fn(UsageReport) -> UsagePatch = whole_usage;
-    }
-
-    #[test]
     fn the_dictate_models_patch_carries_every_field() {
         let _: fn(DictateModelsSnapshot) -> DictateModelsPatch = whole_dictate_models;
     }
@@ -3901,7 +3908,7 @@ mod patches {
                 Subject::Home => "home patch",
                 Subject::Board => "board patch",
                 Subject::Session(_) => "session patch",
-                Subject::Usage => "usage patch",
+                Subject::Usage => "no push: one scan on the ask, and its version never moves",
                 Subject::DictateModels => "dictate models patch",
                 Subject::Extensions => "extensions patch",
                 Subject::Dictate => "no record: its own frames are the deltas",
@@ -3918,7 +3925,6 @@ mod patches {
             ("home", serde_json::to_value(HomePatch::default()).expect("home")),
             ("board", serde_json::to_value(BoardPatch::default()).expect("board")),
             ("session", serde_json::to_value(SessionPatch::default()).expect("session")),
-            ("usage", serde_json::to_value(UsagePatch::default()).expect("usage")),
             (
                 "dictate models",
                 serde_json::to_value(DictateModelsPatch::default()).expect("dictate models"),
@@ -4157,6 +4163,47 @@ mod patches {
             serde_json::json!({ "composer": new["composer"] }),
             "one whole field, no entries",
         );
+
+        // **The conversation is frames, not a patch.** A run of chat frames
+        // since the base moves it, and re-sending the window here would send
+        // the megabytes the frames already drew.
+        let mut new = old.clone();
+        new["conversation"] = serde_json::json!({ "turns": [{ "messages": [] }] });
+        assert_eq!(
+            patch_for_record(&Subject::Session(fixture_seat()), &old, &new),
+            None,
+            "a conversation-only change is not a patch",
+        );
+
+        let mut new = old.clone();
+        new["reviews"] = serde_json::json!({
+            "threads": { "outcome": "read", "value": [] },
+            "reviews": { "outcome": "read", "value": [] },
+        });
+        assert_eq!(
+            patch_for_record(&Subject::Session(fixture_seat()), &old, &new),
+            Some(serde_json::json!({ "reviews": new["reviews"] })),
+            "a review row crossed as its own field",
+        );
+    }
+
+    /// **A home project's identity is its org and name.** A session opening
+    /// inside the project's view must not read as one project removed and
+    /// another added.
+    #[test]
+    fn a_home_project_keeps_its_identity_when_a_session_moves_inside_it() {
+        let old = a_home();
+        let mut new = old.clone();
+        new["projects"][0]["project"]["sessions"] = serde_json::json!([{ "label": "w1" }]);
+        let patch = patch_for_record(&Subject::Home, &old, &new).expect("a patch");
+        let entries = patch["projects"].as_array().expect("the project entries");
+        assert_eq!(entries.len(), 1, "one project read as two: {patch}");
+        assert_eq!(entries[0]["op"], "set");
+        assert_eq!(
+            entries[0]["id"],
+            serde_json::json!({ "org": "TestOrg", "name": "proj" }),
+            "the identity is the org and name pair",
+        );
     }
 
     /// The small records replace a whole field per change, and a field no
@@ -4184,7 +4231,8 @@ mod patches {
         new["pricing_available"] = serde_json::json!(true);
         assert_eq!(
             patch_for_record(&Subject::Usage, &old, &new),
-            Some(serde_json::json!({ "pricing_available": true })),
+            None,
+            "the token pool has no push, so it has no patch",
         );
 
         let old = a_home();
