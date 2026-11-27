@@ -17,7 +17,7 @@ import { canHost } from './browser/host';
  *
  * **`arm` names the reader in the failure warning**, because a phone's log is
  * the only place a failed install is ever seen and a bare "shell listener"
- * would not say which of the three stopped.
+ * would not say which reader stopped.
  *
  * **The Tauri API is imported lazily**, so the web build never loads it. A
  * disconnect that lands before the import resolves registers nothing; one

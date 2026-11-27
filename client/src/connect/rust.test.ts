@@ -1227,6 +1227,24 @@ describe("the connection's own facts", () => {
     }
   });
 
+  /**
+   * **A visibility change alone sends no beat.** The beat that answers a
+   * spell is the return re-read's `pulse`, sent after its asks; an immediate
+   * beat from this listener would race those asks and make the shell read the
+   * same subjects twice.
+   */
+  it('a visibility change alone sends no heartbeat', async () => {
+    const connection = await opened();
+    invoke.mockClear();
+    document.dispatchEvent(new Event('visibilitychange'));
+    await Promise.resolve();
+    expect(
+      invoke.mock.calls.filter(([name]) => name === 'client_heartbeat'),
+      'the listener tracks, it does not beat',
+    ).toEqual([]);
+    connection.close();
+  });
+
   /** A closed connection gives its visibility listener back. */
   it('releases its visibility listener on close', async () => {
     const added = vi.spyOn(document, 'addEventListener');
