@@ -5174,6 +5174,10 @@ impl Workspace {
         // back a lead with neither its mission nor its delegation rules.
         if matches!(kind, crate::mcp::SessionKind::Lead) {
             crate::spawn::apply_lead_charter(launch_settings);
+            crate::spawn::append_policy_notes(
+                launch_settings,
+                &self.policy_notes_for_project(slot.project()),
+            );
             Self::apply_lead_delegation(launch_settings, kind);
         }
         let (registration, replaced) = {

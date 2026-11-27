@@ -124,6 +124,7 @@
     "BiometricRelease": "biometric_release",
     "BiometricRevoke": "biometric_revoke",
     "BiometricRewrite": "biometric_rewrite",
+    "BoardSeen": "board_seen",
     "Cancel": "cancel",
     "CancelQueuedPrompt": "cancel_queued_prompt",
     "CloseSession": "close_session",
@@ -177,6 +178,7 @@
     "SpawnProject": "spawn_project",
     "SpawnWorker": "spawn_worker",
     "SubmitReview": "submit_review",
+    "TaskAck": "task_ack",
     "TaskAnswer": "task_answer",
     "TaskAssign": "task_assign",
     "TaskCreate": "task_create",
@@ -186,6 +188,7 @@
     "TaskReopen": "task_reopen",
     "TaskReserve": "task_reserve",
     "TaskRestore": "task_restore",
+    "TaskSnooze": "task_snooze",
     "TaskVerdict": "task_verdict",
     "UpsertReviewThread": "upsert_review_thread",
     "VaultEnrolmentMaterial": "vault_enrolment_material",
@@ -1122,10 +1125,29 @@
         "projects"
       ],
       "/data/projects[]": [
+        "attention",
         "connectors",
         "crons",
         "project",
         "rows"
+      ],
+      "/data/projects[]/attention": [
+        "agents",
+        "checked_at",
+        "delta",
+        "last_look",
+        "sample"
+      ],
+      "/data/projects[]/attention/delta": [
+        "expired",
+        "landed",
+        "merged",
+        "moved"
+      ],
+      "/data/projects[]/attention/sample": [
+        "rows",
+        "sampled",
+        "total"
       ],
       "/data/projects[]/connectors": [
         "gotify",
@@ -1635,6 +1657,14 @@
         "purpose"
       ]
     },
+    "BoardSeen": {
+      "": [
+        "board_seen"
+      ],
+      "/board_seen": [
+        "project"
+      ]
+    },
     "DictateReadAloudStart": {
       "": [
         "dictate_read_aloud_start"
@@ -1802,6 +1832,15 @@
         "project"
       ]
     },
+    "TaskAck": {
+      "": [
+        "task_ack"
+      ],
+      "/task_ack": [
+        "id",
+        "project"
+      ]
+    },
     "TaskReopen": {
       "": [
         "task_reopen"
@@ -1819,6 +1858,16 @@
         "id",
         "project",
         "reserved"
+      ]
+    },
+    "TaskSnooze": {
+      "": [
+        "task_snooze"
+      ],
+      "/task_snooze": [
+        "id",
+        "project",
+        "until"
       ]
     },
     "UpsertReviewThread": {

@@ -171,6 +171,33 @@ pub(crate) fn apply_lead_charter(settings: &mut SessionLaunchSettings) {
     settings.charter = Some(DEFAULT_LEAD_CHARTER.to_owned());
 }
 
+/// Append the project's policy notes to a lead's charter - the lessons a
+/// teaching's answer recorded, one per class. **They are read at spawn**:
+/// a note written after a lead's spawn reaches that lead at its next spawn
+/// or through its own `tasks__policy` read, never in a running prompt.
+pub(crate) fn append_policy_notes(
+    settings: &mut SessionLaunchSettings,
+    notes: &[crate::store::policy::PolicyNote],
+) {
+    use std::fmt::Write as _;
+    if notes.is_empty() {
+        return;
+    }
+    let Some(charter) = settings.charter.as_mut() else { return };
+    charter.push_str(
+        "\n\n## The project's policy notes\n\n\
+         A teaching's lesson is recorded here for its class. These are the user's own \
+         rules: the drive will not raise an ask a note settles, so read them before you \
+         ask.\n",
+    );
+    for note in notes {
+        // Writing into a String cannot fail; the ignored result is the
+        // alternative to a `push_str(&format!(...))` the lint refuses.
+        let _ = write!(charter, "\n- **{}**: {}", note.class, note.text);
+    }
+    charter.push('\n');
+}
+
 /// Stamp the project's `permission_mode` into the launch settings'
 /// `permissions.defaultMode`, where the existing
 /// `applied_permission_mode` arm in `forge_sdk_worker` picks it up;
@@ -265,6 +292,7 @@ fn spawn_project_inner(
     };
 
     apply_lead_charter(&mut launch_settings);
+    append_policy_notes(&mut launch_settings, &workspace.policy_notes_for_project(project_name));
 
     // The id this lead will run under, resolved before the spawn so the
     // bucket announced here is the bucket the child connects under.
@@ -10569,6 +10597,38 @@ mod lead_charter_tests {
         };
         apply_lead_charter(&mut settings);
         assert_eq!(settings.charter.as_deref(), Some("pre-existing"));
+    }
+
+    /// A teaching's lesson reaches the project's next lead: the notes are
+    /// appended to the charter at spawn, one per class, and an empty set
+    /// adds no empty section.
+    #[test]
+    fn a_leads_charter_carries_the_projects_policy_notes() {
+        let mut settings = SessionLaunchSettings::default();
+        apply_lead_charter(&mut settings);
+        let note = crate::store::policy::PolicyNote {
+            id: "n1".to_owned(),
+            project_name: "forge".to_owned(),
+            class: "pre-push-suite".to_owned(),
+            text: "run the full suite before pushing".to_owned(),
+            source_task: "t-1".to_owned(),
+            at: std::time::SystemTime::UNIX_EPOCH,
+        };
+        append_policy_notes(&mut settings, std::slice::from_ref(&note));
+        let charter = settings.charter.expect("the lead keeps its charter");
+        assert!(charter.contains("## The project's policy notes"), "the section is named");
+        assert!(
+            charter.contains("- **pre-push-suite**: run the full suite before pushing"),
+            "the note is read as its own rule: {charter}",
+        );
+
+        let mut bare = SessionLaunchSettings::default();
+        apply_lead_charter(&mut bare);
+        append_policy_notes(&mut bare, &[]);
+        assert!(
+            !bare.charter.expect("charter").contains("policy notes"),
+            "an empty set adds no section",
+        );
     }
 
     /// An epic with no user look closes on its children being delivered,

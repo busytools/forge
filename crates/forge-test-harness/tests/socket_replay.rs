@@ -363,7 +363,8 @@ census!(Command,
         PluginInstall struct, PluginUpdate struct, PluginUpdateAll struct,
         PluginCheckUpdates struct, MarketplaceAdd struct, MarketplaceRepair struct,
         SpawnProject struct,
-        TaskVerdict struct, TaskAnswer struct, TaskRank struct, TaskAssign struct,
+        TaskVerdict struct, TaskAnswer struct, TaskAck struct, TaskSnooze struct,
+        BoardSeen struct, TaskRank struct, TaskAssign struct,
         TaskCreate struct, TaskMove struct, TaskReopen struct, TaskReserve struct,
         TaskRestore struct, TaskDetail struct,
         DeliverPeerPrompt struct,
@@ -2036,6 +2037,23 @@ fn command_sampled(seat: &SessionSlot) -> BTreeMap<String, BTreeMap<String, Valu
             reserved: true,
         }),
     );
+    // **The person's own acts on the window**, written by hand in the page:
+    // an ack, a snooze and the last-look stamp. A rename on either side
+    // would leave the literal writing a key nothing reads, silently.
+    sampled.insert(
+        "TaskAck".to_owned(),
+        sample(Command::TaskAck { project: "proj".to_owned(), id: "t-1".to_owned() }),
+    );
+    sampled.insert(
+        "TaskSnooze".to_owned(),
+        sample(Command::TaskSnooze {
+            project: "proj".to_owned(),
+            id: "t-1".to_owned(),
+            until: "1h".to_owned(),
+        }),
+    );
+    sampled
+        .insert("BoardSeen".to_owned(), sample(Command::BoardSeen { project: "proj".to_owned() }));
     // **The held vault call's answer**, which the dock writes by hand: the
     // unlock material lives INSIDE `answer`; a rename of `answer`, `decision`,
     // `master_password` or `two_factor` would leave the client's literal
