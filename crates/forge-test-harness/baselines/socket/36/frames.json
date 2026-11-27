@@ -12,7 +12,6 @@
     "FileContent": "file_content",
     "Greeting": "greeting",
     "Page": "page",
-    "Patch": "patch",
     "Pong": "pong",
     "Reply": "reply",
     "SeatFrames": "seat_frames",
@@ -891,35 +890,6 @@
         "type"
       ]
     },
-    "PatchHome": {
-      "": [
-        "data",
-        "kind",
-        "subject",
-        "version"
-      ],
-      "/data": [
-        "agents"
-      ],
-      "/data/agents[]": [
-        "id",
-        "op",
-        "record"
-      ],
-      "/data/agents[]/id": [
-        "label",
-        "org",
-        "project"
-      ],
-      "/data/agents[]/record": [
-        "slot"
-      ],
-      "/data/agents[]/record/slot": [
-        "label",
-        "org",
-        "project"
-      ]
-    },
     "PluginsCliActionFailed": {
       "": [
         "kind",
@@ -1142,8 +1112,7 @@
       "": [
         "data",
         "kind",
-        "subject",
-        "version"
+        "subject"
       ],
       "/data": [
         "projects"
@@ -1167,8 +1136,7 @@
       "": [
         "data",
         "kind",
-        "subject",
-        "version"
+        "subject"
       ],
       "/data": [
         "lsp",
@@ -1258,8 +1226,7 @@
       "": [
         "data",
         "kind",
-        "subject",
-        "version"
+        "subject"
       ],
       "/data": [
         "accounts",
