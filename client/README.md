@@ -391,7 +391,8 @@ fails rather than skips at every step: a rejected submission prints its id and
 Apple's log, and a failed staple or a Gatekeeper rejection stops the release
 before the swap.
 
-The credential lives outside the repo, beside the updater key and the profile:
+The secret half of the credential lives outside the repo, beside the updater
+key and the profile:
 
 ```sh
 ~/.tauri/forge-notary.properties
@@ -407,7 +408,8 @@ APPLE_PASSWORD=xxxx-xxxx-xxxx-xxxx
 APPLE_TEAM_ID=KALKD5L7NF
 ```
 
-Environment variables of the same names win over the file, and
+The team id is not secret; only the Apple ID and the password stay out of the
+repo. Environment variables of the same names win over the file, and
 `FORGE_NOTARY_PROPERTIES` names a different file. The team id may be left out:
 the pre-build check reads it from the provisioning profile's
 `TeamIdentifier`, and the notarising run reads it from the signature the app
