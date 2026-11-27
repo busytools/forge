@@ -6,12 +6,14 @@
  * Touch ID or the phone's sensor is the gesture the browser asks for. The PRF
  * output is deterministic per credential and salt, so it derives the same
  * wrapping key on every assertion; the wrapped purpose key lives in
- * localStorage and is useless without a fresh gesture. Where a browser has no
- * PRF, creation says so plainly and the password path stands.
+ * localStorage and is useless without a fresh gesture. A passkey that cannot
+ * unlock - a manager answered without PRF - is named as that, with the route
+ * to remove it and the password as the other way in.
  *
  * The record is per purpose, exactly as the desktop items are: a second
- * consumer registers its own passkey and wraps its own key, and nothing here
- * learns what a purpose means.
+ * consumer wraps its own key under its own salt, and nothing here learns what
+ * a purpose means. A discoverable scan may be answered by a passkey another
+ * purpose already holds; the salt still derives this purpose's key.
  */
 
 import type { Availability, Release } from './index';
@@ -19,6 +21,25 @@ import { fresh, fromBase64, openText, randomBytes, sealText, toBase64 } from './
 
 /** The localStorage prefix a purpose's record lives under. */
 const RECORD_PREFIX = 'forge.biometric.web.';
+
+/** The localStorage prefix marking that this purpose minted a passkey here. */
+const MINTED_PREFIX = 'forge.biometric.web.minted.';
+
+/**
+ * What a passkey that cannot unlock is told as, in the card's own line.
+ *
+ * **The browser does not name the manager.** Attestation is `none` and no
+ * API reports which passkey provider answered, so the honest name is the
+ * person's own manager. The password is the other way in, and always stays.
+ */
+const NO_UNLOCK_CREATED =
+  'a passkey was saved by your passkey manager, but it cannot unlock; remove it in your passkey manager, or use the password';
+const NO_UNLOCK_HELD =
+  'this device already holds a passkey that cannot unlock; remove it in your passkey manager, or use the password';
+
+/** What a dismissed discoverable prompt is told as. It stores nothing. */
+const PICKER_DISMISSED =
+  'the passkey prompt did not answer, so nothing was stored; press enrol again to create a new passkey, or use the password';
 
 /** What one purpose's local record holds. */
 interface WebRecord {
@@ -116,21 +137,32 @@ async function prfSupport(platform: typeof globalThis.PublicKeyCredential): Prom
 
 /**
  * Seal `key` under a passkey's PRF output, reusing this purpose's passkey when
- * this browser still holds one.
+ * this browser still holds one or can find it again.
  *
  * **A re-enrol replaces the sealed key, not the passkey.** The press is the
  * route back from a stale blob, and one press must not leave another passkey
  * in the person's own passkey manager. The PRF is deterministic, so the same
- * credential reseals the new key whether or not the old bytes still open; a
- * fresh passkey is minted only when this browser holds no record at all (a
- * revoke, or a cleared profile).
+ * credential reseals the new key whether or not the old bytes still open.
+ * **A record this browser lost is not a passkey it lost**: a purpose that
+ * minted one here before is asked for it by a discoverable assertion, so a
+ * revoke, a dropped record or a stale blob reseals the same credential. A
+ * fresh passkey is minted only when the browser has no marker for this
+ * purpose (a cleared profile) or the scan finds nothing.
  */
 export async function store(purpose: string, key: string): Promise<void> {
   const existing = readRecord(purpose);
-  const credential = existing === null ? null : fromBase64(existing.credential);
-  if (existing !== null && credential !== null) {
-    const prf = await assertPasskey(purpose, credential);
-    if (prf !== null) {
+  if (existing !== null) {
+    const credential = fromBase64(existing.credential);
+    if (credential !== null) {
+      const prf = await assertPasskey(purpose, credential);
+      if (prf === null) {
+        // **A held passkey that cannot unlock is reported, not replaced.**
+        // The record is dead and goes, but a second credential would leave
+        // the person with two they cannot use; the refusal names the one to
+        // remove.
+        remove(purpose);
+        throw new Error(NO_UNLOCK_HELD);
+      }
       const wrapped = await sealText(key, prf);
       if (wrapped === null) {
         throw new Error('the passkey released no usable key, so nothing was stored');
@@ -138,11 +170,27 @@ export async function store(purpose: string, key: string): Promise<void> {
       writeRecord(purpose, { credential: existing.credential, wrapped });
       return;
     }
-    // **An assertion with no PRF cannot reseal**, so the record goes and the
-    // fresh passkey below is the replacement.
     remove(purpose);
-  } else if (existing !== null) {
-    remove(purpose);
+  }
+  if (mintedHere(purpose)) {
+    const discovered = await discoverPasskey(purpose);
+    if (discovered !== null) {
+      const prf = prfOutput(discovered);
+      if (prf === null) {
+        // **A discoverable passkey that cannot unlock is not replaced** by a
+        // second one, for the same reason as the held case above.
+        throw new Error(NO_UNLOCK_HELD);
+      }
+      const wrapped = await sealText(key, prf);
+      if (wrapped === null) {
+        throw new Error('the passkey released no usable key, so nothing was stored');
+      }
+      writeRecord(purpose, {
+        credential: toBase64(new Uint8Array(discovered.rawId)),
+        wrapped,
+      });
+      return;
+    }
   }
   const created = await createPasskey(purpose);
   const wrapped = await sealText(key, created.prf);
@@ -182,7 +230,8 @@ export async function release(purpose: string): Promise<Release> {
 /**
  * Drop the purpose's local record. **The platform credential itself stays**:
  * a browser cannot delete a passkey from the page, and a record nothing points
- * at is inert.
+ * at is inert. **The minted marker stays too**: it is how a later enrol finds
+ * that passkey rather than minting another.
  */
 export function remove(purpose: string): void {
   try {
@@ -226,6 +275,10 @@ async function createPasskey(
     options,
   )) as PublicKeyCredential | null;
   if (created === null) throw new Error('the browser created no passkey');
+  // **The credential exists in the person's manager from here on**, whatever
+  // the PRF answers. The marker is what lets a later enrol find it again and
+  // report it instead of minting a second one.
+  markMinted(purpose);
   const credential = toBase64(new Uint8Array(created.rawId));
   const prf = prfOutput(created);
   if (prf !== null) return { credential, prf };
@@ -236,9 +289,37 @@ async function createPasskey(
     const asserted = await assertPasskey(purpose, new Uint8Array(created.rawId));
     if (asserted !== null) return { credential, prf: asserted };
   }
-  throw new Error(
-    'this browser does not support the PRF extension, so nothing was stored; use the password',
-  );
+  throw new Error(NO_UNLOCK_CREATED);
+}
+
+/**
+ * A passkey this browser minted for `purpose` before, found by a discoverable
+ * assertion with no `allowCredentials`, or null when none answered.
+ *
+ * **The scan runs only when the marker says one was minted here.** Running it
+ * on a first enrol would open an empty passkey picker before every create.
+ */
+async function discoverPasskey(purpose: string): Promise<PublicKeyCredential | null> {
+  const challenge = randomBytes(32);
+  if (challenge === null) return null;
+  const options = {
+    publicKey: {
+      challenge,
+      userVerification: 'required',
+      timeout: 60_000,
+      extensions: { prf: { eval: { first: prfSalt(purpose) } } },
+    },
+  } as unknown as CredentialRequestOptions;
+  try {
+    return (await globalThis.navigator.credentials.get(options)) as PublicKeyCredential | null;
+  } catch {
+    // **A dismissed picker is not an absent passkey, and it is not a create.**
+    // This press stores nothing and names the password. The marker goes so a
+    // passkey the person removed in their manager does not leave an empty
+    // picker on every later press; the press after that creates normally.
+    clearMinted(purpose);
+    throw new Error(PICKER_DISMISSED);
+  }
 }
 
 /** Whether a created credential reports the PRF extension enabled. */
@@ -290,6 +371,37 @@ function prfSalt(purpose: string): Uint8Array<ArrayBuffer> {
 
 function recordName(purpose: string): string {
   return RECORD_PREFIX + purpose;
+}
+
+function mintedName(purpose: string): string {
+  return MINTED_PREFIX + purpose;
+}
+
+/** Record that this purpose minted a passkey here, across any record loss. */
+function markMinted(purpose: string): void {
+  try {
+    globalThis.localStorage.setItem(mintedName(purpose), '1');
+  } catch {
+    // Storage that refuses the flag costs the next re-enrol its scan; the
+    // credential itself is already made, so there is nothing else here.
+  }
+}
+
+function mintedHere(purpose: string): boolean {
+  try {
+    return globalThis.localStorage.getItem(mintedName(purpose)) !== null;
+  } catch {
+    return false;
+  }
+}
+
+function clearMinted(purpose: string): void {
+  try {
+    globalThis.localStorage.removeItem(mintedName(purpose));
+  } catch {
+    // Storage that refuses the delete leaves the flag; the next press scans
+    // again, which is the behaviour without this recovery.
+  }
 }
 
 function readRecord(purpose: string): WebRecord | null {

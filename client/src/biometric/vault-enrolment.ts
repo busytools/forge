@@ -175,8 +175,9 @@ export async function enrolVault(connection: VaultConnection): Promise<VaultEnro
     // the browser's own manager makes the held credential's assertion reject;
     // without the drop, every later press would fail on that same dead
     // credential. A cancelled prompt is indistinguishable from it here, so a
-    // cancel costs the record and the next press mints a fresh passkey - the
-    // accepted trade.
+    // cancel costs the record; the next press asks the browser for the
+    // passkey this purpose minted here, and either reuses it or mints one
+    // when none answers.
     await dropRecord();
     return { outcome: 'failed', reason: reasonOf(why) };
   }

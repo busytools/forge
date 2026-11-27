@@ -37,6 +37,16 @@ function holds(purpose: string): boolean {
   return localStorage.getItem(`forge.biometric.web.${purpose}`) !== null;
 }
 
+/**
+ * Whether this browser minted a passkey for the purpose before.
+ *
+ * The marker outlives the record, which is what lets a re-enrol look for the
+ * passkey instead of creating a second one.
+ */
+function minted(purpose: string): boolean {
+  return localStorage.getItem(`forge.biometric.web.minted.${purpose}`) !== null;
+}
+
 /** A create that reports PRF enabled but returns no output. */
 function anEnabledCredential(): unknown {
   return {
@@ -105,7 +115,11 @@ describe('the web gate', () => {
     expect(create?.['authenticatorSelection']).toMatchObject({
       authenticatorAttachment: 'platform',
       userVerification: 'required',
+      residentKey: 'required',
     });
+    // **A first enrol asks for nothing first.** No passkey was ever minted
+    // here, so a discoverable scan would only open an empty picker.
+    expect(asserted, 'a first enrol creates without a discoverable scan').toHaveLength(0);
     expect(create?.['extensions']).toHaveProperty('prf');
     // **The page's own origin is the RP.** No `rp.id` means the browser scopes
     // the credential to the effective domain of the page, which is what the
@@ -152,7 +166,11 @@ describe('the web gate', () => {
     expect(released.outcome).toBe('refused');
   });
 
-  it('refuses a browser whose creation reports no PRF, and stores nothing', async () => {
+  /// **A passkey the manager saved but the gate cannot use is reported as
+  /// that**, not as "this browser has no PRF": the browser answered, the
+  /// manager saved a credential, and the person has something to remove.
+  /// The marker survives the failure so the next enrol looks for it.
+  it('names the passkey manager that saved a PRF-less passkey, and records nothing', async () => {
     Object.defineProperty(globalThis.navigator, 'credentials', {
       configurable: true,
       value: {
@@ -161,9 +179,13 @@ describe('the web gate', () => {
       },
     });
 
-    await expect(gate.store('vault', 'the-purpose-key')).rejects.toThrow('PRF');
+    const attempt = gate.store('vault', 'the-purpose-key');
 
-    expect(holds('vault')).toBe(false);
+    await expect(attempt).rejects.toThrow('passkey manager');
+    await expect(attempt).rejects.toThrow('cannot unlock');
+    await expect(attempt).rejects.toThrow('password');
+    expect(holds('vault'), 'nothing is recorded').toBe(false);
+    expect(minted('vault'), 'the next enrol knows a passkey exists').toBe(true);
   });
 
   it('answers no enrolment before one is stored', async () => {
@@ -325,6 +347,120 @@ describe('the web gate', () => {
     expect(await gate.release('vault')).toEqual({ outcome: 'released', blob: 'second-key' });
   });
 
+  /// **A lost record is not a lost passkey.** A browser that minted one here
+  /// before is asked for it by discoverable assertion instead of minting a
+  /// second; the record then names the credential the browser returned.
+  it('reuses the passkey this browser already holds when the record is gone', async () => {
+    await gate.store('vault', 'first-key');
+    gate.remove('vault');
+    Object.defineProperty(globalThis.navigator, 'credentials', {
+      configurable: true,
+      value: {
+        create: (options: Record<string, unknown>) => {
+          created.push(options);
+          return Promise.resolve(aCredential(PRF));
+        },
+        get: (options: Record<string, unknown>) => {
+          asserted.push(options);
+          return Promise.resolve(aCredential(PRF, new Uint8Array([9, 9, 9, 9])));
+        },
+      },
+    });
+
+    await gate.store('vault', 'second-key');
+
+    expect(created, 'one passkey, not two').toHaveLength(1);
+    expect(asserted, 'one discoverable assertion').toHaveLength(1);
+    const get = asserted[0]?.['publicKey'] as Record<string, unknown> | undefined;
+    expect(get?.['allowCredentials'], 'the passkey is discovered, not named').toBeUndefined();
+    const held = JSON.parse(
+      globalThis.localStorage.getItem('forge.biometric.web.vault') ?? '{}',
+    ) as Record<string, unknown>;
+    expect(held['credential'], 'the record names the credential the browser returned').toBe(
+      btoa(String.fromCharCode(9, 9, 9, 9)),
+    );
+    expect(await gate.release('vault')).toEqual({ outcome: 'released', blob: 'second-key' });
+  });
+
+  /// **A discoverable passkey that cannot unlock is a refusal, not a
+  /// replacement.** Creating over it would leave the person with another
+  /// passkey they cannot use.
+  it('refuses a discoverable passkey that cannot unlock, with no second create', async () => {
+    await gate.store('vault', 'first-key');
+    gate.remove('vault');
+    Object.defineProperty(globalThis.navigator, 'credentials', {
+      configurable: true,
+      value: {
+        create: (options: Record<string, unknown>) => {
+          created.push(options);
+          return Promise.resolve(aCredential(PRF));
+        },
+        get: (options: Record<string, unknown>) => {
+          asserted.push(options);
+          return Promise.resolve(aCredential(null, new Uint8Array([9, 9, 9, 9])));
+        },
+      },
+    });
+
+    const attempt = gate.store('vault', 'second-key');
+
+    await expect(attempt).rejects.toThrow('already holds a passkey');
+    await expect(attempt).rejects.toThrow('passkey manager');
+    await expect(attempt).rejects.toThrow('password');
+    expect(created, 'no third credential').toHaveLength(1);
+    expect(holds('vault')).toBe(false);
+  });
+
+  /// **A dismissed discoverable prompt stores nothing.** Falling through to
+  /// create would mint a second credential on a cancel.
+  it('refuses a dismissed discoverable prompt without creating', async () => {
+    await gate.store('vault', 'first-key');
+    gate.remove('vault');
+    Object.defineProperty(globalThis.navigator, 'credentials', {
+      configurable: true,
+      value: {
+        create: (options: Record<string, unknown>) => {
+          created.push(options);
+          return Promise.resolve(aCredential(PRF));
+        },
+        get: () => Promise.reject(new Error('NotAllowedError')),
+      },
+    });
+
+    const attempt = gate.store('vault', 'second-key');
+
+    await expect(attempt).rejects.toThrow('did not answer');
+    await expect(attempt).rejects.toThrow('password');
+    expect(created, 'a cancel creates nothing').toHaveLength(1);
+    expect(holds('vault')).toBe(false);
+  });
+
+  /// **A held passkey that cannot unlock is reported, not replaced.** The
+  /// record goes, but no second credential is minted: the person has to
+  /// remove the passkey the manager holds.
+  it('refuses a held passkey that cannot unlock instead of minting another', async () => {
+    await gate.store('vault', 'first-key');
+    Object.defineProperty(globalThis.navigator, 'credentials', {
+      configurable: true,
+      value: {
+        create: (options: Record<string, unknown>) => {
+          created.push(options);
+          return Promise.resolve(aCredential(PRF));
+        },
+        get: (options: Record<string, unknown>) => {
+          asserted.push(options);
+          return Promise.resolve(aCredential(null));
+        },
+      },
+    });
+
+    const attempt = gate.store('vault', 'second-key');
+
+    await expect(attempt).rejects.toThrow('already holds a passkey');
+    expect(created, 'no second credential').toHaveLength(1);
+    expect(holds('vault'), 'the dead record goes').toBe(false);
+  });
+
   /// **Some authenticators report PRF enabled and withhold the output at
   /// creation.** One assertion fetches it; without that step a working
   /// authenticator would read as PRF-less.
@@ -364,7 +500,7 @@ describe('the web gate', () => {
       },
     });
 
-    await expect(gate.store('vault', 'the-purpose-key')).rejects.toThrow('PRF');
+    await expect(gate.store('vault', 'the-purpose-key')).rejects.toThrow('passkey manager');
 
     expect(asserted).toHaveLength(0);
     expect(holds('vault')).toBe(false);
