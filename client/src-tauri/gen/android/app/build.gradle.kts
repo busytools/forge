@@ -117,6 +117,11 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.lifecycle:lifecycle-process:2.10.0")
     testImplementation("junit:junit:4.13.2")
+    // The plugin arg classes are bound by the same Jackson mapper Tauri's
+    // `PluginManager` builds, so the unit test deserializes through it. Tauri's
+    // own module keeps Jackson off this module's compile classpath, which is
+    // why the test names the version its mobile build pins.
+    testImplementation("com.fasterxml.jackson.core:jackson-databind:2.15.3")
     androidTestImplementation("androidx.test.ext:junit:1.1.4")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")
 }
