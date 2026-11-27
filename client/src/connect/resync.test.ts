@@ -88,8 +88,13 @@ function fakeConnection() {
     skew: () => null,
     serverProtocol: () => PROTOCOL_VERSION,
     status: () => status,
+    lastHeard: () => null,
+    onHeard: () => () => {},
     probe: () => {
       calls.push('probe');
+    },
+    pulse: () => {
+      calls.push('pulse');
     },
     close: () => {},
   };
@@ -154,18 +159,19 @@ describe('the return re-read', () => {
 
   /**
    * **A return asks once, in one order**: the probe first, then each page
-   * through its own guards, then the seat on screen. The order is the claim -
-   * a probe that lands after the reads answers for a link the reads may
-   * already have waited on.
+   * through its own guards, then the seat on screen, and the pulse last. The
+   * order is the claim - a probe that lands after the reads answers for a
+   * link the reads may already have waited on, and a pulse that lands before
+   * them would make the shell read the same three subjects again.
    */
-  it('probes, then asks each page, then re-reads the shown seat', async () => {
+  it('probes, then asks each page, then re-reads the shown seat, then beats', async () => {
     const fake = fakeConnection();
     pages(fake);
     const stop = watchReturn(fake.connection, () => LEAD);
 
     await returnAfter(5_000);
 
-    expect(fake.calls).toEqual(['probe', 'home', 'board', 'seat']);
+    expect(fake.calls).toEqual(['probe', 'home', 'board', 'seat', 'pulse']);
     // The seat's read is named as a return's, or the chat has no way to trust
     // the snapshot that answers it over an ordinary mid-stream read.
     expect(vi.mocked(rereadSeat)).toHaveBeenCalledWith(fake.connection, LEAD, { returned: true });
@@ -232,7 +238,7 @@ describe('the return re-read', () => {
 
     foreground[0]?.();
 
-    expect(fake.calls).toEqual(['probe', 'home', 'board', 'seat']);
+    expect(fake.calls).toEqual(['probe', 'home', 'board', 'seat', 'pulse']);
     stop();
   });
 
@@ -340,7 +346,7 @@ describe('the resync itself', () => {
 
     resync(fake.connection, null);
 
-    expect(fake.calls).toEqual(['probe', 'home', 'board']);
+    expect(fake.calls).toEqual(['probe', 'home', 'board', 'pulse']);
     expect(vi.mocked(rereadSeat)).not.toHaveBeenCalled();
   });
 });

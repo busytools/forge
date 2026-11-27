@@ -3,9 +3,11 @@
   import { get } from 'svelte/store';
 
   import { observeAttention, pageWatched } from '../attention';
+  import { span } from '../components/age';
   import Sprite from '../components/Sprite.svelte';
   import { DEFAULT_ADDRESS, displayAddress, type Attempt } from '../connect/attempt';
   import { boot } from '../connect/boot';
+  import { RETURN_HIDE_MS } from '../connect/resync';
   import {
     movedParameter,
     rememberedAddress,
@@ -32,6 +34,7 @@
   import { currentRoute, goTo, hrefFor, parseRoute, shownSeat, type Route } from '../routes';
   import { forgetClosed, removedLanding, watchReleases, watchRemovals } from '../session/close';
   import { releaseSeat } from '../session/live';
+  import { silenceOf } from '../silence';
   import type { Connection, ConnectionStatus } from '../socket';
   import { applySettings } from '../theme';
   import { watchUpdate } from '../update/state';
@@ -84,6 +87,25 @@
   let stopShares: (() => void) | null = null;
   let connectionStatus = $state<ConnectionStatus>('connecting');
   /**
+   * The shell's own clock, for the silence line.
+   *
+   * One second is the grain of the word it draws (`span` spells minutes and
+   * hours) and nothing else here reads it, so a tick costs a `Date.now()` and
+   * a derived that is usually `null`.
+   */
+  let nowAt = $state(Date.now());
+  let ticker: ReturnType<typeof setInterval> | null = null;
+  /**
+   * When the link last carried a frame, as the connection reports it.
+   *
+   * **State rather than a polled getter.** A pong moves no state a page
+   * tracks, and the shell forwards the browser's and terminal's binary frames
+   * on events of their own, so a derived reading `lastHeard()` would keep its
+   * old answer until the one-second tick - a minute in a throttled tab. The
+   * connection's `onHeard` is the edge; this is the value it lands in.
+   */
+  let heardAt = $state<number | null>(null);
+  /**
    * What the live connection's greeting said this client's protocol does not
    * agree with, or `null`. Set from the connection rather than from the
    * attempt that took it, because a page left open across a forge upgrade
@@ -106,7 +128,34 @@
    */
   let settled = $state(false);
 
+  /**
+   * A return to a visible page is not silence, and a blink is not a return.
+   *
+   * A parked page's timers stop with it, and its clock would otherwise
+   * measure the whole hide before the next frame lands. **Only a hide the
+   * return re-read also counts** (`RETURN_HIDE_MS`): a brief alt-tab leaves
+   * the page's read current, and re-arming the bound for it would hide a
+   * line that is still true.
+   */
+  let hiddenAt: number | null =
+    typeof document !== 'undefined' && document.hidden ? Date.now() : null;
+
+  function awake(): void {
+    if (document.hidden) {
+      hiddenAt = Date.now();
+      return;
+    }
+    const since = hiddenAt;
+    hiddenAt = null;
+    if (since === null || Date.now() - since < RETURN_HIDE_MS) return;
+    heardAt = Date.now();
+  }
+
   onMount(() => {
+    ticker = setInterval(() => {
+      nowAt = Date.now();
+    }, 1_000);
+    document.addEventListener('visibilitychange', awake);
     // Nothing to open on, so the door, at the URL that names it. **A named
     // server keeps its URL**: the parameter is what a reload re-prefills
     // from, and moving the URL to `/connect` would drop it.
@@ -154,6 +203,8 @@
   let destroyed = false;
   onDestroy(() => {
     destroyed = true;
+    if (ticker !== null) clearInterval(ticker);
+    document.removeEventListener('visibilitychange', awake);
     uninstallBrowser();
     stopTerminal?.();
     stopShares?.();
@@ -263,6 +314,10 @@
     if (open === null) return;
     connectionStatus = open.status();
     skew = open.skew();
+    heardAt = open.lastHeard();
+    const stopHeard = open.onHeard((at) => {
+      heardAt = at;
+    });
 
     const stopHome = watchHome(open).subscribe(($home) => {
       home = $home;
@@ -295,6 +350,7 @@
       stopStatus();
       stopGreetings();
       stopVault();
+      stopHeard();
     };
   });
 
@@ -437,21 +493,60 @@
   });
 
   /**
+   * How long the link has been open with nothing arriving, or `null`.
+   *
+   * **A healthy link is never quiet for this long.** The transports report
+   * what they hear: a browser page's probe is answered every 15 s of quiet,
+   * the desktop shell's byte-counted beat says `client://alive` on the same
+   * cadence, and either one moves the stamp. A number here means the shell's
+   * own loop has stopped reporting - the measured case is the 8 November
+   * server wedge, where the process stayed up and the page heard nothing;
+   * whether the shell's beat fired then is not settled - and the page's own
+   * clock is the only thing left that can say so.
+   */
+  const quietMs = $derived(
+    connection === null
+      ? null
+      : silenceOf({
+          status: connectionStatus,
+          protocol: connection.serverProtocol(),
+          heardAt,
+          now: nowAt,
+        }),
+  );
+
+  /**
    * The page has a read behind it and is no longer current.
    *
    * Both halves are needed: without the read the notice would sit above
    * "Reading the fleet..." claiming a last read that does not exist, and
-   * without the staleness it would show while everything is fine.
+   * without the staleness it would show while everything is fine. A link
+   * nothing has arrived on is not current however open its status still says
+   * it is.
    */
   const stale = $derived(
-    connection !== null && home.wire !== null && !(connectionStatus === 'open' && settled),
+    connection !== null &&
+      home.wire !== null &&
+      !(connectionStatus === 'open' && settled && quietMs === null),
   );
 
-  /** What it says, which depends on whether anything is still trying. */
+  /** What it says: quiet, closed, or still trying. */
   const staleLine = $derived(
-    connectionStatus === 'closed'
-      ? `The connection to ${displayAddress(address)} was closed - showing the last read`
-      : `Reconnecting to ${displayAddress(address)} - showing the last read`,
+    quietMs !== null
+      ? `No word from ${displayAddress(address)} for ${span(quietMs / 1_000)} - showing the last read`
+      : connectionStatus === 'closed'
+        ? `The connection to ${displayAddress(address)} was closed - showing the last read`
+        : `Reconnecting to ${displayAddress(address)} - showing the last read`,
+  );
+
+  /**
+   * The quiet line's stable sentence: the age is the only part that moves,
+   * and a live region announces every change. The visible line keeps the
+   * age; this is the version a screen reader hears, so the announcement
+   * happens when the state changes rather than once a minute.
+   */
+  const quietSpoken = $derived(
+    quietMs === null ? null : `No word from ${displayAddress(address)} - showing the last read`,
   );
 
   /**
@@ -472,6 +567,11 @@
    */
   const sessionNotice = $derived(
     route.name !== 'session' ? null : (skewLine ?? (stale ? staleLine : null)),
+  );
+
+  /** The same line with its age kept out of the announcement. */
+  const sessionNoticeSpoken = $derived(
+    route.name !== 'session' || skewLine !== null || !stale ? null : quietSpoken,
   );
 
   /** The notice the door draws for itself. */
@@ -602,8 +702,16 @@
     <p class="stale" role="status">{skewLine}</p>
   {:else if stale && sessionNotice === null}
     <!-- A live region rather than a landmark: the pages below each carry the
-         page's own `main`, and a second one would be a second page. -->
-    <p class="stale" role="status">{staleLine}</p>
+         page's own `main`, and a second one would be a second page. **The age
+         is aria-hidden**: it moves every minute, and announcing it each time
+         is the noise this keeps out. -->
+    <p class="stale" role="status">
+      {#if quietSpoken === null}
+        {staleLine}
+      {:else}
+        <span aria-hidden="true">{staleLine}</span><span class="sr">{quietSpoken}</span>
+      {/if}
+    </p>
   {/if}
 
   <Router
@@ -615,6 +723,7 @@
     {connection}
     notice={doorNotice}
     {sessionNotice}
+    {sessionNoticeSpoken}
     connected={connection !== null}
     onconnect={connect}
   />

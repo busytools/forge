@@ -42,6 +42,8 @@ import {
   type Subject,
 } from '../protocol';
 import { playPacket } from '../browser/audio';
+import { observeForeground } from '../foreground';
+import { cannotPaint } from '../paint';
 import { noteSnapshot, noteSubscribeWritten, seatLabel } from '../perf';
 import { READ_BOUND_MS, ReadBounds } from '../read-bound';
 import { refused } from '../refusals';
@@ -61,10 +63,11 @@ import type { SettingsEditWire } from '../wire/settings';
 import type { ClientSettings, SessionSlot } from '../wire/types';
 
 /**
- * How often the page heartbeats, and how long the Rust half keeps frames
- * flowing without one. This is the smaller of the two by a factor of three:
- * a slowed page (a backgrounded tab's timers run at about a tick a minute)
- * reads as away, and the reconcile that answers it is complete either way.
+ * How often the page sends its pulse. The Rust half treats one older than its
+ * own 15 s window as a spell, and the beat also says whether the page is
+ * drawing: a hidden window's timers slow to about a tick a minute, and the
+ * beat says so instead of hiding it, so the shell parks the page rather than
+ * reconciling a spell nobody can draw.
  */
 const HEARTBEAT_MS = 5_000;
 
@@ -190,11 +193,53 @@ class RustConnection implements Connection {
   private readonly stores = new Stores();
   private readonly listeners = new Set<(message: ServerMessage) => void>();
   private readonly statuses = new Set<(status: ConnectionStatus) => void>();
+  /** The page's watchers of the link's inbound clock (`onHeard`). */
+  private readonly heardListeners = new Set<(at: number) => void>();
   /** The page's viewers of the relayed frames: the phone's canvas. */
   private readonly frames = new Set<(frame: BrowserFrame) => void>();
   private stops: UnlistenFn[] = [];
   private beat: ReturnType<typeof setInterval> | null = null;
+  /**
+   * The shell said the app is foreground again, and no hide has been reported
+   * since.
+   *
+   * **The phone's own reading of visibility is not to be trusted on return**:
+   * a locked Android window reports no focus and may report no visibility
+   * change, so the document may still read hidden after a resume. The shell's
+   * `client://foreground` is that resume, and the intervals keep saying
+   * visible until a visibility change says hidden again - a hidden signal the
+   * phone never sends leaves the pre-fix behaviour, never a page parked for
+   * good.
+   */
+  private resumed = false;
   private state: ConnectionStatus = 'connecting';
+  /**
+   * When a frame last arrived, for the page's silence line.
+   *
+   * **Stamped here because the shell owns the socket.** The shell's own
+   * status is all a page normally knows, and a shell task whose loop has
+   * stopped reporting sends no status at all; what arrived through the shell
+   * is the only evidence left. **Four events carry it**: the JSON frames on
+   * `client://inbound`, the browser's and terminal's binary frames, which the
+   * shell forwards on events of their own, and the shell's own liveness beat
+   * on `client://alive`.
+   */
+  private heardAt: number | null = null;
+
+  /**
+   * Stamp the link and tell its watchers, which is what makes the stamp
+   * observable to a page rather than a value it has to poll.
+   */
+  private markHeard(at: number): void {
+    this.heardAt = at;
+    for (const fn of this.heardListeners) {
+      try {
+        fn(at);
+      } catch (why) {
+        report('a heard listener threw', why);
+      }
+    }
+  }
   /**
    * The shell's own id for this connection, from `client_connect`.
    *
@@ -297,8 +342,25 @@ class RustConnection implements Connection {
     // and a connection that subscribed after asking could miss it.
     this.stops.push(await listen('client://connection', () => void this.stateMoved()));
     this.stops.push(
-      await listen('client://inbound', (event) => this.heard(event.payload as ServerMessage)),
+      await listen('client://inbound', (event) => {
+        // The page's own silence clock: this is the seam every JSON frame
+        // crosses, so it is where "last heard" is stamped.
+        this.markHeard(Date.now());
+        this.heard(event.payload as ServerMessage);
+      }),
     );
+    // **The terminal's bytes are inbound too**, and they never reach
+    // `client://inbound`: the shell emits them on their own event, which the
+    // terminal surface listens to directly. A stamp-only listener is the
+    // connection's half of that evidence; a session drawing a busy terminal
+    // must not be called quiet. Two listeners on one event is how Tauri's
+    // event API is meant to be used.
+    this.stops.push(await listen('client://terminal-frame', () => this.markHeard(Date.now())));
+    // **The shell's own liveness beat.** An idle link carries no frames at
+    // all - the server's WebSocket control pings are bytes the shell reads
+    // and drops - so this is the only word the page gets, and without it a
+    // perfectly healthy link would be drawn as quiet.
+    this.stops.push(await listen('client://alive', () => this.markHeard(Date.now())));
     // **The shell half's own facts (#2513).** A snapshot's raw length and the
     // shell's parse travel beside the frame; a subscribe's write time is
     // reported when the frame is on the wire, not when the page asked.
@@ -322,6 +384,9 @@ class RustConnection implements Connection {
     // (the desktop's overlay draws its own and this listener never fires).
     this.stops.push(
       await listen<ShellFrame>('client://browser-frame', (event) => {
+        // A browser frame is inbound even when this page draws none of it:
+        // the stamp is the link's, before the payload is narrowed.
+        this.markHeard(Date.now());
         const frame = frameOf(event.payload);
         if (frame === null) return;
         for (const fn of this.frames) fn(frame);
@@ -354,14 +419,57 @@ class RustConnection implements Connection {
       this.end();
       return;
     }
-    this.beat = setInterval(() => {
-      void invoke('client_heartbeat').catch((why: unknown) => {
-        // The shell is gone or restarting; the next tick tries again, and the
-        // connection's own events say where it is.
-        report('the heartbeat could not reach the shell', why);
-      });
-    }, HEARTBEAT_MS);
+    this.beat = setInterval(() => this.beatOnce(), HEARTBEAT_MS);
+    // **The phone's resume is what a visible beat is read from.** A locked
+    // Android window reports no focus and may report no visibility change
+    // either (`../foreground.ts`), so the shell's own resume is the evidence
+    // that the page is back; the interval keeps saying visible until a
+    // visibility change says hidden. The beat that answers a spell is
+    // `pulse`, sent by the return re-read once its asks are out.
+    const stopResume = observeForeground('the page pulse', () => {
+      this.resumed = true;
+    });
+    if (stopResume !== null) this.stops.push(stopResume);
+    const hid = (): void => {
+      if (cannotPaint()) this.resumed = false;
+    };
+    document.addEventListener('visibilitychange', hid);
+    this.stops.push(() => document.removeEventListener('visibilitychange', hid));
     await this.stateMoved();
+  }
+
+  /**
+   * One heartbeat: the page's pulse, carrying whether it is drawing.
+   *
+   * **A hidden page says so.** The shell answers a spell by handing the drawn
+   * seat its whole record, and a hidden window's throttled timer makes every
+   * beat look like one - 23 MB re-sent and re-parsed while nobody draws it
+   * (2026-11-27, 21:21, from system-monitor). The shell leaves a hidden page
+   * parked and reconciles the beat that carries the return.
+   */
+  private beatOnce(): void {
+    this.sendBeat({ visible: !cannotPaint() || this.resumed });
+  }
+
+  /**
+   * The page's return, named as one: the beat the shell answers a spell with.
+   *
+   * **Sent by the return re-read after its asks** (`../connect/resync.ts`),
+   * so the shell leaves the home, the board and the shown seat to those reads
+   * and re-reads only what nothing else will. It says visible whatever the
+   * document reads: a return is evidence the page is drawing, and on Android
+   * the document may still report hidden after a resume.
+   */
+  pulse(): void {
+    this.sendBeat({ visible: true, returned: true });
+  }
+
+  private sendBeat(payload: { visible: boolean; returned?: boolean }): void {
+    void invoke('client_heartbeat', payload).catch((why: unknown) => {
+      // The shell is gone or restarting; the next tick tries again, and the
+      // connection's own events say where it is.
+      report('the heartbeat could not reach the shell', why);
+    });
   }
 
   private async stateMoved(): Promise<void> {
@@ -462,7 +570,12 @@ class RustConnection implements Connection {
     // lost first answer would otherwise leave them loading forever. A watch
     // taken with no socket is the shell's to carry (`Bridge::connect` asks for
     // it), so nothing is re-asked from this side.
-    if (next === 'open') this.bounds.rearmLoading();
+    if (next === 'open') {
+      this.bounds.rearmLoading();
+      // Before the listeners, as the web's `onopen` does: a surface that
+      // draws on `open` reads the stamp.
+      this.markHeard(Date.now());
+    }
     // **Listeners first, then `Showing`.** The page's own re-attach runs on
     // this status and issues its `relist`; the spec's order is re-subscribe,
     // then `Showing`, and the web's `onopen` keeps the same one.
@@ -940,6 +1053,15 @@ class RustConnection implements Connection {
 
   status(): ConnectionStatus {
     return this.state;
+  }
+
+  lastHeard(): number | null {
+    return this.heardAt;
+  }
+
+  onHeard(fn: (at: number) => void): () => void {
+    this.heardListeners.add(fn);
+    return () => this.heardListeners.delete(fn);
   }
 
   close(): void {

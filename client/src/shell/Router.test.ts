@@ -48,6 +48,8 @@ function untouched(): Connection {
     // answers: refusing it would be refusing the page, not the connection.
     serverProtocol: () => PROTOCOL_VERSION,
     status: refuse,
+    lastHeard: () => null,
+    onHeard: () => () => {},
     probe: refuse,
     close: refuse,
   };

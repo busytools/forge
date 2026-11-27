@@ -230,6 +230,9 @@
      the engine stamp.
      `flex: none` because the list is the thing that gives. */
   .rfoot { flex: none; border-top: 1px solid rgba(34,42,60,.9); padding: 10px 12px 12px; }
+  /* The connection's own line over the versions: a skew, a reconnect, or a
+     link that has stopped answering. */
+  .rfoot .notice { font-size: var(--fs-label); color: var(--warn); padding: 0 1px 6px; }
   .rfoot .who { display: flex; align-items: center; gap: 8px; padding: 0 1px 4px; }
   .rfoot .led { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 6px; background: var(--ok); }
   .rfoot .led.wait { background: var(--warn); }
@@ -1837,6 +1840,10 @@
          nothing has resolved reads `usage not reported` rather than a guessed
          window shape. -->
     <div class="rfoot">
+      <!-- The connection's own line: a skew, a reconnect, or a link that has
+           stopped answering. Drawn above the account so the build facts stay
+           at the footer's floor. -->
+      <div class="notice">No word from 127.0.0.1:8790 for 2h - showing the last read</div>
       <div class="who"><span class="led wait"></span><span class="an">Subspace</span><span class="st">rate limited</span></div>
       <div class="frs">
         <div class="win">
