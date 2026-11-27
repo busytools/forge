@@ -6,11 +6,13 @@ import { JSDOM } from 'jsdom';
 import { flushSync, mount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { subjectKey } from '../protocol';
 import type { Connection } from '../socket';
 import type { QueueEnding, QueuedPromptRow } from '../session/wire';
 import type { SessionSlot } from '../wire/types';
+import { echoes } from './echoes.svelte';
 import Queue from './Queue.svelte';
-import { faceAt, walk } from './queue';
+import { faceAt, NO_WORD_AFTER_MS, walk } from './queue';
 import Composed from './testing/Composed.svelte';
 
 /**
@@ -44,6 +46,8 @@ function recording(): { sent: unknown[]; connection: Connection } {
     dispatch: (command: unknown) => {
       sent.push({ command });
     },
+    // No store: a retry's running check falls back to what the caller read.
+    store: () => undefined,
   } as unknown as Connection;
   return { sent, connection };
 }
@@ -62,6 +66,69 @@ beforeEach(() => {
 
 afterEach(() => {
   document.body.innerHTML = '';
+  echoes.clearSeat(subjectKey({ session: SLOT }));
+});
+
+describe('the reader own words in the pile', () => {
+  const seat = subjectKey({ session: SLOT });
+
+  it('draws a press the core has not answered as a sending card', () => {
+    const { connection } = recording();
+    echoes.post(seat, 'p-live', 'on its way', false, echoes.mint());
+    draw([], connection);
+
+    expect(host.textContent, 'the press lives in the pile from the press').toContain('on its way');
+    expect(host.textContent, 'and its line says so').toContain('sending');
+  });
+
+  it('draws one card when the core lists the send the press already holds', () => {
+    const { connection } = recording();
+    echoes.post(seat, 'p-live', 'on its way', false, echoes.mint());
+    draw([{ uuid: 'p-live', source: 'you', text: 'on its way' }], connection);
+
+    expect(
+      host.querySelectorAll('.qcard'),
+      'the core row took the press over; one message is one card',
+    ).toHaveLength(1);
+  });
+
+  it('says it has no word yet when an accepted send hears nothing for the bound', () => {
+    const { connection } = recording();
+    echoes.post(seat, 'p-quiet', 'the quiet one', false, echoes.mint());
+    echoes.accept(seat, 'p-quiet', Date.now() - NO_WORD_AFTER_MS - 1_000);
+    draw([], connection);
+
+    expect(
+      host.textContent,
+      'uncertainty, not failure: the next authoritative read settles it',
+    ).toContain('no word yet');
+  });
+
+  it('gives a refused send its reason and a retry, under a fresh id', () => {
+    const { connection, sent } = recording();
+    echoes.post(seat, 'p-dead', 'the words that did not go', false, echoes.mint());
+    echoes.refuse(seat, 'p-dead', 'the connection is down');
+    draw([], connection);
+
+    expect(host.textContent, 'the words are still there').toContain('the words that did not go');
+    expect(host.textContent, "and the reason is the item's own").toContain(
+      'not sent · the connection is down',
+    );
+
+    const retry = host.querySelector<HTMLButtonElement>('.ended .retry');
+    if (retry === null) throw new Error('the refusal drew no way to send it again');
+    retry.click();
+    flushSync();
+
+    const resent = sent.at(-1) as { command?: { prompt_under?: { uuid?: string; text?: string } } };
+    expect(resent.command?.prompt_under?.text, 'the row sends the same words again').toBe(
+      'the words that did not go',
+    );
+    expect(
+      resent.command?.prompt_under?.uuid,
+      'under a fresh id, which is what the pile settles by',
+    ).not.toBe('p-dead');
+  });
 });
 
 function draw(
@@ -336,13 +403,18 @@ describe('the queue pile', () => {
     expect(second?.textContent, 'with no raw backticks').not.toContain('`marks`');
   });
 
-  it('says a discarded ending and the words it carried', () => {
+  it('says a not-sent ending and the words it carried', () => {
     const { connection } = recording();
     mount(Queue, {
       target: host,
       props: {
         rows: [],
-        ended: { text: 'the lost one', state: 'discarded' },
+        ended: {
+          text: 'the lost one',
+          state: 'not_sent',
+          reason: 'the session ended before this prompt ran',
+          source: 'you',
+        },
         slot: SLOT,
         connection,
       },
@@ -352,7 +424,7 @@ describe('the queue pile', () => {
     expect(
       host.querySelector('.ended')?.textContent,
       'a row that vanishes silently reads as one that was delivered',
-    ).toBe('discarded, never sent: the lost one');
+    ).toContain('not sent · the session ended before this prompt ran: the lost one');
   });
 
   it('draws a peer ending with its body, not the envelope head', () => {
@@ -363,7 +435,9 @@ describe('the queue pile', () => {
         rows: [],
         ended: {
           text: "[Message id=m-1 from agent 'forge' (org 'Busytools')]\n\nthe lost body",
-          state: 'discarded',
+          state: 'not_sent',
+          reason: 'the target went before this message landed',
+          source: 'peer',
         },
         slot: SLOT,
         connection,
@@ -374,7 +448,11 @@ describe('the queue pile', () => {
     expect(
       host.querySelector('.ended')?.textContent,
       'the envelope head is plumbing; the body is what the reader lost',
-    ).toBe('discarded, never sent: the lost body');
+    ).toContain('not sent · the target went before this message landed: the lost body');
+    expect(
+      host.querySelector('.ended .retry'),
+      "a peer's refusal is not this view's to send again",
+    ).toBeNull();
   });
 
   it('says a refused ending and the words it carried', () => {
@@ -383,7 +461,12 @@ describe('the queue pile', () => {
       target: host,
       props: {
         rows: [],
-        ended: { text: 'the refused one', state: 'refused' },
+        ended: {
+          text: 'the refused one',
+          state: 'not_sent',
+          reason: 'the CLI refused it before it ran',
+          source: 'cron',
+        },
         slot: SLOT,
         connection,
       },
@@ -393,7 +476,11 @@ describe('the queue pile', () => {
     expect(
       host.querySelector('.ended')?.textContent,
       'the refusal names the prompt it refused',
-    ).toBe('refused by a hook: the refused one');
+    ).toContain('not sent · the CLI refused it before it ran: the refused one');
+    expect(
+      host.querySelector('.ended .retry'),
+      'and a cron refusal is safe to send again',
+    ).not.toBeNull();
   });
 
   /**
@@ -508,7 +595,12 @@ describe("the pile's own vocabulary", () => {
     // The walked state is the one the walk's own marks draw in, and the ended
     // line belongs to the same check: guarding only the states the app draws
     // for a frame is how a live reach passed this test.
-    draw(rows('one', 'two'), recording().connection, { text: 'gone', state: 'discarded' });
+    draw(rows('one', 'two'), recording().connection, {
+      text: 'gone',
+      state: 'not_sent',
+      reason: 'the session ended before this prompt ran',
+      source: 'you',
+    });
     key(pile(), 'ArrowUp');
 
     // From the suite's own root, which the runner sets to the client: jsdom

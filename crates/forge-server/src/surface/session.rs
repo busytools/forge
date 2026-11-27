@@ -40,6 +40,10 @@ pub struct SessionState {
     /// so a client attaching mid-queue would otherwise draw nothing until the
     /// next prompt moved. Held by the core, so two clients agree.
     pub queue: Vec<forge_workspace::protocol::QueuedPrompt>,
+    /// The last prompt that left the queue without being sent: the same read
+    /// path as `queue`, so a page attaching after the live frame draws the
+    /// ending line the attached page saw.
+    pub queue_ended: Option<forge_workspace::protocol::QueueEnding>,
     /// Clients with voice on for this seat, this one included. A late
     /// attach reads the room here rather than waiting for the next toggle.
     pub voice_listeners: u32,
@@ -61,7 +65,7 @@ impl ViewSurface {
 
 impl SessionState {
     pub(super) fn collect(workspace: &Workspace, slot: &SessionSlot, cwd_raw: &Path) -> Self {
-        let queue = workspace
+        let (queue, queue_ended) = workspace
             .domain_session_for(slot)
             .map(|domain| {
                 let guard = domain.lock();
@@ -70,7 +74,7 @@ impl SessionState {
                 // a seat read has no use for them: cloning the whole entry
                 // per read copies every base64 payload only for serde to
                 // skip it.
-                guard
+                let queue = guard
                     .prompt_queue
                     .iter()
                     .map(|prompt| forge_workspace::protocol::QueuedPrompt {
@@ -79,13 +83,15 @@ impl SessionState {
                         text: prompt.text.clone(),
                         attachments: Vec::new(),
                     })
-                    .collect()
+                    .collect();
+                (queue, guard.queue_ending.clone())
             })
             .unwrap_or_default();
         Self {
             slot: slot.clone(),
             scan_cwd: workspace.git_scan_cwd_for_session(slot, cwd_raw),
             queue,
+            queue_ended,
             voice_listeners: u32::try_from(workspace.voice_listeners(slot)).unwrap_or(u32::MAX),
         }
     }
@@ -145,6 +151,45 @@ mod tests {
 
         assert_eq!(state.queue.len(), 1, "the waiting prompt is still served");
         assert!(state.queue[0].attachments.is_empty(), "and its payloads stay core-side");
+    }
+
+    /// **The ending a page reads after the live frame has gone.** A cancel or
+    /// refusal speaks once on the stream; a page that loads, refreshes or
+    /// switches seats afterwards draws the ending line from this read, so the
+    /// core holds the last one beside its queue.
+    #[test]
+    fn the_read_carries_the_last_ending() {
+        let (workspace, _dir) = crate::surface::testing::workspace();
+        let seat = SessionSlot::lead("TestOrg", "forge");
+        workspace.register_domain_session(seat.clone(), None);
+        let ending = forge_workspace::protocol::QueueEnding {
+            text: "cancelled words".to_owned(),
+            reason: "the CLI cancelled it before it ran".to_owned(),
+            source: forge_workspace::protocol::PromptSource::You,
+        };
+        workspace.domain_session_for(&seat).expect("the domain").lock().record_queue_ending(
+            ending.text.clone(),
+            ending.reason.clone(),
+            ending.source,
+        );
+
+        let state = super::SessionState::collect(&workspace, &seat, Path::new("/tmp"));
+
+        assert_eq!(state.queue_ended, Some(ending), "the catch-up read draws the same line");
+        assert!(state.queue.is_empty(), "with nothing waiting beside it");
+
+        // A new prompt is the next thing to look at, so the ending goes.
+        workspace.domain_session_for(&seat).expect("the domain").lock().record_queued_prompt(
+            "p2",
+            forge_workspace::protocol::PromptSource::You,
+            "the next words",
+            Vec::new(),
+        );
+        let next = super::SessionState::collect(&workspace, &seat, Path::new("/tmp"));
+        assert_eq!(
+            next.queue_ended, None,
+            "the ending does not stand beside a queue that moved on"
+        );
     }
 
     /// **A handoff owns the seat until the swap replaces it, and a

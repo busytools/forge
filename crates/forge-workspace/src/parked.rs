@@ -10,14 +10,20 @@ use crate::mcp::gotify::types::GotifyNotification;
 use crate::mcp::peers::types::{PeerFailureReason, WrappedPrompt};
 
 /// A cron prompt buffered for a sleeping slot: the raw prompt plus whether
-/// this fire is overdue (delivered with a missed marker on drain), and the
-/// entry's identity, which the drained echo names.
+/// this fire is overdue (delivered with a missed marker on drain), the
+/// entry's identity, which the drained echo names, and the prompt uuid it
+/// was parked under.
+///
+/// **The uuid is minted here, not at the drain.** The queue card, the chat
+/// row and the transcript row are one message, so the id its delivery was
+/// accepted under is the id every later carrier uses (#3076).
 #[derive(Debug)]
 pub(crate) struct PendingCron {
     pub text: String,
     pub missed: bool,
     pub cron_id: String,
     pub description: Option<String>,
+    pub uuid: String,
 }
 
 /// Everything parked for one slot, in the order a connecting session
@@ -40,6 +46,10 @@ pub(crate) struct ParkedForSlot {
 pub(crate) struct ParkedPeer {
     pub(crate) sender: SessionSlot,
     pub(crate) wrapped: WrappedPrompt,
+    /// The prompt uuid minted when the delivery was parked. The drain
+    /// dispatches under this id rather than minting a fresh one, so the id
+    /// the sender's delivery was accepted under survives to the chat row.
+    pub(crate) uuid: String,
 }
 
 /// Parked payloads, one bucket per slot.
@@ -47,19 +57,21 @@ pub(crate) type ParkedMap = HashMap<SessionSlot, ParkedForSlot>;
 
 impl crate::Workspace {
     /// Park a peer prompt for `slot`, drained by the session that next
-    /// connects as that slot.
+    /// connects as that slot. Returns the prompt uuid it was parked under,
+    /// minted here so the drain keeps one identity for the message.
     pub(crate) fn park_peer_prompt(
         &self,
         slot: &SessionSlot,
         sender: &SessionSlot,
         wrapped: WrappedPrompt,
-    ) {
-        self.parked_by_slot
-            .lock()
-            .entry(slot.clone())
-            .or_default()
-            .peer
-            .push(ParkedPeer { sender: sender.clone(), wrapped });
+    ) -> String {
+        let uuid = forge_sdk::request_id::next_prompt_id();
+        self.parked_by_slot.lock().entry(slot.clone()).or_default().peer.push(ParkedPeer {
+            sender: sender.clone(),
+            wrapped,
+            uuid: uuid.clone(),
+        });
+        uuid
     }
 
     /// Whether `slot`'s bucket still holds the peer prompt with `id`. The
@@ -78,21 +90,26 @@ impl crate::Workspace {
 
     /// Park a fired cron prompt for `slot`, missed-marked when it came
     /// due while the owner was asleep. The entry's identity rides along so
-    /// the drained echo can name the schedule it came from.
+    /// the drained echo can name the schedule it came from. Returns the
+    /// prompt uuid it was parked under, minted here so the drain keeps one
+    /// identity for the message.
     pub(crate) fn park_cron(
         &self,
         slot: &SessionSlot,
         cron: &forge_primitives::CronEntry,
         missed: bool,
-    ) {
+    ) -> String {
+        let uuid = forge_sdk::request_id::next_prompt_id();
         self.parked_by_slot.lock().entry(slot.clone()).or_default().cron.push(
             crate::crons::PendingCron {
                 text: cron.prompt.clone(),
                 missed,
                 cron_id: cron.id.as_str().to_owned(),
                 description: cron.description.clone(),
+                uuid: uuid.clone(),
             },
         );
+        uuid
     }
 
     /// Park a Gotify notification for `slot`.

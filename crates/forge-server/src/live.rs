@@ -660,25 +660,34 @@ mod tests {
     /// when a frame lands, so the state is already there for the asking.
     #[test]
     fn a_prompts_lifecycle_redraws_the_page() {
-        let slot = SessionSlot::lead("Org", "forge");
+        use forge_workspace::{LifecycleSource, PromptState};
 
-        for state in ["queued", "started", "completed", "cancelled", "discarded", "refused"] {
+        let slot = SessionSlot::lead("Org", "forge");
+        let states = [
+            PromptState::Queued,
+            PromptState::Sent,
+            PromptState::NotSent { reason: "the CLI cancelled it".to_owned() },
+        ];
+        for state in states {
             let update = SessionUpdate::PromptLifecycle {
                 key: slot.clone(),
                 uuid: "p1".to_owned(),
-                state: state.to_owned(),
+                state,
+                source: LifecycleSource::Cli,
             };
-            assert!(fleet_news(&update).any(), "a prompt's {state} is what a row is re-read for");
+            assert!(fleet_news(&update).any(), "every lifecycle state is a row's re-read");
         }
 
-        // The free-form state the protocol promises to carry rather than
-        // drop: a build that has not seen it still moves the row.
-        let unseen = SessionUpdate::PromptLifecycle {
+        // A state the core drew itself moves the row the same way: the
+        // source is how a reader tells a fallback from a CLI fact, not
+        // whether the row is re-read.
+        let fallback = SessionUpdate::PromptLifecycle {
             key: slot,
             uuid: "p1".to_owned(),
-            state: "a-state-from-a-newer-cli".to_owned(),
+            state: PromptState::Sent,
+            source: LifecycleSource::Forge { note: "this CLI reports no start".to_owned() },
         };
-        assert!(fleet_news(&unseen).any(), "an unseen state is news too");
+        assert!(fleet_news(&fallback).any(), "the core's own fallback is news too");
     }
 
     /// The registry that moves `has_background_work`, which is the promotion

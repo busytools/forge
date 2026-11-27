@@ -725,11 +725,18 @@ impl Workspace {
 /// The production delivery: a prompt into a live session, and the turn
 /// its words draw as.
 ///
-/// **A chase carries no envelope of its own** - no delivery update draws
-/// it and the CLI echoes no stdin prompt back - so the row is forged here
-/// rather than left to `delivery_turn`, which has no arm for it. The seat
-/// is already known live by the ladder, so a failed dispatch here is a
-/// race, not a reason to spawn.
+/// **A board delivery is queue-first like every other.** The prompt is
+/// recorded in the core's queue and its row draws at the CLI's `started`, so
+/// it enters the chat only when it is sent - not forged at dispatch, retracted
+/// into the pile, and redrawn at the start, which is the bounce this cut
+/// removes.
+///
+/// **The id keeps the machinery's prefix.** A reloaded transcript row is read
+/// back by that prefix alone (`forge_nudge_`), so a board row read from disk
+/// still draws as forge's own words rather than as the reader's.
+///
+/// The seat is already known live by the ladder, so a failed dispatch here is
+/// a race, not a reason to spawn; the route's own refusal draws the words.
 pub(crate) struct PromptDeliver {
     pub(crate) workspace: Arc<Workspace>,
 }
@@ -737,7 +744,12 @@ pub(crate) struct PromptDeliver {
 impl Deliver for PromptDeliver {
     fn to_seat(&self, slot: &SessionSlot, text: &str) -> Delivery {
         let uuid = forge_sdk::request_id::next_forged_prompt_id();
-        match self.workspace.dispatch_forged_prompt_under(slot, text.to_owned(), uuid) {
+        match self.workspace.dispatch_workspace_prompt_under(
+            slot,
+            text.to_owned(),
+            crate::protocol::PromptSource::Board,
+            uuid,
+        ) {
             Ok(()) => Delivery::Delivered,
             Err(error) => Delivery::NoSession(error.to_string()),
         }
@@ -751,7 +763,6 @@ mod tests {
 
     use super::*;
     use crate::protocol::SessionUpdate;
-    use forge_primitives::Message;
     use forge_primitives::tasks::{
         By, Estimate, LinkKind, Task, TaskId, TaskLink, TaskStatus, TaskTransition, Verify, Waiting,
     };
@@ -1678,15 +1689,15 @@ mod tests {
         assert_eq!(deliver.seen.lock().len(), before, "neither rung repeats");
     }
 
-    /// The delivery forges the chased words as the turn they reached the
-    /// model as.
+    /// **A board delivery is queue-first, and forges no row at dispatch.**
     ///
-    /// **A chase has no envelope of its own**: no delivery update draws it,
-    /// and the CLI echoes no stdin prompt back, so this frame is the only
-    /// carrier the words have in a live view. Without it the turn opens on
-    /// its first tool row, with nothing saying what started it.
+    /// The prompt reaches the model under the machinery's own id prefix, so a
+    /// reloaded transcript row still draws as forge's words. Its chat row is
+    /// the one the session task draws at the CLI's `started`, carrying
+    /// [`PromptSource::Board`] - the forged row at dispatch, retraction into
+    /// the pile and redraw at the start are the bounce this cut removes.
     #[test]
-    fn the_delivery_forges_the_chased_words_as_their_turn() {
+    fn the_delivery_is_queue_first_and_forges_no_dispatch_row() {
         let dir = tempdir().expect("tempdir");
         let (ws, mut rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project(PROJECT, "/tmp/tp-chase");
@@ -1697,42 +1708,27 @@ mod tests {
         let text = "task board: worker w-1 holds no row - feed it or despawn it.";
         assert_eq!(deliver.to_seat(&key, text), Delivery::Delivered);
 
-        // The wired prompt and the forged frame are one thing by id: the
-        // lifecycle frames name only the id, and a row minted apart from the
-        // wire is one nothing can settle.
-        let wired = match ws.drain_test_dispatch_buffer().as_slice() {
-            [crate::protocol::Command::PromptUnder { uuid, text: wired, .. }] => {
+        match ws.drain_test_dispatch_buffer().as_slice() {
+            [crate::protocol::Command::PromptUnder { uuid, text: wired, source, .. }] => {
                 assert_eq!(wired, text, "the model receives the chase's words");
+                assert_eq!(
+                    *source,
+                    crate::protocol::PromptSource::Board,
+                    "the board's row is its own kind, not the machinery's",
+                );
                 assert!(
                     uuid.starts_with("forge_nudge_"),
-                    "the id carries the machinery's prefix, which is what a reloaded row keys \
-                     on: {uuid}",
+                    "the id keeps the prefix a reloaded row keys on: {uuid}",
                 );
-                uuid.clone()
             }
             other => panic!("the delivery wires one prompt; got {other:?}"),
-        };
+        }
         let drawn: Vec<SessionUpdate> = std::iter::from_fn(|| rx.try_recv().ok())
             .map(|frame| std::sync::Arc::unwrap_or_clone(frame.update))
             .collect();
-        let frame = drawn.iter().find_map(|update| match update {
-            SessionUpdate::ChatAppended { msg, .. } => Some(msg),
-            _ => None,
-        });
-        let Some(Message::User { message, uuid, .. }) = frame else {
-            panic!("the chase's delivery forges its words as the turn; got {drawn:?}")
-        };
-        assert_eq!(
-            uuid.as_deref(),
-            Some(wired.as_str()),
-            "the frame is stamped with the id the prompt runs under",
-        );
         assert!(
-            matches!(
-                message.content.first(),
-                Some(forge_primitives::ContentBlock::Text { text: said, .. }) if said == text
-            ),
-            "the frame carries the prose the model received: {message:?}",
+            !drawn.iter().any(|update| matches!(update, SessionUpdate::ChatAppended { .. })),
+            "the board's words enter the chat at `sent`, never at dispatch: {drawn:?}",
         );
     }
 

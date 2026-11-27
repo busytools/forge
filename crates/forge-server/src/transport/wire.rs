@@ -555,6 +555,15 @@ pub struct SessionStateWire {
     /// load, a refresh, a seat switch - has nothing else to draw the waiting
     /// prompts from, and two attached clients have to agree about them.
     pub queue: Vec<forge_workspace::protocol::QueuedPrompt>,
+    /// The last prompt that left the queue without being sent, with the
+    /// reason and the sender a page that attaches afterwards draws on the
+    /// ending line.
+    ///
+    /// **The frame speaks once.** A load, a refresh or a seat switch after a
+    /// cancel would otherwise read a queue with nothing in it and no line
+    /// where the card was, and a prompt that vanishes without a word reads as
+    /// delivered.
+    pub queue_ended: Option<forge_workspace::protocol::QueueEnding>,
     /// Clients with voice on for this seat, this one included.
     pub voice_listeners: u32,
 }
@@ -3298,6 +3307,7 @@ async fn session(
             slot: state_at.slot,
             scan_cwd: state_at.scan_cwd,
             queue: state_at.queue,
+            queue_ended: state_at.queue_ended,
             voice_listeners: state_at.voice_listeners,
         },
         composer: {
@@ -3355,6 +3365,7 @@ mod tests {
                     mime_type: "image/png".to_owned(),
                 }],
             }],
+            queue_ended: None,
             voice_listeners: 0,
         };
         let encoded = serde_json::to_string(&state).expect("the state encodes");
