@@ -125,6 +125,12 @@ if [ "$status" != "Accepted" ]; then
     exit 1
 fi
 
+# The service's own JSON and the submission id go to the release log, so the
+# record names what Apple accepted rather than only that this script thought
+# it did.
+printf '%s\n' "$result"
+echo "[OK] notarisation submission $submission accepted"
+
 # The ticket is stapled before the caller packs anything from the bundle:
 # the staple lives in the bundle, so a tarball packed from the app before
 # this point carries a notarised signature with no ticket beside it.

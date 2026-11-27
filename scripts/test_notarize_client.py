@@ -142,6 +142,8 @@ class NotarizeClientTest(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("[OK] notarisation submission sub-1 accepted", result.stdout)
+        self.assertIn('"status": "Accepted"', result.stdout)
         self.assertIn("[OK] notarised and stapled forge.app", result.stdout)
         submit = self.submit_line()
         for fragment in (
@@ -251,7 +253,7 @@ class NotarizeClientTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("could not be stapled", result.stderr)
         self.assertNotIn("spctl", "\n".join(self.call_lines()))
-        self.assertNotIn("[OK]", result.stdout)
+        self.assertNotIn("[OK] notarised and stapled", result.stdout)
 
     def test_gatekeeper_rejection_is_a_failure(self):
         result = self.run_script(
@@ -264,7 +266,7 @@ class NotarizeClientTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("Gatekeeper does not accept", result.stderr)
-        self.assertNotIn("[OK]", result.stdout)
+        self.assertNotIn("[OK] notarised and stapled", result.stdout)
 
     def test_missing_credential_names_every_missing_key(self):
         result = self.run_script(
