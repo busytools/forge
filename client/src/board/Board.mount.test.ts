@@ -118,6 +118,39 @@ const byText = (text: string): HTMLElement | null => {
   return found ?? null;
 };
 
+/**
+ * The archived shelf's own surface: the full board, then the `archived`
+ * toggle, whose one read answers `rows`. Finished work left the bulk board,
+ * so this is where a terminal row is drawn - and where its detail door
+ * lives.
+ */
+async function summonArchive(rows: Task[]): Promise<void> {
+  const first = boardWire.projects[0];
+  if (first === undefined) throw new Error('the fixture holds no project');
+  app = mount(Board, {
+    target: document.body,
+    props: {
+      wire: homeWire,
+      board: { wire: { ...boardWire, projects: [{ ...first, rows: [] }] }, refused: null },
+      org: 'TestOrg',
+      project: 'proj',
+      initialMode: 'board' as const,
+      onact: (command: Record<string, Record<string, unknown>>) => acts.push(command),
+      onarchived: () =>
+        Promise.resolve({
+          wire: { projects: [{ project: first.project, rows }] },
+          refused: null,
+        }),
+    },
+  });
+  flushSync();
+  byText('archived')?.click();
+  await vi.waitFor(() => {
+    if (document.querySelector('.w-exc') === null) throw new Error('the archive has not landed');
+  });
+  flushSync();
+}
+
 describe("the board's controls", () => {
   it('hands approve, send-back and answer out as commands with their project', () => {
     const waiting = (id: string, verification: boolean) =>
@@ -248,17 +281,22 @@ describe("the board's controls", () => {
   });
 
   /** Every state draws, one class per status - shape and colour both. */
-  it('draws a mark per status', () => {
+  it('draws a mark for every LIVE status', () => {
     summon(
       wireWith(
-        (['pending', 'in_progress', 'waiting', 'completed', 'failed', 'canceled'] as const).map(
-          (status) => row(task(status, `a ${status} row`, status)),
+        (['pending', 'in_progress', 'waiting'] as const).map((status) =>
+          row(task(status, `a ${status} row`, status)),
         ),
       ),
     );
 
-    for (const cls of ['b-pend', 'b-run', 'b-wait', 'b-done', 'b-fail', 'b-cancel']) {
+    for (const cls of ['b-pend', 'b-run', 'b-wait']) {
       expect(document.querySelector(`.b-mark.${cls}`), `${cls} is drawn`).not.toBeNull();
+    }
+    // The finished states are not on this face: their rows left the bulk
+    // board, and the archived toggle draws them with the same marks.
+    for (const cls of ['b-done', 'b-fail', 'b-cancel']) {
+      expect(document.querySelector(`.b-mark.${cls}`), `${cls} should not be drawn`).toBeNull();
     }
   });
 
@@ -1112,24 +1150,24 @@ describe("the row's own page", () => {
     expect(acts.filter((command) => 'task_detail' in command)).toHaveLength(1);
   });
 
-  it('draws a lead-attested row and hands reopen out as a command', () => {
+  it('marks an attested row on the archived shelf and opens it whole', async () => {
     const attested = {
       evidence: 'Looks right - merge',
       at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
     };
-    summon(wireWith([row(task('a1', 'an attested look', 'completed', { attested }))]));
-    expect(document.body.textContent, 'the card lost the mark').toContain('lead attested');
+    await summonArchive([task('a1', 'an attested look', 'completed', { attested })]);
+    expect(document.body.textContent, 'the shelf lost the mark').toContain('lead attested');
 
-    const card = document.querySelector('.b-card[data-id="a1"]');
-    if (card === null) throw new Error('no card');
-    press(card);
-    const drawer = document.querySelector('.dr');
-    expect(drawer?.textContent, 'the quote the lead recorded').toContain('Looks right - merge');
-    byText('reopen')?.click();
+    const door = [...document.querySelectorAll<HTMLElement>('.w-exc button')].find(
+      (button) => button.textContent?.trim() === 'an attested look',
+    );
+    if (door === undefined) throw new Error('the archived row has no door');
+    door.click();
     flushSync();
-    // Opening the drawer asks for the row whole first (`task_detail`); the
-    // press is the command that follows.
-    expect(acts.at(-1)).toEqual({ task_reopen: { project: 'proj', id: 'a1' } });
+    // The row leaves the bulk board when it ends, so its quote and its
+    // reopen door come from the detail read the shelf's door asks for - the
+    // server answers from the archive.
+    expect(acts.at(-1)).toEqual({ task_detail: { project: 'proj', id: 'a1' } });
   });
 
   /** The user reserves a pick from the row page, and the board says so. */
@@ -1279,16 +1317,17 @@ describe("the row's own page", () => {
    * The done mark is the house's tick, not a coloured blob: the chat draws a
    * settled turn the same way, and one glyph per meaning is the point.
    */
-  it("draws the house's tick for a completed row", () => {
-    summon(wireWith([row(task('c1', 'shipped', 'completed'))]));
+  it("draws the house's tick for a completed row on the archived shelf", async () => {
+    await summonArchive([task('c1', 'shipped', 'completed')]);
     expect(
-      document.querySelector('.b-card .b-mark.b-done')?.innerHTML,
+      document.querySelector('.w-exc .b-mark.b-done')?.innerHTML,
       'the done mark is the check',
     ).toContain('i-check');
     expect(
-      document.querySelector('.b-card .b-mark.b-done')?.innerHTML,
+      document.querySelector('.w-exc .b-mark.b-done')?.innerHTML,
       'and not the fail cross',
     ).not.toContain('i-x');
+    expect(document.querySelector('.w-exc')?.textContent, 'the row is named').toContain('shipped');
   });
 
   it("keeps the board reachable through Android's Back", () => {
@@ -1428,476 +1467,6 @@ describe("the row's own page", () => {
     card.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
     flushSync();
     expect(document.querySelector('.dr'), 'Space opens the row page').not.toBeNull();
-  });
-});
-
-describe("the completed group's fold", () => {
-  /** A finished row whose last move was `secs` - for a completed row, the moment it finished. */
-  const done = (id: string, secs: number, rank: number, over: Partial<Task> = {}): BoardRow =>
-    row(
-      task(id, `subject ${id}`, 'completed', {
-        rank,
-        updated_at: { secs_since_epoch: secs, nanos_since_epoch: 0 },
-        ...over,
-      }),
-    );
-
-  const lane = '.b-lane[data-state="completed"]';
-  const drawn = (): (string | undefined)[] =>
-    [...document.querySelectorAll<HTMLElement>(`${lane} .b-card`)].map((card) => card.dataset.id);
-
-  /**
-   * **The finished rows fold.** A board that draws every completed row puts
-   * a project's whole history between the reader and the work. The five most
-   * recently finished draw by default - chosen by when they last moved, not
-   * by their place in the lane, so a row that finished late shows whatever
-   * its rank - and the toggle opens the rest. The lane's count stays the
-   * true total: the fold hides rows without hiding how many there are.
-   */
-  it('folds the finished rows to the five most recent, and the toggle opens the rest', async () => {
-    summon(
-      wireWith([
-        done('c1', 100, 1),
-        done('c2', 10, 2),
-        done('c3', 20, 3),
-        done('c4', 30, 4),
-        done('c5', 40, 5),
-        done('c6', 90, 6),
-        done('c7', 80, 7),
-      ]),
-    );
-
-    // The five latest finishes (100, 90, 80, 40, 30), drawn where the lane's
-    // own order puts them; c2 and c3 finished before those and fold away.
-    expect(drawn(), 'the older rows were not held back').toEqual(['c1', 'c4', 'c5', 'c6', 'c7']);
-    expect(
-      document.querySelector(`${lane} .b-count`)?.textContent?.trim(),
-      'the count stopped naming the whole group',
-    ).toBe('7');
-
-    const toggle = document.querySelector<HTMLButtonElement>(`${lane} .b-fold`);
-    if (toggle === null) throw new Error('the finished group drew no fold control');
-    expect(toggle.textContent?.trim(), 'the toggle names the whole group').toBe('show all (7)');
-    expect(toggle.getAttribute('aria-expanded'), 'the toggle reads as closed').toBe('false');
-
-    toggle.click();
-    flushSync();
-    expect(drawn(), 'the toggle did not open the rest').toEqual([
-      'c1',
-      'c2',
-      'c3',
-      'c4',
-      'c5',
-      'c6',
-      'c7',
-    ]);
-    expect(toggle.textContent?.trim(), 'the open fold offers the close').toBe('show less');
-    expect(toggle.getAttribute('aria-expanded'), 'the toggle reads as open').toBe('true');
-
-    toggle.click();
-    flushSync();
-    expect(drawn(), 'the toggle did not fold back').toEqual(['c1', 'c4', 'c5', 'c6', 'c7']);
-
-    // Under the last card, where a reader scrolling the group meets it: a
-    // control at the lane's head is passed before they know rows are held back.
-    const walk = [...document.querySelectorAll<HTMLElement>(`${lane} .b-card, ${lane} .b-fold`)];
-    expect(
-      walk.at(-1)?.classList.contains('b-fold'),
-      'the fold control is not under the last card',
-    ).toBe(true);
-
-    expect(await violationsOf(document.body.innerHTML)).toEqual([]);
-  });
-
-  /** A group small enough to see whole draws whole: nothing folds, and no control offers to open nothing. */
-  it('draws a finished group of five or fewer whole, with no fold control', () => {
-    summon(
-      wireWith([
-        done('c1', 100, 1),
-        done('c2', 90, 2),
-        done('c3', 80, 3),
-        done('c4', 70, 4),
-        done('c5', 60, 5),
-      ]),
-    );
-    expect(document.querySelectorAll(`${lane} .b-card`)).toHaveLength(5);
-    expect(document.querySelector(`${lane} .b-fold`), 'a whole group offered a fold').toBeNull();
-  });
-
-  /** And a lane with nothing finished draws its empty self: no rows, count zero, no control. */
-  it('draws an empty finished lane with no fold control', () => {
-    summon(wireWith([row(task('p1', 'live', 'pending'))]));
-    const empty = document.querySelector(lane);
-    expect(empty, 'the finished lane went missing').not.toBeNull();
-    expect(empty?.querySelector('.b-count')?.textContent?.trim()).toBe('0');
-    expect(empty?.querySelector('.b-fold'), 'an empty lane offered a fold').toBeNull();
-  });
-
-  /**
-   * **A card being dropped into the folded lane stays drawn.** A drop is
-   * immediate on the page while the core's answer comes later, and a row
-   * that has not finished yet is not one of the five most recent - so a
-   * plain fold would swallow the card mid-gesture and give it back only
-   * when the wire caught up.
-   */
-  it('keeps a card the reader drops into the folded lane drawn', () => {
-    summon(
-      wireWith([
-        ...Array.from({ length: 6 }, (_, i) => done(`c${i + 1}`, 100 + i, i + 1)),
-        row(task('t1', 'moving', 'pending')),
-      ]),
-    );
-
-    const original = Object.getOwnPropertyDescriptor(document, 'elementFromPoint');
-    document.elementFromPoint = () => document.querySelector(lane);
-    const card = document.querySelector<HTMLElement>('.b-card[data-id="t1"]');
-    if (card === null) throw new Error('the card is not on the page');
-    card.dispatchEvent(
-      new MouseEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10, button: 0 }),
-    );
-    window.dispatchEvent(new MouseEvent('pointermove', { clientX: 60, clientY: 60 }));
-    window.dispatchEvent(new MouseEvent('pointerup', {}));
-    flushSync();
-
-    expect(acts[0]).toEqual({
-      task_move: { project: 'proj', id: 't1', to: 'completed', place: { before: null } },
-    });
-    expect(
-      document.querySelector(`${lane} .b-card[data-id="t1"]`),
-      'the dropped card vanished into the fold',
-    ).not.toBeNull();
-    expect(
-      document.querySelector(`${lane} .b-card[data-id="c1"]`),
-      'the fold stopped holding the older rows back',
-    ).toBeNull();
-
-    if (original !== undefined) {
-      Object.defineProperty(document, 'elementFromPoint', original);
-    } else {
-      Reflect.deleteProperty(document, 'elementFromPoint');
-    }
-  });
-
-  /**
-   * **Every finished row stays reachable.** A folded row is off the page,
-   * and the epic pill and the row page's task list land on cards by id: a
-   * jump aimed at a folded card opens the fold and lands, rather than dying
-   * on a missing element.
-   */
-  it('opens the fold to land a jump on a folded row', async () => {
-    // jsdom performs no layout: scrollIntoView is a browser call the jump
-    // makes, so it is stubbed for the length of the case.
-    const original = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
-    Object.defineProperty(Element.prototype, 'scrollIntoView', {
-      value: (): void => {},
-      configurable: true,
-      writable: true,
-    });
-    summon(
-      wireWith([
-        done('epic', 10, 1, { subject: 'the epic' }),
-        done('c2', 120, 2),
-        done('c3', 130, 3),
-        done('c4', 140, 4),
-        done('c5', 150, 5),
-        done('c6', 160, 6),
-        row(task('kid', 'a child', 'failed', { parent: 'epic' })),
-      ]),
-    );
-
-    expect(document.querySelector('.b-card[data-id="epic"]'), 'the epic drew unfolded').toBeNull();
-    const pill = document.querySelector<HTMLElement>('button[aria-label="jump to the epic"]');
-    if (pill === null) throw new Error('the epic pill is not on the page');
-    pill.click();
-    flushSync();
-    await vi.waitFor(() =>
-      expect(document.activeElement, 'the jump never landed').toBe(
-        document.querySelector('.b-card[data-id="epic"]'),
-      ),
-    );
-
-    expect(
-      document.querySelector('.b-card[data-id="epic"]')?.classList.contains('b-flash'),
-      'the landed card flashes',
-    ).toBe(true);
-
-    if (original !== undefined) {
-      Object.defineProperty(Element.prototype, 'scrollIntoView', original);
-    } else {
-      Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
-    }
-  });
-});
-
-describe("the failed and canceled groups' folds", () => {
-  /** An ended row whose last move was `secs` - for an ended row, the moment it ended. */
-  const ended = (
-    id: string,
-    status: 'failed' | 'canceled',
-    secs: number,
-    rank: number,
-    over: Partial<Task> = {},
-  ): BoardRow =>
-    row(
-      task(id, `subject ${id}`, status, {
-        rank,
-        updated_at: { secs_since_epoch: secs, nanos_since_epoch: 0 },
-        ...over,
-      }),
-    );
-
-  const laneOf = (key: TaskStatus): string => `.b-lane[data-state="${key}"]`;
-  const drawnIn = (key: TaskStatus): (string | undefined)[] =>
-    [...document.querySelectorAll<HTMLElement>(`${laneOf(key)} .b-card`)].map(
-      (card) => card.dataset.id,
-    );
-
-  /**
-   * **The failed rows fold like the finished ones.** A failed row is kept
-   * for the record, so the lane accumulates for the life of the project the
-   * same way: the five most recently ended draw by default - by when they
-   * last moved, whatever their place in the lane - and the toggle opens the
-   * rest. The lane's count stays the true total.
-   */
-  it('folds the failed rows to the five most recent, and the toggle opens the rest', async () => {
-    summon(
-      wireWith([
-        ended('f1', 'failed', 100, 1),
-        ended('f2', 'failed', 10, 2),
-        ended('f3', 'failed', 20, 3),
-        ended('f4', 'failed', 30, 4),
-        ended('f5', 'failed', 40, 5),
-        ended('f6', 'failed', 90, 6),
-        ended('f7', 'failed', 80, 7),
-      ]),
-    );
-
-    // The five latest endings (100, 90, 80, 40, 30), drawn where the lane's
-    // own order puts them; f2 and f3 ended before those and fold away.
-    expect(drawnIn('failed'), 'the older rows were not held back').toEqual([
-      'f1',
-      'f4',
-      'f5',
-      'f6',
-      'f7',
-    ]);
-    expect(
-      document.querySelector(`${laneOf('failed')} .b-count`)?.textContent?.trim(),
-      'the count stopped naming the whole group',
-    ).toBe('7');
-
-    const toggle = document.querySelector<HTMLButtonElement>(`${laneOf('failed')} .b-fold`);
-    if (toggle === null) throw new Error('the failed group drew no fold control');
-    expect(toggle.textContent?.trim(), 'the toggle names the whole group').toBe('show all (7)');
-    expect(toggle.getAttribute('aria-expanded'), 'the toggle reads as closed').toBe('false');
-
-    toggle.click();
-    flushSync();
-    expect(drawnIn('failed'), 'the toggle did not open the rest').toEqual([
-      'f1',
-      'f2',
-      'f3',
-      'f4',
-      'f5',
-      'f6',
-      'f7',
-    ]);
-    expect(toggle.textContent?.trim(), 'the open fold offers the close').toBe('show less');
-    expect(toggle.getAttribute('aria-expanded'), 'the toggle reads as open').toBe('true');
-
-    toggle.click();
-    flushSync();
-    expect(drawnIn('failed'), 'the toggle did not fold back').toEqual([
-      'f1',
-      'f4',
-      'f5',
-      'f6',
-      'f7',
-    ]);
-
-    // Under the last card, where a reader scrolling the group meets it.
-    const walk = [
-      ...document.querySelectorAll<HTMLElement>(
-        `${laneOf('failed')} .b-card, ${laneOf('failed')} .b-fold`,
-      ),
-    ];
-    expect(
-      walk.at(-1)?.classList.contains('b-fold'),
-      'the fold control is not under the last card',
-    ).toBe(true);
-
-    expect(await violationsOf(document.body.innerHTML)).toEqual([]);
-  });
-
-  /** The canceled lane folds the same way: five by default, the rest behind the control. */
-  it('folds the canceled rows to the five most recent, and the toggle opens the rest', () => {
-    summon(
-      wireWith([
-        ended('x1', 'canceled', 50, 1),
-        ended('x2', 'canceled', 5, 2),
-        ended('x3', 'canceled', 10, 3),
-        ended('x4', 'canceled', 60, 4),
-        ended('x5', 'canceled', 70, 5),
-        ended('x6', 'canceled', 80, 6),
-      ]),
-    );
-
-    // The five latest endings (80, 70, 60, 50, 10); x2 folded away.
-    expect(drawnIn('canceled'), 'the older rows were not held back').toEqual([
-      'x1',
-      'x3',
-      'x4',
-      'x5',
-      'x6',
-    ]);
-    expect(
-      document.querySelector(`${laneOf('canceled')} .b-count`)?.textContent?.trim(),
-      'the count stopped naming the whole group',
-    ).toBe('6');
-
-    const toggle = document.querySelector<HTMLButtonElement>(`${laneOf('canceled')} .b-fold`);
-    if (toggle === null) throw new Error('the canceled group drew no fold control');
-    expect(toggle.textContent?.trim(), 'the toggle names the whole group').toBe('show all (6)');
-    expect(toggle.getAttribute('aria-expanded'), 'the toggle reads as closed').toBe('false');
-
-    toggle.click();
-    flushSync();
-    expect(drawnIn('canceled'), 'the toggle did not open the rest').toEqual([
-      'x1',
-      'x2',
-      'x3',
-      'x4',
-      'x5',
-      'x6',
-    ]);
-    expect(toggle.getAttribute('aria-expanded'), 'the toggle reads as open').toBe('true');
-
-    toggle.click();
-    flushSync();
-    expect(drawnIn('canceled'), 'the toggle did not fold back').toEqual([
-      'x1',
-      'x3',
-      'x4',
-      'x5',
-      'x6',
-    ]);
-  });
-
-  /** And an empty lane draws its empty self: count zero, no control. */
-  it('draws the empty lanes with no fold control', () => {
-    summon(wireWith([row(task('r1', 'live', 'in_progress'))]));
-    for (const key of ['pending', 'failed', 'canceled'] as const) {
-      const empty = document.querySelector(laneOf(key));
-      expect(empty, `the ${key} lane went missing`).not.toBeNull();
-      expect(empty?.querySelector('.b-count')?.textContent?.trim(), `the ${key} lane's count`).toBe(
-        '0',
-      );
-      expect(empty?.querySelector('.b-fold'), `an empty ${key} lane offered a fold`).toBeNull();
-    }
-  });
-
-  /** A group at its limit draws whole: nothing folds, and no control offers to open nothing. */
-  it('draws a group at its limit whole, with no fold control', () => {
-    summon(
-      wireWith([
-        ...Array.from({ length: 5 }, (_, i) => ended(`f${i + 1}`, 'failed', 100 + i, i + 1)),
-        ...Array.from({ length: 5 }, (_, i) => ended(`x${i + 1}`, 'canceled', 100 + i, i + 1)),
-      ]),
-    );
-    expect(document.querySelectorAll(`${laneOf('failed')} .b-card`)).toHaveLength(5);
-    expect(document.querySelectorAll(`${laneOf('canceled')} .b-card`)).toHaveLength(5);
-    expect(document.querySelector('.b-fold'), 'a whole group offered a fold').toBeNull();
-  });
-
-  /**
-   * **The folds are per lane.** The open state is the reader's own
-   * bookkeeping for each group, not one switch for the board: opening one
-   * leaves every other grown group folded, and opening a second leaves the
-   * first open.
-   */
-  it('opens one group without touching the others', () => {
-    summon(
-      wireWith([
-        ...Array.from({ length: 6 }, (_, i) => ended(`f${i + 1}`, 'failed', 100 + i, i + 1)),
-        ...Array.from({ length: 6 }, (_, i) => ended(`x${i + 1}`, 'canceled', 100 + i, i + 1)),
-      ]),
-    );
-
-    const foldOf = (key: TaskStatus): HTMLButtonElement => {
-      const button = document.querySelector<HTMLButtonElement>(`${laneOf(key)} .b-fold`);
-      if (button === null) throw new Error(`the ${key} group drew no fold control`);
-      return button;
-    };
-
-    foldOf('failed').click();
-    flushSync();
-    expect(drawnIn('failed'), 'the pressed group did not open').toHaveLength(6);
-    expect(foldOf('failed').textContent?.trim(), 'the open group offers the close').toBe(
-      'show less',
-    );
-    expect(drawnIn('canceled'), 'opening one group opened another').toHaveLength(5);
-    expect(
-      foldOf('canceled').textContent?.trim(),
-      'the untouched group stopped naming its count',
-    ).toBe('show all (6)');
-    expect(
-      foldOf('canceled').getAttribute('aria-expanded'),
-      'the untouched group reads as open',
-    ).toBe('false');
-
-    foldOf('canceled').click();
-    flushSync();
-    expect(drawnIn('canceled'), 'the second group did not open').toHaveLength(6);
-    expect(drawnIn('failed'), 'opening the second group folded the first').toHaveLength(6);
-  });
-
-  /**
-   * **Every ended row stays reachable.** A jump aimed at a folded card - an
-   * epic pill, a row page's task list - opens the fold and lands rather than
-   * dying on a missing element.
-   */
-  it('opens the fold to land a jump on a folded row', async () => {
-    // jsdom performs no layout: scrollIntoView is a browser call the jump
-    // makes, so it is stubbed for the length of the case.
-    const original = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollIntoView');
-    Object.defineProperty(Element.prototype, 'scrollIntoView', {
-      value: (): void => {},
-      configurable: true,
-      writable: true,
-    });
-    summon(
-      wireWith([
-        ended('epic', 'failed', 10, 1, { subject: 'the epic' }),
-        ended('f2', 'failed', 120, 2),
-        ended('f3', 'failed', 130, 3),
-        ended('f4', 'failed', 140, 4),
-        ended('f5', 'failed', 150, 5),
-        ended('f6', 'failed', 160, 6),
-        row(task('kid', 'a child', 'pending', { parent: 'epic' })),
-      ]),
-    );
-
-    expect(document.querySelector('.b-card[data-id="epic"]'), 'the epic drew unfolded').toBeNull();
-    const pill = document.querySelector<HTMLElement>('button[aria-label="jump to the epic"]');
-    if (pill === null) throw new Error('the epic pill is not on the page');
-    pill.click();
-    flushSync();
-    await vi.waitFor(() =>
-      expect(document.activeElement, 'the jump never landed').toBe(
-        document.querySelector('.b-card[data-id="epic"]'),
-      ),
-    );
-
-    expect(
-      document.querySelector('.b-card[data-id="epic"]')?.classList.contains('b-flash'),
-      'the landed card flashes',
-    ).toBe(true);
-
-    if (original !== undefined) {
-      Object.defineProperty(Element.prototype, 'scrollIntoView', original);
-    } else {
-      Reflect.deleteProperty(Element.prototype, 'scrollIntoView');
-    }
   });
 });
 

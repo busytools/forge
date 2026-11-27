@@ -300,10 +300,6 @@ function shortTarget(target: string): string {
 }
 
 /** The lane a card belongs to: one lane per state, named as the state is. */
-function laneOf(status: TaskStatus): LaneView['key'] {
-  return status;
-}
-
 /** One card, resolved. */
 function cardView(
   row: BoardRow,
@@ -374,14 +370,15 @@ export function boardView(
   // everything not yet started leads, then the lane that wants the reader,
   // then the work. `pending` reads Backlog - the state never had a name of
   // its own on this page, and the pool is what it is.
+  //
+  // **Live work only.** A terminal row leaves the bulk board at once (the
+  // read drops it), so a Completed, Failed or Canceled lane here would
+  // draw empty forever; finished work is the `archived` toggle's.
   const lanes = (
     [
       ['pending', 'Backlog'],
       ['waiting', 'Waiting'],
       ['in_progress', 'In progress'],
-      ['completed', 'Completed'],
-      ['failed', 'Failed'],
-      ['canceled', 'Canceled'],
     ] as const
   ).map(([key, name]) => ({ key, name, count: 0, cards: [] as BoardCardView[] }));
   if (row === undefined) {
@@ -405,7 +402,7 @@ export function boardView(
   });
   const subjectOf = (parent: string | null): string | null =>
     parent === null ? null : (ordered.find((e) => e.task.id === parent)?.task.subject ?? null);
-  const laneName = new Map(lanes.map((lane) => [lane.key, lane.name]));
+  const laneName = new Map<string, string>(lanes.map((lane) => [lane.key, lane.name]));
   const childrenOf = (id: string): { id: string; label: string }[] =>
     ordered
       .filter((e) => e.task.parent === id)
@@ -414,7 +411,7 @@ export function boardView(
         label: `${laneName.get(e.task.status) ?? e.task.status} \u{b7} ${e.task.subject}`,
       }));
   for (const entry of ordered) {
-    const target = lanes.find((lane) => lane.key === laneOf(entry.task.status));
+    const target = lanes.find((lane) => lane.key === entry.task.status);
     if (target === undefined) continue;
     target.cards.push(cardView(entry, subjectOf(entry.task.parent), childrenOf(entry.task.id)));
   }

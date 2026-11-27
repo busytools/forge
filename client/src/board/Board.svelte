@@ -94,11 +94,10 @@
 
   /** How many rows each grown group draws before it folds. */
   const FOLD_LIMITS: Partial<Record<TaskStatus, number>> = {
-    completed: 5,
-    failed: 5,
-    canceled: 5,
-    // The Backlog folds larger than the finished groups: the queue's order is
-    // the lead's dispatch order, and the top of it is what stays in view.
+    // The Backlog is the one lane that grows without bound: the queue's
+    // order is the lead's dispatch order, and the top of it is what stays
+    // in view. Finished work is not on this face at all - the archived
+    // toggle reads it.
     pending: 10,
   };
 
@@ -106,11 +105,10 @@
   let openFolds = $state<Partial<Record<TaskStatus, boolean>>>({});
 
   /**
-   * The lanes as drawn: a grown group holds its tail back - the finished
-   * groups draw their five most recently finished rows, by `updated_at`, so a
-   * late finish shows whatever its rank; the Backlog draws the queue's own
-   * head - plus any card the reader is placing right now, because a drop into
-   * the folded group lands at once like every other move.
+   * The lanes as drawn: the Backlog holds its tail back - it draws the
+   * queue's own head, and the lead dispatches from that order - plus any
+   * card the reader is placing right now, because a drop into the folded
+   * group lands at once like every other move.
    */
   const drawnLanes = $derived.by(() =>
     lanes.map((lane) => {
@@ -118,10 +116,7 @@
       if (limit === undefined || openFolds[lane.key] === true || lane.cards.length <= limit) {
         return lane;
       }
-      const kept =
-        lane.key === 'pending'
-          ? lane.cards.slice(0, limit)
-          : [...lane.cards].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit);
+      const kept = lane.cards.slice(0, limit);
       const shown = new Set(kept.map((card) => card.id));
       const cards = lane.cards.filter((card) => shown.has(card.id) || moved[card.id] !== undefined);
       return { ...lane, cards };
@@ -663,8 +658,13 @@
                       name="check"
                     />{:else if row.status === 'failed'}<Icon name="x" />{/if}
                 </span>
-                <span class="w-strong">{row.subject}</span>
+                <button type="button" class="w-link" onclick={() => openDrawer(row.id)}
+                  >{row.subject}</button
+                >
                 <span class="w-why">{row.status}</span>
+                {#if row.attested !== null && row.attested !== undefined}
+                  <span class="w-why">lead attested</span>
+                {/if}
                 {#if row.archived_at !== null}
                   <span class="w-why">archived {clockOf(row.archived_at.secs_since_epoch)}</span>
                 {:else}

@@ -92,23 +92,17 @@ describe("one project's board", () => {
 
     const view = boardView(wire.home, wire.board, 'TestOrg', 'proj');
     const lane = (key: string) => view.lanes.find((entry) => entry.key === key);
-    // Every state has its lane, in the order the board draws them: the pool
-    // leads, then the lane that wants the reader, then the work.
-    expect(view.lanes.map((entry) => entry.name)).toEqual([
-      'Backlog',
-      'Waiting',
-      'In progress',
-      'Completed',
-      'Failed',
-      'Canceled',
-    ]);
+    // Every LIVE state has its lane, in the order the board draws them: the
+    // pool leads, then the lane that wants the reader, then the work. A
+    // terminal row leaves the bulk board at once - the archived toggle
+    // reads finished work.
+    expect(view.lanes.map((entry) => entry.name)).toEqual(['Backlog', 'Waiting', 'In progress']);
     expect(lane('in_progress')?.cards.map((card) => card.id)).toEqual(['child']);
     expect(lane('in_progress')?.cards[0]?.epic).toBe('early epic');
     expect(lane('pending')?.cards.map((card) => card.id)).toEqual(['early', 'late']);
     // A decision wait is a waiting row like any other in the lane; the
     // strip is where the reader acts on it.
     expect(lane('waiting')?.cards.map((card) => card.id)).toEqual(['dep', 'ask']);
-    expect(lane('completed')?.cards).toEqual([]);
     expect(view.waiting.map((entry) => entry.id)).toEqual(['ask']);
   });
 
@@ -259,7 +253,8 @@ describe("one project's board", () => {
     ]);
 
     const view = boardView(wire.home, wire.board, 'TestOrg', 'proj');
-    expect(view.lanes.flatMap((lane) => lane.cards).length).toBe(4);
+    // Two live children draw; the terminal ones are off the bulk board.
+    expect(view.lanes.flatMap((lane) => lane.cards).length).toBe(2);
     // Nothing is in the strip here; the hold's numbers are what this pins, so
     // they are read off a root put in the gate.
     const gated = wireWith([
@@ -301,24 +296,14 @@ describe("one project's board", () => {
    * The lead's attested completion and the user's own reserved pick are
    * named in words on the card (#2423/B, /C).
    */
-  it('marks a lead attestation and a reserved pick in words', () => {
-    const wire = wireWith([
-      row(
-        task('a', 'an attested look', 'completed', {
-          attested: {
-            evidence: 'Looks right',
-            at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
-          },
-        }),
-      ),
-      row(task('r', 'a reserved pick', 'pending', { reserved: 'user' })),
-    ]);
+  it('marks a reserved pick in words', () => {
+    const wire = wireWith([row(task('r', 'a reserved pick', 'pending', { reserved: 'user' }))]);
     const cards = boardView(wire.home, wire.board, 'TestOrg', 'proj').lanes.flatMap(
       (lane) => lane.cards,
     );
-    const chips = (id: string) => cards.find((card) => card.id === id)?.chips ?? [];
-    expect(chips('a').map((chip) => chip.label)).toContain('lead attested');
-    expect(chips('r').map((chip) => chip.label)).toContain('reserved for you');
+    expect(cards.find((card) => card.id === 'r')?.chips.map((chip) => chip.label)).toContain(
+      'reserved for you',
+    );
   });
 
   /** The marks become words, and the wait's kind decides the chip. */
