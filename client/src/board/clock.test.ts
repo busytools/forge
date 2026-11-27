@@ -78,14 +78,27 @@ describe('the board clock', () => {
     expect(agedRow(done, encodedAt / 1000 + 90, encodedAt).worked_secs).toBe(60);
   });
 
-  /** Ages come off the task's own timestamp, so they are exact however long
-   * the page has held the record. */
+  /** Ages come off the server's own pair, so they are exact however long the
+   * page has held the record. */
   it('derives the age from the task rather than the encode', () => {
     const encodedAt = 1_700_000_000_000;
     const encodedSecs = Math.floor(encodedAt / 1000);
     const now = encodedSecs + 500;
     const fresh = row({}, { updated_at: { secs_since_epoch: encodedSecs, nanos_since_epoch: 0 } });
     expect(agedRow(fresh, now, encodedAt).updated_secs_ago).toBe(500);
+  });
+
+  /** **A page whose clock is far from the server's draws the same age.** The
+   * record's `updated_secs_ago` was measured on the server's clock, and only
+   * the time since the read is the page's to add - comparing the client's now
+   * to the record's absolute stamp would be wrong by the skew. */
+  it('advances the age without trusting the client clock', () => {
+    const encodedAt = 1_700_000_000_000;
+    const aged = row(
+      { updated_secs_ago: 300 },
+      { updated_at: { secs_since_epoch: 1_000, nanos_since_epoch: 0 } },
+    );
+    expect(agedRow(aged, Math.floor(encodedAt / 1000) + 60, encodedAt).updated_secs_ago).toBe(360);
   });
 
   /** `overdue` crosses from the advanced worked time; the two window marks

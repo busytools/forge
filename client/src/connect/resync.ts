@@ -81,7 +81,7 @@ export function watchReturn(connection: Connection): () => void {
   // unreliable (`asks.rs`), so the shell emits a resume the page listens for
   // - and a page reachable only from a shell must not load the Tauri API
   // where there is none.
-  const stopForeground = observeForeground('return re-read', freshen);
+  const stopForeground = observeForeground('return probe', freshen);
   if (stopForeground !== null) stops.push(stopForeground);
 
   return () => {

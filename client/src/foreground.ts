@@ -3,9 +3,9 @@
  *
  * **Android reports neither focus nor reliably a visibility change on
  * return**, so the shell emits `client://foreground` and that is the only
- * resume signal the phone gives. Three readers hang on it - the frame probe's
- * loop, the return re-read, and the board's marks beat - so the arm lives
- * here once rather than as a copy per reader.
+ * resume signal the phone gives. The frame probe's loop and the return probe
+ * hang on it - a return reads nothing of its own - so the arm lives here once
+ * rather than as a copy per reader.
  */
 
 import { canHost } from './browser/host';

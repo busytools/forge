@@ -98,7 +98,8 @@ export function boardFrom(data: BoardWire): BoardWire {
  * move with the clock instead, which the page's own beat answers. The home
  * hears the task write too, because its fleet counts are derived from the
  * same tasks; it hears neither of the other sets, because its payload no
- * longer carries them.
+ * longer carries them. A row's ages and marks move with the page's clock
+ * instead (`board/clock.ts`), so no frame is due for them.
  */
 export const BOARD_VARIANTS: readonly string[] = [
   'tasks_changed',
@@ -191,12 +192,13 @@ export function connectorsFrame(
  * **The task facts come from the frame; the board's derived facts stay what
  * the last read said.** `worked_secs`, the marks, the rollup, the parent's
  * subject and the transition history are the server's own computation and no
- * frame carries them - so a row that was drawn keeps them, a row that is new
- * draws with their empty values, and the marks beat refreshes them (at most
- * five minutes, the staleness the beat already accepts). A row the frame does
- * not name is left alone: the core's set is the project's live rows, and a
- * removal arrives in the same frame as an absence - the beat reconciles the
- * rest rather than a client guessing that an omission is a delete.
+ * frame carries them - so a row that was drawn keeps them, and a row that is
+ * new draws with their empty values and a `read_at` of the frame that
+ * introduced it (`board/clock.ts`), so its worked time starts there rather
+ * than at the last whole read. A row the frame does not name is left alone:
+ * the core's set is the project's live rows, and a removal arrives in the
+ * same frame as an absence - the next whole read reconciles the rest rather
+ * than a client guessing that an omission is a delete.
  *
  * Returns `null` when the board holds no snapshot to apply into (the first
  * read is still owed), which is the one case the caller still reads.
@@ -230,6 +232,12 @@ export function applyTasks(
         : {
             ...prior,
             task: fresh.task,
+            // **A row this frame starts running is anchored here.** Its
+            // worked figure has not been accruing at the read, so counting
+            // from the read would credit it with time it never ran.
+            ...(prior.task.status !== 'in_progress' && fresh.task.status === 'in_progress'
+              ? { read_at: readAt }
+              : {}),
           },
     );
     order.push(fresh.task.id);

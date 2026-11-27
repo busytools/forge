@@ -41,7 +41,13 @@ export function agedRow(row: BoardRow, nowSecs: number, readAtMs: number): Board
   const elapsed = Math.max(0, nowSecs - encodedAt);
   const inProgress = row.task.status === 'in_progress';
   const worked = row.worked_secs + (inProgress ? elapsed : 0);
-  const updatedAgo = Math.max(0, nowSecs - row.task.updated_at.secs_since_epoch);
+  // **The age advances from the server's own pair, not from the client's
+  // clock against the record's absolute stamp.** `updated_secs_ago` and
+  // `updated_at` were computed together at the encode, so the age is that
+  // figure plus the time elapsed since the read - a page whose clock is
+  // minutes off still draws the right age, where comparing two absolute
+  // instants from two clocks would be wrong by the skew.
+  const updatedAgo = row.updated_secs_ago + elapsed;
   const parked = row.task.waiting_on?.parked === true;
   const estimate = row.task.estimate;
   return {

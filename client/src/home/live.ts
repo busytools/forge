@@ -1,17 +1,17 @@
 /**
- * The home over a live connection: the snapshot it is answered with, the
- * read that follows an update the snapshot cannot carry, and the folds that
- * draw a field a frame carries exactly.
+ * The home over a live connection: the whole read it is answered with, the
+ * patches applied against it, and the folds that draw a field a frame
+ * carries exactly.
  *
  * **A row's state is the server's**, folded from the core's own `Live`
  * alongside the roster, so it arrives in the row already decided - including
  * the unseen marks. **A frame that carries a drawn field exactly is applied;
- * a frame whose value the drawn row cannot reproduce is answered with a
- * fresh read.** The failure direction is always the read rather than a wrong
- * value on screen: a frame this build cannot read, a seat the drawn home
- * does not hold, or a row in a state another source owns keeps the read it
- * always asked for. The residual reads are named in the issue the folds
- * landed under (#3063 rows 1-2).
+ * a frame whose value the drawn row cannot reproduce is answered by the
+ * patch the server derives from the same write, never by a fresh read.** A
+ * frame this build cannot read is reported with its payload rather than
+ * dropped (rule 25), and a field that moved with no patch behind it is the
+ * server's bug to fix, not a read for the page to buy. The residual folds
+ * are named in the issue they landed under (#3063 rows 1-2).
  *
  * `accounts_changed` was the first of these, and it is a replace rather than
  * a fold: the frame carries the whole pool field, so the client draws what

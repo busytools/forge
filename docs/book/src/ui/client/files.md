@@ -121,8 +121,9 @@ cwd, is carried with no landing and parks.
 
 `respond` appends the reviewer's turn and flips the thread toward the
 worker; `resolve` marks it read; `reopen` returns it and nudges the seat.
-Every write re-reads the record, because a review change is not pushed -
-the reviews ride the record, and a record re-read is what carries them.
+Every write is pushed back: the reviews ride the seat's record, and a move in
+them crosses as a patch of the record's review fields, which the page applies
+in place rather than re-reading.
 The Conversation tab answers over the same calls a diff review does - reply,
 resolve, reopen - and a rail row opens its file at its line in the reader.
 

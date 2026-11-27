@@ -884,7 +884,7 @@ pub fn run() -> u8 {
         }
         // **One window-event seam for both readers of attention.** The ask
         // rule turns on whether the person is looking; the page's return
-        // re-read turns on a mobile resume, which `attention` already reads
+        // probe turns on a mobile resume, which `attention` already reads
         // the same way - it just needs to hear it too.
         if let tauri::RunEvent::WindowEvent { event, .. } = &event {
             if let Some(foreground) = attention(event) {
@@ -894,7 +894,7 @@ pub fn run() -> u8 {
             }
             // **A mobile resume is the person coming back**, and the page
             // hears it here: tao's Android window never reports focus, so a
-            // page left to a focus event would never re-read after a lock.
+            // page left to a focus event would never probe after a lock.
             #[cfg(mobile)]
             if returned(event) {
                 use tauri::Emitter as _;
@@ -909,7 +909,7 @@ pub fn run() -> u8 {
 /// page hears as `client://foreground`.
 ///
 /// **`attention` maps it too** - a resume is looking again - but the ask rule
-/// and the page's return re-read are different readers of the same event.
+/// and the page's return probe are different readers of the same event.
 #[cfg(mobile)]
 fn returned(event: &tauri::WindowEvent) -> bool {
     matches!(event, tauri::WindowEvent::Resumed)
