@@ -99,7 +99,8 @@
   .b-in::placeholder { color: var(--dim); }
 
   /* lanes: a name, a count and a rule - no boxes around the column. Every
-     state keeps its lane, and lanes that do not fit wrap to a second row:
+     LIVE state keeps its lane (finished work is the archive's shelf), and
+     lanes that do not fit wrap to a second row:
      the sheet never scrolls sideways, and a missing lane would read as a
      missing state. A lane fills its column, an empty one included, so the
      whole strip takes a drop. */
@@ -401,7 +402,7 @@
         <li class="w-live"><a class="w-who" href="./web-session.html">lead</a>
           <span class="w-strong">fold the session rail</span>
           <span class="w-why">since 00:36</span>
-          <span class="w-why">no artifact touched</span>
+          <span class="w-why">nothing touched yet</span>
           <span class="w-why">next 2h</span>
           <span class="w-why">and 1 more held</span></li>
       </ul>
@@ -617,7 +618,7 @@
           <span class="b-owner"><span class="b-ava">F</span>fleet</span>
           <span class="b-chips">
             <span class="b-chip warn">waiting on you</span>
-            <span class="b-chip bad">overdue</span>
+            <span class="b-chip bad">waiting 3h</span>
           </span>
         </div>
         <div class="b-last">
@@ -678,260 +679,6 @@
       </article>
     </section>
 
-    <section class="b-lane" data-state="completed">
-      <div class="b-cap"><span class="b-lane-nm">Completed</span><span class="b-count">6</span><span class="b-rule"></span></div>
-      <article class="b-card epic">
-        <div class="b-row1">
-          <span class="b-mark b-done"><svg class="ic" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
-          <span class="b-sub settled">
-            <span class="b-line">release 1.1.2</span>
-          </span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">F</span>forge</span>
-          <span class="b-chip blue b-epic-pill">&#9636; epic</span>
-          <span class="b-chips">
-            <span class="b-chip">5/5 done</span>
-            <span class="b-chip blue">to close</span>
-          </span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog">
-            <span class="b-time">worked 1d 1h / 1d</span>
-            <span class="b-bar"><span class="b-fill" style="width:100%"></span></span>
-          </span>
-          <span class="b-wrote">wrote 3d ago</span>
-          <span class="b-acts"><button class="b-pick">forge &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-done"><svg class="ic" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
-          <span class="b-sub settled"><span class="b-line">the lanes wrap at 430</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">S</span>steward</span>
-          <span class="b-chips"><span class="b-chip blue">lead attested</span></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 3h</span></span>
-          <span class="b-wrote">wrote 2d ago</span>
-          <span class="b-acts"><button class="b-pick">steward &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-done"><svg class="ic" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
-          <span class="b-sub settled"><span class="b-line">the strip answers a question</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">A</span>asker</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 1h</span></span>
-          <span class="b-wrote">wrote 2d ago</span>
-          <span class="b-acts"><button class="b-pick">asker &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-done"><svg class="ic" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
-          <span class="b-sub settled"><span class="b-line">the owner picker opens on the card</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">H</span>hand</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 40m</span></span>
-          <span class="b-wrote">wrote 1d ago</span>
-          <span class="b-acts"><button class="b-pick">hand &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-done"><svg class="ic" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
-          <span class="b-sub settled"><span class="b-line">the drawing is held against the page</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">F</span>forge</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 20m</span></span>
-          <span class="b-wrote">wrote 12h ago</span>
-          <span class="b-acts"><button class="b-pick">forge &#9662;</button></span>
-        </div>
-      </article>
-      <button class="b-fold" aria-expanded="false">show all (6)</button>
-    </section>
-
-    <section class="b-lane" data-state="failed">
-      <div class="b-cap"><span class="b-lane-nm">Failed</span><span class="b-count">6</span><span class="b-rule"></span></div>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-fail"><svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
-          <span class="b-sub">
-            <span class="b-line">the spike that ended in error</span>
-          </span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">P</span>probe</span>
-          <a href="#">#1839</a>
-          <span class="b-chips"><span class="b-chip bad">owner gone</span></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog">
-            <span class="b-time">worked 1d 2h / 2d</span>
-            <span class="b-bar"><span class="b-fill" style="width:75%"></span></span>
-          </span>
-          <span class="b-wrote">wrote 1d ago</span>
-          <span class="b-acts"><button class="b-pick">probe &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-fail"><svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
-          <span class="b-sub"><span class="b-line">the retry that kept timing out</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">H</span>hand</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 6h</span></span>
-          <span class="b-wrote">wrote 2d ago</span>
-          <span class="b-acts"><button class="b-pick">hand &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-fail"><svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
-          <span class="b-sub"><span class="b-line">the batch that ate the store</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">F</span>forge</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 2h</span></span>
-          <span class="b-wrote">wrote 2d ago</span>
-          <span class="b-acts"><button class="b-pick">forge &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-fail"><svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
-          <span class="b-sub"><span class="b-line">the probe against a dead port</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">P</span>probe</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 12m</span></span>
-          <span class="b-wrote">wrote 3d ago</span>
-          <span class="b-acts"><button class="b-pick">probe &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-fail"><svg class="ic" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></span>
-          <span class="b-sub"><span class="b-line">the migration that reversed twice</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">S</span>steward</span>
-          <span class="b-chips"><span class="b-chip dim">no change 5h</span></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 3h</span></span>
-          <span class="b-wrote">wrote 3d ago</span>
-          <span class="b-acts"><button class="b-pick">steward &#9662;</button></span>
-        </div>
-      </article>
-      <button class="b-fold" aria-expanded="false">show all (6)</button>
-    </section>
-
-    <section class="b-lane" data-state="canceled">
-      <div class="b-cap"><span class="b-lane-nm">Canceled</span><span class="b-count">6</span><span class="b-rule"></span></div>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-cancel"></span>
-          <span class="b-sub"><span class="b-line">the second editor nobody asked for</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">S</span>steward</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 2h</span></span>
-          <span class="b-wrote">wrote 4d ago</span>
-          <span class="b-acts"><button class="b-pick">steward &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-cancel"></span>
-          <span class="b-sub"><span class="b-line">the theme pass that lost the mock</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">H</span>hand</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 4h</span></span>
-          <span class="b-wrote">wrote 4d ago</span>
-          <span class="b-acts"><button class="b-pick">hand &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-cancel"></span>
-          <span class="b-sub"><span class="b-line">the flag the core never read</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">F</span>fleet</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 1h</span></span>
-          <span class="b-wrote">wrote 5d ago</span>
-          <span class="b-acts"><button class="b-pick">fleet &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-cancel"></span>
-          <span class="b-sub"><span class="b-line">the tour that duplicated the home</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">A</span>asker</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 3h</span></span>
-          <span class="b-wrote">wrote 5d ago</span>
-          <span class="b-acts"><button class="b-pick">asker &#9662;</button></span>
-        </div>
-      </article>
-      <article class="b-card">
-        <div class="b-row1">
-          <span class="b-mark b-cancel"></span>
-          <span class="b-sub"><span class="b-line">the shortcut that ate Escape</span></span>
-        </div>
-        <div class="b-meta">
-          <span class="b-owner"><span class="b-ava">T</span>task-board</span>
-          <span class="b-chips"></span>
-        </div>
-        <div class="b-last">
-          <span class="b-prog"><span class="b-time">worked 30m</span></span>
-          <span class="b-wrote">wrote 6d ago</span>
-          <span class="b-acts"><button class="b-pick">task-board &#9662;</button></span>
-        </div>
-      </article>
-      <button class="b-fold" aria-expanded="false">show all (6)</button>
-    </section>
   </div>
 
   <div class="b-create">
@@ -943,13 +690,14 @@
   <div class="face-cap">the archive, one toggle away</div>
 
   <ul class="w-list" aria-label="closed rows">
-    <li class="w-exc"><span class="w-strong">rate the chase's cadence</span>
+    <li class="w-exc"><button class="w-link">rate the chase's cadence</button>
       <span class="w-why">completed</span>
       <span class="w-why">closed, not yet archived</span>
       <button class="b-btn b-plain w-restore">restore</button></li>
-    <li class="w-exc"><span class="w-strong">an October row that ended</span>
+    <li class="w-exc"><button class="w-link">the lanes wrap at 430</button>
       <span class="w-why">completed</span>
-      <span class="w-why">archived 2d ago</span>
+      <span class="w-why">lead attested</span>
+      <span class="w-why">archived 09:12</span>
       <button class="b-btn b-plain w-restore">restore</button></li>
   </ul>
 
@@ -982,8 +730,8 @@
           <span class="l">In progress &middot; the strip's counts</span>
           <span class="go" aria-hidden="true">&rarr;</span>
         </button>
-        <button class="dr-kid" aria-label="jump to Completed &middot; the lanes wrap at 430">
-          <span class="l">Completed &middot; the lanes wrap at 430</span>
+        <button class="dr-kid" aria-label="jump to Backlog &middot; the strip answers a question">
+          <span class="l">Backlog &middot; the strip answers a question</span>
           <span class="go" aria-hidden="true">&rarr;</span>
         </button>
       </div>

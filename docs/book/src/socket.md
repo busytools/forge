@@ -1260,7 +1260,12 @@ fields were most of a ~708 KB home read for a page that draws none of them
 
 | Field      | What it is                                                                                                                                                                                                                                                               |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `projects` | One entry per project: `project` (its identity - `org` and `name`; the rest of a project's view is the home's), `rows` (the window's fields only: each row a task with its worked time, ages, owner liveness and marks, plus its rollup and its epic's subject - a row's `detail` brief and its history are `tasks__get`'s, or a `task_detail` command's when a drawer opens), `crons`, and `connectors` (this project's own gotify and slack subscription sets). |
+| `projects` | One entry per project: `project` (its identity - `org` and `name`; the rest of a project's view is the home's), `rows` (the project's LIVE rows - a terminal row has left this read - in the window's fields only: each row a task with its worked time, ages, owner liveness and marks, plus its rollup and its epic's subject; a row's `detail` brief and its history are `tasks__get`'s, or a `task_detail` command's when a drawer opens), `crons`, and `connectors` (this project's own gotify and slack subscription sets). |
+
+**`archived`** is the closed view, read once each time the board's
+`archived` toggle opens: one entry per project with `project` and `rows`,
+the terminal rows still in the live set followed by the archive, each a task
+carrying its `archived_at` where it has one.
 
 **`board` hears the variants that move it**: `tasks_changed`,
 `task_detail` (one row read whole, answering a `task_detail` command),

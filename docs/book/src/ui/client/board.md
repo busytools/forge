@@ -28,18 +28,19 @@ snapshot beside it; the row and running counts are the board's own.
 
 The page hears the updates that move what it draws: a task write, a
 schedule set, a connector set, a drawer's row, and the seat events a row's
-liveness is read from. So a seat that claims a row, a row that is cut, or a
-move made in another view arrives as an update, and the page re-reads
-without the reader doing anything. While it is mounted and the page is
-being watched, it also re-reads on a slow five-minute beat: a row's
-time-derived marks are computed by the server at read time, and no update
-announces that a window crossed. A page nobody is watching releases the
-beat entirely, and the return re-read the page already makes when it comes
-back from a hidden spell of at least two seconds asks the board once
-through the same guards. Only the `wrote ... ago` line keeps ticking off
-the page's own clock; the card's worked time and the ages on cards advance
-only on a read, so they are refreshed at most five minutes after the page
-is watched again.
+liveness is read from. **A task write is applied from its frame, with no
+read**: the `tasks_changed` frame carries the project's live set, so a seat
+claiming a row, a row being cut, or a move made in another view lands on the
+drawn board at once - the derived facts stay what the last read said and the
+beat reconciles them. While it is mounted and the page is being watched, it
+also re-reads on a slow five-minute beat: a row's time-derived marks are
+computed by the server at read time, and no update announces that a window
+crossed. A page nobody is watching releases the beat entirely, and the
+return re-read the page already makes when it comes back from a hidden
+spell of at least two seconds asks the board once through the same guards.
+Only the `wrote ... ago` line keeps ticking off the page's own clock; the
+card's worked time and the ages on cards advance only on a read, so they
+are refreshed at most five minutes after the page is watched again.
 
 ## The window
 
@@ -67,7 +68,11 @@ a free-text answer box.
 
 A **look card** is the same shape with the look's own ask - `Approve
 <artifact> or say what to change` - and the strip's controls: `approve`,
-a `what to change` box and `send back`.
+a `what to change` box and `send back`. Two of the core's refusals are drawn
+rather than offered: a root whose children are still open cannot close on a
+look and draws the count in place of `approve`, and a look with no verified
+evidence behind its completion draws that hold; `send back` stays either
+way.
 
 Both cards say how long the ask has waited, counted from the wait's own
 start, never from the row's last edit; a `open the row` line opens the
@@ -79,10 +84,13 @@ What contradicts the state, each a labelled fact rather than a badge:
 
 | Line | Means | Read from |
 |---|---|---|
-| `the gate refused its evidence: <why>` | the row carries an evidence claim the repository could not back | the row's `evidence.problem` |
+| `forge could not confirm its evidence: <why> - no change since HH:MM` | the row carries an evidence claim the repository could not back | the row's `evidence.problem` and its last touch |
 | `<owner> has no session behind it - no change since HH:MM` | the owner is gone | `owner_live` and the last touch |
-| `no change since HH:MM` | nobody has touched the row past the band | the `stale` mark and the last touch |
+| `no change since HH:MM` | a held row nobody has touched past the band | the `stale` mark and the last touch |
 | `<worker> holds no row - feed it or despawn it` | a live worker with nothing to do | the fleet row's `unaccounted_worker` miss |
+
+A row that is also an ask is drawn under needs you and not here: the ask's
+own card already states the fact.
 
 **Staleness is a timestamp, not an adjective.** The line says when the row
 last changed, in the reader's own clock, because motion is not progress
@@ -90,11 +98,12 @@ and a bare `stale` asks the reader to do the arithmetic.
 
 ### Live
 
-One line per seat this project has, saying what it holds: the seat's label
-(its door into the session), the row's running words and when the seat was
-last active, the artifact the row last touched, the measure the row is
+One line per seat HOLDING work on this project, saying what it holds: the
+seat's label (its door into the session), the row's running words and when
+the seat was last active, what the row last touched, the measure the row is
 next judged by, and how many more rows the seat holds when it holds more
-than one. A seat holding nothing says so. What cannot be known is drawn as
+than one. A seat holding nothing is the fleet's own count and the stopped
+worker's exception, not a line here. What cannot be known is drawn as
 unknown, never as progress.
 
 ### Next
@@ -112,35 +121,32 @@ The lanes face, under the `full board` toggle.
 | Top bar | `back`, the project's name with its own read (`N waiting on you`, `N rows`, `N running`), the project's seat chips, `done` | the route and the snapshot |
 | The switch | `window`, `full board`, `archived` | the page's own state |
 | Waiting on you | the rows whose wait is a decision, each card leading with the wait's ask, with the row's links and a look's artifact beside it; the verify gate (`approve`, a words box, `send back`), or an answer box; a root whose children are not all done draws the count and the send-back instead of `approve` | `waiting_on`, the wait's own start for the age, the row's links, and the row's `rollup` |
-| Lanes | every card, in its state's lane, with the grown groups folded - the finished ones to their five most recent, Backlog to its ten | the board's `projects[].rows` |
+| Lanes | every LIVE card, in its state's lane, with the Backlog folded to its ten | the board's `projects[].rows` |
 | Create | a subject box, an epic picker and `+ add`, which files the row at the queue's end | `task_create` |
 
-Six lanes, always drawn in this order, because a missing lane would read as
-a missing state: **Backlog** (pending), **Waiting**, **In progress**,
-**Completed**, **Failed**, **Canceled**. The pool of everything not yet
-started leads, then the lane that wants the reader, then the work. Backlog is
-the `pending` status: work kept to look at later, not by itself an assignment
-and not a promise to start. A lane is a name, its count and a rule, with its
-cards under it - no box around the column - and the lanes wrap to a second
-row rather than scroll sideways.
+Three lanes, drawn in this order: **Backlog** (pending), **Waiting**,
+**In progress**. A terminal row leaves the bulk board the moment it ends -
+its state, when it was archived and its `restore` are the `archived`
+toggle's - so no Completed, Failed or Canceled lane is drawn here. The pool
+of everything not yet started leads, then the lane that wants the reader,
+then the work. Backlog is the `pending` status: work kept to look at later,
+not by itself an assignment and not a promise to start. A lane is a name,
+its count and a rule, with its cards under it - no box around the column -
+and the lanes wrap to a second row rather than scroll sideways.
 
-**The grown groups fold.** A finished row accumulates for the life of the
-project and a queue accumulates for the life of the work, so Completed,
-Failed, Canceled and Backlog are the lanes that grow without bound. The three
-finished groups draw their five most recently finished rows - by when they
-last moved, whatever their place in the lane - and the Backlog draws its top
-ten. The rest of each group waits behind a `show all (N)` control under the
-last card. A card the reader is dropping into a folded group stays drawn
-while the core's answer is in flight, and a jump aimed at a folded row opens
-the fold and lands on it. In progress and Waiting never fold.
+**The Backlog folds.** A queue accumulates for the life of the work, so the
+Backlog draws its top ten and the rest waits behind a `show all (N)` control
+under the last card. A card the reader is dropping into the folded lane
+stays drawn while the core's answer is in flight, and a jump aimed at a
+folded row opens the fold and lands on it. Waiting and In progress never
+fold.
 
 ### A card
 
 Three lines, top to bottom:
 
 - the mark, then the subject. A row in progress displays its `active_form`
-  where it has one, with the subject under it. A completed row's subject is
-  struck through.
+  where it has one, with the subject under it.
 - the owner (their initial in a disc, linking to their session page, or
   `unclaimed`), the epic it belongs under where it has one, its links, and
   its chips - with a `done/total` rollup beside them on a parent.
@@ -153,7 +159,9 @@ solid left spine; each child wears the epic's name in a pill with a return
 arrow and a dimmer spine. The child's card pill is a door: it brings the
 epic's own card into view and flashes it.
 
-The mark carries shape as well as colour, so the board reads without colour:
+The mark carries shape as well as colour, so the board reads without colour.
+The live lanes draw the first three; the archived shelf draws the finished
+three beside the same row's state word:
 
 | Status | Mark | The state |
 |---|---|---|
@@ -164,7 +172,9 @@ The mark carries shape as well as colour, so the board reads without colour:
 | Failed | a cross | it ended in failure |
 | Canceled | a dim bar | withdrawn, kept for the record |
 
-The chips are the server's derived marks, named in words:
+The chips, in words. The five marks and the evidence verdict are the
+server's own derivation; the wait's kind and its age, `owner gone` and
+`reserved for you` are read here from the row's fields:
 
 | Chip | Tone | Means |
 |---|---|---|
@@ -175,20 +185,22 @@ The chips are the server's derived marks, named in words:
 | `overdue` | bad | worked time has crossed the estimate |
 | `no change <5h` | dim | untouched past the band, and its owner is still live |
 | `owner gone` | bad | its owner is no longer a live seat |
-| `in review` | blue | completed with the verify gate up |
-| `lead attested` | blue | the lead completed the look, citing the user's own approval |
+| `in review` | blue | an unmerged pull-request link on a live row |
 | `to close` | blue | a root whose children are all done, waiting for its close |
 | `reserved for you` | dim | the user reserved this pick: the drive leaves it, it never reads ready, and no claim takes it |
+
+A terminal row carries no chips at all: what it ended as, and the lead's
+attestation where one was recorded, are read on the archived shelf.
 
 **The look has two doors, and the row page draws both.** The user's own
 `approve` sits on the window's look card and on the strip; a lead who
 watched the user approve in chat completes the row through `tasks__approve`,
-which requires the approval quoted and records it on the row. The completed
-card then wears `lead attested`, and the row page draws the quote with a
-`reopen` button: reopening strikes the attestation and parks the row on the
-user again. The page's `pick` line is the other side of the drive:
-`reserve for you` marks the row so the drive never dispatches it, and
-`release` takes that back.
+which requires the approval quoted and records it on the row. The row then
+ends, so its archived shelf line says `lead attested`, and its row page -
+opened from that line - draws the quote with a `reopen` button: reopening
+strikes the attestation and parks the row on the user again. The page's
+`pick` line is the other side of the drive: `reserve for you` marks the row
+so the drive never dispatches it, and `release` takes that back.
 
 **A wait leads with its ask.** The card and the row page both open on the
 wait's own `detail` where it states one, else the row's `detail`, and a wait
@@ -202,12 +214,16 @@ label, and a path or a branch draws as text rather than a dead anchor.
 
 ## The archive
 
-The `archived` toggle reads the closed view: the terminal rows still in the
-live set, then the archive, each with its state, when it was archived (a row
-closed but not yet archived says so), and a `restore` that brings the row
-and the tree it took back to the live set. The read happens once per
-opening; a task write while it is open is not applied to it, because the
-closed set is history and the opening is the reader's own ask.
+The `archived` toggle reads the closed view and is where finished work
+lives: the terminal rows still in the live set, then the archive, each with
+its state mark and word, `lead attested` where the lead recorded one, when
+it was archived (a row closed but not yet archived says so), and a `restore`
+that brings the row and the tree it took back to the live set. The row's
+subject is a door: it opens the row page whole, which is where a completed
+row's brief, history, attestation quote and `reopen` are read. The read
+happens once per opening; a task write while it is open is not applied to
+it, because the closed set is history and the opening is the reader's own
+ask.
 
 ## Moving a card
 
@@ -258,7 +274,7 @@ on the service line rather than silently reverting.
 - **Unknown**: a project the snapshot does not carry draws its name and one
   line saying this forge does not hold it, with no regions and no create line.
 - **Empty**: a project with no live rows says so under the window; the full
-  board draws its six empty lanes and the create line.
+  board draws its three empty lanes and the create line.
 - **The archive reading, refused, or empty**: the toggle says which.
 
 ## The two widths

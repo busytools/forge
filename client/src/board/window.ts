@@ -195,6 +195,10 @@ function exceptionOf(row: BoardRow): ExceptionCard | null {
       owner,
     };
   }
+  // **Backlog is the queue's, not an exception**: a ready unowned row is
+  // what the lead dispatches from, and drawing every aged one here reads
+  // the queue as a fault.
+  if (row.marks.ready && task.owner === null) return null;
   if (!row.owner_live && task.owner !== null) {
     return {
       id: task.id,
