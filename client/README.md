@@ -417,6 +417,12 @@ was signed with. `client-release` refuses to build a Developer ID client when
 the credential is missing, the way it refuses without the profile or the
 updater key.
 
+The script passes the app-specific password to `notarytool` as an argument,
+so it is visible in `ps` to anyone running as this user while a submission is
+in flight. Apple's `notarytool store-credentials` with `--keychain-profile`
+avoids that at the cost of a second place the credential lives; this recipe
+keeps the environment and file route.
+
 ## The web image
 
 The same build, served to browsers: a client-only image under `client/docker/`
