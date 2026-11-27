@@ -1880,11 +1880,15 @@ describe("the window's ask kinds and its attention", () => {
     });
   });
 
-  it('disposes of an exception with one of the four named disposals', () => {
+  it('disposes of an exception with one of the four named disposals', async () => {
     windowOver([requestRow('a1', 'exception')]);
     for (const word of ['retry', 'rescope', 'drop', 'diagnose']) {
       expect(byText(word), `${word} is not offered`).not.toBeNull();
     }
+    // The new bar is made of native buttons and the footer of native
+    // buttons and links, so axe over the drawn card is the check that the
+    // kinds' controls are usable, not just present.
+    expect(await violationsOf(document.body.innerHTML)).toEqual([]);
     byText('rescope')?.click();
     flushSync();
     expect(acts.at(-1)).toEqual({

@@ -192,6 +192,9 @@
                 >{card.subject}{#if card.owner !== null}
                   &middot; {card.owner}{/if}</span
               >
+              {#if card.class !== null}<span class="w-chip" title="the class a teaching settles"
+                  >{card.class}</span
+                >{/if}
               {#if card.acknowledged}<span class="w-chip">seen</span>{/if}
               {#if card.snoozed}<span class="w-chip">snoozed</span>{/if}
               {#if card.dueAt !== null}
