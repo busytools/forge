@@ -27,7 +27,8 @@ draw time from the row's own timestamps and the instant the record landed
 without a read: the `wrote ... ago` line, the card's worked time, and the
 chip and waiting-card ages all move together. A page nobody is watching asks
 nothing; the record and its frames were kept while it was away, and a return
-draws them as they stand.
+draws them and then asks once for what the hide made stale, through the same
+page guards every read uses.
 
 ## What it draws
 
