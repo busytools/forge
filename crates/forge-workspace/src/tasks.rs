@@ -1029,7 +1029,7 @@ impl Workspace {
         self.attest_task_at_version(project_name, id, slot, evidence, None)
     }
 
-    /// [`Workspace::attest_task`] with the version the caller read.
+    /// `Workspace::attest_task` with the version the caller read.
     pub(crate) fn attest_task_at_version(
         &self,
         project_name: &str,
@@ -1180,7 +1180,7 @@ impl Workspace {
         self.answer_decision_at_version(project_name, id, by, choice, note, None)
     }
 
-    /// [`Workspace::answer_decision`] with the version the caller read.
+    /// `Workspace::answer_decision` with the version the caller read.
     pub(crate) fn answer_decision_at_version(
         &self,
         project_name: &str,
@@ -1329,7 +1329,7 @@ impl Workspace {
         self.claim_task_at_version(project_name, slot, id, None)
     }
 
-    /// [`Workspace::claim_task`] with the version the caller read.
+    /// `Workspace::claim_task` with the version the caller read.
     pub(crate) fn claim_task_at_version(
         &self,
         project_name: &str,
@@ -1410,7 +1410,7 @@ impl Workspace {
         self.wait_task_recording(project_name, id, slot, kind, detail, on, None, None)
     }
 
-    /// [`Workspace::wait_task`] with the version the caller read.
+    /// `Workspace::wait_task` with the version the caller read.
     pub(crate) fn wait_task_at_version(
         &self,
         project_name: &str,
@@ -1424,7 +1424,7 @@ impl Workspace {
         self.wait_task_recording(project_name, id, slot, kind, detail, on, None, expected)
     }
 
-    /// [`Workspace::wait_task`] for a decision: the row takes the question
+    /// `Workspace::wait_task` for a decision: the row takes the question
     /// the lead is asking and the options it enumerated, so the user's
     /// card carries the ask rather than a thread.
     /// The unversioned door the tests drive; every production caller names
@@ -1442,7 +1442,7 @@ impl Workspace {
         self.wait_decision_task_at_version(project_name, id, slot, detail, question, options, None)
     }
 
-    /// [`Workspace::wait_decision_task`] with the version the caller read.
+    /// `Workspace::wait_decision_task` with the version the caller read.
     pub(crate) fn wait_decision_task_at_version(
         &self,
         project_name: &str,
@@ -1682,7 +1682,7 @@ impl Workspace {
         self.remove_task_tree_at_version(project_name, id, None)
     }
 
-    /// [`Workspace::remove_task_tree`] with the version the caller read.
+    /// `Workspace::remove_task_tree` with the version the caller read.
     pub(crate) fn remove_task_tree_at_version(
         &self,
         project_name: &str,
