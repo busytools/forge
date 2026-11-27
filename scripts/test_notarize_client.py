@@ -5,9 +5,11 @@ runs on the final signed client bundle.
 Run: python3 scripts/test_notarize_client.py
 
 The notary service is Apple's, so every case here puts stand-ins for `xcrun`,
-`codesign`, `openssl`, `ditto` and `spctl` first on PATH and pins the argv the
-script hands them. The stand-ins log each call, so a case proves the script
-reached the tool it claims to rather than passing without reading anything.
+`codesign`, `openssl`, `ditto` and `spctl` first on PATH. The stand-ins pin the
+argv the script hands them, flags included: a stand-in that accepted any
+arguments would let a malformed real command pass, and the tests would report
+a release path that only works against the fake. The stand-ins log each call,
+so a case proves the script reached the tool it claims to.
 
 Stdlib only, like the other script tests: python3 ships with the gate's
 runners, macOS and ubuntu alike.
@@ -45,9 +47,12 @@ if args[:2] == ["notarytool", "submit"]:
     sys.exit(int(os.environ.get("SUBMIT_EXIT", "0")))
 if args[:2] == ["notarytool", "log"]:
     sys.stdout.write(os.environ.get("LOG_OUTPUT", "{}") + "\\n")
-    sys.exit(0)
-if args[:1] == ["stapler"]:
-    sys.exit(int(os.environ.get("STAPLER_EXIT", "0")))
+    sys.exit(int(os.environ.get("LOG_EXIT", "0")))
+if args[:2] == ["stapler", "staple"]:
+    sys.exit(int(os.environ.get("STAPLE_EXIT", "0")))
+if args[:2] == ["stapler", "validate"]:
+    sys.exit(int(os.environ.get("VALIDATE_EXIT", "0")))
+sys.stderr.write("unexpected xcrun argv: " + " ".join(args) + "\\n")
 sys.exit(9)
 """,
     "spctl": """#!/usr/bin/env python3
@@ -76,6 +81,12 @@ from pathlib import Path
 args = sys.argv[1:]
 with open(os.environ["CALLS"], "a") as log:
     log.write("ditto " + " ".join(args) + "\\n")
+code = int(os.environ.get("DITTO_EXIT", "0"))
+if code:
+    sys.exit(code)
+if args[:3] != ["-c", "-k", "--keepParent"] or len(args) != 5:
+    sys.stderr.write("ditto argv does not pin the archive flags: " + " ".join(args) + "\\n")
+    sys.exit(9)
 src, dest = Path(args[-2]), Path(args[-1])
 with zipfile.ZipFile(dest, "w") as archive:
     for path in sorted(src.rglob("*")):
@@ -121,6 +132,9 @@ class NotarizeClientTest(unittest.TestCase):
     def call_lines(self):
         return self.calls.read_text().splitlines() if self.calls.exists() else []
 
+    def calls_text(self):
+        return "\n".join(self.call_lines())
+
     def submit_line(self):
         return next(
             line
@@ -145,30 +159,26 @@ class NotarizeClientTest(unittest.TestCase):
         self.assertIn("[OK] notarisation submission sub-1 accepted", result.stdout)
         self.assertIn('"status": "Accepted"', result.stdout)
         self.assertIn("[OK] notarised and stapled forge.app", result.stdout)
-        submit = self.submit_line()
-        for fragment in (
-            "--apple-id hi@example.com",
-            "--password app-pw",
-            f"--team-id {TEAM}",
-            "--wait",
-            "--output-format json",
-        ):
-            self.assertIn(fragment, submit)
-        calls = self.call_lines()
-        self.assertIn("xcrun stapler staple", "\n".join(calls))
-        self.assertIn("xcrun stapler validate", "\n".join(calls))
-        self.assertTrue(
-            any(line.startswith("spctl --assess --type execute") for line in calls)
+
+        seen = json.loads(self.zip_seen.read_text())
+        zip_path = seen["path"]
+        self.assertEqual(
+            self.submit_line(),
+            f"xcrun notarytool submit {zip_path} --apple-id hi@example.com "
+            f"--password app-pw --team-id {TEAM} --wait --output-format json",
         )
+        calls = self.call_lines()
+        self.assertIn(f"ditto -c -k --keepParent {self.app} {zip_path}", calls)
+        self.assertIn(f"xcrun stapler staple {self.app}", calls)
+        self.assertIn(f"xcrun stapler validate {self.app}", calls)
+        self.assertIn(f"spctl --assess --type execute --verbose=4 {self.app}", calls)
         self.assertLess(
             next(i for i, line in enumerate(calls) if "notarytool submit" in line),
             next(i for i, line in enumerate(calls) if "stapler staple" in line),
         )
-
-        seen = json.loads(self.zip_seen.read_text())
         self.assertIn("forge.app/Contents/Info.plist", seen["names"])
         self.assertFalse(
-            Path(seen["path"]).exists(), "the submission archive must be cleaned up"
+            Path(zip_path).exists(), "the submission archive must be cleaned up"
         )
 
     def test_credential_file_is_read_when_the_environment_is_empty(self):
@@ -208,6 +218,17 @@ class NotarizeClientTest(unittest.TestCase):
         self.assertTrue(any(line.startswith("codesign -dvvv") for line in self.call_lines()))
         self.assertIn(f"--team-id {TEAM}", self.submit_line())
 
+    def test_team_id_in_the_file_wins_over_the_signature(self):
+        self.write_properties(
+            APPLE_ID="hi@example.com", APPLE_PASSWORD="app-pw", APPLE_TEAM_ID="FILETEAM"
+        )
+
+        result = self.run_script(str(self.app), FAKE_TEAM_ID="SIGTEAM")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--team-id FILETEAM", self.submit_line())
+        self.assertNotIn("codesign", self.calls_text())
+
     def test_rejected_submission_fetches_the_log_and_stops(self):
         result = self.run_script(
             str(self.app),
@@ -222,11 +243,28 @@ class NotarizeClientTest(unittest.TestCase):
         self.assertIn("Invalid", result.stderr)
         self.assertIn("sub-9", result.stderr)
         self.assertIn("bad entitlement", result.stderr)
-        calls = "\n".join(self.call_lines())
-        self.assertIn("xcrun notarytool log sub-9", calls)
-        self.assertNotIn("stapler", calls)
-        self.assertNotIn("spctl", calls)
+        self.assertIn(
+            f"xcrun notarytool log sub-9 --apple-id hi@example.com "
+            f"--password app-pw --team-id {TEAM}",
+            self.call_lines(),
+        )
+        self.assertNotIn("stapler", self.calls_text())
+        self.assertNotIn("spctl", self.calls_text())
         self.assertNotIn("[OK]", result.stdout)
+
+    def test_log_failure_still_reports_the_rejection(self):
+        result = self.run_script(
+            str(self.app),
+            APPLE_ID="hi@example.com",
+            APPLE_PASSWORD="app-pw",
+            APPLE_TEAM_ID=TEAM,
+            SUBMIT_JSON=REJECTED,
+            LOG_EXIT="1",
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Invalid", result.stderr)
+        self.assertNotIn("stapler", self.calls_text())
 
     def test_submit_failure_stops_before_stapling(self):
         result = self.run_script(
@@ -239,20 +277,46 @@ class NotarizeClientTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("[ERROR] notarytool could not submit forge.app", result.stderr)
-        self.assertNotIn("stapler", "\n".join(self.call_lines()))
+        self.assertNotIn("stapler", self.calls_text())
 
-    def test_stapler_failure_stops_before_gatekeeper(self):
+    def test_ditto_failure_stops_before_submission(self):
         result = self.run_script(
             str(self.app),
             APPLE_ID="hi@example.com",
             APPLE_PASSWORD="app-pw",
             APPLE_TEAM_ID=TEAM,
-            STAPLER_EXIT="1",
+            DITTO_EXIT="7",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("notarytool submit", self.calls_text())
+
+    def test_staple_failure_stops_before_gatekeeper(self):
+        result = self.run_script(
+            str(self.app),
+            APPLE_ID="hi@example.com",
+            APPLE_PASSWORD="app-pw",
+            APPLE_TEAM_ID=TEAM,
+            STAPLE_EXIT="1",
         )
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("could not be stapled", result.stderr)
-        self.assertNotIn("spctl", "\n".join(self.call_lines()))
+        self.assertNotIn("spctl", self.calls_text())
+        self.assertNotIn("[OK] notarised and stapled", result.stdout)
+
+    def test_validate_failure_stops_before_gatekeeper(self):
+        result = self.run_script(
+            str(self.app),
+            APPLE_ID="hi@example.com",
+            APPLE_PASSWORD="app-pw",
+            APPLE_TEAM_ID=TEAM,
+            VALIDATE_EXIT="1",
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("does not validate", result.stderr)
+        self.assertNotIn("spctl", self.calls_text())
         self.assertNotIn("[OK] notarised and stapled", result.stdout)
 
     def test_gatekeeper_rejection_is_a_failure(self):
@@ -292,7 +356,22 @@ class NotarizeClientTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"(team {TEAM})", result.stdout)
-        self.assertNotIn("xcrun", "\n".join(self.call_lines()))
+        self.assertNotIn("xcrun", self.calls_text())
+        self.assertNotIn("codesign", self.calls_text())
+        self.assertNotIn("app-pw", result.stdout)
+        self.assertNotIn("app-pw", result.stderr)
+
+    def test_check_mode_reads_the_credential_file(self):
+        self.write_properties(
+            APPLE_ID="file@example.com", APPLE_PASSWORD="file-pw", APPLE_TEAM_ID=TEAM
+        )
+
+        result = self.run_script("--check")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("for file@example.com (team KALKD5L7NF)", result.stdout)
+        self.assertNotIn("file-pw", result.stdout)
+        self.assertNotIn("file-pw", result.stderr)
 
     def test_check_mode_names_a_missing_credential(self):
         result = self.run_script("--check")
