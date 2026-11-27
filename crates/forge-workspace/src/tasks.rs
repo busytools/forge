@@ -1391,7 +1391,6 @@ impl Workspace {
     ) -> Result<Option<Task>, MoveError> {
         let at = SystemTime::now();
         let lesson = lesson.map(str::trim).filter(|lesson| !lesson.is_empty());
-        let value_for_move = value.clone();
         let moved = self.move_task(project_name, id, by, false, expected, |task| {
             // An answer is the ask's own door: a resource or dependency
             // wait is resumed by an update, not by recording a value
@@ -1408,8 +1407,7 @@ impl Workspace {
                     // A decision's choice is named against its own options
                     // first, so the refusal quotes the value the person gave
                     // rather than only the kind's shape.
-                    if let (AskKind::Decision, AnswerValue::Choice(choice)) =
-                        (request.kind, &value_for_move)
+                    if let (AskKind::Decision, AnswerValue::Choice(choice)) = (request.kind, &value)
                         && !request.options.is_empty()
                         && !request.options.iter().any(|option| option == choice)
                     {
@@ -1418,7 +1416,7 @@ impl Workspace {
                     // **The value must be the shape the kind needs**: an
                     // option list cannot answer a clarification, and a
                     // teaching without its lesson writes no policy.
-                    if !request.answer_fits(&value_for_move, lesson) {
+                    if !request.answer_fits(&value, lesson) {
                         return Err(MoveError::AnswerShape(answer_shape_need(request.kind)));
                     }
                     // The record is the answer and nothing more: the value
@@ -1426,7 +1424,7 @@ impl Workspace {
                     // answer to the same ask is refused by the wait check
                     // above, because answering resumes the row.
                     request.answer = Some(Answer {
-                        value: value_for_move,
+                        value,
                         note: note
                             .map(str::trim)
                             .filter(|note| !note.is_empty())
@@ -1436,7 +1434,7 @@ impl Workspace {
                 }
                 // A row written before the record: the words are the
                 // answer, and they land in the detail as they always did.
-                None => append_words(task, &value_words(&value_for_move)),
+                None => append_words(task, &value_words(&value)),
             }
             task.waiting_on = None;
             task.status = TaskStatus::InProgress;

@@ -6402,7 +6402,7 @@ impl Workspace {
     /// A snooze's until as the board states it: `activity`, or a duration
     /// from now. Anything else is `None`, so the refusal names the two
     /// forms.
-    fn parse_snooze(&self, stated: &str) -> Option<forge_primitives::tasks::SnoozeUntil> {
+    fn parse_snooze(stated: &str) -> Option<forge_primitives::tasks::SnoozeUntil> {
         let stated = stated.trim();
         if stated.eq_ignore_ascii_case("activity") {
             return Some(forge_primitives::tasks::SnoozeUntil::Activity);
@@ -7870,7 +7870,7 @@ impl Workspace {
                 }
                 Command::TaskSnooze { project, id, until } => {
                     let id = TaskId::from(id.as_str());
-                    match self.parse_snooze(&until) {
+                    match Self::parse_snooze(&until) {
                         None => self.board_edit_refused(
                             "a snooze",
                             "the until is a duration (\"2h\", \"1d\") or \"activity\"",
@@ -8094,7 +8094,7 @@ impl Workspace {
                             let _ = self.update_tx.send(SessionUpdate::TaskDetail {
                                 key,
                                 project: project.clone(),
-                                row,
+                                row: row.map(Box::new),
                             });
                         }
                         None => {

@@ -849,14 +849,14 @@ mod tests {
     fn a_row_written_before_the_new_fields_reads_as_finite_and_unversioned() {
         let mut older = serde_json::to_value(sample_task()).expect("serialize");
         let object = older.as_object_mut().expect("a row is an object");
-        for gone in ["kind", "cadence", "decision", "version", "attempt", "evidence"] {
+        for gone in ["kind", "cadence", "request", "version", "attempt", "evidence"] {
             object.remove(gone);
         }
         object.insert("attempt".to_owned(), serde_json::json!(3));
         let read: Task = serde_json::from_value(older).expect("a row written before the fields");
         assert_eq!(read.kind, TaskKind::Finite, "an old row is finite work");
         assert_eq!(read.cadence, None);
-        assert_eq!(read.decision, None);
+        assert_eq!(read.request, None);
         assert_eq!(read.evidence, None, "a row written before the gate carries no claim");
         assert_eq!(read.version, 0, "nothing names a version it has never written");
     }
@@ -891,6 +891,10 @@ mod tests {
                 verification: false,
                 parked: false,
                 since: None,
+                acknowledged_at: None,
+                due: None,
+                snoozed: None,
+                expired_at: None,
             }),
             ..plain.clone()
         };
@@ -914,6 +918,10 @@ mod tests {
             verification: false,
             parked: false,
             since,
+            acknowledged_at: None,
+            due: None,
+            snoozed: None,
+            expired_at: None,
         };
         let started = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(150);
         let row = Task {
@@ -1008,6 +1016,10 @@ mod tests {
             verification: false,
             parked: false,
             since: None,
+            acknowledged_at: None,
+            due: None,
+            snoozed: None,
+            expired_at: None,
         };
         let json = serde_json::to_vec(&waiting).expect("serialize");
         let back: Waiting = serde_json::from_slice(&json).expect("deserialize");
@@ -1025,6 +1037,10 @@ mod tests {
             verification: false,
             parked: false,
             since: None,
+            acknowledged_at: None,
+            due: None,
+            snoozed: None,
+            expired_at: None,
         };
         let json = serde_json::to_vec(&waiting).expect("serialize");
         let back: Waiting = serde_json::from_slice(&json).expect("deserialize");

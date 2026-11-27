@@ -1944,11 +1944,13 @@ pub enum SessionUpdate {
     /// with its brief and its history, which the board's bulk read leaves
     /// out so a wide board stays light. `row` is `None` when the id names
     /// nothing live or archived. `key` is the project's lead seat, as the
-    /// board's own announcements are.
+    /// board's own announcements are. **Boxed** because a row now carries
+    /// its ask and its wait, and this enum's other variants are a few dozen
+    /// bytes: serde writes a box transparently, so the wire is unchanged.
     TaskDetail {
         key: SessionSlot,
         project: String,
-        row: Option<crate::board::BoardRow>,
+        row: Option<Box<crate::board::BoardRow>>,
     },
     /// The project's schedules moved, as the whole set the core holds.
     ///

@@ -2623,6 +2623,9 @@ fn board(state: &TransportState) -> BoardWire {
 
 /// How many of the window's unasked agent actions the audit sample draws.
 const SAMPLE_SIZE: usize = 3;
+/// How often the sample's window moves on, so a returning reader sees a
+/// different few.
+const SAMPLE_ROTATE_SECS: u64 = 300;
 
 /// The window a board never looked at samples over.
 const SAMPLE_WINDOW_SECS: u64 = 24 * 3_600;
@@ -2670,9 +2673,9 @@ fn attention(state: &TransportState, project: &str, now: SystemTime) -> Value {
     let offset = if total == 0 {
         0
     } else {
-        (now.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |since| since.as_secs()) as usize
-            / 300)
-            % total
+        let slots = u64::try_from(total).unwrap_or(1);
+        let passed = now.duration_since(SystemTime::UNIX_EPOCH).map_or(0, |since| since.as_secs());
+        usize::try_from((passed / SAMPLE_ROTATE_SECS) % slots).unwrap_or(0)
     };
     let rows: Vec<Value> = (0..sampled)
         .map(|index| {

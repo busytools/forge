@@ -851,33 +851,28 @@ impl TasksFacade for ProdTasksFacade {
                     }
                 }
             }
-            let class = match draft.kind {
-                AskKind::Teaching => {
-                    let Some(class) =
-                        draft.class.as_deref().map(str::trim).filter(|c| !c.is_empty())
-                    else {
-                        return Err(TasksError::Refused(
-                            "a teaching names its `class`: the recurring trouble the lesson \
-                             settles"
-                                .to_owned(),
-                        ));
-                    };
-                    if class.chars().count() > MAX_CLASS {
-                        return Err(TasksError::Refused(format!(
-                            "the class is {} characters; keep it to {MAX_CLASS}",
-                            class.chars().count(),
-                        )));
-                    }
-                    Some(class.to_owned())
+            let class = if draft.kind == AskKind::Teaching {
+                let Some(class) = draft.class.as_deref().map(str::trim).filter(|c| !c.is_empty())
+                else {
+                    return Err(TasksError::Refused(
+                        "a teaching names its `class`: the recurring trouble the lesson settles"
+                            .to_owned(),
+                    ));
+                };
+                if class.chars().count() > MAX_CLASS {
+                    return Err(TasksError::Refused(format!(
+                        "the class is {} characters; keep it to {MAX_CLASS}",
+                        class.chars().count(),
+                    )));
                 }
-                _ => {
-                    if draft.class.is_some() {
-                        return Err(TasksError::Refused(
-                            "only a teaching carries a `class`".to_owned(),
-                        ));
-                    }
-                    None
+                Some(class.to_owned())
+            } else {
+                if draft.class.is_some() {
+                    return Err(TasksError::Refused(
+                        "only a teaching carries a `class`".to_owned(),
+                    ));
                 }
+                None
             };
             // **A deadline names the default that runs when it passes**,
             // and there is no approve default: the pair arrives together.
