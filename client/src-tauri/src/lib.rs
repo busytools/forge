@@ -82,6 +82,7 @@ mod commands {
             while let Some(event) = rx.recv().await {
                 let _ = match event {
                     ClientEvent::Connection => app.emit("client://connection", ()),
+                    ClientEvent::Alive => app.emit("client://alive", ()),
                     ClientEvent::Inbound(message) => app.emit("client://inbound", message),
                     ClientEvent::Framed { subject, bytes, parse_ms } => app.emit(
                         "client://framed",

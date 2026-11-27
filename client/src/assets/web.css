@@ -41,6 +41,22 @@
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* **Text a screen reader hears and the page does not draw.** The one rule
+   behind every `.sr` span: a live region whose visible line carries an age
+   that moves with the clock (a stale read's "for 2m") keeps the moving part
+   `aria-hidden` and its stable sentence here, so the announcement follows
+   the state rather than the clock. */
+.sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0; }
+
 /* One focus treatment, on every control the sheet can reach: an accent ring
    with an offset, so it reads on any ground and clears a border rather than
    sitting on it. `:focus-visible` rather than `:focus`, so a pointer press
@@ -3136,10 +3152,9 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
 .tc .wave .area { fill: var(--accent); }
 .tc .wave .edge { fill: none; stroke: var(--hot); stroke-width: 1.5px;
   vector-effect: non-scaling-stroke; }
-/* The phase, for a screen reader only: the card's counts are visual readings
-   and would be unreadable announced fifty times a second. */
-.tc .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
-  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+/* The phase, for a screen reader only (the shared `.sr` rule): the card's
+   counts are visual readings and would be unreadable announced fifty times a
+   second. */
 /* The graph: the same readings the console's meter draws, at the card's own
    pitch - one bar per past reading, newest last, and the window held at a
    fixed length so the pitch stays still while the heights move. */
@@ -3215,10 +3230,9 @@ kbd { font-family: inherit; font-size: inherit; color: inherit;
    it. */
 .comp .notice { font-family: var(--mono); font-size: var(--fs-data);
   padding: 8px 14px 0; margin: 0; border-radius: 0; white-space: normal; }
-/* The band's own words, for a reader who is not looking at it: the open is
-   drawn as the band's colour and motion, and this is the state said plainly. */
-.comp .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
-  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+/* The band's own words, for a reader who is not looking at it (the shared
+   `.sr` rule): the open is drawn as the band's colour and motion, and this is
+   the state said plainly. */
 .comp .notice.q { color: var(--dim); }
 .comp .notice.bad { color: var(--bad); }
 /* The drawing's warn row is its colour and nothing else. */
@@ -3645,9 +3659,8 @@ button.chip:hover { border-color: var(--ctl); color: var(--text); }
   .dock .unlock .fld { min-height: 44px; }
   .dock .unlock .bio { min-height: 44px; }
 }
-/* The phase or the batch, for a screen reader only: the marks say nothing. */
-.dock .sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
-  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+/* The phase or the batch, for a screen reader only (the shared `.sr` rule):
+   the marks say nothing. */
 /* What the marked option would do, which the terminal shows for the focused
    row while the reader decides. */
 /* The preview's own prose: markdown on the wire, rendered as markdown rather

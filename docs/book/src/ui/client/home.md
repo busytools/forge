@@ -199,10 +199,16 @@ happening to it, and nothing about it is the reader's to act on.
 - **Held updates**: a frame this client cannot place is counted and said
   above the fleet, whether or not the home's read landed, so a stream out of
   step with this build is visible rather than silent (rule 25).
-- **A connection that dropped**: the page keeps what it last read and says so
-  above it, and the notice stays until a fresh read lands rather than clearing
-  the moment the socket reopens - the window between those two is the one
-  place a reader cannot tell stale rows from current ones.
+- **A connection that dropped, or one that stopped answering**: the page
+  keeps what it last read and says so above it, and the notice stays until a
+  fresh read lands rather than clearing the moment the socket reopens - the
+  window between those two is the one place a reader cannot tell stale rows
+  from current ones. A link whose status still says `open` while nothing at
+  all has arrived past its own probe window is drawn as quiet:
+  `No word from <address> for 2h - showing the last read`. The transports'
+  deadlines cover a dead socket, and the page's own clock is the backstop for
+  a server that stopped answering while the socket stayed up; the line clears
+  as soon as frames are heard again.
 - **A forge on another protocol**: the shell draws one line above the page
   naming the command that updates the stale half and this client's build -
   and the answering build where the greeting carried it - and the page

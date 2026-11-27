@@ -40,6 +40,7 @@
     connection,
     notice,
     sessionNotice = null,
+    sessionNoticeSpoken = null,
     onconnect,
   }: {
     route: Route;
@@ -65,6 +66,13 @@
      * strip there is a page that scrolls. `null` on every other route.
      */
     sessionNotice?: string | null;
+    /**
+     * The same line with its moving age left out, for the rail's live
+     * region: the visible line keeps the age, and the announcement hears
+     * only what changed. `null` when the line has nothing that moves, and
+     * the rail renders it plainly.
+     */
+    sessionNoticeSpoken?: string | null;
     onconnect: (connected: Extract<Attempt, { ok: true }>) => void;
   } = $props();
 
@@ -313,6 +321,7 @@
       {board}
       mark={settings.mark}
       notice={sessionNotice}
+      noticeSpoken={sessionNoticeSpoken}
     >
       {#snippet conversation(props)}
         <Chat {...props} />
