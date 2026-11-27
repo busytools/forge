@@ -3458,14 +3458,16 @@ pub(crate) fn patch_for_record(subject: &Subject, old: &Value, new: &Value) -> O
         Subject::Home => home_patch(old, new),
         Subject::Board => board_patch(old, new),
         Subject::Session(_) => session_patch(old, new),
+        // **Two subjects have no patch, for their own reasons.**
+        //
         // A take is not a record: its frames are the deltas, and a subscribe
         // is answered with nothing to keep.
-        Subject::Dictate => None,
+        //
         // **The token pool has no push.** Nothing in the stream announces a
         // transcript being written, so nothing ever marks `Usage` dirty; its
-        // subscription is one scan on the ask and its version never moves.
-        // A patch type for it would be dead code, which is why there is none.
-        Subject::Usage => None,
+        // subscription is one scan on the ask and its version never moves. A
+        // patch type for it would be dead code, which is why there is none.
+        Subject::Dictate | Subject::Usage => None,
         Subject::DictateModels | Subject::Extensions => whole_fields(old, new),
     }
 }
