@@ -67,7 +67,7 @@ function fire(name: string, payload: unknown): void {
 }
 
 /** A connection with its listeners in place and the shell's calls answered. */
-async function opened(state: State = OPEN): Promise<Connection> {
+async function opened(state: State = OPEN, expected = 7): Promise<Connection> {
   invoke.mockImplementation((command: string) => {
     if (command === 'client_state') return Promise.resolve(state);
     // The shell's own id for the connection it opened, which `close` names.
@@ -75,10 +75,10 @@ async function opened(state: State = OPEN): Promise<Connection> {
     return Promise.resolve(undefined);
   });
   const connection = connectRust('ws://127.0.0.1:7777/socket');
-  // Six: the connection, the server's frames, the refusals, the browser's own
-  // frames for the page's canvas, and #2513's frame facts and subscribe
-  // writes.
-  await vi.waitFor(() => expect(handlers.size).toBe(7));
+  // Seven: the connection, the server's frames, the refusals, the browser's
+  // own frames for the page's canvas, #2513's frame facts and subscribe
+  // writes - and, under a shell, the phone's resume (`expected`, 8 there).
+  await vi.waitFor(() => expect(handlers.size).toBe(expected));
   await vi.waitFor(() =>
     expect(invoke).toHaveBeenCalledWith('client_connect', { url: 'ws://127.0.0.1:7777/socket' }),
   );
@@ -90,6 +90,9 @@ afterEach(() => {
   handlers.clear();
   listen.mockClear();
   vi.useRealTimers();
+  // A test that fakes the shell or the page's visibility leaves neither set.
+  delete (window as unknown as Record<string, unknown>)['__TAURI_INTERNALS__'];
+  delete (document as { hidden?: unknown }).hidden;
 });
 
 describe('what the shell is told', () => {
@@ -1167,23 +1170,79 @@ describe("the connection's own facts", () => {
     }
   });
 
-  it('the return beats at once, so the spell is answered when it ends', async () => {
+  /**
+   * **The return's pulse names itself as a return.** The shell leaves the
+   * home, the board and the shown seat to the re-reads the return is sending,
+   * and re-reads only what nothing else will; an unnamed beat would make it
+   * encode the home and the board a second time on the same return.
+   */
+  it('the return pulses as a return, whatever the document reads', async () => {
     vi.useFakeTimers();
-    let hidden = true;
-    Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
     try {
       const connection = await opened();
-      await vi.advanceTimersByTimeAsync(5_000);
+      connection.pulse?.();
+      expect(invoke).toHaveBeenCalledWith('client_heartbeat', {
+        visible: true,
+        returned: true,
+      });
+      connection.close();
+    } finally {
+      delete (document as { hidden?: unknown }).hidden;
+    }
+  });
+
+  /**
+   * **A shell resume keeps the page visible where the document does not say
+   * so.** Android reports neither focus nor reliably a visibility change on
+   * return, so a page left reading `hidden` would park itself for the app's
+   * life: no reconcile, and its chat frames dropped rather than held. The
+   * resume is the evidence; a visibility change is what takes it back.
+   */
+  it('a shell resume keeps the beats visible until a hide is reported', async () => {
+    vi.useFakeTimers();
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    (window as unknown as Record<string, unknown>)['__TAURI_INTERNALS__'] = {};
+    try {
+      const connection = await opened(OPEN, 8);
+      fire('client://foreground', undefined);
       invoke.mockClear();
-      hidden = false;
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(invoke, 'the resumed page says visible').toHaveBeenCalledWith('client_heartbeat', {
+        visible: true,
+      });
+
+      // A hide the phone does report takes the resume back.
       document.dispatchEvent(new Event('visibilitychange'));
-      expect(invoke, 'the return is a beat, not a wait for the next timer').toHaveBeenCalledWith(
+      invoke.mockClear();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(invoke, 'and a reported hide says hidden again').toHaveBeenCalledWith(
         'client_heartbeat',
-        { visible: true },
+        { visible: false },
       );
       connection.close();
     } finally {
       delete (document as { hidden?: unknown }).hidden;
+      delete (window as unknown as Record<string, unknown>)['__TAURI_INTERNALS__'];
+    }
+  });
+
+  /** A closed connection gives its visibility listener back. */
+  it('releases its visibility listener on close', async () => {
+    const added = vi.spyOn(document, 'addEventListener');
+    const removed = vi.spyOn(document, 'removeEventListener');
+    try {
+      const connection = await opened();
+      const listener = added.mock.calls.find(([name]) => name === 'visibilitychange')?.[1];
+      connection.close();
+      expect(listener, 'the connection listens to visibility').toBeTypeOf('function');
+      expect(
+        removed.mock.calls.some(([name, fn]) => name === 'visibilitychange' && fn === listener),
+        'and gives the listener back',
+      ).toBe(true);
+    } finally {
+      added.mockRestore();
+      removed.mockRestore();
     }
   });
 });

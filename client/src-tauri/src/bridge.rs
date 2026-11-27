@@ -37,8 +37,12 @@
 //! rebuilds those. A subject that is not a seat is re-read on the reconcile
 //! rather than handed back: the home roster is copied here for the ask
 //! rule's own fold, not as a record to restore. **A hidden page gets the ring
-//! and nothing more**, so a read-aloud keeps playing while the record
-//! hand-off and the whole-subject re-reads wait for the page that draws.
+//! and nothing more**: the held frames go back on each hidden beat, which is
+//! the page's proof that it runs, while the record hand-off and the
+//! whole-subject re-reads wait for the return. The ring is capped, so a long
+//! hidden spell can drop the oldest of them - a voice frame's playback and a
+//! released seat are best-effort behind a hidden window, and the record is
+//! what the return guarantees.
 
 #![allow(
     clippy::unused_async,
@@ -179,6 +183,14 @@ struct State {
     /// reconcile flushes it first. Only `chat_appended` updates are left
     /// out, because the record's conversation rebuilds those.
     last_beat: Option<Instant>,
+    /// Whether the page's last beat said it was drawing.
+    ///
+    /// **A hidden page is not fresh, whatever its pulse says.** The pulse is
+    /// stamped when a socket opens too (a re-subscribe's answers would
+    /// otherwise be held for no reason), and a reconnect while the page is
+    /// hidden must not hand it a frame it will only fold: `forward` asks
+    /// this beside the pulse's age.
+    visible: bool,
     suppressed: u64,
     parked: VecDeque<Value>,
     /// Seats a REPLACES frame has asked a fresh read for and no snapshot has
@@ -334,6 +346,7 @@ impl Bridge {
                 generation: 0,
                 greeting: None,
                 last_beat: None,
+                visible: true,
                 suppressed: 0,
                 parked: VecDeque::new(),
                 refreshing: HashSet::new(),
@@ -1354,38 +1367,63 @@ impl Bridge {
     /// conversation - to a page nobody was drawing, once per throttled beat
     /// (2026-11-27, 21:21, measured by system-monitor). A hidden beat does
     /// not refresh the pulse either, so the page stays parked: frames are
-    /// counted and held, and the beat that carries the return - sent at once
-    /// on the visibility change - is the one reconciled.
+    /// counted and held, and the beat that carries the return is the one
+    /// reconciled.
     ///
-    /// `None` is a page older than the flag, and it means visible: absent
-    /// must behave exactly as every build before it did.
-    pub fn heartbeat(&self, visible: Option<bool>) {
+    /// **`returned` names the beat that carries a return, and the reconcile
+    /// leaves the page's own re-read alone.** The page's return asks its home,
+    /// its board and its shown seat (`connect/resync.ts`) through their own
+    /// guards; a reconcile that read the same three would pay a second whole
+    /// encode of each on every return, which is what the first round of this
+    /// cut's review measured. The flag is the page's statement, so the two
+    /// halves do not depend on which ask the shell happens to execute first.
+    /// It also takes the ring back whether or not the pulse is stale, because
+    /// a socket opening stamps the pulse and would otherwise strand a park's
+    /// frames behind a fresh one.
+    ///
+    /// `None` is a page older than the flag, and it means visible and not a
+    /// return: absent must behave exactly as every build before it did.
+    pub fn heartbeat(&self, visible: Option<bool>, returned: Option<bool>) {
         let visible = visible.unwrap_or(true);
-        let parked = {
+        // The shell is deciding whether to spend a whole encode, so a caller
+        // that contradicts itself - a hidden return - is read as hidden.
+        let returned = returned.unwrap_or(false) && visible;
+        let spell = {
             let mut state = self.lock();
             let idle =
                 state.last_beat.is_some_and(|at| at.elapsed() >= Duration::from_millis(FRESH_MS));
+            state.visible = visible;
             // **Freshness is what `forward` asks to emit a frame live.** A
             // hidden page must not be fresh: it would be handed every frame
-            // to fold while it draws none, and its next beat would read as a
-            // return that never happened.
+            // to fold while it draws none. `forward` reads `visible` too, so
+            // a reconnect that stamps the pulse cannot make a hidden page
+            // fresh either.
             if visible {
                 state.last_beat = Some(Instant::now());
                 state.suppressed = 0;
             }
             idle
         };
-        if !parked {
+        // **A return takes the ring back whatever the pulse says.** Opening a
+        // socket stamps the pulse, so a reconnect inside the freshness window
+        // would leave the frames a hidden page parked with no beat to carry
+        // them back: the ring would hold them until the page went stale,
+        // which a page that is drawing again never does.
+        if returned {
+            self.flush_parked();
+        }
+        if !spell {
             return;
         }
         if visible {
-            self.reconcile();
+            self.reconcile(returned);
         } else {
             // **The ring and no more.** A hidden page is not drawing, so the
             // seat's record and the whole-subject re-reads are owed to the
-            // beat that carries its return, not to this one; the stream-only
-            // frames still flow, because a read-aloud or a released seat is
-            // owed to the page that is running even while it is not seen.
+            // beat that carries its return, not to this one; the frames the
+            // ring holds still go back to a page that is running - a released
+            // seat, a dock's ending, a voice frame - because no record
+            // rebuilds them.
             self.flush_parked();
         }
     }
@@ -1397,10 +1435,14 @@ impl Bridge {
     /// is a non-blocking send, so holding the lock across it costs nothing.
     ///
     /// **A hidden page is owed this much and nothing else.** The ring holds
-    /// only what no record rebuilds - a released seat, a dock's ending, a
-    /// dictation's close, a voice frame - so a read-aloud playing behind a
-    /// hidden window keeps flowing, while the record hand-off and the
-    /// whole-subject refreshes wait for the page that actually draws.
+    /// every frame except a seat's chat: stream-only frames (a released seat,
+    /// a dock's ending, a dictation's close), a seat's snapshot, and a
+    /// `voice_audio` update like any other. It goes back on each hidden beat,
+    /// which is the page's proof that it runs, so a read-aloud behind a
+    /// hidden window plays at the beat's cadence rather than live - and the
+    /// ring's cap drops the oldest on overflow, so a long hidden spell can
+    /// lose its first frames. What waits for the return is the record
+    /// hand-off and the whole-subject refreshes.
     fn flush_parked(&self) {
         let mut state = self.lock();
         while let Some(message) = state.parked.pop_front() {
@@ -1410,10 +1452,10 @@ impl Bridge {
 
     /// The page is behind: hand it what the park would have handed it.
     ///
-    /// **The stream-only frames go first, as themselves**, in the order they
-    /// were held: a released seat, a dock's ending, a dictation's close are
-    /// frames the records do not rebuild, and a reconcile without them would
-    /// be the drop rule 25 forbids.
+    /// **`flush_parked` goes first**, and the frames it hands back are the
+    /// stream-only ones: a released seat, a dock's ending, a dictation's
+    /// close are frames the records do not rebuild, and a reconcile without
+    /// them would be the drop rule 25 forbids.
     ///
     /// **Then the seat the page is drawing, and no other** (#2944). A seat's
     /// record is replayed as the snapshot the core would have carried, its
@@ -1427,7 +1469,15 @@ impl Bridge {
     /// folds nothing on this side (the page's own home fold reads the
     /// frames), so a copy of it here would be stale, while a re-subscribe
     /// answers with the truth.
-    fn reconcile(&self) {
+    ///
+    /// **`returned` is the page's own return, and it owns three subjects.**
+    /// The return re-read asks the home, the board and the shown seat through
+    /// their own guards, so this reconcile leaves those three alone: reading
+    /// them here as well paid a second whole encode of each on every return
+    /// (the first round of this cut's review measured it). The rest - the
+    /// ring, the other seats' marks, the other held subjects - is still the
+    /// shell's to answer, because nothing else will.
+    fn reconcile(&self, returned: bool) {
         self.flush_parked();
         let mut state = self.lock();
         let shown = state.shown.as_ref().map(records::slot_key);
@@ -1438,6 +1488,9 @@ impl Bridge {
             .map(|(key, _)| key.clone())
             .collect();
         for key in seats {
+            if returned && Some(&key) == shown.as_ref() {
+                continue;
+            }
             state.behind.insert(key.clone());
             if Some(&key) == shown.as_ref() {
                 self.catch_up(&mut state, &key);
@@ -1447,9 +1500,12 @@ impl Bridge {
             if watch.what.get("session").is_some() {
                 continue;
             }
-            // **A subject the page just re-read is not read again.** The
-            // page's return and this stale beat name one return, and the
-            // first beat after a lock is always stale.
+            // **A return's own reads, and a subject just re-read, are left
+            // alone.** The page's return asks the home and the board itself;
+            // the stamp covers every other ask that went inside the window.
+            if returned && matches!(watch.what.as_str(), Some("home" | "board")) {
+                continue;
+            }
             let fresh = state
                 .refreshed
                 .get(key)
@@ -1901,10 +1957,16 @@ impl Bridge {
     /// counted, and every other frame is HELD in the ring for the reconcile
     /// to flush - a released seat, a dock's ending, a dictation's close and
     /// an error are frames no record carries.
+    ///
+    /// **A hidden page is parked whatever its pulse's age.** Opening a socket
+    /// stamps the pulse, so a reconnect while the page is hidden would
+    /// otherwise emit its re-subscribe answers live to a page that draws
+    /// none; the visibility the last beat carried is the other half of the
+    /// test, and it is the page's own.
     fn forward(&self, message: &Value, framed: Option<(usize, f64)>) {
         let mut state = self.lock();
-        let fresh =
-            state.last_beat.is_some_and(|at| at.elapsed() < Duration::from_millis(FRESH_MS));
+        let fresh = state.visible
+            && state.last_beat.is_some_and(|at| at.elapsed() < Duration::from_millis(FRESH_MS));
         if !fresh {
             state.suppressed += 1;
             if !rebuilt_by_records(message) {
@@ -2752,7 +2814,7 @@ mod tests {
         assert!(rx.try_recv().is_err(), "nothing was emitted while the page was away");
         // The page comes back: the heartbeat hands the park's stream-only
         // frames over first, then the records.
-        bridge.heartbeat(Some(true));
+        bridge.heartbeat(Some(true), None);
         let caught = event(&mut rx, is_inbound_kind("snapshot")).await;
         let ClientEvent::Inbound(caught) = caught else { unreachable!("filtered to inbound") };
         assert_eq!(caught["subject"], seat(), "the record goes back under its own subject");
@@ -2812,7 +2874,7 @@ mod tests {
         sent(&bridge, releasing.clone());
         sent(&bridge, chat);
         assert_eq!(bridge.lock().parked.len(), 1, "the chat is rebuilt; only the release is held");
-        bridge.heartbeat(Some(true));
+        bridge.heartbeat(Some(true), None);
         let ClientEvent::Inbound(first) = event(&mut rx, is_inbound()).await else {
             unreachable!("filtered to inbound");
         };
@@ -2841,7 +2903,7 @@ mod tests {
         bridge.unsubscribe(&seat());
         park(&bridge);
         sent(&bridge, context_usage(0.2));
-        bridge.heartbeat(Some(true));
+        bridge.heartbeat(Some(true), None);
         let ClientEvent::Inbound(caught) = event(&mut rx, is_inbound_kind("snapshot")).await else {
             unreachable!("filtered to inbound");
         };
@@ -2856,7 +2918,7 @@ mod tests {
         );
         park(&bridge);
         sent(&bridge, context_usage(0.3));
-        bridge.heartbeat(Some(true));
+        bridge.heartbeat(Some(true), None);
         while let Ok(event) = rx.try_recv() {
             if let ClientEvent::Inbound(message) = event {
                 assert_ne!(
@@ -2905,7 +2967,7 @@ mod tests {
         bridge.showing(Some(slot()));
         drain(&mut rx);
         park(&bridge);
-        bridge.heartbeat(Some(true));
+        bridge.heartbeat(Some(true), None);
         assert_eq!(bridge.lock().suppressed, 0, "no frame arrived in the spell");
         let ClientEvent::Inbound(caught) = event(&mut rx, is_inbound_kind("snapshot")).await else {
             unreachable!("filtered to inbound");
@@ -2949,27 +3011,27 @@ mod tests {
                 "update": { "service_status": { "severity": "warning", "message": "a line" } },
             }),
         );
-        bridge.heartbeat(Some(false));
+        bridge.heartbeat(Some(false), None);
         assert!(
             replayed(&mut rx).is_empty(),
             "a hidden page is owed no record, whatever landed while it was away"
         );
         // The return is the beat that answers the spell, once.
-        bridge.heartbeat(Some(true));
+        bridge.heartbeat(Some(true), None);
         assert_eq!(
             replayed(&mut rx),
             vec![seat()],
             "the return is handed the drawn seat's record once"
         );
-        bridge.heartbeat(Some(true));
+        bridge.heartbeat(Some(true), None);
         assert!(replayed(&mut rx).is_empty(), "and a fresh beat is not a second hand-off");
     }
 
     /// **A hidden beat still hands over the ring.** The frames no record
     /// rebuilds - a released seat, a dictation's close, a voice frame - are
-    /// owed to a page that is running even behind a hidden window, so a
-    /// read-aloud keeps playing; only the record hand-off waits for the
-    /// return.
+    /// owed to a page that is running even behind a hidden window; only the
+    /// record hand-off waits for the return. The ring is capped, so this is
+    /// best-effort rather than a stream: the oldest go first on overflow.
     #[tokio::test]
     async fn a_hidden_beat_still_hands_over_the_stream_only_frames() {
         let (bridge, mut rx) = bridge();
@@ -2988,7 +3050,7 @@ mod tests {
                 "update": { "releasing": { "key": seat()["session"] } },
             }),
         );
-        bridge.heartbeat(Some(false));
+        bridge.heartbeat(Some(false), None);
         let ClientEvent::Inbound(first) = event(&mut rx, is_inbound()).await else {
             unreachable!("filtered to inbound");
         };
@@ -3014,7 +3076,7 @@ mod tests {
         event(&mut rx, is_inbound()).await;
         drain(&mut rx);
         park(&bridge);
-        bridge.heartbeat(None);
+        bridge.heartbeat(None, None);
         assert_eq!(
             replayed(&mut rx),
             vec![seat()],
@@ -3048,7 +3110,7 @@ mod tests {
         bridge.showing(Some(slot()));
         drain(&mut rx);
         park(&bridge);
-        bridge.heartbeat(Some(true));
+        bridge.heartbeat(Some(true), None);
         assert_eq!(
             replayed(&mut rx),
             vec![seat()],
@@ -3083,7 +3145,7 @@ mod tests {
         bridge.showing(None);
         drain(&mut rx);
         park(&bridge);
-        bridge.heartbeat(Some(true));
+        bridge.heartbeat(Some(true), None);
         assert!(replayed(&mut rx).is_empty(), "no seat is being drawn, so no record comes back");
     }
 
@@ -3103,7 +3165,7 @@ mod tests {
         bridge.showing(Some(slot()));
         drain(&mut rx);
         park(&bridge);
-        bridge.heartbeat(Some(true));
+        bridge.heartbeat(Some(true), None);
         assert!(
             bridge.lock().behind.contains(&key),
             "the drawn seat with no record keeps its mark"
@@ -3128,14 +3190,14 @@ mod tests {
         // when the release lands.
         bridge.showing(None);
         park(&bridge);
-        bridge.heartbeat(Some(true));
+        bridge.heartbeat(Some(true), None);
         assert!(bridge.lock().behind.contains(&key));
         bridge.release(&seat());
         assert!(!bridge.lock().behind.contains(&key), "a release takes the mark with the record");
 
         bridge.subscribe(seat(), true, false);
         park(&bridge);
-        bridge.heartbeat(Some(true));
+        bridge.heartbeat(Some(true), None);
         assert!(bridge.lock().behind.contains(&key));
         bridge.unsubscribe(&seat());
         assert!(!bridge.lock().behind.contains(&key), "so does the last reader letting go");
@@ -3201,7 +3263,7 @@ mod tests {
                 },
             }),
         );
-        bridge.heartbeat(Some(true));
+        bridge.heartbeat(Some(true), None);
         assert!(
             !replayed(&mut rx).contains(&other),
             "the drawn seat's reconcile does not carry the background seat's record"
@@ -3275,7 +3337,7 @@ mod tests {
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
         // A beat this instant is what the page's timer wrote before the
         // display slept - and the page is already frozen behind it.
-        bridge.heartbeat(Some(true));
+        bridge.heartbeat(Some(true), None);
 
         // The control: a turn frame is not an ask, so nothing is re-read.
         sent(
@@ -3321,7 +3383,7 @@ mod tests {
         connected(&bridge).await;
         bridge.subscribe(json!("home"), true, false);
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
-        bridge.heartbeat(Some(true));
+        bridge.heartbeat(Some(true), None);
 
         sent(
             &bridge,
@@ -4027,7 +4089,7 @@ mod tests {
         bridge.subscribe(json!("home"), true, false);
         let _ = server.heard_until(|v| v["kind"] == "subscribe").await;
         park(&bridge);
-        bridge.heartbeat(Some(true));
+        bridge.heartbeat(Some(true), None);
         let _ = server.heard_until(|v| v["kind"] == "unsubscribe").await;
         let again = server.heard_until(|v| v["kind"] == "subscribe").await;
         assert_eq!(again["what"], json!("home"), "the home is re-read, not copied");
@@ -4044,7 +4106,7 @@ mod tests {
         bridge.subscribe(seat(), true, false);
         sent(&bridge, snapshot(json!({ "conversation": { "turns": [] } })));
         event(&mut rx, is_inbound()).await;
-        bridge.heartbeat(Some(true));
+        bridge.heartbeat(Some(true), None);
         let deadline = tokio::time::Instant::now() + Duration::from_millis(300);
         while tokio::time::Instant::now() < deadline {
             let left = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -4395,10 +4457,99 @@ mod tests {
 
         // The first beat after the park is stale, and reconciles.
         park(&bridge);
-        bridge.heartbeat(Some(true));
+        bridge.heartbeat(Some(true), None);
         assert!(
             tokio::time::timeout(Duration::from_millis(300), server.heard.recv()).await.is_err(),
             "the reconcile read home again on the same return",
+        );
+    }
+
+    /// **A return beat does not read what the page's return already asks
+    /// for.** The page's own re-read covers the home, the board and the
+    /// shown seat through their guards; a reconcile that also read them paid
+    /// a second whole encode of each on every return (measured in review: two
+    /// home and two board encodes on one return). The beat names itself, so
+    /// the two halves do not depend on which ask the shell runs first.
+    #[tokio::test]
+    async fn a_return_leaves_the_page_s_own_three_reads_alone() {
+        let (bridge, mut rx) = bridge();
+        let mut server = stub().await;
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(seat(), true, false);
+        bridge.subscribe(json!("home"), true, false);
+        bridge.subscribe(json!("board"), true, false);
+        // Drain the subscribe frames the three asks put on the stub.
+        for _ in 0..3 {
+            server.heard_until(|frame| frame["kind"] == "subscribe").await;
+        }
+        sent(&bridge, snapshot(json!({ "conversation": { "turns": [] } })));
+        bridge.showing(Some(slot()));
+        drain(&mut rx);
+
+        park(&bridge);
+        // The page's return re-read: the three asks its resync sends.
+        bridge.refresh(&seat(), None);
+        bridge.refresh(&json!("home"), None);
+        bridge.refresh(&json!("board"), None);
+        for _ in 0..3 {
+            server.heard_until(|frame| frame["kind"] == "subscribe").await;
+        }
+        // The return's own beat says so.
+        bridge.heartbeat(Some(true), Some(true));
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), server.heard.recv()).await.is_err(),
+            "the return's beat read a subject the page is already reading",
+        );
+        assert!(
+            replayed(&mut rx).is_empty(),
+            "and the shown seat is left to the return's own read, not handed back twice"
+        );
+    }
+
+    /// **A reconnect while the page is hidden does not make it fresh.** A
+    /// socket opening stamps the pulse (its re-subscribe answers should not
+    /// be held for nothing), and the page's own visibility is what keeps a
+    /// hidden page parked through it - the re-subscribe answers are held and
+    /// flushed on the return, not emitted into a page that draws none.
+    #[tokio::test]
+    async fn a_reconnect_while_hidden_stays_parked() {
+        let (bridge, mut rx) = bridge();
+        let server = stub().await;
+        bridge.connect(server.url.clone());
+        connected(&bridge).await;
+        bridge.subscribe(seat(), true, false);
+        bridge.showing(Some(slot()));
+        sent(&bridge, snapshot(json!({ "conversation": { "turns": [] } })));
+        event(&mut rx, is_inbound()).await;
+        drain(&mut rx);
+
+        // The page says it is hidden, and the socket reconnects (which stamps
+        // the pulse), and a frame lands behind both. The status move's own
+        // connection notice is not the frame this test is about.
+        bridge.heartbeat(Some(false), None);
+        let id = bridge.lock().socket_id;
+        bridge.socket_event(id, SocketEvent::Status(Status::Open));
+        drain(&mut rx);
+        sent(
+            &bridge,
+            json!({
+                "kind": "update",
+                "update": { "service_status": { "severity": "warning", "message": "a line" } },
+            }),
+        );
+        assert!(rx.try_recv().is_err(), "a hidden page is not handed a frame live");
+
+        // The return flushes the ring.
+        bridge.heartbeat(Some(true), Some(true));
+        let ClientEvent::Inbound(first) = event(&mut rx, is_inbound()).await else {
+            unreachable!("filtered to inbound");
+        };
+        assert_eq!(
+            first["update"]["service_status"]["message"],
+            json!("a line"),
+            "the parked frame goes back on the return"
         );
     }
 }

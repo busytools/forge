@@ -8,7 +8,8 @@
  * conversation does not refresh itself while nobody draws it. So a return
  * asks once - home, board and the shown seat - and the probe goes
  * first so a dead socket is caught by its deadline rather than up to a quiet
- * spell later.
+ * spell later. **The page's pulse goes last**, naming the beat as a return so
+ * the shell leaves those three reads to this call.
  *
  * **Only a return that left the screen counts.** A desktop focus change and a
  * glance at another window leave the document visible and re-read nothing;
@@ -52,6 +53,13 @@ export function resync(connection: Connection, shown: SessionSlot | null): void 
   // away, so it is named as such before it goes out; the chat spends the mark
   // on the snapshot that answers it.
   if (shown !== null) rereadSeat(connection, shown, { returned: true });
+  // **The pulse is the last thing the return says.** It names itself as a
+  // return, and the shell's answer to it leaves the three reads above alone:
+  // sent first, it would make the shell reconcile them beside the asks this
+  // same return is sending - two whole home and two whole board encodes on
+  // one return. Where the transport has no pulse (the web), nothing there
+  // reconciles a spell and this is absent.
+  connection.pulse?.();
 }
 
 /**
