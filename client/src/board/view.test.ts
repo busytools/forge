@@ -49,6 +49,7 @@ function row(task: Task, over: Partial<BoardRow> = {}): BoardRow {
     worked_secs: 0,
     updated_secs_ago: 0,
     owner_live: true,
+    wait_secs: null,
     marks: marks(),
     rollup: null,
     parent_subject: null,

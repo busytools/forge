@@ -47,6 +47,7 @@ function row(task: Task, over: Partial<BoardRow> = {}): BoardRow {
     worked_secs: 0,
     updated_secs_ago: 0,
     owner_live: true,
+    wait_secs: null,
     marks: { ready: false, in_review: false, overdue: false, stale: false, to_close: false },
     rollup: null,
     parent_subject: null,
@@ -197,16 +198,24 @@ describe('the window', () => {
       }),
     ]);
     const lines = asked.exceptions.map((item) => item.line);
-    expect(lines[0]).toContain('the gate refused its evidence: commit deadbeef');
+    expect(lines[0]).toContain('forge could not confirm its evidence: commit deadbeef');
+    expect(lines[0], 'the evidence line carries its own timestamp').toContain('no change since');
     expect(lines[1]).toContain('has no session behind it');
     expect(lines[2]).toBe(`no change since ${clockOf(3_600)}`);
   });
 
   it('carries a stopped worker from the fleet as an exception', () => {
+    // The fleet's misses arrive narrowed by `missFrom` (wire/home.ts): the
+    // window reads the client's own union, never a raw server shape.
     const asked = viewOf(
       [row(task('t1', 'in_progress', { owner: { org: ORG, project: PROJECT, label: 'w-1' } }))],
       [],
-      [{ project: PROJECT, misses: [{ unaccounted_worker: 'w-2' }] }],
+      [
+        {
+          project: PROJECT,
+          misses: [{ kind: 'no-row', label: 'w-2 holds no row', worker: 'w-2' }],
+        },
+      ],
     );
     expect(asked.exceptions).toEqual([
       { id: null, subject: 'w-2', line: 'holds no row - feed it or despawn it', owner: 'w-2' },
@@ -214,7 +223,7 @@ describe('the window', () => {
     expect(asked.counts.stopped).toBe(1);
   });
 
-  it('draws one line per seat with what it holds, as provenance', () => {
+  it('draws one line per seat that HOLDS work, as provenance', () => {
     const seat = { org: ORG, project: PROJECT, label: 'builder' };
     const held = task('t1', 'in_progress', {
       owner: seat,
@@ -253,9 +262,9 @@ describe('the window', () => {
     expect(builder?.artifact).toBe('PR #9');
     expect(builder?.next).toBe('2h');
     expect(builder?.held, 'one line per seat, counting the rest').toBe(2);
-    const watcher = asked.live.find((line) => line.label === 'watcher');
-    expect(watcher?.doing).toBeNull();
-    expect(watcher?.since).toBeNull();
+    // A seat holding nothing is the fleet count's and the stopped-worker
+    // exception's business, not the live list's.
+    expect(asked.live.find((line) => line.label === 'watcher')).toBeUndefined();
   });
 
   it("lists the ready queue in the lead's dispatch order", () => {

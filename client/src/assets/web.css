@@ -816,6 +816,7 @@ button.b-epic-pill { cursor: pointer; }
 .w-options { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .w-option { min-height: 36px; text-align: left; }
 .w-do { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.w-hold { margin: 0; color: var(--warn); font-size: var(--fs-label); flex-basis: 100%; }
 .w-discuss { margin-left: auto; }
 .w-open {
   margin-top: 10px; background: none; border: none; color: var(--dim);

@@ -132,14 +132,18 @@
               </div>
             {:else}
               <div class="w-do">
-                <button
-                  type="button"
-                  class="b-btn b-ok"
-                  onclick={() =>
-                    act({
-                      task_verdict: { project: view.project, id: card.id, approve: true },
-                    })}>approve</button
-                >
+                {#if card.approveBlocked !== null}
+                  <p class="w-hold">{card.approveBlocked}</p>
+                {:else}
+                  <button
+                    type="button"
+                    class="b-btn b-ok"
+                    onclick={() =>
+                      act({
+                        task_verdict: { project: view.project, id: card.id, approve: true },
+                      })}>approve</button
+                  >
+                {/if}
                 <input
                   class="b-in"
                   data-editor="board"
@@ -223,7 +227,7 @@
               {#if line.artifact !== null}
                 <span class="w-why">{line.artifact}</span>
               {:else}
-                <span class="w-why">no artifact touched</span>
+                <span class="w-why">nothing touched yet</span>
               {/if}
               <span class="w-why">{line.next === null ? 'no estimate' : `next ${line.next}`}</span>
               {#if line.held > 1}

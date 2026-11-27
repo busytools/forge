@@ -13,9 +13,9 @@
  * arithmetic and motion is not progress either.
  */
 
-import { followable } from '../home/view';
+import { artifactOf, waitOnUser } from './view';
 import type { BoardWire } from '../wire/board';
-import type { BoardRow, HomeWire, Task } from '../wire/home';
+import type { BoardRow, HomeWire, MissRow, Task } from '../wire/home';
 
 /** One card under NEEDS YOU: a decision, or a look. */
 export interface NeedCard {
@@ -36,6 +36,11 @@ export interface NeedCard {
   /** When the wait began, in epoch seconds - the card's age is read from it. */
   at: number;
   age: string;
+  /**
+   * Why the approve door is held, when it is: a root row with open
+   * children cannot close on a look. `null` when approve is offered.
+   */
+  approveBlocked: string | null;
   /** The owner's seat, for the discuss door, when it is a live seat. */
   seat: { org: string; project: string; label: string } | null;
 }
@@ -110,22 +115,6 @@ export function clockOf(secs: number): string {
   return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
 }
 
-/** A bare target as a short label: its last path segment. */
-function shortTarget(target: string): string {
-  const trimmed = target.replace(/\/+$/, '');
-  const parts = trimmed.split('/');
-  return parts[parts.length - 1] ?? trimmed;
-}
-
-/** The first followable link a row carries, as a door. */
-function artifactOf(task: Task): { label: string; href: string } | null {
-  for (const link of task.links) {
-    const href = followable(link.target);
-    if (href !== null) return { label: link.label ?? shortTarget(link.target), href };
-  }
-  return null;
-}
-
 /** The evidence's own state, in the server's three words. */
 function evidenceStateOf(task: Task): NeedCard['evidenceState'] {
   const evidence = task.evidence;
@@ -135,13 +124,6 @@ function evidenceStateOf(task: Task): NeedCard['evidenceState'] {
   return 'unchecked';
 }
 
-/** Whether a wait is the reader's: a decision, or a look park carrying its own gate. */
-function onTheUser(row: BoardRow): boolean {
-  const wait = row.task.waiting_on;
-  if (wait === null) return false;
-  return wait.verification ? row.task.verify === 'user' : wait.kind === 'decision';
-}
-
 /** The instant a row's wait began: the wait's own stamp, else the row's touch. */
 function waitAt(task: Task): number {
   return task.waiting_on?.since?.secs_since_epoch ?? task.updated_at.secs_since_epoch;
@@ -149,7 +131,7 @@ function waitAt(task: Task): number {
 
 function needCardOf(row: BoardRow, nowSecs: number): NeedCard | null {
   const task = row.task;
-  if (task.status !== 'waiting' || !onTheUser(row)) return null;
+  if (task.status !== 'waiting' || !waitOnUser(task)) return null;
   const wait = task.waiting_on;
   const verification = wait?.verification === true;
   const at = waitAt(task);
@@ -161,6 +143,21 @@ function needCardOf(row: BoardRow, nowSecs: number): NeedCard | null {
   const question = verification
     ? `Approve ${looked} or say what to change`
     : (decision?.question ?? wait?.detail?.trim() ?? `A decision is waiting on ${task.subject}`);
+  // Two holds the core would refuse the press for, drawn instead of a door:
+  // a root closes its whole tree on completion and cannot while any child
+  // is open, and a completion or approve rests on evidence the gate has
+  // verified.
+  const evidenceState = evidenceStateOf(task);
+  const openChildren = row.rollup !== null && row.rollup[0] < row.rollup[1];
+  const approveBlocked = !verification
+    ? null
+    : task.parent === null && row.rollup !== null && openChildren
+      ? `This row closes its epic: ${row.rollup[1] - row.rollup[0]} child ${
+          row.rollup[1] - row.rollup[0] === 1 ? 'row is' : 'rows are'
+        } still open. Close ${row.rollup[1] - row.rollup[0] === 1 ? 'it' : 'them'} first.`
+      : evidenceState !== 'verified'
+        ? 'This row has no verified evidence behind its completion; move it with an evidence claim first.'
+        : null;
   return {
     id: task.id,
     kind: verification ? 'look' : 'decision',
@@ -168,11 +165,13 @@ function needCardOf(row: BoardRow, nowSecs: number): NeedCard | null {
     question,
     options: verification ? [] : (decision?.options ?? []),
     evidence: task.evidence?.excerpt ?? null,
-    evidenceState: evidenceStateOf(task),
+    evidenceState,
     artifact,
     owner: task.owner === null ? null : task.owner.label,
     at,
-    age: fmtSecs(Math.max(0, nowSecs - at)),
+    // The server's own wait age: the wait's start, never the row's last edit.
+    age: fmtSecs(row.wait_secs ?? Math.max(0, nowSecs - at)),
+    approveBlocked,
     seat: task.owner === null ? null : { ...task.owner },
   };
 }
@@ -190,7 +189,9 @@ function exceptionOf(row: BoardRow): ExceptionCard | null {
     return {
       id: task.id,
       subject: task.subject,
-      line: `the gate refused its evidence: ${evidence.problem}`,
+      line: `forge could not confirm its evidence: ${
+        evidence.problem
+      } - no change since ${clockOf(task.updated_at.secs_since_epoch)}`,
       owner,
     };
   }
@@ -260,10 +261,14 @@ export function windowView(
     .filter((card): card is NeedCard => card !== null)
     .sort((a, b) => (a.kind === b.kind ? a.at - b.at : a.kind === 'look' ? -1 : 1));
 
-  // EXCEPTIONS: what contradicts the state. A stopped worker is the fleet's
-  // own miss, drawn here because this is the page where the work is.
+  // EXCEPTIONS: what contradicts the state - and never a row already drawn
+  // as an ask, which would report the same fact twice. A stopped worker is
+  // the fleet's own miss, drawn here because this is the page where the
+  // work is.
   const fleet = wire.fleet.find((entry) => entry.project === project);
+  const asked = new Set(needs.map((card) => card.id));
   const exceptions: ExceptionCard[] = rows
+    .filter((row) => !asked.has(row.task.id))
     .map((row) => exceptionOf(row))
     .filter((card): card is ExceptionCard => card !== null);
   for (const miss of fleet?.misses ?? []) {
@@ -278,10 +283,12 @@ export function windowView(
     }
   }
 
-  // LIVE: one line per seat this project has, saying what it holds. The
-  // agent rows are the home's; the row is the board's. A seat between turns
-  // holds its row and is not doing anything yet - drawn as unknown, never as
-  // progress.
+  // LIVE: one line per seat HOLDING work on this project, saying what it
+  // holds. A seat holding nothing is the fleet's business (the header
+  // count and the stopped-worker exception), not this list's. The agent
+  // rows are the home's; the row is the board's. A seat between turns
+  // holds its row and is not doing anything yet - drawn as unknown, never
+  // as progress.
   const byOwner = new Map<string, BoardRow[]>();
   for (const row of rows) {
     const label = row.task.owner?.label;
@@ -291,6 +298,7 @@ export function windowView(
   }
   const live: LiveLine[] = wire.agents
     .filter((agent) => agent.slot.org === org && agent.slot.project === project)
+    .filter((agent) => (byOwner.get(agent.label) ?? []).length > 0)
     .map((agent) => {
       const held = byOwner.get(agent.label) ?? [];
       // The line names one row and counts the rest: a seat holding three
@@ -340,9 +348,11 @@ export function windowView(
   };
 }
 
-/** The worker's label a fleet miss names, where the miss is a stopped one. */
-function stoppedWorkerOf(miss: unknown): string | null {
-  if (typeof miss !== 'object' || miss === null) return null;
-  const held = (miss as { unaccounted_worker?: unknown }).unaccounted_worker;
-  return typeof held === 'string' ? held : null;
+/**
+ * The worker's label a fleet miss names, where the miss is a stopped one.
+ * The miss arrives narrowed by `missFrom` (wire/home.ts), so this reads
+ * the client's own union - never a raw server shape.
+ */
+function stoppedWorkerOf(miss: MissRow): string | null {
+  return miss.kind === 'no-row' ? miss.worker : null;
 }

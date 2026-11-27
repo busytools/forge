@@ -227,7 +227,12 @@ function chipsOf(row: BoardRow): BoardCardView['chips'] {
             : { label: 'waiting', tone: 'warn' },
     );
     if (marks.overdue) {
-      chips.push({ label: `waiting ${fmtSecs(row.updated_secs_ago)}`, tone: 'bad' });
+      // The wait's own age, from the server: an edit on a waiting row moves
+      // its last touch, and the wait did not restart.
+      chips.push({
+        label: `waiting ${fmtSecs(row.wait_secs ?? row.updated_secs_ago)}`,
+        tone: 'bad',
+      });
     }
   }
   if (marks.overdue && task.waiting_on === null) chips.push({ label: 'overdue', tone: 'bad' });

@@ -88,6 +88,15 @@ function boardWithWaiting(): BoardWire {
     estimate: null,
     rank: null,
     verify: 'user',
+    // A parked look carries the evidence the gate verified before it
+    // parked; the card holds the approve door without one.
+    evidence: {
+      commit: 'da08a947e',
+      path: null,
+      excerpt: 'the window draws needs, exceptions, live, next',
+      verified_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
+      problem: null,
+    },
     links: [],
     kind: 'finite',
     version: 1,
@@ -106,6 +115,7 @@ function boardWithWaiting(): BoardWire {
             worked_secs: 60,
             updated_secs_ago: 60,
             owner_live: true,
+            wait_secs: null,
             marks: {
               ready: false,
               in_review: false,

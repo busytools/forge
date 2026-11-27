@@ -12,9 +12,12 @@
   let {
     initial,
     onact = null,
+    mode = 'board',
   }: {
     initial: { home: HomeWire; board: BoardWire };
     onact?: ((command: Record<string, Record<string, unknown>>) => void) | null;
+    /** Which of the board's three views the frame opens on. */
+    mode?: 'window' | 'board' | 'archived';
   } = $props();
 
   // svelte-ignore state_referenced_locally
@@ -28,5 +31,6 @@
   }
 </script>
 
-<!-- The full board: this frame drives the lanes' own interactions. -->
-<Board {wire} {board} org="TestOrg" project="proj" {onact} initialMode="board" />
+<!-- The page over a wire the test drives: the mode picks which view's
+     interactions the frame exercises. -->
+<Board {wire} {board} org="TestOrg" project="proj" {onact} initialMode={mode} />

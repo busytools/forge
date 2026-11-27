@@ -57,6 +57,7 @@ function boardWith(status: TaskStatus): BoardRead {
             worked_secs: 0,
             updated_secs_ago: 0,
             owner_live: true,
+            wait_secs: null,
             marks: {
               ready: false,
               in_review: false,

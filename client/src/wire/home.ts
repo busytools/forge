@@ -248,6 +248,12 @@ export interface BoardRow {
    * rather than gone.
    */
   owner_live: boolean;
+  /**
+   * How long the current wait has run, measured by the server from the
+   * wait's OWN start - never the row's last edit, which any touch moves.
+   * `null` when the row is not waiting.
+   */
+  wait_secs: number | null;
   marks: Marks;
   /** A parent's children: how many are completed, of how many. */
   rollup: [number, number] | null;
@@ -291,7 +297,7 @@ export interface BoardTransition {
  */
 export type MissRow =
   | { kind: 'stalled'; label: string }
-  | { kind: 'no-row'; label: string }
+  | { kind: 'no-row'; label: string; worker: string }
   | { kind: 'unknown'; label: string };
 
 /** Narrow one raw miss value from the wire. */
@@ -302,7 +308,9 @@ export function missFrom(value: unknown): MissRow {
   if (typeof value === 'object' && value !== null && 'unaccounted_worker' in value) {
     const label = (value as { unaccounted_worker?: unknown }).unaccounted_worker;
     if (typeof label === 'string') {
-      return { kind: 'no-row', label: `${label} holds no row` };
+      // The bare label rides too: the window's own line names the seat and
+      // what to do about it, rather than re-reading the sentence.
+      return { kind: 'no-row', label: `${label} holds no row`, worker: label };
     }
   }
   return { kind: 'unknown', label: 'a miss this client does not know' };
@@ -808,6 +816,7 @@ export function rowFrom(entry: unknown): BoardRow {
     // A payload older than the field counts every owner as live: silence is
     // not a claim that the seat is gone.
     owner_live: raw['owner_live'] !== false,
+    wait_secs: typeof raw['wait_secs'] === 'number' ? raw['wait_secs'] : null,
     marks: (raw['marks'] as Marks | undefined) ?? NO_MARKS,
     rollup: (raw['rollup'] as [number, number] | null | undefined) ?? null,
     parent_subject: (raw['parent_subject'] as string | null | undefined) ?? null,

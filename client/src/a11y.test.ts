@@ -196,6 +196,7 @@ describe('axe over the rendered pages', () => {
               worked_secs: 300,
               updated_secs_ago: 60,
               owner_live: true,
+              wait_secs: null,
               marks: {
                 ready: false,
                 in_review: false,

@@ -236,6 +236,7 @@ function boardRow(task: Task): BoardRow {
     worked_secs: 0,
     updated_secs_ago: 0,
     owner_live: true,
+    wait_secs: null,
     marks: {
       ready: false,
       in_review: false,
@@ -723,7 +724,7 @@ describe('the fleet the snapshot describes', () => {
           rows: 4,
           misses: [
             { kind: 'stalled', label: 'queue is stalling' },
-            { kind: 'no-row', label: 'w1 holds no row' },
+            { kind: 'no-row', label: 'w1 holds no row', worker: 'w1' },
             { kind: 'unknown', label: 'a miss this client does not know' },
           ],
         },
@@ -746,6 +747,7 @@ describe('the fleet the snapshot describes', () => {
     expect(missFrom({ unaccounted_worker: 'w1' })).toEqual({
       kind: 'no-row',
       label: 'w1 holds no row',
+      worker: 'w1',
     });
     expect(missFrom(7).kind).toBe('unknown');
   });

@@ -74,6 +74,7 @@ function row(task: Task, over: Partial<BoardRow> = {}): BoardRow {
     worked_secs: 0,
     updated_secs_ago: 0,
     owner_live: true,
+    wait_secs: null,
     marks: marks(),
     rollup: null,
     parent_subject: null,
@@ -2030,5 +2031,145 @@ describe("the backlog's fold", () => {
     } else {
       Reflect.deleteProperty(document, 'elementFromPoint');
     }
+  });
+});
+
+describe("the window's controls", () => {
+  function windowOver(rows: BoardRow[]): {
+    set: (next: { home: HomeWire; board: BoardWire }) => void;
+  } {
+    const frame = mount(Frames, {
+      target: document.body,
+      props: {
+        initial: wireWith(rows),
+        mode: 'window' as const,
+        onact: (command: Record<string, Record<string, unknown>>) => acts.push(command),
+      },
+    }) as unknown as { set: (next: { home: HomeWire; board: BoardWire }) => void };
+    flushSync();
+    return frame;
+  }
+
+  const lead = { org: 'TestOrg', project: 'proj', label: 'lead' };
+  const since = { secs_since_epoch: 0, nanos_since_epoch: 0 };
+
+  function decisionRow(): BoardRow {
+    return row(
+      task('q1', 'ship the window?', 'waiting', {
+        owner: lead,
+        decision: {
+          question: 'Ship it or iterate?',
+          options: ['ship it', 'iterate'],
+          answer: null,
+        },
+        waiting_on: {
+          kind: 'decision',
+          detail: null,
+          on: null,
+          verification: false,
+          since,
+        },
+      }),
+    );
+  }
+
+  function lookRow(
+    evidence: NonNullable<Task['evidence']>,
+    over: Partial<BoardRow> = {},
+  ): BoardRow {
+    return row(
+      task('l1', 'the board window', 'waiting', {
+        owner: lead,
+        verify: 'user',
+        evidence,
+        links: [
+          {
+            kind: 'pr',
+            label: 'PR the cut',
+            target: 'https://example.invalid/pull/1',
+            state: 'open',
+            added_at: since,
+          },
+        ],
+        waiting_on: {
+          kind: 'decision',
+          detail: null,
+          on: null,
+          verification: true,
+          since,
+        },
+      }),
+      over,
+    );
+  }
+
+  const verified = {
+    commit: 'da08a947e',
+    path: null,
+    excerpt: '4596 client tests pass',
+    verified_at: since,
+    problem: null,
+  };
+
+  it('answers with the pressed option, and the card leaves with the row', () => {
+    const frame = windowOver([decisionRow()]);
+    const ship = byText('ship it');
+    if (ship === null) throw new Error('the option is not drawn');
+    ship.click();
+    flushSync();
+    expect(acts.at(-1)).toEqual({
+      task_answer: { project: 'proj', id: 'q1', choice: 'ship it', words: '' },
+    });
+
+    // The server's frame after the answer: the row resumed in progress, so
+    // its ask is gone from the window.
+    frame.set(wireWith([row(task('q1', 'ship the window?', 'in_progress', { owner: lead }))]));
+    flushSync();
+    expect(document.querySelector('.w-need'), 'the answered card is still drawn').toBeNull();
+  });
+
+  it('approves a verified look, and sends one back with the words typed', () => {
+    windowOver([lookRow(verified)]);
+    const approve = byText('approve');
+    if (approve === null) throw new Error('approve is not drawn on a verified look');
+    approve.click();
+    flushSync();
+    expect(acts.at(-1)).toEqual({
+      task_verdict: { project: 'proj', id: 'l1', approve: true },
+    });
+
+    const words = document.querySelector<HTMLInputElement>(
+      '[aria-label="what to change (sent back with it)"]',
+    );
+    if (words === null) throw new Error('the send-back field is not drawn');
+    words.value = 'tighten the rail';
+    words.dispatchEvent(new Event('input', { bubbles: true }));
+    flushSync();
+    byText('send back')?.click();
+    flushSync();
+    expect(acts.at(-1)).toEqual({
+      task_verdict: { project: 'proj', id: 'l1', approve: false, words: 'tighten the rail' },
+    });
+  });
+
+  it('holds the approve door on a look with no verified evidence', () => {
+    windowOver([
+      lookRow({
+        commit: 'deadbeef',
+        path: null,
+        excerpt: null,
+        verified_at: null,
+        problem: 'commit deadbeef does not exist',
+      }),
+    ]);
+    expect(byText('approve'), 'an unverified look offers no approve').toBeNull();
+    expect(document.querySelector('.w-hold')?.textContent).toContain('no verified evidence');
+    expect(byText('send back'), 'the send-back door stays').not.toBeNull();
+  });
+
+  it('holds the approve door on a root whose children are still open', () => {
+    windowOver([lookRow(verified, { rollup: [1, 3] })]);
+    expect(byText('approve'), 'a root with open children cannot close').toBeNull();
+    expect(document.querySelector('.w-hold')?.textContent).toContain('2 child rows are still open');
   });
 });
