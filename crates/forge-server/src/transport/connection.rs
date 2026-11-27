@@ -1631,6 +1631,23 @@ where
                             send_text(socket, text)?;
                         }
                         last_settings = current;
+                        // **A config reload moves records and announces no
+                        // update.** The roster, the dictation switch and the
+                        // plugin checks all come off the loaded document, and
+                        // the core emits no `SessionUpdate` for a reload - so
+                        // without this a project added in `forge.toml` would
+                        // reach no subscriber until its next cold read, which
+                        // no longer exists. The diff drops the ones the reload
+                        // did not move.
+                        let now = Instant::now();
+                        for subject in [
+                            Subject::Home,
+                            Subject::Board,
+                            Subject::DictateModels,
+                            Subject::Extensions,
+                        ] {
+                            watching.mark_dirty(subject, now);
+                        }
                     }
                 }
             }
@@ -9758,12 +9775,15 @@ mod tests {
             }
         });
         let state = Arc::clone(state);
-        let settings = crate::transport::settings_channel();
+        // **The transport's own settings channel, as production wires it**: a
+        // reload publishes a document and the connection hears it here. A
+        // private channel would make every settings-driven path untestable.
+        let sent_settings = state.settings.borrow().clone();
         let watched_progress = Arc::clone(&progress);
         // The production path rather than `drive` alone: the teardown these
         // tests assert on runs in `finish`, which a bare `drive` never calls.
         let driven = tokio::spawn(async move {
-            let receiver = settings.subscribe();
+            let receiver = state.settings.subscribe();
             let mut peer = peer;
             supervise(
                 &mut peer,
@@ -9771,7 +9791,7 @@ mod tests {
                 attached_from(),
                 mint_connection_id(),
                 receiver,
-                None,
+                sent_settings,
                 &watched_progress,
             )
             .await
@@ -11094,6 +11114,70 @@ mod tests {
             })
             .count();
         assert_eq!(board_snapshots, 1, "no whole board record followed the patch");
+
+        drop(to_server);
+        let _ = driven.await;
+    }
+
+    /// **A config reload moves the home and announces no update.** The roster
+    /// comes off the loaded document, so the settings push is what has to mark
+    /// the records a reload can move; the diff drops the ones it did not.
+    #[tokio::test]
+    async fn a_config_reload_patches_the_home_it_moved() {
+        let dir = tempfile::tempdir().expect("a config dir of its own");
+        let fleet = crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+        let Driven { to_server, written, driven, .. } = connection(&state);
+        subscribed_home(&to_server, &written).await;
+
+        // A second project in the file, then the reload the watcher would run.
+        let path = dir.path().join("forge").join("forge.toml");
+        let text = std::fs::read_to_string(&path).expect("the config");
+        let addition = format!(
+            "[[orgs.projects]]\nname = \"proj-two\"\npath = \"{}\"\n\n",
+            dir.path().join("proj-two").display(),
+        );
+        std::fs::write(&path, text.replace("[[accounts]]", &format!("{addition}[[accounts]]")))
+            .expect("the config is rewritten");
+        let reload = fleet.workspace().reload_config().expect("the reload");
+        // **The reload's own frame is the trigger this test is about.** The
+        // harness sends no greeting, so the reload's is the first `Settings`
+        // frame the connection writes.
+        until(
+            || {
+                written
+                    .lock()
+                    .expect("the frame log")
+                    .iter()
+                    .any(|frame| matches!(frame, ServerMessage::Settings { .. }))
+            },
+            &format!("the reload's settings frame (changed: {:?})", reload.changed),
+        )
+        .await;
+
+        until(
+            || {
+                patches_of(&written, &Subject::Home)
+                    .iter()
+                    .any(|(_, patch)| patch["projects"].is_array())
+            },
+            "the home patch a reload owes",
+        )
+        .await;
+        let patches = patches_of(&written, &Subject::Home);
+        let projects = patches[0].1["projects"].as_array().expect("the project entries");
+        assert!(
+            projects.iter().any(|entry| entry["op"] == "set"
+                && entry["id"]["name"] == "proj-two"
+                && entry["record"]["project"]["name"] == "proj-two"),
+            "the added project did not cross: {projects:?}",
+        );
+        let fleet_rows = patches[0].1["fleet"].as_array().expect("the fleet entries");
+        assert!(
+            fleet_rows.iter().any(|entry| entry["op"] == "set" && entry["id"] == "proj-two"),
+            "the added project's fleet row did not cross: {fleet_rows:?}",
+        );
 
         drop(to_server);
         let _ = driven.await;
