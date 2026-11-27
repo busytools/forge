@@ -220,8 +220,7 @@ impl Workspace {
                     // half hour says nothing new. Only a changed claim
                     // speaks again, and not inside the gap.
                     Some(at) => {
-                        clock.last_claim != Some(stamp)
-                            && age_secs(at, now) >= DRIVE_MIN_GAP_SECS
+                        clock.last_claim != Some(stamp) && age_secs(at, now) >= DRIVE_MIN_GAP_SECS
                     }
                 }
             };

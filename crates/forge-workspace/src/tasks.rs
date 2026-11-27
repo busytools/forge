@@ -1196,9 +1196,10 @@ impl Workspace {
             // An answer is the decision's own door: a resource or
             // dependency wait is resumed by an update, not by recording a
             // choice nobody asked for.
-            let on_decision = task.waiting_on.as_ref().is_some_and(|wait| {
-                !wait.verification && wait.kind == Some(WaitingKind::Decision)
-            });
+            let on_decision = task
+                .waiting_on
+                .as_ref()
+                .is_some_and(|wait| !wait.verification && wait.kind == Some(WaitingKind::Decision));
             if task.status != TaskStatus::Waiting || !on_decision {
                 return Err(MoveError::NotWaitingQuestion);
             }
@@ -1481,10 +1482,7 @@ impl Workspace {
             if let Some(expected) = expected
                 && tasks[index].version != expected
             {
-                return Err(MoveError::VersionMismatch {
-                    expected,
-                    current: tasks[index].version,
-                });
+                return Err(MoveError::VersionMismatch { expected, current: tasks[index].version });
             }
             let owner = tasks[index].owner.as_ref().map(SessionSlot::label).map(str::to_owned);
             if owner.as_deref() != Some(slot.label()) {
@@ -1702,10 +1700,7 @@ impl Workspace {
                     return Ok(Vec::new());
                 };
                 if task.version != expected {
-                    return Err(MoveError::VersionMismatch {
-                        expected,
-                        current: task.version,
-                    });
+                    return Err(MoveError::VersionMismatch { expected, current: task.version });
                 }
             }
             let mut doomed = vec![id.clone()];
@@ -4914,9 +4909,8 @@ mod tests {
     /// agent's versioned write nor re-fires the new-input chase.
     #[test]
     fn an_unchanged_connector_read_keeps_changed_at_and_the_version() {
-        let epoch = |secs: u64| {
-            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)
-        };
+        let epoch =
+            |secs: u64| std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs);
         let prior = LinkCheck {
             at: epoch(1_000),
             changed_at: Some(epoch(900)),

@@ -1574,7 +1574,9 @@ mod tests {
     async fn approve_threads_the_quote_and_the_caller_to_the_facade() {
         let facade = Arc::new(MockTasksFacade::default());
         let out = Approve { facade: facade.clone(), slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "t-1", "approval": " looks good ", "version": 3 })))
+            .call(input(
+                serde_json::json!({ "id": "t-1", "approval": " looks good ", "version": 3 }),
+            ))
             .await;
         assert!(!out.is_error, "approve succeeds: {out:?}");
         let calls = facade.attested.lock();
@@ -1668,8 +1670,9 @@ mod tests {
             id: "t-9".to_owned(),
             project: "otherproj".to_owned(),
         }));
-        let elsewhere =
-            tool.call(input(serde_json::json!({ "id": "t-9", "status": "pending", "version": 0 }))).await;
+        let elsewhere = tool
+            .call(input(serde_json::json!({ "id": "t-9", "status": "pending", "version": 0 })))
+            .await;
         assert!(elsewhere.is_error, "another project's row is refused");
         assert_eq!(
             text_of(&elsewhere),
@@ -1678,8 +1681,9 @@ mod tests {
         );
 
         *facade.update_result.lock() = Some(Err(TasksError::NoSuchTask { id: "t-9".to_owned() }));
-        let absent =
-            tool.call(input(serde_json::json!({ "id": "t-9", "status": "pending", "version": 0 }))).await;
+        let absent = tool
+            .call(input(serde_json::json!({ "id": "t-9", "status": "pending", "version": 0 })))
+            .await;
         assert!(absent.is_error, "an absent id is refused");
         assert_eq!(
             text_of(&absent),
@@ -3179,8 +3183,9 @@ mod tests {
             id: "t-9".to_owned(),
             project: "otherproj".to_owned(),
         }));
-        let elsewhere =
-            tool.call(input(serde_json::json!({ "id": "t-9", "kind": "resource", "version": 0 }))).await;
+        let elsewhere = tool
+            .call(input(serde_json::json!({ "id": "t-9", "kind": "resource", "version": 0 })))
+            .await;
         assert!(elsewhere.is_error, "another project's row is refused");
         assert_eq!(
             text_of(&elsewhere),
@@ -3189,7 +3194,9 @@ mod tests {
         );
 
         *facade.wait_result.lock() = Some(Err(TasksError::NoSuchTask { id: "t-9".to_owned() }));
-        let absent = tool.call(input(serde_json::json!({ "id": "t-9", "kind": "resource", "version": 0 }))).await;
+        let absent = tool
+            .call(input(serde_json::json!({ "id": "t-9", "kind": "resource", "version": 0 })))
+            .await;
         assert!(absent.is_error, "an absent id is refused");
         assert_eq!(
             text_of(&absent),

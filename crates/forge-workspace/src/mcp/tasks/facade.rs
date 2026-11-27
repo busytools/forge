@@ -368,13 +368,16 @@ pub(crate) trait TasksFacade: Send + Sync {
     /// descendants went with it. A missing id names its case the way
     /// [`TasksFacade::update_task`] does. `version` is the row as the
     /// caller read it.
-    fn delete_task(&self, caller: &SessionSlot, id: &TaskId, version: u64)
-    -> Result<RemovedTaskTree, TasksError>;
+    fn delete_task(
+        &self,
+        caller: &SessionSlot,
+        id: &TaskId,
+        version: u64,
+    ) -> Result<RemovedTaskTree, TasksError>;
 
     /// Claim `id` for the caller at the version they read. Backs
     /// `tasks__claim`.
-    fn claim_task(&self, caller: &SessionSlot, id: &str, version: u64)
-    -> Result<Task, TasksError>;
+    fn claim_task(&self, caller: &SessionSlot, id: &str, version: u64) -> Result<Task, TasksError>;
 
     /// Put the caller's row `id` into waiting. Backs `tasks__wait`; a
     /// decision also carries the question it asks and the options the lead
@@ -801,8 +804,14 @@ impl TasksFacade for ProdTasksFacade {
         // The answer is the user's own act, relayed through a session:
         // recording it as that session's move would attribute the choice to
         // the worker that typed it.
-        match ws.answer_decision_at_version(&cx.project_name, id, By::User, choice, note, Some(version))
-        {
+        match ws.answer_decision_at_version(
+            &cx.project_name,
+            id,
+            By::User,
+            choice,
+            note,
+            Some(version),
+        ) {
             Ok(Some(task)) => Ok(task),
             Ok(None) => Err(missing_task_error(&ws, &cx.project_name, id)),
             Err(refused) => Err(TasksError::Refused(refused.to_string())),
@@ -950,7 +959,12 @@ impl TasksFacade for MockTasksFacade {
         Ok(task)
     }
 
-    fn claim_task(&self, caller: &SessionSlot, id: &str, _version: u64) -> Result<Task, TasksError> {
+    fn claim_task(
+        &self,
+        caller: &SessionSlot,
+        id: &str,
+        _version: u64,
+    ) -> Result<Task, TasksError> {
         self.claimed.lock().push((caller.clone(), id.to_owned()));
         self.claim_result.lock().clone().unwrap_or_else(|| Ok(mock_task(caller)))
     }
@@ -1291,17 +1305,16 @@ mod prod_facade_tests {
                 },
             )
             .expect("the stub evidence checks out");
-        assert_eq!(
-            task.status,
-            TaskStatus::Waiting,
-            "the look park is where the completion lands",
-        );
+        assert_eq!(task.status, TaskStatus::Waiting, "the look park is where the completion lands",);
         assert!(
             task.waiting_on.as_ref().is_some_and(|wait| wait.verification),
             "and it waits on the look: {:?}",
             task.waiting_on,
         );
-        assert!(task.evidence.as_ref().is_some_and(|e| e.verified_at.is_some()), "with checked evidence");
+        assert!(
+            task.evidence.as_ref().is_some_and(|e| e.verified_at.is_some()),
+            "with checked evidence"
+        );
     }
 
     #[test]
