@@ -1856,11 +1856,17 @@ impl crate::Workspace {
                 );
             }
             for prompt in &held {
-                // The press never ran, so its composer mark settles here.
+                // The press never ran, so its composer mark settles here with
+                // its reason on the item itself.
+                let (state, source) = crate::session_task::forge_not_sent(
+                    "the handoff failed before this prompt could run",
+                    "the successor never started",
+                );
                 let _ = self.update_tx.send(SessionUpdate::PromptLifecycle {
                     key: request.slot.clone(),
                     uuid: prompt.uuid.clone(),
-                    state: "cancelled".to_owned(),
+                    state,
+                    source,
                 });
                 if let Some(sender) = &prompt.sender {
                     self.notice_undelivered_message(
@@ -1868,17 +1874,11 @@ impl crate::Workspace {
                         &request.slot,
                         crate::mcp::peers::types::PeerFailureReason::TargetConnectionFailed,
                     );
-                } else {
-                    let first = prompt.text.lines().next().unwrap_or_default();
-                    let _ = self.update_tx.send(SessionUpdate::Notice {
-                        key: request.slot.clone(),
-                        severity: NoticeSeverity::Error,
-                        text: format!("a prompt held for the failed handoff did not run: {first}"),
-                    });
                 }
             }
             let _ = self.update_tx.send(SessionUpdate::Notice {
                 key: request.slot.clone(),
+                id: crate::protocol::new_notice_id(),
                 severity: NoticeSeverity::Error,
                 text: format!("the handoff could not start a new session: {error}"),
             });
