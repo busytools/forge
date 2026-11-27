@@ -190,6 +190,8 @@ class RustConnection implements Connection {
   private readonly stores = new Stores();
   private readonly listeners = new Set<(message: ServerMessage) => void>();
   private readonly statuses = new Set<(status: ConnectionStatus) => void>();
+  /** The page's watchers of the link's inbound clock (`onHeard`). */
+  private readonly heardListeners = new Set<(at: number) => void>();
   /** The page's viewers of the relayed frames: the phone's canvas. */
   private readonly frames = new Set<(frame: BrowserFrame) => void>();
   private stops: UnlistenFn[] = [];
@@ -200,10 +202,27 @@ class RustConnection implements Connection {
    *
    * **Stamped here because the shell owns the socket.** The shell's own
    * status is all a page normally knows, and a shell task whose loop has
-   * stopped reporting sends no status at all; what arrived through
-   * `client://inbound` is the only evidence left.
+   * stopped reporting sends no status at all; what arrived through the shell
+   * is the only evidence left. **Three events carry it**: the JSON frames on
+   * `client://inbound`, and the browser's and terminal's binary frames, which
+   * the shell forwards on events of their own.
    */
   private heardAt: number | null = null;
+
+  /**
+   * Stamp the link and tell its watchers, which is what makes the stamp
+   * observable to a page rather than a value it has to poll.
+   */
+  private markHeard(at: number): void {
+    this.heardAt = at;
+    for (const fn of this.heardListeners) {
+      try {
+        fn(at);
+      } catch (why) {
+        report('a heard listener threw', why);
+      }
+    }
+  }
   /**
    * The shell's own id for this connection, from `client_connect`.
    *
@@ -296,12 +315,19 @@ class RustConnection implements Connection {
     this.stops.push(await listen('client://connection', () => void this.stateMoved()));
     this.stops.push(
       await listen('client://inbound', (event) => {
-        // The page's own silence clock: this is the seam every frame crosses,
-        // so it is where "last heard" is stamped.
-        this.heardAt = Date.now();
+        // The page's own silence clock: this is the seam every JSON frame
+        // crosses, so it is where "last heard" is stamped.
+        this.markHeard(Date.now());
         this.heard(event.payload as ServerMessage);
       }),
     );
+    // **The terminal's bytes are inbound too**, and they never reach
+    // `client://inbound`: the shell emits them on their own event, which the
+    // terminal surface listens to directly. A stamp-only listener is the
+    // connection's half of that evidence; a session drawing a busy terminal
+    // must not be called quiet. Two listeners on one event is how Tauri's
+    // event API is meant to be used.
+    this.stops.push(await listen('client://terminal-frame', () => this.markHeard(Date.now())));
     // **The shell half's own facts (#2513).** A snapshot's raw length and the
     // shell's parse travel beside the frame; a subscribe's write time is
     // reported when the frame is on the wire, not when the page asked.
@@ -325,6 +351,9 @@ class RustConnection implements Connection {
     // (the desktop's overlay draws its own and this listener never fires).
     this.stops.push(
       await listen<ShellFrame>('client://browser-frame', (event) => {
+        // A browser frame is inbound even when this page draws none of it:
+        // the stamp is the link's, before the payload is narrowed.
+        this.markHeard(Date.now());
         const frame = frameOf(event.payload);
         if (frame === null) return;
         for (const fn of this.frames) fn(frame);
@@ -463,7 +492,7 @@ class RustConnection implements Connection {
       this.bounds.rearmLoading();
       // Before the listeners, as the web's `onopen` does: a surface that
       // draws on `open` reads the stamp.
-      this.heardAt = Date.now();
+      this.markHeard(Date.now());
     }
     // **Listeners first, then `Showing`.** The page's own re-attach runs on
     // this status and issues its `relist`; the spec's order is re-subscribe,
@@ -917,6 +946,11 @@ class RustConnection implements Connection {
 
   lastHeard(): number | null {
     return this.heardAt;
+  }
+
+  onHeard(fn: (at: number) => void): () => void {
+    this.heardListeners.add(fn);
+    return () => this.heardListeners.delete(fn);
   }
 
   close(): void {

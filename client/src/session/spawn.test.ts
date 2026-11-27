@@ -78,6 +78,7 @@ function recording(): { connection: Connection; sent: Record<string, unknown>[] 
     serverProtocol: () => PROTOCOL_VERSION,
     status: () => 'open',
     lastHeard: () => null,
+    onHeard: () => () => {},
     probe: () => {},
     close: () => {},
   };

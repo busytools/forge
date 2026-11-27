@@ -312,6 +312,18 @@ export interface Connection {
    */
   lastHeard(): number | null;
   /**
+   * Watch the link's inbound clock as it moves, and answer a function that
+   * stops watching.
+   *
+   * **A frame can arrive without any state the page tracks changing** - a
+   * pong carries nothing, and the shell forwards the browser's and
+   * terminal's binary frames on events of their own - so a surface that read
+   * `lastHeard()` on a timer would lag a frame by up to a tick, and in a
+   * throttled background tab by much more. This is the edge that moves: one
+   * call per frame, with the stamp the connection recorded.
+   */
+  onHeard(fn: (at: number) => void): () => void;
+  /**
    * Probe the link now rather than waiting out its quiet.
    *
    * A page returning from the background sends this first: the socket may
@@ -752,6 +764,8 @@ export function connect(
    */
   const held = new Map<string, { subject: Subject; answering: boolean; review: boolean }>();
   const listeners = new Set<(message: ServerMessage) => void>();
+  /** The page's watchers of the link's inbound clock (`onHeard`). */
+  const heardListeners = new Set<(at: number) => void>();
   const statuses = new Set<(status: ConnectionStatus) => void>();
   /** The page's viewers of the relayed frames: the phone's canvas. */
   const frameListeners = new Set<(frame: BrowserFrame) => void>();
@@ -791,6 +805,21 @@ export function connect(
    * the moment it could first have spoken rather than from a pre-drop frame.
    */
   let heardAt: number | null = null;
+
+  /**
+   * Stamp the link and tell its watchers, which is what makes the stamp
+   * observable to a page rather than a value it has to poll.
+   */
+  function markHeard(at: number): void {
+    heardAt = at;
+    for (const fn of heardListeners) {
+      try {
+        fn(at);
+      } catch (why) {
+        report('a heard listener threw', why);
+      }
+    }
+  }
   let settings: ClientSettings | null = null;
   let protocolSkew: Skew | null = null;
   /** The greeting's own number, kept whether or not it skews. */
@@ -1181,7 +1210,7 @@ export function connect(
     next.onopen = () => {
       if (next !== socket) return;
       // Before the status moves: a listener that draws on `open` reads this.
-      heardAt = Date.now();
+      markHeard(Date.now());
       subscribed.clear();
       move('open');
       retryDelay = RETRY_MS;
@@ -1393,7 +1422,7 @@ export function connect(
 
     next.onmessage = (event) => {
       if (next !== socket) return;
-      heardAt = Date.now();
+      markHeard(Date.now());
       // **Any inbound frame answers the probe**, whatever it carried: the
       // pong exists to guarantee one arrives, and a frame already flowing
       // proves the same.
@@ -1861,6 +1890,10 @@ export function connect(
     },
     lastHeard() {
       return heardAt;
+    },
+    onHeard(fn) {
+      heardListeners.add(fn);
+      return () => heardListeners.delete(fn);
     },
     probe: probeNow,
     close() {

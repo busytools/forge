@@ -76,6 +76,7 @@ function recording(): Connection {
     serverProtocol: () => 0,
     status: refuse,
     lastHeard: () => null,
+    onHeard: () => () => {},
     probe: refuse,
     close: refuse,
   };

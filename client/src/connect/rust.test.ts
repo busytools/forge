@@ -75,10 +75,11 @@ async function opened(state: State = OPEN): Promise<Connection> {
     return Promise.resolve(undefined);
   });
   const connection = connectRust('ws://127.0.0.1:7777/socket');
-  // Six: the connection, the server's frames, the refusals, the browser's own
+  // Eight: the connection, the server's frames, the terminal's bytes (the
+  // connection's half of a binary frame), the refusals, the browser's own
   // frames for the page's canvas, and #2513's frame facts and subscribe
   // writes.
-  await vi.waitFor(() => expect(handlers.size).toBe(7));
+  await vi.waitFor(() => expect(handlers.size).toBe(8));
   await vi.waitFor(() =>
     expect(invoke).toHaveBeenCalledWith('client_connect', { url: 'ws://127.0.0.1:7777/socket' }),
   );
@@ -1047,9 +1048,11 @@ describe("the connection's own facts", () => {
    * **The desktop's silence clock is stamped where its frames land.** The
    * shell owns the socket and a wedged shell reports no status at all, so the
    * page's only evidence that the link has gone quiet is when it last heard a
-   * frame through this seam.
+   * frame through this seam. **All three seams count**: the JSON frames, and
+   * the browser's and terminal's binary frames, which arrive on events of
+   * their own - a session drawing a busy terminal must not be called quiet.
    */
-  it('records when a frame last arrived, and stamps the open', async () => {
+  it('records when a frame last arrived, on every seam, and stamps the open', async () => {
     const before = Date.now();
     const connection = await opened();
     await vi.waitFor(() => expect(connection.status()).toBe('open'));
@@ -1058,9 +1061,45 @@ describe("the connection's own facts", () => {
     expect(openAt as number, 'stamped at the open, not before it').toBeGreaterThanOrEqual(before);
     expect(openAt as number).toBeLessThanOrEqual(Date.now());
 
+    const stamps: number[] = [];
+    const stop = connection.onHeard((at) => stamps.push(at));
+
     await new Promise((resolve) => setTimeout(resolve, 5));
     fire('client://inbound', { kind: 'pong' });
-    expect(connection.lastHeard(), 'a frame moves the stamp').toBeGreaterThan(openAt as number);
+    const afterJson = connection.lastHeard();
+    expect(afterJson, 'a JSON frame moves the stamp').toBeGreaterThan(openAt as number);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    fire('client://browser-frame', {
+      profile: 5,
+      tab: 2,
+      seq: 7,
+      width: 2560,
+      height: 1440,
+      format: 1,
+      key: true,
+      page_width: 1280,
+      page_height: 720,
+      bytes: btoa(''),
+    });
+    const afterBrowser = connection.lastHeard();
+    expect(afterBrowser, 'a browser frame moves the stamp').toBeGreaterThan(afterJson as number);
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    fire('client://terminal-frame', { id: 1, seq: 0, bytes: btoa('') });
+    const afterTerminal = connection.lastHeard();
+    expect(afterTerminal, 'a terminal frame moves the stamp').toBeGreaterThan(
+      afterBrowser as number,
+    );
+
+    expect(stamps, 'each frame is announced once').toEqual([
+      afterJson,
+      afterBrowser,
+      afterTerminal,
+    ]);
+    stop();
+    fire('client://inbound', { kind: 'pong' });
+    expect(stamps, 'a stopped watcher is not told').toHaveLength(3);
   });
 
   /**
@@ -1145,7 +1184,7 @@ describe("the connection's own facts", () => {
       return Promise.resolve(undefined);
     });
     const connection = connectRust('ws://127.0.0.1:7777/socket');
-    await vi.waitFor(() => expect(handlers.size).toBe(7));
+    await vi.waitFor(() => expect(handlers.size).toBe(8));
     const moves: string[] = [];
     connection.onStatus((next) => moves.push(next));
     status = 'open';

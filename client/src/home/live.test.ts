@@ -205,6 +205,7 @@ function fakeConnection() {
     serverProtocol: () => PROTOCOL_VERSION,
     status: () => 'open',
     lastHeard: () => null,
+    onHeard: () => () => {},
     probe: () => {},
     close: () => {},
   };

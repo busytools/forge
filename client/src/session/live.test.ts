@@ -1963,6 +1963,7 @@ function drivable(refusedAtFirst = false, rangeAskFails = false): Driveable {
     skew: () => null,
     serverProtocol: () => PROTOCOL_VERSION,
     lastHeard: () => null,
+    onHeard: () => () => {},
     // The state the case last drove it to, as both connections report theirs:
     // a seat asks before it takes its page listeners.
     status: () => status,

@@ -72,6 +72,7 @@ function untouched(): Connection {
     serverProtocol: () => PROTOCOL_VERSION,
     status: refuse,
     lastHeard: () => null,
+    onHeard: () => () => {},
     probe: refuse,
     close: refuse,
   };

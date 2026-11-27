@@ -2310,15 +2310,23 @@ describe('the liveness probe', () => {
    * at all, so the last frame's own stamp is the only evidence a page has
    * that the link has gone quiet.
    */
-  it('records when a frame last arrived, and stamps the open', async () => {
+  it('records when a frame last arrived, and announces it', async () => {
     vi.useFakeTimers();
     const { connection, socket } = live();
     const openAt = Date.now();
     expect(connection.lastHeard(), 'the open stamps the link').toBe(openAt);
 
+    const heard: number[] = [];
+    const stop = connection.onHeard((at) => heard.push(at));
+
     await vi.advanceTimersByTimeAsync(42_000);
     socket.deliver({ kind: 'pong' });
     expect(connection.lastHeard(), 'a frame moves the stamp').toBe(openAt + 42_000);
+    expect(heard, 'and its watchers are told').toEqual([openAt + 42_000]);
+
+    stop();
+    socket.deliver({ kind: 'pong' });
+    expect(heard, 'a stopped watcher is not told').toEqual([openAt + 42_000]);
     connection.close();
   });
 
