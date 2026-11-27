@@ -585,8 +585,11 @@ where it has moved on) beside the whole thread, its turns in order.
   resumed, or a new one under a new id.
 - **A refused read**: the server turned the subscription down, and its own
   words are drawn.
-- **A connection that dropped**: the page keeps what it last read, and the
-  rail's footer says so where the build facts live.
+- **A connection that dropped, or one that stopped answering**: the page
+  keeps what it last read, and the rail's footer says so where the build
+  facts live. A link whose status still says `open` while nothing at all has
+  arrived past its own probe window is drawn as quiet, naming how long; the
+  next tick that hears a frame stands that line down.
 - **A forge on another protocol**: the same footer line names the skew; the
   page behind it is live, and nothing is refused over a version.
 - **An account the poller has not reported**: a window-billed account keeps
