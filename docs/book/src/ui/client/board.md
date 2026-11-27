@@ -55,28 +55,31 @@ The rows waiting on the reader, as cards - a look ahead of a decision,
 then the oldest wait first, because a look is a finished row nobody can
 close until it is given.
 
-A **decision card** leads with the question the lead asked, then the
-options it enumerated as buttons the reader answers with one press (a note
-box beside them, optional), then the row's subject and owner, the
-artifact's door when the row carries a followable link, the bounded
-excerpt of the evidence behind the ask, the gate's own word on that
-evidence (`evidence verified`, `evidence unchecked`, `evidence refused`),
-and a `discuss` door into the owner's session - where the conversation
-happens, and what it reaches is written back to the row. A wait minted
-before decisions carried questions falls back to the wait's own words and
-a free-text answer box.
+**A card is an ask, not a dossier**: it reads as a decision at a glance,
+and the detail sits behind its own small controls. Every card is one quiet
+meta line - the kind, the row's subject and owner, and how long the wait
+has run, counted from the wait's own start and never from the row's last
+edit - then the question, then what the reader does about it.
+
+A **decision card** names the question the lead asked and draws the options
+it enumerated as compact buttons the reader answers with one press. The
+note is optional and collapsed behind `add a note`; a wait minted before
+decisions carried questions instead offers `answer in your words`, which
+opens the same box. A `discuss` link goes to the owner's session - where the
+conversation happens, and what it reaches is written back to the row.
 
 A **look card** is the same shape with the look's own ask - `Approve
-<artifact> or say what to change` - and the strip's controls: `approve`,
-a `what to change` box and `send back`. Two of the core's refusals are drawn
-rather than offered: a root whose children are still open cannot close on a
-look and draws the count in place of `approve`, and a look with no verified
-evidence behind its completion draws that hold; `send back` stays either
-way.
+<artifact> or say what to change` - the artifact as a small door, and the
+strip's controls: `approve`, `send back`, and the send-back words behind
+`add a note`. Two of the core's refusals are drawn rather than offered: a
+root whose children are still open cannot close on a look and draws the
+count in place of `approve`, and a look with no verified evidence behind
+its completion draws that hold; `send back` stays either way.
 
-Both cards say how long the ask has waited, counted from the wait's own
-start, never from the row's last edit; a `open the row` line opens the
-drawer.
+Where a card carries evidence, it is one summary line: the gate's own word
+(`evidence verified`, `evidence unchecked`, `evidence refused`) and the
+bounded excerpt, which `more` expands and `less` folds back. `discuss` and
+`open the row` sit together as quiet links under the controls.
 
 ### Exceptions
 
@@ -87,10 +90,11 @@ What contradicts the state, each a labelled fact rather than a badge:
 | `forge could not confirm its evidence: <why> - no change since HH:MM` | the row carries an evidence claim the repository could not back | the row's `evidence.problem` and its last touch |
 | `<owner> has no session behind it - no change since HH:MM` | the owner is gone | `owner_live` and the last touch |
 | `no change since HH:MM` | a held row nobody has touched past the band | the `stale` mark and the last touch |
-| `<worker> holds no row - feed it or despawn it` | a live worker with nothing to do | the fleet row's `unaccounted_worker` miss |
+| `<worker> holds no row since HH:MM - feed it or despawn it` | a live worker with nothing to do | the fleet row's `unaccounted_worker` miss and the seat's last activity |
 
 A row that is also an ask is drawn under needs you and not here: the ask's
-own card already states the fact.
+own card already states the fact. A seat with no recorded activity says
+`holds no row` without a time rather than borrowing the last touch.
 
 **Staleness is a timestamp, not an adjective.** The line says when the row
 last changed, in the reader's own clock, because motion is not progress

@@ -206,28 +206,43 @@
     background: var(--s2); border: 1px solid transparent; border-radius: 999px;
     padding: 7px 14px; cursor: pointer; }
   .w-tab[aria-selected="true"] { color: var(--text); background: var(--s3); border-color: var(--line); }
-  .w-window { display: flex; flex-direction: column; gap: 30px; margin-bottom: 40px; }
-  .w-h { display: flex; align-items: center; gap: 8px; margin: 0 0 10px;
+  .w-window { display: flex; flex-direction: column; gap: 20px; margin-bottom: 40px; }
+  .w-h { display: flex; align-items: center; gap: 8px; margin: 0 0 6px;
     font-family: var(--mono); font-size: 12.5px; font-weight: 500;
     letter-spacing: .05em; color: var(--dim); }
   .w-n { background: var(--s3); color: var(--text); border-radius: 999px; padding: 1px 8px; }
   .w-quiet { color: var(--dim); font-size: 14px; }
-  .w-needs { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; }
-  .w-need { background: var(--sel); border-radius: var(--r); padding: 16px 18px 14px; position: relative; }
+  .w-needs { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 10px; }
+  .w-need { background: var(--sel); border-radius: var(--r); padding: 12px 14px 10px; position: relative; }
   .w-need::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px;
     background: var(--accent); border-radius: var(--r) 0 0 var(--r); opacity: .8; }
-  .w-kind { display: flex; gap: 10px; align-items: center; margin-bottom: 6px;
+  .w-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px;
+    margin-bottom: 4px; font-family: var(--mono); font-size: 12.5px; }
+  .w-kind { display: inline-flex; align-items: center; gap: 4px;
     font-family: var(--mono); font-size: 12.5px; color: var(--hot); }
-  .w-age { color: var(--dim); }
-  .w-q { margin: 0 0 4px; font-size: 16px; font-weight: 500; color: var(--text); }
-  .w-sub { font-family: var(--mono); font-size: 12.5px; color: var(--dim); }
-  .w-detail { margin-top: 8px; font-size: 12.5px; color: var(--muted); }
-  .w-ev { margin: 10px 0 0; padding: 8px 10px; background: var(--s1);
-    border-left: 2px solid var(--line); border-radius: 6px;
-    font-family: var(--mono); font-size: 12.5px; color: var(--muted); white-space: pre-wrap; }
-  .w-options { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-  .w-open { margin-top: 10px; background: none; border: none; color: var(--dim);
-    font-family: var(--mono); font-size: 12.5px; cursor: pointer; padding: 6px 0; }
+  .w-kind .ic { width: 11px; height: 11px; }
+  .w-ctx { color: var(--dim); }
+  .w-age { margin-left: auto; color: var(--dim); }
+  .w-q { margin: 0 0 6px; font-size: 15px; font-weight: 500; line-height: 1.35; color: var(--text); }
+  .w-door { display: inline-block; margin-bottom: 6px; font-family: var(--mono);
+    font-size: 12.5px; color: var(--blue); text-decoration: none; }
+  .w-ev { display: flex; align-items: baseline; gap: 8px; margin: 2px 0 0;
+    font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
+  .w-ev-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .w-more { background: none; border: none; padding: 2px 0; color: var(--dim);
+    font-family: var(--mono); font-size: 12.5px; cursor: pointer;
+    text-decoration: underline; text-underline-offset: 2px; }
+  .w-options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .w-option { font-family: var(--mono); font-size: 12.5px; color: var(--text);
+    background: var(--s2); border: 1px solid var(--line); border-radius: 999px;
+    padding: 5px 12px; min-height: 30px; cursor: pointer; text-align: left; }
+  .w-do { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+  .w-do .b-btn { min-height: 30px; padding: 4px 12px; }
+  .w-note { flex: 1 1 180px; }
+  .w-hold { margin: 0; color: var(--warn); font-size: 12.5px; flex-basis: 100%; }
+  .w-links { display: flex; gap: 14px; margin-top: 8px; }
+  .w-quiet-link { background: none; border: none; padding: 0; color: var(--dim);
+    font-family: var(--mono); font-size: 12.5px; cursor: pointer; text-decoration: none; }
   .w-list { list-style: none; }
   .w-exc, .w-live { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline;
     font-size: 14px; padding: 8px 0; border-bottom: 1px solid var(--line); }
@@ -331,7 +346,7 @@
     <button class="b-back">&larr; back</button>
     <span class="b-id">
       <span class="b-nm">task-board</span>
-      <span class="b-read"><b>2 waiting on you</b> &middot; 32 rows &middot; 2 running</span>
+      <span class="b-read"><b>3 waiting on you</b> &middot; 32 rows &middot; 2 running</span>
     </span>
     <span class="b-spacer"></span>
     <a class="b-seat" href="./web-session.html">task-board</a>
@@ -350,38 +365,69 @@
        address this page is opened at. -->
   <section class="w-window" aria-label="the board window">
     <section aria-labelledby="d-needs">
-      <h2 class="w-h" id="d-needs">needs you <span class="w-n">2</span></h2>
+      <h2 class="w-h" id="d-needs">needs you <span class="w-n">3</span></h2>
       <div class="w-needs">
         <article class="w-need">
-          <div class="w-kind">a look <span class="w-age">waiting 1h</span></div>
-          <h3 class="w-q">Approve PR #3086 or say what to change</h3>
-          <div class="w-sub">the retrofit's board window &middot; lead</div>
-          <div class="w-detail"><a class="b-door" href="./web-session.html">look at <span class="nm">PR #3086</span></a></div>
-          <blockquote class="w-ev">212 client tests pass; the window draws needs, exceptions, live, next</blockquote>
-          <div class="w-detail"><span class="b-chip blue">evidence verified</span></div>
-          <div class="b-do">
-            <button class="b-btn b-ok">approve</button>
-            <input class="b-in" placeholder="what to change" aria-label="what to change (sent back with it)">
-            <button class="b-btn b-no">send back</button>
-            <a class="b-door" href="./web-session.html">discuss</a>
+          <div class="w-meta">
+            <span class="w-kind">a look</span>
+            <span class="w-ctx">the retrofit's board window &middot; lead</span>
+            <span class="w-age">waiting 1h</span>
           </div>
-          <button class="w-open">open the row</button>
+          <h3 class="w-q">Approve PR #3086 or say what to change</h3>
+          <a class="w-door" href="./web-session.html">look at <span class="nm">PR #3086</span></a>
+          <div class="w-ev">
+            <span class="b-chip blue">evidence verified</span>
+            <span class="w-ev-text">212 client tests pass; the window draws needs, exceptions, live, next</span>
+            <button class="w-more" aria-expanded="false">more</button>
+          </div>
+          <div class="w-do">
+            <button class="b-btn b-ok">approve</button>
+            <button class="b-btn b-no">send back</button>
+            <button class="w-more" aria-expanded="false">add a note</button>
+          </div>
+          <div class="w-links">
+            <a class="w-quiet-link" href="./web-session.html">discuss</a>
+            <button class="w-quiet-link">open the row</button>
+          </div>
         </article>
         <article class="w-need">
-          <div class="w-kind">decision <span class="w-age">waiting 3h</span></div>
+          <div class="w-meta">
+            <span class="w-kind">decision</span>
+            <span class="w-ctx">retrofit the task board &middot; lead</span>
+            <span class="w-age">waiting 3h</span>
+          </div>
           <h3 class="w-q">Ship the window with the full board one toggle away?</h3>
-          <div class="w-sub">retrofit the task board &middot; lead</div>
-          <blockquote class="w-ev">the window drew 2 needs, 1 exception, 1 live line and 1 next row</blockquote>
-          <div class="w-detail"><span class="b-chip blue">evidence verified</span></div>
+          <div class="w-ev">
+            <span class="b-chip blue">evidence verified</span>
+            <span class="w-ev-text">the window drew 2 needs, 1 exception, 1 live line and 1 next row</span>
+            <button class="w-more" aria-expanded="false">more</button>
+          </div>
           <div class="w-options" role="group" aria-label="answer with one of">
-            <button class="b-btn b-plain">ship it</button>
-            <button class="b-btn b-plain">iterate on the look first</button>
+            <button class="w-option">ship it</button>
+            <button class="w-option">iterate on the look first</button>
           </div>
-          <div class="b-do">
-            <input class="b-in" placeholder="note (optional)" aria-label="the note sent with the answer">
-            <a class="b-door" href="./web-session.html">discuss</a>
+          <div class="w-do"><button class="w-more" aria-expanded="false">add a note</button></div>
+          <div class="w-links">
+            <a class="w-quiet-link" href="./web-session.html">discuss</a>
+            <button class="w-quiet-link">open the row</button>
           </div>
-          <button class="w-open">open the row</button>
+        </article>
+        <article class="w-need">
+          <div class="w-meta">
+            <span class="w-kind">a look</span>
+            <span class="w-ctx">the chase's cadence check &middot; lead</span>
+            <span class="w-age">waiting 20m</span>
+          </div>
+          <h3 class="w-q">Approve the chase's cadence check or say what to change</h3>
+          <div class="w-do">
+            <p class="w-hold">This row closes its epic: 2 child rows are still open. Close them first.</p>
+            <button class="b-btn b-no">send back</button>
+            <button class="w-more" aria-expanded="false">add a note</button>
+          </div>
+          <div class="w-links">
+            <a class="w-quiet-link" href="./web-session.html">discuss</a>
+            <button class="w-quiet-link">open the row</button>
+          </div>
         </article>
       </div>
     </section>
@@ -392,7 +438,7 @@
         <li class="w-exc"><button class="w-link">fold the session rail</button>
           <span class="w-why">no change since 19:36</span></li>
         <li class="w-exc"><span class="w-strong">reviewer</span>
-          <span class="w-why">holds no row - feed it or despawn it</span></li>
+          <span class="w-why">holds no row since 17:08 - feed it or despawn it</span></li>
       </ul>
     </section>
 
@@ -401,7 +447,7 @@
       <ul class="w-list">
         <li class="w-live"><a class="w-who" href="./web-session.html">lead</a>
           <span class="w-strong">fold the session rail</span>
-          <span class="w-why">since 00:36</span>
+          <span class="w-why">since unknown</span>
           <span class="w-why">nothing touched yet</span>
           <span class="w-why">next 2h</span>
           <span class="w-why">and 1 more held</span></li>
