@@ -14,4 +14,4 @@ import board from './fixtures/board.json';
 import home from './fixtures/home.json';
 
 export const homeWire: HomeWire = homeFrom(home as unknown as HomeWire);
-export const boardWire: BoardWire = boardFrom(board);
+export const boardWire: BoardWire = boardFrom(board as unknown as BoardWire);
