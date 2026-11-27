@@ -2352,6 +2352,28 @@ describe('the conversation the chat draws', () => {
   });
 
   /**
+   * **A notice is one item, and its id keys it on both carriers.** The core
+   * holds the line as a message of the seat's conversation (the frame's
+   * top-level `uuid`), so a page attaching later reads it; the live frame
+   * names the same id, and the row this store appends must carry it too or
+   * the two draw under different keys.
+   */
+  it('keys a notice by the id its held copy carries', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({
+      notice: { key: LEAD, id: 'forge_notice_7', severity: 'info', text: 'one line' },
+    });
+
+    const messages = JSON.stringify(get(chat.value).turns.at(-1)?.messages);
+    expect(messages, 'the line is drawn').toContain('one line');
+    expect(messages, 'under the id the held copy carries').toContain('forge_notice_7');
+  });
+
+  /**
    * The review activity notice is the same line one origin over (#1776): a
    * worker's review turn ended, the core batched the tally into the
    * reviewer's session, and no transcript row holds it - the view this client
@@ -7088,6 +7110,26 @@ describe('the chat holds a queued prompt until the CLI takes it', () => {
       echoes.of(seatKey).map((held) => held.uuid),
       "the prompt's own mark goes with it, and the other send is untouched",
     ).toEqual(['e-other']);
+  });
+
+  /**
+   * **The cancel's own answer settles the hold even alone.** The control's
+   * reply usually arrives beside the CLI's terminal lifecycle frame, but the
+   * reply is the word this client asked for: a stream that lost the other
+   * frame must not leave a held row no read will ever drain.
+   */
+  it('settles a held row on the cancel answer alone', () => {
+    const server = fakeConnection();
+    const chat = new Chat(server.connection, LEAD);
+    chat.start();
+    server.send(page([turn('t1', 'first')], null));
+
+    server.update({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'cancel me' } });
+    server.update({ chat_appended: { key: LEAD, msg: forgedUnder('cancel me', 'p1') } });
+    // Only the control's answer, with no lifecycle frame after it.
+    server.update({ prompt_cancel_resolved: { key: LEAD, uuid: 'p1', cancelled: true } });
+
+    expect(words(chat), 'the cancelled row never draws').not.toContain('cancel me');
   });
 
   it('holds a forged row a page joins frames to, which is the ordinary shape', () => {

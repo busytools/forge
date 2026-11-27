@@ -2159,6 +2159,17 @@ mod tests {
         assert_eq!(data["uuid"], serde_json::json!("forge_notice_1"), "under its own id");
         assert_eq!(data["severity"], serde_json::json!("error"));
         assert_eq!(data["text"], serde_json::json!("the mode was refused"));
+        // **The id is the row's key on both carriers.** The client names a row
+        // by the frame's top-level `uuid`; a system frame's flattened data is
+        // where that has to land, or the live line and this held copy draw as
+        // two rows.
+        let served = serde_json::to_value(conversation.messages().last().expect("the held row"))
+            .expect("the held message encodes");
+        assert_eq!(
+            served["uuid"],
+            serde_json::json!("forge_notice_1"),
+            "the id is top-level on the served frame: {served}",
+        );
         assert_eq!(
             conversation.watermark(),
             7,

@@ -3533,6 +3533,23 @@ export class Chat {
       this.advanced(update);
       return;
     }
+    // **A confirmed cancel settles the hold on its own.** The CLI's terminal
+    // lifecycle frame usually follows, but this control's answer is the one
+    // word the client asked for: a stream that lost the other frame must not
+    // leave a held row no read will ever drain. `cancelled: false` means the
+    // CLI had taken it, so the prompt's own `sent` settles the row instead.
+    if (variant === 'prompt_cancel_resolved') {
+      const resolved = (
+        update as { prompt_cancel_resolved?: { uuid?: unknown; cancelled?: unknown } }
+      ).prompt_cancel_resolved;
+      const uuid = typeof resolved?.uuid === 'string' ? resolved.uuid : null;
+      if (uuid === null || resolved?.cancelled !== true) return;
+      echoes.take(this.key, uuid);
+      this.waiting.delete(uuid);
+      this.drained.delete(uuid);
+      this.dropEmptied(uuid);
+      return;
+    }
     if (variant === 'chat_appended') {
       const message = (update as { chat_appended?: { msg?: unknown } }).chat_appended?.msg;
       if (message === undefined) return;
@@ -3715,14 +3732,24 @@ export class Chat {
     }
     // The core's own line: a command's answer, or why one did not run. It is
     // drawn here because this store is the conversation the page draws, and the
-    // record's copy of the transcript is not. **Live only, deliberately**: the
-    // CLI never wrote such a row, so a page that attaches afterwards has
-    // nothing to read it from and the line is not owed to it.
+    // record's copy of the transcript is not. **The core holds the same line as
+    // a message of the seat's conversation**, so this frame and the copy a
+    // later read serves are one row: `uuid` is the notice's id, which is what
+    // keys both. A frame that names none is from a core older than the field,
+    // and it draws as the arrival it is.
     if (variant === 'notice') {
-      const line = (update as { notice?: { severity?: unknown; text?: unknown } }).notice;
+      const line = (update as { notice?: { id?: unknown; severity?: unknown; text?: unknown } })
+        .notice;
       const text = line?.text;
       if (typeof text !== 'string' || text === '') return;
-      this.append({ type: 'system', subtype: 'forge_notice', severity: line?.severity, text });
+      const id = typeof line?.id === 'string' && line.id !== '' ? line.id : undefined;
+      this.append({
+        type: 'system',
+        subtype: 'forge_notice',
+        severity: line?.severity,
+        text,
+        ...(id === undefined ? {} : { uuid: id }),
+      });
       return;
     }
     // A worker's review turn ended and the core batched the tally onto this
