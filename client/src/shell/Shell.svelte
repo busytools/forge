@@ -7,6 +7,7 @@
   import Sprite from '../components/Sprite.svelte';
   import { DEFAULT_ADDRESS, displayAddress, type Attempt } from '../connect/attempt';
   import { boot } from '../connect/boot';
+  import { RETURN_HIDE_MS } from '../connect/resync';
   import {
     movedParameter,
     rememberedAddress,
@@ -128,15 +129,26 @@
   let settled = $state(false);
 
   /**
-   * A return to a visible page is not silence.
+   * A return to a visible page is not silence, and a blink is not a return.
    *
    * A parked page's timers stop with it, and its clock would otherwise
-   * measure the whole hide before the next frame lands - the measured flash
-   * after a long blink. The window restarts here; a genuinely wedged link is
-   * still caught a bound later.
+   * measure the whole hide before the next frame lands. **Only a hide the
+   * return re-read also counts** (`RETURN_HIDE_MS`): a brief alt-tab leaves
+   * the page's read current, and re-arming the bound for it would hide a
+   * line that is still true.
    */
+  let hiddenAt: number | null =
+    typeof document !== 'undefined' && document.hidden ? Date.now() : null;
+
   function awake(): void {
-    if (!document.hidden) heardAt = Date.now();
+    if (document.hidden) {
+      hiddenAt = Date.now();
+      return;
+    }
+    const since = hiddenAt;
+    hiddenAt = null;
+    if (since === null || Date.now() - since < RETURN_HIDE_MS) return;
+    heardAt = Date.now();
   }
 
   onMount(() => {
@@ -697,7 +709,7 @@
       {#if quietSpoken === null}
         {staleLine}
       {:else}
-        <span aria-hidden="true">{staleLine}</span><span class="a11y">{quietSpoken}</span>
+        <span aria-hidden="true">{staleLine}</span><span class="sr">{quietSpoken}</span>
       {/if}
     </p>
   {/if}

@@ -222,7 +222,7 @@
         {:else}
           <!-- The age moves every minute, and it is aria-hidden so the live
                region announces the state rather than the clock. -->
-          <span aria-hidden="true">{notice}</span><span class="a11y">{noticeSpoken}</span>
+          <span aria-hidden="true">{notice}</span><span class="sr">{noticeSpoken}</span>
         {/if}
       </div>
     {/if}

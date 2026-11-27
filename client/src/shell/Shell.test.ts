@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AddressInfo, RawData, WebSocket } from 'ws';
 
 import { DEFAULT_ADDRESS, displayAddress } from '../connect/attempt';
+import { RETURN_HIDE_MS } from '../connect/resync';
 import { rememberedAddress, rememberAddress, serverParameter } from '../connect/remembered';
 import { homeWire } from '../dev/fixture.data';
 import { goTo } from '../routes';
@@ -1701,7 +1702,7 @@ describe('a link that is open but has gone quiet', () => {
     expect(strip?.querySelector('[aria-hidden="true"]')?.textContent, 'the age is drawn').toContain(
       'for 1m',
     );
-    expect(strip?.querySelector('.a11y')?.textContent, 'the spoken line is stable').toBe(
+    expect(strip?.querySelector('.sr')?.textContent, 'the spoken line is stable').toBe(
       `No word from ${displayAddress(forge.address)} - showing the last read`,
     );
 
@@ -1715,12 +1716,14 @@ describe('a link that is open but has gone quiet', () => {
   });
 
   /**
-   * **A return is not silence.** A parked page's clock stops with it, and a
-   * line measured across the whole hide would flash on wake before the
-   * shell's next word lands. The window restarts when the page is visible
-   * again; a genuinely wedged link is still caught a bound later.
+   * **A return is not silence, and a blink is not a return.** A parked
+   * page's clock stops with it, and a line measured across a long hide would
+   * flash on wake before the shell's next word lands. Only a hide the return
+   * re-read also counts (`RETURN_HIDE_MS`) restarts the window: a brief
+   * alt-tab leaves the read current, and clearing the line for it would
+   * re-arm the bound on a line that is still true.
    */
-  it('restarts the clock when the page comes back to view', async () => {
+  it('restarts the clock only after a hide long enough to count', async () => {
     const forge = await stubForge({ mark: null, theme: null, font: null });
     forges.push(forge);
     await openAt('/', forge.address);
@@ -1732,10 +1735,18 @@ describe('a link that is open but has gone quiet', () => {
     const hidden = { value: true };
     Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden.value });
     try {
+      // A blink: hidden and visible again inside the re-read's own window,
+      // which `resync.ts` ignores for the same signal.
+      document.dispatchEvent(new Event('visibilitychange'));
+      hidden.value = false;
       document.dispatchEvent(new Event('visibilitychange'));
       flushSync();
-      expect(drawn(), 'a hidden page dropped its line').toContain('No word from');
+      expect(drawn(), 'a brief hide dropped a line that still stood').toContain('No word from');
 
+      // A real return: the window restarts and the line stands down.
+      hidden.value = true;
+      document.dispatchEvent(new Event('visibilitychange'));
+      vi.setSystemTime(Date.now() + RETURN_HIDE_MS);
       hidden.value = false;
       document.dispatchEvent(new Event('visibilitychange'));
       flushSync();
