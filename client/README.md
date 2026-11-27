@@ -387,9 +387,9 @@ notarises the final bundle after the re-sign: it zips the app, submits it with
 `notarytool submit --wait`, staples the accepted ticket, and reads the result
 back with `stapler validate` and `spctl`. The updater tarball is packed after
 the staple, so an auto-update installs an app that carries it. The script
-fails rather than skips at every step: a rejected submission prints its id and
-Apple's log, and a failed staple or a Gatekeeper rejection stops the release
-before the swap.
+fails rather than skips at every step: a rejected submission prints its id
+and, when the log can be fetched, Apple's log, and a failed staple or a
+Gatekeeper rejection stops the release before the swap.
 
 The secret half of the credential lives outside the repo, beside the updater
 key and the profile:
