@@ -103,6 +103,39 @@ describe('the router at a document address', () => {
   });
 });
 
+describe('the router at the home address', () => {
+  /**
+   * **A failed read is not a reason to drop what the stream held.** The held
+   * patches are the stream's own record of frames this client could not
+   * place; inside the `wire` branch they were hidden exactly when the read
+   * had failed and the reader most needed to know they were kept.
+   */
+  it('says a failed read and the patches it held, together', () => {
+    const body = render(Router, {
+      props: {
+        route: { name: 'home' },
+        settings: DEFAULT_SETTINGS,
+        address: '127.0.0.1:8790',
+        home: {
+          wire: null,
+          refused: null,
+          failed: 'a bad frame',
+          report: null,
+          heldPatches: [{}],
+        },
+        failure: null,
+        connected: true,
+        connection: untouched(),
+        notice: null,
+        onconnect: () => {},
+      },
+    }).body;
+
+    expect(body, 'the failed read is not drawn').toContain('a bad frame');
+    expect(body, 'the held patch was dropped with the failed read').toContain('1 server update');
+  });
+});
+
 describe('the router at a session address', () => {
   /**
    * The conversation column is where the seat's history draws, and it is the

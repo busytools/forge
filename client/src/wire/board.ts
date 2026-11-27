@@ -205,6 +205,7 @@ export function applyTasks(
   wire: BoardWire | null,
   project: { org: string; name: string },
   tasks: readonly unknown[],
+  readAt: number,
 ): BoardWire | null {
   if (wire === null) return null;
   const at = wire.projects.findIndex(
@@ -223,7 +224,9 @@ export function applyTasks(
     byId.set(
       fresh.task.id,
       prior === undefined
-        ? fresh
+        ? // **A row the frame introduces is anchored to this frame**: its
+          // worked figure is empty as of now, not as of the last whole read.
+          { ...fresh, read_at: readAt }
         : {
             ...prior,
             task: fresh.task,

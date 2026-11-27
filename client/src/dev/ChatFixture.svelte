@@ -117,7 +117,12 @@
         }
         // `snapshot()` is what the seat's own read asks the held store for;
         // the fixture holds no record, so it answers none.
-        return { state: () => ({ kind: 'ready' as const }), snapshot: () => null };
+        return {
+          state: () => ({ kind: 'ready' as const }),
+          snapshot: () => null,
+          unexpected: () => [],
+          value: { subscribe: () => () => undefined },
+        };
       },
       unsubscribe: () => undefined,
       holds: () => asked,

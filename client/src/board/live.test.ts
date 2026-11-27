@@ -266,6 +266,42 @@ describe('the board over a connection', () => {
     stop();
   });
 
+  /**
+   * **A frame fold writes the view whole, so it must carry what it did not
+   * touch.** The held patches and the record clock live beside the wire, and
+   * a fold that named only the wire dropped both: the patch vanished from the
+   * page, and every other project's worked time re-anchored to this frame.
+   */
+  it('carries the held patches and the record clock through a frame fold', () => {
+    const forge = fakeConnection();
+    const seen: BoardRead[] = [];
+    const stop = watchBoard(forge.connection).subscribe((next) => seen.push(next));
+    const store = forge.stores.get(BOARD);
+
+    vi.setSystemTime(1_000_000);
+    store?.set(boardWire(), 1);
+    const landed = seen.at(-1)?.readAt ?? 0;
+    expect(landed, 'the record did not land at the read instant').toBe(1_000_000);
+
+    vi.setSystemTime(1_060_000);
+    store?.gap('a skipped version');
+    store?.unplaced({ tasks_changed: 'unreadable' });
+    forge.arrive(NEWS);
+
+    expect(seen.at(-1)?.heldPatches, 'a frame fold dropped the held patch').toHaveLength(1);
+    expect(seen.at(-1)?.resyncing, 'a frame fold dropped the catching-up state').toBe(true);
+    expect(seen.at(-1)?.readAt, 'a frame fold reset the record clock').toBe(landed);
+    const rows = (
+      seen.at(-1)?.wire as
+        { projects: { rows: { task: { id: string }; read_at?: number }[] }[] } | undefined
+    )?.projects[0]?.rows;
+    expect(
+      rows?.[0]?.read_at,
+      'the row the frame introduced is not anchored to its own frame',
+    ).toBe(1_060_000);
+    stop();
+  });
+
   it('draws a refusal as the refusal, not an empty board', () => {
     const forge = fakeConnection();
     const seen: { refused: string | null }[] = [];

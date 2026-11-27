@@ -910,6 +910,20 @@
              without the record - and the refusal is what says so. -->
         <p class="refused">This forge would not answer for the seat: {read.refused}</p>
       {/if}
+      {#if read.resyncing}
+        <!-- The stream skipped a version: the record stays drawn, and this
+             says it may be a beat behind while one whole read lands. -->
+        <p class="refused">Catching up with the server...</p>
+      {/if}
+      {#if (read.heldPatches ?? []).length > 0}
+        <!-- Rule 25: a frame this client cannot place is kept and said, never
+             dropped in silence. -->
+        <p class="refused">
+          {read.heldPatches?.length} server update{(read.heldPatches?.length ?? 0) === 1 ? '' : 's'}
+          for the seat could not be read and
+          {(read.heldPatches?.length ?? 0) === 1 ? 'was' : 'were'} kept
+        </p>
+      {/if}
       {#if conversation !== null}
         {@render conversation(conversationProps)}
       {:else if seat.waking || seat.lifecycle === 'Spawning'}

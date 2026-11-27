@@ -2928,6 +2928,44 @@ describe('the record a page holds over an update stream', () => {
   });
 
   /**
+   * **What only the store knows is drawn too.** A patch this client cannot
+   * place is held there, and a skipped version marks the store resyncing;
+   * neither rides a frame, and a seat that repainted only on frames and
+   * answers left both silently undrawn (rule 25).
+   */
+  it('draws the patches it could not place, and says it is catching up', () => {
+    const { connection, held } = stored();
+    const page = watch(connection);
+    const store = held.get({ session: LEAD });
+    expect(store, 'the seat opened no store').toBeDefined();
+    if (store === undefined) return;
+
+    const seeded = {
+      slot: LEAD,
+      state: { scan_cwd: '/tmp' },
+      header: { session_id: null, seq: 1 },
+    };
+    const answer: ServerMessage = { kind: 'snapshot', subject: { session: LEAD }, data: seeded };
+
+    store.set(seeded);
+    page.land(answer);
+    expect(page.read().heldPatches ?? [], 'a clean read held something').toHaveLength(0);
+
+    store.gap('a skipped version');
+    expect(page.read().resyncing, 'the gap was not drawn').toBe(true);
+
+    store.unplaced({ state: 'unreadable' });
+    expect(page.read().heldPatches, 'the held patch was not drawn').toHaveLength(1);
+
+    // The whole read the gap asked for answers: current, and holding nothing.
+    store.set(seeded);
+    page.land(answer);
+    expect(page.read().resyncing, 'the answer did not draw as current').toBe(false);
+    expect(page.read().heldPatches ?? [], 'the answer kept a held patch').toHaveLength(0);
+    page.stop();
+  });
+
+  /**
    * **The escalation opens the seat's subscription, never a tab.** The arm
    * that raises the role lives outside the seat's own factory, where a bare
    * `open()` is the DOM global: the role would rise with nothing subscribed,

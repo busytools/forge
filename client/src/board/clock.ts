@@ -34,7 +34,10 @@ export const STALE_SECS = 4 * 3600;
 
 /** One row advanced to `nowSecs`, from the instant the server encoded it. */
 export function agedRow(row: BoardRow, nowSecs: number, readAtMs: number): BoardRow {
-  const encodedAt = Math.floor(readAtMs / 1000);
+  // **A row a frame introduced is anchored to that frame**, not to the whole
+  // read before it: its figure is empty as of the frame, and counting from
+  // the read would credit it with work done before it existed.
+  const encodedAt = Math.floor((row.read_at ?? readAtMs) / 1000);
   const elapsed = Math.max(0, nowSecs - encodedAt);
   const inProgress = row.task.status === 'in_progress';
   const worked = row.worked_secs + (inProgress ? elapsed : 0);

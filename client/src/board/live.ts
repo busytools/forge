@@ -113,6 +113,27 @@ function boardStore(connection: Connection): Readable<BoardRead> {
     });
   }
 
+  /**
+   * The view a frame's fold is written with.
+   *
+   * **A frame carries one project's facts and the board's clock stays where
+   * the last whole read put it.** The derived figures a fold leaves in place
+   * were computed at that read, so re-stamping the clock here would
+   * re-anchor every other project's worked time to this frame. The held
+   * patches and the catching-up state ride every write for the same reason
+   * the wire does: `view.set` replaces the value whole, and a fold that names
+   * only the wire drops both from the page.
+   */
+  function folded(): BoardRead {
+    return {
+      wire: drawn,
+      refused: null,
+      readAt,
+      resyncing: held?.state().kind === 'resyncing',
+      heldPatches: held?.unexpected() ?? [],
+    };
+  }
+
   function watch(): void {
     held = connection.subscribe('board');
     stopStore = held.value.subscribe(() => {
@@ -153,15 +174,11 @@ function boardStore(connection: Connection): Readable<BoardRead> {
         // applied into the drawn board at once; the patch that follows it
         // carries the server's own derivation (#3063, rule 32).
         const frame = tasksFrame(message.update);
-        const applied = frame === null ? null : applyTasks(drawn, frame.project, frame.tasks);
+        const applied =
+          frame === null ? null : applyTasks(drawn, frame.project, frame.tasks, Date.now());
         if (applied !== null) {
           drawn = applied;
-          view.set({
-            wire: drawn,
-            refused: null,
-            readAt: Date.now(),
-            resyncing: held?.state().kind === 'resyncing',
-          });
+          view.set(folded());
         }
         return;
       }
@@ -170,12 +187,7 @@ function boardStore(connection: Connection): Readable<BoardRead> {
         const applied = applyCrons(drawn, crons.project, crons.crons);
         if (applied !== null) {
           drawn = applied;
-          view.set({
-            wire: drawn,
-            refused: null,
-            readAt: Date.now(),
-            resyncing: held?.state().kind === 'resyncing',
-          });
+          view.set(folded());
         }
         return;
       }
@@ -189,12 +201,7 @@ function boardStore(connection: Connection): Readable<BoardRead> {
             : applyConnectors(drawn, connectors.project, connectors.gotify, connectors.slack);
         if (applied !== null) {
           drawn = applied;
-          view.set({
-            wire: drawn,
-            refused: null,
-            readAt: Date.now(),
-            resyncing: held?.state().kind === 'resyncing',
-          });
+          view.set(folded());
         }
       }
       // **A frame this page cannot fold is not lost**: it marked the board
