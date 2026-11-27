@@ -1833,6 +1833,23 @@ fn frames_record() -> Value {
             }),
         }),
     );
+    // **The seat's delta, which no sample covered.** The same envelope as the
+    // home's, but a seat patch carries no version (its stream is numbered by
+    // its own frames) and replaces whole fields - so the negative version and
+    // the field vocabulary are both pinned here rather than left to a test
+    // that would pass with the patch machinery removed.
+    payload_sampled.insert(
+        "PatchSession".to_owned(),
+        shape_of(&ServerMessage::Patch {
+            subject: Subject::Session(SessionSlot::lead("TestOrg", "proj")),
+            version: None,
+            data: json!({
+                "reviews": {
+                    "threads": { "outcome": "read", "value": [] },
+                },
+            }),
+        }),
+    );
     // **The board's own read (#2517)**, the payload the home used to carry:
     // its rows, schedules and connector sets. Read from the server's fixture,
     // the same bytes its wire test round-trips, so a field rename moves this

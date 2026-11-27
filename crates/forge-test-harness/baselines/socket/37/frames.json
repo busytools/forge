@@ -920,6 +920,31 @@
         "project"
       ]
     },
+    "PatchSession": {
+      "": [
+        "data",
+        "kind",
+        "subject"
+      ],
+      "/data": [
+        "reviews"
+      ],
+      "/data/reviews": [
+        "threads"
+      ],
+      "/data/reviews/threads": [
+        "outcome",
+        "value"
+      ],
+      "/subject": [
+        "session"
+      ],
+      "/subject/session": [
+        "label",
+        "org",
+        "project"
+      ]
+    },
     "PluginsCliActionFailed": {
       "": [
         "kind",
