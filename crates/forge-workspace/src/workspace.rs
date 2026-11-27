@@ -7757,6 +7757,9 @@ impl Workspace {
                 Command::TaskAnswer { project, id, choice, words } => {
                     let id = TaskId::from(id.as_str());
                     let answered = match &choice {
+                        // The user's own door carries no version: there is no
+                        // second reader to refuse, and the board they acted
+                        // on is the one they saw.
                         Some(choice) => self.answer_decision(
                             &project,
                             &id,
@@ -7995,6 +7998,7 @@ impl Workspace {
                                     worked_secs: 0,
                                     updated_secs_ago: 0,
                                     owner_live: true,
+                                    wait_secs: None,
                                     marks: crate::board::Marks::default(),
                                     rollup: None,
                                     parent_subject: None,

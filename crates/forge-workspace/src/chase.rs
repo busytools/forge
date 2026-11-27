@@ -287,17 +287,21 @@ pub(crate) fn crossings(
         // Signal 3: a connector saw something after the row's last touch -
         // a merged pull request, a CI verdict, a state change - and the row
         // may now be obsolete or urgent.
+        // A read that reported the same head again saw nothing new: the
+        // input is measured from `changed_at`, not from the five-minute
+        // refresh, so a steady connector does not re-fire the chase.
         let newest_check = row
             .task
             .links
             .iter()
             .filter(|link| link.kind == forge_primitives::tasks::LinkKind::Pr)
             .filter_map(|link| link.last_check.as_ref().map(|check| (link, check)))
-            .filter(|(_, check)| check.at > row.task.updated_at)
-            .max_by_key(|(_, check)| check.at);
+            .filter_map(|(link, check)| check.changed_at.map(|at| (link, check, at)))
+            .filter(|(_, _, at)| *at > row.task.updated_at)
+            .max_by_key(|(_, _, at)| *at);
         if !row.task.status.is_terminal()
-            && let Some((link, check)) = newest_check
-            && !fired_already(fired, ChaseRung::NewInput, id, Some(&stamp(check.at)))
+            && let Some((link, check, changed_at)) = newest_check
+            && !fired_already(fired, ChaseRung::NewInput, id, Some(&stamp(changed_at)))
         {
             out.push(Crossing {
                 rung: ChaseRung::NewInput,
@@ -1417,6 +1421,7 @@ mod tests {
             state: Some("merged".to_owned()),
             last_check: Some(forge_primitives::tasks::LinkCheck {
                 at: check_at,
+                changed_at: Some(check_at),
                 state: Some("merged".to_owned()),
                 head: Some("abc123".to_owned()),
                 ci: Some("passing".to_owned()),
@@ -1435,11 +1440,13 @@ mod tests {
         drop(seen);
         assert_eq!(sweep(&ws, &deliver, 3_100), 0, "one ask per check");
 
-        // A fresher check is a new fact.
+        // A check that found something DIFFERENT is a new fact: both the
+        // read and the content move.
         ws.with_tasks_mut(|tasks| {
             let row = tasks.iter_mut().find(|task| task.id == TaskId::from("t-1")).expect("row");
             let check = row.links[0].last_check.as_mut().expect("check");
             check.at = epoch(3_200);
+            check.changed_at = Some(epoch(3_200));
             check.state = Some("open".to_owned());
         });
         assert_eq!(sweep(&ws, &deliver, 3_300), 1, "the fresher check is asked about");

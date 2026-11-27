@@ -245,7 +245,14 @@ impl Evidence {
 /// success.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LinkCheck {
+    /// When the connector last read the link. Freshness is measured from
+    /// here, so an unchanged read still keeps the check current.
     pub at: SystemTime,
+    /// When the read last reported something DIFFERENT from the one before
+    /// it. New input is measured from here: a connector re-reading the same
+    /// head every five minutes has seen nothing new.
+    #[serde(default)]
+    pub changed_at: Option<SystemTime>,
     /// The target's state as the connector spells it (open / closed /
     /// merged), absent when the check could not say.
     #[serde(default)]

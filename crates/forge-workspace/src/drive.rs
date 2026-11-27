@@ -14,8 +14,9 @@
 //! a wait on the user - a decision and a look are the user's to give, and
 //! no agent chases them.
 //!
-//! Caps: one outstanding nudge per project, and at most one per
-//! [`DRIVE_MIN_GAP_SECS`] while the same claim holds. The nudge clears
+//! Caps: one outstanding nudge per project - the same claim is never
+//! re-sent, and a CHANGED claim waits out [`DRIVE_MIN_GAP_SECS`] so a
+//! flapping board cannot become a stream of nudges. The nudge clears
 //! when the claim set empties - the lead acted, or the board moved - and a
 //! fresh claim starts its own clock. A sleeping lead is never woken: its
 //! next session start reads the board, and the clock is dropped so that
@@ -34,8 +35,7 @@ use crate::workspace::Workspace;
 /// How often the drive looks. A lead that stops is nudged within this.
 pub const DRIVE_INTERVAL_SECS: u64 = 60;
 
-/// At most one nudge per project inside this window while the same claim
-/// holds.
+/// How close together two DIFFERENT claims may be nudged in one project.
 pub const DRIVE_MIN_GAP_SECS: u64 = 30 * 60;
 
 /// How many subjects of each kind a nudge names before it counts the
@@ -49,9 +49,21 @@ pub(crate) struct DriveClock {
     /// When the last nudge landed. `None` means nothing is outstanding and
     /// the next claim may speak at once.
     pub(crate) last_nudge: Option<SystemTime>,
+    /// A digest of the claims the outstanding nudge named. While it is
+    /// unchanged, the nudge is already outstanding and says nothing new.
+    pub(crate) last_claim: Option<u64>,
     /// Whether the last delivery attempt failed, so a failure episode is
     /// logged once rather than on every retry tick.
     pub(crate) failing: bool,
+}
+
+/// A digest of one nudge's claim set, so the drive can tell a changed
+/// board from the one it already spoke about.
+fn claim_stamp(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// How long `now` is after `since`, and zero when the clock went
@@ -195,21 +207,34 @@ impl Workspace {
                 self.drive_clocks.lock().remove(&lead);
                 continue;
             }
+            let text = claims.nudge(&view.name);
+            let stamp = claim_stamp(&text);
             let due = {
                 let mut clocks = self.drive_clocks.lock();
                 let clock = clocks.entry(lead.clone()).or_default();
-                clock.last_nudge.is_none_or(|at| age_secs(at, now) >= DRIVE_MIN_GAP_SECS)
+                match clock.last_nudge {
+                    // Nothing outstanding: the next claim may speak at once.
+                    None => true,
+                    // **One outstanding nudge per claim.** The same claim
+                    // is already on the lead's record; repeating it every
+                    // half hour says nothing new. Only a changed claim
+                    // speaks again, and not inside the gap.
+                    Some(at) => {
+                        clock.last_claim != Some(stamp)
+                            && age_secs(at, now) >= DRIVE_MIN_GAP_SECS
+                    }
+                }
             };
             if !due {
                 continue;
             }
-            let text = claims.nudge(&view.name);
             match deliver.to_seat(&lead, &text) {
                 Delivery::Delivered => {
                     let recovered = {
                         let mut clocks = self.drive_clocks.lock();
                         clocks.get_mut(&lead).is_some_and(|clock| {
                             clock.last_nudge = Some(now);
+                            clock.last_claim = Some(stamp);
                             std::mem::replace(&mut clock.failing, false)
                         })
                     };
@@ -606,10 +631,11 @@ mod tests {
         assert_eq!(pass(&ws, &deliver, 1_000), 0, "a lead mid-turn has not stopped");
     }
 
-    /// One outstanding nudge per project: inside the gap the same claim
-    /// says nothing, and it speaks again only once the gap is spent.
+    /// One outstanding nudge per project: the SAME claim is never re-sent,
+    /// however long it holds; a changed claim is the one that speaks again,
+    /// and not inside the gap.
     #[test]
-    fn one_nudge_per_project_per_gap() {
+    fn one_outstanding_nudge_per_claim() {
         let dir = tempdir().expect("tempdir");
         let ws = fixture(dir.path());
         let _rx = live_lead(&ws);
@@ -618,7 +644,24 @@ mod tests {
 
         assert_eq!(pass(&ws, &deliver, 1_000), 1);
         assert_eq!(pass(&ws, &deliver, 1_060), 0, "inside the gap");
-        assert_eq!(pass(&ws, &deliver, 1_000 + DRIVE_MIN_GAP_SECS), 1, "the gap is spent");
+        assert_eq!(
+            pass(&ws, &deliver, 1_000 + DRIVE_MIN_GAP_SECS),
+            0,
+            "the same claim is already outstanding; the gap does not re-open it",
+        );
+
+        // A changed board is a new fact, and the gap still bounds it.
+        ws.seed_test_task(task("t-2", TaskStatus::Pending, None));
+        assert_eq!(
+            pass(&ws, &deliver, 1_000 + DRIVE_MIN_GAP_SECS + 60),
+            1,
+            "a changed claim speaks once the gap is spent",
+        );
+        assert_eq!(
+            pass(&ws, &deliver, 4_000 + DRIVE_MIN_GAP_SECS),
+            0,
+            "and then it holds like any other claim",
+        );
         assert_eq!(deliver.seen.lock().len(), 2);
     }
 

@@ -151,6 +151,18 @@ fn task_to_json(task: &Task) -> serde_json::Value {
             }),
         );
     }
+    // `tasks__get` promises the row's links and its archive state: an
+    // archived row that omitted `archived_at` read as a live terminal row,
+    // and the evidence a completion rests on could not be followed.
+    if !task.links.is_empty() {
+        map.insert(
+            "links".to_owned(),
+            serde_json::json!(task.links.iter().map(link_json).collect::<Vec<_>>()),
+        );
+    }
+    if let Some(archived_at) = task.archived_at {
+        map.insert("archived_at".to_owned(), serde_json::json!(fmt_rfc3339(archived_at)));
+    }
     map.insert("version".to_owned(), serde_json::json!(task.version));
     map.insert("created_at".to_owned(), serde_json::json!(fmt_rfc3339(task.created_at)));
     map.insert("updated_at".to_owned(), serde_json::json!(fmt_rfc3339(task.updated_at)));
@@ -163,6 +175,47 @@ fn kind_str(kind: forge_primitives::tasks::TaskKind) -> &'static str {
         forge_primitives::tasks::TaskKind::Finite => "finite",
         forge_primitives::tasks::TaskKind::Standing => "standing",
     }
+}
+
+/// The link kind as the tool schema spells it.
+fn link_kind_str(kind: LinkKind) -> &'static str {
+    match kind {
+        LinkKind::Spec => "spec",
+        LinkKind::Plan => "plan",
+        LinkKind::Issue => "issue",
+        LinkKind::Pr => "pr",
+        LinkKind::Branch => "branch",
+        LinkKind::Path => "path",
+        LinkKind::Other => "other",
+    }
+}
+
+/// One link as the tool output reads it: where it points, what the
+/// connector last saw, and when it was attached.
+fn link_json(link: &forge_primitives::tasks::TaskLink) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    map.insert("kind".to_owned(), serde_json::json!(link_kind_str(link.kind)));
+    map.insert("target".to_owned(), serde_json::json!(link.target));
+    for (key, value) in [("label", link.label.as_deref()), ("state", link.state.as_deref())] {
+        if let Some(value) = value {
+            map.insert(key.to_owned(), serde_json::json!(value));
+        }
+    }
+    if let Some(check) = &link.last_check {
+        map.insert(
+            "last_check".to_owned(),
+            serde_json::json!({
+                "at": fmt_rfc3339(check.at),
+                "changed_at": check.changed_at.map(fmt_rfc3339),
+                "state": check.state,
+                "head": check.head,
+                "ci": check.ci,
+                "problem": check.problem,
+            }),
+        );
+    }
+    map.insert("added_at".to_owned(), serde_json::json!(fmt_rfc3339(link.added_at)));
+    serde_json::Value::Object(map)
 }
 
 /// The decision record as the tool output reads it: the ask, its options,
@@ -413,11 +466,12 @@ impl Tool for Update {
          approves); and completing the epic's ROOT row closes it and archives the whole \
          tree. A child of an epic completes when its deliverable is out - for a change, \
          delivered means the PR exists and the delivering worker's own checks ran at its \
-         head; for a report or a sweep, concluded means it is handed over. A local commit \
-         alone completes nothing. **A move to `completed` needs `evidence`** - a `commit` the \
-         repository holds, or a `path` at that commit (at HEAD when no commit is named), with \
-         an `excerpt` for the reader - and forge checks it on the move: a completion with no \
-         evidence, or with evidence the repository cannot back, is refused rather than landed. \
+         head; for a report or a sweep, concluded means it is handed over. **A move to \
+         `completed` needs `evidence`**: a `commit` the repository holds - the commit alone is \
+         a claim forge checks - or a `path` at that commit (at HEAD when no commit is named), \
+         with an `excerpt` for the reader. forge checks the claim on the move: a completion \
+         with no evidence, or with evidence the repository cannot back, is refused rather than \
+         landed. Being committed is not the claim; what this move states is. \
          Any session in the \
          project may move any of its tasks, so a lead can \
          complete a worker's task and a worker can put a row it holds into waiting - and a row \
@@ -453,10 +507,10 @@ impl Tool for Update {
                 },
                 "version": {
                     "type": "integer",
-                    "description": "The row's version as you read it. A stated version the row \
-                                    is no longer at refuses the write and names the current \
+                    "description": "The row's version as you read it. Required: a version the \
+                                    row is no longer at refuses the write and names the current \
                                     one, so a lost update is visible instead of overwriting \
-                                    another writer. Omit to write without the check.",
+                                    another writer.",
                 },
                 "subject": { "type": "string", "description": "New row text." },
                 "active_form": {
@@ -476,8 +530,9 @@ impl Tool for Update {
                                     epic completes when its deliverable is out - for a \
                                     change, delivered means the PR exists and the \
                                     delivering worker's own checks ran at its head; for a \
-                                    report or a sweep, concluded means it is handed over. A \
-                                    local commit alone completes nothing.",
+                                    report or a sweep, concluded means it is handed over. \
+                                    Being committed is not the claim; the `evidence` this move \
+                                    states is.",
                 },
                 "owner": {
                     "type": "string",
@@ -542,7 +597,7 @@ impl Tool for Update {
                 },
                 "estimate": { "type": "string", "description": "A duration estimate." },
             },
-            "required": ["id"],
+            "required": ["id", "version"],
             "additionalProperties": false,
         })
     }
@@ -552,6 +607,15 @@ impl Tool for Update {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
+        // Every write names the version it read: an update that skipped
+        // the check could silently overwrite another writer's move.
+        if args.patch.version.is_none() {
+            return tool_error(
+                "a write names the version it read: pass `version`, the row's version as \
+                 tasks__list or tasks__get returned it"
+                    .to_owned(),
+            );
+        }
         match self.facade.update_task(&self.slot, &TaskId::from(args.id.as_str()), args.patch) {
             Ok(task) => match serde_json::to_string_pretty(&task_to_json(&task)) {
                 Ok(json) => ToolOutput::text(json),
@@ -631,7 +695,9 @@ fn withheld_line(withheld: &[crate::board::BoardRow]) -> Option<String> {
     let noun = if total == 1 { "row" } else { "rows" };
     let pronoun = if total == 1 { "it" } else { "them" };
     Some(format!(
-        "{total} finished {noun} withheld by status: {}. Pass {} to read {pronoun}.",
+        "{total} finished {noun} withheld by status: {}. Pass {} to read {pronoun}. A finished \
+         row archives a day after it ended and leaves this read entirely; `tasks__get` by its id \
+         returns it whole, archived rows included.",
         tally.join(", "),
         doors.join(" or "),
     ))
@@ -765,8 +831,9 @@ impl Tool for List {
          `ready` (true = pending with nothing waiting on it and not reserved for the user; \
          ownership is NOT part of the mark, so read `owner` too when the question is an \
          unowned row). An empty `rows` means your project has no tasks in flight (or only \
-         terminal rows, which the closing line names), or that your project could not be \
-         resolved, or that this run could not read its stored tasks. Any session in the \
+         terminal rows, which the closing line names, or archived rows, which `tasks__get` reads \
+         by id), or that your project could not be resolved, or that this run could not read its \
+         stored tasks. Any session in the \
          project may call this."
     }
 
@@ -955,6 +1022,7 @@ struct Delete {
 #[derive(serde::Deserialize)]
 struct DeleteArgs {
     id: String,
+    version: u64,
 }
 
 #[async_trait::async_trait]
@@ -995,8 +1063,14 @@ impl Tool for Delete {
                     "type": "string",
                     "description": "The task id to remove, or any unique prefix of one.",
                 },
+                "version": {
+                    "type": "integer",
+                    "description": "The row's version as you read it. A delete that would land \
+                                    on a row another writer has since changed is refused with \
+                                    the current version.",
+                },
             },
-            "required": ["id"],
+            "required": ["id", "version"],
             "additionalProperties": false,
         })
     }
@@ -1006,7 +1080,7 @@ impl Tool for Delete {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        match self.facade.delete_task(&self.slot, &TaskId::from(args.id.as_str())) {
+        match self.facade.delete_task(&self.slot, &TaskId::from(args.id.as_str()), args.version) {
             Ok(removed) => {
                 let mut envelope =
                     crate::mcp::deleted::removed_record(&task_to_json(&removed.task));
@@ -1029,6 +1103,7 @@ struct Claim {
 #[derive(serde::Deserialize)]
 struct ClaimArgs {
     id: String,
+    version: u64,
 }
 
 #[async_trait::async_trait]
@@ -1039,13 +1114,15 @@ impl Tool for Claim {
 
     fn description(&self) -> &'static str {
         "Claim a task in YOUR project: one atomic write that makes you its owner and marks it \
-         in progress. Pass `id`, a full task id or any unique prefix of one; an exact id wins \
-         over any longer id that starts with it, and a prefix matching more than one row is \
-         refused with the matching rows named. Refused when a live seat holds the row (named), \
-         when it is not pending, when it is reserved for the user (`reserved: \"user\"` - the \
-         drive's pick and nobody else's), or when you already have a row in progress: one in \
-         progress per worker. Claiming is for unassigned rows: a row a lead created for you \
-         already names you as `owner`, so work it without claiming. Returns the claimed record."
+         in progress. Pass `id`, a full task id or any unique prefix of one, and `version`, \
+         the row as you read it; an exact id wins over any longer id that starts with it, and \
+         a prefix matching more than one row is refused with the matching rows named. Refused \
+         when a live seat holds the row (named), when it is not pending, when it is waiting on \
+         something, when it is reserved for the user (`reserved: \"user\"` - the user's pick \
+         and nobody else's), when the version you named is stale, or when you already have a \
+         row in progress: one in progress per worker. Claiming is for unassigned rows: a row a \
+         lead created for you already names you as `owner`, so work it without claiming. \
+         Returns the claimed record."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -1056,8 +1133,14 @@ impl Tool for Claim {
                     "type": "string",
                     "description": "The task id to claim, or any unique prefix of one.",
                 },
+                "version": {
+                    "type": "integer",
+                    "description": "The row's version as you read it. A claim that would land \
+                                    on a row another writer has since changed is refused with \
+                                    the current version.",
+                },
             },
-            "required": ["id"],
+            "required": ["id", "version"],
             "additionalProperties": false,
         })
     }
@@ -1067,7 +1150,7 @@ impl Tool for Claim {
             Ok(args) => args,
             Err(err) => return tool_error(format!("invalid arguments: {err}")),
         };
-        match self.facade.claim_task(&self.slot, &args.id) {
+        match self.facade.claim_task(&self.slot, &args.id, args.version) {
             Ok(task) => match serde_json::to_string_pretty(&task_to_json(&task)) {
                 Ok(json) => ToolOutput::text(json),
                 Err(err) => tool_error(format!("response serialization failed: {err}")),
@@ -1096,6 +1179,7 @@ struct WaitArgs {
     question: Option<String>,
     #[serde(default)]
     options: Vec<String>,
+    version: u64,
 }
 
 #[async_trait::async_trait]
@@ -1174,8 +1258,14 @@ impl Tool for Wait {
                                     real alternatives rather than one option and a rest.",
                     "items": { "type": "string" },
                 },
+                "version": {
+                    "type": "integer",
+                    "description": "The row's version as you read it. A wait that would land \
+                                    on a row another writer has since changed is refused with \
+                                    the current version.",
+                },
             },
-            "required": ["id", "kind"],
+            "required": ["id", "kind", "version"],
             "additionalProperties": false,
         })
     }
@@ -1197,6 +1287,7 @@ impl Tool for Wait {
             on.as_ref(),
             args.question,
             args.options,
+            args.version,
         ) {
             Ok(task) => match serde_json::to_string_pretty(&task_to_json(&task)) {
                 Ok(json) => ToolOutput::text(json),
@@ -1217,6 +1308,7 @@ struct ApproveArgs {
     id: String,
     /// The approval as the user gave it, quoted.
     approval: String,
+    version: u64,
 }
 
 #[async_trait::async_trait]
@@ -1237,7 +1329,10 @@ impl Tool for Approve {
          The user's own approve, send-back and cancel doors stay; the user's reopen strikes \
          the attestation, re-mints the look gate and parks the row on them again. A task is \
          named by its full id or any unique prefix of one. Refused when the row is not \
-         waiting on a look, when the quote is empty, or when the caller is not the lead."
+         waiting on a look, when the quote is empty, when the version you named is stale, when \
+         the caller is not the lead, or when the completion's evidence does not check out \
+         against the repository - the same gate every completion runs, because the approve IS \
+         a completion."
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -1253,8 +1348,14 @@ impl Tool for Approve {
                     "description": "The user's approval, quoted as they gave it (e.g. \
                                     \"Looks right - merge\"). Required and non-empty.",
                 },
+                "version": {
+                    "type": "integer",
+                    "description": "The row's version as you read it. An approve that would \
+                                    land on a row another writer has since changed is refused \
+                                    with the current version.",
+                },
             },
-            "required": ["id", "approval"],
+            "required": ["id", "approval", "version"],
             "additionalProperties": false,
         })
     }
@@ -1272,7 +1373,12 @@ impl Tool for Approve {
                     .to_owned(),
             );
         }
-        match self.facade.attest_task(&self.slot, &TaskId::from(args.id.as_str()), approval) {
+        match self.facade.attest_task(
+            &self.slot,
+            &TaskId::from(args.id.as_str()),
+            approval,
+            args.version,
+        ) {
             Ok(task) => match serde_json::to_string_pretty(&task_to_json(&task)) {
                 Ok(json) => ToolOutput::text(json),
                 Err(err) => tool_error(format!("response serialization failed: {err}")),
@@ -1295,6 +1401,7 @@ struct AnswerArgs {
     /// The note they left with it, when they left one.
     #[serde(default)]
     note: Option<String>,
+    version: u64,
 }
 
 #[async_trait::async_trait]
@@ -1332,8 +1439,14 @@ impl Tool for Answer {
                     "type": "string",
                     "description": "The short note the user left with the choice, if any.",
                 },
+                "version": {
+                    "type": "integer",
+                    "description": "The row's version as you read it. An answer that would \
+                                    land on a row another writer has since changed is refused \
+                                    with the current version.",
+                },
             },
-            "required": ["id", "choice"],
+            "required": ["id", "choice", "version"],
             "additionalProperties": false,
         })
     }
@@ -1362,6 +1475,7 @@ impl Tool for Answer {
             &TaskId::from(args.id.as_str()),
             choice,
             args.note.as_deref(),
+            args.version,
         ) {
             Ok(task) => match serde_json::to_string_pretty(&task_to_json(&task)) {
                 Ok(json) => ToolOutput::text(json),
@@ -1460,7 +1574,7 @@ mod tests {
     async fn approve_threads_the_quote_and_the_caller_to_the_facade() {
         let facade = Arc::new(MockTasksFacade::default());
         let out = Approve { facade: facade.clone(), slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "t-1", "approval": " looks good " })))
+            .call(input(serde_json::json!({ "id": "t-1", "approval": " looks good ", "version": 3 })))
             .await;
         assert!(!out.is_error, "approve succeeds: {out:?}");
         let calls = facade.attested.lock();
@@ -1473,7 +1587,7 @@ mod tests {
     async fn approve_refuses_an_empty_quote_without_touching_the_facade() {
         let facade = Arc::new(MockTasksFacade::default());
         let out = Approve { facade: facade.clone(), slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "t-1", "approval": "   " })))
+            .call(input(serde_json::json!({ "id": "t-1", "approval": "   ", "version": 3 })))
             .await;
         assert!(out.is_error, "an empty approval is nothing to stand behind");
         assert!(facade.attested.lock().is_empty(), "invalid input never reaches the facade");
@@ -1499,8 +1613,8 @@ mod tests {
         }
         assert_eq!(
             approve.input_schema()["required"],
-            serde_json::json!(["id", "approval"]),
-            "the quote is required at the schema",
+            serde_json::json!(["id", "approval", "version"]),
+            "the quote and the version it read are required at the schema",
         );
     }
 
@@ -1533,7 +1647,7 @@ mod tests {
     async fn update_reports_a_missing_id_rather_than_succeeding_silently() {
         let facade = Arc::new(MockTasksFacade::default());
         let out = Update { facade, slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "nope", "status": "completed" })))
+            .call(input(serde_json::json!({ "id": "nope", "status": "completed", "version": 0 })))
             .await;
         assert!(out.is_error, "an unknown id is an error, not a no-op");
         assert!(
@@ -1555,7 +1669,7 @@ mod tests {
             project: "otherproj".to_owned(),
         }));
         let elsewhere =
-            tool.call(input(serde_json::json!({ "id": "t-9", "status": "pending" }))).await;
+            tool.call(input(serde_json::json!({ "id": "t-9", "status": "pending", "version": 0 }))).await;
         assert!(elsewhere.is_error, "another project's row is refused");
         assert_eq!(
             text_of(&elsewhere),
@@ -1565,7 +1679,7 @@ mod tests {
 
         *facade.update_result.lock() = Some(Err(TasksError::NoSuchTask { id: "t-9".to_owned() }));
         let absent =
-            tool.call(input(serde_json::json!({ "id": "t-9", "status": "pending" }))).await;
+            tool.call(input(serde_json::json!({ "id": "t-9", "status": "pending", "version": 0 }))).await;
         assert!(absent.is_error, "an absent id is refused");
         assert_eq!(
             text_of(&absent),
@@ -1585,7 +1699,7 @@ mod tests {
         task.owner = Some(SessionSlot::lead("TestOrg", "myproj"));
         *facade.update_result.lock() = Some(Ok(task));
         let out = Update { facade, slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "t-1", "status": "in_progress" })))
+            .call(input(serde_json::json!({ "id": "t-1", "status": "in_progress", "version": 0 })))
             .await;
         assert!(!out.is_error, "update succeeds: {out:?}");
         let json: serde_json::Value =
@@ -1607,7 +1721,7 @@ mod tests {
         *facade.delete_result.lock() =
             Some(Ok(RemovedTaskTree { task: sample_task(), descendants_removed: 2 }));
         let out = Delete { facade, slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "t-1" })))
+            .call(input(serde_json::json!({ "id": "t-1", "version": 0 })))
             .await;
         assert!(!out.is_error, "delete succeeds: {out:?}");
         assert_eq!(out.blocks.len(), 1, "the envelope stays one text block: {out:?}");
@@ -1631,7 +1745,7 @@ mod tests {
         *facade.delete_result.lock() =
             Some(Ok(RemovedTaskTree { task: sample_task(), descendants_removed: 0 }));
         let out = Delete { facade, slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "t-1" })))
+            .call(input(serde_json::json!({ "id": "t-1", "version": 0 })))
             .await;
         assert!(!out.is_error, "delete succeeds: {out:?}");
         let json: serde_json::Value =
@@ -1648,7 +1762,8 @@ mod tests {
                 "id": "t-1",
                 "status": "waiting",
                 "detail": "why",
-                "links_add": [{ "target": "x" }]
+                "links_add": [{ "target": "x" }],
+                "version": 0
             })))
             .await;
         assert!(!out.is_error, "update succeeds: {out:?}");
@@ -2216,7 +2331,7 @@ mod tests {
                 "for a change, delivered means the PR exists and the delivering worker's own \
                  checks ran at its head",
                 "for a report or a sweep, concluded means it is handed over",
-                "A local commit alone completes nothing",
+                "Being committed is not the claim",
             ] {
                 assert!(
                     text.contains(clause),
@@ -2378,6 +2493,7 @@ mod tests {
             worked_secs: 0,
             updated_secs_ago: 0,
             owner_live: true,
+            wait_secs: None,
             marks: crate::board::Marks {
                 ready: false,
                 in_review: false,
@@ -2756,6 +2872,7 @@ mod tests {
                 "id": "t-1",
                 "choice": "flag it",
                 "note": "until the bench is green",
+                "version": 0,
             })))
             .await;
         assert!(!out.is_error, "answer succeeds: {out:?}");
@@ -2770,7 +2887,7 @@ mod tests {
         let facade = Arc::new(MockTasksFacade::default());
         let worker = SessionSlot::worker("TestOrg", "myproj", "w-1");
         let out = Answer { facade: facade.clone(), slot: worker }
-            .call(input(serde_json::json!({ "id": "t-1", "choice": "flag it" })))
+            .call(input(serde_json::json!({ "id": "t-1", "choice": "flag it", "version": 0 })))
             .await;
         assert!(out.is_error, "a decision is the user's to answer through the lead");
         assert!(facade.answered.lock().is_empty(), "and the facade is never reached");
@@ -2890,7 +3007,7 @@ mod tests {
         // The default mock finds nothing, so this is the not-found path.
         let facade = Arc::new(MockTasksFacade::default());
         let out = Delete { facade, slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "nope" })))
+            .call(input(serde_json::json!({ "id": "nope", "version": 0 })))
             .await;
         assert!(out.is_error, "an unknown id is an error, not a no-op");
     }
@@ -2906,7 +3023,7 @@ mod tests {
             id: "t-9".to_owned(),
             project: "otherproj".to_owned(),
         }));
-        let elsewhere = tool.call(input(serde_json::json!({ "id": "t-9" }))).await;
+        let elsewhere = tool.call(input(serde_json::json!({ "id": "t-9", "version": 0 }))).await;
         assert!(elsewhere.is_error, "another project's row is refused");
         assert_eq!(
             text_of(&elsewhere),
@@ -2915,7 +3032,7 @@ mod tests {
         );
 
         *facade.delete_result.lock() = Some(Err(TasksError::NoSuchTask { id: "t-9".to_owned() }));
-        let absent = tool.call(input(serde_json::json!({ "id": "t-9" }))).await;
+        let absent = tool.call(input(serde_json::json!({ "id": "t-9", "version": 0 }))).await;
         assert!(absent.is_error, "an absent id is refused");
         assert_eq!(
             text_of(&absent),
@@ -2957,7 +3074,8 @@ mod tests {
         let slot = SessionSlot::worker("TestOrg", "myproj", "w-1");
         let out = Claim { facade: facade.clone(), slot }
             .call(input(serde_json::json!({
-                "id": "t-1"
+                "id": "t-1",
+                "version": 0
             })))
             .await;
         assert!(!out.is_error, "claim succeeds: {out:?}");
@@ -2991,7 +3109,7 @@ mod tests {
             id: "t-9".to_owned(),
             project: "otherproj".to_owned(),
         }));
-        let elsewhere = tool.call(input(serde_json::json!({ "id": "t-9" }))).await;
+        let elsewhere = tool.call(input(serde_json::json!({ "id": "t-9", "version": 0 }))).await;
         assert!(elsewhere.is_error, "another project's row is refused");
         assert_eq!(
             text_of(&elsewhere),
@@ -3000,7 +3118,7 @@ mod tests {
         );
 
         *facade.claim_result.lock() = Some(Err(TasksError::NoSuchTask { id: "t-9".to_owned() }));
-        let absent = tool.call(input(serde_json::json!({ "id": "t-9" }))).await;
+        let absent = tool.call(input(serde_json::json!({ "id": "t-9", "version": 0 }))).await;
         assert!(absent.is_error, "an absent id is refused");
         assert_eq!(
             text_of(&absent),
@@ -3017,7 +3135,7 @@ mod tests {
         *facade.claim_result.lock() =
             Some(Err(TasksError::Refused("w-1 holds this row".to_owned())));
         let out = Claim { facade, slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "t-1" })))
+            .call(input(serde_json::json!({ "id": "t-1", "version": 0 })))
             .await;
         assert!(out.is_error, "the claim is refused");
         assert!(
@@ -3039,7 +3157,7 @@ mod tests {
             project: "otherproj".to_owned(),
         }));
         let elsewhere =
-            tool.call(input(serde_json::json!({ "id": "t-9", "kind": "resource" }))).await;
+            tool.call(input(serde_json::json!({ "id": "t-9", "kind": "resource", "version": 0 }))).await;
         assert!(elsewhere.is_error, "another project's row is refused");
         assert_eq!(
             text_of(&elsewhere),
@@ -3048,7 +3166,7 @@ mod tests {
         );
 
         *facade.wait_result.lock() = Some(Err(TasksError::NoSuchTask { id: "t-9".to_owned() }));
-        let absent = tool.call(input(serde_json::json!({ "id": "t-9", "kind": "resource" }))).await;
+        let absent = tool.call(input(serde_json::json!({ "id": "t-9", "kind": "resource", "version": 0 }))).await;
         assert!(absent.is_error, "an absent id is refused");
         assert_eq!(
             text_of(&absent),
@@ -3066,6 +3184,7 @@ mod tests {
                 "kind": "dependency",
                 "detail": "the board read has to land first",
                 "on": "t-9",
+                "version": 0,
             })))
             .await;
         assert!(!out.is_error, "wait succeeds: {out:?}");
@@ -3079,7 +3198,7 @@ mod tests {
     async fn a_dependency_wait_without_on_is_refused() {
         let facade = Arc::new(MockTasksFacade::default());
         let out = Wait { facade: facade.clone(), slot: lead_slot() }
-            .call(input(serde_json::json!({ "id": "t-1", "kind": "dependency" })))
+            .call(input(serde_json::json!({ "id": "t-1", "kind": "dependency", "version": 0 })))
             .await;
         assert!(out.is_error, "a dependency wait names its blocker");
         assert!(facade.waited.lock().is_empty(), "invalid input never reaches the facade");

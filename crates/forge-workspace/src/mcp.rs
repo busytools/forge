@@ -466,12 +466,13 @@ work: a landed row with no children and no epic above it is deleted in the same 
 pass, never left completed; a landed child of an epic - open or already terminal \
 - is completed and left terminal so the epic can read `to close` (a verify=user \
 child parks in waiting on the user first). Read it \
-with tasks__list: a `ready` mark means a row can be started, `worked` and \
-`overdue` say how long it has run against its estimate, and an over-estimate \
-message is an answer you owe. Claim an unassigned row \
-before working: tasks__claim by `id`, or by `epic` to pull that epic's top \
-ready row; one row in progress per worker. Keep your row true: tasks__update on every \
-state change - the update is also your alive signal - and attach the PR \
+with tasks__list: a `ready` mark means a row can be started, `overdue` says it \
+is past its estimate or its wait, and an over-estimate asks for an answer; \
+tasks__get reads one row whole. Claim an unassigned row \
+before working, naming its version; one row in progress per worker. \
+Keep your row true: tasks__update on every \
+state change - the update is also your alive signal, and every write names its \
+version - and attach the PR \
 the moment it exists. If you cannot proceed, tasks__wait: `kind` is \
 decision (a question for the user, minted only by the lead - a hold they \
 asked for, something ambiguous after the decision model, peers and your \

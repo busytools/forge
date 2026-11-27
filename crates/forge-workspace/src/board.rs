@@ -68,6 +68,12 @@ pub struct BoardRow {
     /// names only the dead holder - a live owner who has not touched the
     /// row is stuck, not gone.
     pub owner_live: bool,
+    /// How long the row's current wait has run, measured from the wait's
+    /// OWN start (`waiting_on.since`), never from the row's last edit. A
+    /// row re-stating the same wait keeps its start, and a row edited
+    /// while waiting does not reset its age. `None` when it is not waiting.
+    #[serde(default)]
+    pub wait_secs: Option<u64>,
     pub marks: Marks,
     /// A parent's children: how many are completed, of how many.
     pub rollup: Option<(usize, usize)>,
@@ -246,6 +252,10 @@ impl Workspace {
                 children_by_parent.entry(parent).or_default().push(task);
             }
         }
+        // Liveness is read once per owner, not once per row: the lookup
+        // resolves the project and the worker registry, so asking per row
+        // made a sweep O(rows x projects) under the same locks.
+        let mut liveness: HashMap<(String, String), bool> = HashMap::new();
         tasks
             .iter()
             .map(|task| {
@@ -258,7 +268,10 @@ impl Workspace {
                 let children = children_by_parent.get(&task.id).map_or(&[][..], Vec::as_slice);
                 let children_terminal =
                     !children.is_empty() && children.iter().all(|c| c.status.is_terminal());
-                let owner_live = task.owner.as_ref().is_none_or(|owner| self.seat_is_live(owner));
+                let owner_live = task.owner.as_ref().is_none_or(|owner| {
+                    let key = (owner.project().to_owned(), owner.label().to_owned());
+                    *liveness.entry(key).or_insert_with(|| self.seat_is_live(owner))
+                });
                 // Terminal rows carry no marks: they are history, and a mark
                 // on one reads as work that still needs someone.
                 let marks = if task.status.is_terminal() {
@@ -277,6 +290,12 @@ impl Workspace {
                             || (task.status == TaskStatus::Waiting
                                 && !parked
                                 && task.wait_age_secs(now).is_some_and(|age| age > stale_secs)),
+                        // The mark answers "is anyone actually on this?" - a
+                        // held row nobody moves, or an owner with no session.
+                        // An unowned ready row keeps it too: the chase's
+                        // queue-stall signal reads it, and a window that
+                        // draws every backlog row as an exception narrows
+                        // that on its own side.
                         stale: !parked && (updated_secs_ago > stale_secs || !owner_live),
                         to_close: task.parent.is_none() && children_terminal && retro_ran(task),
                     }
@@ -286,6 +305,7 @@ impl Workspace {
                     worked_secs: worked,
                     updated_secs_ago,
                     owner_live,
+                    wait_secs: task.wait_age_secs(now),
                     marks,
                     rollup: (!children.is_empty()).then(|| {
                         (
@@ -654,9 +674,14 @@ mod tests {
     fn a_row_with_no_movement_reads_stale() {
         let dir = tempdir().expect("tempdir");
         let ws = fixture(dir.path());
-        let mut stale_row = task("old", TaskStatus::Pending);
+        // Held work: a row nobody owns is backlog, and backlog is not
+        // stale - the mark answers whether anyone is on the row.
+        live_worker(&ws, "w-1");
+        let mut stale_row = task("old", TaskStatus::InProgress);
+        stale_row.owner = Some(SessionSlot::worker("TestOrg", PROJECT, "w-1"));
         stale_row.updated_at = epoch(0);
-        let mut fresh_row = task("new", TaskStatus::Pending);
+        let mut fresh_row = task("new", TaskStatus::InProgress);
+        fresh_row.owner = Some(SessionSlot::worker("TestOrg", PROJECT, "w-1"));
         fresh_row.updated_at = epoch(100);
         fresh_row.id = TaskId::from("new");
         ws.seed_test_task(stale_row);
@@ -732,11 +757,14 @@ mod tests {
             parked,
             since: Some(epoch(0)),
         };
+        live_worker(&ws, "w-1");
         let mut parked = task("t-parked", TaskStatus::Waiting);
+        parked.owner = Some(SessionSlot::worker("TestOrg", PROJECT, "w-1"));
         parked.waiting_on = Some(wait(true));
         parked.updated_at = epoch(0);
         ws.seed_test_task(parked);
         let mut unsettled = task("t-unparked", TaskStatus::Waiting);
+        unsettled.owner = Some(SessionSlot::worker("TestOrg", PROJECT, "w-1"));
         unsettled.waiting_on = Some(wait(false));
         unsettled.updated_at = epoch(0);
         ws.seed_test_task(unsettled);
