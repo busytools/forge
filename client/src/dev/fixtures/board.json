@@ -19,7 +19,11 @@
           "moved": 0,
           "landed": 0,
           "expired": 0,
-          "merged": 0
+          "merged": 0,
+          "moved_items": [],
+          "landed_items": [],
+          "expired_items": [],
+          "merged_items": []
         },
         "sample": {
           "rows": [],
