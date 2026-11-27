@@ -4240,6 +4240,54 @@ describe('the read, and the answer a frame has outrun', () => {
   });
 
   /**
+   * **When the read carries the ending, the read wins.** The core holds the
+   * last line a seat drew, so a whole-record answer is the newer word than
+   * anything this view watched - even when that word is that there is no
+   * ending any more, which is what an occupant swap leaves.
+   */
+  it('takes the ending a whole-record read carries, and its clearing', () => {
+    const connection = drivable();
+    const page = watch(connection);
+    page.land(snapshotOf(LEAD, {}));
+    page.land(
+      updateOf({ prompt_queued: { key: LEAD, uuid: 'p1', source: 'you', text: 'old words' } }),
+    );
+    page.land(
+      updateOf({ connection_failed: { key: LEAD, message: 'the process exited', fatal: false } }),
+    );
+    paint();
+    expect(page.read().wire?.queue_ended, 'precondition: the view holds a line').not.toBeNull();
+
+    // The server's own line, newer than the one this view watched.
+    page.land(
+      snapshotOf(LEAD, {
+        state: {
+          queue_ended: {
+            text: 'server words',
+            reason: 'the CLI cancelled it before it ran',
+            source: 'cron',
+          },
+        },
+      }),
+    );
+    expect(page.read().wire?.queue_ended, "the read's line is the one drawn").toEqual({
+      text: 'server words',
+      state: 'not_sent',
+      reason: 'the CLI cancelled it before it ran',
+      source: 'cron',
+    });
+
+    // The occupant changed and the core cleared its ending: an explicit null
+    // is the server saying so, and the old occupant's line must go.
+    page.land(snapshotOf(LEAD, { state: { queue_ended: null } }));
+    expect(
+      page.read().wire?.queue_ended,
+      "the previous occupant's ending does not outlive the read that cleared it",
+    ).toBeNull();
+    page.stop();
+  });
+
+  /**
    * **A read whose queue has rows is a queue that has moved on**, so the
    * ending it carries from before belongs to a card no longer on the record.
    * Carried anyway, the dim line stands beside a fresh row it has nothing to

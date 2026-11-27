@@ -408,11 +408,15 @@ export interface SessionRecord {
    */
   mcp_operation_error: McpOperationFailure | null;
   /**
-   * The last row that left by discard or refusal, which the pile says in one
-   * line where the card was. Not on the wire: the read carries what is
-   * waiting, and this is what this view watched leave.
+   * The last row that was not sent, which the pile says in one line where the
+   * card was.
+   *
+   * **Three values, three facts.** An ending is the line; `null` is the
+   * server saying this seat has none (it clears one when the occupant
+   * changes); `undefined` is a read that did not carry the field at all, so a
+   * live observation this view already holds stands.
    */
-  queue_ended: QueueEnding | null;
+  queue_ended: QueueEnding | null | undefined;
   /**
    * The prompts this seat is holding: a draft leads, then arrival order. The
    * composer's dock draws the front; a parallel batch parks two at once, so
@@ -718,8 +722,16 @@ function asksFrom(served: unknown, single: unknown): unknown[] {
   return single === null || single === undefined ? [] : [single];
 }
 
-/** One refusal an ending line draws, or `null` when the value is not one. */
-function endingFrom(value: unknown): QueueEnding | null {
+/**
+ * One ending the read carries.
+ *
+ * **Absent is not empty.** `undefined` means the read did not carry the field,
+ * so a live observation this view holds survives; a present value that is not
+ * an ending this build can draw is `null`, which is the server saying this
+ * seat has none.
+ */
+function endingFrom(value: unknown): QueueEnding | null | undefined {
+  if (value === undefined) return undefined;
   const held = record(value);
   const words = text(held['text']);
   const reason = text(held['reason']);

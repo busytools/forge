@@ -395,10 +395,17 @@ describe("the seat's queue ending", () => {
       reason: 'the CLI cancelled it before it ran',
       source: 'you',
     });
-    expect(sessionFrom({ state: {} }).queue_ended, 'a seat with no ending draws none').toBeNull();
+    expect(
+      sessionFrom({ state: {} }).queue_ended,
+      'a read that cannot speak leaves the live observation standing',
+    ).toBeUndefined();
+    expect(
+      sessionFrom({ state: { queue_ended: null } }).queue_ended,
+      'an explicit null is the server saying the seat has none',
+    ).toBeNull();
     expect(
       sessionFrom({ state: { queue_ended: { text: 'no reason' } } }).queue_ended,
-      'an ending with no reason is not one this build can draw',
+      'a present value that is not an ending is the server saying none',
     ).toBeNull();
   });
 });
