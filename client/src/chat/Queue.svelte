@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { fade } from 'svelte/transition';
+
   import { subjectKey } from '../protocol';
   import { CONNECTION_DOWN } from '../refusals';
   import type { Connection } from '../socket';
@@ -7,6 +9,8 @@
   import type { SessionSlot } from '../wire/types';
   import { runningAt } from './conversation';
   import { echoes } from './echoes.svelte';
+  import { wantsMotion } from './glide';
+  import { appear, drawnAt } from './motion';
   import { renderInlineProse } from './prose';
   import {
     drawnRows,
@@ -125,6 +129,22 @@
   let cursor = $state<string | null>(null);
 
   let pile = $state<HTMLElement | null>(null);
+
+  /**
+   * Every card's position on the pass just drawn.
+   *
+   * **Read while the card is there**, because the chat row it becomes is
+   * updated by another store in the same paint: a position recorded on the way
+   * out could run after the row has already mounted. A card that stays put is
+   * re-measured each pass, so its leaving pass has the position from the one
+   * before.
+   */
+  $effect(() => {
+    for (const row of drawn) {
+      const node = pile?.querySelector<HTMLElement>(`[id="${row.uuid}"]`);
+      if (node !== null && node !== undefined) drawnAt(row.uuid, node.getBoundingClientRect());
+    }
+  });
 
   /**
    * The walk's own row, which is none once it has left.
@@ -342,6 +362,7 @@
               tabindex="-1"
               aria-selected={active === row.uuid}
               style="transform: translateY({-depth * STEP}px)"
+              use:appear
             >
               <!-- The card's rendered line, which the module produced from
                    escaped input: the same renderer a row's preview uses. -->
@@ -349,7 +370,13 @@
               <span class="w">{@html cardWords(row.text)}</span>
               <span class="m">
                 <span class="src {src.kind}">{src.label}</span>
-                {#if status !== null}<span class="st">{status}</span>{/if}
+                {#key status}
+                  {#if status !== null}
+                    <span class="st" transition:fade={{ duration: wantsMotion() ? 140 : 0 }}
+                      >{status}</span
+                    >
+                  {/if}
+                {/key}
                 {#if at === 0}<span class="nx">next</span>{/if}
                 {#if active === row.uuid}<span class="pos">#{at + 1} / {drawn.length}</span>{/if}
               </span>
@@ -435,8 +462,11 @@
   }
   /* The card's own state, in the meta's own face: the one vocabulary, said
      where the card already carries its sender. */
+  /* The state crosses in place: a reserved width means `sending` becoming
+     `no word yet` never walks the chips beside it. */
   .m .st {
     color: var(--warn);
+    min-width: 11ch;
   }
   /* The refusal's retry, where the words are: a small control on the ending
      line, never a second surface. */

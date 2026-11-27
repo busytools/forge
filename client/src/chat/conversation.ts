@@ -34,6 +34,7 @@ import { places } from './conversations';
 import { cronNames } from './cron-names.svelte';
 import { promptLifecycleFrame } from '../wire/home';
 import { echoes } from './echoes.svelte';
+import { noteArrival } from './motion';
 import { outputs } from './outputs.svelte';
 import { stripEscapes } from './text';
 import {
@@ -4116,6 +4117,11 @@ export class Chat {
   }
 
   private append(message: unknown, own = false, into: string | null = null): void {
+    // **A row appended live may rise into place on its first mount.** The
+    // window is short and one-shot, so a row the reader later scrolls to
+    // arrives still.
+    const arriving = uuidOf(message);
+    if (arriving !== null) noteArrival(arriving);
     this.stream((held) => {
       const last = held.turns[held.turns.length - 1];
       // What a row of its own would hold, asked of the fold rather than of the
