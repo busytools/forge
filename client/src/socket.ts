@@ -336,6 +336,22 @@ export interface Connection {
    * a person returning every few seconds must not keep a dead link open.
    */
   probe(): void;
+  /**
+   * The page's pulse, where the transport has one: "I am here, and drawing".
+   *
+   * **The shell parks a page whose pulse is stale and answers the spell with
+   * the drawn seat's whole record**, so the beat that ends a return names
+   * itself as a return: the shell then leaves the home, the board and the
+   * shown seat to the re-reads the page is sending at that moment, and
+   * reconciles only what nothing else will. A beat that went first would make
+   * the shell re-encode the home and the board beside the page's own reads
+   * (measured on this cut's review: two whole home and two whole board
+   * encodes on one return).
+   *
+   * Absent where the page has no shell: the web transport's connection is the
+   * socket itself, and nothing there reconciles a spell.
+   */
+  pulse?(): void;
   close(): void;
 }
 
