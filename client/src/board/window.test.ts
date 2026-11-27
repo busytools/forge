@@ -204,6 +204,37 @@ describe('the window', () => {
     expect(lines[2]).toBe(`no change since ${clockOf(3_600)}`);
   });
 
+  it('times a stopped worker by its last activity, and omits the time when none is known', () => {
+    const seat = { org: ORG, project: PROJECT, label: 'w-2' };
+    const miss = [
+      {
+        project: PROJECT,
+        misses: [{ kind: 'no-row' as const, label: 'w-2 holds no row', worker: 'w-2' }],
+      },
+    ];
+    const seen = viewOf(
+      [],
+      [
+        {
+          slot: seat,
+          label: 'w-2',
+          lifecycle: 'Idle',
+          last_activity: { secs_since_epoch: 3_600, nanos_since_epoch: 0 },
+        },
+      ],
+      miss,
+    );
+    expect(seen.exceptions[0]?.line).toBe(
+      `holds no row since ${clockOf(3_600)} - feed it or despawn it`,
+    );
+    const quiet = viewOf(
+      [],
+      [{ slot: seat, label: 'w-2', lifecycle: 'Idle', last_activity: null }],
+      miss,
+    );
+    expect(quiet.exceptions[0]?.line).toBe('holds no row - feed it or despawn it');
+  });
+
   it('carries a stopped worker from the fleet as an exception', () => {
     // The fleet's misses arrive narrowed by `missFrom` (wire/home.ts): the
     // window reads the client's own union, never a raw server shape.

@@ -503,7 +503,16 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
    border: depth is the surface step, and a hairline is a rule or a divider,
    never a box. */
 .board-page { max-width: none; }
-.b-top { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
+/* The header has its own rhythm: a breadcrumb line with the right-hand
+   controls on its baseline, the counts as a quiet line under it, and air
+   before the tab strip. */
+.b-top { display: flex; align-items: center; gap: 8px; padding: 6px 0 0; }
+.b-crumb { display: flex; align-items: baseline; gap: 12px; }
+.b-counts {
+  display: flex; align-items: baseline; gap: 10px; margin: 10px 0 0;
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+}
+.b-counts b { font-weight: 500; color: var(--hot); }
 .b-back, .b-done {
   font-family: var(--mono); font-size: var(--fs-label); color: var(--muted);
   background: transparent; border: 0; border-radius: 999px; padding: 7px 12px; cursor: pointer;
@@ -511,10 +520,7 @@ button.upd { border: 0; background: none; padding: 0; font: inherit; cursor: poi
 .b-back:hover, .b-done:hover { background: var(--s2); color: var(--text); }
 .b-back:focus-visible, .b-done:focus-visible, .b-btn:focus-visible,
 .b-pick:focus-visible, .b-fold:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-.b-id { margin-left: 8px; display: flex; align-items: baseline; gap: 12px; }
 .b-nm { font-size: 19px; font-weight: 500; letter-spacing: -.01em; color: var(--text); }
-.b-read { font-size: var(--fs-label); color: var(--dim); }
-.b-read b { font-weight: 500; color: var(--hot); }
 .b-spacer { flex: 1; }
 /* the service line: the core's own words for an edit that did not land */
 .b-said { margin: -6px 0 16px; padding: 9px 13px; border-radius: 10px; font-size: var(--fs-data); }
@@ -772,7 +778,7 @@ button.b-epic-pill { cursor: pointer; }
 
 /* ---------- the window: the board drawn for a person, exceptions first ---------- */
 
-.w-switch { display: flex; gap: 6px; margin: 0 0 20px; flex-wrap: wrap; }
+.w-switch { display: flex; gap: 6px; margin: 22px 0 20px; flex-wrap: wrap; }
 .w-tab {
   font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
   background: var(--s2); border: 1px solid transparent; border-radius: 999px;
@@ -829,27 +835,42 @@ button.b-epic-pill { cursor: pointer; }
   text-decoration: underline; text-underline-offset: 2px;
 }
 .w-more:hover { color: var(--blue); }
-.w-options { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.w-option {
-  font-family: var(--mono); font-size: var(--fs-label); color: var(--text);
-  background: var(--s2); border: 1px solid var(--line); border-radius: 999px;
-  padding: 5px 12px; min-height: 30px; cursor: pointer; text-align: left;
+/* **One action bar per card, and the hierarchy is by SHAPE.** Primary
+   actions are the only filled controls; the secondary is outlined at the
+   same height and radius; the note is a ghost button - a button, not an
+   underline. The row's own doors are the footer's, in meta type. */
+.w-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.w-options { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.w-primary, .w-secondary, .w-ghost {
+  min-height: 32px; padding: 0 14px; border-radius: 999px;
+  font-family: var(--mono); font-size: var(--fs-label); cursor: pointer;
 }
-.w-option:hover { border-color: var(--blue); color: var(--blue); }
-.w-option:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-.w-do { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
-.w-do .b-btn { min-height: 30px; padding: 4px 12px; }
-.w-note { flex: 1 1 180px; }
-.w-hold { margin: 0; color: var(--warn); font-size: var(--fs-label); flex-basis: 100%; }
-.w-links { display: flex; gap: 14px; margin-top: 8px; }
-.w-quiet-link {
-  background: none; border: none; padding: 0; color: var(--dim);
-  font-family: var(--mono); font-size: var(--fs-label); cursor: pointer; text-decoration: none;
+.w-primary { background: var(--ok); color: var(--bg); border: 1px solid var(--ok); font-weight: 500; }
+.w-primary:hover { filter: brightness(1.06); }
+.w-secondary {
+  background: transparent; color: var(--bad);
+  border: 1px solid rgba(224, 104, 62, .45);
 }
-.w-quiet-link:hover { color: var(--blue); }
-.w-quiet-link:focus-visible, .w-more:focus-visible {
+.w-secondary:hover { background: rgba(224, 104, 62, .08); }
+.w-ghost { background: transparent; color: var(--dim); border: 1px dashed var(--line); }
+.w-ghost:hover { color: var(--text); border-color: var(--dim); }
+.w-primary:focus-visible, .w-secondary:focus-visible, .w-ghost:focus-visible,
+.w-more:focus-visible, .w-foot-link:focus-visible {
   outline: 2px solid var(--blue); outline-offset: 2px;
 }
+.w-note { flex: 1 1 180px; min-height: 32px; }
+.w-hold { margin: 0; color: var(--warn); font-size: var(--fs-label); flex-basis: 100%; }
+.w-foot {
+  display: flex; gap: 8px; align-items: center; margin-top: 10px; padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-family: var(--mono); font-size: var(--fs-label); color: var(--dim);
+}
+.w-foot-link {
+  background: none; border: none; padding: 0; color: inherit; font: inherit;
+  cursor: pointer; text-decoration: none;
+}
+.w-foot-link:hover { color: var(--blue); }
+.w-dot { color: var(--line); }
 .w-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .w-exc, .w-live {
   display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline;
@@ -867,7 +888,8 @@ button.b-epic-pill { cursor: pointer; }
 .w-link:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 .w-restore { margin-left: auto; }
 @media (pointer: coarse) {
-  .w-tab, .w-option, .w-more, .w-quiet-link, .w-door, .w-note, .w-do .b-btn, .w-link {
+  .w-tab, .w-primary, .w-secondary, .w-ghost, .w-more, .w-foot-link, .w-door, .w-note,
+  .w-link {
     min-height: 44px;
   }
 }

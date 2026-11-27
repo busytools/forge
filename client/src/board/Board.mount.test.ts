@@ -1767,6 +1767,24 @@ describe("the window's controls", () => {
     });
   });
 
+  it('draws the evidence state even when the claim carries no excerpt', () => {
+    windowOver([
+      lookRow({
+        commit: 'da08a947e',
+        path: null,
+        excerpt: null,
+        verified_at: since,
+        problem: null,
+      }),
+    ]);
+    const line = document.querySelector('.w-need .w-ev');
+    expect(
+      line?.textContent,
+      'a verified claim with no excerpt still states its verdict',
+    ).toContain('evidence verified');
+    expect(line?.querySelector('.w-more'), 'and offers no expand for nothing').toBeNull();
+  });
+
   it('holds the approve door on a look with no verified evidence', () => {
     windowOver([
       lookRow({

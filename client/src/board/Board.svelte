@@ -618,20 +618,10 @@
 
 <main class="wrap board-page" class:dragging={dragging !== null} bind:this={boardEl}>
   <div class="b-top" class:dragging={dragging !== null}>
-    <button type="button" class="b-back" onclick={close}>{'\u{2190}'} back</button>
-    <span class="b-id">
+    <div class="b-crumb">
+      <button type="button" class="b-back" onclick={close}>{'\u{2190}'} back</button>
       <span class="b-nm">{project}</span>
-      <span class="b-read">
-        {#if board.wire === null}
-          {board.refused === null ? 'reading the board...' : 'no board'}
-        {:else}
-          {#if view.read.onYou > 0}<b>{view.read.onYou} waiting on you</b> &middot;
-          {/if}<span class="b-read-counts"
-            >{view.read.rows} rows &middot; {view.read.running} running</span
-          >
-        {/if}
-      </span>
-    </span>
+    </div>
     <span class="b-spacer"></span>
     {#each seats as seat (seat.label)}
       <a class="b-seat" class:drop={dropSeat === seat.label} data-seat={seat.label} href={seat.href}
@@ -640,6 +630,16 @@
     {/each}
     <button type="button" class="b-done" onclick={close}>done</button>
   </div>
+  <!-- The counts are their own quiet line: the breadcrumb and the controls
+       share the top baseline, and the totals sit under it. -->
+  <p class="b-counts">
+    {#if board.wire === null}
+      {board.refused === null ? 'reading the board...' : 'no board'}
+    {:else}
+      {#if view.read.onYou > 0}<b>{view.read.onYou} waiting on you</b>{/if}
+      <span class="b-read-counts">{view.read.rows} rows &middot; {view.read.running} running</span>
+    {/if}
+  </p>
 
   <div class="w-switch" role="tablist" aria-label="which board">
     <button

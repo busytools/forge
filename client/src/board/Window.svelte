@@ -92,42 +92,49 @@
                 >look at <span class="nm">{card.artifact.label}</span></a
               >
             {/if}
-            {#if card.evidence !== null}
+            {#if chip !== null || card.evidence !== null}
               <div class="w-ev" class:open={expanded}>
                 {#if chip !== null}<span class="b-chip {chip.tone}">{chip.label}</span>{/if}
-                <span class="w-ev-text">{expanded ? card.evidence : summaryOf(card.evidence)}</span>
-                {#if card.evidence.length > SUMMARY_CHARS}
-                  <button
-                    type="button"
-                    class="w-more"
-                    aria-expanded={expanded}
-                    onclick={() => (evidenceOpen[card.id] = !expanded)}
-                    >{expanded ? 'less' : 'more'}</button
+                {#if card.evidence !== null}
+                  <span class="w-ev-text"
+                    >{expanded ? card.evidence : summaryOf(card.evidence)}</span
                   >
+                  {#if card.evidence.length > SUMMARY_CHARS}
+                    <button
+                      type="button"
+                      class="w-more"
+                      aria-expanded={expanded}
+                      onclick={() => (evidenceOpen[card.id] = !expanded)}
+                      >{expanded ? 'less' : 'more'}</button
+                    >
+                  {/if}
                 {/if}
               </div>
             {/if}
-            {#if card.kind === 'decision'}
-              {#if card.options.length > 0}
-                <div class="w-options" role="group" aria-label="answer with one of">
-                  {#each card.options as option (option)}
-                    <button
-                      type="button"
-                      class="w-option"
-                      onclick={() =>
-                        act({
-                          task_answer: {
-                            project: view.project,
-                            id: card.id,
-                            choice: option,
-                            words: notes[card.id] ?? '',
-                          },
-                        })}>{option}</button
-                    >
-                  {/each}
-                </div>
-              {/if}
-              <div class="w-do">
+            <!-- One action bar: filled primaries, an outlined secondary, and
+                 the note as a ghost button. The row's meta doors are the
+                 footer's, never this bar's. -->
+            <div class="w-actions">
+              {#if card.kind === 'decision'}
+                {#if card.options.length > 0}
+                  <div class="w-options" role="group" aria-label="answer with one of">
+                    {#each card.options as option (option)}
+                      <button
+                        type="button"
+                        class="w-primary"
+                        onclick={() =>
+                          act({
+                            task_answer: {
+                              project: view.project,
+                              id: card.id,
+                              choice: option,
+                              words: notes[card.id] ?? '',
+                            },
+                          })}>{option}</button
+                      >
+                    {/each}
+                  </div>
+                {/if}
                 {#if note}
                   <input
                     class="b-in w-note"
@@ -140,7 +147,7 @@
                   {#if card.options.length === 0}
                     <button
                       type="button"
-                      class="b-btn b-plain"
+                      class="w-primary"
                       onclick={() =>
                         act({
                           task_answer: {
@@ -154,21 +161,19 @@
                 {:else}
                   <button
                     type="button"
-                    class="w-more"
+                    class="w-ghost"
                     aria-expanded={note}
                     onclick={() => (noteOpen[card.id] = true)}
                     >{card.options.length > 0 ? 'add a note' : 'answer in your words'}</button
                   >
                 {/if}
-              </div>
-            {:else}
-              <div class="w-do">
+              {:else}
                 {#if card.approveBlocked !== null}
                   <p class="w-hold">{card.approveBlocked}</p>
                 {:else}
                   <button
                     type="button"
-                    class="b-btn b-ok"
+                    class="b-btn b-ok w-primary"
                     onclick={() =>
                       act({
                         task_verdict: { project: view.project, id: card.id, approve: true },
@@ -177,7 +182,7 @@
                 {/if}
                 <button
                   type="button"
-                  class="b-btn b-no"
+                  class="b-btn b-no w-secondary"
                   onclick={() =>
                     act({
                       task_verdict: {
@@ -200,18 +205,19 @@
                 {:else}
                   <button
                     type="button"
-                    class="w-more"
+                    class="w-ghost"
                     aria-expanded={note}
                     onclick={() => (noteOpen[card.id] = true)}>add a note</button
                   >
                 {/if}
-              </div>
-            {/if}
-            <div class="w-links">
-              {#if card.seat !== null}
-                <a class="w-quiet-link" href={discussHref(card.seat)}>discuss</a>
               {/if}
-              <button type="button" class="w-quiet-link" onclick={() => onopen?.(card.id)}
+            </div>
+            <div class="w-foot">
+              {#if card.seat !== null}
+                <a class="w-foot-link" href={discussHref(card.seat)}>discuss</a>
+                <span class="w-dot" aria-hidden="true">&middot;</span>
+              {/if}
+              <button type="button" class="w-foot-link" onclick={() => onopen?.(card.id)}
                 >open the row</button
               >
             </div>
