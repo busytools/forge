@@ -11,8 +11,11 @@ it left, so a prompt the CLI has already taken cannot be drawn as dropped.
 
 **A person's own press joins the pile.** From the moment Enter is pressed
 the words are a card, saying `sending` until the core answers; the core's
-`prompt_queued` row takes that card over by id, so a message is never drawn
-in the queue and the chat at once. It enters the chat only at `sent`.
+`prompt_queued` row takes that card over by id, and from that handover on a
+message is not drawn in the queue and the chat at once. It enters the chat
+at `sent`. A page read that lands inside the handover window can carry the
+same words before the queue's retraction pulls them back, so the one home
+is the settled state rather than every instant of the crossing.
 
 ## What it draws
 
@@ -115,8 +118,10 @@ peer message, a cron fire, a Gotify push, a Slack delivery, a review nudge,
 the task board's chase and forge's own continuation are all written to the
 CLI under an id the moment they arrive, and each draws its row where the
 CLI starts it - the board's chase included, which is queue-first like every
-other delivery and enters the chat only at `sent`. A delivery draws at its
-own `sent`, so one arriving mid-turn is visible in the pile while it waits,
+other delivery and enters the chat at `sent` on the normal path (a route
+that never reached the CLI, or a CLI that reports no lifecycle frames,
+draws its row at dispatch). A delivery draws at its own `sent`, so one
+arriving mid-turn is visible in the pile while it waits,
 and its row lands where the CLI took it: inside the running turn when the
 CLI absorbs it there, or as the next turn's first row when it queues it to
 the boundary. Forge's own machinery keeps its dispatch row on the wire; a

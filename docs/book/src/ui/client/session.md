@@ -327,7 +327,8 @@ prompt - a person's send, a peer message, a cron fire, a Gotify push, a
 Slack delivery, a review nudge, the task board's chase, forge's own
 continuation - is written to the CLI's queue under an id and draws its row
 when the core reports it `sent` (see [the queue](./queue.md)). The board's
-chase is queue-first like any delivery; forge's own machinery - a worker
+chase is queue-first like any delivery on that normal path; a route that
+never reached the CLI draws its row at dispatch. Forge's own machinery - a worker
 kick, an auto-continue - keeps the arrival row it forges, because nothing
 else carries its words. A CLI that reports no lifecycle frames has no
 `sent`, and there each row draws at dispatch, or on the init frame when it
