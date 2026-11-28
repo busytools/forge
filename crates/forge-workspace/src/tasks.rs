@@ -14,7 +14,8 @@ use std::time::{Duration, SystemTime};
 use forge_primitives::tasks::Verify;
 use forge_primitives::tasks::{
     Answer, AnswerValue, AskKind, Attestation, By, Deadline, DefaultIfIgnored, Disposition,
-    LinkKind, Request, ReservedBy, Task, TaskId, TaskStatus, TaskTransition, Waiting, WaitingKind,
+    Evidence, LinkKind, Request, ReservedBy, Task, TaskId, TaskStatus, TaskTransition, Waiting,
+    WaitingKind,
 };
 
 use crate::SessionSlot;
@@ -132,9 +133,13 @@ pub(crate) enum MoveError {
     EvidenceUnverifiedLead(String),
     /// A row whose claim is the project lead's verification was moved by
     /// a session that is not the project's lead: only the lead may
-    /// complete it (or the user's own approve), or the claim is restated
-    /// with the artifact.
+    /// complete it, or the user's own approve.
     LeadVerificationLeadOnly,
+    /// A seat that is not the project's lead would change an evidence
+    /// block carrying the lead's verification: only the lead restates
+    /// that claim, and the rule rides the one commit path so no door can
+    /// replace it.
+    LeadVerificationRestate,
     /// An update named a version the row is not at: another writer got
     /// there first, and the caller is reading a stale record.
     VersionMismatch { expected: u64, current: u64 },
@@ -209,6 +214,14 @@ fn parked_on_look(task: &Task) -> bool {
 /// project is not this project's lead.
 fn moved_by_project_lead(by: &By, project_name: &str) -> bool {
     matches!(by, By::Seat(slot) if slot.is_lead() && slot.project() == project_name)
+}
+
+/// Whether an evidence block carries the project lead's verification:
+/// blank words are no claim at all, the same reading the gate gives them.
+fn carries_lead_verification(evidence: Option<&Evidence>) -> bool {
+    evidence
+        .and_then(|evidence| evidence.lead_verified.as_deref())
+        .is_some_and(|words| !words.trim().is_empty())
 }
 
 /// Whether a row presents as waiting on the user: an ask on the user or a
@@ -467,7 +480,13 @@ impl std::fmt::Display for MoveError {
             Self::LeadVerificationLeadOnly => write!(
                 f,
                 "this row's claim is the project lead's verification; only the lead may \
-                 complete it, or restate the claim with the artifact"
+                 complete it. Ask your lead to complete it, or to restate the claim with the \
+                 artifact"
+            ),
+            Self::LeadVerificationRestate => write!(
+                f,
+                "this row's claim is the project lead's verification, and only the lead may \
+                 restate it; ask your lead to restate the claim with the artifact"
             ),
             Self::VersionMismatch { expected, current } => write!(
                 f,
@@ -771,6 +790,19 @@ impl Workspace {
             let prior = next.status;
             f(&mut next)?;
 
+            // A row whose claim is the project lead's verification keeps
+            // it: only the lead restates that block. The rule rides the
+            // one commit path - on the row this lock resolved, so a
+            // stated prefix cannot slip past it - and runs before the
+            // gate stamps anything. The user's own moves are the person,
+            // not a seat restating a claim.
+            if !moved_by_project_lead(&by, project_name)
+                && !matches!(by, By::User)
+                && carries_lead_verification(tasks[index].evidence.as_ref())
+                && next.evidence != tasks[index].evidence
+            {
+                return Err(MoveError::LeadVerificationRestate);
+            }
             // The look gate is the user's to clear: an update that would
             // clear a row's own gate is refused by name.
             if gate
@@ -6345,6 +6377,65 @@ mod tests {
             TaskStatus::Pending,
             "the row did not move",
         );
+    }
+
+    /// A row whose claim is the lead's word keeps it: a worker's evidence
+    /// replacement is refused by the move's own rule, on the row its lock
+    /// resolved, so a stated prefix cannot slip past; the lead restates
+    /// freely.
+    #[test]
+    fn only_the_lead_may_restate_a_vouched_claim() {
+        let dir = tempdir().expect("tempdir");
+        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
+        ws.seed_test_project("proj", "/tmp/tp-vouch-restate");
+        let quote = "read the sibling repo; it holds";
+        ws.push_task(Task {
+            evidence: Some(Evidence {
+                commit: None,
+                path: None,
+                lead_verified: Some(quote.to_owned()),
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
+            ..sample_task("t-1", "proj")
+        });
+        let restated = |task: &mut Task| {
+            task.evidence = Some(Evidence {
+                commit: Some("test-commit".to_owned()),
+                path: None,
+                lead_verified: None,
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            });
+        };
+        let worker = SessionSlot::worker("TestOrg", "proj", "w-1");
+
+        assert_eq!(
+            ws.update_task("proj", &TaskId::from("t-1"), By::Seat(worker.clone()), restated),
+            Err(MoveError::LeadVerificationRestate),
+            "a worker cannot draw the lead's word away",
+        );
+        assert_eq!(
+            ws.update_task("proj", &TaskId::from("t-"), By::Seat(worker), restated),
+            Err(MoveError::LeadVerificationRestate),
+            "a stated prefix resolves to the same row before the rule reads it",
+        );
+        let stored = ws.tasks_for_project("proj");
+        assert_eq!(
+            stored[0].evidence.as_ref().and_then(|evidence| evidence.lead_verified.as_deref()),
+            Some(quote),
+            "the claim the row carried is still there",
+        );
+
+        ws.update_task(
+            "proj",
+            &TaskId::from("t-1"),
+            By::Seat(SessionSlot::lead("TestOrg", "proj")),
+            restated,
+        )
+        .expect("the lead restates freely");
     }
 
     /// The lead's word is a claim form of its own: no commit and no path,

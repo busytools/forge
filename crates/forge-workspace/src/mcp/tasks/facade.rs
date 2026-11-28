@@ -711,31 +711,9 @@ impl TasksFacade for ProdTasksFacade {
                     .to_owned(),
             ));
         }
-        // A row whose claim is the lead's verification keeps it: replacing
-        // the evidence block draws the quote away, and a row parked on a
-        // look never runs the gate to notice. Only the lead restates it.
-        // The id resolves the way the move resolves it, so a stated
-        // prefix cannot slip past this scan.
-        if patch.evidence.is_some()
-            && caller.label() != crate::LEAD_LABEL
-            && let Ok(resolved) = ws.resolve_task_id(&cx.project_name, id)
-        {
-            let carries = ws
-                .tasks_for_project(&cx.project_name)
-                .iter()
-                .find(|task| task.id == resolved)
-                .and_then(|task| task.evidence.as_ref())
-                .and_then(|evidence| evidence.lead_verified.as_deref())
-                .is_some_and(|words| !words.trim().is_empty());
-            if carries {
-                return Err(TasksError::Refused(
-                    "this row's claim is the project lead's verification, and only the lead \
-                     may restate it; a worker's evidence replacement would draw the lead's \
-                     word away"
-                        .to_owned(),
-                ));
-            }
-        }
+        // The vouched-row restatement rule is the move's own (tasks.rs):
+        // it runs inside the lock that resolved the row, so a stated
+        // prefix cannot slip past a separate scan here.
         let estimate = match patch.estimate.as_deref() {
             Some(words) => Some(
                 Estimate::parse(words).ok_or_else(|| TasksError::BadEstimate(words.to_owned()))?,
@@ -1639,7 +1617,7 @@ mod prod_facade_tests {
     /// commit-only restatement.
     #[test]
     fn the_lead_states_the_quote_on_the_update_that_completes() {
-        let (_ws, facade, lead, _worker) = fixture();
+        let (_ws, facade, lead, worker) = fixture();
         let row = facade
             .create_task(&lead, TaskDraft { evidence: None, ..draft("the port rows", None, None) })
             .expect("lead creates");
@@ -1668,12 +1646,15 @@ mod prod_facade_tests {
             "the quote lands where the lead stated it",
         );
 
+        // A plain row is not vouched, so a worker's commit-only evidence
+        // update is admitted: the door refuses the quote, not the
+        // artifact, and the vouched-row rule has nothing to keep.
         let plain = facade
             .create_task(&lead, TaskDraft { evidence: None, ..draft("a plain row", None, None) })
             .expect("lead creates");
         let updated = facade
             .update_task(
-                &lead,
+                &worker,
                 &plain.id,
                 TaskPatch {
                     version: Some(plain.version),
@@ -1686,7 +1667,7 @@ mod prod_facade_tests {
                     ..TaskPatch::default()
                 },
             )
-            .expect("a commit-only restatement is admitted");
+            .expect("a worker's commit-only restatement is admitted");
         assert_eq!(
             updated.evidence.as_ref().and_then(|evidence| evidence.commit.as_deref()),
             Some("test-commit"),
@@ -1792,10 +1773,14 @@ mod prod_facade_tests {
     /// stored, and nothing is refused.
     #[test]
     fn a_blank_quote_is_no_claim_at_either_door() {
-        let (ws, facade, lead, _worker) = fixture();
+        // Both calls run as the worker: the lead's door is exempt from
+        // every guard, so a lead-only test would say nothing about the
+        // normalization. The plain row carries no quote, so the
+        // vouched-row restatement rule does not fire either.
+        let (ws, facade, lead, worker) = fixture();
         let row = facade
             .create_task(
-                &lead,
+                &worker,
                 TaskDraft {
                     evidence: Some(EvidenceDraft {
                         commit: Some("test-commit".to_owned()),
@@ -1806,7 +1791,7 @@ mod prod_facade_tests {
                     ..draft("blank at creation", None, None)
                 },
             )
-            .expect("a blank quote is no claim");
+            .expect("a blank quote is no claim, even from a worker");
         assert!(
             row.evidence.as_ref().and_then(|evidence| evidence.lead_verified.as_ref()).is_none(),
             "nothing was stored at creation",
@@ -1815,7 +1800,7 @@ mod prod_facade_tests {
         let row = facade.create_task(&lead, draft("plain", None, None)).expect("lead creates");
         facade
             .update_task(
-                &lead,
+                &worker,
                 &row.id,
                 TaskPatch {
                     evidence: Some(EvidenceDraft {
