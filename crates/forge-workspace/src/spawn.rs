@@ -10793,7 +10793,7 @@ mod lead_charter_tests {
     /// or restores, is settled with the user in the plan. The review checks
     /// the implementation against the spec, so a spec that changed the
     /// product passes every lens; the plan step is the only gate that runs
-    /// before the branch exists. Pinned because the step read as "write the
+    /// before the branch is cut. Pinned because the step read as "write the
     /// plan the worker implements", which let a visibility change travel as
     /// an implementation detail of a bug fix.
     #[test]
@@ -10806,14 +10806,18 @@ mod lead_charter_tests {
                 "the tested surfaces, the capability half and the plan-time decision are one \
                  sentence",
             ),
-            ("a bug fix is no exemption", "the exemption a fix used to read as is refused"),
+            (
+                "A bug fix is no exemption:",
+                "the colon is pinned so an exception appended after it fails here",
+            ),
             (
                 "a spec that changed the product passes it unseen",
                 "the review's structural blind spot is the reason, stated",
             ),
             (
-                "this step is the only gate that can catch that",
-                "the plan step is named as the gate",
+                "the plan step is the only gate that runs before the branch is cut",
+                "the gate is the step that runs before the cut, not a claim the review cannot \
+                 catch it",
             ),
         ] {
             assert!(
