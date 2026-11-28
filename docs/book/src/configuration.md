@@ -136,18 +136,21 @@ or the project level. Two values:
 - `"forge"` - the certified `claude-headless` port, resolved by name on
   `PATH`.
 
-The key resolves at spawn: the project's own `engine`, else its org's, else
+The key resolves at spawn: a worker's own `engine` argument (see the
+`agents__spawn` tool; a lead states it to try the port on one worker)
+beats the project's own `engine`, which beats its org's, which beats
 `default`. Both levels accept both values, so a project sets `"default"`
 under an org set to `"forge"` to run the `claude` CLI. An unknown value at
 either level fails the load, naming the org or project, the value and the
-accepted values (`default`, `forge`).
+accepted values (`default`, `forge`); an unknown value in the spawn
+argument is refused by name at the call.
 
 The setting is portable across a synced `forge.toml`; the binary it names is
 a per-machine artifact, installed on `PATH` like the `claude` CLI (see
-[Install and build](./install.md)). A machine whose key asks for `forge`
-and whose `PATH` has no `claude-headless` **fails that spawn rather than
-falling back to `claude`**, and the failure names the binary, the setting
-and the project or org it belongs to:
+[Install and build](./install.md)). A machine whose key - or whose spawn
+argument - asks for `forge` and whose `PATH` has no `claude-headless`
+**fails that spawn rather than falling back to `claude`**, and the failure
+names the binary and the setting or argument that chose it:
 
 ```
 engine 'forge' needs the 'claude-headless' binary on PATH, and this machine has none; it was chosen by project 'forge' of org 'Busytools' (orgs.Busytools.projects.forge.engine). Install the certified port or set that key back to 'default'.
@@ -155,8 +158,11 @@ engine 'forge' needs the 'claude-headless' binary on PATH, and this machine has 
 
 The engine applies to the next session: a running session keeps the binary
 it started on, and its next `/new`, `/resume` or handoff starts on the
-engine the config names then. Rollback is setting the key back to
-`default`.
+engine the config names then. A worker spawned with an `engine` argument is
+the exception: its choice is recorded on the worker, so its restart, heal,
+`/new`, `/resume` and `resume_session` come back on that engine even if the
+project's key changes meanwhile. Rollback is setting the key back to
+`default`, or spawning the worker with `engine = "default"`.
 
 ## `[[accounts]]`
 

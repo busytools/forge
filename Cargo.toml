@@ -165,6 +165,9 @@ missing_errors_doc = "allow"        # thiserror covers public-error docs.
 missing_panics_doc = "allow"        # `panic` is denied above; noise is minimal.
 doc_markdown = "allow"              # Bare crate paths in prose are fine.
 too_many_lines = "allow"            # Translators + dispatchers naturally large.
+too_many_arguments = "allow"        # Row writes and spawn plumbers name one column
+                                    # per argument; a parameter struct only moves
+                                    # the list one indirection away.
 unnecessary_wraps = "allow"         # Symmetry across translate-fn returns.
 struct_field_names = "allow"        # Wire-shape structs share prefixes by API contract.
 struct_excessive_bools = "allow"    # Many UI state structs are flag bags by nature

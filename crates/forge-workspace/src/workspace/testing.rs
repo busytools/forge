@@ -746,6 +746,7 @@ impl Workspace {
             is_git_repo: None,
             mcp_families: None,
             cwd: None,
+            engine: None,
         };
         crate::store::sessions::put(db, &record)
     }
@@ -1291,6 +1292,7 @@ impl Workspace {
             // launchpad without needing a worktree on disk.
             crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
             None,
+            None,
         );
     }
 
@@ -1314,6 +1316,7 @@ impl Workspace {
             false,
             crate::mcp::workers::types::WorkerTree { is_git_repo, cwd: Some(cwd.to_owned()) },
             None,
+            None,
         );
     }
 
@@ -1333,6 +1336,7 @@ impl Workspace {
             None,
             false,
             crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
+            None,
             None,
         );
     }
@@ -1370,6 +1374,7 @@ impl Workspace {
                 is_git_repo: None,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
         );
     }

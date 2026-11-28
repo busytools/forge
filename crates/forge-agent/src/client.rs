@@ -140,6 +140,10 @@ pub enum EngineScope {
     Org { org: String },
     /// The project's own `engine` key.
     Project { org: String, project: String },
+    /// The `agents__spawn` `engine` argument. It outranks both config keys
+    /// for the one worker it spawned, and that worker's recorded engine
+    /// keeps choosing for every later launch of it.
+    SpawnArgument,
 }
 
 impl EngineScope {
@@ -149,6 +153,7 @@ impl EngineScope {
             Self::Default => "engine".to_owned(),
             Self::Org { org } => format!("orgs.{org}.engine"),
             Self::Project { org, project } => format!("orgs.{org}.projects.{project}.engine"),
+            Self::SpawnArgument => "agents__spawn engine".to_owned(),
         }
     }
 
@@ -158,6 +163,7 @@ impl EngineScope {
             Self::Default => "the default".to_owned(),
             Self::Org { org } => format!("org '{org}'"),
             Self::Project { org, project } => format!("project '{project}' of org '{org}'"),
+            Self::SpawnArgument => "the agents__spawn engine argument".to_owned(),
         }
     }
 }
@@ -182,16 +188,26 @@ impl EngineSetting {
     pub fn project_own(&self) -> Option<Engine> {
         match self.scope {
             EngineScope::Project { .. } => Some(self.engine),
-            EngineScope::Default | EngineScope::Org { .. } => None,
+            EngineScope::Default | EngineScope::Org { .. } | EngineScope::SpawnArgument => None,
         }
     }
 
     /// The failure sentence a missing `forge` binary owes the reader: the
     /// binary, the setting that asked for it, and no fallback.
     pub fn missing_binary(&self) -> String {
+        // A spawn argument is undone on the spawn, not on a key: sending its
+        // reader to `engine` would name a key that never carried the choice.
+        let remedy = match self.scope {
+            EngineScope::SpawnArgument => {
+                "Install the certified port, or spawn the worker with engine 'default'."
+            }
+            EngineScope::Default | EngineScope::Org { .. } | EngineScope::Project { .. } => {
+                "Install the certified port or set that key back to 'default'."
+            }
+        };
         format!(
             "engine '{}' needs the '{}' binary on PATH, and this machine has none; it was \
-             chosen by {} ({}). Install the certified port or set that key back to 'default'.",
+             chosen by {} ({}). {remedy}",
             self.engine.as_stored(),
             FORGE_ENGINE_BINARY,
             self.scope.label(),
@@ -393,6 +409,29 @@ mod tests {
 
         let unset = serde_json::to_value(SessionLaunchSettings::default()).expect("serialize");
         assert_eq!(unset.get("engine"), None, "an unset engine stays out of the wire");
+    }
+
+    /// A worker spawned with its own `engine` argument: the missing-binary
+    /// failure names that argument, not a config key, and its remedy is the
+    /// argument rather than a key edit.
+    #[test]
+    fn a_spawn_arguments_missing_binary_names_the_argument() {
+        let setting = super::EngineSetting {
+            engine: super::Engine::Forge,
+            scope: super::EngineScope::SpawnArgument,
+        };
+        let message = setting.missing_binary();
+        for needed in ["claude-headless", "agents__spawn", "engine 'default'"] {
+            assert!(message.contains(needed), "the failure names {needed}: {message}");
+        }
+        assert!(
+            !message.contains("orgs.") && !message.contains("projects."),
+            "it names no config key, because none chose it: {message}",
+        );
+        assert!(
+            !message.contains("set that key back"),
+            "and it does not send a reader to a key that never carried the choice: {message}",
+        );
     }
 
     #[test]

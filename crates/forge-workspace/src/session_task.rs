@@ -4308,6 +4308,7 @@ mod tests {
                 false,
                 crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
                 None,
+                None,
             )
             .expect("seed the row the rollback judges");
 
@@ -9337,6 +9338,7 @@ provider = "anthropic"
                     is_git_repo: None,
                     mcp_families: None,
                     cwd: None,
+                    engine: None,
                 },
             )
             .expect("seed the row");
@@ -12726,6 +12728,7 @@ provider = "anthropic"
                 false,
                 crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
                 None,
+                None,
             )
             .expect("seed the worker's row");
 
@@ -14591,6 +14594,7 @@ mod connected_hook_tests {
                 false,
                 crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
                 None,
+                None,
             )
             .expect("seed the worker row");
         dir
@@ -14688,6 +14692,7 @@ mod connected_hook_tests {
                 None,
                 false,
                 crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
+                None,
                 None,
             )
             .expect("seed the worker row");

@@ -827,6 +827,14 @@ pub enum Command {
         /// spawn written before the key existed.
         #[serde(default)]
         cwd: Option<String>,
+        /// The engine this spawn itself stated: `agents__spawn`'s `engine`
+        /// argument. It outranks the project's key and the org's for this
+        /// worker, and the handler records it on the worker's row so a
+        /// resume, heal or restart comes back on the same binary.
+        /// `None` falls through exactly as before: the row's engine on a
+        /// re-spawn, else the config's resolved setting.
+        #[serde(default)]
+        engine: Option<forge_agent::client::Engine>,
         /// True only for boot/reconnect re-spawns of persisted
         /// workers, which bypass the project's worker cap:
         /// they restore state the user already had, and their reply is
@@ -1547,6 +1555,17 @@ pub enum SpawnRole {
         /// because the server is built inside `get_agent_handle_at_key`,
         /// which reads no store of its own.
         mcp_families: Option<Vec<String>>,
+        /// The engine this worker's launch runs on when its own record
+        /// named one: the `agents__spawn` argument, or what its row
+        /// recorded. `None` falls through to the project's resolved
+        /// setting, which is what an older worker does. Carried here for
+        /// the same reason as `mcp_families`: the launch is stamped inside
+        /// `get_agent_handle_at_key`, after the config's project is settled.
+        /// The value and not an `EngineSetting`: the scope is the spawn
+        /// argument by construction, and a carried `EngineSetting` would
+        /// widen this enum past the error variant's size lint.
+        #[serde(default)]
+        engine: Option<forge_agent::client::Engine>,
     },
 }
 

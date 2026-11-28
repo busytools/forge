@@ -69,6 +69,7 @@ fn stranded_owner_fixture(
         false,
         crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
         None,
+        None,
     )
     .expect("seed the stranded worker's row");
     (ws, key, dir, project_dir)
@@ -1308,6 +1309,7 @@ fn deliver_worker_cron_with_an_unwakeable_owner_is_neither_parked_nor_delivered(
         None,
         false,
         crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
+        None,
         None,
     )
     .expect("seed the worker's row");

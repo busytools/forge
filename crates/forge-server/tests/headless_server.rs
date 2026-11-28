@@ -473,6 +473,7 @@ port = {gateway_port}
                 is_git_repo: None,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
         )
         .expect("seed the project's open lead");

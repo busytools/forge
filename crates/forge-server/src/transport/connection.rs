@@ -5410,6 +5410,7 @@ fn dispatch_answering(
             interactive,
             mcp_families,
             cwd,
+            engine,
             from_boot_respawn,
             ..
         } => {
@@ -5425,6 +5426,7 @@ fn dispatch_answering(
                 interactive,
                 mcp_families,
                 cwd,
+                engine,
                 from_boot_respawn,
                 return_to: Some(tx),
             };

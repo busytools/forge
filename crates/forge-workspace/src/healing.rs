@@ -441,6 +441,9 @@ async fn restart_worker(
             true,
             row.mcp_families,
             row.cwd,
+            // The engine the worker's record holds, so a heal brings it
+            // back on the binary it was spawned with.
+            row.engine,
         )
         .await
         .map(|reply| Some(reply.session_id))
@@ -561,6 +564,7 @@ mod tests {
             is_git_repo: None,
             mcp_families: None,
             cwd: None,
+            engine: None,
         };
 
         assert_eq!(

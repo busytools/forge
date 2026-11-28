@@ -301,6 +301,13 @@ pub trait WorkerFacade: Send + Sync {
     /// project's own - an absolute or `~`-prefixed path, resolved to its
     /// repo root. `None` keeps the project's path for a fresh spawn, and
     /// adopts the row's recorded tree for a resume that states none.
+    ///
+    /// `engine` is the spawn's own engine choice, already parsed from the
+    /// tool's value. It outranks the project's `engine` and the org's for
+    /// this worker, and the spawn records it so a resume, heal or restart
+    /// comes back on the same binary. `None` falls through: a resume
+    /// adopts the worker's recorded engine, and a worker whose row names
+    /// none lets the config's key answer as before.
     async fn spawn_worker(
         &self,
         caller: &SessionSlot,
@@ -312,6 +319,7 @@ pub trait WorkerFacade: Send + Sync {
         resume_session: bool,
         mcp_families: Option<Vec<String>>,
         cwd: Option<String>,
+        engine: Option<forge_agent::client::Engine>,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError>;
 
     /// Merge the supplied fields onto the stored dynamic-worker row for
@@ -588,6 +596,7 @@ impl WorkerFacade for ProdWorkerFacade {
         resume_session: bool,
         mcp_families: Option<Vec<String>>,
         cwd: Option<String>,
+        engine: Option<forge_agent::client::Engine>,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError> {
         let cp = self.caller_project(caller).ok_or(WorkerSpawnError::UnknownCallerProject)?;
         validate_worker_spawn(cp.is_lead, &label, &charter)?;
@@ -849,6 +858,7 @@ impl WorkerFacade for ProdWorkerFacade {
             // spawn that stated no tree records none, so the row keeps
             // meaning the project's own path.
             cwd: stated.as_ref().map(|_| root.to_string_lossy().into_owned()),
+            engine,
             from_boot_respawn: false,
             return_to: Some(tx),
         };
@@ -1139,7 +1149,7 @@ impl WorkerFacade for ProdWorkerFacade {
 
 /// A captured `MockWorkerFacade::spawn_worker` call:
 /// `(caller, label, resolved charter, kick, resume_kick, interactive,
-/// resume_session, mcp_families, cwd)`.
+/// resume_session, mcp_families, cwd, engine)`.
 #[cfg(any(test, feature = "testing"))]
 type RecordedSpawnCall = (
     SessionSlot,
@@ -1151,6 +1161,7 @@ type RecordedSpawnCall = (
     bool,
     Option<Vec<String>>,
     Option<String>,
+    Option<forge_agent::client::Engine>,
 );
 
 /// A captured `MockWorkerFacade::update_worker` call:
@@ -1240,6 +1251,7 @@ impl WorkerFacade for MockWorkerFacade {
         resume_session: bool,
         mcp_families: Option<Vec<String>>,
         cwd: Option<String>,
+        engine: Option<forge_agent::client::Engine>,
     ) -> Result<WorkerSpawnReply, WorkerSpawnError> {
         let cp = self.caller_project(caller).ok_or(WorkerSpawnError::UnknownCallerProject)?;
         validate_worker_spawn(cp.is_lead, &label, &charter)?;
@@ -1253,6 +1265,7 @@ impl WorkerFacade for MockWorkerFacade {
             resume_session,
             mcp_families,
             cwd,
+            engine,
         ));
         self.spawn_reply.lock().clone().unwrap_or(Err(WorkerSpawnError::DispatchFailed {
             message: "no preloaded reply".into(),
@@ -1461,6 +1474,7 @@ mod mock_tests {
                 false,
                 None,
                 None,
+                None,
             )
             .await;
         assert!(matches!(res, Err(WorkerSpawnError::NotLeadCaller)));
@@ -1491,6 +1505,7 @@ mod mock_tests {
                 None,
                 false,
                 false,
+                None,
                 None,
                 None,
             )
@@ -1547,6 +1562,7 @@ mod mock_tests {
                 None,
                 false,
                 false,
+                None,
                 None,
                 None,
             )

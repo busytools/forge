@@ -623,6 +623,8 @@ struct SpawnArgs {
     mcp_families: Option<Vec<String>>,
     #[serde(default)]
     cwd: Option<String>,
+    #[serde(default)]
+    engine: Option<String>,
 }
 
 /// Validate and canonicalise a spawn or update `mcp_families` argument:
@@ -725,13 +727,26 @@ impl Tool for Spawn {
          lands back in it. A path inside a project declared in \
          forge.toml is refused - that project is driven by its own \
          agent, so message it instead. Omit `cwd` and the worker runs \
-         in your project exactly as before. This tool errors if called \
+         in your project exactly as before. PICK THE ENGINE FOR THIS ONE \
+         WORKER WITH `engine`: `forge` runs the experimental \
+         `claude-headless` port (it must be installed on PATH), and \
+         `default` runs the `claude` CLI. A stated value beats the \
+         project's `engine` in forge.toml, which beats its org's, and \
+         omitting the argument falls through to them exactly as before. \
+         The choice is stored on the worker, so its restart, heal and \
+         `resume_session` come back on the same engine even if the \
+         project's key changes meanwhile; a resume that states one \
+         revises it. A machine with no `claude-headless` fails this \
+         spawn with an error naming the argument, never falling back to \
+         `claude`. This tool errors if called \
          from a worker session; only the project lead may spawn."
     }
 
     fn input_schema(&self) -> serde_json::Value {
         let families: Vec<&str> =
             crate::mcp::McpFamily::ALL.iter().map(|family| family.as_str()).collect();
+        let engines: Vec<&str> =
+            forge_agent::client::Engine::ALL.iter().map(|engine| engine.as_stored()).collect();
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -768,6 +783,11 @@ impl Tool for Spawn {
                     "type": "string",
                     "description": "Optional tree for this worker, when it should run somewhere other than your project's own directory - a sibling repo you are driving, for instance. Absolute or `~`-prefixed; a bare relative path is refused. A subdirectory of a repo resolves to the repo root. A path inside a project declared in forge.toml is refused when it is another project's: that project is driven by its own agent, so message it instead. Recorded on the worker's row, so the resume after a forge restart lands back in the same tree, and a resume may state that same tree again. State a DIFFERENT tree on a `resume_session` and it is refused, because a conversation is found by the tree it ran in - move a worker between trees by despawning it and spawning fresh. Omit `cwd` and the worker runs in your project exactly as before.",
                 },
+                "engine": {
+                    "type": "string",
+                    "enum": engines,
+                    "description": "Optional engine for THIS worker only. `default` is the `claude` CLI; `forge` is the experimental `claude-headless` port, which must be installed on PATH. Omit it and the project's `engine` in forge.toml applies, else its org's, else `default`. A stated value outranks both keys, and it is recorded on the worker: its restart, heal and `resume_session` come back on the same engine even if the project's key changes meanwhile. A resume that states one revises it. A machine without `claude-headless` fails the spawn with an error naming this argument, never falling back to `claude`.",
+                },
             },
             "required": ["label", "charter"],
             "additionalProperties": false,
@@ -790,6 +810,22 @@ impl Tool for Spawn {
             Ok(families) => families,
             Err(message) => return tool_error(message),
         };
+        // A value outside the two engines is refused here, by name: a
+        // typo must never quietly fall through to the project's key, which
+        // is the one thing the argument exists to override.
+        let engine = match args.engine.as_deref() {
+            None => None,
+            Some(value) => match forge_agent::client::Engine::from_stored(value) {
+                Some(engine) => Some(engine),
+                None => {
+                    return tool_error(format!(
+                        "engine must be one of {}; got '{value}'. Omit it to let the project's \
+                         `engine` key - or its org's - choose, exactly as before.",
+                        forge_agent::client::Engine::ACCEPTED,
+                    ));
+                }
+            },
+        };
         let label = args.label.clone();
         match self
             .facade
@@ -803,6 +839,7 @@ impl Tool for Spawn {
                 args.resume_session,
                 mcp_families,
                 args.cwd,
+                engine,
             )
             .await
         {
@@ -2529,6 +2566,65 @@ mod tests {
             None,
             "no cwd means the project's own path",
         );
+    }
+
+    /// The engine argument reaches the facade as the parsed choice: a
+    /// stated value wins for this one worker, and an absent argument is
+    /// `None` so the config keeps answering exactly as before. `default`
+    /// is stated as a value, not dropped, because a worker told to run the
+    /// CLI must stay on it after its project moves.
+    #[tokio::test]
+    async fn spawn_passes_the_stated_engine_and_omits_an_absent_one() {
+        use forge_agent::client::Engine;
+
+        let host = host();
+        *host.workers.spawn_reply.lock() = Some(Ok(preloaded_reply(None)));
+        let tool = spawn_tool(&host);
+
+        for (stated, expected) in [
+            (Some("forge"), Some(Engine::Forge)),
+            (Some("default"), Some(Engine::Default)),
+            (None, None),
+        ] {
+            let mut value = serde_json::json!({"label": "reviewer", "charter": "c"});
+            if let Some(stated) = stated {
+                value["engine"] = serde_json::json!(stated);
+            }
+            let output = tool.call(ToolInput { value }).await;
+            assert!(!output.is_error, "{stated:?}: {:?}", output.blocks);
+            let calls = host.workers.spawn_calls.lock();
+            assert_eq!(
+                calls.last().expect("the call was recorded").9,
+                expected,
+                "{stated:?} must reach the facade as {expected:?}",
+            );
+        }
+    }
+
+    /// An engine outside the two values is refused before anything is
+    /// dispatched, and the refusal names the value and the accepted set -
+    /// never a quiet fallback to `claude`.
+    #[tokio::test]
+    async fn spawn_refuses_an_unknown_engine_by_name() {
+        let host = host();
+        let tool = spawn_tool(&host);
+
+        let output = tool
+            .call(ToolInput {
+                value: serde_json::json!({
+                    "label": "reviewer",
+                    "charter": "c",
+                    "engine": "claude",
+                }),
+            })
+            .await;
+
+        assert!(output.is_error, "an unknown engine must refuse");
+        let text = text_of(&output);
+        for needed in ["claude", "default", "forge"] {
+            assert!(text.contains(needed), "the refusal names {needed}: {text}");
+        }
+        assert!(host.workers.spawn_calls.lock().is_empty(), "nothing is dispatched");
     }
 
     /// The spawn argument reaches the facade in canonical wire order,

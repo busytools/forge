@@ -1283,6 +1283,11 @@ pub(crate) struct WorkerSpawnArgs {
     /// by the facade (or, on a boot re-spawn, taken from the row): `None`
     /// means the project's own path.
     pub cwd: Option<String>,
+    /// The engine this spawn's own `engine` argument stated, if any. It
+    /// outranks the project's key and the org's; `None` falls through to
+    /// them, or - on a resume of a worker whose row records one - to the
+    /// engine that worker was spawned with.
+    pub engine: Option<forge_agent::client::Engine>,
 }
 
 /// The charter a spawned worker's prompt carries: the stored text plus
@@ -1365,8 +1370,16 @@ pub(crate) fn handle_spawn_worker(
     from_boot_respawn: bool,
     return_to: tokio::sync::oneshot::Sender<Result<WorkerSpawnReply, String>>,
 ) {
-    let WorkerSpawnArgs { label, charter, kick, resume_kick, interactive, mcp_families, cwd } =
-        args;
+    let WorkerSpawnArgs {
+        label,
+        charter,
+        kick,
+        resume_kick,
+        interactive,
+        mcp_families,
+        cwd,
+        engine,
+    } = args;
     let label = label.as_str();
     let resume_kick = resume_kick.as_deref();
     // **The label rules belong to this handler, not only to the tool.** The
@@ -1683,6 +1696,30 @@ pub(crate) fn handle_spawn_worker(
     // stated list is a revision; a fresh spawn stating nothing means
     // every family, which writes as absence.
     let resume_like = is_resume || from_boot_respawn;
+    // The worker's engine, in precedence order: what this spawn stated,
+    // else - on a resume or boot re-spawn - the engine its row already
+    // recorded, so the worker comes back on the binary it was spawned
+    // with even after the project's key moved. A fresh spawn stating
+    // nothing resolves nothing, and the project's key answers exactly as
+    // it always has. `default` is a value here, not an absence: a worker
+    // told to run the CLI must stay on it.
+    let resolved_engine = match engine {
+        Some(stated) => Some(stated),
+        None if resume_like => {
+            workspace.recorded_worker_engine(&project_key, label).unwrap_or_else(|error| {
+                tracing::warn!(
+                    target: "forge_workspace::spawn",
+                    event_name = "worker_row_engine_unreadable",
+                    project = %project_key.as_str(),
+                    label = %label,
+                    %error,
+                    "reading the worker's recorded engine failed; resolving the project's key",
+                );
+                None
+            })
+        }
+        None => None,
+    };
     let families_field: Option<&[String]> = if resume_like && mcp_families.is_none() {
         None
     } else {
@@ -1704,6 +1741,7 @@ pub(crate) fn handle_spawn_worker(
             cwd: cwd.clone(),
         },
         families_field,
+        resolved_engine,
     ) {
         Ok(()) => None,
         Err(error) => {
@@ -1800,6 +1838,10 @@ pub(crate) fn handle_spawn_worker(
             // take it away.
             wrote_row: !is_resume && !from_boot_respawn,
             mcp_families: families.clone(),
+            // What this worker's launch runs on when its own record named
+            // an engine: the cold spawn stamp reads it in place of the
+            // project's key.
+            engine: resolved_engine,
         },
         // A worker spawn is an opening door like the lead's: it starts the
         // seat it names.
@@ -3384,6 +3426,7 @@ provider = "anthropic"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -3451,6 +3494,7 @@ provider = "anthropic"
                     interactive: false,
                     mcp_families: None,
                     cwd: None,
+                    engine: None,
                 },
                 SessionSlot::from_str_for_test("lead"),
                 None,
@@ -4000,6 +4044,7 @@ provider = "anthropic"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4095,6 +4140,7 @@ provider = "anthropic"
                     is_git_repo: seeded_is_git,
                     mcp_families: None,
                     cwd: None,
+                    engine: None,
                 },
             )
             .expect("seed the row the spawn will write");
@@ -4111,6 +4157,7 @@ provider = "anthropic"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             resume_existing,
@@ -4201,6 +4248,7 @@ provider = "anthropic"
             false,
             crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
             None,
+            None,
         )
         .expect("seed the row the resume re-writes");
 
@@ -4217,6 +4265,7 @@ provider = "anthropic"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             Some("tester-id"),
@@ -4290,6 +4339,7 @@ provider = "anthropic"
                 interactive: false,
                 mcp_families: None,
                 cwd: Some(inside.to_string_lossy().into_owned()),
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -4377,6 +4427,7 @@ provider = "anthropic"
                     is_git_repo: true,
                     cwd: Some(sibling_root.to_string_lossy().into_owned()),
                 },
+                None,
                 None,
             )
             .expect("record the row the despawn reads");
@@ -4697,6 +4748,7 @@ provider = "anthropic"
             false,
             crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
             None,
+            None,
         )
         .expect("record proj-b's parked row");
         let err = spawn_reply(&ws, &key_of("proj-a"), "parked", false)
@@ -4749,6 +4801,7 @@ provider = "anthropic"
                 is_git_repo: None,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
         )
         .expect("write a row with no recorded gitness");
@@ -5043,6 +5096,7 @@ provider = "anthropic"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -5560,6 +5614,7 @@ heal_stable = "30s"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             lead.clone(),
             None,
@@ -5807,6 +5862,7 @@ heal_stable = "30s"
             false,
             crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
             Some(&["cron".to_owned()]),
+            None,
         )
         .expect("seed a stale selection");
 
@@ -5822,6 +5878,7 @@ heal_stable = "30s"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -5869,6 +5926,7 @@ heal_stable = "30s"
                 interactive: false,
                 mcp_families: None,
                 cwd: Some(root.to_string_lossy().into_owned()),
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -5923,6 +5981,7 @@ heal_stable = "30s"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -5960,6 +6019,7 @@ heal_stable = "30s"
             false,
             crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
             Some(&["cron".to_owned()]),
+            None,
         )
         .expect("seed the stored selection");
 
@@ -5976,6 +6036,7 @@ heal_stable = "30s"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -6005,6 +6066,7 @@ heal_stable = "30s"
                 interactive: false,
                 mcp_families: Some(vec!["tasks".to_owned()]),
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -6054,6 +6116,7 @@ heal_stable = "30s"
                 interactive: false,
                 mcp_families: Some(vec!["slack".to_owned()]),
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -6108,6 +6171,7 @@ heal_stable = "30s"
                 interactive: false,
                 mcp_families: Some(vec!["tasks".to_owned()]),
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -6225,6 +6289,7 @@ heal_stable = "30s"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -6305,6 +6370,7 @@ heal_stable = "30s"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -6353,6 +6419,7 @@ heal_stable = "30s"
                 label: "reviewer".to_owned(),
                 wrote_row: false,
                 mcp_families: None,
+                engine: None,
             },
             true,
         );
@@ -6698,6 +6765,7 @@ heal_stable = "30s"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -6751,6 +6819,7 @@ heal_stable = "30s"
                     interactive: false,
                     mcp_families: None,
                     cwd: None,
+                    engine: None,
                 },
                 SessionSlot::from_str_for_test("lead"),
                 None,
@@ -6842,6 +6911,7 @@ heal_stable = "30s"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -7047,6 +7117,7 @@ provider = "anthropic"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -7078,6 +7149,7 @@ provider = "anthropic"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -7122,6 +7194,7 @@ provider = "anthropic"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -7152,6 +7225,7 @@ provider = "anthropic"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -7179,6 +7253,7 @@ provider = "anthropic"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -7216,6 +7291,7 @@ provider = "anthropic"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -7265,6 +7341,7 @@ provider = "anthropic"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -7370,6 +7447,7 @@ provider = "anthropic"
                         interactive: false,
                         mcp_families: None,
                         cwd: None,
+                        engine: None,
                     },
                     SessionSlot::from_str_for_test("lead"),
                     None,
@@ -7432,6 +7510,7 @@ provider = "anthropic"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -7471,6 +7550,7 @@ provider = "anthropic"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -7500,6 +7580,7 @@ provider = "anthropic"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -7536,6 +7617,7 @@ provider = "anthropic"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead"),
             None,
@@ -7952,6 +8034,7 @@ provider = "anthropic"
                 false,
                 crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
                 None,
+                None,
             )
             .expect("seed the row whose live worker is gone");
 
@@ -7992,6 +8075,7 @@ provider = "anthropic"
                 None,
                 false,
                 crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
+                None,
                 None,
             )
             .expect("seed the stranded row");
@@ -8055,6 +8139,7 @@ provider = "anthropic"
                 false,
                 crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
                 None,
+                None,
             )
             .expect("seed the lead's row");
 
@@ -8103,6 +8188,7 @@ provider = "anthropic"
                 None,
                 false,
                 crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
+                None,
                 None,
             )
             .expect("seed a row the despawn must leave alone");
@@ -8615,6 +8701,7 @@ provider = "anthropic"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::lead("Default", "forge"),
             None,
@@ -8668,6 +8755,7 @@ provider = "anthropic"
                 None,
                 false,
                 true,
+                None,
                 None,
                 None,
             )
@@ -8739,6 +8827,7 @@ provider = "anthropic"
                 // it is what the despawn has to read the gitness from.
                 crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
                 None,
+                None,
             )
             .expect("seed the row that outlived its worker");
         (workspace, project_key, wt, repo, config)
@@ -8804,6 +8893,7 @@ provider = "anthropic"
                     is_git_repo: None,
                     mcp_families: None,
                     cwd: None,
+                    engine: None,
                 },
             )
             .expect("seed the row the migration writes");
@@ -9046,6 +9136,7 @@ provider = "anthropic"
                 interactive: false,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
             SessionSlot::from_str_for_test("lead-uuid"),
             None,
@@ -10393,6 +10484,249 @@ provider = "anthropic"
             recorded,
             Some(forge_agent::client::Engine::Default),
             "a spawn that resolved the default records it, so the header says default",
+        );
+    }
+
+    /// A one-project config whose project carries `engine`, for the
+    /// worker-spawn engine cases. The project path is not a git repo, so
+    /// the spawn needs no worktree.
+    fn write_worker_engine_config(dir: &std::path::Path, project_engine: Option<&str>) {
+        let forge_dir = crate::config::ensure_forge_data_dir(dir).expect("forge dir");
+        let engine_line =
+            project_engine.map(|engine| format!("engine = \"{engine}\"\n")).unwrap_or_default();
+        std::fs::write(
+            forge_dir.join("forge.toml"),
+            format!(
+                r#"
+[[orgs]]
+name = "TestOrg"
+accounts = ["acct-a"]
+
+[[orgs.projects]]
+name = "proj"
+path = "/tmp/spawn-engine-arg"
+{engine_line}model = "claude-sonnet-5"
+
+[[accounts]]
+display_name = "acct-a"
+token = "t"
+models = ["claude-sonnet-5"]
+provider = "anthropic"
+"#
+            ),
+        )
+        .expect("write forge.toml");
+    }
+
+    /// Spawn `port-hand` with `stated` as the engine argument and answer
+    /// the engine block its child was handed, the seat's recorded engine,
+    /// and the engine the worker's own row carries.
+    async fn worker_engine_spawn(
+        dir: &std::path::Path,
+        stated: Option<forge_agent::client::Engine>,
+    ) -> (
+        Option<serde_json::Value>,
+        Option<forge_agent::client::Engine>,
+        Option<forge_agent::client::Engine>,
+    ) {
+        let ws = std::sync::Arc::new(
+            Workspace::new_for_test(dir.to_owned()).expect("boot from the fixture"),
+        );
+        ws.seed_test_ready_account("acct-a");
+        let key = ws.list_projects().into_iter().find(|v| v.name == "proj").expect("project").key;
+        let (handle, mut agent_rx) = Workspace::testing_stub_handle();
+        ws.install_test_spawn_handle(handle);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &ws,
+            key.clone(),
+            WorkerSpawnArgs {
+                label: "port-hand".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                mcp_families: None,
+                cwd: None,
+                engine: stated,
+            },
+            SessionSlot::lead("TestOrg", "proj"),
+            None,
+            false,
+            tx,
+        );
+        rx.await.expect("reply channel").expect("the spawn is admitted");
+        let Some(forge_primitives::AgentCommand::NewSession { launch_settings, .. }) =
+            agent_rx.try_recv().ok()
+        else {
+            panic!("the worker spawn has to reach a launch");
+        };
+        let recorded = ws
+            .domain_session_for(&SessionSlot::worker("TestOrg", "proj", "port-hand"))
+            .expect("the spawn registered the seat")
+            .lock()
+            .configured_engine;
+        let row = ws
+            .stored_worker_row(&key, "port-hand")
+            .expect("read the worker's row")
+            .and_then(|row| row.engine);
+        (launch_settings.get("engine").cloned(), recorded, row)
+    }
+
+    /// The spawn's own `engine` argument outranks the project's key, and
+    /// it is written on the worker's row - which is what makes a later
+    /// resume, heal or restart land back on the same binary.
+    #[tokio::test]
+    async fn a_spawn_argument_outranks_the_projects_engine() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_worker_engine_config(dir.path(), None);
+
+        let (launch, recorded, row) =
+            worker_engine_spawn(dir.path(), Some(forge_agent::client::Engine::Forge)).await;
+
+        assert_eq!(
+            launch,
+            Some(serde_json::json!({
+                "engine": "forge",
+                "scope": { "kind": "spawn_argument" },
+            })),
+            "a stated engine reaches the child although the project names none",
+        );
+        assert_eq!(
+            recorded,
+            Some(forge_agent::client::Engine::Forge),
+            "and the seat records the engine it launched on",
+        );
+        assert_eq!(
+            row,
+            Some(forge_agent::client::Engine::Forge),
+            "the worker's row carries the choice, so a resume can resolve it",
+        );
+    }
+
+    /// An absent argument falls through exactly as before: the project's
+    /// key reaches the child, with the scope that chose it, and the row
+    /// records no engine of its own.
+    #[tokio::test]
+    async fn a_spawn_with_no_argument_takes_the_projects_engine() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_worker_engine_config(dir.path(), Some("forge"));
+
+        let (launch, recorded, row) = worker_engine_spawn(dir.path(), None).await;
+
+        assert_eq!(
+            launch,
+            Some(serde_json::json!({
+                "engine": "forge",
+                "scope": { "kind": "project", "org": "TestOrg", "project": "proj" },
+            })),
+            "the project's key reaches a worker whose spawn stated nothing",
+        );
+        assert_eq!(recorded, Some(forge_agent::client::Engine::Forge));
+        assert_eq!(row, None, "nothing was stated, so the row records nothing");
+    }
+
+    /// `engine = "default"` is a value, not an omission: a worker told to
+    /// run the `claude` CLI launches on it even though its project names
+    /// the port.
+    #[tokio::test]
+    async fn an_explicit_default_beats_a_project_set_to_forge() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_worker_engine_config(dir.path(), Some("forge"));
+
+        let (launch, recorded, row) =
+            worker_engine_spawn(dir.path(), Some(forge_agent::client::Engine::Default)).await;
+
+        assert_eq!(launch, None, "the `claude` CLI carries no engine block");
+        assert_eq!(
+            recorded,
+            Some(forge_agent::client::Engine::Default),
+            "the seat records the CLI, not the project's port",
+        );
+        assert_eq!(
+            row,
+            Some(forge_agent::client::Engine::Default),
+            "and the explicit default is stored, so a project that moves to `forge` cannot \
+             pull the worker along",
+        );
+    }
+
+    /// A resume resolves the engine the worker's row records, not the key
+    /// the project names now: a worker spawned with `forge` whose project
+    /// moved to `default` comes back on `claude-headless`.
+    #[tokio::test]
+    async fn a_resume_keeps_the_workers_recorded_engine_after_the_key_moves() {
+        use forge_agent::client::Engine;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_worker_engine_config(dir.path(), Some("forge"));
+        let ws = std::sync::Arc::new(
+            Workspace::new_for_test(dir.path().to_owned()).expect("boot from the fixture"),
+        );
+        ws.seed_test_ready_account("acct-a");
+        let key = ws.list_projects().into_iter().find(|v| v.name == "proj").expect("project").key;
+        // What a spawn with `engine = "forge"` leaves behind: the row is
+        // the worker's durable handle to the binary it was spawned with.
+        ws.record_worker_row(
+            &key,
+            "port-hand",
+            "550e8400-e29b-41d4-a716-446655440042",
+            "charter",
+            None,
+            None,
+            false,
+            crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
+            None,
+            Some(Engine::Forge),
+        )
+        .expect("seed the worker's row");
+
+        // The project's key moves after the spawn.
+        write_worker_engine_config(dir.path(), Some("default"));
+        ws.reload_config().expect("the edited config loads");
+
+        let (handle, mut agent_rx) = Workspace::testing_stub_handle();
+        ws.install_test_spawn_handle(handle);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        handle_spawn_worker(
+            &ws,
+            key,
+            WorkerSpawnArgs {
+                label: "port-hand".to_owned(),
+                charter: "charter".to_owned(),
+                kick: None,
+                resume_kick: None,
+                interactive: false,
+                mcp_families: None,
+                cwd: None,
+                engine: None,
+            },
+            SessionSlot::lead("TestOrg", "proj"),
+            Some("550e8400-e29b-41d4-a716-446655440042"),
+            false,
+            tx,
+        );
+        rx.await.expect("reply channel").expect("the resume is admitted");
+
+        let Some(forge_primitives::AgentCommand::ResumeSession { launch_settings, .. }) =
+            agent_rx.try_recv().ok()
+        else {
+            panic!("the resume has to reach a launch");
+        };
+        assert_eq!(
+            launch_settings.get("engine"),
+            Some(&serde_json::json!({
+                "engine": "forge",
+                "scope": { "kind": "spawn_argument" },
+            })),
+            "the row's engine outranks the project's new key; the worker keeps its port",
+        );
+        assert_eq!(
+            ws.domain_session_for(&SessionSlot::worker("TestOrg", "proj", "port-hand"))
+                .expect("the resume registered the seat")
+                .lock()
+                .configured_engine,
+            Some(Engine::Forge),
         );
     }
 

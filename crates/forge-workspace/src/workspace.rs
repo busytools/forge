@@ -3670,10 +3670,23 @@ impl Workspace {
         };
         // The engine for this launch, from the project the guard settled on:
         // one snapshot decides the binary, the model and the account together.
-        // A `/new`, `/resume` or handoff re-spawns on a pooled handle instead
-        // and is stamped in `stamp_respawn_overrides`; between the two, every
-        // launch carries the engine its project resolves to.
-        Self::stamp_engine_setting(Some(&project.engine), &mut settings);
+        // A worker whose own record names an engine carries it on the role,
+        // and that outranks the config - the spawn argument beats the
+        // project's key, the project's key beats the org's, and an absent
+        // one falls through exactly as before. A `/new`, `/resume` or
+        // handoff re-spawns on a pooled handle instead and is stamped in
+        // `stamp_respawn_overrides`; between the two, every launch carries
+        // the engine its project resolves to.
+        let stated_engine = match role {
+            crate::protocol::SpawnRole::Lead => None,
+            crate::protocol::SpawnRole::Worker { engine, .. } => {
+                engine.map(|engine| forge_agent::client::EngineSetting {
+                    engine,
+                    scope: forge_agent::client::EngineScope::SpawnArgument,
+                })
+            }
+        };
+        Self::stamp_engine_setting(stated_engine.as_ref().or(Some(&project.engine)), &mut settings);
         // The account and model checks have passed, so this spawn is
         // committed: record the id its lead will run under, either the
         // one the store held or the one minted in
@@ -5090,18 +5103,46 @@ impl Workspace {
         self.gateway.bindings.binding_for(&org, &project, &session)
     }
 
-    /// Stamp the engine the seat's project resolves to onto a launch.
+    /// Stamp the engine the seat's launch runs on onto a launch.
     ///
-    /// **The config is the only source.** A launch settings that arrived
+    /// **A worker's own record is the first source**: a worker spawned with
+    /// its own `engine` argument keeps that engine for every re-spawn, so a
+    /// project key moved in between does not move it. Every other seat -
+    /// and every lead - resolves the config. A launch settings that arrived
     /// carrying an engine of its own is overwritten, so a spawn never runs a
-    /// binary no key names today; `default` clears the field, which is what a
-    /// launch settings that predates the key carries.
+    /// binary no key and no spawn argument names; `default` clears the
+    /// field, which is what a launch settings that predates the key carries.
     pub(crate) fn stamp_engine(
         &self,
         slot: &SessionSlot,
         launch_settings: &mut SessionLaunchSettings,
     ) {
-        let engine = self.project_for_slot(slot).map(|project| project.engine);
+        // A worker's own engine outlives the key that did not choose it:
+        // once its spawn stated one, every re-spawn of that seat - `/new`,
+        // `/resume`, a handoff - resolves it from the row, so a project key
+        // moved in between does not move the worker. A worker whose row
+        // names none, and every lead, resolve the config as always.
+        let stored_engine = if slot.is_lead() {
+            None
+        } else {
+            self.project_key_for_name(slot.project()).and_then(|project_key| {
+                self.recorded_worker_engine(&project_key, slot.label()).unwrap_or_else(|error| {
+                    tracing::warn!(
+                        target: "forge_workspace::workspace",
+                        event_name = "worker_row_engine_unreadable",
+                        slot = %slot.display(),
+                        %error,
+                        "reading the worker's recorded engine failed; resolving the project's key",
+                    );
+                    None
+                })
+            })
+        };
+        let stored = stored_engine.map(|engine| forge_agent::client::EngineSetting {
+            engine,
+            scope: forge_agent::client::EngineScope::SpawnArgument,
+        });
+        let engine = stored.or_else(|| self.project_for_slot(slot).map(|project| project.engine));
         Self::stamp_engine_setting(engine.as_ref(), launch_settings);
     }
 
@@ -5775,7 +5816,10 @@ impl Workspace {
             seat_state: existing.as_ref().and_then(|row| row.seat_state),
             is_git_repo: existing.as_ref().and_then(|row| row.is_git_repo),
             mcp_families: existing.as_ref().and_then(|row| row.mcp_families.clone()),
-            cwd: existing.and_then(|row| row.cwd),
+            cwd: existing.as_ref().and_then(|row| row.cwd.clone()),
+            // The worker's own engine is part of its identity, not of the
+            // occupant: re-recording an id must not drop it.
+            engine: existing.and_then(|row| row.engine),
         };
         if let Err(error) = crate::store::sessions::put(db, &row) {
             tracing::warn!(
@@ -6704,6 +6748,9 @@ impl Workspace {
             interactive: row.interactive.unwrap_or(false),
             mcp_families: row.mcp_families,
             cwd: row.cwd,
+            // The engine the worker's own record holds: an explicit
+            // `/resume` of a worker spawned with one lands back on it.
+            engine: row.engine,
             // **A user-driven restore is the row restore a boot re-spawn
             // does.** The row already holds the worker's cap slot and tree,
             // so the restore semantics fit: no cap check, and a failure kept
@@ -7304,6 +7351,7 @@ impl Workspace {
                     interactive,
                     mcp_families,
                     cwd,
+                    engine,
                     from_boot_respawn,
                     return_to,
                 } => {
@@ -7326,6 +7374,7 @@ impl Workspace {
                             interactive,
                             mcp_families,
                             cwd,
+                            engine,
                         },
                         spawned_by,
                         resume_existing.as_deref(),
@@ -8466,6 +8515,9 @@ impl Workspace {
                 // The row's own tree, which is what this re-spawn
                 // restores: the handler records it back verbatim.
                 cwd: worker.cwd.clone(),
+                // And the engine the row holds, for the same reason: the
+                // boot comes back on the binary the worker was spawned with.
+                engine: worker.engine,
                 from_boot_respawn: true,
                 return_to: Some(tx),
             };
@@ -9725,6 +9777,7 @@ impl Workspace {
         interactive: bool,
         tree: crate::mcp::workers::types::WorkerTree,
         mcp_families: Option<&[String]>,
+        engine: Option<forge_agent::client::Engine>,
     ) -> anyhow::Result<()> {
         let Some((org, project)) = self.project_identity_for_key(project_key) else {
             anyhow::bail!("no configured project for {}", project_key.as_str());
@@ -9773,6 +9826,10 @@ impl Workspace {
                 // from an older row: a spawn that states no tree runs in
                 // the project root, and only a resume adopts one.
                 cwd: tree.cwd,
+                // And the engine the spawn chose, carried the same way: the
+                // spawn handler resolves a resume's stored value before it
+                // gets here, so this is always the worker's engine now.
+                engine,
             },
         )
     }
@@ -9821,6 +9878,26 @@ impl Workspace {
             anyhow::bail!("the session store is unavailable this session");
         };
         Ok(crate::store::sessions::get(db, &org, &project, label)?.and_then(|row| row.mcp_families))
+    }
+
+    /// The engine the worker's row records, or `Ok(None)` when there is no
+    /// row or its spawn stated none (which keeps the project's key
+    /// answering). Same failure contract as
+    /// [`Self::recorded_worker_is_git_repo`]: an unreadable row is an
+    /// `Err`, not an absence.
+    pub(crate) fn recorded_worker_engine(
+        &self,
+        project_key: &ProjectKey,
+        label: &str,
+    ) -> anyhow::Result<Option<forge_agent::client::Engine>> {
+        let Some((org, project)) = self.project_identity_for_key(project_key) else {
+            return Ok(None);
+        };
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else {
+            anyhow::bail!("the session store is unavailable this session");
+        };
+        Ok(crate::store::sessions::get(db, &org, &project, label)?.and_then(|row| row.engine))
     }
 
     /// Delete a worker's persisted row so it never re-spawns. The row is
@@ -10049,6 +10126,9 @@ impl Workspace {
                 // And absent leaves the stored tree alone: the tree is
                 // fixed at spawn, the way the gitness is.
                 cwd: None,
+                // Nor does an update revise the worker's engine; a resume
+                // that states one is the door that changes it.
+                engine: None,
             },
         )
     }
@@ -13761,6 +13841,7 @@ path = "{}"
             false,
             crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
             None,
+            None,
         )
         .expect("seed the stranded row");
 
@@ -14452,6 +14533,7 @@ provider = "anthropic"
                     cwd: Some(project.path().to_string_lossy().into_owned()),
                 },
                 Some(&["tasks".to_owned(), "agents".to_owned()]),
+                None,
             )
             .expect("seed the worker row");
         workspace.enable_test_dispatch_intercept();
@@ -14536,6 +14618,7 @@ provider = "anthropic"
                 None,
                 false,
                 crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
+                None,
                 None,
             )
             .expect("seed the worker row");
@@ -14624,6 +14707,7 @@ provider = "anthropic"
                 None,
                 false,
                 crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
+                None,
                 None,
             )
             .expect("seed the worker row");
@@ -14740,6 +14824,7 @@ provider = "anthropic"
             Some("original resume"),
             false,
             crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
+            None,
             None,
         )
         .expect("seed the row this test then updates");
@@ -15002,6 +15087,7 @@ provider = "anthropic"
                 None,
                 false,
                 crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
+                None,
                 None,
             )
             .expect_err("a closed store must surface a durability failure, not a silent no-op");
@@ -17431,6 +17517,7 @@ provider = "anthropic"
                 is_git_repo: None,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
         )
         .expect("seed the lead row a spawn writes");
@@ -17449,6 +17536,7 @@ provider = "anthropic"
                 is_git_repo: None,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
         )
         .expect("seed the steward's own row, as the released build leaves it");
@@ -17714,6 +17802,7 @@ provider = "anthropic"
                 is_git_repo: None,
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
         )
         .expect("seed the row");
@@ -21394,6 +21483,7 @@ mod tag_retry_tests {
                 false,
                 crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
                 None,
+                None,
             )
             .expect("seed the row this arm must keep");
 
@@ -21592,6 +21682,7 @@ mod tag_retry_tests {
                 false,
                 crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
                 None,
+                None,
             )
             .expect("seed the worker's row");
         let session_key = SessionSlot::worker("TestOrg", "proj-x", "builder");
@@ -21656,6 +21747,7 @@ mod tag_retry_tests {
                 None,
                 false,
                 crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
+                None,
                 None,
             )
             .expect("seed the row the rollback judges");
@@ -22346,7 +22438,9 @@ mod worker_respawn_tests {
     /// A respawn starts on the engine the config names now. `/new`,
     /// `/resume` and a handoff re-spawn on a pooled handle, where the
     /// cold-spawn stamp never runs; a stale engine arriving on the command
-    /// is overwritten, because the config is the only source.
+    /// is overwritten, because the config is the only source - for a lead,
+    /// and for any worker whose own row names no engine. A worker that
+    /// stated one keeps it, which the sibling test below pins.
     #[test]
     fn a_respawn_launches_on_the_projects_engine() {
         use forge_agent::client::{Engine, EngineScope, EngineSetting};
@@ -22389,6 +22483,54 @@ mod worker_respawn_tests {
         );
     }
 
+    /// A worker that was spawned with its own engine keeps it on every
+    /// re-spawn. `/new`, `/resume` and a handoff rebuild the launch from
+    /// the worker's row, so a project key that moved after the spawn does
+    /// not move the worker.
+    #[test]
+    fn a_respawn_keeps_a_workers_recorded_engine() {
+        use forge_agent::client::{Engine, EngineScope, EngineSetting};
+
+        let (ws, _rx) = Workspace::testing_stub();
+        let dir = tempfile::tempdir().expect("tempdir");
+        ws.install_db_for_test(crate::store::Db::open(&dir.path().join("db.redb")).expect("db"));
+        ws.seed_test_project_with_engine(
+            "engine-proj",
+            "/tmp/engine-respawn-worker",
+            Engine::Default,
+        );
+        let project = ws.project_key_for_name("engine-proj").expect("seeded project");
+        ws.record_worker_row(
+            &project,
+            "port-hand",
+            "id-1",
+            "charter",
+            None,
+            None,
+            false,
+            crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
+            None,
+            Some(Engine::Forge),
+        )
+        .expect("the worker's row");
+        let worker = SessionSlot::worker("TestOrg", "engine-proj", "port-hand");
+        let domain = ws.register_domain_session(worker.clone(), None);
+
+        let mut settings = SessionLaunchSettings::default();
+        ws.stamp_respawn_overrides(&worker, "new-id", &mut settings);
+
+        assert_eq!(
+            settings.engine,
+            Some(EngineSetting { engine: Engine::Forge, scope: EngineScope::SpawnArgument }),
+            "the worker's own engine outranks the project's default",
+        );
+        assert_eq!(
+            domain.lock().configured_engine,
+            Some(Engine::Forge),
+            "and the seat's record keeps naming the port",
+        );
+    }
+
     /// The role a spawn carries is the role it gets, and the slot's label
     /// comes from the same value - so a worker cannot be handed a worker's
     /// tool surface AND the lead's address. A worker re-spawned by the
@@ -22403,6 +22545,7 @@ mod worker_respawn_tests {
             label: "implementer".to_owned(),
             wrote_row: true,
             mcp_families: None,
+            engine: None,
         };
 
         let slot = Workspace::slot_for_spawn(&role, &project);
@@ -22511,6 +22654,7 @@ mod worker_respawn_tests {
             is_git_repo: None,
             mcp_families: None,
             cwd: None,
+            engine: None,
         }
     }
 
@@ -22558,6 +22702,7 @@ mod worker_respawn_tests {
                     false,
                     crate::mcp::workers::types::WorkerTree { is_git_repo: is_git, cwd: None },
                     None,
+                    None,
                 )
                 .expect("seed the row this wave re-spawns");
         }
@@ -22581,6 +22726,7 @@ mod worker_respawn_tests {
                 is_git_repo: Some(true),
                 mcp_families: None,
                 cwd: None,
+                engine: None,
             },
         )
         .expect("seed the id-less row");
@@ -22996,6 +23142,7 @@ mod worker_respawn_tests {
                 false,
                 crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
                 None,
+                None,
             )
             .expect("seed the persisted worker this test re-spawns");
         workspace.enable_test_dispatch_intercept();
@@ -23041,6 +23188,7 @@ mod worker_respawn_tests {
                 None,
                 false,
                 crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
+                None,
                 None,
             )
             .expect("write the row this test then deletes");
@@ -23125,6 +23273,7 @@ provider = "anthropic"
             // `demo` is not a git repo, so the worker runs in the project
             // root and has no worktree the wave must find.
             crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
+            None,
             None,
         )
         .expect("the row the re-spawn wave resumes onto");
@@ -23221,6 +23370,7 @@ provider = "anthropic"
                     false,
                     None,
                     None,
+                    None,
                 )
                 .await;
         });
@@ -23267,6 +23417,7 @@ provider = "anthropic"
                     true,
                     None,
                     None,
+                    None,
                 )
                 .await
         });
@@ -23311,6 +23462,7 @@ provider = "anthropic"
                     None,
                     false,
                     true,
+                    None,
                     None,
                     None,
                 )
@@ -23537,6 +23689,7 @@ provider = "anthropic"
                 true,
                 None,
                 None,
+                None,
             ),
         )
         .await
@@ -23595,6 +23748,7 @@ provider = "anthropic"
                 true,
                 None,
                 None,
+                None,
             )
             .await
             .expect_err("the label is already live");
@@ -23635,6 +23789,7 @@ provider = "anthropic"
                 None,
                 false,
                 true,
+                None,
                 None,
                 None,
             )
@@ -23750,6 +23905,7 @@ provider = "anthropic"
                     true,
                     None,
                     None,
+                    None,
                 )
                 .await
         });
@@ -23853,6 +24009,7 @@ provider = "anthropic"
             false,
             crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
             None,
+            None,
         )
         .expect("record the worker's own row");
         ws.enable_test_dispatch_intercept();
@@ -23868,6 +24025,7 @@ provider = "anthropic"
                     None,
                     false,
                     true,
+                    None,
                     None,
                     None,
                 )
@@ -23957,6 +24115,7 @@ provider = "anthropic"
             false,
             crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
             None,
+            None,
         )
         .expect("record proj-b's row");
 
@@ -23996,6 +24155,7 @@ provider = "anthropic"
                 true,
                 None,
                 None,
+                None,
             )
             .await
             .expect_err("a live holder refuses the resume");
@@ -24023,6 +24183,7 @@ provider = "anthropic"
             false,
             crate::mcp::workers::types::WorkerTree { is_git_repo: true, cwd: None },
             None,
+            None,
         )
         .expect("record proj-a's row");
         let facade = crate::mcp::workers::facade::ProdWorkerFacade::from_arc(&ws);
@@ -24035,6 +24196,7 @@ provider = "anthropic"
                 None,
                 false,
                 true,
+                None,
                 None,
                 None,
             )
@@ -24140,6 +24302,7 @@ provider = "anthropic"
                     true,
                     None,
                     None,
+                    None,
                 )
                 .await
         });
@@ -24179,6 +24342,7 @@ provider = "anthropic"
                     None,
                     false,
                     true,
+                    None,
                     None,
                     None,
                 )
@@ -24284,6 +24448,7 @@ provider = "anthropic"
                             true,
                             None,
                             None,
+                            None,
                         )
                         .await
                 });
@@ -24332,6 +24497,7 @@ provider = "anthropic"
                     None,
                     false,
                     true,
+                    None,
                     None,
                     None,
                 )
@@ -24419,6 +24585,7 @@ provider = "anthropic"
                 true,
                 None,
                 None,
+                None,
             ),
         )
         .await
@@ -24499,6 +24666,7 @@ provider = "anthropic"
                         None,
                         false,
                         true,
+                        None,
                         None,
                         None,
                     ),
@@ -24601,6 +24769,7 @@ provider = "anthropic"
                         None,
                         false,
                         true,
+                        None,
                         None,
                         None,
                     ),
@@ -24787,6 +24956,7 @@ provider = "anthropic"
             false,
             crate::mcp::workers::types::WorkerTree { is_git_repo: false, cwd: None },
             None,
+            None,
         )
         .expect("seed the row that disagrees with the disk");
         ws.enable_test_dispatch_intercept();
@@ -24802,6 +24972,7 @@ provider = "anthropic"
                     None,
                     false,
                     true,
+                    None,
                     None,
                     None,
                 )
@@ -24855,6 +25026,7 @@ provider = "anthropic"
                     None,
                     false,
                     true,
+                    None,
                     None,
                     None,
                 )
@@ -24941,6 +25113,7 @@ provider = "anthropic"
                     true,
                     None,
                     None,
+                    None,
                 )
                 .await
         });
@@ -24982,6 +25155,7 @@ provider = "anthropic"
                     None,
                     false,
                     true,
+                    None,
                     None,
                     None,
                 )
@@ -25040,6 +25214,7 @@ provider = "anthropic"
                     None,
                     false,
                     false,
+                    None,
                     None,
                     None,
                 )
@@ -25194,6 +25369,7 @@ provider = "anthropic"
                     true,
                     None,
                     None,
+                    None,
                 )
                 .await
         });
@@ -25276,6 +25452,7 @@ provider = "anthropic"
                 true,
                 None,
                 Some(other_root.to_string_lossy().into_owned()),
+                None,
             ),
         )
         .await
@@ -25311,6 +25488,7 @@ provider = "anthropic"
                     true,
                     None,
                     Some(stated),
+                    None,
                 )
                 .await
         });

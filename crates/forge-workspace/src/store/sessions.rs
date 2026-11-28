@@ -104,6 +104,14 @@ pub struct SessionRecord {
     /// the field existed reads as today.
     #[serde(default)]
     pub cwd: Option<String>,
+    /// The engine this worker's own `agents__spawn` argument chose:
+    /// `default` (the `claude` CLI) or `forge` (the certified
+    /// `claude-headless` port). Absent on a worker whose spawn stated no
+    /// engine, so its launches keep resolving the project's key exactly
+    /// as they always have. `default` is a stated choice, not absence: a
+    /// worker told to run the CLI stays on it after the project moves.
+    #[serde(default)]
+    pub engine: Option<forge_agent::client::Engine>,
 }
 
 /// A configured project as the migration needs it: its catalog key, and
@@ -266,6 +274,8 @@ pub fn migrate_from_dynamic_workers(
             mcp_families: None,
             // Nor a tree of its own: the retired table never held one.
             cwd: None,
+            // Nor an engine: the retired table never held one either.
+            engine: None,
         };
         // An existing row is the id-bearing one: merge onto it so the
         // occupant it names survives. `update` leaves an absent field at
@@ -589,6 +599,7 @@ mod tests {
             is_git_repo: None,
             mcp_families: None,
             cwd: None,
+            engine: None,
         }
     }
 
@@ -630,6 +641,49 @@ mod tests {
             decoded.mcp_families, None,
             "an absent field stays absent, never an invented set"
         );
+    }
+
+    /// A worker's own engine survives the store with its wire spelling, and
+    /// a row written before the field existed decodes as absent - which is
+    /// the config's key, exactly the behaviour every older worker has.
+    /// `default` is a stated choice here, not an absence: a worker spawned
+    /// with `engine = "default"` must stay on the `claude` CLI after its
+    /// project's key moves to `forge`.
+    #[test]
+    fn the_workers_engine_round_trips_and_old_rows_stay_absent() {
+        use forge_agent::client::Engine;
+
+        let dir = tempdir().expect("tempdir");
+        let db = Db::open(&dir.path().join("db.redb")).expect("open db");
+
+        let mut row = record("Personal", "forge", "port-hand", None);
+        row.engine = Some(Engine::Forge);
+        put(&db, &row).expect("write");
+        let mut plain = record("Personal", "forge", "cli-hand", None);
+        plain.engine = Some(Engine::Default);
+        put(&db, &plain).expect("write");
+
+        let read = get(&db, "Personal", "forge", "port-hand").expect("read").expect("row");
+        assert_eq!(read.engine, Some(Engine::Forge), "the worker's engine reads back whole");
+        let body: serde_json::Value = serde_json::from_slice(
+            &raw_for_test(&db, "Personal", "forge", "port-hand").expect("raw"),
+        )
+        .expect("the body is json");
+        assert_eq!(
+            body.get("engine").and_then(serde_json::Value::as_str),
+            Some("forge"),
+            "the stored spelling is the wire's own",
+        );
+        assert_eq!(
+            get(&db, "Personal", "forge", "cli-hand").expect("read").and_then(|row| row.engine),
+            Some(Engine::Default),
+            "an explicitly stated default is stored, not dropped as absence",
+        );
+
+        let legacy = br#"{"session_id":null}"#;
+        let decoded =
+            decode("Personal", "forge", "old", legacy).expect("a legacy body still decodes");
+        assert_eq!(decoded.engine, None, "an absent engine stays absent, never an invented one");
     }
 
     /// The worker's own tree survives the store: written as spawned, read
@@ -848,6 +902,8 @@ mod tests {
                 mcp_families: None,
                 // Nor a tree of its own; absent is the project root.
                 cwd: None,
+                // Nor an engine.
+                engine: None,
             },
             "the row carries the worker's fields and no id",
         );
