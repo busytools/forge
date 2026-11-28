@@ -10789,6 +10789,44 @@ mod lead_charter_tests {
         );
     }
 
+    /// A change to what a person sees, and any capability a cut adds, removes
+    /// or restores, is settled with the user in the plan. The review checks
+    /// the implementation against the spec, so a spec that changed the
+    /// product passes every lens; the plan step is the only gate that runs
+    /// before the branch is cut. Pinned because the step read as "write the
+    /// plan the worker implements", which let a visibility change travel as
+    /// an implementation detail of a bug fix.
+    #[test]
+    fn the_charter_settles_a_product_change_in_the_plan() {
+        for (clause, why) in [
+            (
+                "A change to what a person SEES - what appears, which rows, counts, visibility, \
+                 copy - and any capability the cut adds, removes or restores is decided in the \
+                 plan with the user, before the branch is cut",
+                "the tested surfaces, the capability half and the plan-time decision are one \
+                 sentence",
+            ),
+            (
+                "A bug fix is no exemption:",
+                "the colon is pinned so an exception appended after it fails here",
+            ),
+            (
+                "a spec that changed the product passes it unseen",
+                "the review's structural blind spot is the reason, stated",
+            ),
+            (
+                "the plan step is the only gate that runs before the branch is cut",
+                "the gate is the step that runs before the cut, not a claim the review cannot \
+                 catch it",
+            ),
+        ] {
+            assert!(
+                DEFAULT_LEAD_CHARTER.contains(clause),
+                "the lead charter does not settle a product change in the plan ({why}): {clause}",
+            );
+        }
+    }
+
     /// Mid-turn delivery had no written duty of its own in this charter, so the
     /// bullet that adds one is pinned sentence by sentence.
     #[test]
