@@ -428,9 +428,10 @@ pub const EVIDENCE_EXCERPT_MAX: usize = 4_000;
 ///
 /// `verified_at` is stamped by the gate on the move that last verified
 /// the claim - a check of the artifact, or the project lead's word
-/// standing for one the check cannot reach - and `problem` carries why
-/// the last check failed. Absence is never success, and an unchecked
-/// claim reads as unknown.
+/// standing for one the check cannot reach. `problem` is never set on a
+/// live row: a refusal refuses the move rather than recording why, so a
+/// set value only comes from a hand-edited store. Absence is never
+/// success, and an unchecked claim reads as unknown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Evidence {
     #[serde(default)]
@@ -454,6 +455,14 @@ pub struct Evidence {
     pub verified_at: Option<SystemTime>,
     #[serde(default)]
     pub problem: Option<String>,
+}
+
+/// The lead's verification as a claim: trimmed, with blank words read as
+/// no claim at all. Every seam reads the field through this - the write
+/// doors, the gate, the read boundary and the client - so a blank stored
+/// value cannot drift between them.
+pub fn lead_verification(words: Option<&str>) -> Option<&str> {
+    words.map(str::trim).filter(|words| !words.is_empty())
 }
 
 impl Evidence {

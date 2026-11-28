@@ -82,13 +82,13 @@ pub(crate) struct EvidenceDraft {
     pub excerpt: Option<String>,
 }
 
-/// Whether an evidence draft states the lead's verification once the
-/// words are trimmed: blank words are no claim at all, as [`EvidenceDraft`]
-/// says, so the doors read the normalized shape.
+/// Whether an evidence draft states the lead's verification, read through
+/// the one seam that defines a blank quote as no claim.
 fn states_lead_verification(evidence: Option<&EvidenceDraft>) -> bool {
-    evidence
-        .and_then(|evidence| evidence.lead_verified.as_deref())
-        .is_some_and(|words| !words.trim().is_empty())
+    forge_primitives::tasks::lead_verification(
+        evidence.and_then(|evidence| evidence.lead_verified.as_deref()),
+    )
+    .is_some()
 }
 
 impl EvidenceDraft {
