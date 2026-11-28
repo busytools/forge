@@ -56,6 +56,7 @@ import {
   type ConnectionStatus,
 } from '../socket';
 import { Stores, type Store } from '../stores';
+import { SubjectStreams } from '../wire/apply';
 import { coversHome } from '../wire/fleet';
 import { settingsFrom } from '../wire/types';
 import { takeSettings } from '../settings/frame';
@@ -316,6 +317,18 @@ class RustConnection implements Connection {
    * between the server and the page is not a wait with nothing behind it.
    */
   private readonly bounds: ReadBounds;
+
+  /**
+   * The whole-read and patch rule this transport shares with the web's:
+   * see `wire/apply.ts`. The shell forwards patch frames like every other
+   * frame, so the page places them here exactly as a browser places the
+   * socket's.
+   */
+  private readonly streams = new SubjectStreams({
+    store: (subject) => this.stores.get(subject),
+    refresh: (subject) => this.refresh(subject),
+    report,
+  });
 
   /** The ordinary pass this connection bounds its reads with. */
   private readonly boundMs: number;
@@ -595,6 +608,9 @@ class RustConnection implements Connection {
     store.refuse(payload.why);
     report(`the subscription to ${payload.key} was refused`, payload.why);
     if (refused === null) return;
+    // A refused subject's gap ends with it: the entry would otherwise swallow
+    // the next real gap's ask for the connection's life.
+    this.streams.end(refused);
     // **The page learns from a frame, not from the store alone.** A seat's
     // readers act on an `error` frame ("a refused subscribe is given to the
     // store it was attributed to"), and a subject store re-reads its refused
@@ -648,7 +664,16 @@ class RustConnection implements Connection {
         break;
       case 'snapshot':
         this.bounds.clear(message.subject);
-        this.stores.get(message.subject)?.set(message.data);
+        // **The version lands with the record**, or no patch can ever be
+        // placed against it: the shell forwards `snapshot.version` like the
+        // socket's own answer carries it.
+        this.streams.snapshot(message.subject, message.version, message.data);
+        break;
+      case 'patch':
+        // **The shell forwards this frame and this page had no case for it**,
+        // so every patch died on the desktop and the phone while the web
+        // applied them (#3102 review). The placing rule is the shared one.
+        this.streams.patch(message.subject, message.version, message.data);
         break;
       case 'update': {
         const slot = slotOf(message.update);
@@ -778,6 +803,7 @@ class RustConnection implements Connection {
     // **The last page reader is what ends the hold**, as the shell's own count
     // is: a subject two callers watch stays held until both have gone.
     if (last) this.held.delete(subjectKey(what));
+    if (last) this.streams.end(what);
     void invoke('client_unsubscribe', { what }).catch((why: unknown) => {
       report('an unsubscribe could not reach the shell', why);
     });
@@ -848,6 +874,7 @@ class RustConnection implements Connection {
    */
   release(what: Subject): void {
     while (this.stores.get(what) !== undefined) this.stores.close(what);
+    this.streams.end(what);
     this.held.delete(subjectKey(what));
     void invoke('client_release', { what }).catch((why: unknown) => {
       report('a release could not reach the shell', why);

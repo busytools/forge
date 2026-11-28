@@ -222,7 +222,22 @@
 {#if route.name === 'connect'}
   <Connect {settings} initialAddress={address} launchFailure={failure} {notice} {onconnect} />
 {:else if route.name === 'home'}
+  {#if (home.heldPatches ?? []).length > 0}
+    <!-- Rule 25: a frame this client cannot read is kept and said, never
+         dropped in silence - and a failed read is no reason to stop saying
+         it, so this draws outside the wire branch. -->
+    <p class="pending">
+      {home.heldPatches?.length} server update{(home.heldPatches?.length ?? 0) === 1 ? '' : 's'} for the
+      home could not be read and
+      {(home.heldPatches?.length ?? 0) === 1 ? 'was' : 'were'} kept
+    </p>
+  {/if}
   {#if home.wire}
+    {#if home.catchingUp}
+      <!-- The stream skipped a version: the record is still drawn, and this
+           says the figures may be a beat behind while one whole read lands. -->
+      <p class="pending">Catching up with the server...</p>
+    {/if}
     <Home wire={home.wire} {address} mark={settings.mark} {connection} />
   {:else if home.refused}
     <!-- The server turned the subscription down, in its own words. Handing

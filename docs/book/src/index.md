@@ -17,9 +17,11 @@ three things sharing a repository:
   the fleet, per-session chat, a projects board, the inspector, tasks
   and reviews. A client subscribes to a subject -
   the home, a session, the
-  token/cost pool - is answered with that subject in full and then with
-  the updates that change it (`usage` is the exception: it is a scan, and
-  is answered once per subscribe), and acts through the same command bus.
+  token/cost pool - is answered with that subject in full and its version,
+  and then with typed patches carrying only the fields that moved, each the
+  next version (`usage` is the exception: it is a scan, answered once per
+  subscribe, and `dictate`'s take is frames rather than a record), and acts
+  through the same command bus.
   The [socket page](./socket.md) is the protocol, and
   the full set of surfaces the client can draw is catalogued in
   [the client's pages](./ui/client/index.md), which are kept in step

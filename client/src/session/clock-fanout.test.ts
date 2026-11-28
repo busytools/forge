@@ -96,6 +96,7 @@ function seat(turns: unknown[] = load.turns) {
     updates: () => [],
     state: () => ({ kind: 'ready' }) as const,
     dropped: () => 0,
+    unexpected: () => [],
     set: () => undefined,
     push: () => undefined,
     compact: () => undefined,

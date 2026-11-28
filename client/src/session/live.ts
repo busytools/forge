@@ -36,13 +36,13 @@ import { outputs } from '../chat/outputs.svelte';
 import { git, vcsLine } from '../chat/git.svelte';
 import { cannotPaint } from '../paint';
 import { slotOf, subjectKey, type SessionUpdate, type Subject } from '../protocol';
-import type { Connection, ConnectionStatus } from '../socket';
+import { report, type Connection, type ConnectionStatus } from '../socket';
 import type { Store } from '../stores';
 import type { SessionSlot } from '../wire/types';
 import { applyTake, applyUpdate, isTakeUpdate, REPLACES, variantOf } from './apply';
 import { markReturn } from './returns';
 import { cover as coverRanges, filled as fillRanges, type Range } from './stream';
-import { sessionFrom, type SessionRecord } from './wire';
+import { patchRecord, sessionFrom, type SessionRecord } from './wire';
 
 /** What the session page has to draw from, and why it has nothing when it does not. */
 export interface SessionRead {
@@ -57,6 +57,17 @@ export interface SessionRead {
    * never ran. Only a record a review read answered may draw that line.
    */
   review: boolean;
+  /**
+   * Patches the socket could not place for this seat, held for the page to
+   * say so (rule 25): a frame this client cannot read is drawn as itself
+   * rather than dropped in silence.
+   */
+  heldPatches?: unknown[];
+  /**
+   * The stream skipped a version: the record stays drawn, and this says it
+   * may be a beat behind while one whole read lands.
+   */
+  resyncing?: boolean;
 }
 
 const NOTHING: SessionRead = { wire: null, refused: null, review: false };
@@ -210,6 +221,8 @@ interface Seat {
   open: () => void;
   /** Ask for the record again: see `reread`. */
   reread: (options?: { review?: boolean; returned?: boolean }) => void;
+  /** Write the view as it stands: see `flush`. */
+  paint: () => void;
 }
 
 /**
@@ -471,7 +484,7 @@ export function clearReview(connection: Connection, slot: SessionSlot): void {
   // Nothing this page read belongs to a review sitting any more: a later
   // mount draws the held record without a base line until its own read lands.
   seat.readReview = false;
-  seat.view.set({ wire: seat.wire, refused: seat.refused, review: false });
+  seat.paint();
   // **The transports learn it too.** Their held declaration is what a
   // reconnect re-asks with; left saying `review`, every reconnect would pay
   // a base fetch and a pinned scan for a seat nobody is reviewing.
@@ -546,6 +559,8 @@ function createSeat(
     if (seat.held?.state().kind === 'refused') {
       connection.release(subject);
       seat.held = null;
+      stopStore?.();
+      stopStore = null;
       publish(null, null);
       return;
     }
@@ -590,6 +605,7 @@ function createSeat(
     end,
     open,
     reread,
+    paint: flush,
   };
 
   /**
@@ -637,6 +653,19 @@ function createSeat(
   let shown = false;
 
   /**
+   * The store facts no frame carries, as last drawn: a skipped version and a
+   * patch this client could not place.
+   *
+   * **Only a change to one of these repaints.** The store also notifies for
+   * every frame it retains for the chat's folder, and a repaint per frame is
+   * what this page's paint throttle exists to avoid.
+   */
+  let drawnState = 'loading';
+  let drawnHeld = 0;
+  /** The listener on the held store's notifications: see `watchStore`. */
+  let stopStore: (() => void) | null = null;
+
+  /**
    * Write the record as it stands, with the refusal that goes with it, to the
    * store.
    *
@@ -654,7 +683,17 @@ function createSeat(
       watchdog = null;
     }
     armedAt = 0;
-    seat.view.set({ wire: seat.wire, refused: seat.refused, review: seat.readReview });
+    // **The store's own two facts ride every write.** `view.set` replaces the
+    // value whole, so a write that named only the record dropped a held patch
+    // and the catching-up state with it (rule 25).
+    const store = seat.held;
+    seat.view.set({
+      wire: seat.wire,
+      refused: seat.refused,
+      review: seat.readReview,
+      heldPatches: store?.unexpected() ?? [],
+      resyncing: store?.state().kind === 'resyncing',
+    });
   }
 
   /**
@@ -766,8 +805,10 @@ function createSeat(
     clearRetry();
     stopMessages?.();
     stopStatus?.();
+    stopStore?.();
     stopMessages = null;
     stopStatus = null;
+    stopStore = null;
     // **The seat's conversation goes with the seat**: its column's listeners
     // stop, so a same-slot successor's frames are not folded into a
     // conversation nothing draws. The rest of the connection's are kept.
@@ -993,6 +1034,33 @@ function createSeat(
   }
 
   /**
+   * Listen to the held store for the two facts no frame carries.
+   *
+   * **A version gap and a patch the socket could not place live only in the
+   * store**: `gap` and `unplaced` write nothing a page hears, and the whole
+   * read a gap asks for clears both - so a seat that repainted only on frames
+   * and answers held the patch and then dropped it without ever saying so
+   * (rule 25). The reader repaints only when one of the two moves; every
+   * other store change is a frame the chat's folder reads, and this record
+   * must not be re-derived from it.
+   */
+  function watchStore(): void {
+    stopStore?.();
+    stopStore = null;
+    const store = seat.held;
+    if (store === null) return;
+    stopStore = store.value.subscribe(() => {
+      if (seat.held !== store) return;
+      const state = store.state().kind;
+      const count = store.unexpected().length;
+      if (state === drawnState && count === drawnHeld) return;
+      drawnState = state;
+      drawnHeld = count;
+      flush();
+    });
+  }
+
+  /**
    * Open the seat's subscription - the first store, or the socket's half
    * again after a drop.
    *
@@ -1026,6 +1094,7 @@ function createSeat(
     seat.asking = connection.holds(subject);
     seat.askingReview = seat.review;
     seat.askedAt = seat.seen;
+    watchStore();
   }
 
   /**
@@ -1258,16 +1327,12 @@ function createSeat(
       return;
     }
 
-    // **A machine turn ending is the record's to state**, and only when one
-    // was held. The core's abort says only "not a handoff": a CLI compaction
-    // running under the handoff is still running, and only the record folds
-    // both sources. **Gated on what the page holds**, because a session death
-    // sends the same `null` to every seat - and a record encode per death is
-    // the 6.5 MB read a page with nothing to correct would pay for nothing.
-    const held = seat.wire?.composer.machine ?? null;
-    if (name === 'machine_turn' && payload['machine'] === null && held !== null) {
-      reread();
-    }
+    // **A machine turn's ending and a review's write are the record's to
+    // state, and the server patches both.** The core's abort says only "not a
+    // handoff": a CLI compaction running under the handoff is still running,
+    // and only the record folds both sources - so the frame is not the answer
+    // and the patch is. The `patch` arm below carries either of them in; no
+    // read is asked for here.
 
     // A fired cron's schedule reaches no field of this record: the row's
     // prose carries the prompt, and the pairing lives on the frame alone.
@@ -1275,17 +1340,6 @@ function createSeat(
     // the record has nothing to say about.
     if (name === 'cron_prompt_appended') {
       cronNames.remember(payload['uuid'], payload['description']);
-    }
-
-    // A review was touched - filed, answered, resolved. The reviews ride a
-    // read rather than a record field, so the notice is the one cue to take
-    // that read again; without it the strip's rows and its panel keep saying
-    // `open` at threads the reader just settled.
-    if (name === 'review_activity_notice') {
-      // **The record, not the base.** A write's notice is one of ten a minute
-      // when a round is being sealed; each review read would fetch the same
-      // repo again for a base the page read seconds ago.
-      reread({ review: false });
     }
 
     const seq = typeof frame.seq === 'number' ? frame.seq : null;
@@ -1414,6 +1468,24 @@ function createSeat(
           seat.owed.length = 0;
           reread();
         }
+        return;
+      }
+      if (message.kind === 'patch') {
+        // **A seat's patch is a whole-field delta of what the frames cannot
+        // carry** - the resolved machine state, the review rows. What moved
+        // replaces that field, narrowed exactly as a read narrows it; the
+        // frames keep every field the patch does not name.
+        if (subjectKey(message.subject) !== key) return;
+        if (seat.wire === null) return;
+        const patched = patchRecord(seat.wire, message.data);
+        if (patched === null) {
+          report('a seat patch carried no field this client draws', message.data);
+          return;
+        }
+        seat.wire = patched;
+        // A delta is painted like a frame, not flushed like an answer: this
+        // is not a new read of the seat.
+        soon();
         return;
       }
       if (message.kind === 'snapshot') {

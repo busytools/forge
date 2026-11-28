@@ -1,6 +1,7 @@
 //! One connection: the upgrade, what the server says first, and the loop
 //! that answers what a client asks for.
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -32,9 +33,9 @@ use super::envelope::{
 use super::frame::FrameTransport as _;
 use super::origin as origin_gate;
 use super::wire::{
-    FileContentWire, OpenTimings, ReviewedThreadWire, cap_message_record, cap_tool_records,
-    conversation_for, encode_subject, encode_subject_timed, floor_cursor, page_within,
-    placement_wire,
+    FileContentWire, OpenTimings, ReviewedThreadWire, StreamVersion, cap_message_record,
+    cap_tool_records, conversation_for, encode_subject, encode_subject_timed, floor_cursor,
+    page_within, patch_for_record, patch_projection, placement_wire,
 };
 use super::{PROTOCOL_VERSION, TransportState, WRITE_BOUND, WriteStalled, write_within};
 use crate::live::Live;
@@ -71,6 +72,80 @@ struct Watching {
     /// is remembered and the subscribe that completes it spends - never both,
     /// or the count would be two.
     showing_attached: bool,
+    /// Each watched subject's last whole record and the version it is at.
+    ///
+    /// **The base every patch is diffed against.** Seeded by the subscribe
+    /// answer and replaced by each patch's own record, so what crosses is
+    /// exactly the move from what this connection's store holds to what the
+    /// core holds now.
+    streams: HashMap<Subject, StreamRecord>,
+    /// Subjects whose record may have moved since `streams` was written.
+    /// A burst of updates marks the same subject many times and is re-read
+    /// once, at the deadline.
+    dirty: HashSet<Subject>,
+    /// Subjects with a read in flight off the loop.
+    ///
+    /// **A patch must never overtake the read of the same subject.** The
+    /// off-loop read encodes the record before its answer seeds the base, so
+    /// a patch fired while it runs is diffed against the OLD base and then
+    /// the stale answer reverts it - the reverted field stays reverted. These
+    /// subjects are marked dirty like any other and `emit_patches` defers
+    /// them: the mark survives the seed, and the diff against the seeded base
+    /// is what crosses. `finish_read` clears the entry whatever the outcome.
+    reading: HashSet<Subject>,
+    /// When the dirty set is re-read. Set by the first mark of a burst, so a
+    /// stream that never goes quiet still patches at a bounded rate.
+    patches_due: Option<Instant>,
+}
+
+/// One watched subject as this connection last served it.
+struct StreamRecord {
+    version: StreamVersion,
+    /// What a patch for this subject can carry, as the base holds it - the
+    /// projection, never the whole record (see `patch_projection`). A seat's
+    /// base is the handful of fields its patch can name rather than the
+    /// conversation and the file index no patch ever carries.
+    projection: serde_json::Value,
+}
+
+/// How long a dirty subject waits for the burst behind it.
+///
+/// One client paint's worth, near the frame batch's own window: a task write
+/// and the frames it stirs fold into one encode, and a busy fleet patches at
+/// this rate rather than once per frame.
+const PATCH_COALESCE: Duration = Duration::from_millis(150);
+
+impl Watching {
+    /// Note that this subject's record may have moved.
+    ///
+    /// **A subject with a base is marked, and a subject with a read in flight
+    /// is marked too** - `emit_patches` holds its patch until the read's
+    /// answer has seeded the base. A subject with neither is dropped: there
+    /// is no base to diff against and no answer coming that would make one.
+    fn mark_dirty(&mut self, subject: Subject, at: Instant) {
+        if !self.reading.contains(&subject) && !self.streams.contains_key(&subject) {
+            return;
+        }
+        self.dirty.insert(subject);
+        self.patches_due.get_or_insert(at + PATCH_COALESCE);
+    }
+
+    /// Seed the base a whole read hands the client.
+    ///
+    /// **The answer and its number are seeded together**, so a patch diffs
+    /// from exactly what the client was handed; a re-subscribe of the same
+    /// subject crosses as the next number. A mark taken while the read was in
+    /// flight stays in [`Self::dirty`] and crosses as a patch against this
+    /// seed - the read's own answer cannot carry it, because it was encoded
+    /// before the update landed.
+    fn seed(&mut self, subject: &Subject, data: &serde_json::Value) -> StreamVersion {
+        let version = StreamVersion(
+            self.streams.get(subject).map_or(1, |held| held.version.0.saturating_add(1)),
+        );
+        let projection = patch_projection(subject, data);
+        self.streams.insert(subject.clone(), StreamRecord { version, projection });
+        version
+    }
 }
 
 impl<'a> Holds<'a> {
@@ -1497,6 +1572,7 @@ where
     let mut ping_generation: Option<u64> = None;
     loop {
         let due = held.due();
+        let patches_due = watching.patches_due;
         tokio::select! {
             // **A queued answer is read before the beat decides.** A pong can
             // sit unread while this task is busy in a write, and by the time
@@ -1549,8 +1625,7 @@ where
                 match answer {
                     Answer::Reply(message) => send(socket, *message)?,
                     Answer::Read(read) => {
-                        finish_read(socket, state, watching, holds, &mut reads.one, &mut held, *read)
-                            .await?;
+                        finish_read(socket, state, watching, holds, &mut reads.one, &mut held, *read)?;
                         // **And the asks that queued behind it**, in the order
                         // they were asked: one may start the next read.
                         while reads.one.is_none() {
@@ -1587,6 +1662,23 @@ where
                             send_text(socket, text)?;
                         }
                         last_settings = current;
+                        // **A config reload moves records and announces no
+                        // update.** The roster, the dictation switch and the
+                        // plugin checks all come off the loaded document, and
+                        // the core emits no `SessionUpdate` for a reload - so
+                        // without this a project added in `forge.toml` would
+                        // reach no subscriber until its next cold read, which
+                        // no longer exists. The diff drops the ones the reload
+                        // did not move.
+                        let now = Instant::now();
+                        for subject in [
+                            Subject::Home,
+                            Subject::Board,
+                            Subject::DictateModels,
+                            Subject::Extensions,
+                        ] {
+                            watching.mark_dirty(subject, now);
+                        }
                     }
                 }
             }
@@ -1596,6 +1688,10 @@ where
             heard = next_update(updates) => {
                 let Some(frame) = heard else { break };
                 let update = frame.update;
+                // **Which watched records this frame can have moved**, marked
+                // before the frame is consumed by the write path below. A
+                // frame nothing watches marks nothing.
+                mark_patches(watching, &update, Instant::now());
                 // A take of this connection's that ends takes its seat back
                 // out: with the take gone, the seat has no stream a frame
                 // could belong to. Only the claim that take NAMES is retired
@@ -1990,6 +2086,16 @@ where
             {
                 batch::flush(socket, held.take()).await?;
             }
+            // **A subject's moved fields, composed after the burst settles.**
+            // The batch goes first, so a patch never overtakes the frame that
+            // caused it. Same disabled-while-none shape as the batch's own
+            // deadline: an idle connection waits on nothing and sends nothing.
+            () = tokio::time::sleep_until(patches_due.unwrap_or_else(Instant::now).into()),
+                if patches_due.is_some() =>
+            {
+                batch::flush(socket, held.take()).await?;
+                emit_patches(socket, state, watching).await?;
+            }
         }
     }
     if vanished {
@@ -2110,7 +2216,7 @@ struct OpenReport {
 /// **One body for the loop's reads and the ones served off it**: what a
 /// client hears and what the trace records must not depend on which side the
 /// record was built.
-async fn write_snapshot<S>(
+fn write_snapshot<S>(
     socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     watching: &mut Watching,
@@ -2119,7 +2225,7 @@ async fn write_snapshot<S>(
     report: Option<OpenReport>,
 ) -> anyhow::Result<()>
 where
-    S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
 {
     // Watched only once the subject is one this server can answer for: a
     // refused subscribe leaves nothing to hear, and the client's own re-ask is
@@ -2129,23 +2235,36 @@ where
     // frames from here, and the marks are spent when it says the seat is on
     // screen (`Showing`), not when it starts listening.
     let seat = report.as_ref().and_then(|report| report.seat.clone());
+    // **One entry per subscribe, duplicates included**: an unsubscribe gives
+    // back one hold, and two subscriptions of one seat on this connection are
+    // two holds. Forwarding asks `any`, so a duplicate adds no frame.
     watching.subjects.push(subject.clone());
+    // **A whole read is the base the patches are diffed against**, so the
+    // record and its number are seeded together: a patch carries the move
+    // from exactly what this answer handed the client. A re-subscribe of the
+    // same subject crosses as the next number, and the client adopts the
+    // answer's version with the record it replaces. The base is the
+    // projection a patch can carry. A mark taken while this read was in
+    // flight is still in `dirty`, and `emit_patches` sends it against this
+    // seed once `finish_read` has cleared the subject from `reading`.
+    let version = watching.seed(&subject, &data);
     // **The label is taken before the subject moves into the frame**: the log
     // line names the subject, and the frame consumes it.
     let subject_name = subject_label(&subject);
-    let write = send_frame_timed(socket, ServerMessage::Snapshot { subject, data }, &SystemClock)?;
-    if let Some(report) = &report {
-        log_open(report, &write, &subject_name);
+    let write =
+        send_frame_timed(socket, ServerMessage::Snapshot { subject, version, data }, &SystemClock)?;
+    if let Some(report) = report {
+        log_open(&report, &write, &subject_name);
     }
     // **The subscribe that completes a showing pair spends its marks here**,
     // after the seat's own record is on its way: the snapshot was encoded
     // before the death trace is spent, so its row still carries the death, and
-    // the home re-send that follows carries it cleared.
+    // the home patch that follows carries it cleared.
     if let Some(slot) = &seat
         && watching.showing.as_ref() == Some(slot)
         && !watching.showing_attached
     {
-        spend_showing(socket, state, watching, slot).await?;
+        spend_showing(state, watching, slot);
     }
     Ok(())
 }
@@ -2259,7 +2378,7 @@ fn log_open(report: &OpenReport, write: &FrameWrite, subject: &str) {
 
 /// Answer a subscribe read that ran off the loop: its record, its refusal, or
 /// nothing when the client let the seat go while it ran.
-async fn finish_read<S>(
+fn finish_read<S>(
     socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     watching: &mut Watching,
@@ -2272,6 +2391,10 @@ where
     S: futures_util::Sink<Message, Error = axum::Error> + Unpin + Send,
 {
     let Some(read) = reads.take() else { return Ok(()) };
+    // **The read is over whatever the outcome**, so the deferral ends with it:
+    // an answer seeds the base (and any mark crosses next), and a refusal has
+    // nothing left to wait for.
+    watching.reading.remove(&done.subject);
     match done.outcome {
         Ok((data, timings)) => {
             write_snapshot(
@@ -2290,8 +2413,7 @@ where
                     hold_ms: done.hold_ms,
                     timings,
                 }),
-            )
-            .await?;
+            )?;
             // **The frames held while the record was built go out behind it.**
             for frame in read.frames {
                 held.push(Instant::now(), frame);
@@ -2763,6 +2885,11 @@ where
                     Subject::Session(slot) => Some(slot.clone()),
                     _ => None,
                 };
+                // **The subject is in flight from here**, so any update that
+                // lands before its answer is deferred behind the answer
+                // (`mark_patches` walks this set) rather than patched against
+                // the base the answer is about to replace.
+                watching.reading.insert(what.clone());
                 let state = Arc::clone(state);
                 let encode_subject = what.clone();
                 let task = spawn_read(
@@ -2806,7 +2933,6 @@ where
                             timings,
                         }),
                     )
-                    .await
                 }
                 // A seat nobody has started is an ANSWER rather than a
                 // silence: the client learns why, and never draws an empty
@@ -3720,6 +3846,19 @@ where
             // closes, and that is what detaches it.
             if let Some(at) = watching.subjects.iter().position(|held| held == &what) {
                 watching.subjects.remove(at);
+                // **The patch base goes with the last hold.** A subject this
+                // connection still watches somewhere keeps its record and any
+                // pending mark; one it no longer watches a single copy of has
+                // no store to patch, so its base goes - or a seat resumed
+                // mid-coalesce could be re-encoded and sent a patch for a
+                // subscription this connection released.
+                if !watching.subjects.iter().any(|held| held == &what) {
+                    watching.streams.remove(&what);
+                    watching.reading.remove(&what);
+                    if watching.dirty.remove(&what) && watching.dirty.is_empty() {
+                        watching.patches_due = None;
+                    }
+                }
                 if let Subject::Session(slot) = &what {
                     // Only a hold THIS connection took is given back here,
                     // for the same reason the clean-up gives back only those:
@@ -3737,6 +3876,7 @@ where
             // answered so the client is not left waiting on it.
             if reads.one.as_ref().is_some_and(|read| read.subject == what) {
                 let _ = reads.one.take();
+                watching.reading.remove(&what);
                 if let Subject::Session(slot) = &what {
                     holds.give_back(slot);
                 }
@@ -3763,7 +3903,7 @@ where
             reads.waiting = kept;
             Ok(())
         }
-        ClientMessage::Showing { seat } => set_showing(socket, state, watching, seat).await,
+        ClientMessage::Showing { seat } => set_showing(socket, state, watching, seat),
         // **The peer's own liveness probe, answered here rather than by the
         // core.** Any inbound frame is proof the peer is reading, so this
         // costs the workspace nothing; the reply is what lets a client with
@@ -3793,7 +3933,7 @@ fn released_subscribe(what: &Subject) -> ServerMessage {
 /// subscribed, and spending on that would clear marks nobody looked at. The
 /// answer is whether anything was spent, which is what the home it holds is
 /// owed a re-encode for.
-async fn set_showing<S>(
+fn set_showing<S>(
     socket: &mut ClientSocket<S>,
     state: &Arc<TransportState>,
     watching: &mut Watching,
@@ -3828,44 +3968,29 @@ where
     watching.showing = Some(next.clone());
     socket.note_showing(Some(&next));
     if watched {
-        spend_showing(socket, state, watching, &next).await?;
+        spend_showing(state, watching, &next);
     }
     Ok(())
 }
 
 /// Spend what showing `slot` earns: its diamond, its failure mark and its
-/// death trace, and the home refresh a spent mark owes.
+/// death trace, and the home patch a spent mark owes.
 ///
 /// **Called once per showing, from whichever half completes the pair.**
-async fn spend_showing<S>(
-    socket: &mut ClientSocket<S>,
-    state: &Arc<TransportState>,
-    watching: &mut Watching,
-    slot: &SessionSlot,
-) -> anyhow::Result<()>
-where
-    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
-{
+fn spend_showing(state: &Arc<TransportState>, watching: &mut Watching, slot: &SessionSlot) {
     let failed = state.surface.failed_turn(slot);
     // The seat's own snapshot was encoded before this, so the failure a death
     // left on its row is drawn by the read that spends it.
     let death = state.surface.seat_shown(slot);
     let spent = Live::lock(&state.live).attach(slot, failed) || death;
     watching.showing_attached = true;
-    if spent && watching.subjects.iter().any(|held| matches!(held, Subject::Home)) {
-        match encode_subject(state, &Subject::Home).await {
-            Ok(home) => {
-                send(socket, ServerMessage::Snapshot { subject: Subject::Home, data: home })?;
-            }
-            Err(error) => tracing::debug!(
-                event_name = "home_refresh_failed",
-                slot = %slot.display(),
-                %error,
-                "the home refresh after a seat was shown could not be encoded",
-            ),
-        }
+    if spent {
+        // **The cleared marks are a patch, not a re-sent home.** What moved is
+        // the row's diamond and its failure mark, and the record diff carries
+        // exactly those; a whole snapshot for two fields was the beat this
+        // cut deletes.
+        watching.mark_dirty(Subject::Home, Instant::now());
     }
-    Ok(())
 }
 
 /// The next number for a connection, unique for the process's life.
@@ -4064,6 +4189,110 @@ fn forward_queued(
             update: Arc::new(for_a_client(Arc::unwrap_or_clone(frame.update), cap)),
         })
         .collect()
+}
+
+/// Which of this connection's watched records the frame can have moved.
+///
+/// **A seat is dirtied only by the two notices whose fields no frame
+/// carries**: its own frames already reach the client and are applied there,
+/// and re-encoding the seat record per token append would be the read this
+/// cut deletes. Dictation has no record to patch - its take frames are its
+/// deltas - so it is never dirty.
+fn mark_patches(watching: &mut Watching, update: &SessionUpdate, at: Instant) {
+    // **A read in flight counts as watched here.** The first subscribe of a
+    // subject pushes it onto `subjects` only when its answer is written, so a
+    // subject being read for the first time is invisible to a mark that only
+    // walked that list - which is the window an update landing during the
+    // read has to be caught in.
+    let mut watching_now: Vec<Subject> = watching.subjects.clone();
+    for held in &watching.reading {
+        if !watching_now.contains(held) {
+            watching_now.push(held.clone());
+        }
+    }
+    for subject in watching_now {
+        let dirty = match &subject {
+            Subject::Dictate => false,
+            Subject::Session(_) => {
+                matches!(
+                    update,
+                    SessionUpdate::MachineTurn { .. } | SessionUpdate::ReviewActivityNotice { .. }
+                ) && subject.covers(update)
+            }
+            subject => subject.covers(update),
+        };
+        if dirty {
+            watching.mark_dirty(subject, at);
+        }
+    }
+}
+
+/// Re-read each dirty subject once, and send the fields that moved.
+///
+/// **Nothing is sent for a subject that did not move**, and its number does
+/// not advance: an unchanged subject is silent, which is what the deleted
+/// beats used to fill. A read that fails puts the base back and sends
+/// nothing; the next frame tries again.
+async fn emit_patches<S>(
+    socket: &mut ClientSocket<S>,
+    state: &Arc<TransportState>,
+    watching: &mut Watching,
+) -> anyhow::Result<()>
+where
+    S: futures_util::Sink<Message, Error = axum::Error> + Unpin,
+{
+    watching.patches_due = None;
+    let dirty: Vec<Subject> = watching.dirty.drain().collect();
+    let mut deferred = false;
+    for subject in dirty {
+        // **A subject with a read in flight waits for its base.** Sending now
+        // would diff against the OLD base and the read's stale answer would
+        // revert it; the mark is kept and crosses once the seed has landed.
+        if watching.reading.contains(&subject) {
+            watching.dirty.insert(subject);
+            deferred = true;
+            continue;
+        }
+        let Some(held) = watching.streams.remove(&subject) else { continue };
+        let new = match encode_subject(state, &subject).await {
+            Ok(new) => new,
+            Err(error) => {
+                tracing::debug!(
+                    event_name = "subject_patch_read_failed",
+                    subject = %subject_label(&subject),
+                    %error,
+                    "a dirty subject could not be re-read, so no patch was sent",
+                );
+                watching.streams.insert(subject, held);
+                continue;
+            }
+        };
+        // Both sides of the diff are projections: the base was stored as one,
+        // and the fresh record is one too. A field outside the projection can
+        // never be patched, so diffing it would only produce a frame the
+        // client could not use.
+        let projected = patch_projection(&subject, &new);
+        let Some(patch) = patch_for_record(&subject, &held.projection, &projected) else {
+            watching.streams.insert(subject, held);
+            continue;
+        };
+        let version = StreamVersion(held.version.0.saturating_add(1));
+        // **A seat's patch carries no number.** Its stream is numbered by its
+        // own frames, and this is a whole-field replacement applied as it
+        // arrives rather than a place in that sequence.
+        let seat = matches!(subject, Subject::Session(_));
+        watching.streams.insert(subject.clone(), StreamRecord { version, projection: projected });
+        send(
+            socket,
+            ServerMessage::Patch { subject, version: (!seat).then_some(version), data: patch },
+        )?;
+    }
+    if deferred {
+        // The read has not landed yet, so the deferred marks try again at the
+        // next coalesce - and their diff then runs against the seeded base.
+        watching.patches_due.get_or_insert(Instant::now() + PATCH_COALESCE);
+    }
+    Ok(())
 }
 
 /// Where one binary message went, decided without touching a take.
@@ -7811,6 +8040,7 @@ mod tests {
     async fn a_compressed_write_reports_the_bytes_it_wrote() {
         let large = ServerMessage::Snapshot {
             subject: Subject::Home,
+            version: StreamVersion(1),
             data: json!({ "padding": "x".repeat(100_000) }),
         };
         let text = serde_json::to_string(&large).expect("the frame encodes").len();
@@ -7843,6 +8073,7 @@ mod tests {
         let at_len = |len: usize| {
             let base = serde_json::to_string(&ServerMessage::Snapshot {
                 subject: Subject::Home,
+                version: StreamVersion(1),
                 data: json!({ "pad": "" }),
             })
             .expect("the frame encodes")
@@ -7850,6 +8081,7 @@ mod tests {
             let pad = "x".repeat(len - base);
             let text = serde_json::to_string(&ServerMessage::Snapshot {
                 subject: Subject::Home,
+                version: StreamVersion(1),
                 data: json!({ "pad": pad }),
             })
             .expect("the frame encodes");
@@ -9627,12 +9859,15 @@ mod tests {
             }
         });
         let state = Arc::clone(state);
-        let settings = crate::transport::settings_channel();
+        // **The transport's own settings channel, as production wires it**: a
+        // reload publishes a document and the connection hears it here. A
+        // private channel would make every settings-driven path untestable.
+        let sent_settings = state.settings.borrow().clone();
         let watched_progress = Arc::clone(&progress);
         // The production path rather than `drive` alone: the teardown these
         // tests assert on runs in `finish`, which a bare `drive` never calls.
         let driven = tokio::spawn(async move {
-            let receiver = settings.subscribe();
+            let receiver = state.settings.subscribe();
             let mut peer = peer;
             supervise(
                 &mut peer,
@@ -9640,7 +9875,7 @@ mod tests {
                 attached_from(),
                 mint_connection_id(),
                 receiver,
-                None,
+                sent_settings,
                 &watched_progress,
             )
             .await
@@ -9731,7 +9966,7 @@ mod tests {
             .iter()
             .rev()
             .find_map(|frame| match frame {
-                ServerMessage::Snapshot { subject: Subject::Home, data } => Some(data.clone()),
+                ServerMessage::Snapshot { subject: Subject::Home, data, .. } => Some(data.clone()),
                 _ => None,
             })
             .expect("the barrier's home snapshot")
@@ -9840,7 +10075,8 @@ mod tests {
         until(
             || {
                 written.lock().expect("the frame log").iter().any(|frame| {
-                    let ServerMessage::Snapshot { subject: Subject::Session(read), data } = frame
+                    let ServerMessage::Snapshot { subject: Subject::Session(read), data, .. } =
+                        frame
                     else {
                         return false;
                     };
@@ -10055,7 +10291,20 @@ mod tests {
             "the subscribe completing the pair to attach it",
         )
         .await;
-        until(|| home_snapshots(&written) == 3, "the home refresh a spent mark owes").await;
+        // **The spent mark crosses as a patch, not a re-sent home.** The
+        // barrier's own answer is the base; what follows it is the diff.
+        until(
+            || !patches_of(&written, &Subject::Home).is_empty(),
+            "the home patch a spent mark owes",
+        )
+        .await;
+        let patches = patches_of(&written, &Subject::Home);
+        assert_eq!(
+            patches[0].1.get("unseen"),
+            Some(&serde_json::json!([])),
+            "the patch carries the diamond's clearing",
+        );
+        assert_eq!(home_snapshots(&written), 2, "and no third whole home record followed it");
 
         drop(to_server);
         let _ = driven.await;
@@ -10603,20 +10852,11 @@ mod tests {
             crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
         let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
         let slot = lead();
+        // **A mark is drawn on a row**, so the seat needs an agent: the home's
+        // `unseen` is filtered by the roster, and a diamond with no row to sit
+        // on is not in the record at all.
+        fleet.install_agent("TestOrg", "proj", "lead");
         let Driven { to_server, written, driven, .. } = connection(&state);
-
-        to_server
-            .send(Message::Text(
-                serde_json::to_string(&ClientMessage::Subscribe {
-                    what: Subject::Home,
-                    answering: false,
-                    review: false,
-                })
-                .expect("the subscribe encodes")
-                .into(),
-            ))
-            .expect("the message goes");
-        until(|| home_snapshots(&written) == 1, "the home's first read").await;
 
         // A turn finished on a seat nothing is attached to: the diamond.
         let result = serde_json::from_value(serde_json::json!({
@@ -10635,6 +10875,9 @@ mod tests {
             source: None,
         });
 
+        // The read AFTER the diamond exists, so the mark is in its base.
+        subscribed_home(&to_server, &written).await;
+
         subscribed(&to_server, &slot);
         until(
             || {
@@ -10650,7 +10893,18 @@ mod tests {
         assert_eq!(home_snapshots(&written), 1, "a subscribe refreshed the home");
 
         showing(&to_server, Some(slot.clone()));
-        until(|| home_snapshots(&written) == 2, "the home refresh a spent mark owes").await;
+        until(
+            || !patches_of(&written, &Subject::Home).is_empty(),
+            "the home patch a spent mark owes",
+        )
+        .await;
+        let patches = patches_of(&written, &Subject::Home);
+        assert_eq!(
+            patches[0].1.get("unseen"),
+            Some(&serde_json::json!([])),
+            "the spent diamond is the patch's own field",
+        );
+        assert_eq!(home_snapshots(&written), 1, "and no whole home record followed it");
 
         drop(to_server);
         let _ = driven.await;
@@ -10836,5 +11090,382 @@ mod tests {
             }
             _ => panic!("a lagged download is answered as a download with a reason"),
         }
+    }
+
+    fn patches_of(
+        written: &Arc<Mutex<Vec<ServerMessage>>>,
+        subject: &Subject,
+    ) -> Vec<(Option<u64>, serde_json::Value)> {
+        written
+            .lock()
+            .expect("the frame log")
+            .iter()
+            .filter_map(|frame| match frame {
+                ServerMessage::Patch { subject: holding, version, data } if holding == subject => {
+                    Some((version.map(|version| version.0), data.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// **A real change crosses as a patch with the next number, and no whole
+    /// record follows it.** The task write moves the home's fleet row and the
+    /// board's row: one patch each, carrying only what moved, and the snapshot
+    /// count stays at the subscribe answer.
+    #[tokio::test]
+    async fn a_covering_change_crosses_as_a_patch_not_a_read() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+        let Driven { to_server, written, driven, .. } = connection(&state);
+
+        for subject in [Subject::Home, Subject::Board] {
+            to_server
+                .send(Message::Text(
+                    serde_json::to_string(&ClientMessage::Subscribe {
+                        what: subject,
+                        answering: false,
+                        review: false,
+                    })
+                    .expect("the subscribe encodes")
+                    .into(),
+                ))
+                .expect("the message goes");
+        }
+        until(
+            || {
+                let frames = written.lock().expect("the frame log");
+                [Subject::Home, Subject::Board].iter().all(|subject| {
+                    frames.iter().any(|frame| {
+                        matches!(frame, ServerMessage::Snapshot { subject: held, .. } if held == subject)
+                    })
+                })
+            },
+            "both subscribe answers",
+        )
+        .await;
+        for (subject, version) in [Subject::Home, Subject::Board].iter().zip([1, 1]) {
+            let frames = written.lock().expect("the frame log");
+            let answer = frames.iter().find_map(|frame| match frame {
+                ServerMessage::Snapshot { subject: held, version, .. } if held == subject => {
+                    Some(version.0)
+                }
+                _ => None,
+            });
+            assert_eq!(answer, Some(version), "the first read of {subject:?} is version {version}");
+        }
+
+        fleet.add_task("TestOrg", "proj", "a live row", "w1", None).expect("the task is seeded");
+        fleet.emit(SessionUpdate::TasksChanged { key: lead(), tasks: Vec::new() });
+
+        until(
+            || {
+                !patches_of(&written, &Subject::Home).is_empty()
+                    && !patches_of(&written, &Subject::Board).is_empty()
+            },
+            "a patch for both subjects",
+        )
+        .await;
+
+        let home = patches_of(&written, &Subject::Home);
+        assert_eq!(home.len(), 1, "one change, one home patch");
+        assert_eq!(home[0].0, Some(2), "the patch advances the version");
+        let fleet_rows = home[0].1["fleet"].as_array().expect("the fleet's entry");
+        assert_eq!(fleet_rows.len(), 1, "only the moved project crosses");
+        assert_eq!(fleet_rows[0]["op"], "set");
+        assert_eq!(fleet_rows[0]["id"], "proj");
+        assert_eq!(fleet_rows[0]["record"]["rows"], 1, "the project's count moved");
+
+        let board = patches_of(&written, &Subject::Board);
+        assert_eq!(board.len(), 1, "one change, one board patch");
+        assert_eq!(board[0].0, Some(2));
+        let projects = board[0].1["projects"].as_array().expect("the project entry");
+        assert_eq!(projects[0]["op"], "set");
+        assert_eq!(projects[0]["identity"]["name"], "proj");
+        let rows = projects[0]["board"]["rows"].as_array().expect("the row entry");
+        assert_eq!(rows[0]["op"], "set", "the new row is a set");
+        assert_eq!(rows[0]["id"], "a live row");
+        assert_eq!(rows[0]["record"]["task"]["subject"], "a live row");
+
+        assert_eq!(home_snapshots(&written), 1, "no whole home record followed the patch");
+        let board_snapshots = written
+            .lock()
+            .expect("the frame log")
+            .iter()
+            .filter(|frame| {
+                matches!(frame, ServerMessage::Snapshot { subject: Subject::Board, .. })
+            })
+            .count();
+        assert_eq!(board_snapshots, 1, "no whole board record followed the patch");
+
+        drop(to_server);
+        let _ = driven.await;
+    }
+
+    /// **A config reload moves the home and announces no update.** The roster
+    /// comes off the loaded document, so the settings push is what has to mark
+    /// the records a reload can move; the diff drops the ones it did not.
+    #[tokio::test]
+    async fn a_config_reload_patches_the_home_it_moved() {
+        let dir = tempfile::tempdir().expect("a config dir of its own");
+        let fleet = crate::testing::Fleet::in_dir(dir.path(), &[("TestOrg", &["proj"])])
+            .expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+        let Driven { to_server, written, driven, .. } = connection(&state);
+        subscribed_home(&to_server, &written).await;
+
+        // A second project in the file, then the reload the watcher would run.
+        let path = dir.path().join("forge").join("forge.toml");
+        let text = std::fs::read_to_string(&path).expect("the config");
+        let addition = format!(
+            "[[orgs.projects]]\nname = \"proj-two\"\npath = \"{}\"\n\n",
+            dir.path().join("proj-two").display(),
+        );
+        std::fs::write(&path, text.replace("[[accounts]]", &format!("{addition}[[accounts]]")))
+            .expect("the config is rewritten");
+        let reload = fleet.workspace().reload_config().expect("the reload");
+        // **The reload's own frame is the trigger this test is about.** The
+        // harness sends no greeting, so the reload's is the first `Settings`
+        // frame the connection writes.
+        until(
+            || {
+                written
+                    .lock()
+                    .expect("the frame log")
+                    .iter()
+                    .any(|frame| matches!(frame, ServerMessage::Settings { .. }))
+            },
+            &format!("the reload's settings frame (changed: {:?})", reload.changed),
+        )
+        .await;
+
+        until(
+            || {
+                patches_of(&written, &Subject::Home)
+                    .iter()
+                    .any(|(_, patch)| patch["projects"].is_array())
+            },
+            "the home patch a reload owes",
+        )
+        .await;
+        let patches = patches_of(&written, &Subject::Home);
+        let projects = patches[0].1["projects"].as_array().expect("the project entries");
+        assert!(
+            projects.iter().any(|entry| entry["op"] == "set"
+                && entry["id"]["name"] == "proj-two"
+                && entry["record"]["project"]["name"] == "proj-two"),
+            "the added project did not cross: {projects:?}",
+        );
+        let fleet_rows = patches[0].1["fleet"].as_array().expect("the fleet entries");
+        assert!(
+            fleet_rows.iter().any(|entry| entry["op"] == "set" && entry["id"] == "proj-two"),
+            "the added project's fleet row did not cross: {fleet_rows:?}",
+        );
+
+        drop(to_server);
+        let _ = driven.await;
+    }
+
+    /// **A subject released before its patch is due sends nothing.** The base
+    /// and the pending mark go with the last subscription, or a connection
+    /// that let a seat go could still be handed a patch for it.
+    #[tokio::test]
+    async fn an_unsubscribed_subject_is_not_patched() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+        let Driven { to_server, written, driven, .. } = connection(&state);
+        subscribed_home(&to_server, &written).await;
+
+        fleet.add_task("TestOrg", "proj", "a row", "w1", None).expect("the task is seeded");
+        fleet.emit(SessionUpdate::TasksChanged { key: lead(), tasks: Vec::new() });
+        // The mark is set by the frame above; the release lands before the
+        // coalescing window closes.
+        to_server
+            .send(Message::Text(
+                serde_json::to_string(&ClientMessage::Unsubscribe { what: Subject::Home })
+                    .expect("the unsubscribe encodes")
+                    .into(),
+            ))
+            .expect("the message goes");
+        // Past the coalescing window, and nothing may have been written.
+        tokio::time::sleep(PATCH_COALESCE + Duration::from_millis(150)).await;
+
+        assert!(
+            patches_of(&written, &Subject::Home).is_empty(),
+            "a released subject was patched: {:?}",
+            patches_of(&written, &Subject::Home),
+        );
+        assert_eq!(home_snapshots(&written), 1, "the release sent a record too");
+
+        drop(to_server);
+        let _ = driven.await;
+    }
+
+    /// **A usage probe settlement moves the account figures, and that
+    /// crosses as a patch** - not a re-read and not a queued whole record.
+    #[tokio::test]
+    async fn a_usage_probe_settlement_patches_the_account_figures() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        fleet.workspace().seed_test_ready_account("Acct");
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+        let Driven { to_server, written, driven, .. } = connection(&state);
+        subscribed_home(&to_server, &written).await;
+
+        fleet.workspace().seed_test_usage(
+            "Acct",
+            forge_primitives::usage::UsageSnapshot {
+                source: forge_primitives::usage::UsageSourceKind::Oauth,
+                fetched_at: std::time::SystemTime::now(),
+                five_hour: None,
+                seven_day: None,
+                seven_day_opus: None,
+                seven_day_sonnet: None,
+                extra_usage: None,
+                spend: None,
+                balance: Some(12.5),
+            },
+        );
+        fleet.emit(SessionUpdate::AccountsChanged {
+            accounts: fleet.workspace().account_pool_view(),
+        });
+
+        until(
+            || {
+                patches_of(&written, &Subject::Home)
+                    .iter()
+                    .any(|(_, patch)| patch["accounts"].is_object())
+            },
+            "the accounts patch",
+        )
+        .await;
+        let patches = patches_of(&written, &Subject::Home);
+        let usage = patches[0].1["accounts"]["usage"].as_array().expect("the usage rows");
+        assert_eq!(usage[0]["display_name"], "Acct");
+        assert_eq!(usage[0]["snapshot"]["balance"], 12.5, "the settled figure did not cross");
+        assert_eq!(home_snapshots(&written), 1, "a whole home record followed the probe");
+
+        drop(to_server);
+        let _ = driven.await;
+    }
+
+    /// **An unchanged subject sends nothing, ever.** No beat, no re-send, no
+    /// number advancing: half an hour of a watched, untouched subject is its
+    /// first read and nothing else.
+    #[tokio::test(start_paused = true)]
+    async fn a_watched_subject_that_does_not_move_sends_nothing() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+        let Driven { to_server, written, driven, .. } = connection(&state);
+        subscribed_home(&to_server, &written).await;
+
+        // Half an hour in thirty-second hops, each with a ping so the
+        // keepalive sees a live peer rather than reaping the connection.
+        for _ in 0..60 {
+            to_server
+                .send(Message::Text(
+                    serde_json::to_string(&ClientMessage::Ping).expect("the ping encodes").into(),
+                ))
+                .expect("the ping goes");
+            advance_and_settle(Duration::from_secs(30)).await;
+        }
+
+        assert_eq!(home_snapshots(&written), 1, "the home re-sent itself");
+        assert!(patches_of(&written, &Subject::Home).is_empty(), "an unchanged home sent a patch");
+        drop(to_server);
+        let _ = driven.await;
+    }
+
+    /// **Only the two notices whose fields no frame carries dirty a seat.**
+    /// Its own frames are its deltas, and re-encoding the record per frame
+    /// would be the read this cut deletes.
+    #[test]
+    fn only_the_unframed_notices_dirty_a_seat() {
+        let slot = lead();
+        let mut watching = Watching::default();
+        watching.subjects.push(Subject::Session(slot.clone()));
+        watching.streams.insert(
+            Subject::Session(slot.clone()),
+            StreamRecord { version: StreamVersion(1), projection: serde_json::Value::Null },
+        );
+
+        for quiet in [
+            SessionUpdate::TurnCancelled { key: slot.clone() },
+            SessionUpdate::WorkChanged {
+                key: slot.clone(),
+                work: crate::work::WorkState::default(),
+                git: forge_primitives::git_diff::GitWorkView::default(),
+                pr: None,
+                closes: Vec::new(),
+            },
+        ] {
+            mark_patches(&mut watching, &quiet, Instant::now());
+            assert!(
+                !watching.dirty.contains(&Subject::Session(slot.clone())),
+                "{quiet:?} dirtied the seat, but its frame already carries the change",
+            );
+        }
+        assert!(watching.patches_due.is_none(), "and nothing was scheduled");
+
+        for noticed in [
+            SessionUpdate::MachineTurn { key: slot.clone(), machine: None },
+            SessionUpdate::ReviewActivityNotice {
+                key: slot.clone(),
+                branch: "b".to_owned(),
+                waiting: 0,
+                message: "a review".to_owned(),
+            },
+        ] {
+            mark_patches(&mut watching, &noticed, Instant::now());
+            assert!(
+                watching.dirty.contains(&Subject::Session(slot.clone())),
+                "{noticed:?} left the seat's record stale",
+            );
+        }
+        assert!(watching.patches_due.is_some(), "the re-read is scheduled");
+    }
+
+    /// **A mark taken while a read is in flight is kept, and a mark with
+    /// neither a base nor a read is dropped.** The off-loop answer replaces
+    /// the base, so a patch fired now would be reverted by it; the mark waits
+    /// in `dirty` while `reading` holds `emit_patches` back, and it crosses
+    /// once the seed has landed.
+    #[test]
+    fn a_mark_during_a_read_is_kept_for_the_seed() {
+        let slot = lead();
+        let subject = Subject::Session(slot.clone());
+        let at = Instant::now();
+
+        // Nothing has read the subject and no read is running: there is no
+        // base to diff against and no answer coming, so the mark is dropped
+        // rather than re-read forever.
+        let mut idle = Watching::default();
+        idle.mark_dirty(subject.clone(), at);
+        assert!(idle.dirty.is_empty(), "a mark with no base and no read was kept");
+
+        // A read in flight: the mark is kept, and schedules the patch that
+        // will be deferred until the answer seeds the base.
+        let mut held = Watching::default();
+        held.reading.insert(subject.clone());
+        held.mark_dirty(subject.clone(), at);
+        assert!(held.dirty.contains(&subject), "a mark taken during a read was dropped");
+        assert!(held.patches_due.is_some(), "no patch was scheduled");
+
+        // The seed lands; the deferred mark is still there to be diffed
+        // against it, and the base carries its own number.
+        held.reading.remove(&subject);
+        let version = held.seed(&subject, &serde_json::json!({ "composer": null }));
+        assert_eq!(version, StreamVersion(1), "the first seed starts at one");
+        assert!(held.dirty.contains(&subject), "the seed dropped the deferred mark");
+
+        // **A seed with no mark schedules nothing**: an ordinary subscribe
+        // pays no second encode for a window it did not have.
+        let mut quiet = Watching::default();
+        quiet.seed(&Subject::Session(slot), &serde_json::json!({}));
+        assert!(quiet.dirty.is_empty(), "an unmarked subscribe was re-read");
+        assert!(quiet.patches_due.is_none(), "an unmarked subscribe scheduled a patch");
     }
 }

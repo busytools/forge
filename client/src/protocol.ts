@@ -25,7 +25,7 @@ import type { ClientSettings, SessionSlot } from './wire/types';
  * rail footer carries both halves' build and socket numbers, and a mismatch
  * raises the notice beside it. Nothing refuses a connection over it.
  */
-export const PROTOCOL_VERSION = 36;
+export const PROTOCOL_VERSION = 37;
 
 /**
  * The release this client was built from, baked in by the build.
@@ -515,7 +515,25 @@ export type ServerMessage =
    * holds the same document, and it is narrowed in `wire/settings.ts`.
    */
   | { kind: 'settings'; document: unknown }
-  | { kind: 'snapshot'; subject: Subject; data: unknown }
+  /**
+   * A subject's whole read: its answer to a subscribe, and the only whole
+   * record a subscription is sent.
+   *
+   * `version` is the number the record is at. The store keeps it, applies
+   * only a patch numbered `version + 1`, and treats anything else as a gap -
+   * one more whole read, never a loop.
+   */
+  | { kind: 'snapshot'; subject: Subject; version?: number; data: unknown }
+  /**
+   * One subject's change: only the fields that moved.
+   *
+   * Absent means unchanged; a present `null` clears an optional value; a list
+   * field crosses as `set`/`removed` entries addressed by id. `version` is
+   * absent on a seat's patch - a seat's stream is numbered by its own frames
+   * (`update.seq`), and its patch is a whole-field replacement applied as it
+   * arrives.
+   */
+  | { kind: 'patch'; subject: Subject; version?: number; data: unknown }
   /**
    * One frame of a seat's stream.
    *

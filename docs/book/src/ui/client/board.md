@@ -14,21 +14,21 @@ return the reader where they came from, and a deep link with nothing to go
 back to lands on the home.
 
 The page draws from the `board` subject: a project's rows, schedules and
-connector sets ride in that subject's entry, and it hears the updates that
-move them. The seat chips and the fleet's `waiting on you` count come from
-the home snapshot beside it; the row and running counts are the board's own.
-So a seat that claims a row, a row that is cut, or a move made in another view
-arrives as an update, and the page re-reads without the reader doing
-anything. While it is mounted and the page is being watched, it also re-reads
-on a slow five-minute beat: a row's time-derived marks are computed by the
-server at read time, and no update announces that a window crossed. A page
-nobody is watching releases the beat entirely, and the return re-read the
-page already makes when it comes back from a hidden spell of at least two
-seconds asks the board once through the same guards. Only the `wrote ... ago`
-line keeps ticking off the page's own clock; the card's worked time and the
-chip and waiting-card ages advance only on a read, so they are refreshed at
-most five minutes after the page is watched again, and can be up to the time
-it was away plus five minutes old.
+connector sets ride in that subject's record, and the server patches the
+record when they move. The seat chips and the fleet's `waiting on you` count
+come from the home snapshot beside it; the row and running counts are the
+board's own. So a seat that claims a row, a row that is cut, or a move made
+in another view arrives as a patch, and the page redraws without the reader
+doing anything.
+
+**There is no beat.** A row's ages and time-derived marks are computed at
+draw time from the row's own timestamps and the instant the record landed
+(`client/src/board/clock.ts`), so a watched board ticks every five seconds
+without a read: the `wrote ... ago` line, the card's worked time, and the
+chip and waiting-card ages all move together. A page nobody is watching asks
+nothing; the record and its frames were kept while it was away, and a return
+draws them and then asks once for what the hide made stale, through the same
+page guards every read uses.
 
 ## What it draws
 
@@ -216,6 +216,14 @@ stamps the change as the user's.
   a row filed there would name a project `forge.toml` has no entry for.
 - **A set of seats**: the seat chips draw only when the project holds one; a
   project with nothing running draws none.
+- **Catching up**: a version gap keeps the record on screen and draws a
+  `catching up` phrase in the header while one whole read lands, so the
+  figures are never silently stale.
+- **Held updates**: a frame this client cannot place is counted as `N held`
+  in the header, never dropped (rule 25).
+- **A record this client could not read**: the page says so in the fleet's
+  place rather than drawing an empty board, which would read as a project
+  with no rows.
 
 ## The two widths
 

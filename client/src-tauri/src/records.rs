@@ -119,6 +119,30 @@ impl Records {
         self.subjects.insert(key.to_owned(), Held::Refused(why.to_owned()));
     }
 
+    /// Fold one `patch` frame into its subject's record.
+    ///
+    /// **A patch carries the fields that moved and nothing else** (an absent
+    /// field means unchanged), so it merges at the record's top level - the
+    /// same rule the page applies to the same frames. The fold exists because
+    /// the record this side hands a parked page is the copy it folded: an
+    /// unfolded patch would be reverted by the catch-up snapshot built before
+    /// it, and no later patch re-sends those fields.
+    ///
+    /// Answers whether a record this side holds took it.
+    pub fn patch(&mut self, subject: &Value, data: &Value) -> bool {
+        let key = subject_key(subject);
+        let Some(Held::Ready(record)) = self.subjects.get_mut(&key) else {
+            return false;
+        };
+        let (Some(record), Some(patch)) = (record.as_object_mut(), data.as_object()) else {
+            return false;
+        };
+        for (field, value) in patch {
+            record.insert(field.clone(), value.clone());
+        }
+        true
+    }
+
     /// The record a reader wants, or the refusal's words, or None for a
     /// subject this client does not hold. `None` is a state too - a page
     /// draws "not read yet" rather than an empty seat.

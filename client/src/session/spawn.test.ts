@@ -28,6 +28,8 @@ function held(): Store {
     updates: [],
     state: { kind: 'loading' },
     dropped: 0,
+    version: null,
+    unexpected: [],
   });
   return {
     subject: { session: LEAD },
@@ -36,7 +38,12 @@ function held(): Store {
     updates: () => [],
     state: () => ({ kind: 'loading' }),
     dropped: () => 0,
+    version: () => null,
+    unexpected: () => [],
     set: () => {},
+    applied: () => {},
+    gap: () => {},
+    unplaced: () => {},
     push: () => {},
     compact: () => {},
     compacted: () => false,

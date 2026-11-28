@@ -60,7 +60,9 @@ function parsedTask(task: Record<string, unknown>): Record<string, unknown> {
   const raw = {
     projects: [{ work: { gate: 'in_repo' }, rows: [{ task }] }],
   } as unknown as BoardWire;
-  const taskRow = boardFrom(raw).projects[0]?.rows[0]?.task;
+  const parsed = boardFrom(raw);
+  if (parsed === null) throw new Error('the board record did not parse');
+  const taskRow = parsed.projects[0]?.rows[0]?.task;
   if (taskRow === undefined) throw new Error('the row did not parse');
   return taskRow as unknown as Record<string, unknown>;
 }

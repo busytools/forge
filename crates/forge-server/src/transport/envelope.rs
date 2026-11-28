@@ -12,13 +12,13 @@ use forge_workspace::DictateAxes;
 use forge_workspace::env::git_diff::content::FileContent;
 use serde::{Deserialize, Serialize};
 
-use super::wire::ReviewedThreadWire;
+use super::wire::{ReviewedThreadWire, StreamVersion};
 use crate::live::fleet_news;
 use crate::{Command, SessionUpdate};
 
 /// What a client can watch. A subscription names one of these and is
 /// answered with that subject's snapshot.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Subject {
     Home,
@@ -115,7 +115,7 @@ impl Subject {
             // The board snapshot carries every project's rows, crons and
             // connector sets, so the variants that move them - plus the seat
             // events a row's `stale` mark is read from - belong here. A row's
-            // time-derived marks are the page's own beat, not a frame.
+            // time-derived marks are the page's own clock, not a frame.
             Self::Board => {
                 board_detail(update)
                     || matches!(update, SessionUpdate::TasksChanged { .. })
@@ -136,7 +136,7 @@ impl Subject {
             Self::Usage => false,
             // The check's own landing, and the load's signal: a page open
             // during a first 3 GB download hears models finished loading
-            // through `DictateAvailability` and reads again, so its state
+            // through `DictateAvailability` and is patched, so its state
             // chips are not stuck on `pending` until the next check. The
             // feed belongs to no seat, so nothing else reaches here.
             Self::DictateModels => matches!(
@@ -551,9 +551,7 @@ pub enum ServerMessage {
     /// connection draws the same document, and a connection that attaches
     /// while a reload is in flight reads the current load here - which is
     /// why no settings read verb exists.
-    Settings {
-        document: forge_primitives::SettingsDocument,
-    },
+    Settings { document: forge_primitives::SettingsDocument },
     /// A settings save that wrote nothing. `message` is the loader's own
     /// words for an invalid candidate or the guard's own for a refusal;
     /// `key_path` anchors it at one of the save's keys where one is known.
@@ -568,9 +566,7 @@ pub enum ServerMessage {
     /// A settings save that wrote. The reload push carries the new document;
     /// this is the saver's own acknowledgement, matched by `id`, so a page
     /// clears its draft only for its own save.
-    SettingsSaved {
-        id: u64,
-    },
+    SettingsSaved { id: u64 },
     Greeting {
         version: u32,
         /// The build that sent this, in the two forms a view's own
@@ -581,8 +577,30 @@ pub enum ServerMessage {
         forge_version_short: String,
         settings: ClientSettings,
     },
-    Snapshot {
+    /// A subject's whole read: its answer to a subscribe, and the only whole
+    /// record a subscription is sent.
+    ///
+    /// **`version` is the number the record is at.** A client keeps it with
+    /// the store and applies only the patch numbered `version + 1`; anything
+    /// else is a gap, answered by one more whole read. A reconnect resets the
+    /// store and the number together, so a patch can never apply over a base
+    /// from another connection.
+    Snapshot { subject: Subject, version: StreamVersion, data: serde_json::Value },
+    /// One subject's change: the typed patch its record's twin defines.
+    ///
+    /// **Only the fields that moved cross.** An absent field means unchanged,
+    /// a present `null` clears an optional value, and a list field crosses as
+    /// `set`/`removed` entries addressed by id. An unchanged subject sends
+    /// nothing at all - there is no periodic re-send.
+    ///
+    /// **`version` is `None` for a seat.** A seat's stream is numbered by its
+    /// own frames (`Update::seq`), so its patch is a whole-field replacement
+    /// applied as it arrives rather than a number in that sequence. Every
+    /// record subject carries the next number of its stream.
+    Patch {
         subject: Subject,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<StreamVersion>,
         data: serde_json::Value,
     },
     /// Boxed for the same reason as a command: the update is the largest
@@ -673,10 +691,7 @@ pub enum ServerMessage {
     /// The answer to a `Command` that carried a `reply_to`, including a
     /// refusal, so a client awaiting one is never left watching a channel
     /// that stays empty.
-    Reply {
-        reply_to: u64,
-        body: serde_json::Value,
-    },
+    Reply { reply_to: u64, body: serde_json::Value },
     /// One tab's viewer state: which viewer controls it, how many are
     /// attached, and whether the page's focused node is editable.
     ///
@@ -720,27 +735,14 @@ pub enum ServerMessage {
     },
     /// Who holds a terminal's input, pushed to every viewer of it on a take
     /// or a release.
-    TerminalControl {
-        seat: SessionSlot,
-        id: u16,
-        controller: Option<u64>,
-    },
+    TerminalControl { seat: SessionSlot, id: u16, controller: Option<u64> },
     /// Where the viewed tab's history sits: what the bar's arrows may do.
-    BrowserNavState {
-        id: u16,
-        tab: u16,
-        can_back: bool,
-        can_forward: bool,
-    },
+    BrowserNavState { id: u16, tab: u16, can_back: bool, can_forward: bool },
     /// The viewed tab's browser stopped.
     ///
     /// A host that died under a viewer is said out loud: a frozen last frame
     /// reads as a slow page, and the person has no way to tell the two apart.
-    BrowserSurfaceFailed {
-        id: u16,
-        tab: u16,
-        reason: String,
-    },
+    BrowserSurfaceFailed { id: u16, tab: u16, reason: String },
     /// The tabs of the viewer's profile, as a client's strip draws them.
     ///
     /// Pushed to a connection that asked with `browser_tabs`, once per change:
@@ -757,11 +759,7 @@ pub enum ServerMessage {
     /// A page asked for a file: the shell opens its picker and answers
     /// [`ClientMessage::BrowserFileAnswer`] under the same id. **`tab` is the
     /// tab that asked**, so a viewer is asked only for the one it is on.
-    BrowserFileDialog {
-        id: u64,
-        tab: u16,
-        multiple: bool,
-    },
+    BrowserFileDialog { id: u64, tab: u16, multiple: bool },
     /// A page's download finished on the server: the shell opens its save
     /// door and writes the bytes, or says `error` and writes nothing. `tab`
     /// is the tab it started from.

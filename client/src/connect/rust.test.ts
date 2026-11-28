@@ -824,6 +824,121 @@ describe('frames from the bridge', () => {
     });
   });
 
+  /**
+   * **A patch the shell forwards lands in its store.** The shell's socket
+   * applies nothing; it hands the page every frame it reads, patch frames
+   * included, and this page is where a patch is placed. Without this path the
+   * desktop and Android clients drew their first read and then stopped: every
+   * fold after it was dropped in silence (#3102 review).
+   */
+  it('applies a patch the shell forwards, against the version its snapshot carried', async () => {
+    const connection = await opened();
+    const store = connection.subscribe('extensions');
+    fire('client://inbound', {
+      kind: 'snapshot',
+      subject: 'extensions',
+      version: 1,
+      data: { lsp: [], update_run: null },
+    });
+    expect(store.version(), 'the snapshot took its version').toBe(1);
+    invoke.mockClear();
+    fire('client://inbound', {
+      kind: 'patch',
+      subject: 'extensions',
+      version: 2,
+      data: { lsp: [{ name: 'ts' }] },
+    });
+    expect(store.snapshot()).toEqual({ lsp: [{ name: 'ts' }], update_run: null });
+    expect(store.version()).toBe(2);
+    expect(
+      invoke.mock.calls.filter(([command]) => command === 'client_refresh'),
+      'a patch asked for a whole read',
+    ).toEqual([]);
+  });
+
+  /**
+   * **A version gap earns exactly one whole read, and the patches ride it.**
+   * The gap keeps the record on screen and holds the patches it could not
+   * place; a second gap while that read is in flight is the same fault, so it
+   * asks nothing more - a stream of frames can never become a poll.
+   */
+  it('asks exactly one whole read when a patch skips its version', async () => {
+    const connection = await opened();
+    const store = connection.subscribe('extensions');
+    fire('client://inbound', {
+      kind: 'snapshot',
+      subject: 'extensions',
+      version: 1,
+      data: { lsp: [], update_run: null },
+    });
+    invoke.mockClear();
+    fire('client://inbound', {
+      kind: 'patch',
+      subject: 'extensions',
+      version: 3,
+      data: { lsp: [{ name: 'ts' }] },
+    });
+    fire('client://inbound', {
+      kind: 'patch',
+      subject: 'extensions',
+      version: 4,
+      data: { lsp: [{ name: 'go' }] },
+    });
+    expect(store.state(), 'the gap is not drawn').toMatchObject({ kind: 'resyncing' });
+    expect(store.unexpected(), 'the patches were dropped').toHaveLength(2);
+    expect(
+      invoke.mock.calls.filter(([command]) => command === 'client_refresh'),
+      'one whole read per gap',
+    ).toEqual([['client_refresh', { what: 'extensions' }]]);
+  });
+
+  /**
+   * **A refused subject's gap ends with it.** Left behind, the resync entry
+   * says a whole read is still in flight for a subject that will never
+   * answer, and the next real gap's ask is swallowed for the connection's
+   * life.
+   */
+  it('clears the gap when the subject is refused, so a later gap asks again', async () => {
+    const connection = await opened();
+    const store = connection.subscribe('extensions');
+    fire('client://inbound', {
+      kind: 'snapshot',
+      subject: 'extensions',
+      version: 1,
+      data: { lsp: [], update_run: null },
+    });
+    // One gap: one whole read.
+    fire('client://inbound', {
+      kind: 'patch',
+      subject: 'extensions',
+      version: 3,
+      data: { lsp: [] },
+    });
+    // The read the gap asked for is refused.
+    fire('client://refused', { key: 'extensions', why: 'this forge holds no extensions' });
+    expect(store.state()).toMatchObject({ kind: 'refused' });
+
+    // A later gap on a fresh subscribe asks again, rather than riding an ask
+    // whose subject is gone.
+    invoke.mockClear();
+    fire('client://inbound', {
+      kind: 'snapshot',
+      subject: 'extensions',
+      version: 1,
+      data: { lsp: [], update_run: null },
+    });
+    fire('client://inbound', {
+      kind: 'patch',
+      subject: 'extensions',
+      version: 5,
+      data: { lsp: [] },
+    });
+    expect(
+      invoke.mock.calls.filter(([command]) => command === 'client_refresh'),
+      'the second gap did not ask for its own read',
+    ).toHaveLength(1);
+  });
+
   it('names a non-seat subject on the refusal frame, and no seat', async () => {
     const connection = await opened();
     const store = connection.subscribe('board');

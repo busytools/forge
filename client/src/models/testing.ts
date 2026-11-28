@@ -15,6 +15,7 @@ import { PROTOCOL_VERSION } from '../protocol';
 import type { Connection, ConnectionStatus } from '../socket';
 import { Stores } from '../stores';
 import { modelsFrom, type DictateModelsWire } from '../wire/models';
+import { SubjectStreams } from '../wire/apply';
 
 /** One catalogue row, from the feed's own published figures. */
 function row(
@@ -309,6 +310,11 @@ export const modelsWire: DictateModelsWire = modelsFrom({
  */
 export function fakeConnection() {
   const stores = new Stores();
+  const streams = new SubjectStreams({
+    store: (subject) => stores.get(subject),
+    refresh: () => true,
+    report: () => {},
+  });
   const subscribed: Subject[] = [];
   const unsubscribed: Subject[] = [];
   const refreshed: Subject[] = [];
@@ -383,8 +389,14 @@ export function fakeConnection() {
      * and then every listener hears it.
      */
     arrive(message: ServerMessage) {
+      // **A record lands through the transport's own rule**, version and gap
+      // included, so a test drives the page through the same placement a live
+      // socket does.
       if (message.kind === 'snapshot') {
-        stores.get(message.subject)?.set(message.data);
+        streams.snapshot(message.subject, message.version, message.data);
+      }
+      if (message.kind === 'patch') {
+        streams.patch(message.subject, message.version, message.data);
       }
       if (message.kind === 'error' && message.what === 'subscribe') {
         stores.get(MODELS)?.refuse(message.why);

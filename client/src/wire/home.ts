@@ -217,6 +217,15 @@ export interface BoardRow {
   history: BoardTransition[];
   /** How many transitions the row has in all, never fewer than the list above. */
   history_total: number;
+  /**
+   * The instant this row's `worked_secs` was computed, ms since the epoch.
+   *
+   * **Set only on a row a frame introduced**, whose figure is empty as of
+   * that frame rather than as of the last whole read; every other row is
+   * anchored to the read it came from. The page's clock advances each row
+   * from its own instant (`board/clock.ts`).
+   */
+  read_at?: number;
 }
 
 /**

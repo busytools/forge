@@ -1572,7 +1572,9 @@ describe('what a row says', () => {
         },
       ],
     } as unknown as BoardWire;
-    const row = boardFrom(raw).projects[0]?.rows[0];
+    const parsed = boardFrom(raw);
+    if (parsed === null) throw new Error('the board record did not parse');
+    const row = parsed.projects[0]?.rows[0];
     expect(row?.history_total, 'no stated count reads as the trail it sent').toBe(1);
   });
 
@@ -1670,8 +1672,10 @@ describe('what a row says', () => {
         ...boardWire,
         projects: [{ ...first, rows: [{ task: { ...base, links }, worked_secs: 0 }] }],
       } as unknown as BoardWire;
+      const parsed = boardFrom(odd);
+      if (parsed === null) throw new Error('the board record did not parse');
       expect(
-        boardFrom(odd).projects[0]?.rows[0]?.task.links,
+        parsed.projects[0]?.rows[0]?.task.links,
         `a row with links = ${JSON.stringify(links)} read as something else`,
       ).toEqual([]);
     }
@@ -1684,7 +1688,9 @@ describe('what a row says', () => {
       ...boardWire,
       projects: [{ ...first, rows: undefined, tasks: undefined }],
     } as unknown as BoardWire;
-    expect(boardFrom(neither).projects[0]?.rows).toEqual([]);
+    const parsed = boardFrom(neither);
+    if (parsed === null) throw new Error('the board record did not parse');
+    expect(parsed.projects[0]?.rows).toEqual([]);
   });
 
   it('narrows an account state it does not know', () => {

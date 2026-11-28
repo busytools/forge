@@ -296,7 +296,7 @@ entry matches" and chips pointing at nothing.
   model in use this client has no case for.
 - **A model mid-load**: the row's chip carries the state the preflight
   snapshot reports - waiting, verifying, fetching with its fraction,
-  loading, loaded, or failed. The page re-reads when the load finishes
+  loading, loaded, or failed. The record is patched when the load finishes
   (`dictate_availability`), so chips do not stay on `waiting` until the
   next check.
 - **A download in flight**: one line under the header naming the file, the

@@ -45,13 +45,52 @@ export interface BoardWire {
 export interface BoardRead {
   wire: BoardWire | null;
   refused: string | null;
+  /**
+   * When the drawn record was received, ms since the epoch: the instant the
+   * server's worked time and ages were computed.
+   *
+   * **The page's clock moves the record's time-derived figures from here**
+   * (`board/clock.ts`); absent on a fixture, where the record is drawn as of
+   * now and nothing has elapsed.
+   */
+  readAt?: number;
+  /**
+   * The stream skipped a version, so one whole read is on its way.
+   *
+   * The record above is still drawn - a gap never blanks a page - and this is
+   * what says the figures may be a beat behind.
+   */
+  resyncing?: boolean;
+  /**
+   * Patches the socket could not place, held for the page to say so.
+   *
+   * Rule 25: a frame this client cannot read is drawn as itself rather than
+   * dropped, and the page's own line is where it is drawn.
+   */
+  heldPatches?: unknown[];
+  /**
+   * The read landed and this client could not draw it: its own state, not an
+   * empty board.
+   *
+   * **A malformed record is a failure, not an empty fleet.** Drawing `[]` for
+   * a record whose list is not a list says "this forge has no projects",
+   * which is a claim the server never made (rule 25: a gap is visible).
+   */
+  failed?: string | null;
 }
 
 /**
  * Narrow the snapshot where it enters, so every union downstream is already
  * one of the values the board draws.
+ *
+ * `null` when the record is not the shape this client reads: the caller
+ * draws the failure rather than an empty board, and a throw inside a store
+ * notification would take the page down with it.
  */
-export function boardFrom(data: BoardWire): BoardWire {
+export function boardFrom(data: BoardWire): BoardWire | null {
+  // **A record missing its list cannot be drawn as an empty one**: an absent
+  // list is a shape this build cannot read, and the page says so.
+  if (!Array.isArray(data.projects)) return null;
   return {
     projects: data.projects.map((row) => ({
       ...row,
@@ -72,7 +111,8 @@ export function boardFrom(data: BoardWire): BoardWire {
  * move with the clock instead, which the page's own beat answers. The home
  * hears the task write too, because its fleet counts are derived from the
  * same tasks; it hears neither of the other sets, because its payload no
- * longer carries them.
+ * longer carries them. A row's ages and marks move with the page's clock
+ * instead (`board/clock.ts`), so no frame is due for them.
  */
 export const BOARD_VARIANTS: readonly string[] = [
   'tasks_changed',
@@ -165,12 +205,13 @@ export function connectorsFrame(
  * **The task facts come from the frame; the board's derived facts stay what
  * the last read said.** `worked_secs`, the marks, the rollup, the parent's
  * subject and the transition history are the server's own computation and no
- * frame carries them - so a row that was drawn keeps them, a row that is new
- * draws with their empty values, and the marks beat refreshes them (at most
- * five minutes, the staleness the beat already accepts). A row the frame does
- * not name is left alone: the core's set is the project's live rows, and a
- * removal arrives in the same frame as an absence - the beat reconciles the
- * rest rather than a client guessing that an omission is a delete.
+ * frame carries them - so a row that was drawn keeps them, and a row that is
+ * new draws with their empty values and a `read_at` of the frame that
+ * introduced it (`board/clock.ts`), so its worked time starts there rather
+ * than at the last whole read. A row the frame does not name is left alone:
+ * the core's set is the project's live rows, and a removal arrives in the
+ * same frame as an absence - the next whole read reconciles the rest rather
+ * than a client guessing that an omission is a delete.
  *
  * Returns `null` when the board holds no snapshot to apply into (the first
  * read is still owed), which is the one case the caller still reads.
@@ -179,6 +220,7 @@ export function applyTasks(
   wire: BoardWire | null,
   project: { org: string; name: string },
   tasks: readonly unknown[],
+  readAt: number,
 ): BoardWire | null {
   if (wire === null) return null;
   const at = wire.projects.findIndex(
@@ -197,10 +239,18 @@ export function applyTasks(
     byId.set(
       fresh.task.id,
       prior === undefined
-        ? fresh
+        ? // **A row the frame introduces is anchored to this frame**: its
+          // worked figure is empty as of now, not as of the last whole read.
+          { ...fresh, read_at: readAt }
         : {
             ...prior,
             task: fresh.task,
+            // **A row this frame starts running is anchored here.** Its
+            // worked figure has not been accruing at the read, so counting
+            // from the read would credit it with time it never ran.
+            ...(prior.task.status !== 'in_progress' && fresh.task.status === 'in_progress'
+              ? { read_at: readAt }
+              : {}),
           },
     );
     order.push(fresh.task.id);
