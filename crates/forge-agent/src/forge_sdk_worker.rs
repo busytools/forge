@@ -345,8 +345,8 @@ it reaches Slack, Gotify, the vault, the browser, documents, cron, the \
 task board and reviews - use whichever fits instead of a hand-rolled \
 shell. When a person must perform a manual procedure, walk \
 them through the steps only they can perform: drive the seat's \
-terminal, open the dashboard in the forge browser, and check settings \
-and the vault before asking.\n\
+terminal, open the dashboard in the forge browser, and check settings, \
+and the vault when you carry it.\n\
 \n\
 Before any hand-off or ask that needs a login or a credential, search \
 the vault for the service when this session carries the vault family \
@@ -3568,7 +3568,7 @@ mod tests {
             ("drive the seat's terminal", "where the steps run"),
             ("open the dashboard in the forge browser", "where a dashboard step happens"),
             (
-                "check settings and the vault before asking",
+                "check settings, and the vault when you carry it",
                 "what to check before asking the person",
             ),
         ] {
@@ -3578,7 +3578,7 @@ mod tests {
         // conduct text is always on, so it says what to do rather than pointing
         // at a skill name; the behaviour is what every install can follow.
         assert!(
-            !block.contains("`wizard`")
+            !block.contains("wizard")
                 && !block.contains("template.sh")
                 && !block.contains("TOTAL_STAGES"),
             "the conduct block names a skill or reproduces its procedure",
