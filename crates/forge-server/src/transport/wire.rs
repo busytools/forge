@@ -27,7 +27,7 @@ use forge_primitives::{ContentBlock, GotifySubscription, Message, SessionSlot, U
 use forge_workspace::bench::{
     BenchResult, BenchState, ReadAloudState, SpeakingBenchResult, SpeakingBenchState,
 };
-use forge_workspace::board::{BoardRow, FleetRow};
+use forge_workspace::board::FleetRow;
 use forge_workspace::catalogue::{CatalogueCheck, CatalogueRow, InUseModel, ModelUpdate};
 use forge_workspace::env::git_diff::content::{DiffContent, FileContent, scan as scan_content};
 use forge_workspace::env::git_diff::file::{merge_base, read_file_lines};
@@ -3497,7 +3497,10 @@ pub enum BoardProjectEntry {
 #[serde(rename_all = "snake_case")]
 pub struct ProjectBoardPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub rows: Option<Vec<PatchEntry<TaskId, BoardRow>>>,
+    // **A row crosses as the window's own JSON**, never as the whole
+    // `BoardRow`: the bulk read strips the brief and history, and a patch
+    // that carried them back would undo the trim on every move.
+    pub rows: Option<Vec<PatchEntry<TaskId, Value>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crons: Option<Vec<forge_primitives::CronEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3951,16 +3954,22 @@ mod patches {
                 projects
                     .into_iter()
                     .map(|project| {
-                        let ProjectBoardWire { project: identity, rows, crons, connectors } =
+                        let ProjectBoardWire { project: identity, rows, crons, connectors, .. } =
                             project;
                         BoardProjectEntry::Set {
                             identity,
                             board: ProjectBoardPatch {
                                 rows: Some(
                                     rows.into_iter()
-                                        .map(|row| PatchEntry::Set {
-                                            id: row.task.id.clone(),
-                                            record: row,
+                                        .filter_map(|row| {
+                                            let id = row
+                                                .get("task")
+                                                .and_then(|task| task.get("id"))
+                                                .and_then(Value::as_str)?;
+                                            Some(PatchEntry::Set {
+                                                id: TaskId::from(id),
+                                                record: row,
+                                            })
                                         })
                                         .collect(),
                                 ),
@@ -4109,6 +4118,7 @@ mod patches {
                 Subject::DictateModels => "dictate models patch",
                 Subject::Extensions => "extensions patch",
                 Subject::Dictate => "no record: its own frames are the deltas",
+                Subject::Archived => "no patch: a task write re-reads the closed view",
             }
         }
         let _: fn(&Subject) -> &'static str = carries;
