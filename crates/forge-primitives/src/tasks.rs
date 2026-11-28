@@ -656,8 +656,8 @@ pub struct TaskChase {
     pub task_id: Option<TaskId>,
     /// The rung's subject where a row id does not identify it: the
     /// worker a seat-level rung names, or the estimate a nudge fired
-    /// against - so a restated estimate arms the nudge again. `default`
-    /// reads a row written before the field.
+    /// against - so an estimate restated to a different duration arms the
+    /// nudge again. `default` reads a row written before the field.
     #[serde(default)]
     pub subject: Option<String>,
     pub project_name: String,

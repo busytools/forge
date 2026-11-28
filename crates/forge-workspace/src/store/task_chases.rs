@@ -6,7 +6,7 @@
 //! "did it fire at or after T?", which the newest row answers alone - and a
 //! held state re-appends once per cadence window, so without that the table
 //! would grow with time rather than with what the board is tracking (one
-//! permanently-over row is 288 rows a day at the 5-minute cadence).
+//! permanently-over row is 48 rows a day at the 30-minute cadence).
 
 use anyhow::Context;
 use forge_primitives::tasks::{ChaseRung, TaskChase, TaskId};

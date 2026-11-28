@@ -864,7 +864,7 @@ always. What it asks, and on what clock, is a constant in the code:
 - **A failed row, one whose owner is gone, an epic still owing its retro,
   and one ready to close each tell the lead every 30 minutes** while the
   state holds.
-- **A worker holding no row is named when it drifts, again every 5
+- **A worker holding no row is named when it drifts, again every 30
   minutes while it stays drifted**, and at once after it accounts and
   drifts again.
 - **Each row waiting on the user, untouched for 30 minutes, gets one

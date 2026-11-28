@@ -10,11 +10,13 @@
 //!
 //! **One cadence, not three.** An open finite overrun asks once - parking
 //! an in-progress row - and the lead hears the escalation once per
-//! estimate; every other held state repeats at `CHASE_CADENCE_SECS` until
-//! it clears. **The chase log is the whole slate**: every naming is deduped
-//! by it, so a restart re-reads it rather than re-firing, and a state that
-//! clears has its naming forgotten - off the log, where a fresh process
-//! reads - so a recurrence is named at once, whatever happened in between.
+//! estimate; the stall, death, close, retro and unaccounted rungs repeat
+//! at `CHASE_CADENCE_SECS` while their state holds, and the movement and
+//! new-input namings fire once per touch or check. **The chase log is the
+//! whole slate**: every naming is deduped by it, so a restart re-reads it
+//! rather than re-firing, and a state that clears has its naming
+//! forgotten - off the log, where a fresh process reads - so a recurrence
+//! is named at once, whatever happened in between.
 //!
 //! Delivery degrades, never wakes: a live owner is asked; with a dead
 //! owner the lead is; with every seat asleep the mark alone stands. A
@@ -93,8 +95,9 @@ fn since_secs(at: SystemTime, now: SystemTime) -> u64 {
     now.duration_since(at).map_or(u64::MAX, |d| d.as_secs())
 }
 
-/// Whether `rung` already fired for `id` and this subject - a restated
-/// estimate changes the subject, which arms the nudge again.
+/// Whether `rung` already fired for `id` and this subject - an estimate
+/// restated to a different duration changes the subject, which arms the
+/// nudge again.
 fn fired_already(fired: &[TaskChase], rung: ChaseRung, id: &TaskId, subject: Option<&str>) -> bool {
     fired.iter().any(|chase| {
         chase.rung == rung
@@ -175,8 +178,8 @@ pub(crate) fn fmt_secs(secs: u64) -> String {
 /// and a dependency chase goes to the blocker's owner.
 ///
 /// An open finite overrun asks once, parking an in-progress row (the sweep
-/// does the write); the lead hears the escalation once per estimate if the
-/// ask goes unanswered past the cadence, and then the chase stops for that
+/// does the write); the lead hears the escalation once per estimate once
+/// the ask has had its cadence, and then the chase stops for that
 /// estimate.
 pub(crate) fn crossings(
     lead: &SessionSlot,
@@ -202,7 +205,7 @@ pub(crate) fn crossings(
 
         // Signal 1a: open finite work past its estimate owes a re-plan; a
         // terminal row's numbers are history. The ask is one per estimate and
-        // parks the row; the sweep writes the park.
+        // parks an in-progress row; the sweep writes the park.
         if open
             && let Some(estimate) = estimate.filter(|_| over)
             && !fired_already(fired, ChaseRung::EstimateNudge, id, Some(&estimate.secs.to_string()))
@@ -223,7 +226,7 @@ pub(crate) fn crossings(
             });
         }
         // The escalation: once per estimate, only while the row is still
-        // open, and only after the ask had its cadence unanswered. Then this
+        // open, and only once the ask has had its cadence. Then this
         // estimate is done being chased.
         if open
             && over
@@ -650,9 +653,10 @@ impl Workspace {
             }
             let crossings = crossings(&lead, &rows, &history, &unaccounted, &fired, now);
             for crossing in crossings {
-                // The re-plan ask is a state, not a message alone: the row
-                // is parked waiting on its owner before the owner hears, so
-                // the board shows the same thing the message says.
+                // The re-plan ask is a state, not a message alone: an
+                // in-progress row is parked waiting on its owner before the
+                // owner hears, so the board shows the same thing the message
+                // says.
                 if crossing.rung == ChaseRung::EstimateNudge
                     && let Some(id) = &crossing.task_id
                 {
@@ -959,7 +963,7 @@ mod tests {
         assert_eq!(deliver.seen.lock().len(), 1, "and the naming stands");
     }
 
-    /// The drifted worker's naming repeats at the 5-minute cadence while
+    /// The drifted worker's naming repeats at the 30-minute cadence while
     /// it stays drifted.
     #[test]
     fn the_unaccounted_naming_repeats_at_its_cadence() {
@@ -1069,8 +1073,8 @@ mod tests {
         assert_eq!(sweep(&ws, &deliver, 5010), 1, "the new failure is named at once");
     }
 
-    /// The 1x overrun nudge is once per estimate: a restated estimate
-    /// arms it again.
+    /// The 1x overrun nudge is once per estimate: a restated estimate of a
+    /// different duration arms it again.
     #[test]
     fn a_restated_estimate_arms_the_overrun_nudge_again() {
         let dir = tempdir().expect("tempdir");
