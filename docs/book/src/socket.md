@@ -367,9 +367,9 @@ settings card's `enrol`, which needs the vault open.
 
 ## Subjects
 
-Everything a client reads is addressed by a subject, and there are seven:
-`home`, `board`, `session <org>/<project>/<label>`, `usage`, `dictate_models`,
-`extensions` and `dictate`.
+Everything a client reads is addressed by a subject, and there are eight:
+`home`, `board`, `archived`, `session <org>/<project>/<label>`, `usage`,
+`dictate_models`, `extensions` and `dictate`.
 
 A seat nobody has started is an answer rather than a silence. Subscribing
 to one that is not there comes back as an `error` saying so, so a client

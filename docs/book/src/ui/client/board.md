@@ -50,16 +50,8 @@ schedule set, a connector set, a drawer's row, and the seat events a row's
 liveness is read from. **A task write is applied from its frame, with no
 read**: the `tasks_changed` frame carries the project's live set, so a seat
 claiming a row, a row being cut, or a move made in another view lands on the
-drawn board at once - the derived facts stay what the last read said and the
-beat reconciles them. While it is mounted and the page is being watched, it
-also re-reads on a slow five-minute beat: a row's time-derived marks are
-computed by the server at read time, and no update announces that a window
-crossed. A page nobody is watching releases the beat entirely, and the
-return re-read the page already makes when it comes back from a hidden
-spell of at least two seconds asks the board once through the same guards.
-Only the `wrote ... ago` line keeps ticking off the page's own clock; the
-card's worked time and the ages on cards advance only on a read, so they
-are refreshed at most five minutes after the page is watched again.
+drawn board at once. The derived facts on those rows are recomputed at draw
+time, so the frame and the page's own tick keep them current together.
 
 ## The window
 
