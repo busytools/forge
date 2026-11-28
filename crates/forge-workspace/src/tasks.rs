@@ -130,13 +130,11 @@ pub(crate) enum MoveError {
     /// spawn-time tool schema, so a stated field can be dropped before
     /// forge sees it. The reason is the check's own, and it leads.
     EvidenceUnverifiedLead(String),
-    /// `lead_verified` came from a session that is not the project's
-    /// lead: only the lead may vouch for an artifact the gate cannot
-    /// check, and a worker cannot stand behind its own work.
+    /// A row whose claim is the project lead's verification was moved by
+    /// a session that is not the project's lead: only the lead may
+    /// complete it (or the user's own approve), or the claim is restated
+    /// with the artifact.
     LeadVerificationLeadOnly,
-    /// `lead_verified` is present but carries no words; a lead's
-    /// verification is what it says was checked.
-    LeadVerificationEmpty,
     /// An update named a version the row is not at: another writer got
     /// there first, and the caller is reading a stale record.
     VersionMismatch { expected: u64, current: u64 },
@@ -468,14 +466,8 @@ impl std::fmt::Display for MoveError {
             ),
             Self::LeadVerificationLeadOnly => write!(
                 f,
-                "only the project's lead may state `lead_verified`; this session is not that \
-                 seat. A worker completes on the artifact itself, and asks its lead to vouch \
-                 when the artifact is outside the repository"
-            ),
-            Self::LeadVerificationEmpty => write!(
-                f,
-                "`lead_verified` is the lead's own verification in words, and this one is \
-                 empty: state what was checked and where, or omit it and name the artifact"
+                "this row's claim is the project lead's verification; only the lead may \
+                 complete it, or restate the claim with the artifact"
             ),
             Self::VersionMismatch { expected, current } => write!(
                 f,
@@ -966,14 +958,24 @@ impl Workspace {
         task: &mut Task,
         by: &By,
     ) -> Result<(), MoveError> {
-        let Some(evidence) = task.evidence.as_mut() else {
-            return Err(MoveError::EvidenceMissing);
-        };
         let lead = moved_by_project_lead(by, project_name);
+        let Some(evidence) = task.evidence.as_mut() else {
+            // A row with no block at all is the same absence as an empty
+            // one, and the lead hears the same thing: the field it stated
+            // can be dropped before forge sees it.
+            return Err(if lead {
+                MoveError::EvidenceMissingLead
+            } else {
+                MoveError::EvidenceMissing
+            });
+        };
+        // A blank quote is no claim at all: the write seams drop it, and
+        // a stored one reads the same here rather than failing
+        // differently.
+        if evidence.lead_verified.as_deref().is_some_and(|words| words.trim().is_empty()) {
+            evidence.lead_verified = None;
+        }
         if evidence.lead_verified.is_some() {
-            if evidence.lead_verified.as_deref().is_some_and(|words| words.trim().is_empty()) {
-                return Err(MoveError::LeadVerificationEmpty);
-            }
             // The user's own approve is the verification its gate waits
             // on, so it needs no seat; the lead's word is the seat's to
             // give.
@@ -6326,8 +6328,8 @@ mod tests {
             .expect_err("a worker cannot vouch for its own artifact");
         assert_eq!(refused, MoveError::LeadVerificationLeadOnly);
         assert!(
-            refused.to_string().contains("only the project's lead"),
-            "the refusal names the rule: {refused}",
+            refused.to_string().contains("only the lead may complete it"),
+            "the refusal says whose completion it is: {refused}",
         );
 
         let foreign_lead = SessionSlot::lead("TestOrg", "other");
@@ -6382,42 +6384,6 @@ mod tests {
         assert!(
             done.evidence.as_ref().is_some_and(|evidence| evidence.verified_at.is_some()),
             "the lead's check is stamped like any other",
-        );
-    }
-
-    /// A lead's verification carries its words: a present but blank one is
-    /// refused by name rather than read as an absent claim.
-    #[test]
-    fn a_blank_lead_verification_is_refused_by_name() {
-        let dir = tempdir().expect("tempdir");
-        let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
-        ws.seed_test_project("proj", "/tmp/tp-vouch-blank");
-        ws.push_task(Task {
-            evidence: Some(Evidence {
-                commit: None,
-                path: None,
-                lead_verified: Some("   ".to_owned()),
-                excerpt: None,
-                verified_at: None,
-                problem: None,
-            }),
-            ..sample_task("t-1", "proj")
-        });
-
-        let refused = ws
-            .update_task(
-                "proj",
-                &TaskId::from("t-1"),
-                By::Seat(SessionSlot::lead("TestOrg", "proj")),
-                |task| {
-                    task.status = TaskStatus::Completed;
-                },
-            )
-            .expect_err("blank words are not a verification");
-        assert_eq!(refused, MoveError::LeadVerificationEmpty);
-        assert!(
-            refused.to_string().contains("lead_verified"),
-            "the refusal names the field: {refused}",
         );
     }
 
@@ -6482,14 +6448,18 @@ mod tests {
     }
 
     /// A quote-only claim whose field was dropped arrives as NO claim at
-    /// all. The lead's own refusal has to name `lead_verified` and the
-    /// respawn - "state the commit or the path" cannot work for a
-    /// sibling-repo artifact, which is the case this exists for.
+    /// all, in any of the three shapes: no block, a block naming nothing,
+    /// and a block whose quote is blank (the write seams drop blank
+    /// words, so a stored one reads the same). The lead's own refusal has
+    /// to name `lead_verified` and the respawn - "state the commit or the
+    /// path" cannot work for a sibling-repo artifact, which is the case
+    /// this exists for.
     #[test]
     fn a_lead_whose_quote_was_dropped_is_told_about_the_field() {
         let dir = tempdir().expect("tempdir");
         let (ws, _rx) = Workspace::testing_stub_with_config_dir(dir.path().to_owned());
         ws.seed_test_project("proj", "/tmp/tp-vouch-dropped");
+        ws.push_task(Task { evidence: None, ..sample_task("t-absent", "proj") });
         ws.push_task(Task {
             evidence: Some(Evidence {
                 commit: None,
@@ -6499,30 +6469,43 @@ mod tests {
                 verified_at: None,
                 problem: None,
             }),
-            ..sample_task("t-1", "proj")
+            ..sample_task("t-empty", "proj")
+        });
+        ws.push_task(Task {
+            evidence: Some(Evidence {
+                commit: None,
+                path: None,
+                lead_verified: Some("   ".to_owned()),
+                excerpt: None,
+                verified_at: None,
+                problem: None,
+            }),
+            ..sample_task("t-blank", "proj")
         });
 
-        let refused = ws
-            .update_task(
-                "proj",
-                &TaskId::from("t-1"),
-                By::Seat(SessionSlot::lead("TestOrg", "proj")),
-                |task| {
-                    task.status = TaskStatus::Completed;
-                },
-            )
-            .expect_err("there is nothing to check");
-        assert_eq!(refused, MoveError::EvidenceMissingLead);
-        let said = refused.to_string();
-        assert!(
-            said.contains("`lead_verified`") && said.contains("respawn the session"),
-            "the lead hears the field and the respawn it needs: {said}",
-        );
+        for id in ["t-absent", "t-empty", "t-blank"] {
+            let refused = ws
+                .update_task(
+                    "proj",
+                    &TaskId::from(id),
+                    By::Seat(SessionSlot::lead("TestOrg", "proj")),
+                    |task| {
+                        task.status = TaskStatus::Completed;
+                    },
+                )
+                .expect_err("there is nothing to check");
+            assert_eq!(refused, MoveError::EvidenceMissingLead, "the shape of {id}");
+            let said = refused.to_string();
+            assert!(
+                said.contains("`lead_verified`") && said.contains("respawn the session"),
+                "the lead hears the field and the respawn it needs on {id}: {said}",
+            );
+        }
 
         let worker_refused = ws
             .update_task(
                 "proj",
-                &TaskId::from("t-1"),
+                &TaskId::from("t-empty"),
                 By::Seat(SessionSlot::worker("TestOrg", "proj", "w-1")),
                 |task| {
                     task.status = TaskStatus::Completed;

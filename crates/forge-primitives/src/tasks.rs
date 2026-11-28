@@ -426,9 +426,11 @@ pub const EVIDENCE_EXCERPT_MAX: usize = 4_000;
 /// them for the reader; it is never the whole claim, because output
 /// cannot be checked.
 ///
-/// `verified_at` is stamped by the gate on the move that checks the
-/// artifact, and `problem` carries why the last check failed - absence is
-/// never success, and an unchecked claim reads as unknown.
+/// `verified_at` is stamped by the gate on the move that last verified
+/// the claim - a check of the artifact, or the project lead's word
+/// standing for one the check cannot reach - and `problem` carries why
+/// the last check failed. Absence is never success, and an unchecked
+/// claim reads as unknown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Evidence {
     #[serde(default)]
@@ -444,10 +446,10 @@ pub struct Evidence {
     pub lead_verified: Option<String>,
     #[serde(default)]
     pub excerpt: Option<String>,
-    /// When the claim last verified: the gate's own check of the artifact,
-    /// or the moment the project lead's word landed for one the gate
-    /// cannot check (the quote rides `lead_verified`). Absence is never
-    /// success, and an unchecked claim reads as unknown.
+    /// When the claim last verified: the gate's check of the artifact,
+    /// or a move that accepted the project lead's word for one the check
+    /// cannot reach (the quote rides `lead_verified`; a later approve
+    /// re-stamps it).
     #[serde(default)]
     pub verified_at: Option<SystemTime>,
     #[serde(default)]
