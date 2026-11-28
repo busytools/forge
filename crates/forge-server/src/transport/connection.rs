@@ -11204,6 +11204,147 @@ mod tests {
         let _ = driven.await;
     }
 
+    /// The permission request a fixture's ask is about.
+    fn permission_request() -> forge_primitives::PermissionRequest {
+        forge_primitives::PermissionRequest {
+            tool_call: forge_primitives::ToolCall {
+                tool_call_id: "tu-1".to_owned(),
+                title: "write a file".to_owned(),
+                kind: forge_primitives::ToolKind::Edit,
+                status: forge_primitives::ToolCallStatus::InProgress,
+                content: Vec::new(),
+                raw_input: None,
+                raw_output: None,
+                output_metadata: None,
+                task_metadata: None,
+                locations: Vec::new(),
+                meta: None,
+            },
+            options: Vec::new(),
+            display: None,
+        }
+    }
+
+    /// One row parked on the user's decision, as the wait rides the fleet.
+    fn waited_task(project: &str, id: &str, words: &str) -> forge_primitives::tasks::Task {
+        forge_primitives::tasks::Task {
+            id: id.into(),
+            project_name: project.to_owned(),
+            subject: "the parser".to_owned(),
+            active_form: None,
+            detail: None,
+            status: forge_primitives::tasks::TaskStatus::Waiting,
+            kind: forge_primitives::tasks::TaskKind::Finite,
+            owner: Some(SessionSlot::worker("TestOrg", project, "w1")),
+            parent: None,
+            waiting_on: Some(forge_primitives::tasks::Waiting {
+                kind: Some(forge_primitives::tasks::WaitingKind::User),
+                detail: Some(words.to_owned()),
+                on: None,
+                verification: false,
+                parked: false,
+                due: None,
+                acknowledged_at: None,
+                snoozed: None,
+                expired_at: None,
+                since: Some(std::time::SystemTime::UNIX_EPOCH),
+            }),
+            request: None,
+            estimate: None,
+            cadence: None,
+            rank: None,
+            verify: None,
+            attested: None,
+            reserved: None,
+            links: Vec::new(),
+            evidence: None,
+            version: 0,
+            archived_at: None,
+            created_at: std::time::SystemTime::UNIX_EPOCH,
+            updated_at: std::time::SystemTime::UNIX_EPOCH,
+        }
+    }
+
+    /// **An ask's arrival crosses the home as an agents patch**, and the row
+    /// it carries is the whole guarantee a parked client's banner rests on:
+    /// `pending`, `pending_depth` and `pending_seq` all ride the entry. A
+    /// regression that left the ask's update out of the home's marks would
+    /// keep the server green and silently kill the notification.
+    #[tokio::test]
+    async fn a_permission_request_crosses_the_home_as_an_agents_patch() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+        let Driven { to_server, written, driven, .. } = connection(&state);
+        subscribed_home(&to_server, &written).await;
+
+        // The parking is the seat's own state, and the update is what marks
+        // the home; the fleet's lead row appears with it because the seat now
+        // holds an ask.
+        let seat = lead();
+        fleet.workspace().seed_test_prompt_queue(
+            &seat,
+            forge_workspace::PendingInteractionKind::Permission,
+            1,
+        );
+        fleet.emit(SessionUpdate::PermissionRequest {
+            key: seat.clone(),
+            tool_id: "tu-1".to_owned(),
+            request: permission_request(),
+        });
+
+        until(|| !patches_of(&written, &Subject::Home).is_empty(), "the home patch an ask owes")
+            .await;
+        let patches = patches_of(&written, &Subject::Home);
+        assert_eq!(patches.len(), 1, "one ask, one home patch");
+        let agents = patches[0].1["agents"].as_array().expect("the agents' entries");
+        assert_eq!(agents.len(), 1, "only the moved seat crosses");
+        assert_eq!(agents[0]["op"], "set");
+        assert_eq!(agents[0]["id"]["label"], "lead", "the seat's slot is the entry's id");
+        assert_eq!(agents[0]["record"]["pending"], json!("permission"));
+        assert_eq!(agents[0]["record"]["pending_depth"], json!(1));
+        assert_eq!(agents[0]["record"]["pending_seq"], json!(1));
+        assert_eq!(home_snapshots(&written), 1, "no whole home record followed the patch");
+
+        drop(to_server);
+        let _ = driven.await;
+    }
+
+    /// **A task write crosses the home's fleet row, and the wait rides it.**
+    /// `attention` is what a parked client announces from, and the entry
+    /// carries the whole row rather than the counts alone - the other half of
+    /// the guarantee the ask patch pins.
+    #[tokio::test]
+    async fn a_tasks_changed_crosses_the_home_as_a_fleet_patch_carrying_the_wait() {
+        let fleet =
+            crate::testing::Fleet::new(&[("TestOrg", &["proj"])]).expect("the fleet builds");
+        let state = Arc::new(TransportState::for_workspace(&fleet.workspace()));
+        let Driven { to_server, written, driven, .. } = connection(&state);
+        subscribed_home(&to_server, &written).await;
+
+        fleet.seed_task(waited_task("proj", "t-wait", "sign this off"));
+        fleet.emit(SessionUpdate::TasksChanged { key: lead(), tasks: Vec::new() });
+
+        until(
+            || !patches_of(&written, &Subject::Home).is_empty(),
+            "the home patch a task write owes",
+        )
+        .await;
+        let patches = patches_of(&written, &Subject::Home);
+        let rows = patches[0].1["fleet"].as_array().expect("the fleet's entries");
+        assert_eq!(rows.len(), 1, "only the moved project crosses");
+        assert_eq!(rows[0]["op"], "set");
+        assert_eq!(rows[0]["id"], "proj");
+        let attention = rows[0]["record"]["attention"].as_array().expect("the wait");
+        assert_eq!(attention[0]["task"], "t-wait");
+        assert_eq!(attention[0]["owner"], "w1");
+        assert_eq!(attention[0]["words"], "sign this off");
+        assert_eq!(home_snapshots(&written), 1, "no whole home record followed the patch");
+
+        drop(to_server);
+        let _ = driven.await;
+    }
+
     /// **A config reload moves the home and announces no update.** The roster
     /// comes off the loaded document, so the settings push is what has to mark
     /// the records a reload can move; the diff drops the ones it did not.
