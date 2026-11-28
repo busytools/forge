@@ -1254,3 +1254,24 @@ that build leaves off.
   listening" is not a door, "I opened it and the table draws both halves" is.
   Ved, 2026-10-27, after two doors opened on blank pages: *"Do you not check
   for yourself before you ask me to verify?"*
+
+## The claude-headless port
+
+forge drives the `claude-headless-rs` port as its experimental engine. This
+project's lead owns it since the handover of 2026-11-29.
+
+**The `claude` CLI is the standard.** Every divergence found in the port is
+fixed by replicating the reference's observed behaviour - its source, its wire
+frames, its paired probe - and merging that reproduction. We do not invent
+behaviour, do not improve an oddity the reference has, and do not accept a
+known residual without Ved ratifying an exemption (today only EX-1..EX-3).
+Ved, 2026-11-29: *"We are not going to invent anything, we are just going to
+simply replicate what Claude CLI does and then merge it. This goes for all the
+fixes on the port."*
+
+The transfer record, the open ledger and the convergence checklist are at
+`~/Projects/.gate/logs/port-verify-404493f2/`. The port's trunk is
+`origin/main` in `~/Projects/claude-headless-rs`, which is a **bare
+repository at its root** - never edit that directory in place; work in a
+worktree. The certified artifact restores in one command from
+`~/Projects/.gate/artifacts/claude-headless-certified-404493f2`.
