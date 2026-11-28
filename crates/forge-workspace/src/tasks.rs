@@ -13,8 +13,9 @@ use std::time::{Duration, SystemTime};
 
 use forge_primitives::tasks::Verify;
 use forge_primitives::tasks::{
-    Answer, AnswerValue, AskKind, Attestation, By, Deadline, DefaultIfIgnored, Disposition,
-    LinkKind, Request, ReservedBy, Task, TaskId, TaskStatus, TaskTransition, Waiting, WaitingKind,
+    Answer, AnswerValue, AskKind, Attestation, By, ChaseRung, Deadline, DefaultIfIgnored,
+    Disposition, LinkKind, Request, ReservedBy, Task, TaskId, TaskStatus, TaskTransition, Waiting,
+    WaitingKind,
 };
 
 use crate::SessionSlot;
@@ -891,6 +892,10 @@ impl Workspace {
             self.record_transition(project_name, &task.id, Some(prior), task.status, by);
         }
         if task.status.is_terminal() {
+            // The row's end answers its estimate asks: the log entries go
+            // with it, so a reopen asks again rather than reading a stale
+            // ask as unanswered.
+            self.forget_estimate_chases(project_name, &task.id);
             self.resolve_wait_on(project_name, &task.id);
         }
         self.announce_tasks_changed(project_name);
@@ -2133,6 +2138,16 @@ impl Workspace {
             Some(tasks[index].clone())
         });
         if outcome.is_some() {
+            // The park stops the clock: worked_secs is the sum of
+            // in_progress intervals, and a park with no transition would
+            // keep accruing for as long as the row waited.
+            self.record_transition(
+                project_name,
+                id,
+                Some(TaskStatus::InProgress),
+                TaskStatus::Waiting,
+                By::System,
+            );
             self.announce_tasks_changed(project_name);
         }
         outcome
@@ -2192,6 +2207,42 @@ impl Workspace {
             .map(|view| view.key);
         let Some(key) = key else { return false };
         self.list_live_workers(&key).iter().any(|entry| &entry.slot == slot)
+    }
+
+    /// Forget the estimate rungs recorded for a row: its end answered them,
+    /// so a reopen must not read a stale ask as unanswered.
+    fn forget_estimate_chases(&self, project_name: &str, id: &TaskId) {
+        let guard = self.db.lock();
+        let Some(db) = guard.as_ref() else { return };
+        let fired = match crate::store::task_chases::list_for_project(db, project_name) {
+            Ok(fired) => fired,
+            Err(error) => {
+                tracing::error!(
+                    target: "forge_workspace::tasks",
+                    %error,
+                    "reading the chase log to forget a closed row's asks failed",
+                );
+                return;
+            }
+        };
+        for chase in fired.iter().filter(|chase| {
+            chase.task_id.as_ref() == Some(id)
+                && matches!(chase.rung, ChaseRung::EstimateNudge | ChaseRung::Escalate)
+        }) {
+            if let Err(error) = crate::store::task_chases::forget(
+                db,
+                project_name,
+                chase.rung,
+                Some(id),
+                chase.subject.as_deref(),
+            ) {
+                tracing::error!(
+                    target: "forge_workspace::tasks",
+                    %error,
+                    "forgetting a closed row's estimate chase failed; a reopen may read a stale ask",
+                );
+            }
+        }
     }
 
     /// Append one status transition to the durable history.
