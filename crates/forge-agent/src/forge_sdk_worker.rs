@@ -343,8 +343,10 @@ over and tells its lead it is waiting. The MCP families a session \
 carries, and the browser and document tools that arrive with it, are how \
 it reaches Slack, Gotify, the vault, the browser, documents, cron, the \
 task board and reviews - use whichever fits instead of a hand-rolled \
-shell. When a person must perform a manual procedure, use \
-the `wizard` skill and drive it through the terminal.\n\
+shell. When a person must perform a manual procedure, walk \
+them through the steps only they can perform: drive the seat's \
+terminal, open the dashboard in the forge browser, and check settings \
+and the vault before asking.\n\
 \n\
 Before any hand-off or ask that needs a login or a credential, search \
 the vault for the service when this session carries the vault family \
@@ -3519,12 +3521,11 @@ mod tests {
         );
     }
 
-    /// **The terminal, the MCP families and the wizard are known before a
-    /// skill is ever invoked.** The paragraph carries the capability and its
-    /// moment; the procedure itself stays in the skill, so a session that
-    /// never invokes it still knows what it has.
+    /// **The terminal, the MCP families and the manual procedure are known
+    /// before a session starts.** The paragraph carries the behaviour and its
+    /// moment, so a session that loads nothing extra still knows what to do.
     #[test]
-    fn the_conduct_block_names_the_terminal_the_families_and_the_wizard() {
+    fn the_conduct_block_names_the_terminal_the_families_and_the_manual_procedure() {
         let block = FORGE_SESSION_CONDUCT_SYSTEM_PROMPT;
         assert!(
             block.contains("A session has a terminal of its own per seat"),
@@ -3563,15 +3564,24 @@ mod tests {
                 "use whichever fits instead of a hand-rolled shell",
                 "the tool group before a hand-rolled shell",
             ),
-            ("the `wizard` skill", "the skill for a manual procedure"),
-            ("drive it through the terminal", "where the wizard runs"),
+            ("walk them through the steps only they can perform", "the manual procedure's shape"),
+            ("drive the seat's terminal", "where the steps run"),
+            ("open the dashboard in the forge browser", "where a dashboard step happens"),
+            (
+                "check settings and the vault before asking",
+                "what to check before asking the person",
+            ),
         ] {
             assert!(block.contains(clause), "the conduct block drops '{clause}' ({why})");
         }
-        // **The block names the moment, the skill carries the procedure.**
+        // **The block states the behaviour and names no skill to carry it.** The
+        // conduct text is always on, so it says what to do rather than pointing
+        // at a skill name; the behaviour is what every install can follow.
         assert!(
-            !block.contains("template.sh") && !block.contains("TOTAL_STAGES"),
-            "the conduct block reproduces the skill's procedure",
+            !block.contains("`wizard`")
+                && !block.contains("template.sh")
+                && !block.contains("TOTAL_STAGES"),
+            "the conduct block names a skill or reproduces its procedure",
         );
     }
 
