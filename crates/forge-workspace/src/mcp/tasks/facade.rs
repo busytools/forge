@@ -73,6 +73,11 @@ pub(crate) struct EvidenceDraft {
     pub commit: Option<String>,
     #[serde(default)]
     pub path: Option<String>,
+    /// The project lead's own verification, in words. Kept exactly as
+    /// stated - blank words are the gate's to refuse by name, not the
+    /// draft's to drop into an absent claim.
+    #[serde(default)]
+    pub lead_verified: Option<String>,
     #[serde(default)]
     pub excerpt: Option<String>,
 }
@@ -85,6 +90,7 @@ impl EvidenceDraft {
         Evidence {
             commit: named(&self.commit),
             path: named(&self.path),
+            lead_verified: self.lead_verified.clone(),
             excerpt: self
                 .excerpt
                 .as_deref()
@@ -552,7 +558,7 @@ impl TasksFacade for ProdTasksFacade {
         // like any other, and goes through the same gate: creation is not
         // a way around the evidence.
         if task.status == TaskStatus::Completed {
-            ws.verify_completion_evidence(&cx.project_name, &mut task)
+            ws.verify_completion_evidence(&cx.project_name, &mut task, &By::Seat(caller.clone()))
                 .map_err(|refused| TasksError::Refused(refused.to_string()))?;
             // Nor a way around the look park: a finished row whose own
             // completion waits on the user lands waiting on that look.
@@ -1362,6 +1368,7 @@ mod prod_facade_tests {
             evidence: Some(Evidence {
                 commit: Some("test-commit".to_owned()),
                 path: None,
+                lead_verified: None,
                 excerpt: None,
                 verified_at: None,
                 problem: None,
@@ -1394,6 +1401,7 @@ mod prod_facade_tests {
             evidence: Some(EvidenceDraft {
                 commit: Some("test-commit".to_owned()),
                 path: None,
+                lead_verified: None,
                 excerpt: None,
             }),
         }
@@ -2169,6 +2177,7 @@ mod prod_facade_tests {
                     evidence: Some(EvidenceDraft {
                         commit: Some("test-commit".to_owned()),
                         path: None,
+                        lead_verified: None,
                         excerpt: None,
                     }),
                     ..draft("the parked row", Some("reviewer"), Some("epic"))
@@ -2223,6 +2232,7 @@ mod prod_facade_tests {
                     evidence: Some(EvidenceDraft {
                         commit: Some("test-commit".to_owned()),
                         path: None,
+                        lead_verified: None,
                         excerpt: None,
                     }),
                     ..draft("the parked row", Some("reviewer"), Some("epic"))

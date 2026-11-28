@@ -419,10 +419,12 @@ pub const EVIDENCE_EXCERPT_MAX: usize = 4_000;
 ///
 /// A row that changes code, docs or a page cannot move to completed
 /// without one of the artifact forms: a commit that must exist in the
-/// project's repository, or a path that must exist at that commit (or at
-/// `HEAD` when no commit is named). The excerpt travels beside them for
-/// the reader; it is never the whole claim, because output cannot be
-/// checked.
+/// project's repository, a path that must exist at that commit (or at
+/// `HEAD` when no commit is named), or the project lead's own
+/// verification for an artifact the mechanical check cannot reach (a
+/// sibling repository, a non-git artifact). The excerpt travels beside
+/// them for the reader; it is never the whole claim, because output
+/// cannot be checked.
 ///
 /// `verified_at` is stamped by the gate on the move that checks the
 /// artifact, and `problem` carries why the last check failed - absence is
@@ -433,6 +435,12 @@ pub struct Evidence {
     pub commit: Option<String>,
     #[serde(default)]
     pub path: Option<String>,
+    /// The project lead's own verification, in words. It is a claim form
+    /// of its own: when present and non-empty, the mechanical check is
+    /// skipped and only the project's lead seat may move the row with it.
+    /// A worker cannot vouch for its own artifact.
+    #[serde(default)]
+    pub lead_verified: Option<String>,
     #[serde(default)]
     pub excerpt: Option<String>,
     #[serde(default)]
@@ -713,6 +721,7 @@ mod tests {
             evidence: Some(Evidence {
                 commit: Some("0123456789abcdef".to_owned()),
                 path: Some("crates/forge-primitives/src/tasks.rs".to_owned()),
+                lead_verified: None,
                 excerpt: Some("cargo nextest run: 206 passed".to_owned()),
                 verified_at: Some(std::time::SystemTime::UNIX_EPOCH),
                 problem: None,
@@ -964,6 +973,7 @@ mod tests {
         let evidence = Evidence {
             commit: Some("0123456789abcdef".to_owned()),
             path: Some("crates/forge-workspace/src/board.rs".to_owned()),
+            lead_verified: None,
             excerpt: Some("12 tests run: 12 passed".to_owned()),
             verified_at: Some(std::time::SystemTime::UNIX_EPOCH),
             problem: None,
@@ -971,6 +981,15 @@ mod tests {
         let json = serde_json::to_vec(&evidence).expect("serialize");
         let back: Evidence = serde_json::from_slice(&json).expect("deserialize");
         assert_eq!(back, evidence, "every part of the claim survives the store");
+
+        // The field is additive: a block stored before it existed reads
+        // with no lead verification rather than failing the load.
+        let older: Evidence = serde_json::from_slice(
+            br#"{"commit":"0123456789abcdef","path":null,"excerpt":null,
+                "verified_at":null,"problem":null}"#,
+        )
+        .expect("a block written before the field existed still reads");
+        assert_eq!(older.lead_verified, None, "absence is no lead verification");
 
         let unchecked = Evidence { verified_at: None, problem: None, ..evidence.clone() };
         let back: Evidence =

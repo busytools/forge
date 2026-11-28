@@ -253,7 +253,13 @@ function needCardOf(row: BoardRow, rows: BoardRow[], nowSecs: number): NeedCard 
     question,
     options: kind === 'decision' ? (request?.options ?? []) : [],
     class: request?.class ?? null,
-    evidence: task.evidence?.excerpt ?? null,
+    // The lead's own verification is the line when the row carries one: it
+    // is what stands for the artifact the gate could not check. Absent
+    // draws the excerpt, exactly as before.
+    evidence:
+      task.evidence?.lead_verified != null
+        ? `lead-verified: ${task.evidence.lead_verified}`
+        : (task.evidence?.excerpt ?? null),
     evidenceState,
     artifact,
     owner: task.owner === null ? null : task.owner.label,

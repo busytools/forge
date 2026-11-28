@@ -104,6 +104,7 @@ describe('the window', () => {
       evidence: {
         commit: 'abc123',
         path: null,
+        lead_verified: null,
         excerpt: '12 tests run: 12 passed',
         verified_at: null,
         problem: null,
@@ -121,6 +122,35 @@ describe('the window', () => {
     expect(card?.owner).toBe('w-1');
     expect(card?.seat?.label).toBe('w-1');
     expect(card?.age).toBe('2m');
+  });
+
+  it("carries the lead's verification as the evidence line when the row has one", () => {
+    const ask = task('t1', 'waiting', {
+      waiting_on: {
+        kind: 'user',
+        detail: null,
+        on: null,
+        verification: false,
+        since: { secs_since_epoch: NOW - 60, nanos_since_epoch: 0 },
+      },
+      request: {
+        kind: 'decision',
+        question: 'Ship it?',
+        options: ['ship it', 'wait'],
+        answer: null,
+      },
+      evidence: {
+        commit: null,
+        path: null,
+        lead_verified: 'read the sibling repo; it passes',
+        excerpt: 'the excerpt is not the line',
+        verified_at: { secs_since_epoch: NOW - 30, nanos_since_epoch: 0 },
+        problem: null,
+      },
+    });
+    const card = viewOf([row(ask)]).needs[0];
+    expect(card?.evidence).toBe('lead-verified: read the sibling repo; it passes');
+    expect(card?.evidenceState).toBe('verified');
   });
 
   it('ranks a look ahead of a decision, then the oldest wait first', () => {
@@ -183,6 +213,7 @@ describe('the window', () => {
       evidence: {
         commit: 'deadbeef',
         path: null,
+        lead_verified: null,
         excerpt: null,
         verified_at: null,
         problem: 'commit deadbeef does not exist',

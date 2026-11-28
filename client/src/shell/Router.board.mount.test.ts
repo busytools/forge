@@ -107,6 +107,7 @@ function boardWithWaiting(): BoardWire {
     evidence: {
       commit: 'da08a947e',
       path: null,
+      lead_verified: null,
       excerpt: 'the window draws needs, exceptions, live, next',
       verified_at: { secs_since_epoch: 0, nanos_since_epoch: 0 },
       problem: null,

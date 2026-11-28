@@ -175,6 +175,9 @@ export interface RequestWire {
 export interface EvidenceWire {
   commit: string | null;
   path: string | null;
+  /** The project lead's own verification, in words, for an artifact the
+   *  gate cannot check mechanically; drawn in place of the excerpt. */
+  lead_verified: string | null;
   excerpt: string | null;
   verified_at: WireTime | null;
   problem: string | null;
@@ -1057,6 +1060,7 @@ function evidenceFrom(raw: unknown): EvidenceWire | null {
   return {
     commit: text('commit'),
     path: text('path'),
+    lead_verified: text('lead_verified'),
     excerpt: text('excerpt'),
     verified_at: (held['verified_at'] as WireTime | null | undefined) ?? null,
     problem: text('problem'),

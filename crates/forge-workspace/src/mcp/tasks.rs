@@ -144,6 +144,7 @@ fn task_to_json(task: &Task) -> serde_json::Value {
             serde_json::json!({
                 "commit": evidence.commit,
                 "path": evidence.path,
+                "lead_verified": evidence.lead_verified,
                 "excerpt": evidence.excerpt,
                 // The wire's `verified at`: absent until the gate's check
                 // passed, so an unchecked claim reads as unknown.
@@ -420,13 +421,17 @@ impl Tool for Create {
                     "type": "object",
                     "description": "What the completion will rest on. `commit` is a sha the \
                                     repository must hold; `path` a file that must exist at that \
-                                    commit (or at HEAD when no commit is named). `excerpt` is a \
-                                    bounded output sample for the reader - it is never the claim \
-                                    itself. A row cannot complete without one of the two \
-                                    artifacts.",
+                                    commit (or at HEAD when no commit is named); \
+                                    `lead_verified` is the project lead's own verification, in \
+                                    words, for an artifact the gate cannot check mechanically \
+                                    (a sibling repo, a non-git artifact) - only the lead seat \
+                                    may state it. `excerpt` is a bounded output sample for the \
+                                    reader - it is never the claim itself. A row cannot \
+                                    complete without one of the three claim forms.",
                     "properties": {
                         "commit": { "type": "string" },
                         "path": { "type": "string" },
+                        "lead_verified": { "type": "string" },
                         "excerpt": { "type": "string" },
                     },
                     "additionalProperties": false,
@@ -490,9 +495,12 @@ impl Tool for Update {
          head; for a report or a sweep, concluded means it is handed over. **A move to \
          `completed` needs `evidence`**: a `commit` the repository holds - the commit alone is \
          a claim forge checks - or a `path` at that commit (at HEAD when no commit is named), \
-         with an `excerpt` for the reader. forge checks the claim on the move: a completion \
-         with no evidence, or with evidence the repository cannot back, is refused rather than \
-         landed. Being committed is not the claim; what this move states is. \
+         with an `excerpt` for the reader; or `lead_verified`, the project lead's own \
+         verification in words for an artifact the gate cannot check mechanically (a sibling \
+         repo, a non-git artifact), which only the lead seat may state. forge checks the \
+         claim on the move: a completion with no evidence, or with evidence the repository \
+         cannot back, is refused rather than landed. Being committed is not the claim; what \
+         this move states is. \
          Any session in the \
          project may move any of its tasks, so a lead can \
          complete a worker's task and a worker can put a row it holds into waiting - and a row \
@@ -605,13 +613,19 @@ impl Tool for Update {
                     "type": "object",
                     "description": "The completion's claim: `commit` (a sha the repository must \
                                     hold), `path` (a file that must exist at that commit, or at \
-                                    HEAD when no commit is named), and `excerpt` (a bounded \
-                                    sample of the output, for the reader). A move to completed \
-                                    is refused while the claim is missing or does not check \
-                                    out; restating the claim clears its last verdict.",
+                                    HEAD when no commit is named), `lead_verified` (the project \
+                                    lead's own verification, in words, for an artifact the gate \
+                                    cannot check mechanically - a sibling repo, a non-git \
+                                    artifact; only the lead seat may state it, and the \
+                                    mechanical check is skipped when it is present), and \
+                                    `excerpt` (a bounded sample of the output, for the reader). \
+                                    A move to completed is refused while the claim is missing \
+                                    or does not check out; restating the claim clears its last \
+                                    verdict.",
                     "properties": {
                         "commit": { "type": "string" },
                         "path": { "type": "string" },
+                        "lead_verified": { "type": "string" },
                         "excerpt": { "type": "string" },
                     },
                     "additionalProperties": false,
@@ -2825,6 +2839,7 @@ mod tests {
         row.task.evidence = Some(forge_primitives::tasks::Evidence {
             commit: Some("abc123".to_owned()),
             path: None,
+            lead_verified: None,
             excerpt: None,
             verified_at: Some(SystemTime::UNIX_EPOCH),
             problem: None,
@@ -3288,6 +3303,7 @@ mod tests {
         row.task.evidence = Some(forge_primitives::tasks::Evidence {
             commit: Some("abc123".to_owned()),
             path: None,
+            lead_verified: None,
             excerpt: None,
             verified_at: Some(SystemTime::UNIX_EPOCH),
             problem: None,

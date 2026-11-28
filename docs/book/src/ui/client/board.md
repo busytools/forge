@@ -138,9 +138,11 @@ the reader's own acts: no agent has a verb for either, so the press that
 writes them is always the person's.
 
 Where a card carries evidence, it is one summary line: the gate's own word
-(`evidence verified`, `evidence unchecked`, `evidence refused`) and the
-bounded excerpt, which `more` expands and `less` folds back. A claim with no
-excerpt still states its word.
+(`evidence verified`, `evidence unchecked`, `evidence refused`) and either
+the bounded excerpt, which `more` expands and `less` folds back, or - when
+the project's lead vouched for an artifact the gate cannot check
+mechanically, like a sibling repository - `lead-verified:` followed by the
+lead's own words. A claim with no excerpt still states its word.
 
 **One action bar per card, and the hierarchy is by shape.** The primary
 actions - `approve` on a look, the option pills on a decision, a

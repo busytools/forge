@@ -538,6 +538,7 @@ mod tests {
             evidence: Some(Evidence {
                 commit: Some("test-commit".to_owned()),
                 path: None,
+                lead_verified: None,
                 excerpt: None,
                 verified_at: None,
                 problem: None,

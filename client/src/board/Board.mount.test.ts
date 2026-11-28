@@ -1734,6 +1734,7 @@ describe("the window's controls", () => {
   const verified = {
     commit: 'da08a947e',
     path: null,
+    lead_verified: null,
     excerpt: '4596 client tests pass',
     verified_at: since,
     problem: null,
@@ -1801,6 +1802,7 @@ describe("the window's controls", () => {
       lookRow({
         commit: 'da08a947e',
         path: null,
+        lead_verified: null,
         excerpt: null,
         verified_at: since,
         problem: null,
@@ -1814,11 +1816,34 @@ describe("the window's controls", () => {
     expect(line?.querySelector('.w-more'), 'and offers no expand for nothing').toBeNull();
   });
 
+  it("draws the lead's verification in place of the excerpt", () => {
+    windowOver([
+      lookRow({
+        commit: null,
+        path: null,
+        lead_verified: 'read the sibling repo: the five port rows pass',
+        excerpt: 'the excerpt is not the line',
+        verified_at: since,
+        problem: null,
+      }),
+    ]);
+    const line = document.querySelector('.w-need .w-ev');
+    expect(
+      line?.textContent,
+      "the lead's own words are the line a sibling-repo artifact draws",
+    ).toContain('lead-verified: read the sibling repo: the five port rows pass');
+    expect(
+      line?.textContent,
+      'the excerpt does not stand in when the lead has vouched',
+    ).not.toContain('the excerpt is not the line');
+  });
+
   it('holds the approve door on a look with no verified evidence', () => {
     windowOver([
       lookRow({
         commit: 'deadbeef',
         path: null,
+        lead_verified: null,
         excerpt: null,
         verified_at: null,
         problem: 'commit deadbeef does not exist',
