@@ -186,6 +186,35 @@ describe('the window', () => {
     expect(card?.excerpt).toBeNull();
   });
 
+  it('reads a blank excerpt as absent rather than as a line', () => {
+    const ask = task('t1', 'waiting', {
+      waiting_on: {
+        kind: 'user',
+        detail: null,
+        on: null,
+        verification: false,
+        since: { secs_since_epoch: NOW - 60, nanos_since_epoch: 0 },
+      },
+      request: {
+        kind: 'decision',
+        question: 'Ship it?',
+        options: ['ship it', 'wait'],
+        answer: null,
+      },
+      evidence: {
+        commit: 'abc123',
+        path: null,
+        lead_verified: null,
+        excerpt: '   ',
+        verified_at: null,
+        problem: null,
+      },
+    });
+    const card = viewOf([row(ask)]).needs[0];
+    expect(card?.evidence, 'blank words are not a line').toBeNull();
+    expect(card?.excerpt).toBeNull();
+  });
+
   it('ranks a look ahead of a decision, then the oldest wait first', () => {
     const look = task('t1', 'waiting', {
       verify: 'user',

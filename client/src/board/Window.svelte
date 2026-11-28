@@ -258,26 +258,24 @@
               >
             {/if}
             {#if chip !== null || card.evidence !== null}
-              {@const expandable =
-                card.excerpt !== null ||
-                (card.evidence !== null && card.evidence.length > SUMMARY_CHARS)}
               <div class="w-ev" class:open={expanded}>
                 {#if chip !== null}<span class="b-chip {chip.tone}">{chip.label}</span>{/if}
                 {#if card.evidence !== null}
                   <!-- The full line rides the title whatever the card's
-                       width does to the drawn one. -->
+                       width does to the drawn one, and `more` is always
+                       drawn: a character count cannot know the card's
+                       width, and a touch reader has no hover for the
+                       title. -->
                   <span class="w-ev-text" title={card.evidence}
                     >{expanded ? card.evidence : summaryOf(card.evidence)}</span
                   >
-                  {#if expandable}
-                    <button
-                      type="button"
-                      class="w-more"
-                      aria-expanded={expanded}
-                      onclick={() => (evidenceOpen[card.id] = !expanded)}
-                      >{expanded ? 'less' : 'more'}</button
-                    >
-                  {/if}
+                  <button
+                    type="button"
+                    class="w-more"
+                    aria-expanded={expanded}
+                    onclick={() => (evidenceOpen[card.id] = !expanded)}
+                    >{expanded ? 'less' : 'more'}</button
+                  >
                 {/if}
                 <!-- The excerpt a lead's quote folded away keeps its own
                      line under it, once the reader asks for the rest. -->

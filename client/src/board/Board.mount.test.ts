@@ -1817,11 +1817,14 @@ describe("the window's controls", () => {
   });
 
   it("draws the lead's verification as the line and folds the excerpt behind more", () => {
+    const quote =
+      'read the sibling repo at the new head; all five port rows pass on it, and the report holds';
+    const full = `lead-verified: ${quote}`;
     windowOver([
       lookRow({
         commit: null,
         path: null,
-        lead_verified: 'read the sibling repo at the new head; the five port rows pass on it',
+        lead_verified: quote,
         excerpt: 'the excerpt is not the line',
         verified_at: since,
         problem: null,
@@ -1831,12 +1834,16 @@ describe("the window's controls", () => {
     const text = line?.querySelector('.w-ev-text');
     expect(
       text?.textContent,
+      'the drawn line is bounded, so the title is what carries the tail',
+    ).not.toBe(full);
+    expect(
+      text?.textContent,
       "the lead's own words are the line a sibling-repo artifact draws",
     ).toContain('lead-verified: read the sibling repo at the new head');
     expect(
       text?.getAttribute('title'),
-      'the full line rides the title whatever the width does to the drawn one',
-    ).toBe('lead-verified: read the sibling repo at the new head; the five port rows pass on it');
+      'the untruncated line rides the title whatever the width does to the drawn one',
+    ).toBe(full);
     expect(line?.textContent, 'the excerpt is folded behind more, not dropped').not.toContain(
       'the excerpt is not the line',
     );
@@ -1847,9 +1854,34 @@ describe("the window's controls", () => {
     (more as HTMLElement).click();
     flushSync();
     const expanded = document.querySelector('.w-need .w-ev');
-    expect(expanded?.textContent, 'the excerpt still draws once expanded').toContain(
+    expect(expanded?.textContent, "the lead's words survive the expansion").toContain(
+      'lead-verified: read the sibling repo at the new head',
+    );
+    const excerpt = expanded?.querySelector('.w-ev-excerpt');
+    expect(excerpt?.textContent, 'the excerpt draws on its own line once expanded').toBe(
       'the excerpt is not the line',
     );
+  });
+
+  it('offers the expander on a short evidence line too', () => {
+    // A character count cannot know the card's width: the narrow layout
+    // truncates well under the old 90-character bound, and a touch reader
+    // has no hover for the title.
+    windowOver([
+      lookRow({
+        commit: null,
+        path: null,
+        lead_verified: 'read it; it holds',
+        excerpt: null,
+        verified_at: since,
+        problem: null,
+      }),
+    ]);
+    const line = document.querySelector('.w-need .w-ev');
+    expect(
+      line?.querySelector('.w-more'),
+      'a short line still offers the expander and the title',
+    ).not.toBeNull();
   });
 
   it('holds the approve door on a look with no verified evidence', () => {

@@ -176,7 +176,8 @@ export interface EvidenceWire {
   commit: string | null;
   path: string | null;
   /** The project lead's own verification, in words, for an artifact the
-   *  gate cannot check mechanically; drawn in place of the excerpt. */
+   *  gate cannot check mechanically; drawn as the evidence line, with the
+   *  excerpt kept behind the same `more`. */
   lead_verified: string | null;
   excerpt: string | null;
   verified_at: WireTime | null;

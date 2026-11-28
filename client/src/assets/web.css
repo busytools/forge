@@ -983,6 +983,8 @@ button.b-epic-pill { cursor: pointer; }
   .w-link, .w-digest-line, .w-who, .w-exc .w-link {
     min-height: 44px;
   }
+  /* The expander is a short word, so its target needs the width too. */
+  .w-more { min-width: 44px; }
   /* The footer trigger carries the footer's own min-height, so it needs its
      own coarse rule at the same specificity. */
   .b-pick.w-foot-pill { min-height: 44px; }

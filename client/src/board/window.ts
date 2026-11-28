@@ -256,6 +256,8 @@ function needCardOf(row: BoardRow, rows: BoardRow[], nowSecs: number): NeedCard 
   // The excerpt then folds behind the same `more`, never dropped.
   const leadVerified = task.evidence?.lead_verified?.trim() ?? '';
   const vouched = leadVerified === '' ? null : leadVerified;
+  const excerpt = task.evidence?.excerpt?.trim() ?? '';
+  const drawnExcerpt = excerpt === '' ? null : excerpt;
   return {
     id: task.id,
     kind,
@@ -263,8 +265,8 @@ function needCardOf(row: BoardRow, rows: BoardRow[], nowSecs: number): NeedCard 
     question,
     options: kind === 'decision' ? (request?.options ?? []) : [],
     class: request?.class ?? null,
-    evidence: vouched === null ? (task.evidence?.excerpt ?? null) : `lead-verified: ${vouched}`,
-    excerpt: vouched === null ? null : (task.evidence?.excerpt ?? null),
+    evidence: vouched === null ? drawnExcerpt : `lead-verified: ${vouched}`,
+    excerpt: vouched === null ? null : drawnExcerpt,
     evidenceState,
     artifact,
     owner: task.owner === null ? null : task.owner.label,
