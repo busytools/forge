@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { flip } from 'svelte/animate';
   import { fade, fly } from 'svelte/transition';
   import { hrefForSlot } from '../routes';
@@ -126,15 +127,22 @@
     const check = (): void => {
       clipped[id] = node.scrollWidth > node.clientWidth + 1;
     };
+    // A new param means the words changed; measure after the text lands,
+    // not against the previous string Svelte has not replaced yet.
+    const remeasure = (): void => {
+      void tick().then(check);
+    };
     check();
+    // One observer per line measures content and box together; the window
+    // listener is the fallback where ResizeObserver is absent.
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(check);
     observer?.observe(node);
-    window.addEventListener('resize', check);
+    if (observer === null) window.addEventListener('resize', check);
     return {
-      update: check,
+      update: remeasure,
       destroy(): void {
         observer?.disconnect();
-        window.removeEventListener('resize', check);
+        if (observer === null) window.removeEventListener('resize', check);
         clipped[id] = false;
       },
     };
@@ -282,21 +290,27 @@
                 >look at <span class="nm">{card.artifact.label}</span></a
               >
             {/if}
-            {#if chip !== null || card.evidence !== null}
+            {#if chip !== null || card.vouched !== null || card.evidence !== null}
+              {@const line = card.vouched ?? card.evidence}
+              {@const folded = card.vouched === null ? null : card.evidence}
               <div class="w-ev" class:open={expanded}>
                 {#if chip !== null}<span class="b-chip {chip.tone}">{chip.label}</span>{/if}
-                {#if card.evidence !== null}
+                <!-- `lead-verified:` is chrome, drawn only when the row's
+                     own field carries the lead's words; an excerpt can
+                     never compose it. -->
+                {#if card.vouched !== null}
+                  <span class="w-ev-marker">lead-verified:</span>
+                {/if}
+                {#if line !== null}
                   <!-- The whole line is drawn and the CSS clips it; the
                        action measures whether it is actually clipped, so
                        `more` appears only when it has something to show
                        (or an excerpt is folded behind it). The full line
                        always rides the title. -->
-                  <span
-                    class="w-ev-text"
-                    title={card.evidence}
-                    use:measureEvidence={[card.id, card.evidence]}>{card.evidence}</span
+                  <span class="w-ev-text" title={line} use:measureEvidence={[card.id, line]}
+                    >{line}</span
                   >
-                  {#if card.excerpt !== null || clipped[card.id] === true || expanded}
+                  {#if folded !== null || clipped[card.id] === true || expanded}
                     <button
                       type="button"
                       class="w-more"
@@ -308,8 +322,8 @@
                 {/if}
                 <!-- The excerpt a lead's quote folded away keeps its own
                      line under it, once the reader asks for the rest. -->
-                {#if expanded && card.excerpt !== null}
-                  <span class="w-ev-text w-ev-excerpt">{card.excerpt}</span>
+                {#if expanded && folded !== null}
+                  <span class="w-ev-text w-ev-excerpt">{folded}</span>
                 {/if}
               </div>
             {/if}

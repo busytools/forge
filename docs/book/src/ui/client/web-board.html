@@ -253,6 +253,7 @@
     font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
   .w-ev-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .w-ev.open .w-ev-text { white-space: normal; }
+  .w-ev-marker { color: var(--blue); }
   .w-ev-excerpt { flex-basis: 100%; white-space: normal; overflow-wrap: anywhere; }
   .w-more { background: none; border: none; padding: 2px 0; color: var(--dim);
     font-family: var(--mono); font-size: 12.5px; cursor: pointer;
@@ -450,11 +451,13 @@
           </div>
           <h3 class="w-q">Approve PR #3086 or say what to change</h3>
           <a class="w-door" href="./web-session.html">look at <span class="nm">PR #3086</span></a>
-          <!-- The expanded evidence block: the lead's words are the line, and
-               the excerpt it folded away draws on its own line beneath. -->
+          <!-- The expanded evidence block: the marker is chrome drawn from the
+               row's own field, the lead's words are the line, and the excerpt
+               it folded away draws on its own line beneath. -->
           <div class="w-ev open">
             <span class="b-chip blue">evidence verified</span>
-            <span class="w-ev-text">lead-verified: read the sibling repo at 4f2c1a9; all five port rows pass on the new engine, and the report holds</span>
+            <span class="w-ev-marker">lead-verified:</span>
+            <span class="w-ev-text">read the sibling repo at 4f2c1a9; all five port rows pass on the new engine, and the report holds</span>
             <button class="w-more" aria-expanded="true">less</button>
             <span class="w-ev-text w-ev-excerpt">212 client tests pass; the window draws needs, exceptions, live, next</span>
           </div>

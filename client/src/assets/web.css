@@ -888,6 +888,9 @@ button.b-epic-pill { cursor: pointer; }
 }
 .w-ev-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .w-ev.open .w-ev-text { white-space: normal; }
+/* The lead's marker is chrome, drawn only from the row's own field - an
+   excerpt can never spell it into being. */
+.w-ev-marker { color: var(--blue); }
 /* The excerpt a lead's quote folded away takes its own line once the
    reader expands the block; it wraps rather than ellipsising. */
 .w-ev-excerpt { flex-basis: 100%; white-space: normal; overflow-wrap: anywhere; }

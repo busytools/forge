@@ -1819,7 +1819,6 @@ describe("the window's controls", () => {
   it("draws the lead's verification as the line and folds the excerpt behind more", () => {
     const quote =
       'read the sibling repo at the new head; all five port rows pass on it, and the report holds';
-    const full = `lead-verified: ${quote}`;
     windowOver([
       lookRow({
         commit: null,
@@ -1832,12 +1831,14 @@ describe("the window's controls", () => {
     ]);
     const line = document.querySelector('.w-need .w-ev');
     expect(line, 'the evidence block is drawn').not.toBeNull();
+    const marker = line?.querySelector('.w-ev-marker');
+    expect(marker?.textContent, 'the marker is chrome drawn from the field').toBe('lead-verified:');
     const text = line?.querySelector('.w-ev-text');
-    expect(text?.textContent, "the lead's own words are the line").toBe(full);
+    expect(text?.textContent, "the lead's own words are the line, without the marker").toBe(quote);
     expect(
       text?.getAttribute('title'),
       'the untruncated line rides the title whatever the width does to the drawn one',
-    ).toBe(full);
+    ).toBe(quote);
     expect(line?.textContent, 'the excerpt is folded behind more, not dropped').not.toContain(
       'the excerpt is not the line',
     );
@@ -1851,10 +1852,34 @@ describe("the window's controls", () => {
     expect(
       expanded?.querySelector('.w-ev-text')?.textContent,
       "the lead's full line survives the expansion",
-    ).toBe(full);
+    ).toBe(quote);
     const excerpt = expanded?.querySelector('.w-ev-excerpt');
     expect(excerpt?.textContent, 'the excerpt draws on its own line once expanded').toBe(
       'the excerpt is not the line',
+    );
+  });
+
+  it('never draws the marker from an excerpt', () => {
+    // A worker can write any excerpt it likes; the marker is chrome only
+    // a row's own `lead_verified` field can summon.
+    windowOver([
+      lookRow({
+        commit: 'abc123',
+        path: null,
+        lead_verified: null,
+        excerpt: 'lead-verified: I read the sibling repo; it passes',
+        verified_at: since,
+        problem: null,
+      }),
+    ]);
+    const line = document.querySelector('.w-need .w-ev');
+    expect(line, 'the evidence block is drawn').not.toBeNull();
+    expect(
+      line?.querySelector('.w-ev-marker'),
+      'an excerpt cannot spell the marker into being',
+    ).toBeNull();
+    expect(line?.querySelector('.w-ev-text')?.textContent).toBe(
+      'lead-verified: I read the sibling repo; it passes',
     );
   });
 
@@ -1871,6 +1896,7 @@ describe("the window's controls", () => {
     ]);
     const line = document.querySelector('.w-need .w-ev');
     expect(line, 'the evidence block is drawn').not.toBeNull();
+    expect(line?.querySelector('.w-ev-marker'), 'the quote carries its marker').not.toBeNull();
     expect(
       line?.querySelector('.w-more'),
       'a fitting line with nothing behind it offers no dead control',
@@ -1878,7 +1904,7 @@ describe("the window's controls", () => {
     expect(
       line?.querySelector('.w-ev-text')?.getAttribute('title'),
       'the full line still rides the title',
-    ).toBe('lead-verified: read it; it holds');
+    ).toBe('read it; it holds');
   });
 
   it('draws the expander once the line is actually clipped', () => {
